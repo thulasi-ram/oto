@@ -1,0 +1,845 @@
+# golangci-lint v2 configuration.
+#
+# The depguard block below is not decoration. The layering rules in CONTEXT.md §5
+# and the dependency direction in SPEC §I.1 are mechanically enforced here,
+# because architecture that is only written down decays within a quarter.
+#
+# depguard resolves allow/deny by LONGEST PREFIX MATCH, which is what lets a rule
+# deny a whole domain and then re-allow that domain's service package.
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/thulasiram/oto
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # Off: a layering violation and a style nit can land on the same line, and the
+  # layering violation is the one that must never be silently swallowed.
+  uniq-by-line: false
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - revive
+    - gosec
+    - bodyclose
+    - sqlclosecheck
+    - rowserrcheck
+    - depguard
+    - ineffassign
+    - unused
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests may reach anywhere: the arch rules describe production code.
+      - path: (_test\.go|^test/)
+        linters:
+          - depguard
+          - gosec
+          - errcheck
+      - path: doc\.go
+        linters:
+          - revive
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+    staticcheck:
+      checks:
+        - all
+        - -ST1000   # package comments live in doc.go
+        - -ST1003   # initialisms; revive owns naming
+
+    gosec:
+      excludes:
+        - G115      # integer conversion overflow: too noisy on pool sizing
+        - G101      # 'credentials' in the compose-default DSN in config.Default()
+
+    revive:
+      severity: error
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+          arguments: ["disableStutteringCheck"]
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+
+    depguard:
+      rules:
+        # CONTEXT.md §5.1 — api MUST NOT import repository. A handler that reaches
+        # into SQL has skipped every invariant the service enforces.
+        api-must-not-import-repository:
+          list-mode: lax
+          files:
+            - "**/internal/identity/api/**"
+            - "**/internal/sources/api/**"
+            - "**/internal/ingestion/api/**"
+            - "**/internal/alerts/api/**"
+            - "**/internal/grouping/api/**"
+            - "**/internal/rules/api/**"
+            - "**/internal/enrichment/api/**"
+            - "**/internal/notification/api/**"
+            - "**/internal/channels/api/**"
+            - "**/internal/streaming/api/**"
+            - "**/internal/silences/api/**"
+            - "**/internal/stats/api/**"
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity/repository
+              desc: "api MUST NOT import repository (identity); call the service"
+            - pkg: github.com/thulasiram/oto/internal/sources/repository
+              desc: "api MUST NOT import repository (sources); call the service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion/repository
+              desc: "api MUST NOT import repository (ingestion); call the service"
+            - pkg: github.com/thulasiram/oto/internal/alerts/repository
+              desc: "api MUST NOT import repository (alerts); call the service"
+            - pkg: github.com/thulasiram/oto/internal/grouping/repository
+              desc: "api MUST NOT import repository (grouping); call the service"
+            - pkg: github.com/thulasiram/oto/internal/rules/repository
+              desc: "api MUST NOT import repository (rules); call the service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment/repository
+              desc: "api MUST NOT import repository (enrichment); call the service"
+            - pkg: github.com/thulasiram/oto/internal/notification/repository
+              desc: "api MUST NOT import repository (notification); call the service"
+            - pkg: github.com/thulasiram/oto/internal/channels/repository
+              desc: "api MUST NOT import repository (channels); call the service"
+            - pkg: github.com/thulasiram/oto/internal/streaming/repository
+              desc: "api MUST NOT import repository (streaming); call the service"
+            - pkg: github.com/thulasiram/oto/internal/silences/repository
+              desc: "api MUST NOT import repository (silences); call the service"
+            - pkg: github.com/thulasiram/oto/internal/stats/repository
+              desc: "api MUST NOT import repository (stats); call the service"
+
+        # CONTEXT.md §5.1 — repository MUST NOT import api. A row struct that knows
+        # about a DTO is a row struct that will be shaped by the wire format.
+        repository-must-not-import-api:
+          list-mode: lax
+          files:
+            - "**/internal/identity/repository/**"
+            - "**/internal/sources/repository/**"
+            - "**/internal/ingestion/repository/**"
+            - "**/internal/alerts/repository/**"
+            - "**/internal/grouping/repository/**"
+            - "**/internal/rules/repository/**"
+            - "**/internal/enrichment/repository/**"
+            - "**/internal/notification/repository/**"
+            - "**/internal/channels/repository/**"
+            - "**/internal/streaming/repository/**"
+            - "**/internal/silences/repository/**"
+            - "**/internal/stats/repository/**"
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity/api
+              desc: "repository MUST NOT import api (identity)"
+            - pkg: github.com/thulasiram/oto/internal/sources/api
+              desc: "repository MUST NOT import api (sources)"
+            - pkg: github.com/thulasiram/oto/internal/ingestion/api
+              desc: "repository MUST NOT import api (ingestion)"
+            - pkg: github.com/thulasiram/oto/internal/alerts/api
+              desc: "repository MUST NOT import api (alerts)"
+            - pkg: github.com/thulasiram/oto/internal/grouping/api
+              desc: "repository MUST NOT import api (grouping)"
+            - pkg: github.com/thulasiram/oto/internal/rules/api
+              desc: "repository MUST NOT import api (rules)"
+            - pkg: github.com/thulasiram/oto/internal/enrichment/api
+              desc: "repository MUST NOT import api (enrichment)"
+            - pkg: github.com/thulasiram/oto/internal/notification/api
+              desc: "repository MUST NOT import api (notification)"
+            - pkg: github.com/thulasiram/oto/internal/channels/api
+              desc: "repository MUST NOT import api (channels)"
+            - pkg: github.com/thulasiram/oto/internal/streaming/api
+              desc: "repository MUST NOT import api (streaming)"
+            - pkg: github.com/thulasiram/oto/internal/silences/api
+              desc: "repository MUST NOT import api (silences)"
+            - pkg: github.com/thulasiram/oto/internal/stats/api
+              desc: "repository MUST NOT import api (stats)"
+
+        # CONTEXT.md §5.2 — domain packages are pure Go: entities, invariants and the
+        # state machine. NO I/O IMPORTS AT ALL. Ever.
+        domain-must-be-pure:
+          list-mode: lax
+          files:
+            - "**/internal/identity/domain/**"
+            - "**/internal/sources/domain/**"
+            - "**/internal/ingestion/domain/**"
+            - "**/internal/alerts/domain/**"
+            - "**/internal/grouping/domain/**"
+            - "**/internal/rules/domain/**"
+            - "**/internal/enrichment/domain/**"
+            - "**/internal/notification/domain/**"
+            - "**/internal/channels/domain/**"
+            - "**/internal/streaming/domain/**"
+            - "**/internal/silences/domain/**"
+            - "**/internal/stats/domain/**"
+          allow:
+            - github.com/thulasiram/oto/pkg/alertkey
+            - github.com/thulasiram/oto/internal/platform/clock
+            - github.com/thulasiram/oto/internal/platform/id
+            - github.com/thulasiram/oto/internal/platform/errs
+          deny:
+            - pkg: net/http
+              desc: "domain is pure Go: no HTTP"
+            - pkg: database/sql
+              desc: "domain is pure Go: no SQL"
+            - pkg: github.com/jackc/pgx
+              desc: "domain is pure Go: no pgx"
+            - pkg: github.com/slack-go/slack
+              desc: "domain is pure Go: no Slack SDK"
+            - pkg: github.com/go-chi/chi
+              desc: "domain is pure Go: no router"
+            - pkg: github.com/Masterminds/squirrel
+              desc: "domain is pure Go: no query builder"
+            - pkg: github.com/riverqueue/river
+              desc: "domain is pure Go: no job queue"
+            - pkg: github.com/prometheus/client_golang
+              desc: "domain is pure Go: no metrics client"
+            - pkg: go.opentelemetry.io/otel
+              desc: "domain is pure Go: no tracing"
+            - pkg: github.com/thulasiram/oto/internal/platform/db
+              desc: "domain is pure Go: no database access"
+            - pkg: github.com/thulasiram/oto/internal/platform/httpx
+              desc: "domain is pure Go: no HTTP layer"
+            - pkg: github.com/thulasiram/oto/internal/platform/jobs
+              desc: "domain is pure Go: no job queue"
+            - pkg: github.com/thulasiram/oto/internal/platform/telemetry
+              desc: "domain is pure Go: no telemetry"
+
+        # CONTEXT.md §5.4 — identity may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        identity-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/identity/**"
+          allow:
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "identity MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "identity MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "identity MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "identity MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "identity MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "identity MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "identity MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "identity MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "identity MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "identity MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "identity MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — sources may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        sources-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/sources/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "sources MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "sources MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "sources MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "sources MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "sources MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "sources MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "sources MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "sources MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "sources MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "sources MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "sources MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — ingestion may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        ingestion-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/ingestion/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "ingestion MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "ingestion MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "ingestion MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "ingestion MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "ingestion MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "ingestion MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "ingestion MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "ingestion MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "ingestion MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "ingestion MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "ingestion MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — alerts may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        alerts-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/alerts/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "alerts MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "alerts MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "alerts MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "alerts MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "alerts MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "alerts MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "alerts MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "alerts MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "alerts MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "alerts MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "alerts MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — grouping may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        grouping-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/grouping/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "grouping MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "grouping MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "grouping MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "grouping MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "grouping MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "grouping MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "grouping MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "grouping MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "grouping MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "grouping MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "grouping MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — rules may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        rules-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/rules/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "rules MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "rules MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "rules MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "rules MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "rules MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "rules MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "rules MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "rules MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "rules MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "rules MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "rules MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — enrichment may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        enrichment-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/enrichment/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "enrichment MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "enrichment MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "enrichment MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "enrichment MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "enrichment MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "enrichment MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "enrichment MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "enrichment MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "enrichment MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "enrichment MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "enrichment MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — notification may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        notification-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/notification/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "notification MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "notification MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "notification MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "notification MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "notification MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "notification MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "notification MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "notification MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "notification MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "notification MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "notification MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — channels may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        channels-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/channels/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "channels MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "channels MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "channels MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "channels MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "channels MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "channels MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "channels MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "channels MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "channels MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "channels MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "channels MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — streaming may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        streaming-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/streaming/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/silences/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "streaming MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "streaming MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "streaming MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "streaming MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "streaming MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "streaming MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "streaming MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "streaming MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "streaming MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "streaming MUST NOT import silences internals; declare a port and accept silences/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "streaming MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — silences may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        silences-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/silences/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/stats/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "silences MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "silences MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "silences MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "silences MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "silences MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "silences MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "silences MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "silences MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "silences MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "silences MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "silences MUST NOT import stats internals; declare a port and accept stats/service"
+
+        # CONTEXT.md §5.4 — stats may not reach into another domain's internals.
+        # Cross-domain calls are service -> service, through an interface declared
+        # by the CONSUMER. Only <other>/service is re-allowed below.
+        stats-must-not-reach-into-other-domains:
+          list-mode: lax
+          files:
+            - "**/internal/stats/**"
+          allow:
+            - github.com/thulasiram/oto/internal/identity/service
+            - github.com/thulasiram/oto/internal/sources/service
+            - github.com/thulasiram/oto/internal/ingestion/service
+            - github.com/thulasiram/oto/internal/alerts/service
+            - github.com/thulasiram/oto/internal/grouping/service
+            - github.com/thulasiram/oto/internal/rules/service
+            - github.com/thulasiram/oto/internal/enrichment/service
+            - github.com/thulasiram/oto/internal/notification/service
+            - github.com/thulasiram/oto/internal/channels/service
+            - github.com/thulasiram/oto/internal/streaming/service
+            - github.com/thulasiram/oto/internal/silences/service
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "stats MUST NOT import identity internals; declare a port and accept identity/service"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "stats MUST NOT import sources internals; declare a port and accept sources/service"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "stats MUST NOT import ingestion internals; declare a port and accept ingestion/service"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "stats MUST NOT import alerts internals; declare a port and accept alerts/service"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "stats MUST NOT import grouping internals; declare a port and accept grouping/service"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "stats MUST NOT import rules internals; declare a port and accept rules/service"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "stats MUST NOT import enrichment internals; declare a port and accept enrichment/service"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "stats MUST NOT import notification internals; declare a port and accept notification/service"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "stats MUST NOT import channels internals; declare a port and accept channels/service"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "stats MUST NOT import streaming internals; declare a port and accept streaming/service"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "stats MUST NOT import silences internals; declare a port and accept silences/service"
+
+        # SPEC §I.1 — alerts NEVER imports notification. It appends events and enqueues
+        # jobs; notification subscribes. This is what makes it possible to run oto with
+        # notifications entirely disabled, which is how the first correctness tests run.
+        dependency-direction-alerts-and-ingestion:
+          list-mode: lax
+          files:
+            - "**/internal/alerts/**"
+            - "**/internal/ingestion/**"
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "alerts/ingestion MUST NOT import notification (SPEC §I.1)"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "alerts/ingestion MUST NOT import channels (SPEC §I.1)"
+
+        # platform is not a domain and must never depend on one, or the entire
+        # dependency direction inverts and the import graph grows a cycle.
+        platform-must-not-import-domains:
+          list-mode: lax
+          files:
+            - "**/internal/platform/**"
+            - "**/pkg/**"
+          deny:
+            - pkg: github.com/thulasiram/oto/internal/identity
+              desc: "platform MUST NOT import the identity domain"
+            - pkg: github.com/thulasiram/oto/internal/sources
+              desc: "platform MUST NOT import the sources domain"
+            - pkg: github.com/thulasiram/oto/internal/ingestion
+              desc: "platform MUST NOT import the ingestion domain"
+            - pkg: github.com/thulasiram/oto/internal/alerts
+              desc: "platform MUST NOT import the alerts domain"
+            - pkg: github.com/thulasiram/oto/internal/grouping
+              desc: "platform MUST NOT import the grouping domain"
+            - pkg: github.com/thulasiram/oto/internal/rules
+              desc: "platform MUST NOT import the rules domain"
+            - pkg: github.com/thulasiram/oto/internal/enrichment
+              desc: "platform MUST NOT import the enrichment domain"
+            - pkg: github.com/thulasiram/oto/internal/notification
+              desc: "platform MUST NOT import the notification domain"
+            - pkg: github.com/thulasiram/oto/internal/channels
+              desc: "platform MUST NOT import the channels domain"
+            - pkg: github.com/thulasiram/oto/internal/streaming
+              desc: "platform MUST NOT import the streaming domain"
+            - pkg: github.com/thulasiram/oto/internal/silences
+              desc: "platform MUST NOT import the silences domain"
+            - pkg: github.com/thulasiram/oto/internal/stats
+              desc: "platform MUST NOT import the stats domain"
+            - pkg: github.com/thulasiram/oto/internal/app
+              desc: "platform MUST NOT import the wiring layer"
+
+        # R5/§H — Slack is one implementation of the Channel port. Slack types must not
+        # leak past the provider and the renderer, or the abstraction is a lie and the
+        # generic-webhook provider stops proving anything.
+        slack-sdk-is-provider-only:
+          list-mode: lax
+          files:
+            - "**/internal/**"
+            - "**/cmd/**"
+            - "!**/internal/channels/providers/slack/**"
+            - "!**/internal/channels/render/slack/**"
+          deny:
+            - pkg: github.com/slack-go/slack
+              desc: "the Slack SDK is confined to channels/providers/slack and channels/render/slack (R5)"
+
+        # Global state, weak randomness and print debugging do not survive review.
+        banned-packages:
+          list-mode: lax
+          files:
+            - "**/internal/**"
+            - "**/pkg/**"
+            - "**/cmd/**"
+          deny:
+            - pkg: math/rand
+              desc: "use crypto/rand, or platform/id for identifiers"
+            - pkg: math/rand/v2
+              desc: "use crypto/rand, or platform/id for identifiers"
+            - pkg: github.com/pkg/errors
+              desc: "use the stdlib errors package plus platform/errs"
+            - pkg: io/ioutil
+              desc: "deprecated; use io and os"
+            - pkg: github.com/sirupsen/logrus
+              desc: "logging is log/slog via platform/log"
+            - pkg: go.uber.org/zap
+              desc: "logging is log/slog via platform/log"
+

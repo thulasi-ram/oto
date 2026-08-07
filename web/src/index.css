@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  /* Colour encodes STATE (SPEC §H, C7). The same four states drive the UI and
+     the Slack attachment colour, so they live in one place. */
+  --color-state-firing: oklch(0.63 0.21 25);
+  --color-state-suppressed: oklch(0.65 0.02 260);
+  --color-state-resolved: oklch(0.66 0.16 150);
+  --color-state-expired: oklch(0.68 0.13 75);
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  @apply bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+}

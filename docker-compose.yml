@@ -1,0 +1,61 @@
+name: oto
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: oto-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: oto
+      POSTGRES_PASSWORD: oto
+      POSTGRES_DB: oto
+      # Dev only. C locale keeps text sorting deterministic across machines.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      # oto uses LISTEN/NOTIFY for the SSE bridge; keep the WAL settings honest.
+      - -c
+      - wal_level=logical
+      - -c
+      - log_min_duration_statement=500
+    ports:
+      - "5432:5432"
+    volumes:
+      - oto-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oto -d oto"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # A real Alertmanager is not needed to exercise the ingest path, but a real
+  # alertmanager sending real webhooks is. This one routes EVERYTHING to oto
+  # running on the host, so `amtool alert add ...` lands in the local database.
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: oto-alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --log.level=info
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - oto-amdata:/alertmanager
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9093/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+volumes:
+  oto-pgdata:
+  oto-amdata:

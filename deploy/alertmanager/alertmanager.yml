@@ -1,0 +1,35 @@
+# Dev-only Alertmanager configuration.
+#
+# Everything routes to one webhook receiver pointed at oto on the host, so that
+# `amtool alert add alertname=Test severity=critical` produces a real webhook v4
+# body on the real ingest path. This is the fastest honest way to test ingestion
+# without a Prometheus.
+#
+# The receiver block below is the ENTIRE Alertmanager change oto requires
+# (SPEC §J.1). Nothing else is needed.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: oto
+  group_by: ["alertname", "namespace"]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 4h
+
+receivers:
+  - name: oto
+    webhook_configs:
+      # send_resolved MUST stay true: oto distinguishes `resolved` from `expired`
+      # and will raise a persistent source_health warning if it is off (C15).
+      - send_resolved: true
+        url: http://host.docker.internal:8080/api/v1/ingest/alertmanager
+        max_alerts: 0
+        http_config:
+          # Replace with a real oto ingest token once identity is wired up.
+          authorization:
+            type: Bearer
+            credentials: oto_ingest_dev_token
+
+inhibit_rules: []
