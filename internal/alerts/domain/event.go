@@ -53,6 +53,16 @@ var (
 	// EventOccurrenceUnacknowledged records an ack being dropped (T10).
 	EventOccurrenceUnacknowledged = EventType{"occurrence.unacknowledged"}
 
+	// EventAlertSnoozed records a human asking oto to be quiet about this Alert
+	// until a fixed time (§B.8.5, T15). Payload: snooze_id, until, note,
+	// duration_seconds. It is a fact about OTO'S NOTIFICATION BEHAVIOUR — the
+	// signal's state, ack state and severity are untouched.
+	EventAlertSnoozed = EventType{"alert.snoozed"}
+	// EventAlertUnsnoozed records a snooze ending (§B.8.5, T15). Payload:
+	// snooze_id, reason ∈ {manual, expired, superseded}. Actor is `user` for
+	// manual and superseded, `system` for expired.
+	EventAlertUnsnoozed = EventType{"alert.unsnoozed"}
+
 	// EventGroupOpened records a new AlertGroup generation.
 	EventGroupOpened = EventType{"group.opened"}
 	// EventGroupClosed records a generation closing after group_close_delay.
@@ -123,6 +133,7 @@ func AllEventTypes() []EventType {
 		EventOccurrenceOpened, EventOccurrenceReopened, EventOccurrenceSuppressed,
 		EventOccurrenceUnsuppressed, EventOccurrenceResolved, EventOccurrenceExpired,
 		EventOccurrenceAcknowledged, EventOccurrenceUnacknowledged,
+		EventAlertSnoozed, EventAlertUnsnoozed,
 		EventGroupOpened, EventGroupClosed, EventGroupMemberJoined, EventGroupMemberLeft,
 		EventGroupStormStarted, EventGroupStormEnded,
 		EventRuleSnapshotCaptured, EventRuleDefinitionChanged, EventRuleLookupFailed,

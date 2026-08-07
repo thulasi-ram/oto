@@ -14,7 +14,7 @@ Three entities:
 - **Alert** — the *identity of a label set* within `(org, cluster)`. Created on first sight,
   survives resolution forever. Millions of rows, bounded by label cardinality, not by time.
 - **AlertOccurrence** — one *contiguous firing episode*, `(alert_id, seq)`. A stateful interval
-  with a start and an end. It is what you ack and what you count for MTTR.
+  with a start and an end. It is what you ack, and whose firing duration is measured. (The acronym "MTTR" is banned as of ADR 0013; use "firing duration".)
 - **AlertEvent** — an immutable record of *one thing that happened at one instant*. Append-only.
   Never updated, never deleted; aged out by `DROP PARTITION`.
 

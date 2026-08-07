@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -74,9 +75,11 @@ var (
 	TransitionT1 = TransitionID{"T1"}
 	// TransitionT2 is a repeat observation of an already-firing occurrence.
 	TransitionT2 = TransitionID{"T2"}
-	// TransitionT3 suppresses a firing occurrence. Reconciler only.
+	// TransitionT3 suppresses a firing occurrence. RECONCILER ONLY, and that
+	// asymmetry with T4 is deliberate — see the note on the transition table.
 	TransitionT3 = TransitionID{"T3"}
-	// TransitionT4 unsuppresses a suppressed occurrence. Reconciler only.
+	// TransitionT4 unsuppresses a suppressed occurrence. Reconciler OR ingest —
+	// see the asymmetry note on the transition table (§B.3.1).
 	TransitionT4 = TransitionID{"T4"}
 	// TransitionT5 resolves an occurrence on an explicit upstream observation.
 	TransitionT5 = TransitionID{"T5"}
@@ -141,9 +144,28 @@ var transitionTable = []transitionRule{
 		id: TransitionT3, actors: []ActorKind{ActorReconciler},
 		event: EventOccurrenceSuppressed,
 	},
+	// ⭐ T4 IS ASYMMETRIC WITH T3 AND THAT IS DELIBERATE (§B.3.1). Do not "fix" it.
+	//
+	// T3 (firing -> suppressed) is RECONCILER ONLY, because ingest can never
+	// observe suppression: Alertmanager's MuteStage runs before RetryStage and
+	// DROPS suppressed alerts from the slice that continues down the pipeline
+	// (research A6), so a suppressed alert never reaches oto's webhook at all.
+	//
+	// T4 (suppressed -> firing) is RECONCILER *OR* INGEST, for exactly the same
+	// reason read the other way round: a webhook arrival is POSITIVE PROOF OF
+	// NON-SUPPRESSION. If the alert were still suppressed it would never have been
+	// sent. Ingest cannot see suppression begin, but arrival IS the evidence that
+	// it ended.
+	//
+	// Making T4 reconciler-only left an occurrence stuck in `suppressed` for up to
+	// a full reconcile interval after a silence expired, even though a webhook had
+	// already proved it was firing again — and when group_interval is shorter than
+	// the reconcile interval (the common case) oto rendered a live firing alert as
+	// "silenced by @ram". That is a visible lie of precisely the kind §B.4 exists
+	// to prevent.
 	{
 		from: StateSuppressed, to: StateFiring, trigger: TriggerObserveFiring,
-		id: TransitionT4, actors: []ActorKind{ActorReconciler},
+		id: TransitionT4, actors: []ActorKind{ActorReconciler, ActorIngest},
 		event: EventOccurrenceUnsuppressed,
 	},
 	{
@@ -291,6 +313,21 @@ type TransitionResult struct {
 	// Events are the AlertEvents to append, in order. At most one edge appends
 	// more than nothing, so this is empty or a single event.
 	Events []Event
+
+	// DetectedBy names the witness: "webhook" for ingest, "reconciler" for the
+	// reconciler. It is what T4's `occurrence.unsuppressed` payload carries
+	// (§B.3.1), and it is set on every edge so a caller never has to re-derive it.
+	DetectedBy string
+
+	// Clamped reports that §B.3.2 fired: the upstream clock ran backwards and
+	// `ended_at` was pulled forward to `started_at` rather than violating
+	// occ_order_ck and aborting the ingest transaction.
+	Clamped bool
+	// ClampSkew is how far backwards the upstream clock was, and is zero unless
+	// Clamped. THE CALLER MUST ACCUMULATE IT into source_health.clock_skew_ms and
+	// export it as oto_clock_skew_seconds: the skew is MEASURED AND SURFACED,
+	// never rejected (C12).
+	ClampSkew time.Duration
 }
 
 // Apply runs the SPEC §B.3 state machine over one AlertOccurrence.
@@ -324,6 +361,12 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 
 	from := o.state
 	next := o
+	// extra carries the keys the machine itself puts on the event payload:
+	// `detected_by` on T4, and the §B.3.2 clamp record on T5 and T6. A caller's
+	// own cmd.Payload is merged over nothing — these keys are the machine's, and
+	// they are computed, not supplied.
+	extra := map[string]any{}
+	var clampDelta time.Duration
 	switch rule.id {
 	case TransitionT1:
 		return TransitionResult{}, errs.New(errs.KindPrecondition, "no_open_occurrence",
@@ -344,10 +387,14 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		next.observe(cmd)
 
 	case TransitionT4:
+		// `detected_by` records WHICH of the two witnesses saw suppression end.
+		// The reconciler saw status.state == "active"; ingest saw a webhook
+		// arrive, which is positive proof of non-suppression (§B.3.1).
 		next.state = StateFiring
 		next.suppressionReason = SuppressionReason{}
 		next.lastObservedAt = cmd.At.RecordedAt()
 		next.observe(cmd)
+		extra["detected_by"] = detectedBy(cmd.Actor.Kind())
 
 	case TransitionT5:
 		// T5 sets ended_at from the UPSTREAM claim. A skewed upstream clock could
@@ -356,9 +403,10 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		next.state = StateResolved
 		next.resolveReason = ResolveUpstream
 		next.suppressionReason = SuppressionReason{}
-		next.endedAt = notBefore(cmd.At.OccurredAt(), o.startedAt)
+		next.endedAt, clampDelta = clampEnd(cmd.At.OccurredAt(), o.startedAt)
 		next.lastObservedAt = cmd.At.RecordedAt()
 		next.observe(cmd)
+		recordClamp(extra, cmd.At.OccurredAt(), clampDelta)
 
 	case TransitionT6:
 		if !cmd.SourceHealthy {
@@ -376,7 +424,8 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		next.state = StateExpired
 		next.resolveReason = ResolveTimeout
 		next.suppressionReason = SuppressionReason{}
-		next.endedAt = notBefore(cmd.At.RecordedAt(), o.startedAt)
+		next.endedAt, clampDelta = clampEnd(cmd.At.RecordedAt(), o.startedAt)
+		recordClamp(extra, cmd.At.RecordedAt(), clampDelta)
 
 	case TransitionT7:
 		// The terminal occurrence is untouched. The caller opens a new episode.
@@ -387,6 +436,10 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		}, nil
 
 	case TransitionT8:
+		// §B.3.2 names T8 alongside T5 and T6, but a reopen CLEARS ended_at rather
+		// than setting it, so there is nothing to clamp here: the invariant
+		// occ_order_ck guards (ended_at >= started_at) is vacuously true while
+		// ended_at is NULL. The clamp reappears when this occurrence next ends.
 		next.state = StateFiring
 		next.resolveReason = ResolveReason{}
 		next.suppressionReason = SuppressionReason{}
@@ -404,7 +457,12 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		return TransitionResult{}, err
 	}
 
-	res := TransitionResult{ID: rule.id, From: from, To: next.state, Occurrence: next}
+	res := TransitionResult{
+		ID: rule.id, From: from, To: next.state, Occurrence: next,
+		DetectedBy: detectedBy(cmd.Actor.Kind()),
+		Clamped:    clampDelta > 0,
+		ClampSkew:  clampDelta,
+	}
 
 	eventType := rule.event
 	if rule.id == TransitionT2 {
@@ -427,7 +485,7 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		At:           cmd.At,
 		Actor:        cmd.Actor,
 		Summary:      summaryOr(cmd.Summary, defaultSummary(rule.id, from, next.state)),
-		Payload:      cmd.Payload,
+		Payload:      mergePayload(cmd.Payload, extra),
 		DedupeKey:    dedupeKeyFor(rule.id, next),
 	})
 	if err != nil {
@@ -517,11 +575,71 @@ func (o *Occurrence) observe(cmd TransitionCommand) {
 }
 
 func notBefore(t, floor time.Time) time.Time {
+	t, _ = clampEnd(t, floor)
+	return t
+}
+
+// clampEnd implements ⭐ SPEC §B.3.2: `ended_at = max(occurred_at, started_at)`.
+//
+// Upstream clocks skew, sometimes backwards. A `resolved` observation whose
+// `occurred_at` precedes the occurrence's `started_at` would violate
+// occ_order_ck and ABORT THE INGEST TRANSACTION — turning a customer's NTP
+// problem into oto dropping a whole batch. So the value is pulled forward to the
+// floor and the distance is returned, to be recorded on the event payload and
+// accumulated into source_health.clock_skew_ms. Measure the skew; never reject.
+func clampEnd(t, floor time.Time) (time.Time, time.Duration) {
 	t = t.UTC()
 	if t.Before(floor) {
-		return floor
+		return floor, floor.Sub(t)
 	}
-	return t
+	return t, 0
+}
+
+// recordClamp writes the §B.3.2 evidence onto the event payload: the clamp flag
+// and the UNMODIFIED upstream value, so the timeline can still show what the
+// source actually claimed.
+func recordClamp(payload map[string]any, raw time.Time, delta time.Duration) {
+	if delta <= 0 {
+		return
+	}
+	payload["clamped"] = true
+	payload["source_ends_at"] = raw.UTC().Format(time.RFC3339Nano)
+	payload["clock_skew_ms"] = delta.Milliseconds()
+}
+
+// Detection witnesses for `occurrence.unsuppressed` (§B.3.1, T4).
+const (
+	// DetectedByWebhook means ingest saw the alert arrive, which is positive
+	// proof of non-suppression: Alertmanager would never have sent a suppressed
+	// alert.
+	DetectedByWebhook = "webhook"
+	// DetectedByReconciler means the API v2 reconciler saw status.state=="active".
+	DetectedByReconciler = "reconciler"
+)
+
+// detectedBy maps the driving actor onto the §B.3.1 witness vocabulary.
+func detectedBy(k ActorKind) string {
+	switch k {
+	case ActorIngest:
+		return DetectedByWebhook
+	case ActorReconciler:
+		return DetectedByReconciler
+	default:
+		return k.String()
+	}
+}
+
+// mergePayload copies the caller's payload and lays the machine-computed keys
+// over it. The machine wins: `clamped` and `detected_by` are facts it derived,
+// not hints a caller may contradict.
+func mergePayload(base, extra map[string]any) map[string]any {
+	if len(base) == 0 && len(extra) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(base)+len(extra))
+	maps.Copy(out, base)
+	maps.Copy(out, extra)
+	return out
 }
 
 func summaryOr(s, fallback string) string {
@@ -606,10 +724,14 @@ type OpenOccurrenceParams struct {
 	Payload map[string]any
 }
 
-// OpenOccurrence opens a new firing episode and returns it with the
+// OpenNewOccurrence opens a new firing episode and returns it with the
 // `occurrence.opened` event to append. A new occurrence always starts unacked:
 // T10 says an ack does not survive into a new episode.
-func OpenOccurrence(p OpenOccurrenceParams) (Occurrence, []Event, error) {
+//
+// The name carries the "New" because SPEC §F.5.2 gives the identifier
+// `OpenOccurrence` to the repository PARAMETER STRUCT of the same name, and Go
+// has one namespace for both.
+func OpenNewOccurrence(p OpenOccurrenceParams) (Occurrence, []Event, error) {
 	if p.Actor.IsZero() {
 		return Occurrence{}, nil, errs.New(errs.KindValidation, "required", "actor is required")
 	}

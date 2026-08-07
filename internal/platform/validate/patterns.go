@@ -60,10 +60,22 @@ const (
 	// closed alert_events.type enum (§D.4.1).
 	PatternEventType = `^[a-z_]+\.[a-z_]+$`
 
-	// PatternHTTPURL mirrors the regex half of alert_sources_base_ck and
-	// alert_sources_prom_ck. The DDL additionally rejects a trailing slash on
-	// those two columns; that is a column rule, not a URL rule.
+	// PatternHTTPURL mirrors the REGEX HALF of alert_sources_base_ck and
+	// alert_sources_prom_ck.
 	PatternHTTPURL = `^https?://[^[:space:]]+$`
+
+	// PredicateHTTPURLNoTrailingSlash mirrors the OTHER HALF of
+	// alert_sources_base_ck and alert_sources_prom_ck, verbatim as the DDL spells
+	// it. ⭐ kernel finding C.8: those CHECKs are TWO predicates ANDed together,
+	//
+	//	base_url ~ '^https?://[^[:space:]]+$'  AND  base_url NOT LIKE '%/'
+	//
+	// and the validator used to mirror only the first, so a trailing slash
+	// produced a 23514 -> 500 where a 422 belongs. It is declared here, next to
+	// the regex, so that TestValidatorMatchesDDL can compare PREDICATE SETS rather
+	// than regexes alone — comparing only the regex is precisely how this gap
+	// survived (§L.2.4, §P-10).
+	PredicateHTTPURLNoTrailingSlash = `NOT LIKE '%/'`
 )
 
 // Compiled forms of the canonical patterns. Go's regexp does not understand the

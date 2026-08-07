@@ -3,6 +3,7 @@ package validate
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -199,8 +200,12 @@ func describeAs(field string, fe validator.FieldError) (code, message string) {
 		return "uuid", field + " must be a UUID"
 	case "email":
 		return "email", field + " must be a valid email address"
-	case "url", "httpurl":
+	case "url":
 		return "url", field + " must be an absolute http(s) URL"
+	case "httpurl":
+		// The message NAMES the trailing slash, because that is the failure a
+		// human actually hits: pasting a base URL out of a browser bar (§L.2.4).
+		return "url", field + " must be an absolute http(s) URL with no trailing slash, query string or fragment"
 	case "gt", "gte", "lt", "lte":
 		return tag, fmt.Sprintf("%s must be %s %s", field, comparator(tag), param)
 	case "ltefield", "gtefield", "ltfield", "gtfield":
@@ -300,13 +305,48 @@ func isNotBlank(fl validator.FieldLevel) bool {
 	}
 }
 
-// isAbsoluteHTTPURL implements the `httpurl` rule. The regex is the one half of
-// alert_sources_base_ck that is a URL rule; the DDL's additional "no trailing
-// slash" predicate is a column rule and is enforced by the domain constructor.
+// isAbsoluteHTTPURL implements the `httpurl` rule.
 func isAbsoluteHTTPURL(fl validator.FieldLevel) bool {
 	s, ok := stringOf(fl)
-	return ok && HTTPURLRe.MatchString(s)
+	return ok && IsAbsoluteHTTPURL(s)
 }
+
+// IsAbsoluteHTTPURL reports whether s satisfies BOTH halves of
+// `alert_sources_base_ck` (and `alert_sources_prom_ck`).
+//
+// ⭐ kernel finding C.8 / §P-10. The DDL CHECK is two predicates ANDed:
+//
+//	base_url ~ '^https?://[^[:space:]]+$'  AND  base_url NOT LIKE '%/'
+//
+// This rule mirrored only the first, so a base URL with a trailing slash sailed
+// through layer 1 and died at layer 6 as a 23514 — a 500 where a 422 belongs,
+// and a 500 that tells the caller nothing about which field was wrong. Layer 6
+// is the backstop, never the error message.
+//
+// A fragment or a query string is rejected for the same reason a trailing slash
+// is: `base_url` is a PREFIX that oto concatenates API paths onto, and neither
+// survives concatenation. `https://am.example.com/api?x=1` + `/api/v2/alerts` is
+// not a URL anyone meant to type.
+//
+// It is exported so that a domain constructor and an `api` mapper enforce the
+// identical predicate rather than each re-deriving half of it (R9: a bound lives
+// in three places and they must be IDENTICAL).
+func IsAbsoluteHTTPURL(s string) bool {
+	if !HTTPURLRe.MatchString(s) {
+		return false
+	}
+	if strings.HasSuffix(s, "/") {
+		return false // mirrors: base_url NOT LIKE '%/'
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Fragment == "" && u.RawQuery == "" && u.Host != ""
+}
+
+// TrimTrailingSlash is the DEFENCE IN DEPTH half of §L.2.4: `toDomain()` strips
+// trailing slashes before constructing the domain value, so a client that
+// somehow bypasses layer 1 still cannot violate the CHECK. The 422 exists to
+// produce a good message; this exists to make the 500 impossible.
+func TrimTrailingSlash(s string) string { return strings.TrimRight(s, "/") }
 
 // MaxCursorBytes bounds an opaque keyset cursor. A cursor is a base64url token
 // minted by oto; the filter-hash check that makes it "valid for this filter"

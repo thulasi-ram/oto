@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oto.dev/schemas/channel/webhook/v1.json",
+  "title": "Generic webhook",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["url"],
+  "properties": {
+    "url": {
+      "type": "string", "title": "Endpoint URL",
+      "format": "uri", "pattern": "^https?://", "maxLength": 2048
+    },
+    "method": { "type": "string", "enum": ["POST", "PUT"], "default": "POST" },
+    "headers": {
+      "type": "object", "title": "Additional headers",
+      "maxProperties": 20,
+      "propertyNames": { "pattern": "^[A-Za-z0-9-]{1,64}$" },
+      "additionalProperties": { "type": "string", "maxLength": 1024 }
+    },
+    "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000, "default": 5000 },
+    "insecure_skip_verify": { "type": "boolean", "default": false }
+  }
+}

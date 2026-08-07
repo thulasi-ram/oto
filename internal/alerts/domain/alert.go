@@ -37,6 +37,10 @@ type Alert struct {
 	state               State
 	ackState            AckState
 	currentOccurrenceID uuid.UUID
+	// snoozedUntil is the §B.8 projection of the active alert_snoozes row. It is
+	// the THIRD ORTHOGONAL AXIS and it is NOT a state: a snoozed alert is still
+	// firing, still whatever severity it was, and is still rendered that way.
+	snoozedUntil time.Time
 
 	firstSeenAt       time.Time
 	lastSeenAt        time.Time
@@ -67,6 +71,9 @@ type AlertParams struct {
 	AckState AckState
 	// CurrentOccurrenceID is the open occurrence, or uuid.Nil when none is open.
 	CurrentOccurrenceID uuid.UUID
+	// SnoozedUntil is the projection of the active alert_snoozes row, or the zero
+	// time when the Alert is awake (§B.8).
+	SnoozedUntil time.Time
 
 	FirstSeenAt       time.Time
 	LastSeenAt        time.Time
@@ -144,6 +151,7 @@ func NewAlert(p AlertParams) (Alert, error) {
 		state:               p.State,
 		ackState:            ackState,
 		currentOccurrenceID: p.CurrentOccurrenceID,
+		snoozedUntil:        utcOrZero(p.SnoozedUntil),
 		firstSeenAt:         p.FirstSeenAt.UTC(),
 		lastSeenAt:          p.LastSeenAt.UTC(),
 		lastStateChangeAt:   p.LastStateChangeAt.UTC(),
@@ -226,16 +234,18 @@ func (a Alert) IsFlapping() bool { return a.isFlapping }
 // HasOpenOccurrence reports whether an episode is currently running.
 func (a Alert) HasOpenOccurrence() bool { return a.currentOccurrenceID != uuid.Nil }
 
-// AlertProjection is the derived view an Alert carries of its occurrences. It is
-// recomputed from the authoritative Occurrence after every transition and written
-// back in the same transaction.
-type AlertProjection struct {
-	State               State
-	AckState            AckState
-	CurrentOccurrenceID uuid.UUID
-	LastSeenAt          time.Time
-	LastStateChangeAt   time.Time
-	TotalOccurrences    int
+// SnoozedUntil is when oto's notifications about this Alert resume, or the zero
+// time when it is awake. See IsSnoozedAt for the question you almost always mean.
+func (a Alert) SnoozedUntil() time.Time { return a.snoozedUntil }
+
+// IsSnoozedAt reports whether oto is holding its tongue about this Alert at the
+// given instant. The instant is a PARAMETER: the domain never calls time.Now().
+//
+// This answers "is oto notifying?", never "what is the world doing?". The alert
+// is still firing, still whatever severity it was, and every surface MUST keep
+// rendering it that way (§B.8.1, §B.8.6).
+func (a Alert) IsSnoozedAt(now time.Time) bool {
+	return !a.snoozedUntil.IsZero() && a.snoozedUntil.After(now.UTC())
 }
 
 // Project returns the Alert with a new projection applied. It re-proves the
@@ -254,7 +264,8 @@ func (a Alert) Project(p AlertProjection) (Alert, error) {
 		GeneratorURL:        a.generatorURL,
 		State:               p.State,
 		AckState:            p.AckState,
-		CurrentOccurrenceID: p.CurrentOccurrenceID,
+		CurrentOccurrenceID: derefID(p.CurrentOccurrenceID),
+		SnoozedUntil:        derefTime(p.SnoozedUntil),
 		FirstSeenAt:         a.firstSeenAt,
 		LastSeenAt:          p.LastSeenAt,
 		LastStateChangeAt:   p.LastStateChangeAt,

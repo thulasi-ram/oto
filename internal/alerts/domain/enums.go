@@ -97,9 +97,28 @@ func (a AckState) IsZero() bool { return a.s == "" }
 // IsAcked reports whether a human has taken this occurrence.
 func (a AckState) IsAcked() bool { return a == AckStateAcked }
 
+// MaxRawSeverityBytes bounds the RAW `severity` label as it is persisted on
+// `alerts.severity`, mirroring alerts_sev_ck (1..256). It is a LENGTH bound and
+// deliberately not an enum: see the ⭐ ruling on SeverityFromLabel below.
+const MaxRawSeverityBytes = 256
+
 // Severity is the class of an Alert's `severity` label, used to pick the leading
 // emoji on a Slack card (§H.2) and the icon in the UI. Colour encodes STATE;
 // severity encodes as an icon, never as colour alone.
+//
+// ⭐ SPEC §L.4.2 — SEVERITY IS STRICT IN THE DOMAIN, LENIENT AT THE BOUNDARY.
+// This type is a CLOSED enum: there is no way to hold an out-of-range value.
+// `alerts.severity`, however, stores the RAW upstream label, because users filter
+// on their own vocabulary (`sev1`, `P1`, `page`) and normalising at write time
+// would destroy it. Normalisation happens at RENDER time, through this type.
+// Two constructors, two trust models:
+//
+//	NewSeverity        strict, total-failure — API input, config, anything typed.
+//	SeverityFromLabel  lenient, total-success — upstream labels, which are
+//	                   arbitrary user strings.
+//
+// That is the same asymmetry as httpx.Bind versus the webhook decoder, applied
+// to one field. Snooze never touches it: a snoozed critical is still critical.
 type Severity struct{ s string }
 
 // The closed Severity set.
@@ -134,23 +153,54 @@ func NewSeverity(s string) (Severity, error) {
 }
 
 // SeverityFromLabel maps an UNTRUSTED upstream `severity` label onto the closed
-// set. It never fails: anything unrecognised or absent is SeverityUnknown, which
-// is what §H.2's last row says and what §L.3's governing rule requires.
+// set. It is TOTAL: it never fails, and anything unrecognised or absent is
+// SeverityUnknown, which is what §H.2's last row says and what §L.3's governing
+// rule requires. A severity oto has never seen must never cost an alert.
+//
+// The alias table is SPEC §L.4.2's, with one refinement it permits: `page` and
+// `none` keep their own values rather than collapsing into critical and info, so
+// that §H.2's "critical / page" and "info / none" rows stay literal and a
+// renderer can still show the user the word they wrote.
+//
+//	critical | crit | fatal | p1 | sev1   -> Critical
+//	page                                  -> Page      (renders as Critical, §H.2)
+//	warning  | warn | p2 | sev2           -> Warning
+//	info     | informational | p3|p4|p5   -> Info
+//	none                                  -> None      (renders as Info, §H.2)
+//	"" | anything else                    -> Unknown
 func SeverityFromLabel(label string) Severity {
 	switch strings.ToLower(strings.TrimSpace(label)) {
-	case SeverityCritical.s:
+	case SeverityCritical.s, "crit", "fatal", "p1", "sev1":
 		return SeverityCritical
 	case SeverityPage.s:
 		return SeverityPage
-	case SeverityWarning.s:
+	case SeverityWarning.s, "warn", "p2", "sev2":
 		return SeverityWarning
-	case SeverityInfo.s:
+	case SeverityInfo.s, "informational", "p3", "p4", "p5":
 		return SeverityInfo
 	case SeverityNone.s:
 		return SeverityNone
 	default:
 		return SeverityUnknown
 	}
+}
+
+// NewRawSeverity bounds the RAW upstream `severity` label for persistence on
+// `alerts.severity`, mirroring alerts_sev_ck EXACTLY and nothing more.
+//
+// ⛔ It deliberately does NOT validate the value against the Severity enum. The
+// raw label is the user's own filter vocabulary and normalising it at write time
+// would destroy it (§L.4.2). An empty or blank label is "absent" and yields a nil
+// pointer, because alerts_sev_ck's floor is one character, not zero.
+func NewRawSeverity(raw string) (*string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	if len(raw) > MaxRawSeverityBytes {
+		return nil, errs.Newf(errs.KindValidation, "max_length",
+			"severity must have at most %d characters", MaxRawSeverityBytes)
+	}
+	return &raw, nil
 }
 
 // String renders the severity.
