@@ -1,2 +1,3 @@
-// Package domain holds the pure ingestion entities, invariants and state machine. It imports no I/O: no pgx, no net/http, no slack-go.
+// Package domain holds ingestion's pure types: the ingest bounds B1-B17, the
+// batch and rejection entities, and the C.5 replay-suppression key. No I/O.
 package domain

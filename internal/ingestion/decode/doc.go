@@ -1,2 +1,3 @@
-// Package decode leniently decodes the Alertmanager webhook v4 body and the Grafana superset into Observations.
+// Package decode is SPEC §L.3: the lenient, hard-bounded decoder for untrusted
+// inbound payloads. Hand-written bounds, no reflection, no validator tags.
 package decode

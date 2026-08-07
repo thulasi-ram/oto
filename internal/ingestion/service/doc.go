@@ -1,2 +1,3 @@
-// Package service holds the ingestion business logic and the port interfaces it declares for itself. Concretes are injected by internal/app.
+// Package service accepts raw webhook batches durably and normalises them into
+// Observations for the alerts state machine. Nothing here makes a network call.
 package service

@@ -1,2 +1,3 @@
-// Package repository holds the hand-written SQL, row structs and row mappers for the ingestion module. It MUST NOT import api.
+// Package repository is the hand-written SQL over ingest_batches,
+// ingest_rejections and ingest_dedup. Org-scoped everywhere, no ORM.
 package repository

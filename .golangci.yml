@@ -337,6 +337,11 @@ linters:
           files:
             - "**/internal/ingestion/**"
           allow:
+            # SPEC §C.1 / CONTEXT.md §5.2b / SPEC §P-11: internal/alerts/domain is THE
+            # SHARED DOMAIN KERNEL and is the single sanctioned cross-domain `domain`
+            # import. ingestion normalises into its LabelSet/AlertKey/GroupKey types,
+            # so it is re-allowed here — and nothing wider is.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/alerts/service
