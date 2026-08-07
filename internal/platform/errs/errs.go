@@ -3,185 +3,264 @@ package errs
 import (
 	"errors"
 	"fmt"
-	"net/http"
+	"time"
 )
 
-// Code is a stable, typed error code. It is the only thing that decides an HTTP
-// status and a problem+json "type" URI — that mapping lives here and nowhere else.
-type Code string
+// Kind is the error taxonomy of SPEC §L.1. Every error that crosses a service
+// boundary carries exactly one Kind, and a Kind is the only thing that decides an
+// HTTP status. The distinguishing rules are binding:
+//
+//   - validation — the caller can fix it by changing the request.
+//   - conflict — the caller must re-read and retry.
+//   - precondition — the request is valid but the entity is in the wrong state
+//     (acknowledging a resolved AlertOccurrence, for example).
+//   - upstream — nothing the caller did is wrong; a dead Alertmanager is never
+//     the caller's fault.
+//   - unavailable — oto's own backpressure. On the ingest path this is the ONLY
+//     correct failure (C4): 503 with Retry-After, never 429, never any other 4xx,
+//     because Alertmanager permanently deletes an alert it saw a 4xx for.
+type Kind string
 
-// The v1 code set.
+// The closed Kind set (SPEC §L.1). Adding one requires a SPEC amendment.
 const (
-	CodeInternal             Code = "internal"
-	CodeNotFound             Code = "not_found"
-	CodeConflict             Code = "conflict"
-	CodeValidationFailed     Code = "validation_failed"
-	CodeUnauthorized         Code = "unauthorized"
-	CodeForbidden            Code = "forbidden"
-	CodePayloadTooLarge      Code = "payload_too_large"
-	CodeUnavailable          Code = "unavailable"
-	CodeTimeout              Code = "timeout"
-	CodeCursorFilterMismatch Code = "cursor_filter_mismatch"
-	CodeUnprocessable        Code = "unprocessable"
-	CodeRateLimited          Code = "rate_limited"
-	CodeNotImplemented       Code = "not_implemented"
+	KindValidation   Kind = "validation_failed"      // 422 — well-formed, semantically invalid
+	KindMalformed    Kind = "malformed_request"      // 400 — unparseable body / bad query param
+	KindUnauthorized Kind = "unauthenticated"        // 401 — no or bad credential
+	KindForbidden    Kind = "forbidden"              // 403 — cross-org access (v1: the only cause)
+	KindNotFound     Kind = "not_found"              // 404
+	KindConflict     Kind = "conflict"               // 409 — unique violation, concurrent update
+	KindPrecondition Kind = "precondition_failed"    // 412 — illegal state transition
+	KindTooLarge     Kind = "payload_too_large"      // 413
+	KindUnsupported  Kind = "unsupported_media_type" // 415
+	KindRateLimited  Kind = "rate_limited"           // 429 — READ API ONLY. NEVER on /ingest (C4).
+	KindInternal     Kind = "internal_error"         // 500
+	KindUpstreamDown Kind = "upstream_unavailable"   // 502 — Alertmanager/Prometheus/Slack failed
+	KindUnavailable  Kind = "unavailable"            // 503 — our backpressure (ingest, pool exhausted)
+	KindUpstreamSlow Kind = "upstream_timeout"       // 504
 )
 
-// TypeBase prefixes every problem+json "type" URI.
-const TypeBase = "https://oto.dev/errors/"
-
-// FieldError is one field-level validation failure.
-type FieldError struct {
-	Field string `json:"field"`
-	Code  string `json:"code"`
+// Violation is one field-level failure inside a KindValidation error.
+//
+// Field is a JSON-name path, '/'-separated, with array indices as numeric
+// segments and map keys verbatim: matchers[0].name is reported as
+// "matchers/0/name" (SPEC §L.2.2). Code comes from the closed tag→code map in
+// §L.2.3. Message is human and always safe to render.
+type Violation struct {
+	Field   string `json:"field"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
-// Error is oto's typed error. It wraps a cause and carries the code, a human
-// title/detail and any field errors.
+// Error is oto's structured error. It carries the taxonomy Kind, a stable machine
+// Code, a human Message that is always safe to show, the field Violations of a
+// validation failure, retry guidance and the wrapped cause.
+//
+// The Message NEVER contains a secret, a raw upstream payload or a SQL string.
+// The Cause is for logs; it is never rendered to a caller.
 type Error struct {
-	Code   Code
-	Title  string
-	Detail string
-	Fields []FieldError
-	cause  error
+	Kind       Kind
+	Code       string
+	Message    string
+	Violations []Violation
+	Retryable  bool
+	RetryAfter time.Duration
+	Cause      error
 }
 
-// Error implements error.
+// Error implements the error interface.
 func (e *Error) Error() string {
-	if e.Detail != "" {
-		return fmt.Sprintf("%s: %s", e.Code, e.Detail)
+	switch {
+	case e.Message != "" && e.Code != "":
+		return string(e.Kind) + "/" + e.Code + ": " + e.Message
+	case e.Message != "":
+		return string(e.Kind) + ": " + e.Message
+	case e.Code != "":
+		return string(e.Kind) + "/" + e.Code
+	default:
+		return string(e.Kind)
 	}
-	return string(e.Code)
 }
 
-// Unwrap exposes the wrapped cause to errors.Is and errors.As.
-func (e *Error) Unwrap() error { return e.cause }
+// Unwrap exposes the cause to errors.Is and errors.As.
+func (e *Error) Unwrap() error { return e.Cause }
 
-// New builds a typed error.
-func New(code Code, detail string) *Error {
-	return &Error{Code: code, Title: titleFor(code), Detail: detail}
+// Is makes errors.Is work against a Kind sentinel: errors.Is(err, errs.ErrNotFound)
+// is true for any not_found error. A target that also carries a Code matches only
+// errors with that same Code.
+func (e *Error) Is(target error) bool {
+	var t *Error
+	if !errors.As(target, &t) {
+		return false
+	}
+	if t.Kind != e.Kind {
+		return false
+	}
+	return t.Code == "" || t.Code == e.Code
 }
 
-// Newf builds a typed error with a formatted detail.
-func Newf(code Code, format string, args ...any) *Error {
-	return New(code, fmt.Sprintf(format, args...))
+// Kind sentinels, for errors.Is. They carry no message and are never returned.
+var (
+	ErrValidation   error = &Error{Kind: KindValidation}
+	ErrMalformed    error = &Error{Kind: KindMalformed}
+	ErrUnauthorized error = &Error{Kind: KindUnauthorized}
+	ErrForbidden    error = &Error{Kind: KindForbidden}
+	ErrNotFound     error = &Error{Kind: KindNotFound}
+	ErrConflict     error = &Error{Kind: KindConflict}
+	ErrPrecondition error = &Error{Kind: KindPrecondition}
+	ErrTooLarge     error = &Error{Kind: KindTooLarge}
+	ErrUnsupported  error = &Error{Kind: KindUnsupported}
+	ErrRateLimited  error = &Error{Kind: KindRateLimited}
+	ErrInternal     error = &Error{Kind: KindInternal}
+	ErrUpstreamDown error = &Error{Kind: KindUpstreamDown}
+	ErrUnavailable  error = &Error{Kind: KindUnavailable}
+	ErrUpstreamSlow error = &Error{Kind: KindUpstreamSlow}
+)
+
+// New builds an Error of the given Kind.
+func New(kind Kind, code, message string) *Error {
+	return &Error{Kind: kind, Code: code, Message: message}
 }
 
-// Wrap attaches a code to an existing error. A nil err returns nil.
-func Wrap(code Code, err error, detail string) *Error {
+// Newf builds an Error with a formatted message.
+func Newf(kind Kind, code, format string, args ...any) *Error {
+	return &Error{Kind: kind, Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// Wrap attaches a Kind and a code to an existing error. A nil err returns nil, so
+// Wrap is safe to use in a one-line return.
+func Wrap(err error, kind Kind, code, message string) *Error {
 	if err == nil {
 		return nil
 	}
-	return &Error{Code: code, Title: titleFor(code), Detail: detail, cause: err}
+	return &Error{Kind: kind, Code: code, Message: message, Cause: err}
 }
 
-// WithFields attaches field-level validation failures.
-func (e *Error) WithFields(fields ...FieldError) *Error {
-	e.Fields = append(e.Fields, fields...)
+// WithViolations returns e carrying the given field violations. It is only
+// meaningful on a KindValidation error (SPEC §L.1).
+func (e *Error) WithViolations(v ...Violation) *Error {
+	e.Violations = append(e.Violations, v...)
 	return e
 }
 
-// NotFound reports that a named resource does not exist.
-func NotFound(what string) *Error { return Newf(CodeNotFound, "%s not found", what) }
-
-// Conflict reports that the request conflicts with the current state.
-func Conflict(detail string) *Error { return New(CodeConflict, detail) }
-
-// Invalid reports a failed validation at the DTO boundary.
-func Invalid(detail string) *Error { return New(CodeValidationFailed, detail) }
-
-// Unauthorized reports a missing or unusable credential.
-func Unauthorized(d string) *Error { return New(CodeUnauthorized, d) }
-
-// Forbidden reports an authenticated principal acting outside its org.
-func Forbidden(d string) *Error { return New(CodeForbidden, d) }
-
-// Unavailable reports a transient condition. On the ingest path this is the ONLY
-// correct failure: 503 with Retry-After, never 429 and never any other 4xx (C4).
-func Unavailable(d string) *Error { return New(CodeUnavailable, d) }
-
-// Internal wraps an unexpected error. Its cause is logged, never rendered.
-func Internal(err error) *Error { return Wrap(CodeInternal, err, "an internal error occurred") }
-
-// CodeOf extracts the code from err, defaulting to CodeInternal.
-func CodeOf(err error) Code {
-	var e *Error
-	if errors.As(err, &e) {
-		return e.Code
-	}
-	return CodeInternal
+// WithCause returns e carrying cause. The cause is logged, never rendered.
+func (e *Error) WithCause(cause error) *Error {
+	e.Cause = cause
+	return e
 }
 
-// As extracts the *Error from err, if there is one.
+// WithRetryAfter marks e retryable after d. On the ingest path this is what turns
+// backpressure into a 503 + Retry-After rather than a lost alert (C4).
+func (e *Error) WithRetryAfter(d time.Duration) *Error {
+	e.Retryable = true
+	e.RetryAfter = d
+	return e
+}
+
+// Validation reports a well-formed but semantically invalid request. The caller
+// can fix it by changing what it sent.
+func Validation(code, message string, violations ...Violation) *Error {
+	return New(KindValidation, code, message).WithViolations(violations...)
+}
+
+// Malformed reports a body or query parameter that could not be parsed at all.
+func Malformed(code, message string) *Error { return New(KindMalformed, code, message) }
+
+// Unauthorized reports a missing or unusable credential.
+func Unauthorized(code, message string) *Error { return New(KindUnauthorized, code, message) }
+
+// Forbidden reports an authenticated principal acting outside its Org. In v1 that
+// is the only cause (R2: no RBAC, no roles).
+func Forbidden(code, message string) *Error { return New(KindForbidden, code, message) }
+
+// NotFound reports that a resource does not exist within the caller's Org.
+func NotFound(code, message string) *Error { return New(KindNotFound, code, message) }
+
+// Conflict reports that the caller must re-read and retry: a unique violation on a
+// key the user supplied, or a concurrent update. A unique violation on a key oto
+// computed (alert_key, idempotency_key) is NOT an error — it is the idempotency
+// mechanism, swallowed by ON CONFLICT (SPEC §L.1).
+func Conflict(code, message string) *Error { return New(KindConflict, code, message) }
+
+// Precondition reports that the request is valid but the entity is in the wrong
+// state — an illegal AlertOccurrence lifecycle transition, or acknowledging an
+// occurrence that has already resolved.
+func Precondition(code, message string) *Error { return New(KindPrecondition, code, message) }
+
+// TooLarge reports a body over the layer's hard bound. On the ingest path this is
+// bound B1 (8 MiB) and is one of the only three permitted 4xx (SPEC §L.3.2).
+func TooLarge(code, message string) *Error { return New(KindTooLarge, code, message) }
+
+// Unsupported reports a media type oto will not decode.
+func Unsupported(code, message string) *Error { return New(KindUnsupported, code, message) }
+
+// RateLimited reports a read-API rate limit. It MUST NEVER be used on the ingest
+// path: a 429 makes Alertmanager drop the alert permanently (C4).
+func RateLimited(code, message string, retryAfter time.Duration) *Error {
+	return New(KindRateLimited, code, message).WithRetryAfter(retryAfter)
+}
+
+// Internal reports an oto bug. Its cause is logged; the caller sees only the
+// message. A DDL CHECK violation reaching this point means layers 1–3 have a hole.
+func Internal(code string, cause error) *Error {
+	return &Error{Kind: KindInternal, Code: code, Message: "an internal error occurred", Cause: cause}
+}
+
+// UpstreamDown reports that an AlertSource, Prometheus or a Channel provider
+// failed. An upstream failure is never the caller's fault (SPEC §L.1).
+func UpstreamDown(code, message string, cause error) *Error {
+	return &Error{Kind: KindUpstreamDown, Code: code, Message: message, Cause: cause}
+}
+
+// UpstreamSlow reports that an upstream exceeded its timeout budget.
+func UpstreamSlow(code, message string, cause error) *Error {
+	return &Error{Kind: KindUpstreamSlow, Code: code, Message: message, Cause: cause}
+}
+
+// Unavailable reports oto's own backpressure — ingest overload, pool exhaustion, a
+// slow Postgres. This is the only correct ingest failure (C4).
+func Unavailable(code, message string, retryAfter time.Duration) *Error {
+	return New(KindUnavailable, code, message).WithRetryAfter(retryAfter)
+}
+
+// As extracts the *Error from err, if there is one anywhere in its chain.
 func As(err error) (*Error, bool) {
 	var e *Error
 	ok := errors.As(err, &e)
 	return e, ok
 }
 
-// StatusFor maps a code onto its HTTP status. This is the single mapping table.
-//
-// Note: the ingest path does NOT use this table for transient failures — SPEC C4
-// binds it to 503 + Retry-After, never 429 and never any other 4xx.
-func StatusFor(code Code) int {
-	switch code {
-	case CodeNotFound:
-		return http.StatusNotFound
-	case CodeConflict:
-		return http.StatusConflict
-	case CodeValidationFailed, CodeCursorFilterMismatch:
-		return http.StatusUnprocessableEntity
-	case CodeUnauthorized:
-		return http.StatusUnauthorized
-	case CodeForbidden:
-		return http.StatusForbidden
-	case CodePayloadTooLarge:
-		return http.StatusRequestEntityTooLarge
-	case CodeUnavailable:
-		return http.StatusServiceUnavailable
-	case CodeTimeout:
-		return http.StatusGatewayTimeout
-	case CodeUnprocessable:
-		return http.StatusUnprocessableEntity
-	case CodeRateLimited:
-		return http.StatusTooManyRequests
-	case CodeNotImplemented:
-		return http.StatusNotImplemented
-	default:
-		return http.StatusInternalServerError
+// KindOf reports the Kind of err, defaulting to KindInternal for an untyped error.
+// An error that reaches the transport without a Kind is a bug, and 500 says so.
+func KindOf(err error) Kind {
+	if e, ok := As(err); ok {
+		return e.Kind
 	}
+	return KindInternal
 }
 
-// TypeURI is the problem+json "type" for a code.
-func TypeURI(code Code) string { return TypeBase + string(code) }
+// IsKind reports whether err carries the given Kind.
+func IsKind(err error, k Kind) bool { return KindOf(err) == k }
 
-func titleFor(code Code) string {
-	switch code {
-	case CodeNotFound:
-		return "Not found"
-	case CodeConflict:
-		return "Conflict"
-	case CodeValidationFailed:
-		return "Validation failed"
-	case CodeUnauthorized:
-		return "Unauthorized"
-	case CodeForbidden:
-		return "Forbidden"
-	case CodePayloadTooLarge:
-		return "Payload too large"
-	case CodeUnavailable:
-		return "Service unavailable"
-	case CodeTimeout:
-		return "Timeout"
-	case CodeCursorFilterMismatch:
-		return "Cursor does not match the current filters"
-	case CodeUnprocessable:
-		return "Unprocessable"
-	case CodeRateLimited:
-		return "Rate limited"
-	case CodeNotImplemented:
-		return "Not implemented"
-	default:
-		return "Internal server error"
+// CodeOf reports the stable machine code of err, or "" if it has none.
+func CodeOf(err error) string {
+	if e, ok := As(err); ok {
+		return e.Code
 	}
+	return ""
+}
+
+// ViolationsOf returns the field violations carried by err, if any.
+func ViolationsOf(err error) []Violation {
+	if e, ok := As(err); ok {
+		return e.Violations
+	}
+	return nil
+}
+
+// RetryAfterOf returns the retry delay err advertises, and whether it is retryable.
+func RetryAfterOf(err error) (time.Duration, bool) {
+	if e, ok := As(err); ok {
+		return e.RetryAfter, e.Retryable
+	}
+	return 0, false
 }

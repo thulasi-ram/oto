@@ -1,0 +1,51 @@
+-- Row Level Security -- DELIBERATELY NOT ENABLED. This migration is a no-op.
+--
+-- FINDING (raised per CONTEXT.md §8, "if the SPEC is ambiguous, raise it, do not
+-- choose"): Row Level Security is NOT mentioned anywhere in SPEC.md, CONTEXT.md
+-- or docs/adr/. Not in §D, not as future work, not as a backstop. §D specifies
+-- exactly one tenancy mechanism and it is not RLS.
+--
+-- THE TENANCY MODEL THE SPEC ACTUALLY SPECIFIES
+-- --------------------------------------------
+-- 1. Every tenant-scoped table carries org_id, most with
+--    REFERENCES orgs(id) ON DELETE CASCADE (SPEC §D.1-§D.10).
+-- 2. Every repository method takes a db.TenantScope, which has an UNEXPORTED
+--    field and can therefore only be constructed from an authenticated
+--    Principal. There is no repository method without one (CONTEXT.md §5 rule 6).
+--    The Go type system, not the database, is the enforcement point.
+-- 3. Every composite index starts with org_id (rule 7), so the scoped predicate
+--    is also the fast path -- correctness and performance point the same way.
+-- 4. SSE is additionally scoped server-side: "a client cannot widen it" (§E.4).
+--
+-- Enabling RLS here would be improvising a second, undocumented tenancy model on
+-- top of that one -- which is exactly what CONTEXT.md §8 forbids, and what
+-- §L.9 warns about in a different register: duplicating a rulebook produces two
+-- subtly different rulebooks.
+--
+-- IF YOU WANT RLS LATER, this is the shape it should take -- but it needs an ADR
+-- and a SPEC amendment FIRST, because it has real consequences:
+--   * oto uses TWO pooled connections (§G.10). A pooler hands the same backend
+--     to different tenants, so the org must be set per transaction
+--     (SET LOCAL, never SET) and any code path that forgets silently returns
+--     ZERO ROWS rather than failing loudly. That failure mode is worse than the
+--     one RLS is meant to prevent.
+--   * The migration role and the River role need BYPASSRLS or explicit policies,
+--     or background jobs stop seeing their own work.
+--   * Cross-tenant maintenance (partitions.manage, retention.prune, the reaper)
+--     is deliberately NOT org-scoped and would need carve-outs.
+--
+-- ---------------------------------------------------------------------------
+-- ALTER TABLE alerts ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE alerts FORCE  ROW LEVEL SECURITY;
+-- CREATE POLICY alerts_tenant_isolation ON alerts
+--   USING      (org_id = current_setting('oto.org_id', true)::uuid)
+--   WITH CHECK (org_id = current_setting('oto.org_id', true)::uuid);
+-- -- ... repeated for every table carrying org_id, plus a BYPASSRLS role for
+-- -- migrations, River, and the cross-tenant maintenance jobs.
+-- ---------------------------------------------------------------------------
+
+-- +goose Up
+SELECT 1;
+
+-- +goose Down
+SELECT 1;

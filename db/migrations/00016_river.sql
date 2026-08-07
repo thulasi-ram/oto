@@ -1,0 +1,59 @@
+-- River job queue schema -- OWNED BY RIVER, NOT BY THIS MIGRATION SET.
+--
+-- SPEC §D.10 is explicit:
+--
+--   "River creates and owns river_job, river_leader, river_queue, river_client*.
+--    Do not hand-write them; run `river migrate-up` as part of `oto migrate up`."
+--
+-- This file is therefore a deliberate PLACEHOLDER and a no-op. It exists so that
+-- the ordering is recorded in goose's own version table: every oto table exists
+-- by version 14, and River's schema is applied immediately after.
+--
+-- WHY RIVER MUST NOT BE HAND-WRITTEN
+-- ----------------------------------
+-- river.InsertTx is a free transactional outbox -- the ingest handler enqueues
+-- ingest.process_batch INSIDE the same transaction that writes ingest_batches
+-- (SPEC §G.1), which is what makes "202 is a promise" true. That guarantee
+-- depends on River's exact table shape and its SELECT ... FOR UPDATE SKIP LOCKED
+-- claim query. A hand-written copy would drift from the driver on the next
+-- River upgrade and break the outbox silently.
+--
+-- HOW IT IS ACTUALLY APPLIED
+-- --------------------------
+-- River ships its own migrator, which keeps its own version table
+-- (river_migration) entirely separate from goose's. `oto migrate up` must run
+-- BOTH, in this order:
+--
+--   1. goose up            -- this directory, via db/migrations embed.FS
+--   2. river migrate-up    -- River's own migrator
+--
+-- In Go (cmd/oto), that second step is:
+--
+--   import (
+--       "github.com/riverqueue/river/rivermigrate"
+--       "github.com/riverqueue/river/riverdriver/riverpgxv5"
+--   )
+--
+--   m, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+--   if err != nil { return err }
+--   _, err = m.Migrate(ctx, rivermigrate.DirectionUp, nil)
+--
+-- Or from the CLI, for a developer working by hand:
+--
+--   go run github.com/riverqueue/river/cmd/river@latest migrate-up \
+--       --database-url "$OTO_DB_URL"
+--
+-- ROLLBACK: `river migrate-down` (or DirectionDown), NOT `goose down`. Rolling
+-- this goose migration back deliberately does nothing to River's tables --
+-- goose does not own them and must not drop them, or a `goose down` in staging
+-- would destroy every queued job.
+--
+-- NOTE FOR WHOEVER WIRES cmd/oto: the two migrators must not run concurrently
+-- against the same database, and River's must run after goose's, because River
+-- workers immediately begin claiming jobs that reference oto tables.
+
+-- +goose Up
+SELECT 1;
+
+-- +goose Down
+SELECT 1;

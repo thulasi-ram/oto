@@ -90,7 +90,7 @@ func Recover(next http.Handler) http.Handler {
 				slog.String("path", r.URL.Path),
 				slog.String("stack", string(debug.Stack())),
 			)
-			httpx.Error(w, r, errs.New(errs.CodeInternal, "an internal error occurred"))
+			httpx.WriteProblem(w, r, errs.Internal("panic", nil))
 		}()
 		next.ServeHTTP(w, r)
 	})

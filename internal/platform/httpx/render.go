@@ -77,13 +77,17 @@ func metaFor(r *http.Request, started time.Time) Meta {
 	return m
 }
 
-// Decode reads a JSON request body into dst. It rejects unknown fields, empty
-// bodies and trailing content, and returns typed validation errors so the caller
-// never has to translate encoding/json's messages itself.
+// Decode reads a JSON request body into dst.
+//
+// This is the trusted-input policy of SPEC §L.2: unknown fields, empty bodies and
+// trailing content are all rejected loudly, because a client that sends them has
+// a bug. It is the exact opposite of the untrusted Alertmanager payload path
+// (§L.3), which decodes leniently and never fails a batch on an unknown field.
 func Decode(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) error {
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		if mt := strings.TrimSpace(strings.Split(ct, ";")[0]); mt != "application/json" {
-			return errs.Newf(errs.CodeValidationFailed, "Content-Type must be application/json, got %q", mt)
+			return errs.Newf(errs.KindUnsupported, "unsupported_media_type",
+				"Content-Type must be application/json, got %q", mt)
 		}
 	}
 	if maxBytes > 0 {
@@ -97,7 +101,7 @@ func Decode(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) err
 		return decodeError(err)
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errs.New(errs.CodeValidationFailed, "body must contain exactly one JSON value")
+		return errs.Malformed("trailing_content", "body contains trailing JSON")
 	}
 	return nil
 }
@@ -109,19 +113,29 @@ func decodeError(err error) error {
 
 	switch {
 	case errors.As(err, &syn):
-		return errs.Newf(errs.CodeValidationFailed, "malformed JSON at byte %d", syn.Offset)
+		return errs.Newf(errs.KindMalformed, "malformed_json", "malformed JSON at byte %d", syn.Offset)
 	case errors.As(err, &typ):
-		return errs.Newf(errs.CodeValidationFailed, "field %q must be of type %s", typ.Field, typ.Type).
-			WithFields(errs.FieldError{Field: typ.Field, Code: "type"})
+		return errs.Newf(errs.KindValidation, "validation_failed",
+			"field %q must be of type %s", typ.Field, typ.Type).
+			WithViolations(errs.Violation{
+				Field:   typ.Field,
+				Code:    "type",
+				Message: fmt.Sprintf("%s must be of type %s", typ.Field, typ.Type),
+			})
 	case errors.As(err, &tooLarge):
-		return errs.Newf(errs.CodePayloadTooLarge, "request body exceeds %d bytes", tooLarge.Limit)
+		return errs.Newf(errs.KindTooLarge, "payload_too_large",
+			"request body exceeds %d bytes", tooLarge.Limit)
 	case errors.Is(err, io.EOF):
-		return errs.New(errs.CodeValidationFailed, "request body must not be empty")
+		return errs.Malformed("empty_body", "request body must not be empty")
 	case strings.HasPrefix(err.Error(), "json: unknown field "):
 		field := strings.Trim(strings.TrimPrefix(err.Error(), "json: unknown field "), `"`)
-		return errs.Newf(errs.CodeValidationFailed, "unknown field %q", field).
-			WithFields(errs.FieldError{Field: field, Code: "unknown"})
+		return errs.Newf(errs.KindValidation, "validation_failed", "unknown field %q", field).
+			WithViolations(errs.Violation{
+				Field:   field,
+				Code:    "unknown_field",
+				Message: fmt.Sprintf("%s is not a known field", field),
+			})
 	default:
-		return errs.Wrap(errs.CodeValidationFailed, err, fmt.Sprintf("cannot decode body: %v", err))
+		return errs.Wrap(err, errs.KindMalformed, "malformed_json", "request body could not be decoded")
 	}
 }
