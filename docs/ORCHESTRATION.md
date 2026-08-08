@@ -54,9 +54,23 @@ Done: Alertmanager/Prometheus clients + rule matching; River job queue,
 per-thread ordering primitive, SSE streaming with durable resume; Slack Block
 Kit renderer + provider, generic webhook provider, channel registry.
 
-Remaining: alerts/grouping repository + service, ingestion (webhook + bounds +
-dedup), notification (policy, dispatch, thread state), enrichment pipeline,
-identity + HTTP API wiring, the SolidJS UI.
+Also done: alerts + grouping repository/service, ingestion, enrichment + rules,
+notification.
+
+**BLOCKED.** The identity module, every module's `api` sub-package, the
+`internal/app` composition root and the SolidJS UI screens are NOT implemented.
+Both agents doing that work were terminated mid-write by an account spend limit.
+Their partial output was recovered, the tree is green and committed at `2063979`.
+
+To resume, re-run two agents with the briefs in the orchestrator transcript:
+1. identity + API layer + `internal/app` + `cmd/oto` — wire every operationId in
+   `docs/api/openapi.yaml`, separate ingest/UI connection pools, `/stream`
+   mounted outside timeout middleware.
+2. the SolidJS UI — alert list, grouping, sentry-style timeline with the rule
+   drift diff, SSE with `Last-Event-ID` resume, JSON-Schema-driven channel forms.
+
+Nothing runs end-to-end until step 1 lands: the modules are all implemented but
+nothing constructs them.
 
 ### Phase 4 — review and test (not started)
 A small team of skeptical reviewers, an auditor and a judge review the code
