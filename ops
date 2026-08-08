@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210106,"nonce":"tVCyUqs18zdwTqDMS1TjG4lzb6E=","title":"The Slack card has never been rendered by Slack: no workspace has ever been connected","was":"**What is wrong.** No Slack credential has ever been used by this codebase. The"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210106,"nonce":"a0bjImfm6MWezS5loW+eeGNDhZk=","added":["critical","slack"],"removed":null}]}
