@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210108,"nonce":"YJX7l+TnP9SDvV/4q2W5MoJXH20=","title":"The enrichment pipeline has no tests at all","was":"**What is wrong.** `internal/enrichment/` has no test file of any kind. That"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210108,"nonce":"eSFr6aVscK04E6GWI60+jRRzSEU=","added":["high","testing"],"removed":null}]}
