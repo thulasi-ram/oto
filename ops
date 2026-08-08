@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210109,"nonce":"aE/+zDBT/2dDL7w/Yq3Tu9Qo1IU=","title":"The reconciler ADR 0006 calls mandatory can be switched off with one PATCH","was":"**What is wrong.** ADR 0006 is titled \"the reconciler is mandatory, **not"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210109,"nonce":"bWywETUi/FKniii5Sk1K0l5d6Cw=","added":["high","ingest"],"removed":null}]}
