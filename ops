@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210110,"nonce":"hXw0BUjcNgoCRo78WvwMJcSmI3c=","title":"SPEC section G.7 still specifies the ordering switch that wedges threads forever","was":"**What is wrong.** SPEC §G.7 still prints the ordering switch that was proven to"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210110,"nonce":"0z9tDyzppvMy3zLLLHL8osafDyM=","added":["medium","docs"],"removed":null}]}
