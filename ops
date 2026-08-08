@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210106,"nonce":"i7HHwB8F/D1B8/RbGPKmNCwSEXM=","title":"Clicking Acknowledge in Slack does nothing: the interaction is verified and then discarded","was":"**What is wrong.** `POST /api/v1/channels/slack/interactions` verifies the Slack"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210106,"nonce":"Cb6vXf45clk4RpYQvoSS1UR8H80=","added":["critical","slack"],"removed":null}]}
