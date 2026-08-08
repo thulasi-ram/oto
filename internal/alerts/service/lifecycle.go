@@ -340,31 +340,16 @@ func (s *Service) observe(
 			}
 		}
 
-		// A severity RISE on an Alert oto already knew about (ADR 0020).
+		// ⛔ NO `severity_raised` NOTIFICATION IS EMITTED HERE, AND THE CODE THAT
+		// ONCE DID WAS UNREACHABLE.
 		//
-		// ⭐ THIS IS THE TRANSITION THAT USED TO BE INVISIBLE. Everything else on
-		// this path either posts a root or is genuinely not news; a severity bump
-		// did neither — it arrived folded into `new_alerts` or as a bare root
-		// update, and a root update is `chat.update`, which is completely silent.
-		// The card went amber to red and the channel was told nothing.
-		//
-		// It rides the pre-upsert snapshot `priorAlerts` already reads for §B.3's
-		// material-change test, so it costs no extra query. It is emitted only
-		// when there IS an occurrence to point at: `notifications_focus_ck`
-		// requires an alert_id for this Reason, and a severity change on an alert
-		// with no live episode is a label edit nobody is waiting on.
-		if haveOcc && !results[i].WasInserted {
-			if was, ok := prior[alert.Key().String()]; ok &&
-				domain.Raised(was.Severity(), alert.Severity()) {
-				notifies = append(notifies, notifyRequest{
-					groupID:      groupOf(opt, occ),
-					reason:       reasonSeverityRaised,
-					alertID:      ptr(alert.ID()),
-					occurrenceID: ptr(occ.ID()),
-					actor:        actor.Kind().String(),
-				})
-			}
-		}
+		// It read the pre-upsert snapshot, compared `was.Severity()` with
+		// `alert.Severity()` under `!WasInserted`, and could never be true: the
+		// lookup is by `alert.Key()`, and `severity` is hashed INTO that key
+		// (§C.2), so a changed severity is a changed key — a MISS in `prior` and a
+		// fresh insert, never an update. Two severities of one rule are two Alerts.
+		// ADR 0020 records the finding; `test/integration/alert_identity_test.go`
+		// proves it against a real database.
 
 		if haveOcc {
 			latest[alert.ID()] = occ

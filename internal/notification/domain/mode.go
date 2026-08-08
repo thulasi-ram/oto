@@ -140,6 +140,16 @@ type PlanInput struct {
 	// Broadcast is the org's policy over which transitions surface in the channel
 	// (ADR 0020). The zero value is the approved default set.
 	Broadcast BroadcastPolicy
+	// ChannelNoticeClaimed reports that THIS destination won the channel-level
+	// storm-notice latch for this evaluation (`channels.storm_notice_at`).
+	//
+	// ⛔ IT IS AN ANSWER, NOT A QUESTION. The caller has already taken the latch
+	// against the database before building this input; PlanFor neither asks for
+	// nor could ask for it, because the whole point of the latch is that exactly
+	// one caller wins it. False is the ordinary case and means "this channel has
+	// already been told a storm is on" — the reply still lands on the group's
+	// thread, quietly.
+	ChannelNoticeClaimed bool
 }
 
 // Plan is the decision: which modes this fact produces on this destination, and
@@ -316,20 +326,27 @@ func PlanFor(in PlanInput) Plan {
 	// never overrides a destination's volume setting; a channel that has opted out
 	// of thread replies does not receive louder ones.
 	//
-	// Reaching here means neither `storm` nor `flapping` dropped the reply, so the
-	// only damping left to apply is the storm announcement's own case: `ReasonStorm`
-	// is the one Reason that survives the storm gate, and it is the one broadcast
-	// ADR 0020 permits during a storm.
+	// Two ways to earn a broadcast, and they are not the same shape:
+	//
+	//  1. `Warrants` — the TRANSITION is one an on-call engineer would be angry to
+	//     have missed. Two Reasons qualify and neither is per-alert noise.
+	//  2. `WarrantsChannelNotice` — the fact is about the CHANNEL, not the thread,
+	//     and the caller has already won the once-per-channel latch for it. This
+	//     is `storm`, and it is the only broadcast permitted while a storm is on.
 	mode := ModeThreadReply
-	if in.Broadcast.Warrants(in.Reason) {
-		switch {
-		case in.Capabilities.Has(CapBroadcast):
-			mode = ModeBroadcastReply
-		default:
-			// §H.10 capability degradation: broadcast → reply. The fact still
-			// lands on the thread; only the channel-level summons is lost.
-			p.BroadcastDamped, p.BroadcastDampReason = true, "no_capability"
-		}
+	wantsBroadcast := in.Broadcast.Warrants(in.Reason) ||
+		(WarrantsChannelNotice(in.Reason) && in.ChannelNoticeClaimed)
+	switch {
+	case !wantsBroadcast:
+		// `storm` on a channel that has already been told: the group's own thread
+		// still records that this generation went quiet. That is not a damped
+		// broadcast — nothing was withheld, the channel simply already knows.
+	case in.Capabilities.Has(CapBroadcast):
+		mode = ModeBroadcastReply
+	default:
+		// §H.10 capability degradation: broadcast → reply. The fact still
+		// lands on the thread; only the channel-level summons is lost.
+		p.BroadcastDamped, p.BroadcastDampReason = true, "no_capability"
 	}
 
 	// A Reason with a reply but no root — `comment` — still needs the reply, and

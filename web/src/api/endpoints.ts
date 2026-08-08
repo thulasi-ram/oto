@@ -45,6 +45,7 @@ import type {
   Me,
   Notification,
   Occurrence,
+  OrgSettingsView,
   Policy,
   PolicyPreview,
   PolicyPreviewRequest,
@@ -60,6 +61,7 @@ import type {
   StatsOverview,
   TimelineQuery,
   UpdateChannelRequest,
+  UpdateOrgSettingsRequest,
   UpdatePolicyRequest,
   UpdateSourceRequest,
   Uuid,
@@ -504,6 +506,33 @@ export function getStatsOverview(
 
 export function getCurrentPrincipal(c: Ctx = {}): Promise<Me> {
   return getItem<Me>(`${V1}/me`, ctx(c));
+}
+
+/**
+ * The org's tuning, each value with its origin and its bounds.
+ *
+ * All three parts are needed by the screen and none is derivable from another.
+ * `settings` is what oto is using; `origins` says whether that came from this
+ * org or from the shipped default — two answers that behave identically today
+ * and diverge the moment oto's default moves; `bounds` is the same table the
+ * server rejects with, which is what lets the form refuse a value before the
+ * write instead of guessing after a 422.
+ */
+export function getOrgSettings(c: Ctx = {}): Promise<OrgSettingsView> {
+  return getItem<OrgSettingsView>(`${V1}/org/settings`, ctx(c));
+}
+
+/**
+ * A **partial** write. An omitted key is left alone; `reset` is the only way to
+ * return one to oto's shipped default.
+ *
+ * Writing the default value back by hand is deliberately NOT the same operation
+ * and this function never does it: it records an override that happens to equal
+ * today's default, and that override would not follow the default if oto moved
+ * it. The API distinguishes the two facts, so the UI must too.
+ */
+export function updateOrgSettings(body: UpdateOrgSettingsRequest): Promise<OrgSettingsView> {
+  return patchItem<OrgSettingsView>(`${V1}/org/settings`, body);
 }
 
 export function getVersion(c: Ctx = {}): Promise<VersionInfo> {

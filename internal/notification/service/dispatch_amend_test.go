@@ -165,6 +165,7 @@ func newHarness(t *testing.T, tgt *target) harness {
 		Snapshots:     snapshots{fx: fx},
 		Events:        events,
 		Enqueuer:      jobs,
+		Channels:      channels,
 		Clock:         clk,
 	})
 	require.NoError(t, err)

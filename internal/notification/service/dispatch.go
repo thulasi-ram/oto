@@ -75,6 +75,7 @@ type DispatchService struct {
 	unsealer      CredentialUnsealer
 	gates         GateFactory
 	enqueuer      Enqueuer
+	settings      SettingsReader
 	baseURL       string
 	maxInstances  int
 	lease         time.Duration
@@ -96,8 +97,13 @@ type DispatchConfig struct {
 	Unsealer      CredentialUnsealer
 	Gates         GateFactory
 	Enqueuer      Enqueuer
-	BaseURL       string
-	MaxInstances  int
+	// Settings reads the org's notification tuning — here, ONLY the unacked
+	// reminder's mention audience (ADR 0020). OPTIONAL: nil means `none`, which is
+	// the shipped default anyway, because a settings lookup must never be able to
+	// stop a delivery.
+	Settings     SettingsReader
+	BaseURL      string
+	MaxInstances int
 	// StaleClaimLease is how long a `sending` delivery is believed before it is
 	// treated as abandoned (§G.5). Zero means 120 s.
 	StaleClaimLease time.Duration
@@ -121,7 +127,7 @@ func NewDispatchService(cfg DispatchConfig) (*DispatchService, error) {
 		txr: cfg.Tx, notifications: cfg.Notifications, deliveries: cfg.Deliveries,
 		threads: cfg.Threads, channels: cfg.Channels, events: cfg.Events,
 		views: cfg.Views, registry: cfg.Registry, unsealer: cfg.Unsealer,
-		gates: cfg.Gates, enqueuer: cfg.Enqueuer,
+		gates: cfg.Gates, enqueuer: cfg.Enqueuer, settings: cfg.Settings,
 		baseURL: cfg.BaseURL, maxInstances: cfg.MaxInstances,
 		lease: cfg.StaleClaimLease, clk: cfg.Clock, log: cfg.Logger,
 		metrics: cfg.Metrics,
@@ -570,6 +576,7 @@ func (s *DispatchService) claim(
 		BaseURL:        s.baseURL,
 		MaxInstances:   s.maxInstances,
 		Continued:      continuedRoot(d, th, mode),
+		Mentions:       s.mentionsFor(ctx, scope, n, view),
 	}
 	msg, err := renderer.Render(ctx, view, opts)
 	if err != nil {
@@ -1054,4 +1061,44 @@ func jitter() float64 {
 	}
 	// Map to [-0.5, +0.5).
 	return float64(binary.BigEndian.Uint64(b[:])>>11)/float64(1<<53) - 0.5
+}
+
+// mentionsFor resolves the audience of ONE unacked reminder (ADR 0020).
+//
+// ⭐ IT IS SCOPED TO EXACTLY ONE REASON, AND THE GUARD IS THE FIRST LINE. Every
+// other delivery returns before the settings read, so the common path costs no
+// query at all — and, more importantly, so no other message oto sends can ever
+// acquire a mention. A mention is the loudest thing oto can do and the reminder
+// is the only fact that has argued for it.
+//
+// ⛔ IT NEVER PROPAGATES A FAILURE. An unreadable settings row yields NO mention,
+// which is the shipped default and the quiet direction. A reminder that is a
+// little less loud than configured still lands; a reminder that fails to send
+// because a settings lookup timed out does not.
+//
+// ⛔ NOT A ROTA (§4.8, ADR 0013). The audience is read from configuration and is
+// the same at 03:00 as at 15:00. Nothing here reads a clock, and that absence is
+// the guarantee.
+func (s *DispatchService) mentionsFor(
+	ctx context.Context, scope db.TenantScope,
+	n domain.Notification, view *NotificationView,
+) []string {
+	if n.Reason != domain.ReasonUnackedReminder || s.settings == nil || view == nil {
+		return nil
+	}
+	def, err := s.settings.NotificationDefaults(ctx, scope)
+	if err != nil {
+		s.log.WarnContext(ctx, "notification: could not read the reminder mention policy",
+			"org_id", scope.OrgID(), "error", err.Error())
+		return nil
+	}
+	// The FOCUS severity when there is one, the group's otherwise. The gate is
+	// about "how bad is the thing nobody has acknowledged", and a group's severity
+	// is §H.2's max over its members, which is the right answer for a group-scoped
+	// reminder.
+	severity := view.Group.Severity
+	if view.Focus != nil && view.Focus.Severity != "" {
+		severity = view.Focus.Severity
+	}
+	return def.ReminderMention.Audience(severity)
 }

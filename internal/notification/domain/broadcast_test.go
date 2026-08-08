@@ -36,16 +36,25 @@ func lastMode(p domain.Plan) domain.Mode {
 func TestTheDefaultSetBroadcasts(t *testing.T) {
 	t.Parallel()
 
+	// ⭐ THE SET IS TWO. It was four; the ADR was revised. `severity_raised` is
+	// gone because it names a transition oto cannot observe, and `storm` is gone
+	// because a storm is MANY alerts and a per-thread broadcast of it is the flood
+	// the damping exists to prevent.
 	broadcasts := []domain.Reason{
-		domain.ReasonSeverityRaised,
 		domain.ReasonRefired,
-		domain.ReasonStorm,
 		domain.ReasonUnackedReminder,
 	}
 	for _, r := range broadcasts {
 		if got := lastMode(domain.PlanFor(base(r))); got != domain.ModeBroadcastReply {
 			t.Errorf("%s: got mode %q, want a broadcast — ADR 0020 puts it in the default set", r, got)
 		}
+	}
+
+	// ⛔ `storm` DOES NOT BROADCAST PER GROUP. Its channel-level notice is a
+	// separate, latched decision, and without the latch it is a plain reply on the
+	// group's own thread.
+	if got := lastMode(domain.PlanFor(base(domain.ReasonStorm))); got == domain.ModeBroadcastReply {
+		t.Error("storm broadcast per group; ADR 0020 moved it to a once-per-channel notice")
 	}
 
 	// Facts about the RESPONSE, addressed to people already in the thread.
@@ -92,13 +101,24 @@ func TestStormDampsEveryBroadcastButTheStormItself(t *testing.T) {
 	// happening.
 	storm := base(domain.ReasonStorm)
 	storm.StormMode = true
+	storm.ChannelNoticeClaimed = true
 	if got := lastMode(domain.PlanFor(storm)); got != domain.ModeBroadcastReply {
 		t.Fatalf("the storm announcement itself: got %q, want a broadcast", got)
 	}
 
+	// ⭐ AND THE SECOND GROUP TO STORM DOES NOT. It lost the channel latch, so its
+	// reply stays on its own thread. This is the line that turns twenty
+	// simultaneous group collapses into one channel message.
+	second := base(domain.ReasonStorm)
+	second.StormMode = true
+	second.ChannelNoticeClaimed = false
+	if got := lastMode(domain.PlanFor(second)); got != domain.ModeThreadReply {
+		t.Fatalf("a storm that lost the channel latch: got %q, want a quiet thread reply", got)
+	}
+
 	// Every other broadcasting transition loses its reply entirely during a
 	// storm, which necessarily loses its broadcast.
-	for _, r := range []domain.Reason{domain.ReasonSeverityRaised, domain.ReasonRefired} {
+	for _, r := range []domain.Reason{domain.ReasonRefired} {
 		in := base(r)
 		in.StormMode = true
 		p := domain.PlanFor(in)
@@ -162,7 +182,7 @@ func TestFlappingDampsBroadcastToo(t *testing.T) {
 func TestBroadcastNeverOverridesTheDestinationsOwnVolume(t *testing.T) {
 	t.Parallel()
 
-	in := base(domain.ReasonSeverityRaised)
+	in := base(domain.ReasonRefired)
 	in.ThreadUpdates = false
 
 	p := domain.PlanFor(in)
@@ -188,11 +208,12 @@ func TestCapBroadcastDegradesForEveryBroadcastingReason(t *testing.T) {
 
 	noBroadcast := allCaps &^ domain.CapBroadcast
 	for _, r := range []domain.Reason{
-		domain.ReasonSeverityRaised, domain.ReasonRefired,
-		domain.ReasonStorm, domain.ReasonUnackedReminder,
+		domain.ReasonRefired, domain.ReasonStorm, domain.ReasonUnackedReminder,
 	} {
 		in := base(r)
 		in.Capabilities = noBroadcast
+		// The storm only wants a broadcast at all once it holds the channel latch.
+		in.ChannelNoticeClaimed = true
 
 		p := domain.PlanFor(in)
 		if got := lastMode(p); got != domain.ModeThreadReply {
@@ -241,26 +262,60 @@ func TestChannelPolicyCodesNeverKillAThread(t *testing.T) {
 	}
 }
 
-// TestSeverityRaisedIsAlertScoped — notifications_focus_ck requires an alert_id
-// for it, because two members of one group can move in opposite directions in the
-// same batch.
-func TestSeverityRaisedIsAlertScoped(t *testing.T) {
+// ⛔ TestSeverityRaisedIsNotAReason. It was one, briefly, with a migration behind
+// it. It named a transition oto cannot observe: `severity` is a Prometheus LABEL
+// and is hashed into `alert_key` (§C.2), so two severities of one rule are two
+// ALERTS with two identities — no row is ever `warning` and later `critical`.
+//
+// This test is the tombstone. `test/integration/alert_identity_test.go` proves
+// the premise against a real database; this one stops the enum value coming back
+// by habit.
+func TestSeverityRaisedIsNotAReason(t *testing.T) {
 	t.Parallel()
 
-	if !domain.ReasonSeverityRaised.Valid() {
-		t.Fatal("severity_raised is not in the closed Reason set")
+	if domain.Reason("severity_raised").Valid() {
+		t.Fatal("severity_raised is back in the closed Reason set. " +
+			"It cannot fire: severity is part of alert identity, so a severity rise " +
+			"is a NEW alert, not a change to an existing one (ADR 0020)")
 	}
-	if !domain.ReasonSeverityRaised.AlertScoped() {
-		t.Fatal("severity_raised must be alert-scoped: it is a fact about ONE alert's label")
+	for _, r := range domain.AllReasons() {
+		if r == "severity_raised" {
+			t.Fatal("severity_raised is back in AllReasons")
+		}
 	}
-	// It survives even the quietest verbosity: a channel that asked to hear only
-	// about firing has asked to hear when something starts being worse.
-	for _, v := range []domain.Verbosity{
-		domain.VerbosityAll, domain.VerbosityStatusChanges,
-		domain.VerbosityFiringAndResolved, domain.VerbosityFiringOnly,
-	} {
-		if !v.AllowsReply(domain.ReasonSeverityRaised) {
-			t.Errorf("verbosity %q drops severity_raised", v)
+}
+
+// TestTheChannelStormNoticeCannotRepeatPerAlert is the property the storm
+// relocation exists for.
+//
+// A storm is MANY alerts across MANY groups, all landing in the same channel. The
+// only thing that stops the "oto has gone quiet" announcement from becoming the
+// flood it is announcing is that exactly one of them holds the channel latch.
+func TestTheChannelStormNoticeCannotRepeatPerAlert(t *testing.T) {
+	t.Parallel()
+
+	// Twenty groups collapse. One won the latch; nineteen did not.
+	broadcasts := 0
+	for i := range 20 {
+		in := base(domain.ReasonStorm)
+		in.StormMode = true
+		in.ChannelNoticeClaimed = i == 0
+		if lastMode(domain.PlanFor(in)) == domain.ModeBroadcastReply {
+			broadcasts++
+		}
+	}
+	if broadcasts != 1 {
+		t.Fatalf("%d channel-level storm broadcasts for 20 storming groups, want exactly 1", broadcasts)
+	}
+
+	// And the notice is not something an ordinary Reason can claim: holding the
+	// latch does nothing for anything but `storm`, so a future Reason cannot
+	// acquire a channel-wide post by setting one flag.
+	for _, r := range []domain.Reason{domain.ReasonAcked, domain.ReasonComment, domain.ReasonNewAlerts} {
+		in := base(r)
+		in.ChannelNoticeClaimed = true
+		if lastMode(domain.PlanFor(in)) == domain.ModeBroadcastReply {
+			t.Errorf("%s broadcast by holding the channel storm latch", r)
 		}
 	}
 }

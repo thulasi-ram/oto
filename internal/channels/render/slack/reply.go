@@ -31,7 +31,6 @@ const (
 	reasonComment         = "comment"
 	reasonUnackedReminder = "unacked_reminder"
 	reasonStorm           = "storm"
-	reasonSeverityRaised  = "severity_raised"
 
 	// System reply types. They have no Reason in the DDL because they are facts
 	// about oto's own delivery machinery, not about the signal (§H.5).
@@ -56,18 +55,28 @@ func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOption
 			Text{Type: TypeMrkdwn, Text: truncateField(extra, v.Links.Group)}))
 	}
 
-	fallback := replyText(v)
+	// ⛔⛔ THE MENTION IS ADDED TO THE TOP-LEVEL `text` ONLY, AND THE SENTENCE IS
+	// BUILT WITHOUT IT FIRST (ADR 0020).
+	//
+	// The attachment's own `fallback` and the delivery `summary` are copies of the
+	// sentence used for notification previews and for the timeline; a mention in
+	// either is a duplicate of a thing that only means something in one position.
+	// The top-level text is the ONLY place a broadcast can carry it, because
+	// Slack's in-channel `thread_broadcast` reference carries no attachment at all.
+	sentence := replyText(v, nil)
+	text := replyText(v, o.Mentions)
+
 	return Payload{
-		Text:        fallback,
+		Text:        text,
 		UnfurlLinks: false,
 		UnfurlMedia: false,
 		Metadata:    rootMetadata(v),
 		Attachments: []Attachment{{
 			Color:    colour,
-			Fallback: truncateRunes(fallback, 200),
+			Fallback: truncateRunes(sentence, 200),
 			Blocks:   blocks,
 		}},
-	}, fallback, fallback
+	}, sentence, sentence
 }
 
 // replyBody returns the reply's mrkdwn, an optional context line, and the colour
@@ -172,24 +181,12 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 			body += " after " + d
 		}
 		body += ".*"
-		if m := mentionList(r.mentions); m != "" {
-			body += " " + m
-		}
+		// ⛔ NO MENTION HERE. It goes in the TOP-LEVEL `text` — see replyText.
+		// This body lives inside an attachment (§H.1 S3), and Slack strips
+		// attachments from the in-channel `thread_broadcast` reference, so a
+		// mention placed here would be invisible in the channel even if it
+		// notified. ADR 0020.
 		body += " — " + link(v.Links.Group, "open in oto")
-
-	case reasonSeverityRaised:
-		// ⛔ ADR 0020 RENDERING RULE 5: this reply BROADCASTS, and the in-channel
-		// reference Slack builds from it carries NEITHER THE ATTACHMENT NOR ITS
-		// BLOCKS — no colour bar, no Acknowledge button. So the severity is stated
-		// in WORDS and in an EMOJI, never left to the colour, and the call to
-		// action is "open the thread". The colour below is for the thread copy
-		// only; a reader who sees only the channel reference must lose nothing.
-		colour = CardFiring.Colour()
-		body = ":rotating_light: *Severity raised to " + escape(severityWord(v)) + "*"
-		if was := previousSeverity(v); was != "" {
-			body += " — was " + code(was)
-		}
-		body += ". " + link(v.Links.Group, "open in oto") + "."
 
 	case reasonStorm:
 		colour = CardStorm.Colour()
@@ -313,38 +310,6 @@ func enricherLabel(name string) string {
 	return escape(strings.ReplaceAll(strings.Join(parts, " "), "_", " "))
 }
 
-// severityWord is the severity this reply is announcing, in WORDS.
-//
-// ⛔ ADR 0020 RENDERING RULE 5. The channel-visible form of a broadcast carries
-// no attachment, so it carries no colour bar: "the card went red" is a fact only
-// a thread reader gets. The word is the whole message for everybody else.
-//
-// It prefers the FOCUS — a severity rise is a fact about one Alert
-// (notifications_focus_ck) — and falls back to the group so the sentence is never
-// left with a hole in it.
-func severityWord(v *domain.NotificationView) string {
-	raw := ""
-	if v.Focus != nil {
-		raw = v.Focus.Severity
-	}
-	if raw == "" {
-		raw = v.Group.Severity
-	}
-	if raw == "" {
-		return "a higher severity"
-	}
-	return raw
-}
-
-// previousSeverity is the severity the card showed before, or "" when the view
-// does not carry one. The reply must read correctly either way.
-func previousSeverity(v *domain.NotificationView) string {
-	if v.Previous != nil {
-		return v.Previous.Severity
-	}
-	return ""
-}
-
 func commentPrefix(who string) string {
 	if who == "" {
 		return ""
@@ -451,24 +416,33 @@ func nameList(alerts []domain.AlertView, o domain.RenderOptions) string {
 // THIS STRING IS VERY NEARLY EVERYTHING A CHANNEL READER SEES. No colour bar, no
 // Acknowledge button, no blocks. A broadcast whose text reads "Re-fired" is a
 // broadcast that communicates nothing.
-func replyText(v *domain.NotificationView) string {
+func replyText(v *domain.NotificationView, mentions []string) string {
 	title := v.Group.Title
 	if title == "" {
 		title = v.Group.GroupLabels["alertname"]
 	}
-	lead := replyLead(v.Reason)
-	if v.Reason == reasonSeverityRaised {
-		// The severity goes in the lead itself, because "Severity raised:" without
-		// the new value is the one thing a reader of the channel copy cannot look
-		// up without opening the thread — which is what this sentence is trying to
-		// make them decide to do.
-		lead = SeverityEmoji(severityWord(v)) + " Severity raised to " + severityWord(v) + ":"
-	}
-	out := lead + " " + title
+	out := replyLead(v.Reason) + " " + title
 	if v.Group.ClusterKey != "" {
 		out += " on " + v.Group.ClusterKey
 	}
 	out += "."
+
+	// ⛔⛔ THE MENTION LIVES HERE AND NOWHERE ELSE (ADR 0020). Everything the
+	// renderer builds for the thread sits inside ONE attachment (§H.1 S3, the only
+	// way to get a colour bar), and Slack strips attachments from the in-channel
+	// `thread_broadcast` reference — so a mention inside a block is invisible in
+	// the channel, notification or not. This string is very nearly all a channel
+	// reader sees, which makes it the only position a mention can occupy.
+	//
+	// It goes AFTER the sentence: the sentence has to be readable by the people
+	// who were not mentioned, and a message that opens with four user ids reads as
+	// addressed to four people rather than to the channel.
+	//
+	// The audience is already resolved and already gated on severity by the org's
+	// policy. This renderer does not decide WHO — only WHERE.
+	if m := mentionList(mentions); m != "" {
+		out += " " + m
+	}
 	return truncateRunes(oneLine(out), otoTopLevelText)
 }
 
@@ -502,10 +476,6 @@ func replyLead(reason string) string {
 		return ":rotating_light: Still unacknowledged:"
 	case reasonStorm:
 		return ":zap: Storm damping on for:"
-	case reasonSeverityRaised:
-		// Overridden by replyText, which has the view and can name the severity.
-		// This is the fallback for a caller that has only the Reason.
-		return ":rotating_light: Severity raised for:"
 	case reasonDegraded:
 		return ":warning: oto could not update the thread for:"
 	case reasonContinued:

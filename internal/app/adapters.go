@@ -687,6 +687,12 @@ func (o orgSettings) NotificationDefaults(
 		Broadcast:            notifdomain.BroadcastPolicy{Resolved: cfg.BroadcastOnResolved},
 		Verbosity:            notifdomain.Verbosity(cfg.DefaultVerbosity),
 		UnackedReminderAfter: cfg.UnackedReminderAfter,
+		StormCooldown:        cfg.StormCooldown,
+		ReminderMention: notifdomain.MentionPolicy{
+			Mode:        cfg.UnackedReminderMention,
+			List:        cfg.UnackedReminderMentionList,
+			MinSeverity: cfg.UnackedReminderMentionMinSeverity,
+		},
 	}, nil
 }
 

@@ -349,10 +349,6 @@ const (
 	reasonComment      = "comment"
 	reasonSnoozed      = domain.NotifyReasonSnoozed
 	reasonUnsnoozed    = domain.NotifyReasonUnsnoozed
-	// reasonSeverityRaised is ADR 0020's first broadcasting transition, added to
-	// notifications_reason_ck by migration 00027. A RISE only: a decrease is good
-	// news arriving quietly, which is what update-in-place is for.
-	reasonSeverityRaised = "severity_raised"
 )
 
 // reasonFor maps a §B.3 transition onto the §H.6 Reason it justifies.

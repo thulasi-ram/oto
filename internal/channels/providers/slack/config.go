@@ -34,12 +34,14 @@ type Config struct {
 	Transport string `json:"transport"`
 	// MaxInstances is how many member instances the card renders inline.
 	MaxInstances int `json:"max_instances"`
-	// MentionOnReminder is the FIXED audience an unacked reminder addresses.
-	//
-	// It is not a rota. It must never become time-aware and there must never be a
-	// second stage (§G.9.1). oto does not know who is on call, and a product that
-	// guesses is a paging product.
-	MentionOnReminder []string `json:"mention_on_reminder"`
+	// ⛔ THERE IS NO `mention_on_reminder` HERE, AND ITS REMOVAL IS A BUG FIX.
+	// It existed, was schema-validated, was rendered into the settings form — and
+	// was NEVER READ: the registry builds one shared renderer and nothing ever
+	// called the option that would have carried this list into it. An operator
+	// could set it and nothing could ever happen. The unacked-reminder audience is
+	// now ONE org-level setting (`unacked_reminder_mention`, ADR 0020), resolved
+	// once, gated on severity, and rendered into the top-level `text` where a
+	// broadcast can actually carry it.
 	// LinkNames makes Slack linkify bare @names in the message text.
 	LinkNames bool `json:"link_names"`
 }

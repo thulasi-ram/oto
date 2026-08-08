@@ -70,6 +70,7 @@ func TestEvaluateTwiceAllocatesOneSequence(t *testing.T) {
 		Snapshots:     snapshots{fx: fx},
 		Events:        repository.NewEventRepository(testPool, clk),
 		Enqueuer:      jobs,
+		Channels:      channels,
 		Clock:         clk,
 	})
 	require.NoError(t, err)

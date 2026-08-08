@@ -92,6 +92,21 @@ type Settings struct {
 	// quietly. Every other broadcasting transition is fixed by policy, because a
 	// broadcast cannot be un-sent and the set is a product decision, not a dial.
 	BroadcastOnResolved bool
+
+	// UnackedReminderMention is WHO the one unacked reminder addresses:
+	// none | here | channel | list (mention.go). DEFAULT `none`.
+	//
+	// ⛔ NOT A ROTA, EVER (§4.8, ADR 0013). A fixed audience chosen once, in
+	// configuration. No time of day, no weekday, no schedule, no second stage.
+	UnackedReminderMention string
+	// UnackedReminderMentionList is the explicit audience for mode `list`: Slack
+	// user and usergroup ids, at most MaxReminderMentions of them.
+	UnackedReminderMentionList []string
+	// UnackedReminderMentionMinSeverity is the severity class at or above which a
+	// mention is attached at all. DEFAULT `critical` — `@here` on every unacked
+	// warning is how a channel gets muted, and a muted channel hides the real
+	// incident.
+	UnackedReminderMentionMinSeverity string
 }
 
 // The defaults of SPEC §D.1, restated as the values a brand-new org boots with.
@@ -116,6 +131,13 @@ const (
 	DefaultUnackedReminderAfter = 0 * time.Second
 	// DefaultBroadcastOnResolved is off (ADR 0020).
 	DefaultBroadcastOnResolved = false
+	// DefaultUnackedReminderMention is `none`, and the default is a RESEARCH
+	// RESULT: Slack documents that @here and @channel do not notify when used in
+	// threads, and oto's reminder is a thread reply. Shipping `here` by default
+	// would ship a setting that silently does nothing. See mention.go.
+	DefaultUnackedReminderMention = MentionNone
+	// DefaultUnackedReminderMentionMinSeverity is `critical` only.
+	DefaultUnackedReminderMentionMinSeverity = MentionSeverityCritical
 )
 
 // DefaultSettings is the tuning an org has until somebody changes it.
@@ -140,6 +162,9 @@ func DefaultSettings() Settings {
 		UnackedReminderAfter: DefaultUnackedReminderAfter,
 		DefaultVerbosity:     DefaultChannelVerbosity,
 		BroadcastOnResolved:  DefaultBroadcastOnResolved,
+
+		UnackedReminderMention:            DefaultUnackedReminderMention,
+		UnackedReminderMentionMinSeverity: DefaultUnackedReminderMentionMinSeverity,
 	}
 }
 
@@ -186,6 +211,12 @@ func (s Settings) Normalise() Settings {
 	}
 	if !channelVerbosities[s.DefaultVerbosity] {
 		s.DefaultVerbosity = d.DefaultVerbosity
+	}
+	if !ValidMentionMode(s.UnackedReminderMention) {
+		s.UnackedReminderMention = d.UnackedReminderMention
+	}
+	if !ValidMentionMinSeverity(s.UnackedReminderMentionMinSeverity) {
+		s.UnackedReminderMentionMinSeverity = d.UnackedReminderMentionMinSeverity
 	}
 	// UnackedReminderAfter is deliberately NOT defaulted here: zero is a meaningful
 	// value for it — "this org sets no reminder default" — and rewriting it to a

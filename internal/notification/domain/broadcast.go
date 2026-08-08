@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 // Broadcast policy — ADR 0020, "Broadcast the transitions that must be seen".
 //
 // ⭐ WHY THIS FILE EXISTS. ADR 0008 made `chat.update` the primary verb and
@@ -57,22 +59,29 @@ func DefaultBroadcastPolicy() BroadcastPolicy { return BroadcastPolicy{Resolved:
 // Warrants reports whether this transition is one an on-call engineer would be
 // angry to have missed.
 //
-// ⛔ THE FOUR FIXED MEMBERS ARE NOT CONFIGURABLE, and the omissions are as
-// deliberate as the members:
+// ⛔ THE SET IS TWO REASONS. It was four; ADR 0020 was revised and it is now the
+// two whose quiet form is genuinely INVISIBLE, which is the only property that
+// earns an irreversible channel post:
 //
-//   - `severity_raised`   — the purest case. Today's alternative is a silent edit
-//     from amber to red.
+//   - `unacked_reminder`  — its purpose is to reach someone who has NOT engaged.
+//     In-thread it reaches only the already-engaged, which
+//     is precisely the wrong audience. This is the case
+//     `reply_broadcast` was put in oto for.
 //   - `refired`           — a re-fire INSIDE `refire_grace` reopens the existing
-//     occurrence and produces an update plus a thread reply, so
-//     it posts no new root and is otherwise invisible. A re-fire
-//     AFTER the grace window opens a new generation and a new
-//     root message, which is already loud (§B.5).
-//   - `storm`             — a behaviour change in OTO ITSELF: from this moment
-//     individual notifications are being withheld. People must
-//     be told the tool changed, or the silence that follows is
-//     indistinguishable from nothing happening.
-//   - `unacked_reminder`  — its entire purpose is to be seen. It was the original
-//     hard-coded exception; it is now an instance of the rule.
+//     occurrence: an update plus a thread reply, no new root.
+//     The thread said "resolved" and people stopped following
+//     it. A re-fire AFTER the grace window opens a new
+//     generation and a new root message, which is already
+//     loud (§B.5) and is not in this set.
+//
+// ⛔ `storm` WAS REMOVED FROM THIS SET AND MUST NOT COME BACK. A storm means MANY
+// alerts; a per-thread broadcast of "oto has gone quiet" therefore produces
+// exactly the flood the damping exists to prevent — oto shouting, once per
+// group, about having started to be quiet. The fact is real and still delivered:
+// the per-group `storm` reply stays on that group's thread, and the CHANNEL is
+// told once, by StormNotice below.
+//
+// ⛔ `severity_raised` is not here because it does not exist. See reason.go.
 //
 // NOT broadcast: `acked`, `comment`, `enriched`, `snoozed`. Each is a fact about
 // the RESPONSE, addressed to people already following the thread — that is what
@@ -80,7 +89,7 @@ func DefaultBroadcastPolicy() BroadcastPolicy { return BroadcastPolicy{Resolved:
 // traffic of every well-handled alert, punishing the behaviour oto wants.
 func (p BroadcastPolicy) Warrants(r Reason) bool {
 	switch r {
-	case ReasonSeverityRaised, ReasonRefired, ReasonStorm, ReasonUnackedReminder:
+	case ReasonRefired, ReasonUnackedReminder:
 		return true
 	case ReasonAllResolved:
 		return p.Resolved
@@ -88,3 +97,52 @@ func (p BroadcastPolicy) Warrants(r Reason) bool {
 		return false
 	}
 }
+
+// ⭐ THE CHANNEL-LEVEL STORM NOTICE.
+//
+// "oto has started withholding individual notifications" is a fact about OTO'S
+// OWN BEHAVIOUR, and §B.6 refuses to let a damper engage silently. But storm mode
+// is decided PER GROUP, and a channel routinely carries many groups: in a real
+// storm, twenty generations enter storm mode inside a minute, and twenty
+// per-thread broadcasts into one channel is the flood, not the fix.
+//
+// So the notice is addressed to the CHANNEL and issued at most once per channel
+// per window, by a latch the database holds (`channels.storm_notice_at`). The
+// per-group `storm` reply still lands on each group's own thread — the record is
+// complete — but exactly one of those replies is allowed to surface in-channel.
+//
+// ⛔ THE LATCH IS A TIME WINDOW, NOT A REFERENCE COUNT, AND THAT IS DELIBERATE. A
+// count of storming groups would be exact and would also LEAK: a generation can
+// be closed while storming (`Close` clears `storm_mode` with no storm-end
+// evaluation), and a leaked count means the channel is never told about the next
+// storm at all. A silent, permanent failure of a damper's own announcement is the
+// worst outcome available here; an occasional extra notice is the cheapest. The
+// window self-heals.
+
+// StormNoticeWindow is the shortest gap between two channel-level storm notices,
+// when the org's own storm cooldown is unusable.
+//
+// The caller should pass the org's `storm_cooldown_s`, because that is the
+// setting that already defines the minimum distance between a storm starting and
+// the same storm ending (§B.6): a window equal to it lets a storm's start and its
+// own end each get through, while collapsing every other group's storm inside it.
+const StormNoticeWindow = 5 * time.Minute
+
+// NormaliseStormNoticeWindow bounds a caller-supplied window. Zero or negative
+// means "the org set nothing usable", which must not mean "no latch at all" —
+// that would restore the per-group flood.
+func NormaliseStormNoticeWindow(d time.Duration) time.Duration {
+	if d <= 0 {
+		return StormNoticeWindow
+	}
+	return d
+}
+
+// WarrantsChannelNotice reports whether this Reason is the one that speaks for
+// the CHANNEL rather than for the thread, and therefore has to pass the latch
+// before it may broadcast.
+//
+// It is exactly one Reason and is not configurable. A second member would be a
+// second thing competing for one channel-wide latch, and the loser would be
+// silently dropped.
+func WarrantsChannelNotice(r Reason) bool { return r == ReasonStorm }

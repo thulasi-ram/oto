@@ -82,6 +82,18 @@ type OrgSettingsDTO struct {
 	DefaultVerbosity string `json:"default_verbosity"`
 	// BroadcastOnResolved is ADR 0020's one configurable broadcast, default off.
 	BroadcastOnResolved bool `json:"broadcast_on_resolved"`
+
+	// UnackedReminderMention is WHO the one unacked reminder addresses:
+	// none | here | channel | list. DEFAULT `none`, because Slack documents that
+	// @here and @channel do not notify from inside a thread and oto's reminder is
+	// a thread reply — a default of `here` would ship a control that does nothing.
+	// ⛔ NOT A ROTA (§4.8): a fixed audience, never time-aware, never a ladder.
+	UnackedReminderMention string `json:"unacked_reminder_mention"`
+	// UnackedReminderMentionList is the explicit audience for mode `list`: Slack
+	// user (`<@U...>`) and usergroup (`<!subteam^S...>`) ids, at most ten.
+	UnackedReminderMentionList []string `json:"unacked_reminder_mention_list"`
+	// UnackedReminderMentionMinSeverity gates it on severity. DEFAULT `critical`.
+	UnackedReminderMentionMinSeverity string `json:"unacked_reminder_mention_min_severity"`
 }
 
 // OrgDTO is the tenant boundary.

@@ -53,29 +53,32 @@ const (
 	ReasonUnackedReminder Reason = "unacked_reminder"
 	// ReasonStorm announces storm damping engaging. A VISIBLE state, never a
 	// silent suppression.
+	//
+	// It is a fact about ONE GROUP going quiet, and it stays on that group's
+	// thread. The CHANNEL-level "oto has started withholding things" notice is a
+	// separate, once-per-channel decision — see broadcast.go, and ADR 0020.
 	ReasonStorm Reason = "storm"
-	// ReasonSeverityRaised is an Alert's severity CLASS increasing —
-	// warning → critical (ADR 0020, migration 00027).
-	//
-	// ⭐ IT EXISTS BECAUSE THE MOST IMPORTANT CHANGE OTO CAN OBSERVE WAS THE ONE
-	// IT COULD NOT SAY. A severity bump used to arrive as part of `new_alerts` or
-	// as a bare root update, and a root update is `chat.update`, which is
-	// completely silent: the card went from amber to red and the channel was told
-	// nothing at all. Nobody would design that on purpose.
-	//
-	// A DECREASE is deliberately not a Reason. It is good news arriving quietly,
-	// which is exactly what update-in-place is for.
-	ReasonSeverityRaised Reason = "severity_raised"
 )
 
-// allReasons is the closed set, in the order migration 00018 declares it, with
-// `severity_raised` appended by migration 00027.
+// ⛔ THERE IS NO `severity_raised`, AND ADDING ONE WOULD BE ADDING AN ENUM VALUE
+// NOTHING CAN EVER WRITE.
+//
+// ADR 0020 originally proposed it as the purest case for broadcasting — a card
+// going amber to red under a silent `chat.update`. A migration (00027) was
+// written for it and has been deleted. The premise does not survive contact with
+// §C.2: `severity` is an ordinary Prometheus LABEL and is hashed into
+// `alert_key`, so two severities of one rule are TWO ALERTS, not one Alert
+// changing. Nothing observes a rise, so nothing can emit the Reason, and a
+// CHECK-constraint value with no writer is a trap for the next person reading
+// this file. `test/integration/alert_identity_test.go` is the proof.
+
+// allReasons is the closed set, in the order migration 00018 declares it.
 var allReasons = []Reason{
 	ReasonFired, ReasonNewAlerts, ReasonSomeResolved, ReasonAllResolved,
 	ReasonRepeat, ReasonSuppressed, ReasonUnsuppressed, ReasonExpired,
 	ReasonRefired, ReasonAcked, ReasonUnacked, ReasonSnoozed, ReasonUnsnoozed,
 	ReasonEnriched, ReasonRuleChanged, ReasonComment, ReasonUnackedReminder,
-	ReasonStorm, ReasonSeverityRaised,
+	ReasonStorm,
 }
 
 // AllReasons returns the closed Reason set. The slice is freshly built so a
@@ -105,11 +108,7 @@ func (r Reason) String() string { return string(r) }
 // therefore REQUIRES an alert_id (notifications_focus_ck).
 func (r Reason) AlertScoped() bool {
 	switch r {
-	case ReasonAcked, ReasonUnacked, ReasonRefired, ReasonRuleChanged, ReasonSeverityRaised:
-		// A severity rise is a fact about ONE Alert's label, never about the
-		// group: two members of a group can move in opposite directions in the
-		// same batch, and a group-scoped severity Reason could not say which one
-		// moved.
+	case ReasonAcked, ReasonUnacked, ReasonRefired, ReasonRuleChanged:
 		return true
 	default:
 		return false

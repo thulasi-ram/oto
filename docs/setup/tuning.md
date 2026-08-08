@@ -264,22 +264,30 @@ damper's name.
 
 **What it does.** oto's primary verb is `chat.update`: it edits the existing alert card in place instead
 of posting a new message. That is what keeps a channel readable — but **`chat.update` is completely
-silent.** No notification, no unread, nothing rises in the channel. A card can go from `warning` to
-`critical` and everyone can miss it. Thread replies have the same problem: they notify thread
-participants and nobody else.
+silent.** No notification, no unread, nothing rises in the channel. Thread replies have the same
+problem: they notify thread participants and nobody else.
 
 `reply_broadcast` (Slack's *"Also send to #channel"*) is the antidote. The thread stays the record; the
 one change that matters surfaces once in the channel. See
 [ADR 0020](../adr/0020-broadcast-the-transitions-that-must-be-seen.md) for the full reasoning.
 
-**Broadcast by default:**
+**Broadcast by default — two transitions, and the test is "is the quiet form *invisible*?"**
 
-| Transition | Why |
+| Transition | Why the quiet form is invisible |
 |---|---|
-| Severity increase (`warning` → `critical`) | Otherwise a silent edit changes the card from amber to red and tells nobody. |
-| Re-fire within `refire_grace` | The one re-fire case that produces no new root message, so it is the one that is otherwise invisible. (A re-fire *after* the grace window already posts a new card — see `refire_grace` above.) |
-| Storm detected | oto has just started suppressing individual notifications. People must be told the tool changed behaviour, or the quiet that follows is indistinguishable from nothing happening. |
-| Unacked reminder | Its entire purpose is to be seen. |
+| Unacked reminder | Its purpose is to reach somebody who has **not** engaged. In-thread it reaches only the already-engaged, which is the wrong audience. |
+| Re-fire within `refire_grace` | The thread said *resolved* and people stopped following it. This is the one re-fire case that produces no new root message. (A re-fire *after* the grace window already posts a new card — see `refire_grace` above.) |
+
+**Storm is not one of them, and is instead a channel-level notice.** A storm means *many* alerts across
+many groups, so one broadcast per storming group would be exactly the flood the damping exists to
+prevent. Each group's thread still records that it went quiet; the **channel** is told once, and the
+"once" is enforced by a latch (`channels.storm_notice_at`) whose window is your `storm_cooldown_s`.
+Twenty groups collapsing in a minute produce one message.
+
+**There is no severity-increase broadcast, and there cannot be.** `severity` is a Prometheus label and
+labels are hashed into an Alert's identity, so `warning` and `critical` versions of one rule are two
+different Alerts with two different threads — no card ever goes from amber to red. See
+[ADR 0020, Amendment 2](../adr/0020-broadcast-the-transitions-that-must-be-seen.md).
 
 **Never broadcast:** acknowledged, comment, enriched, snoozed. Each is a fact about the *response*,
 addressed to people already in the thread. Broadcasting an ack would double the channel traffic of every
@@ -297,8 +305,8 @@ because a resolve arrived quietly.
 2. **A broadcast is a `chat.postMessage`**, so it spends the ~1 message/second/channel budget — unlike
    an update, which is Tier 3 and effectively free. This is why broadcasts are damped during a storm:
    one broadcast per interesting transition, during the exact event that generates hundreds of them, is
-   a self-inflicted flood. In storm mode exactly one broadcast is permitted — the storm announcement
-   itself.
+   a self-inflicted flood. In storm mode exactly one broadcast is permitted **per channel** — the storm
+   notice itself.
 
 **Interaction with `verbosity`.** Broadcast is decided per *transition*, then modulated by the
 destination channel's `verbosity` and `thread_updates` settings. A channel that has opted out of thread
@@ -316,6 +324,9 @@ broadcast — a reminder nobody sees is not a reminder.
 | `unacked_reminder_after_s` | `0` (unset) | The org **default** a notification policy's own `unacked_reminder_after_s` falls back to when it is NULL. A policy with an opinion always wins. | **Zero means "no org default"**, which is what shipped — not "immediately". When set, the range is `60`–`86400`, mirroring `policies_reminder_ck` exactly. ⛔ One stage, forever (§G.9.1). |
 | `default_verbosity` | `status_changes` | The fallback for a Channel that names no verbosity of its own. A channel's own setting always wins — an org default can never make a quiet channel loud. | Set it to `firing_only` if most of your channels want the quietest setting and you would rather not repeat yourself. |
 | `broadcast_on_resolved` | `false` | Whether `all_resolved` is broadcast into the channel rather than posted quietly in the thread. | See **Broadcast**, above. It is the only broadcast that is configurable, because a broadcast cannot be un-sent. |
+| `unacked_reminder_mention` | `none` | Who the unacked reminder addresses: `none`, `here`, `channel`, or `list`. | ⚠️ **`here` and `channel` probably do nothing.** Slack documents that `@here`/`@channel` *"won't notify people … when they're used in threads"*, and oto's reminder is a thread reply. Individual and usergroup mentions **do** notify from that position, so `list` is the only form known to work — which is why the default is `none` rather than a control that silently achieves nothing. |
+| `unacked_reminder_mention_list` | `[]` | The explicit audience for mode `list`: Slack users `<@U…>` and usergroups `<!subteam^S…>`, at most 10. | ⛔ **Not a rota.** A fixed audience you choose once. It must never become time-aware and there is never a second stage (§G.9.1). oto does not know who is on call. |
+| `unacked_reminder_mention_min_severity` | `critical` | The severity at or above which a mention is attached at all. | `@here` on every unacked *warning* is how a channel learns to mute oto, and a muted channel hides the real incident. The gate **fails closed**: a severity oto cannot rank gets no mention at any setting. |
 | `raw_retention_days` | `14` | How long raw webhook payloads are kept before their partition is dropped. | Storage, not behaviour. Raise it if you debug ingestion often. |
 | `event_retention_months` | `13` | How long the event timeline is kept. | Thirteen months so year-on-year comparisons work. |
 

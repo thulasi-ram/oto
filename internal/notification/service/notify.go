@@ -68,6 +68,21 @@ type OrgDefaults struct {
 	// ⛔ ONE STAGE, FOREVER (§G.9.1). A scalar, and a FALLBACK — never a second
 	// threshold and never a ladder.
 	UnackedReminderAfter time.Duration
+	// StormCooldown is the org's `storm_cooldown_s`, reused as the window of the
+	// once-per-channel storm-notice latch (ADR 0020). It is the right window
+	// because it is already the minimum distance between a storm starting and the
+	// same storm ending, so a storm's start and its own end each get through while
+	// every other group's storm inside it collapses into the first. Zero means
+	// "unusable", and the domain substitutes its own floor rather than removing the
+	// latch — no latch is the per-group flood.
+	StormCooldown time.Duration
+	// ReminderMention is who the ONE unacked reminder addresses (ADR 0020). The
+	// zero value is `none`, which is the shipped default and a deliberate one:
+	// Slack does not notify on @here/@channel from inside a thread, and the
+	// reminder is a thread reply.
+	//
+	// ⛔ NOT A ROTA (§4.8). A fixed audience and a severity floor, nothing else.
+	ReminderMention domain.MentionPolicy
 }
 
 // SettingsReader reads one org's notification-level tuning from `orgs.settings`.
@@ -112,6 +127,7 @@ type NotificationService struct {
 	snapshots     SnapshotSource
 	events        EventSink
 	enqueuer      Enqueuer
+	channels      ChannelStore
 	settings      SettingsReader
 	clk           clock.Clock
 	log           *slog.Logger
@@ -127,6 +143,11 @@ type NotificationConfig struct {
 	Snapshots     SnapshotSource
 	Events        EventSink
 	Enqueuer      Enqueuer
+	// Channels is the destination store. This service reads no channel row of its
+	// own — routing resolves them — but it TAKES the once-per-channel storm-notice
+	// latch here, inside the evaluation transaction, so a rolled-back evaluation
+	// cannot consume a channel's one storm notice (ADR 0020).
+	Channels ChannelStore
 	// Settings reads the org's notification tuning. OPTIONAL: nil means every org
 	// runs oto's shipped defaults, which is the correct degraded answer — a
 	// settings lookup must never be able to stop a notification.
@@ -144,15 +165,15 @@ func NewNotificationService(cfg NotificationConfig) (*NotificationService, error
 	switch {
 	case cfg.Tx == nil, cfg.Policies == nil, cfg.Notifications == nil,
 		cfg.Deliveries == nil, cfg.Threads == nil, cfg.Snapshots == nil,
-		cfg.Events == nil, cfg.Enqueuer == nil:
+		cfg.Events == nil, cfg.Enqueuer == nil, cfg.Channels == nil:
 		return nil, errs.New(errs.KindInternal, "notification_service_deps",
-			"the notification service needs a tx runner, a policy service, its stores, an event sink and an enqueuer")
+			"the notification service needs a tx runner, a policy service, its stores, a channel store, an event sink and an enqueuer")
 	}
 	s := &NotificationService{
 		txr: cfg.Tx, policies: cfg.Policies, notifications: cfg.Notifications,
 		deliveries: cfg.Deliveries, threads: cfg.Threads, snapshots: cfg.Snapshots,
-		events: cfg.Events, enqueuer: cfg.Enqueuer, settings: cfg.Settings,
-		clk: cfg.Clock, log: cfg.Logger,
+		events: cfg.Events, enqueuer: cfg.Enqueuer, channels: cfg.Channels,
+		settings: cfg.Settings, clk: cfg.Clock, log: cfg.Logger,
 	}
 	if s.clk == nil {
 		s.clk = clock.New()
@@ -266,7 +287,7 @@ func (s *NotificationService) evaluate(
 	// very next evaluation in every pod, with no restart.
 	def := s.orgDefaults(ctx, scope)
 
-	dests, softSup := s.plan(ctx, in.Reason, snap, match, def)
+	dests, softSup := s.plan(ctx, scope, in.Reason, snap, match, def)
 	if len(dests) == 0 {
 		reason, ok := softSup.Winner()
 		if !ok {
@@ -418,6 +439,8 @@ func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantSc
 		def.Verbosity = got.Verbosity
 	}
 	def.Broadcast = got.Broadcast
+	def.StormCooldown = got.StormCooldown
+	def.ReminderMention = got.ReminderMention
 	return def
 }
 
@@ -429,7 +452,8 @@ func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantSc
 // this method has no access to. `fanOut` re-applies the table against the thread
 // it just ensured — see modesFor — and that is where `Plan.Modes` becomes rows.
 func (s *NotificationService) plan(
-	ctx context.Context, reason domain.Reason, snap domain.Snapshot, match Match, def OrgDefaults,
+	ctx context.Context, scope db.TenantScope, reason domain.Reason,
+	snap domain.Snapshot, match Match, def OrgDefaults,
 ) ([]destination, domain.Suppressors) {
 	var sup domain.Suppressors
 	if !match.Routed() {
@@ -445,6 +469,22 @@ func (s *NotificationService) plan(
 		// conservatively and identically for every destination. The row-level
 		// decision is taken in fanOut against the real thread.
 		in := planInput(reason, c, def, false, snap.Group.StormMode, flapping)
+
+		// ⭐ THE ONCE-PER-CHANNEL STORM NOTICE (ADR 0020). "oto has started
+		// withholding individual notifications" is a fact about the CHANNEL, and
+		// storm mode is decided per GROUP: without this latch, twenty generations
+		// collapsing inside one minute would post twenty "going quiet" messages
+		// into one channel — the flood the damper exists to prevent, produced by
+		// the damper's own announcement.
+		//
+		// The claim runs INSIDE the evaluation transaction, so an evaluation that
+		// rolls back cannot consume a channel's one notice, and it runs per
+		// DESTINATION, because two channels are two audiences and each is entitled
+		// to be told once.
+		if domain.WarrantsChannelNotice(reason) {
+			in.ChannelNoticeClaimed = s.claimStormNotice(ctx, scope, c.ID, def, snap.TakenAt)
+		}
+
 		p := domain.PlanFor(in)
 
 		if p.BroadcastDamped {
@@ -481,6 +521,28 @@ func (s *NotificationService) plan(
 		return out[i].channel.ID.String() < out[j].channel.ID.String()
 	})
 	return out, sup
+}
+
+// claimStormNotice takes the channel-level storm-notice latch, or reports that
+// this channel has already been told.
+//
+// ⛔ A FAILED CLAIM IS NOT A FAILED NOTIFICATION. The latch is bookkeeping for
+// oto's own volume; a database hiccup while taking it must not stop the storm
+// reply reaching the group's thread. So an error degrades to "not claimed" — the
+// QUIET direction, which is the safe one here: the alternative would be a channel
+// receiving one broadcast per storming group because a latch read failed.
+func (s *NotificationService) claimStormNotice(
+	ctx context.Context, scope db.TenantScope, channelID uuid.UUID,
+	def OrgDefaults, now time.Time,
+) bool {
+	window := domain.NormaliseStormNoticeWindow(def.StormCooldown)
+	claimed, err := s.channels.ClaimStormNotice(ctx, scope, channelID, now, now.Add(-window))
+	if err != nil {
+		s.log.WarnContext(ctx, "notification: could not take the storm-notice latch",
+			"channel_id", channelID, "error", err.Error())
+		return false
+	}
+	return claimed
 }
 
 // record persists a suppressed intent.

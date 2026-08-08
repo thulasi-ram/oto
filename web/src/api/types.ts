@@ -52,6 +52,10 @@ export type DeliveryErrorClass = S["DeliveryErrorClass"];
 export type ChannelType = S["ChannelType"];
 export type RendererId = S["RendererId"];
 export type Verbosity = S["Verbosity"];
+/** Who the ONE unacked reminder addresses. `list` is the only form Slack documents as notifying from a thread. */
+export type ReminderMention = S["ReminderMention"];
+/** The severity class at or above which a reminder attaches a mention at all. */
+export type ReminderMentionSeverity = S["ReminderMentionSeverity"];
 export type ChannelHealthStatus = S["ChannelHealthStatus"];
 export type SourceKind = S["SourceKind"];
 export type SourceHealthStatus = S["SourceHealthStatus"];
@@ -112,6 +116,18 @@ export type AlertQuality = S["AlertQualityDTO"];
 export type Me = S["MeDTO"];
 export type Org = S["OrgDTO"];
 export type OrgSettings = S["OrgSettingsDTO"];
+/**
+ * The effective tuning, plus where each value came from and what the server will
+ * accept. The three together are the feature: an effective value with no origin
+ * cannot be acted on, because "600 because we chose it" and "600 because that is
+ * what oto ships" behave identically today and diverge the moment oto's default
+ * moves.
+ */
+export type OrgSettingsView = S["OrgSettingsViewDTO"];
+/** `org` (this org wrote it) or `default` (oto's shipped value is in force). */
+export type SettingOrigin = S["SettingOrigin"];
+/** One knob's server-enforced range, **with the argument for it**. */
+export type SettingBound = S["SettingBoundDTO"];
 export type User = S["UserDTO"];
 export type ApiToken = S["ApiTokenDTO"];
 export type ApiTokenCreated = S["ApiTokenCreatedDTO"];
@@ -134,6 +150,8 @@ export type UpdateChannelRequest = S["UpdateChannelRequest"];
 export type CreatePolicyRequest = S["CreatePolicyRequest"];
 export type UpdatePolicyRequest = S["UpdatePolicyRequest"];
 export type PolicyPreviewRequest = S["PolicyPreviewRequest"];
+/** A partial write: an omitted key is left alone, `reset` returns one to the default. */
+export type UpdateOrgSettingsRequest = S["UpdateOrgSettingsRequest"];
 export type LoginRequest = S["LoginRequest"];
 
 /* ---- streaming ---------------------------------------------------------- */

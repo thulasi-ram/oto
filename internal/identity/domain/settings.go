@@ -50,6 +50,16 @@ const (
 	KeyUnackedReminder     SettingKey = "unacked_reminder_after_s"
 	KeyDefaultVerbosity    SettingKey = "default_verbosity"
 	KeyBroadcastOnResolved SettingKey = "broadcast_on_resolved"
+
+	// KeyUnackedReminderMention is WHO the one unacked reminder addresses:
+	// none | here | channel | list. DEFAULT `none`, on evidence — see mention.go.
+	KeyUnackedReminderMention SettingKey = "unacked_reminder_mention"
+	// KeyUnackedReminderMentionList is the explicit audience for mode `list`.
+	KeyUnackedReminderMentionList SettingKey = "unacked_reminder_mention_list"
+	// KeyUnackedReminderMentionMinSeverity gates mentions on severity. DEFAULT
+	// `critical`: `@here` on every unacked warning is how a channel learns to mute
+	// oto, and a muted channel hides the real incident.
+	KeyUnackedReminderMentionMinSeverity SettingKey = "unacked_reminder_mention_min_severity"
 )
 
 // Origin says where an effective value came from.
@@ -207,6 +217,18 @@ type SettingsPatch struct {
 	DefaultVerbosity *string
 	// BroadcastOnResolved is ADR 0020's one configurable broadcast, default off.
 	BroadcastOnResolved *bool
+
+	// UnackedReminderMention is who the reminder addresses. See mention.go for
+	// why the default is `none` and why that is a research result rather than a
+	// preference.
+	//
+	// ⛔ NOT A ROTA (§4.8). The three fields below are a fixed audience and a
+	// severity gate. None of them may ever become time-aware.
+	UnackedReminderMention *string
+	// UnackedReminderMentionList is the explicit audience for mode `list`.
+	UnackedReminderMentionList *[]string
+	// UnackedReminderMentionMinSeverity is the severity floor for attaching one.
+	UnackedReminderMentionMinSeverity *string
 }
 
 // intPtr returns the address of the field named by k, or nil for a key that is
@@ -241,7 +263,9 @@ func (p *SettingsPatch) intPtr(k SettingKey) **int {
 		return &p.EventRetentionMonth
 	case KeyUnackedReminder:
 		return &p.UnackedReminderAfterS
-	case KeyDefaultVerbosity, KeyBroadcastOnResolved:
+	case KeyDefaultVerbosity, KeyBroadcastOnResolved,
+		KeyUnackedReminderMention, KeyUnackedReminderMentionList,
+		KeyUnackedReminderMentionMinSeverity:
 		return nil
 	default:
 		return nil
@@ -274,6 +298,38 @@ func (p SettingsPatch) Validate() error {
 		v = append(v, errs.Violation{
 			Field: string(KeyDefaultVerbosity), Code: "invalid_enum",
 			Message: "one of all, status_changes, firing_and_resolved, firing_only",
+		})
+	}
+
+	if p.UnackedReminderMention != nil && !ValidMentionMode(*p.UnackedReminderMention) {
+		v = append(v, errs.Violation{
+			Field: string(KeyUnackedReminderMention), Code: "invalid_enum",
+			Message: "one of none, here, channel, list. `here` and `channel` are believed NOT to notify from inside a thread reply, which is where oto puts the reminder; an explicit list is the only form Slack documents as notifying",
+		})
+	}
+	if p.UnackedReminderMentionList != nil {
+		list := *p.UnackedReminderMentionList
+		if len(list) > MaxReminderMentions {
+			v = append(v, errs.Violation{
+				Field: string(KeyUnackedReminderMentionList), Code: "max_items",
+				Message: "at most 10 individuals or usergroups: a reminder that notifies more than that is a page, and oto pages nobody",
+			})
+		}
+		for _, m := range list {
+			if !ValidMentionToken(m) {
+				v = append(v, errs.Violation{
+					Field: string(KeyUnackedReminderMentionList), Code: "pattern",
+					Message: "each entry is a Slack user `<@U...>` or usergroup `<!subteam^S...>`; @here and @channel are modes, not list members",
+				})
+				break
+			}
+		}
+	}
+	if p.UnackedReminderMentionMinSeverity != nil &&
+		!ValidMentionMinSeverity(*p.UnackedReminderMentionMinSeverity) {
+		v = append(v, errs.Violation{
+			Field: string(KeyUnackedReminderMentionMinSeverity), Code: "invalid_enum",
+			Message: "one of critical, warning, info",
 		})
 	}
 
@@ -310,6 +366,18 @@ func (p SettingsPatch) Merge(next SettingsPatch) SettingsPatch {
 		v := *next.BroadcastOnResolved
 		out.BroadcastOnResolved = &v
 	}
+	if next.UnackedReminderMention != nil {
+		v := *next.UnackedReminderMention
+		out.UnackedReminderMention = &v
+	}
+	if next.UnackedReminderMentionList != nil {
+		v := append([]string(nil), *next.UnackedReminderMentionList...)
+		out.UnackedReminderMentionList = &v
+	}
+	if next.UnackedReminderMentionMinSeverity != nil {
+		v := *next.UnackedReminderMentionMinSeverity
+		out.UnackedReminderMentionMinSeverity = &v
+	}
 	return out
 }
 
@@ -327,6 +395,12 @@ func (p SettingsPatch) Clear(keys ...SettingKey) SettingsPatch {
 			out.DefaultVerbosity = nil
 		case KeyBroadcastOnResolved:
 			out.BroadcastOnResolved = nil
+		case KeyUnackedReminderMention:
+			out.UnackedReminderMention = nil
+		case KeyUnackedReminderMentionList:
+			out.UnackedReminderMentionList = nil
+		case KeyUnackedReminderMentionMinSeverity:
+			out.UnackedReminderMentionMinSeverity = nil
 		}
 	}
 	return out
@@ -350,6 +424,18 @@ func (p SettingsPatch) Origin(k SettingKey) Origin {
 		if p.BroadcastOnResolved != nil {
 			return OriginOrg
 		}
+	case KeyUnackedReminderMention:
+		if p.UnackedReminderMention != nil {
+			return OriginOrg
+		}
+	case KeyUnackedReminderMentionList:
+		if p.UnackedReminderMentionList != nil {
+			return OriginOrg
+		}
+	case KeyUnackedReminderMentionMinSeverity:
+		if p.UnackedReminderMentionMinSeverity != nil {
+			return OriginOrg
+		}
 	}
 	return OriginDefault
 }
@@ -368,7 +454,9 @@ func (p SettingsPatch) Overridden() []SettingKey {
 // AllSettingKeys is the closed key set in a stable order.
 func AllSettingKeys() []SettingKey {
 	out := IntKeys()
-	return append(out, KeyDefaultVerbosity, KeyBroadcastOnResolved)
+	return append(out, KeyDefaultVerbosity, KeyBroadcastOnResolved,
+		KeyUnackedReminderMention, KeyUnackedReminderMentionList,
+		KeyUnackedReminderMentionMinSeverity)
 }
 
 // Settings folds the org's overrides onto oto's defaults and CLAMPS the result.
@@ -419,6 +507,32 @@ func (p SettingsPatch) Settings() Settings {
 
 	if p.BroadcastOnResolved != nil {
 		s.BroadcastOnResolved = *p.BroadcastOnResolved
+	}
+
+	// The mention surface, CLAMPED on read like everything else: a stored value
+	// outside the vocabulary falls back to the shipped default rather than failing
+	// a reminder. `none` and `critical` are the safe fallbacks in both directions —
+	// the quiet one and the narrow one.
+	s.UnackedReminderMention = MentionNone
+	if p.UnackedReminderMention != nil && ValidMentionMode(*p.UnackedReminderMention) {
+		s.UnackedReminderMention = *p.UnackedReminderMention
+	}
+	s.UnackedReminderMentionList = nil
+	if p.UnackedReminderMentionList != nil {
+		list := *p.UnackedReminderMentionList
+		if len(list) > MaxReminderMentions {
+			list = list[:MaxReminderMentions]
+		}
+		for _, m := range list {
+			if ValidMentionToken(m) {
+				s.UnackedReminderMentionList = append(s.UnackedReminderMentionList, m)
+			}
+		}
+	}
+	s.UnackedReminderMentionMinSeverity = MentionSeverityCritical
+	if p.UnackedReminderMentionMinSeverity != nil &&
+		ValidMentionMinSeverity(*p.UnackedReminderMentionMinSeverity) {
+		s.UnackedReminderMentionMinSeverity = *p.UnackedReminderMentionMinSeverity
 	}
 
 	return s

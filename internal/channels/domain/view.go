@@ -131,12 +131,6 @@ type ActorView struct{ Kind, ID, Label string }
 // PreviousState is the state the card showed before this delivery.
 type PreviousState struct {
 	State, AckState string
-	// Severity is the RAW severity label the card showed before this delivery.
-	// OPTIONAL: it lets a `severity_raised` reply say "was warning" rather than
-	// only "now critical". Empty means "not carried", and every renderer must
-	// stay intelligible without it — a broadcast whose meaning depends on a field
-	// that may be absent is a broadcast that sometimes means nothing.
-	Severity string
 }
 
 // Action is one interactive affordance on a card.

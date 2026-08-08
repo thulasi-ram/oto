@@ -81,7 +81,6 @@ const REASONS: readonly NotificationReason[] = [
   "comment",
   "unacked_reminder",
   "storm",
-  "severity_raised",
 ];
 
 const REASON_LABEL: Record<NotificationReason, string> = {
@@ -108,12 +107,15 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   // notion of who is next — which is why the reason is not called what the rest
   // of this industry calls it (SPEC §G.9.1, §A.1).
   unacked_reminder: "still firing and unacknowledged",
+  // A fact about ONE group going quiet, and it stays on that group's thread.
+  // The channel-level "oto has started withholding" notice is a separate,
+  // once-per-channel decision and is not a Reason a policy selects.
+  //
+  // There is deliberately no `severity_raised` here: `severity` is an ordinary
+  // Prometheus label and is hashed into `alert_key`, so two severities of one
+  // rule are two Alerts rather than one Alert changing. Nothing can observe a
+  // rise, so nothing could ever write it (openapi `NotificationReason`).
   storm: "storm mode",
-  // ADR 0020. A RISE only — a fall has no reason and never will, because good
-  // news is allowed to arrive quietly. This is one of the transitions oto
-  // broadcasts into the channel, because chat.update is silent and without it
-  // the card goes from amber to red and nobody is told.
-  severity_raised: "severity raised",
 };
 
 export const PoliciesSection: Component = () => {

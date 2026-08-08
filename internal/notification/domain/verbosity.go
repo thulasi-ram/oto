@@ -52,22 +52,18 @@ var replySets = map[Verbosity]map[Reason]bool{
 		ReasonUnsuppressed: true, ReasonExpired: true, ReasonRefired: true,
 		ReasonNewAlerts: true, ReasonAllResolved: true, ReasonRuleChanged: true,
 		ReasonComment: true, ReasonSnoozed: true, ReasonUnsnoozed: true,
-		ReasonUnackedReminder: true, ReasonStorm: true, ReasonSeverityRaised: true,
+		ReasonUnackedReminder: true, ReasonStorm: true,
 	},
 	VerbosityFiringAndResolved: {
 		ReasonNewAlerts: true, ReasonAllResolved: true, ReasonExpired: true,
 		ReasonRuleChanged: true, ReasonSnoozed: true, ReasonUnsnoozed: true,
-		ReasonUnackedReminder: true, ReasonStorm: true, ReasonSeverityRaised: true,
+		ReasonUnackedReminder: true, ReasonStorm: true,
 	},
 	VerbosityFiringOnly: {
-		// `severity_raised` is present even at the quietest setting, and it earns
-		// it: a channel that asked to hear only about firing has asked to hear
-		// when something starts being worse, which is the same fact arriving
-		// later. It is still a reply, so `thread_updates: false` still silences it
-		// — verbosity is a volume dial, not an override.
+		// `storm` is present even at the quietest setting: a channel that asked
+		// for less has not asked to be lied to about oto withholding things.
 		ReasonNewAlerts: true, ReasonRuleChanged: true, ReasonSnoozed: true,
 		ReasonUnsnoozed: true, ReasonUnackedReminder: true, ReasonStorm: true,
-		ReasonSeverityRaised: true,
 	},
 }
 

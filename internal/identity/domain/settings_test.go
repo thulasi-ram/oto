@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -250,8 +251,28 @@ func TestTheShippedDefaultsAreUnchanged(t *testing.T) {
 
 	var empty domain.SettingsPatch
 	got, want := empty.Settings(), domain.DefaultSettings()
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("an empty patch yields %+v, want the shipped defaults %+v", got, want)
+	}
+
+	// ⭐ THE MENTION DEFAULT IS `none`, AND IT IS ASSERTED HERE RATHER THAN LEFT
+	// TO THE STRUCT COMPARISON, because it is the one default in this file that is
+	// a RESEARCH RESULT: Slack documents that @here and @channel do not notify
+	// when used in threads, and oto's unacked reminder is a thread reply. A
+	// default of `here` would be a control that silently does nothing, which is
+	// worse than no default at all (ADR 0020).
+	if got.UnackedReminderMention != domain.MentionNone {
+		t.Fatalf("the shipped reminder mention is %q, want none", got.UnackedReminderMention)
+	}
+	// And mentions are gated on severity, critical only: @here on every unacked
+	// warning is how a channel gets muted, and a muted channel hides the real
+	// incident.
+	if got.UnackedReminderMentionMinSeverity != domain.MentionSeverityCritical {
+		t.Fatalf("the shipped mention severity gate is %q, want critical",
+			got.UnackedReminderMentionMinSeverity)
+	}
+	if len(got.UnackedReminderMentionList) != 0 {
+		t.Fatalf("the shipped reminder mention list is %v, want empty", got.UnackedReminderMentionList)
 	}
 
 	// Every default must sit inside its own bound.

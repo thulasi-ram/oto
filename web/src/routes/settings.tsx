@@ -11,11 +11,13 @@ import { cx } from "~/components/ui/primitives";
 import { ChannelsSection } from "~/features/settings/ChannelsSection";
 import { PoliciesSection } from "~/features/settings/PoliciesSection";
 import { SourcesSection } from "~/features/settings/SourcesSection";
+import { TuningSection } from "~/features/settings/TuningSection";
 
 const SECTIONS = [
   { id: "sources", label: "Sources and clusters" },
   { id: "channels", label: "Channels" },
   { id: "policies", label: "Notification policies" },
+  { id: "tuning", label: "Tuning" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -63,6 +65,9 @@ const SettingsRoute: Component = () => {
             </Match>
             <Match when={params.section === "policies"}>
               <PoliciesSection />
+            </Match>
+            <Match when={params.section === "tuning"}>
+              <TuningSection />
             </Match>
           </Switch>
         </div>

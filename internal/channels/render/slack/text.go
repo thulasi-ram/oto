@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -246,22 +247,35 @@ func blockID(name, nonce string) string {
 	return id
 }
 
-// mentionList renders the fixed mention audience for an unacked reminder.
+// mentionList renders the resolved mention audience for an unacked reminder.
 //
-// This list is NOT a rota and must never become time-aware (§G.9.1). It is a
-// fixed audience the operator chose once, in configuration, and oto has no
+// ⛔⛔ ITS ONLY CALLER PUTS THE RESULT IN THE TOP-LEVEL `text`, AND THAT IS
+// CORRECTNESS, NOT STYLE (ADR 0020). §H.1 S3 puts every oto block inside one
+// attachment, and Slack's in-channel `thread_broadcast` reference "cannot contain
+// attachments or message buttons" — so a mention rendered into a block is not
+// merely un-notifying in the channel, it is not THERE. The top-level text is very
+// nearly all a channel reader sees, and it is the only position a mention can
+// occupy and still mean something.
+//
+// The tokens arrive in Slack's own wire form, already resolved and already gated
+// on severity by the org's mention policy. Anything that is not a recognised
+// mention shape is DROPPED rather than passed through: this string goes into a
+// message, and an unvalidated fragment there is an injection surface.
+//
+// This list is NOT a rota and must never become time-aware (§G.9.1, §4.8). It is
+// a fixed audience the operator chose once, in configuration, and oto has no
 // concept of who is on call.
 func mentionList(mentions []string) string {
 	out := make([]string, 0, len(mentions))
 	for _, m := range mentions {
-		switch m {
-		case "!here":
-			out = append(out, "<!here>")
-		case "!channel":
-			out = append(out, "<!channel>")
-		default:
+		if mentionTokenRe.MatchString(m) {
 			out = append(out, m)
 		}
 	}
 	return strings.Join(out, " ")
 }
+
+// mentionTokenRe is the closed set of mention shapes this renderer will emit: a
+// Slack user, a usergroup, `@here` or `@channel`. Nothing else reaches a message.
+var mentionTokenRe = regexp.MustCompile(
+	`^(<@[UW][A-Z0-9]{2,}>|<!subteam\^S[A-Z0-9]{2,}>|<!here>|<!channel>)$`)

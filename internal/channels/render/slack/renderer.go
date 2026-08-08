@@ -24,49 +24,28 @@ const defaultMaxInstances = 10
 // a fallback for a view that did not stamp RenderedAt. That is what makes it
 // golden-file testable, and golden files are how a broken layout is caught at
 // build time instead of at 03:00.
+// ⛔ THE RENDERER HOLDS NO MENTION AUDIENCE, AND IT USED TO. There was a
+// `mentions` field, a `WithMentions` option and a `For` method to mint a
+// channel-scoped copy — and NOTHING EVER CALLED THEM. The registry builds one
+// shared `New(clk)` and hands it to every dispatch, so
+// `channels.config.mention_on_reminder` was parsed, schema-validated, rendered
+// into the settings form and then silently discarded: a control an operator could
+// set and that could never do anything. That is the exact trap ADR 0020 is trying
+// to close, so it was closed here too.
+//
+// The audience now arrives per delivery, already resolved and already gated on
+// severity, as `RenderOptions.Mentions` — one place to configure it, one place to
+// read it, and the resolution is testable without a channel row.
 type Renderer struct {
 	clock clock.Clock
-	// mentions is the fixed audience an unacked reminder addresses, from
-	// channels.config.mention_on_reminder (§L.5.1).
-	//
-	// It is a FIXED AUDIENCE, not a rota. It must never become time-aware and it
-	// must never acquire a second stage (§G.9.1). oto does not know who is on
-	// call and will never pretend to.
-	mentions []string
-}
-
-// Option configures a Renderer.
-type Option func(*Renderer)
-
-// WithMentions sets the fixed unacked-reminder audience for a channel-scoped
-// renderer. The registry's shared renderer has none; the channels service mints a
-// scoped copy when it dispatches to a channel that configured one.
-func WithMentions(mentions []string) Option {
-	return func(r *Renderer) {
-		r.mentions = append([]string(nil), mentions...)
-	}
 }
 
 // New builds the Slack renderer.
-func New(clk clock.Clock, opts ...Option) *Renderer {
+func New(clk clock.Clock) *Renderer {
 	if clk == nil {
 		clk = clock.New()
 	}
-	r := &Renderer{clock: clk}
-	for _, o := range opts {
-		o(r)
-	}
-	return r
-}
-
-// For returns a channel-scoped copy of r carrying the given options. The shared
-// renderer is never mutated: it is used concurrently by every dispatch worker.
-func (r *Renderer) For(opts ...Option) *Renderer {
-	cp := &Renderer{clock: r.clock, mentions: append([]string(nil), r.mentions...)}
-	for _, o := range opts {
-		o(cp)
-	}
-	return cp
+	return &Renderer{clock: clk}
 }
 
 // ID implements domain.Renderer.

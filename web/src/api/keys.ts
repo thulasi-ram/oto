@@ -54,6 +54,8 @@ export const qk = {
     channelTypes: () => ["settings", "channel-types"] as const,
     channels: () => ["settings", "channels"] as const,
     policies: () => ["settings", "policies"] as const,
+    /** The org's tuning, its origins and its bounds — one query, one screen. */
+    org: () => ["settings", "org"] as const,
   },
   deliveries: {
     all: () => ["deliveries"] as const,

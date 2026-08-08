@@ -87,6 +87,11 @@ type ChannelStore interface {
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Channel, error)
 	SetHealth(ctx context.Context, s db.TenantScope, id uuid.UUID, status domain.HealthStatus, detail string, now time.Time) error
 	Credential(ctx context.Context, s db.TenantScope, id uuid.UUID) (repository.SealedCredential, error)
+	// ClaimStormNotice takes the once-per-channel storm-notice latch (ADR 0020).
+	// True means THIS evaluation is the one that gets to tell the channel oto has
+	// started withholding; false means the channel was already told inside the
+	// window and the per-group reply stays quiet on its own thread.
+	ClaimStormNotice(ctx context.Context, s db.TenantScope, id uuid.UUID, now, notBefore time.Time) (bool, error)
 }
 
 // EventSink appends this module's facts to the shared timeline.

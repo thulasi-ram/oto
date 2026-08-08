@@ -590,6 +590,7 @@ func (c *Container) buildNotification(
 		Snapshots:     snapshots,
 		Events:        eventRepo,
 		Enqueuer:      c.enqueuer,
+		Channels:      channelRepo,
 		// ADR 0020's broadcast policy and the org's fallback verbosity, read from
 		// `orgs.settings` on every evaluation — the same adapter the lifecycle and
 		// storm ports use.
@@ -617,6 +618,9 @@ func (c *Container) buildNotification(
 			Registerer: reg,
 		}),
 		Enqueuer: c.enqueuer,
+		// The unacked reminder's mention audience, read from `orgs.settings` at
+		// claim time (ADR 0020). It is the ONLY setting the dispatch path reads.
+		Settings: settings,
 		BaseURL:  c.Config.HTTP.BaseURL,
 		Clock:    clk,
 		Logger:   logger,

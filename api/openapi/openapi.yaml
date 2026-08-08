@@ -4930,17 +4930,18 @@ components:
         - comment
         - unacked_reminder
         - storm
-        - severity_raised
       description: |
         Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
         is mapped onto this enum on ingest.
 
-        `severity_raised` is an Alert's severity **class** increasing — `warning` → `critical` (ADR 0020,
-        migration `00027_severity_raised_reason.sql`). It exists because oto's primary verb is
-        `chat.update`, and **`chat.update` is completely silent**: without this value the card went from
-        amber to red and the channel was told nothing at all. It is one of the transitions oto
-        **broadcasts** into the channel. A severity *decrease* has no value here and never will — good
-        news is allowed to arrive quietly, which is exactly what update-in-place is for.
+        ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
+        broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
+        written for it. The premise does not survive SPEC §C.2: in Prometheus `severity` is an ordinary
+        **label**, and the canonical label set is hashed into `alert_key`. Two severities of one rule are
+        therefore **two Alerts**, with two identities, two rows and two threads. No row is ever `warning`
+        and later `critical`, so nothing can observe a rise and nothing could ever write the value. It
+        was removed rather than kept "just in case": an enum value with no writer misleads every client
+        that switches on it.
 
         `unacked_reminder` is oto's ONE reminder stage (§G.9.1): the signal is still firing and still
         unacknowledged, so oto says so once more in the existing thread. It replaced the value this enum
@@ -5051,18 +5052,55 @@ components:
 
         - `all` — every reply type.
         - `status_changes` *(default)* — ack, unack, suppressed, unsuppressed, expired, refired,
-          new_alerts, all_resolved, rule_changed, comment, unacked_reminder, storm, severity_raised.
+          new_alerts, all_resolved, rule_changed, comment, unacked_reminder, storm.
         - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, unacked_reminder,
-          storm, severity_raised.
-        - `firing_only` — new_alerts, rule_changed, unacked_reminder, storm, severity_raised.
+          storm.
+        - `firing_only` — new_alerts, rule_changed, unacked_reminder, storm.
 
-        `severity_raised` is present at **every** level including the quietest: a channel that asked to
-        hear only about firing has asked to hear when something starts being worse. It is still a reply,
-        so `thread_updates: false` still silences it — verbosity is a volume dial, never an override.
+        `storm` is present at **every** level including the quietest: a channel that asked for less has
+        not asked to be lied to about oto withholding things. It is still a reply, so
+        `thread_updates: false` still silences it — verbosity is a volume dial, never an override.
 
         A channel that names no verbosity falls back to its **org's** `default_verbosity`
         (`GET /api/v1/org/settings`), and only then to `status_changes`.
       examples: [status_changes]
+
+    ReminderMention:
+      type: string
+      enum: [none, here, channel, list]
+      default: none
+      description: |
+        Who the **one** unacked reminder addresses (ADR 0020, §G.9.1).
+
+        ⚠️ **The default is `none`, and that is a research result, not timidity.** Slack's own help says
+        of `@here`, `@channel` and `@everyone`: *"These mentions won't notify people when their
+        notifications are paused or when they're used in threads."* oto's reminder is a thread reply that
+        broadcasts — `reply_broadcast` changes where a *reference* to it appears, and Slack documents no
+        exception to the thread rule for it. So on the evidence `here` and `channel` are **silent
+        no-ops** in the position oto uses them, and defaulting to one would ship a control that
+        manufactures the belief that somebody was told.
+
+        Individuals and usergroups are documented differently: a `<@U…>` mention notifies the user, and a
+        `<!subteam^S…>` mention notifies every user in the group, with no thread carve-out either time.
+        **`list` is the only form known to work.**
+
+        ⛔ **A list is not a rota** (ADR 0013, SCOPE-BOUNDARY §4.8). It is a fixed audience an operator
+        chose once. It must never become time-aware, never acquire a second stage, and never be derived
+        from a schedule. oto does not know who is on call.
+      examples: [none]
+
+    ReminderMentionSeverity:
+      type: string
+      enum: [critical, warning, info]
+      default: critical
+      description: |
+        The severity class at or above which the unacked reminder attaches a mention at all.
+
+        **Default `critical`.** `@here` on every unacked warning is how a channel learns to mute oto, and
+        a muted channel hides the real incident. The gate **fails closed**: a severity oto cannot rank —
+        an unknown label, or an absent one — gets no mention at any setting, so a typo'd `severity:`
+        cannot ping ten people. `page` is not listed because §H.2 renders it identically to `critical`.
+      examples: [critical]
 
     ChannelHealthStatus:
       type: string
@@ -8107,15 +8145,38 @@ components:
             Whether `all_resolved` is **broadcast** into the channel rather than posted quietly in the
             thread (ADR 0020). Default **off**.
 
-            It is the only broadcast that is configurable. The other four — `severity_raised`, `refired`,
-            `storm` and `unacked_reminder` — are fixed by policy, because **a broadcast cannot be
+            It is the only broadcast that is configurable. The other two — `refired` and
+            `unacked_reminder` — are fixed by policy, because **a broadcast cannot be
             un-sent**: Slack documents nothing that removes a channel reference once made. The bar is
+
+            `storm` is **not** in that list any more. A storm is many alerts, so one broadcast per
+            storming group is the flood the damping exists to prevent; the "oto has started withholding"
+            notice is now issued once per **channel**, latched on `channels.storm_notice_at`, while each
+            group's `storm` reply stays quietly on its own thread.
             *"would an on-call engineer be angry to have missed this?"*, not *"is this interesting?"*, and
             a channel that learns to scroll past oto's broadcasts has lost the only mechanism oto has for
             genuine urgency.
 
             Closure is genuinely welcome on a quiet channel. On a busy one it doubles traffic for the
             least urgent fact oto has — nobody was ever woken because a resolve arrived quietly.
+        unacked_reminder_mention:
+          $ref: '#/components/schemas/ReminderMention'
+        unacked_reminder_mention_list:
+          type: array
+          maxItems: 10
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^(<@[UW][A-Z0-9]{2,}>|<!subteam\^S[A-Z0-9]{2,}>)$'
+          description: |
+            The explicit audience for `unacked_reminder_mention: list` — Slack users and usergroups, in
+            Slack's own wire form. `@here` and `@channel` are **modes**, not members: a list that could
+            contain `@channel` would let a five-person list quietly become a channel-wide ping.
+
+            ⛔ **This is not a rota** (ADR 0013). A fixed audience chosen once, in configuration. It must
+            never become time-aware and there is never a second stage.
+        unacked_reminder_mention_min_severity:
+          $ref: '#/components/schemas/ReminderMentionSeverity'
       description: |
         Org-level tuning, as **effective values**. **Grouping, flap damping and storm collapse are on by
         default** — oto defaults to quiet, and every damping decision it makes is a visible state rather
@@ -9814,6 +9875,19 @@ components:
           description: |
             Broadcast `all_resolved` into the channel (ADR 0020). Default off, and the **only**
             configurable broadcast — a broadcast cannot be un-sent.
+        unacked_reminder_mention:
+          $ref: '#/components/schemas/ReminderMention'
+        unacked_reminder_mention_list:
+          type: array
+          maxItems: 10
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^(<@[UW][A-Z0-9]{2,}>|<!subteam\^S[A-Z0-9]{2,}>)$'
+          description: |
+            The explicit audience for mode `list`. ⛔ Not a rota (ADR 0013): fixed ids, never time-aware.
+        unacked_reminder_mention_min_severity:
+          $ref: '#/components/schemas/ReminderMentionSeverity'
         reset:
           type: array
           maxItems: 32
