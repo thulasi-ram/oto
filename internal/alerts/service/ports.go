@@ -69,7 +69,11 @@ type OccurrenceRepository interface {
 	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) ([]domain.Occurrence, db.Cursor, error)
 	Observe(ctx context.Context, s db.TenantScope, id uuid.UUID, o domain.Observation) error
 	Transition(ctx context.Context, s db.TenantScope, id uuid.UUID, t domain.Transition) error
-	SetAck(ctx context.Context, s db.TenantScope, id uuid.UUID, a domain.AckChange) error
+	// SetAck asserts `expectVersion` — the occurrence's state_version as read —
+	// so an acknowledgement cannot land on an episode that ended while the human
+	// was deciding. It does NOT bump the version: ack is orthogonal to state
+	// (§B.1) and must never cancel a concurrent transition.
+	SetAck(ctx context.Context, s db.TenantScope, id uuid.UUID, a domain.AckChange, expectVersion int) error
 	BindRuleSnapshot(ctx context.Context, s db.TenantScope, id, snapshotID uuid.UUID) error
 	// ReapCandidates feeds T6. THE REAPER GUARD (§B.4) IS THE CALLER'S: an
 	// occurrence whose AlertSource is not healthy is HELD, never expired. Losing

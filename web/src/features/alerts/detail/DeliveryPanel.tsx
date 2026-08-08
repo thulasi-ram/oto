@@ -30,6 +30,10 @@ import { absoluteTime, shortId } from "~/lib/format";
  */
 const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, string> = {
   no_policy: "no notification policy matched, so nobody was told",
+  // §B.8.2 ranks a snooze ahead of every automatic damper: it is a deliberate
+  // human act and therefore the most actionable explanation of a silence.
+  snoozed:
+    "a person asked oto to hold its notifications for this alert until a fixed time — the alert itself kept firing",
   throttled: "the per-subject throttle was already spent",
   storm: "the group was in storm mode — one message with a count was posted instead",
   flapping: "this alert is damped as flapping, so updates are digested rather than sent one by one",
@@ -39,26 +43,13 @@ const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, strin
 };
 
 /**
- * Forward-compatible suppression reasons.
- *
- * §B.8.2 records a snooze as `notifications.suppressed_reason = 'snoozed'`, and
- * the ordering rule puts it ahead of every automatic damper because it is a
- * deliberate human act and therefore the most actionable explanation. The
- * published `NotificationSuppressedReason` enum does not carry the value yet,
- * so it is recognised here rather than falling through to the raw string.
+ * A reason oto has never heard of renders as its raw wire value rather than as
+ * nothing. The published enum is closed, so this only fires when the server is
+ * ahead of the client — which gate G3 (`npm run generate:check`, in CI) exists
+ * to make a build failure rather than a blank in the UI.
  */
-const FORWARD_SUPPRESSED_REASON: Readonly<Record<string, string>> = {
-  snoozed:
-    "a person asked oto to hold its notifications for this alert until a fixed time — the alert itself kept firing",
-  unsnoozed: "the quiet period ended",
-};
-
 function describeSuppression(reason: string): string {
-  return (
-    SUPPRESSED_REASON[reason as NonNullable<NotificationSuppressedReason>] ??
-    FORWARD_SUPPRESSED_REASON[reason] ??
-    reason
-  );
+  return SUPPRESSED_REASON[reason as NonNullable<NotificationSuppressedReason>] ?? reason;
 }
 
 const REASON_LABEL: Record<string, string> = {
@@ -76,7 +67,9 @@ const REASON_LABEL: Record<string, string> = {
   enriched: "enrichment arrived",
   rule_changed: "the rule changed",
   comment: "a comment was added",
-  escalation: "still firing and unacknowledged",
+  snoozed: "snoozed",
+  unsnoozed: "snooze ended",
+  unacked_reminder: "still firing and unacknowledged",
   storm: "storm",
 };
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -60,6 +61,12 @@ type Config struct {
 	Clock clock.Clock
 	// Transport lets a test point the client at an httptest.Server.
 	Transport http.RoundTripper
+	// DialContext installs the SSRF guard's dialer.
+	//
+	// ⭐ It is the control, not the URL validation at configuration time: it sees
+	// the address the socket actually connects to, so a DNS record re-pointed
+	// between the check and the dial has nothing left to win.
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 	// Sleep lets a test drive the retry backoff.
 	Sleep httpc.Sleeper
 }
@@ -90,6 +97,7 @@ func New(cfg Config) (*Client, error) {
 		ErrPrefix:        ErrPrefix,
 		Clock:            clk,
 		Transport:        cfg.Transport,
+		DialContext:      cfg.DialContext,
 		Sleep:            cfg.Sleep,
 	})
 	if err != nil {

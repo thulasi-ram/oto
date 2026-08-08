@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,9 @@ type occurrenceRow struct {
 	reopenCount   int32
 	reopenOf      *uuid.UUID
 
+	stateVersion  int32
+	suppressCount int32
+
 	ackState     string
 	ackedBy      *uuid.UUID
 	ackedByLabel *string
@@ -52,7 +56,8 @@ type occurrenceRow struct {
 var occurrenceColumnList = []string{
 	"id", "org_id", "alert_id", "group_id", "seq", "state", "suppression_reason", "suppressed_by",
 	"started_at", "ended_at", "last_observed_at", "source_starts_at", "source_ends_at",
-	"source_updated_at", "resolve_reason", "reopen_count", "reopen_of", "ack_state", "acked_by",
+	"source_updated_at", "resolve_reason", "reopen_count", "reopen_of", "state_version",
+	"suppress_count", "ack_state", "acked_by",
 	"acked_by_label", "acked_at", "ack_note", "rule_snapshot_id", "value", "observed_skew_ms",
 }
 
@@ -63,7 +68,7 @@ func (r *occurrenceRow) scanDest() []any {
 		&r.id, &r.orgID, &r.alertID, &r.groupID, &r.seq, &r.state, &r.suppressionReason,
 		&r.suppressedBy, &r.startedAt, &r.endedAt, &r.lastObservedAt, &r.sourceStartsAt,
 		&r.sourceEndsAt, &r.sourceUpdatedAt, &r.resolveReason, &r.reopenCount, &r.reopenOf,
-		&r.ackState, &r.ackedBy, &r.ackedByLabel, &r.ackedAt, &r.ackNote, &r.ruleSnapshotID,
+		&r.stateVersion, &r.suppressCount, &r.ackState, &r.ackedBy, &r.ackedByLabel, &r.ackedAt, &r.ackNote, &r.ruleSnapshotID,
 		&r.value, &r.observedSkewMS,
 	}
 }
@@ -109,6 +114,8 @@ func (r *occurrenceRow) toDomain() (domain.Occurrence, error) {
 		ResolveReason:     res,
 		ReopenCount:       int(r.reopenCount),
 		ReopenOf:          idOrNil(r.reopenOf),
+		StateVersion:      int(r.stateVersion),
+		SuppressCount:     int(r.suppressCount),
 		AckState:          ack,
 		AckedBy:           idOrNil(r.ackedBy),
 		AckedByLabel:      strOrEmpty(r.ackedByLabel),
@@ -378,13 +385,37 @@ func collectOccurrences(rows pgx.Rows, capacity int) ([]domain.Occurrence, error
 
 // ------------------------------------------------------------------- writes
 
+// ⭐⭐ `source_ends_at` IS MONOTONIC PER EPISODE. `GREATEST`, never plain
+// assignment.
+//
+// This column is the ENTIRE input to the §B.4 reaper grace check, and T2 is the
+// only edge that writes it without a state change to guard it. Alertmanager
+// delivers at-least-once from an HA pair with no ordering guarantee between
+// replicas, so a payload carrying an OLDER `endsAt` arriving after a newer one is
+// ordinary traffic, not an exotic failure. Assigning it verbatim let that stale
+// payload REWIND `source_ends_at` into the past, which makes the reaper's grace
+// check pass on the very next tick and expire an alert that is firing — the same
+// fabricated resolution the transition compare-and-set exists to prevent,
+// arriving by a different road.
+//
+// Monotonicity is the right shape rather than a lock: `endsAt` on a FIRING
+// observation is "this alert is valid until at least here", so two deliveries can
+// be folded in either order and agree. A genuine end time that is EARLIER —
+// upstream saying the alert actually stopped — arrives as a `resolved`
+// observation and travels through Transition, which writes it verbatim, because
+// there upstream is making a definite statement rather than extending a lease.
+//
+// `state_version` is bumped even though no state moves: see
+// domain.TransitionPrecondition. A version blind to T2 would leave the reaper's
+// compare-and-set blind to exactly the webhook that disproves the expiry.
 const observeSQL = `
 UPDATE alert_occurrences SET
     last_observed_at  = GREATEST(last_observed_at, $3),
-    source_ends_at    = COALESCE($4, source_ends_at),
-    source_updated_at = COALESCE($5, source_updated_at),
+    source_ends_at    = GREATEST(source_ends_at, $4),
+    source_updated_at = GREATEST(source_updated_at, $5),
     value             = COALESCE($6, value),
     observed_skew_ms  = $7,
+    state_version     = state_version + 1,
     updated_at        = now()
 WHERE org_id = $1 AND id = $2`
 
@@ -394,7 +425,9 @@ WHERE org_id = $1 AND id = $2`
 // says a zero `endsAt` means "no end time known for this payload", not "forget
 // the end time you already had". Clearing it would silently disable the reaper
 // for that occurrence, because occ_reap_idx only sees rows with a non-null
-// source_ends_at.
+// source_ends_at. `GREATEST` preserves it for free — in Postgres GREATEST ignores
+// NULL arguments and returns NULL only when every argument is NULL, so it is
+// COALESCE's behaviour plus the monotonicity above.
 func (r *OccurrenceRepository) Observe(
 	ctx context.Context, s db.TenantScope, id uuid.UUID, o domain.Observation,
 ) error {
@@ -419,6 +452,21 @@ func (r *OccurrenceRepository) Observe(
 	return nil
 }
 
+// ⭐⭐ THE COMPARE-AND-SET, and `state_version` IS THE WHOLE OF IT.
+//
+// `db.Tx` runs at READ COMMITTED, so an UPDATE keyed on `id` alone behaves like
+// this under contention: the loser blocks on the row lock, the winner commits,
+// the loser wakes, re-evaluates a predicate that mentions nothing but the primary
+// key, and writes a verdict reached against a row that no longer exists. That is
+// not a hypothetical — it stamps `expired`/`timeout` over an occurrence a webhook
+// has just proved is firing, and it puts `suppressed` with a NULL `ended_at` back
+// over an episode ingest resolved.
+//
+// This predicate was briefly a four-column pre-image, for want of a version
+// column. Migration 00023 added one, and one column is the stronger guard: a
+// multi-column pre-image can be partially specified and still read as guarded.
+// `state_version` is bumped by EVERY write that moves a decision input, Observe
+// included, so there is exactly one question to ask and exactly one way to ask it.
 const transitionSQL = `
 UPDATE alert_occurrences SET
     state              = $3,
@@ -430,15 +478,33 @@ UPDATE alert_occurrences SET
     source_ends_at     = COALESCE($9, source_ends_at),
     source_updated_at  = COALESCE($10, source_updated_at),
     reopen_count       = COALESCE($11, reopen_count),
-    value              = COALESCE($12, value),
+    suppress_count     = COALESCE($12, suppress_count),
+    value              = COALESCE($13, value),
+    state_version      = state_version + 1,
     updated_at         = now()
-WHERE org_id = $1 AND id = $2`
+WHERE org_id = $1 AND id = $2 AND state_version = $14`
 
-// Transition persists one §B.3 edge, exactly as the domain machine produced it.
+const occurrenceExistsSQL = `SELECT state_version FROM alert_occurrences WHERE org_id = $1 AND id = $2`
+
+// Transition persists one §B.3 edge, exactly as the domain machine produced it,
+// as a COMPARE-AND-SET against the `state_version` the machine read.
 //
 // `ended_at` is written verbatim: it has ALREADY been clamped to >= started_at by
 // §B.3.2 and re-deriving it here would give two answers to one question. A nil
 // EndedAt CLEARS the column, which is what makes T8 (reopen) work.
+//
+// ⛔ A Transition with no `Expected.StateVersion` is REFUSED. The precondition
+// travels on the Transition rather than as an argument precisely so that it
+// cannot be omitted: an unguarded state write is the defect this method exists to
+// make unrepresentable, and a new call site must not be able to reintroduce it by
+// forgetting a parameter. `state_version` is `NOT NULL DEFAULT 1` with
+// `occ_sver_ck (>= 1)`, so zero is unambiguously "never bound to a row" and never
+// a legal value somebody meant.
+//
+// A write whose version no longer holds returns errs.KindConflict — NEVER
+// success, and never a silent no-op. The caller decides what that means: ingest
+// and the reconciler re-read and re-decide, the reaper abandons the transition as
+// superseded.
 func (r *OccurrenceRepository) Transition(
 	ctx context.Context, s db.TenantScope, id uuid.UUID, t domain.Transition,
 ) error {
@@ -454,6 +520,10 @@ func (r *OccurrenceRepository) Transition(
 	if t.LastObservedAt.IsZero() {
 		return errs.Internal("transition_time_missing", errsMissing("last_observed_at is required"))
 	}
+	if t.Expected.StateVersion < 1 {
+		return errs.Internal("transition_precondition_missing",
+			errsMissing("a transition must carry the state_version it was computed from"))
+	}
 
 	var suppressedBy []byte
 	if t.SuppressedBy != nil {
@@ -467,16 +537,54 @@ func (r *OccurrenceRepository) Transition(
 	tag, err := r.db(ctx).Exec(ctx, transitionSQL, s.OrgID(), id,
 		t.ToState.String(), t.SuppressionReason, suppressedBy, t.ResolveReason,
 		t.EndedAt, t.LastObservedAt.UTC(), t.SourceEndsAt, t.SourceUpdatedAt,
-		t.ReopenCount, t.Value)
+		t.ReopenCount, t.SuppressCount, t.Value, t.Expected.StateVersion)
 	if err != nil {
 		return mapErr(err, "apply transition")
 	}
 	if tag.RowsAffected() == 0 {
-		return errs.NotFound("occurrence_not_found", "no such occurrence")
+		return r.transitionMiss(ctx, s, id, t.Expected.StateVersion)
 	}
 	return nil
 }
 
+// transitionMiss tells a vanished occurrence apart from a superseded pre-image.
+//
+// The two need different answers: "no such occurrence" is a caller error, while
+// "somebody else moved this row while you were deciding" is a concurrency
+// conflict the caller is expected to handle by re-reading or by standing down. A
+// single NotFound for both would send the reaper down the wrong branch on exactly
+// the race this compare-and-set exists to catch.
+func (r *OccurrenceRepository) transitionMiss(
+	ctx context.Context, s db.TenantScope, id uuid.UUID, want int,
+) error {
+	var live int32
+	err := r.db(ctx).QueryRow(ctx, occurrenceExistsSQL, s.OrgID(), id).Scan(&live)
+	if err != nil {
+		if isNoRows(err) {
+			return errs.NotFound("occurrence_not_found", "no such occurrence")
+		}
+		return mapErr(err, "apply transition")
+	}
+	return errs.Conflict("occurrence_superseded",
+		"this occurrence moved to state_version "+strconv.Itoa(int(live))+
+			" while a transition against "+strconv.Itoa(want)+" was being computed")
+}
+
+// ⭐ `state_version` IS ASSERTED HERE BUT NOT BUMPED, and the asymmetry is the
+// §B.1 orthogonality rule made mechanical.
+//
+// ASSERTED, because the domain refuses to acknowledge a terminal occurrence
+// (Occurrence.Acknowledge) — and it can only refuse against the snapshot it read.
+// A T5 or T6 committing between that read and this write used to land the ack on
+// an episode that had already ended, and the ack path's companion
+// `alerts.SetProjection` then wrote the PRE-resolution `state` and
+// `current_occurrence_id` back onto the alert row. The list showed `firing` for
+// an alert Alertmanager had resolved, pointing at the wrong episode.
+//
+// NOT BUMPED, because an acknowledgement is orthogonal to state (§B.1). If an ack
+// bumped the version it would make a concurrent, entirely legitimate §B.3
+// transition lose its compare-and-set — a human clicking "ack" must never be able
+// to cancel a resolution.
 const setAckSQL = `
 UPDATE alert_occurrences SET
     ack_state      = $3,
@@ -485,19 +593,34 @@ UPDATE alert_occurrences SET
     acked_at       = $6,
     ack_note       = $7,
     updated_at     = now()
-WHERE org_id = $1 AND id = $2`
+WHERE org_id = $1 AND id = $2 AND state_version = $8`
 
 // SetAck writes T9 or T10. Ack fields are ALL-OR-NOTHING (occ_ack_ck): writing
 // three of the four is writing a row the database will refuse, so an unack
 // clears every one of them together.
+//
+// `expectVersion` is the `state_version` the caller's occurrence was read at. A
+// lost assertion is errs.KindConflict, which the API renders as 409: the human is
+// told the episode moved rather than being shown a green tick over a resolved
+// alert.
+//
+// ⚠️ ACCEPTED, NOT FIXED: two humans acknowledging the same episode inside one
+// round trip both pass this assertion, and the second one's `acked_by_label` and
+// `ack_note` overwrite the first's. Both acks are on the timeline, which is the
+// truth; the projection simply names one of them. Serialising it would cost a
+// lock on the hot ack path to arbitrate between two people who agree.
 func (r *OccurrenceRepository) SetAck(
-	ctx context.Context, s db.TenantScope, id uuid.UUID, a domain.AckChange,
+	ctx context.Context, s db.TenantScope, id uuid.UUID, a domain.AckChange, expectVersion int,
 ) error {
 	if err := requireScope(s); err != nil {
 		return err
 	}
 	if err := requireID("occurrence id", id); err != nil {
 		return err
+	}
+	if expectVersion < 1 {
+		return errs.Internal("ack_precondition_missing",
+			errsMissing("an acknowledgement must carry the state_version it was read at"))
 	}
 
 	var (
@@ -517,12 +640,12 @@ func (r *OccurrenceRepository) SetAck(
 	}
 
 	tag, err := r.db(ctx).Exec(ctx, setAckSQL, s.OrgID(), id,
-		ackStateOrUnacked(a.To).String(), by, byLabel, at, note)
+		ackStateOrUnacked(a.To).String(), by, byLabel, at, note, expectVersion)
 	if err != nil {
 		return mapErr(err, "write acknowledgement")
 	}
 	if tag.RowsAffected() == 0 {
-		return errs.NotFound("occurrence_not_found", "no such occurrence")
+		return r.transitionMiss(ctx, s, id, expectVersion)
 	}
 	return nil
 }

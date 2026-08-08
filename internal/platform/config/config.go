@@ -12,6 +12,8 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/structs"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/thulasiram/oto/internal/platform/ratelimit"
 )
 
 // EnvPrefix is the prefix every oto environment variable carries.
@@ -46,8 +48,18 @@ type HTTPConfig struct {
 	// RequestTimeout bounds a single non-streaming request. SSE routes opt out.
 	RequestTimeout time.Duration `koanf:"request_timeout" validate:"gt=0"`
 	MaxBodyBytes   int64         `koanf:"max_body_bytes"  validate:"gt=0"`
-	CORSOrigins    []string      `koanf:"cors_origins"`
-	BaseURL        string        `koanf:"base_url"`
+	// CORSOrigins is the exact list of browser origins allowed to read
+	// authenticated responses.
+	//
+	// ⛔ IT DEFAULTS TO EMPTY, WHICH DISABLES CORS. It used to default to
+	// `http://localhost:5173` — the SolidJS dev server — while `AllowCredentials`
+	// was true, so any production deployment that never set
+	// OTO_HTTP_CORS_ORIGINS let a page served from a developer's laptop read
+	// every authenticated response with the user's cookie attached. A convenience
+	// default on a credentialed CORS policy is a hole with a friendly name; the
+	// dev server sets the variable, like every other origin has to.
+	CORSOrigins []string `koanf:"cors_origins"`
+	BaseURL     string   `koanf:"base_url"`
 }
 
 // DBConfig configures the two pgx pools mandated by SPEC §G.10.
@@ -150,12 +162,46 @@ type SlackConfig struct {
 	SigningSecret string `koanf:"signing_secret"`
 }
 
-// SecurityConfig holds the secret material the process needs at boot.
+// SecurityConfig holds the secret material and the deployment-level trust
+// decisions the process needs at boot.
+//
+// ⛔ EVERY SWITCH BELOW IS DEPLOYMENT-LEVEL AND NONE OF THEM IS PER-TENANT. Each
+// says something about the network oto runs in or the certificates it trusts,
+// which is knowledge an operator has and an org member does not. A tenant-visible
+// field that granted any of them would be a field that lets one customer read the
+// host's metadata service.
 type SecurityConfig struct {
 	// SecretKey is the base64 32-byte AES-256-GCM key used by platform/secrets.
 	SecretKey     string        `koanf:"secret_key"`
 	SessionTTL    time.Duration `koanf:"session_ttl"    validate:"gt=0"`
 	SessionCookie string        `koanf:"session_cookie" validate:"required"`
+
+	// AllowPrivateTargets opens the SSRF guard (`platform/netguard`) for a
+	// self-hosted install whose Alertmanager, Prometheus or webhook receiver
+	// genuinely sits on a private network.
+	//
+	// ⛔ DEFAULT CLOSED, and it opens the guard for the WHOLE PROCESS. With it on,
+	// oto will dial 10.0.0.0/8, 127.0.0.1 and 169.254.169.254 on behalf of any
+	// tenant, so it belongs only on a single-tenant install.
+	// OTO_SECURITY_ALLOW_PRIVATE_TARGETS.
+	AllowPrivateTargets bool `koanf:"allow_private_targets"`
+
+	// AllowInsecureTLS lets `alert_sources.tls_skip_verify` actually take effect.
+	//
+	// ⛔ DEFAULT CLOSED. The column is tenant-writable through
+	// `POST /api/v1/sources`, and honouring it unconditionally let any org member
+	// turn off certificate verification for an outbound connection made by oto's
+	// own process. Whether an unverified certificate is acceptable is a statement
+	// about the operator's network. OTO_SECURITY_ALLOW_INSECURE_TLS.
+	AllowInsecureTLS bool `koanf:"allow_insecure_tls"`
+
+	// LoginRateBurst and LoginRateRefill bound `POST /api/v1/auth/login` per
+	// client address; LoginMaxConcurrent bounds how many argon2id verifications
+	// run at once. See `platform/ratelimit` for why the second is the one that
+	// bounds memory.
+	LoginRateBurst     int           `koanf:"login_rate_burst"     validate:"gt=0"`
+	LoginRateRefill    time.Duration `koanf:"login_rate_refill"    validate:"gt=0"`
+	LoginMaxConcurrent int           `koanf:"login_max_concurrent" validate:"gt=0"`
 }
 
 // Default returns the configuration oto boots with when nothing is supplied.
@@ -172,7 +218,7 @@ func Default() Config {
 			ShutdownTimeout: 20 * time.Second,
 			RequestTimeout:  30 * time.Second,
 			MaxBodyBytes:    16 << 20,
-			CORSOrigins:     []string{"http://localhost:5173"},
+			CORSOrigins:     []string{},
 			BaseURL:         "http://localhost:8080",
 		},
 		DB: DBConfig{
@@ -230,6 +276,14 @@ func Default() Config {
 		Security: SecurityConfig{
 			SessionTTL:    30 * 24 * time.Hour,
 			SessionCookie: "oto_session",
+			// Default closed, both of them. A guard that has to be turned ON is a
+			// guard an operator has thought about; one that has to be turned off is
+			// one nobody ever notices was never on.
+			AllowPrivateTargets: false,
+			AllowInsecureTLS:    false,
+			LoginRateBurst:      ratelimit.DefaultBurst,
+			LoginRateRefill:     ratelimit.DefaultRefill,
+			LoginMaxConcurrent:  ratelimit.DefaultConcurrency,
 		},
 	}
 }
@@ -307,6 +361,14 @@ func Validate(cfg Config) error {
 	}
 	if cfg.DB.IngestPoolSize() >= cfg.DB.MaxConns {
 		return errors.New("config: db.ingest_share_percent leaves no connections for the general pool")
+	}
+	// A credentialed CORS policy with a wildcard origin is not a policy. The
+	// browser refuses the combination anyway; refusing it at boot means an
+	// operator learns from a startup error rather than from a support ticket.
+	for _, o := range cfg.HTTP.CORSOrigins {
+		if strings.TrimSpace(o) == "*" {
+			return errors.New("config: http.cors_origins may not contain '*': oto sends credentials, and a wildcard origin with credentials is refused by every browser")
+		}
 	}
 	if cfg.Slack.Enabled && cfg.Slack.Mode == "http" && cfg.Slack.SigningSecret == "" {
 		return errors.New("config: slack.signing_secret is required in http mode (an empty secret accepts forged requests)")

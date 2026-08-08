@@ -37,9 +37,25 @@
 // Slack `channel_not_found` on seq 4 leaves seq 5, 6, 7… snoozing on
 // `last_sent_seq+1 == 4` forever, and the thread is wedged for the lifetime of
 // the group. SPEC §G.7.3 is therefore not an optimisation: `Recover` advances
-// `last_sent_seq` past a slot that is finished-but-unsent and records why, so a
-// poisoned message can never wedge a thread forever. Head-of-line blocking is the
-// real killer here, not throughput.
+// `last_sent_seq` past a slot that is finished-but-unsent and records why.
+// Head-of-line blocking is the real killer here, not throughput.
+//
+// # Liveness is a CONTRACT, not a guarantee this package can keep alone
+//
+// "A poisoned message can never wedge a thread forever" is only true if the
+// caller upholds three obligations, because a River snooze consumes no attempt
+// and no retry ceiling can therefore end one:
+//
+//  1. Item.NeedsRoot MUST be the RE-DERIVED mode. Feeding the gate the mode
+//     stored on the row makes it block on a missing root that the sender already
+//     knows how to replace with a fresh one.
+//  2. ActionRecoverThread MUST reach a terminal outcome when recovery advances
+//     nothing. Answering a fruitless recovery with another snooze is the wedge.
+//  3. Recovery.StalledItem MUST be acted on. Recover deliberately refuses to skip
+//     an unresolved slot, so it names the delivery that owns the head; if nothing
+//     restarts that delivery, the refusal is itself a wedge.
+//
+// Each of those was violated once, and each cost a thread its voice permanently.
 //
 // # Layering
 //

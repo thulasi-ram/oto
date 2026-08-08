@@ -201,6 +201,7 @@ CREATE INDEX occ_ack_idx    ON alert_occurrences (org_id, ack_state, started_at 
 ALTER TABLE alerts ADD CONSTRAINT alerts_current_occ_fk
   FOREIGN KEY (current_occurrence_id) REFERENCES alert_occurrences(id) ON DELETE SET NULL;
 
+-- vocab:allow — superseded by 00025_vocabulary_comments.sql, which rewrites this pg_description row. History, not intent.
 COMMENT ON TABLE  alert_occurrences IS
   'One CONTIGUOUS FIRING EPISODE of an Alert, identified by (alert_id, seq). This is what you acknowledge and what you time for MTTR. At most one may be open per Alert, enforced by occ_one_open_idx.';
 COMMENT ON COLUMN alert_occurrences.org_id IS 'Denormalised from alerts so every composite index can lead with org_id (CONTEXT.md §5 rule 7).';

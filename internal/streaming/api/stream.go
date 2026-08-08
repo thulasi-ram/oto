@@ -121,9 +121,12 @@ func (rt *Router) stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// From here on the status line is committed and errors can only be logged.
+	// NewSSEWriter sends the header block and then flushes; if that flush fails
+	// the 200 is already on the wire, so a problem+json body would be appended to
+	// a text/event-stream response rather than replacing it. Log and hang up.
 	sse, err := httpx.NewSSEWriter(w)
 	if err != nil {
-		httpx.Error(w, r, errs.Internal("sse_unsupported", err))
+		rt.log.ErrorContext(ctx, "streaming: response writer cannot stream", "error", err)
 		return
 	}
 

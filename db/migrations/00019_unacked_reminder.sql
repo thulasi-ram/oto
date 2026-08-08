@@ -26,6 +26,7 @@
 
 -- +goose Up
 
+-- vocab:allow — a rename must name the old column. This line is the fix, not the violation.
 ALTER TABLE notification_policies RENAME COLUMN escalate_after_s TO unacked_reminder_after_s;
 ALTER TABLE notification_policies RENAME CONSTRAINT policies_esc_ck TO policies_reminder_ck;
 

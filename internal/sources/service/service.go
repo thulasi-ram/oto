@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -109,10 +110,50 @@ func (s *Service) List(ctx context.Context, scope db.TenantScope, f domain.Sourc
 // this before expiring anything: losing sight of an alert is not the alert
 // resolving, and a dead Alertmanager looks exactly like a quiet one.
 func (s *Service) Health(ctx context.Context, scope db.TenantScope, id uuid.UUID) (domain.SourceHealth, error) {
-	if _, err := s.source(ctx, scope, id); err != nil {
+	src, err := s.source(ctx, scope, id)
+	if err != nil {
 		return domain.SourceHealth{}, err
 	}
-	return s.repo.GetHealth(ctx, scope, id)
+	h, err := s.repo.GetHealth(ctx, scope, id)
+	if err != nil {
+		return h, err
+	}
+	return withReconcileWarning(h, src, s.clk.Now().UTC()), nil
+}
+
+// withReconcileWarning raises the standing warning for a source whose
+// reconciliation has been turned off.
+//
+// ⭐ ADR 0006 CALLS THE RECONCILER MANDATORY, AND `reconcile_enabled` LETS A
+// TENANT TURN IT OFF. The two disagreed silently, so the disagreement is made
+// visible here rather than resolved by pretending the flag does not exist — see
+// ADR 0006's amendment for why the flag survives.
+//
+// The consequence is specific and permanent: Alertmanager's MuteStage drops
+// silenced and inhibited alerts BEFORE any webhook fires, so the reconciler is
+// the only thing in oto that can ever observe suppression. A source with
+// reconciliation off will show an alert as firing for as long as it stays
+// silenced upstream, with no way to learn otherwise. It also loses divergence
+// accounting and `send_resolved` discovery.
+//
+// ⚠️ IT IS A WARNING AND NOT A STATUS CHANGE. Downgrading the status would block
+// the reaper for the lifetime of the source, so nothing would ever expire — a
+// correctness rule turned into a leak. The operator is told; the machine keeps
+// its existing semantics.
+func withReconcileWarning(h domain.SourceHealth, src domain.Source, now time.Time) domain.SourceHealth {
+	if src.ReconcileEnabled {
+		return h
+	}
+	if _, ok := h.Warning(domain.WarnReconcileDisabled); ok {
+		return h
+	}
+	h.Warnings = append(h.Warnings, domain.HealthWarning{
+		Code:    domain.WarnReconcileDisabled,
+		Message: "reconciliation is off for this source, so oto can never observe a silenced or inhibited alert here and will show upstream-muted alerts as firing",
+		Subject: src.Name,
+		At:      now,
+	})
+	return h
 }
 
 // Alerts reads the source's current world from GET /api/v2/alerts.

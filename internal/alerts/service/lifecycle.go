@@ -83,18 +83,57 @@ func (s *Service) ObserveBatch(
 	}
 	cfg := s.lifecycleSettings(ctx, scope)
 
+	// ⭐ RE-READ AND RE-DECIDE is this path's answer to a lost compare-and-set.
+	//
+	// A conflict means the occurrence moved between the batch's read and its
+	// write, so the verdict was reached against a row that no longer exists. The
+	// whole attempt has already rolled back — every write in `observe` is inside
+	// the transaction, the events carry §C.8 dedupe keys and the alert upsert is
+	// ON CONFLICT — so running it again from a fresh read is both safe and the
+	// only way to reach the right answer.
+	//
+	// ⛔ NOT retried when a caller's transaction is already open: `db.Tx` nests,
+	// so `InTx` here would join the outer unit of work and a "retry" would replay
+	// against writes that were never rolled back. The ingest worker wraps each
+	// chunk in its own `db.Tx`, so the conflict surfaces there and the job's own
+	// retry re-reads instead. The reconciler calls this method directly and is
+	// retried in place.
 	var res ObserveResult
-	err := s.tx.InTx(ctx, func(ctx context.Context) error {
-		var err error
-		res, err = s.observe(ctx, scope, obs, opt, cfg)
-		return err
-	})
-	if err != nil {
-		return ObserveResult{}, err
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = s.tx.InTx(ctx, func(ctx context.Context) error {
+			var ierr error
+			res, ierr = s.observe(ctx, scope, obs, opt, cfg)
+			return ierr
+		})
+		if err == nil {
+			return res, nil
+		}
+		if !errs.IsKind(err, errs.KindConflict) || attempt >= observeMaxAttempts || db.InTx(ctx) {
+			return ObserveResult{}, err
+		}
+		s.log.InfoContext(ctx, "alerts: observation batch lost a compare-and-set, re-deciding",
+			"org_id", scope.OrgID(), "attempt", attempt, "observations", len(obs),
+			"error", err)
 	}
-	return res, nil
 }
 
+// observeMaxAttempts bounds the re-decide loop. A batch that loses three
+// consecutive compare-and-sets is contending with something that is winning every
+// time, and spinning on it would starve the worker rather than fix anything: the
+// conflict is returned and the job's own retry budget takes over.
+const observeMaxAttempts = 3
+
+// ⚠️ LOCK ORDER: THIS TRANSACTION TAKES `alerts` BEFORE `alert_occurrences`.
+// Step 2's `UpsertBatch` locks the alert row, and the occurrence is only read and
+// written afterwards. `Service.expire` (sweep.go) takes them the OTHER WAY ROUND.
+// The two orders form a cycle; see the longer note at `expire` before adding any
+// explicit lock to either site.
+//
+// The accidental upside of locking `alerts` first is that two ObserveBatch calls
+// touching one alert serialise here, so neither can read a stale occurrence — the
+// compare-and-set below is contended almost exclusively by the reaper.
+//
 //nolint:gocyclo // this IS the §B.3 table's driver; splitting it would scatter one decision across files.
 func (s *Service) observe(
 	ctx context.Context, scope db.TenantScope, obs []domain.Observation,
@@ -439,6 +478,10 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 		SourceEndsAt:   nilTime(o.SourceEndsAt()),
 		Value:          o.Value(),
 		Clamped:        r.Clamped,
+		// ⭐ The compare-and-set pre-image, taken from the row the machine actually
+		// read. It is derived here and nowhere else, so no call site can persist an
+		// edge against a pre-image it did not decide from.
+		Expected: domain.PreconditionFor(r.Before),
 	}
 	if !o.SourceUpdatedAt().IsZero() {
 		t.SourceUpdatedAt = nilTime(o.SourceUpdatedAt())
@@ -486,6 +529,9 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 	t.SuppressedBy = &sb
 	if n := o.ReopenCount(); n > 0 {
 		t.ReopenCount = &n
+	}
+	if n := o.SuppressCount(); n > 0 {
+		t.SuppressCount = &n
 	}
 	if r.DetectedBy == domain.DetectedByReconciler {
 		t.DetectedBy = domain.ObservedByReconciler

@@ -19,12 +19,22 @@ Prerequisites: Go 1.26, Node 24, Docker.
 cp .env.example .env      # defaults already match docker-compose.yml
 make db-up                # postgres:17 + alertmanager, waits for health
 make migrate-up           # apply migrations
+
+# The first org, the first user and the first token. v1 has no signup route and
+# no org-creation API on purpose, so a freshly migrated database has no
+# credential that can log in — this subcommand is the only way to make one, and
+# it refuses to run twice.
+OTO_BOOTSTRAP_PASSWORD='a long passphrase' \
+  go run ./cmd/oto bootstrap --org-slug acme --email you@example.com
+
 make dev                  # API on :8080
 make ui-dev               # UI on :5173, proxying /api and /healthz to :8080
 ```
 
-Then open <http://localhost:5173>. The landing page calls `/healthz` through the dev proxy, which
-is the quickest way to confirm the front end and the back end are talking.
+`bootstrap` prints a personal access token **once**; only its sha256 is stored. Then open
+<http://localhost:5173> and log in with the email and password you just used. The landing page
+calls `/healthz` through the dev proxy, which is the quickest way to confirm the front end and the
+back end are talking.
 
 | | |
 |---|---|
@@ -35,13 +45,19 @@ is the quickest way to confirm the front end and the back end are talking.
 `make help` lists every target. The ones you will use most:
 
 ```
-make build          build ./bin/oto
-make test           go test -race ./...   (integration tests need Docker)
-make lint           golangci-lint, including the depguard layering rules
-make ci             fmt + lint + build + test + ui-build
-make migrate-status which migrations have been applied
-make db-reset       destroy the dev volume and start clean
+make build            build ./bin/oto
+make test             go test -race ./...   (integration tests need Docker)
+make lint             golangci-lint, including the depguard layering rules
+make lint-vocabulary  SCOPE-BOUNDARY AC-49: the banned on-call vocabulary
+make generate-check   gate G3: the checked-in TS client matches openapi.yaml
+make ci               everything the GitHub workflow runs, in the same order
+make migrate-status   which migrations have been applied
+make db-reset         destroy the dev volume and start clean
 ```
+
+`make ci`, `just ci` and `.github/workflows/ci.yml` run the same list. They diverged once — `make
+ci` was green on a tree the GitHub `ui` job rejected — and keeping them identical is the only
+reason a contributor's green means anything.
 
 ## Layout
 
@@ -53,9 +69,35 @@ internal/<domain> api / service / repository / domain — see CONTEXT.md §5
 pkg/alertkey/     canonical label serialisation and the identity keys
 db/migrations/    goose SQL, expand/contract only
 web/              Vite 6 + SolidJS + TypeScript strict + Tailwind v4
-deploy/           helm chart, compose, alertmanager and prometheus config
-test/             fixtures, integration, contract, load, harness
+deploy/           compose and alertmanager config. ⚠️ `deploy/helm/` and
+                  `deploy/prometheus/` are EMPTY DIRECTORIES: the Helm chart of
+                  SPEC acceptance criterion 31 (`helm install oto` as the entire
+                  install) is not built yet, and neither is the sample
+                  prometheus.yml. Deploy with the binary and compose for now.
+test/             ⚠️ fixtures only. `test/{contract,integration,load,harness}/`
+                  each hold a single `doc.go` and no test; the first tests in
+                  this repo live next to the code they cover
+                  (`internal/**/*_test.go`, `web/src/**/*.test.ts`). Treat the
+                  four empty directories as a plan, not as coverage.
 ```
+
+## What is actually enforced
+
+Enforcement is worth stating precisely, because this repository has previously claimed gates it did
+not have. What CI runs today, and therefore what will stop a bad change:
+
+| Gate | Where | Status |
+|---|---|---|
+| Layering (`depguard`) | `.golangci.yml`, `go-lint` job | **enforced** |
+| gofmt / `go mod tidy` clean | `go-lint` job | **enforced** |
+| `go build` + `go vet` | `go-build` job | **enforced** |
+| `go test -race ./...` | `go-test` job | **enforced**, but the suite is young — a green here means little yet |
+| G3: openapi.yaml → TS client is not stale | `ui` job, `npm run generate:check` | **enforced** |
+| AC-49 vocabulary + forbidden columns | `vocabulary` job, `go run ./tools/lintvocab` | **enforced**, with known debt listed in `tools/lintvocab/baseline.txt` |
+| `TestValidatorMatchesDDL` (§L.8) | `internal/platform/validate/ddl_test.go` | **enforced** — every canonical regex is compared byte-for-byte with its DDL `CHECK` |
+| G1: Go DTO → OpenAPI | — | **not built** |
+| G2: running server → OpenAPI (schemathesis) | — | **not built** |
+| G4: OpenAPI → generated valibot validators | — | **not built**; the valibot schemas in `web/src` are hand-written, which §L.8.1 forbids |
 
 The layering rules are mechanically enforced by `depguard` in `.golangci.yml`: `api` cannot import
 `repository`, `repository` cannot import `api`, `domain` packages import no I/O at all, and no

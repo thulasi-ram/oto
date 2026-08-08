@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -228,6 +229,19 @@ type Config struct {
 	// from an httptest.Server in tests.
 	Transport http.RoundTripper
 
+	// DialContext replaces the transport's dialer.
+	//
+	// ⭐ IT IS WHERE THE SSRF GUARD LIVES (`platform/netguard`). A guard that
+	// resolves the host, approves it, and then hands the HOSTNAME to
+	// `client.Do` has performed two independent DNS resolutions and is defeated
+	// by a record served with TTL 0 that answers them differently. A guard
+	// installed HERE inspects the address the socket is about to connect to,
+	// which is the address that decides where the bytes go.
+	//
+	// It is ignored when Transport is set, because a caller supplying a whole
+	// transport has taken responsibility for its dialer.
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
 	// Sleep overrides the retry sleeper. Leave nil in production.
 	Sleep Sleeper
 }
@@ -280,8 +294,11 @@ func NormalizeBaseURL(raw string) (string, error) {
 	return out, nil
 }
 
-// buildTransport turns TLSOptions into a RoundTripper.
-func buildTransport(o TLSOptions) (http.RoundTripper, error) {
+// buildTransport turns TLSOptions and the guarded dialer into a RoundTripper.
+func buildTransport(
+	o TLSOptions,
+	dial func(ctx context.Context, network, addr string) (net.Conn, error),
+) (http.RoundTripper, error) {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return nil, errors.New("http.DefaultTransport is not an *http.Transport")
@@ -289,6 +306,12 @@ func buildTransport(o TLSOptions) (http.RoundTripper, error) {
 	tr := base.Clone()
 	tr.MaxIdleConnsPerHost = defaultIdleConns
 	tr.ForceAttemptHTTP2 = true
+	if dial != nil {
+		tr.DialContext = dial
+		// A proxy dials the proxy, not the target, which silently removes the
+		// guarded dialer from the path. oto never proxies its upstream API calls.
+		tr.Proxy = nil
+	}
 
 	minVersion := o.MinVersion
 	if minVersion == 0 {

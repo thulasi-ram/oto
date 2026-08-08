@@ -63,6 +63,7 @@ COMMENT ON COLUMN alert_quality_daily.deliveries IS 'Delivery materialisations a
 COMMENT ON COLUMN alert_quality_daily.acked_occurrences IS 'Episodes acknowledged by SOMEBODY. Never by whom -- that is the whole point (R8). Capped at occurrences.';
 COMMENT ON COLUMN alert_quality_daily.auto_resolved IS 'Episodes that ended with an explicit upstream status=resolved.';
 COMMENT ON COLUMN alert_quality_daily.expired IS 'Episodes that ended because we STOPPED HEARING about them. Counted separately from auto_resolved because expired is NOT resolved and oto never conflates the two.';
+-- vocab:allow — superseded by 00025_vocabulary_comments.sql. History, not intent.
 COMMENT ON COLUMN alert_quality_daily.total_firing_seconds IS 'Summed firing duration, the raw material for MTTR without storing a per-person timing anywhere.';
 COMMENT ON COLUMN alert_quality_daily.flap_transitions IS 'State flips observed, the noisiness signal for the hygiene report.';
 

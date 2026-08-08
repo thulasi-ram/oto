@@ -52,10 +52,13 @@ type NotificationStore interface {
 // DeliveryStore persists materialisations and owns their retry state.
 type DeliveryStore interface {
 	Create(ctx context.Context, s db.TenantScope, in repository.NewDelivery) (domain.Delivery, bool, error)
+	SetThreadSeq(ctx context.Context, s db.TenantScope, id uuid.UUID, seq int, now time.Time) error
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Delivery, error)
 	Claim(ctx context.Context, s db.TenantScope, id uuid.UUID, leaseCutoff, now time.Time) (domain.Delivery, bool, error)
 	PersistRendered(ctx context.Context, s db.TenantScope, id uuid.UUID, payload json.RawMessage, hash, fallback string, now time.Time) error
-	MarkSent(ctx context.Context, s db.TenantScope, id uuid.UUID, messageID, conversationID string, raw json.RawMessage, now time.Time) error
+	// MarkSent reports whether the row was actually written. False means the claim
+	// was gone and the send is recorded NOWHERE — see the repository's warning.
+	MarkSent(ctx context.Context, s db.TenantScope, id uuid.UUID, messageID, conversationID string, raw json.RawMessage, now time.Time) (bool, error)
 	MarkFailed(ctx context.Context, s db.TenantScope, id uuid.UUID, message string, class domain.ErrorClass, nextAttemptAt, now time.Time) error
 	MarkDead(ctx context.Context, s db.TenantScope, id uuid.UUID, message string, class domain.ErrorClass, now time.Time) error
 	MarkSkipped(ctx context.Context, s db.TenantScope, id uuid.UUID, why string, now time.Time) error

@@ -39,11 +39,16 @@ type SSEWriter struct {
 //   - X-Accel-Buffering: no — nginx buffers proxied responses by default, which
 //     turns a live stream into bursts arriving minutes late. This header is the
 //     only thing that turns it off, and it is why SSE "works locally, not in prod".
+//
+// ⛔ ORDER IS LOAD-BEARING. Every header MUST be set before the first flush.
+// The first flush commits the status line and the header block to the wire; a
+// `Header().Set` afterwards mutates a map nobody will ever read, silently. That
+// is exactly how this function shipped a 200 with no Content-Type at all, which
+// a browser EventSource rejects outright — the stream framed correctly and the
+// live UI still could not attach. Flushability is therefore probed LAST, and the
+// probe doubles as the flush that sends the headers.
 func NewSSEWriter(w http.ResponseWriter) (*SSEWriter, error) {
 	rc := http.NewResponseController(w)
-	if err := rc.Flush(); err != nil {
-		return nil, ErrStreamingUnsupported
-	}
 
 	// Clear the server's write deadline. http.Server.WriteTimeout is a per-request
 	// budget, and a stream that is meant to live for hours would otherwise be cut
@@ -60,8 +65,15 @@ func NewSSEWriter(w http.ResponseWriter) (*SSEWriter, error) {
 
 	w.WriteHeader(http.StatusOK)
 
-	s := &SSEWriter{w: w, rc: rc}
-	return s, s.flush()
+	// The first flush both commits the header block above and proves the writer
+	// can stream at all. If it cannot, the response is already committed as a 200
+	// — but an SSEWriter that cannot flush is useless, so the caller is told, and
+	// the caller's only remaining move is to close the connection.
+	if err := rc.Flush(); err != nil {
+		return nil, ErrStreamingUnsupported
+	}
+
+	return &SSEWriter{w: w, rc: rc}, nil
 }
 
 // Event writes one frame and flushes it.

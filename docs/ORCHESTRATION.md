@@ -8,8 +8,14 @@ picking this up should read this file first, then `CONTEXT.md`, then
 
 A thin orchestrator spawns purpose-built subagents. Each subagent owns a
 disjoint set of paths, reads the SPEC as binding, and returns a short report.
-Subagents do **not** write or run tests — a dedicated skeptical review phase
-owns that, deliberately, so that the reviewers are not marking their own work.
+
+For phases 0–3 subagents did **not** write or run tests, on the theory that a
+later review phase would. That rule is now **withdrawn**: it produced a
+repository with zero tests, a CI `ui` job that failed on the commit that
+introduced it, and eight of thirty-six live API operations diverging from the
+contract — every one of them the kind a single smoke test catches on day one.
+From phase 4 onward an agent tests what it writes, and the review phase reviews
+rather than backfills.
 
 Rules that have held so far and should keep holding:
 
@@ -57,25 +63,43 @@ Kit renderer + provider, generic webhook provider, channel registry.
 Also done: alerts + grouping repository/service, ingestion, enrichment + rules,
 notification.
 
-**BLOCKED.** The identity module, every module's `api` sub-package, the
-`internal/app` composition root and the SolidJS UI screens are NOT implemented.
-Both agents doing that work were terminated mid-write by an account spend limit.
-Their partial output was recovered, the tree is green and committed at `2063979`.
+The blockage recorded here — "identity, every `api` sub-package, `internal/app`
+and the UI are NOT implemented; nothing runs end-to-end" — is **resolved and this
+paragraph was stale for some time**. The binary serves traffic today: `go run
+./cmd/oto migrate && go run ./cmd/oto bootstrap && go run ./cmd/oto serve` brings
+up an API that answers all 15 tags, ingests Alertmanager webhooks, dispatches
+notifications and streams SSE. An audit exercised 36 operations against it.
 
-To resume, re-run two agents with the briefs in the orchestrator transcript:
-1. identity + API layer + `internal/app` + `cmd/oto` — wire every operationId in
-   `api/openapi/openapi.yaml`, separate ingest/UI connection pools, `/stream`
-   mounted outside timeout middleware.
-2. the SolidJS UI — alert list, grouping, sentry-style timeline with the rule
-   drift diff, SSE with `Last-Event-ID` resume, JSON-Schema-driven channel forms.
+### Phase 4 — review and test (in progress)
+A conformance audit against the running binary is done and its findings are being
+worked. What it established, so it is not re-established:
 
-Nothing runs end-to-end until step 1 lands: the modules are all implemented but
-nothing constructs them.
+- **Structure is as documented.** Layering holds under `golangci-lint`; the four
+  scope-boundary doors are shut in the live schema and the route tree; ADRs 0007,
+  0014, 0016 and 0017 conform exactly. `CONTEXT.md` is a trustworthy map.
+- **Behaviour was optimistic.** Eight of thirty-six operations diverged from
+  `api/openapi/openapi.yaml`, including two that made the product unusable (no
+  source could be created; the SSE stream sent no `Content-Type`, so no browser
+  could attach).
+- **Enforcement was false.** §L.8.1 claimed "four gates, all in CI". G1, G2 and G4
+  did not exist; G3 existed, was not in CI, and failed when run. The AC-49
+  vocabulary lint did not exist. There were zero tests.
 
-### Phase 4 — review and test (not started)
-A small team of skeptical reviewers, an auditor and a judge review the code
-*before* any tests are written or run. Then tests, then run it for real against
-the docker-compose Alertmanager.
+Gates now in CI: G3, the AC-49 vocabulary lint (`tools/lintvocab`) and
+`TestValidatorMatchesDDL`. G1, G2 and G4 remain unbuilt and are named as such in
+`README.md`. Tests are being written next to the code they cover, not in
+`test/`, whose four subdirectories still hold nothing but a `doc.go`.
+
+## Open work handed on from the phase-4 audit
+
+- `escalate_after_seconds` still ships on the wire from
+  `internal/notification/api/{dto,mapper}.go`. The DB column (00019), the
+  contract and the UI all say `unacked_reminder_after_s(econds)`; the Go DTO is
+  the last holdout and is listed in `tools/lintvocab/baseline.txt`.
+- G1 (Go DTO → OpenAPI), G2 (schemathesis against a running server) and G4
+  (generated valibot validators) are unbuilt.
+- `deploy/helm/oto/` and `deploy/prometheus/` are empty directories; SPEC
+  acceptance criterion 31 (`helm install oto` is the entire install) is unmet.
 
 ## Open defects found by implementers, awaiting SPEC amendment
 

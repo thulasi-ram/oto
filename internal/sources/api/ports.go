@@ -99,6 +99,31 @@ type IngestTokenIssuer interface {
 	RevokeIngestTokens(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) error
 }
 
+// UnitOfWork runs fn inside ONE database transaction, satisfied by
+// `*sources/repository.TxRunner`.
+//
+// ⭐ IT IS WHAT MAKES A SOURCE AND ITS INGEST TOKEN ONE FACT. `createSource`
+// writes to two tables owned by two modules — `alert_sources` here and
+// `api_tokens` behind IngestTokenIssuer — and before this port existed they were
+// two independent commits. A failure in the second left a source row that could
+// never receive a webhook, which is worse than no source at all: the operator has
+// a URL to paste and it answers 401 forever.
+type UnitOfWork interface {
+	InTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// AddressGuard is the SSRF control, satisfied by `*platform/netguard.Guard`.
+//
+// ⚠️ The check this layer performs is CONFIGURATION-TIME FEEDBACK, so an operator
+// who pastes `http://169.254.169.254` learns why while they are still looking at
+// the form. It is NOT the control: the same guard is installed as the outbound
+// transport's dialer, and that is what actually decides, on the address the
+// socket connected to. A layer that treated a passing CheckURL as permission
+// would be a layer defeated by a TTL-0 DNS rebind.
+type AddressGuard interface {
+	CheckURL(ctx context.Context, raw string) error
+}
+
 // Reconciler runs one forced reconcile pass.
 //
 // ⛔ The reconciler is NOT a second ingestion path (§G.8): it reads the

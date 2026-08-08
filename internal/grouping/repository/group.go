@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -292,6 +293,16 @@ type NewGeneration struct {
 	At             time.Time
 }
 
+// ⭐ `state_version = $12` is the OPTIMISTIC LOCK, and $12 is the version the
+// caller READ, not the one it is writing.
+//
+// `alert_groups` already carries the version column; it was simply never used as
+// one. Every writer here is a read-recompute-write at READ COMMITTED — GetByID,
+// then Rollup, then this UPDATE — and without the predicate two concurrent
+// recomputes both read version N, both derive N+1, and both write it. The second
+// one's counts win, the first one's are lost, and `notifications.idempotency_key`
+// hashes N+1 for two DIFFERENT group states, so the second fact is dropped as a
+// duplicate of the first (§C.7). That is a notification the channel never gets.
 const updateRollupSQL = `
 UPDATE alert_groups SET
     firing_count     = $3,
@@ -304,15 +315,23 @@ UPDATE alert_groups SET
     state_version    = $10,
     last_activity_at = GREATEST(first_seen_at, last_activity_at, $11),
     updated_at       = now()
-WHERE org_id = $1 AND id = $2`
+WHERE org_id = $1 AND id = $2 AND state_version = $12`
 
-// SetRollup writes the recomputed membership rollup and the state version.
+// SetRollup writes the recomputed membership rollup and the state version, as a
+// COMPARE-AND-SET against `fromVersion` — the `state_version` the caller read
+// before it recomputed anything.
 //
 // `state_version` is supplied by the caller, which took it from the domain: the
 // version is what notification.idempotency_key hashes (§C.7), so bumping it is a
-// decision about whether a fact is NEW, not a side effect of an UPDATE.
+// decision about whether a fact is NEW, not a side effect of an UPDATE. That is
+// exactly why it also makes a sound optimistic lock — a caller that decided the
+// version must be the caller that owns the write.
+//
+// A lost compare-and-set is errs.KindConflict, and the caller re-reads and
+// recomputes: a rollup is a pure projection of the current members, so recomputing
+// it is always the right answer and never loses information.
 func (r *GroupRepository) SetRollup(
-	ctx context.Context, s db.TenantScope, g domain.Group,
+	ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int,
 ) error {
 	if err := requireScope(s); err != nil {
 		return err
@@ -320,12 +339,12 @@ func (r *GroupRepository) SetRollup(
 	c := g.Counts()
 	tag, err := r.db(ctx).Exec(ctx, updateRollupSQL, s.OrgID(), g.ID(),
 		c.Firing, c.Suppressed, c.Resolved, c.Expired, c.Total, c.Acked,
-		strPtr(g.Severity()), g.StateVersion(), g.LastActivityAt().UTC())
+		strPtr(g.Severity()), g.StateVersion(), g.LastActivityAt().UTC(), fromVersion)
 	if err != nil {
 		return mapErr(err, "write group rollup")
 	}
 	if tag.RowsAffected() == 0 {
-		return errs.NotFound("group_not_found", "no such alert group")
+		return r.versionMiss(ctx, s, g.ID(), fromVersion, "write group rollup")
 	}
 	return nil
 }
@@ -336,22 +355,28 @@ UPDATE alert_groups SET
     storm_since   = $4,
     state_version = $5,
     updated_at    = now()
-WHERE org_id = $1 AND id = $2`
+WHERE org_id = $1 AND id = $2 AND state_version = $6`
 
 // SetStorm writes storm mode. The pair is all-or-nothing (groups_storm_ck) and
 // is written together, because storm collapse is a VISIBLE state and half of one
 // renders as neither.
-func (r *GroupRepository) SetStorm(ctx context.Context, s db.TenantScope, g domain.Group) error {
+//
+// It carries the same `state_version` compare-and-set as SetRollup: a storm
+// decision is derived from the group it read, and writing it over a generation
+// that has moved since would announce a damping transition for counts nobody has.
+func (r *GroupRepository) SetStorm(
+	ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int,
+) error {
 	if err := requireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx, setStormSQL, s.OrgID(), g.ID(),
-		g.StormMode(), nilTime(g.StormSince()), g.StateVersion())
+		g.StormMode(), nilTime(g.StormSince()), g.StateVersion(), fromVersion)
 	if err != nil {
 		return mapErr(err, "write storm mode")
 	}
 	if tag.RowsAffected() == 0 {
-		return errs.NotFound("group_not_found", "no such alert group")
+		return r.versionMiss(ctx, s, g.ID(), fromVersion, "write storm mode")
 	}
 	return nil
 }
@@ -365,27 +390,49 @@ UPDATE alert_groups SET
     storm_mode       = false,
     storm_since      = NULL,
     updated_at       = now()
-WHERE org_id = $1 AND id = $2 AND state = 'open'`
+WHERE org_id = $1 AND id = $2 AND state = 'open' AND state_version = $5`
 
 // Close ends a generation and freezes its thread.
 //
-// The `state = 'open'` predicate makes it a compare-and-set: closing an
-// already-closed generation affects zero rows and is reported as a precondition
-// failure rather than silently rewriting closed_at.
-func (r *GroupRepository) Close(ctx context.Context, s db.TenantScope, g domain.Group) error {
+// The `state = 'open'` predicate already made this a compare-and-set on the
+// state; `state_version = $5` completes it. Closing is decided from a rollup that
+// proved no member is still live, and that proof is only about the generation as
+// it was read — a member that joined in the meantime bumps the version, and
+// freezing its thread would be freezing a live incident's conversation.
+func (r *GroupRepository) Close(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error {
 	if err := requireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx, closeGroupSQL, s.OrgID(), g.ID(),
-		g.ClosedAt().UTC(), g.StateVersion())
+		g.ClosedAt().UTC(), g.StateVersion(), fromVersion)
 	if err != nil {
 		return mapErr(err, "close alert group")
 	}
 	if tag.RowsAffected() == 0 {
 		return errs.Precondition("group_already_closed",
-			"this group generation does not exist or is already closed")
+			"this group generation does not exist, is already closed, or changed while it was being closed")
 	}
 	return nil
+}
+
+// versionMiss tells a vanished generation apart from a lost optimistic lock, so
+// the caller can recompute in the one case and give up in the other.
+func (r *GroupRepository) versionMiss(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID, fromVersion int, what string,
+) error {
+	var live int32
+	err := r.db(ctx).QueryRow(ctx,
+		`SELECT state_version FROM alert_groups WHERE org_id = $1 AND id = $2`,
+		s.OrgID(), groupID).Scan(&live)
+	if err != nil {
+		if isNoRows(err) {
+			return errs.NotFound("group_not_found", "no such alert group")
+		}
+		return mapErr(err, what)
+	}
+	return errs.Conflict("group_state_version_stale",
+		"this generation moved to state_version "+strconv.Itoa(int(live))+
+			" while a change against "+strconv.Itoa(fromVersion)+" was being computed")
 }
 
 // Touch records activity so an idle generation's close clock restarts.

@@ -19,9 +19,31 @@ const (
 	// so it can be lifted into `validate/patterns.go` unchanged.
 	PatternTokenPrefix = `^oto_(pat|ingest)_[A-Za-z0-9]{4}$`
 
-	// TokenPrefixLen is how many leading characters of a secret are stored for
-	// display: `oto_pat_` plus four random characters is twelve.
-	TokenPrefixLen = 12
+	// TokenPrefixRandomChars is how many characters of the random half of a
+	// secret are kept for display.
+	//
+	// ⭐ THE STORED PREFIX IS `<kind literal> + TokenPrefixRandomChars`, and its
+	// LENGTH THEREFORE DEPENDS ON THE KIND. `oto_pat_` is eight characters so a
+	// PAT prefix is twelve; `oto_ingest_` is ELEVEN so an ingest prefix is
+	// FIFTEEN. A single fixed length cannot be right for both, and assuming one
+	// was is exactly how `POST /api/v1/sources` came to reject every request it
+	// was ever sent: a twelve-character slice of an ingest secret is
+	// `oto_ingest_X`, one random character, which api_tokens_prefix_ck refuses.
+	//
+	// api_tokens_prefix_ck — `^oto_(pat|ingest)_[A-Za-z0-9]{4}$` — has ALWAYS
+	// admitted both lengths, and `prefix` is TEXT, so no migration is implied by
+	// fixing this. The DDL was right; the Go constant was not.
+	TokenPrefixRandomChars = 4
+
+	// TokenPrefixLenPAT is the stored prefix length of a PAT: len("oto_pat_") + 4.
+	TokenPrefixLenPAT = len(SecretPrefixPAT) + TokenPrefixRandomChars
+	// TokenPrefixLenIngest is the stored prefix length of an ingest token:
+	// len("oto_ingest_") + 4.
+	TokenPrefixLenIngest = len(SecretPrefixIngest) + TokenPrefixRandomChars
+
+	// MaxTokenPrefixLen bounds the longest prefix any kind can produce. It is the
+	// display width the UI and the DTO documentation are written against.
+	MaxTokenPrefixLen = TokenPrefixLenIngest
 
 	// TokenHashBytes mirrors api_tokens_hash_ck and sessions_hash_ck: a sha256
 	// digest, exactly 32 bytes. A shorter value would silently be a different
@@ -115,23 +137,43 @@ func (h TokenHash) String() string { return "[redacted]" }
 type TokenPrefix struct{ v string }
 
 // NewTokenPrefix parses a stored prefix, enforcing api_tokens_prefix_ck.
+//
+// ⚠️ The message names the SHAPE and not the regex. A problem+json body echoing
+// `^oto_(pat|ingest)_[A-Za-z0-9]{4}$` publishes an internal invariant to every
+// caller, including the ones probing for one (§L3).
 func NewTokenPrefix(s string) (TokenPrefix, error) {
 	if !tokenPrefixRe.MatchString(s) {
 		return TokenPrefix{}, errs.Validation("invalid_token_prefix",
-			"prefix must match "+PatternTokenPrefix)
+			"a token prefix is a kind literal followed by four alphanumeric characters")
 	}
 	return TokenPrefix{v: s}, nil
 }
 
+// PrefixLenOfKind is how many characters of a secret of this kind are stored.
+func PrefixLenOfKind(k TokenKind) int {
+	return len(k.SecretPrefix()) + TokenPrefixRandomChars
+}
+
 // PrefixOfSecret derives the stored prefix from a freshly minted or presented
-// secret. It is the ONE place the twelve-character split lives, so the prefix
-// written at creation and the prefix looked up at verification cannot drift.
+// secret.
+//
+// ⭐ THE SPLIT IS KIND-RELATIVE, and this is the ONE place it lives, so the
+// prefix written at creation and the prefix looked up at verification cannot
+// drift. It reads the kind off the secret's own literal first, because the two
+// literals are different lengths — see TokenPrefixRandomChars for what a single
+// fixed length cost.
 func PrefixOfSecret(secret string) (TokenPrefix, error) {
-	if len(secret) < TokenPrefixLen {
+	kind, ok := KindOfSecret(secret)
+	if !ok {
+		return TokenPrefix{}, errs.Validation("invalid_token_prefix",
+			"a token secret starts with its kind literal")
+	}
+	n := PrefixLenOfKind(kind)
+	if len(secret) < n {
 		return TokenPrefix{}, errs.Validation("invalid_token_prefix",
 			"a token secret is longer than its prefix")
 	}
-	return NewTokenPrefix(secret[:TokenPrefixLen])
+	return NewTokenPrefix(secret[:n])
 }
 
 // KindOfSecret reports which credential a presented secret claims to be, from
@@ -159,7 +201,7 @@ func (p TokenPrefix) IsZero() bool { return p.v == "" }
 //
 // ⭐ THE PREFIX/HASH SPLIT is the security shape of this type. The secret is
 // shown exactly once, at creation, and is never stored: the row holds a sha256
-// digest and a twelve-character display prefix, so a database disclosure yields
+// digest and a short display prefix, so a database disclosure yields
 // neither a usable credential nor an offline attack worth mounting against 256
 // bits of entropy. There is no field on this struct that could hold plaintext,
 // which is what makes "the secret is never stored" a property of the type rather

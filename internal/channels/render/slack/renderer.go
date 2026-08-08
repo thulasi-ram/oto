@@ -171,6 +171,7 @@ func renderNonce(v *domain.NotificationView, o domain.RenderOptions) string {
 		}
 	}
 	write(v.Group.ID, strconv.Itoa(v.Group.Generation), v.Reason, string(o.Mode))
+	write(strconv.FormatBool(o.Continued))
 	write(strconv.FormatInt(v.RenderedAt.UTC().Unix(), 10))
 	write(strconv.Itoa(v.Group.FiringCount), strconv.Itoa(v.Group.ResolvedCount),
 		strconv.Itoa(v.Group.AckedCount), strconv.Itoa(v.Group.SuppressedCount),

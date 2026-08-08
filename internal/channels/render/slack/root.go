@@ -35,7 +35,7 @@ func (r *Renderer) renderRoot(v *domain.NotificationView, o domain.RenderOptions
 	if b, ok := r.actionsBlock(v, state, nonce); ok {
 		blocks = append(blocks, b)
 	}
-	blocks = append(blocks, r.footerBlock(v, state, now, nonce))
+	blocks = append(blocks, r.footerBlock(v, o, state, now, nonce))
 
 	fallback := rootText(v, state)
 
@@ -272,7 +272,7 @@ func overflowMenu(v *domain.NotificationView, state CardState) (Action, bool) {
 // footerBlock is the provenance line: which group, which receiver, why this
 // delivery happened, and when the card was last touched. It is what makes an
 // update-in-place card trustworthy — the reader can see it is current.
-func (r *Renderer) footerBlock(v *domain.NotificationView, state CardState, now time.Time, nonce string) Block {
+func (r *Renderer) footerBlock(v *domain.NotificationView, o domain.RenderOptions, state CardState, now time.Time, nonce string) Block {
 	parts := []string{"oto"}
 	if k := v.Group.GroupKey; k != "" {
 		parts = append(parts, code(shortKey(k)))
@@ -290,6 +290,11 @@ func (r *Renderer) footerBlock(v *domain.NotificationView, state CardState, now 
 		parts = append(parts, "acked "+slackDate(*v.Occurrence.AckedAt))
 	}
 	parts = append(parts, "updated "+slackDate(now))
+	if o.Continued {
+		// §H.9: this card replaces one that is gone or unreachable. Saying so is
+		// what stops a recovery reading as a second incident.
+		parts = append(parts, "_continued from an earlier card_")
+	}
 
 	text := strings.Join(parts, "  ·  ")
 	return contextBlock(blockID("footer", nonce), Text{Type: TypeMrkdwn, Text: truncateField(text, v.Links.Group)})

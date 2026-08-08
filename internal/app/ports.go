@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
+	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/secrets"
@@ -56,14 +57,24 @@ func (e *lateEnqueuer) EnqueueMany(ctx context.Context, reqs []db.JobRequest) ([
 	return q.EnqueueMany(ctx, reqs)
 }
 
-// keyringSealer and keyringUnsealer hand the ONE platform keyring to the
-// consumer-declared ports without any module naming `platform/secrets` itself.
+// keyringSealer and the three unsealer adapters hand the ONE platform keyring to
+// the consumer-declared ports without any module naming `platform/secrets`
+// itself.
 //
 // A nil keyring stays nil rather than becoming a no-op sealer. The repositories
 // already refuse to store or read a credential without one — "this deployment
 // has no credential keyring configured" — and a no-op would be the difference
 // between a deployment that cannot configure a channel and one that stores a bot
 // token in the clear.
+//
+// ⭐ EACH RETURNS THE PORT TYPE, NOT `*secrets.Keyring`, AND THAT IS THE WHOLE
+// POINT. Returning the concrete stored a TYPED NIL in the interface field: an
+// interface value holding a `(*secrets.Keyring)(nil)` is NOT `== nil`, so the
+// `if r.open == nil` guard in every credential repository never fired, and the
+// promised "fails loudly at the repository" became `Keyring.Unseal` dereferencing
+// `k.aeads` on a nil receiver — a panic, recovered as a 500, on a path whose
+// whole design is to fail closed. Converting to the interface HERE, where the
+// nil is still visible as a nil, is what makes the guards downstream true.
 func keyringSealer(k *secrets.Keyring) channelsrepo.Sealer {
 	if k == nil {
 		return nil
@@ -71,7 +82,26 @@ func keyringSealer(k *secrets.Keyring) channelsrepo.Sealer {
 	return k
 }
 
-func keyringUnsealer(k *secrets.Keyring) *secrets.Keyring { return k }
+func channelsUnsealer(k *secrets.Keyring) channelsrepo.Unsealer {
+	if k == nil {
+		return nil
+	}
+	return k
+}
+
+func sourcesUnsealer(k *secrets.Keyring) sourcesrepo.Unsealer {
+	if k == nil {
+		return nil
+	}
+	return k
+}
+
+func dispatchUnsealer(k *secrets.Keyring) notifservice.CredentialUnsealer {
+	if k == nil {
+		return nil
+	}
+	return k
+}
 
 // ⭐ THE PORT-DRIFT ASSERTIONS.
 //
@@ -86,9 +116,10 @@ func keyringUnsealer(k *secrets.Keyring) *secrets.Keyring { return k }
 var (
 	// platform/secrets satisfies every sealed-secret port in the system. This is
 	// what makes "one keyring for the whole process" checkable.
-	_ channelsrepo.Sealer   = (*secrets.Keyring)(nil)
-	_ channelsrepo.Unsealer = (*secrets.Keyring)(nil)
-	_ sourcesrepo.Unsealer  = (*secrets.Keyring)(nil)
+	_ channelsrepo.Sealer             = (*secrets.Keyring)(nil)
+	_ channelsrepo.Unsealer           = (*secrets.Keyring)(nil)
+	_ sourcesrepo.Unsealer            = (*secrets.Keyring)(nil)
+	_ notifservice.CredentialUnsealer = (*secrets.Keyring)(nil)
 
 	// The late-bound outbox is a db.Enqueuer like any other.
 	_ db.Enqueuer = (*lateEnqueuer)(nil)

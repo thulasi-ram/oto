@@ -89,8 +89,9 @@ type NewDelivery struct {
 	// webhook, which can neither thread nor amend. deliveries_thread_ck permits it
 	// only for post_root, which is the only mode such a destination ever gets.
 	ThreadID *uuid.UUID
-	// ThreadSeq is 0 when there is no thread. Otherwise it was allocated from
-	// channel_threads.next_seq INSIDE this transaction.
+	// ThreadSeq is 0 when there is no thread, and 0 when the caller intends to
+	// allocate the sequence only for a row this insert actually creates — which is
+	// the correct order, and what SetThreadSeq exists for.
 	ThreadSeq int
 	Mode      domain.Mode
 	CreatedAt time.Time
@@ -132,20 +133,23 @@ INSERT INTO notification_deliveries (
   id, org_id, notification_id, channel_id, thread_id, thread_seq, mode,
   status, attempts, created_at, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',0,$8,$8)
-ON CONFLICT (notification_id, channel_id) DO NOTHING
+ON CONFLICT (notification_id, channel_id, mode) DO NOTHING
 RETURNING` + deliveryColumns
 
 // Create records one fan-out row.
 //
-// The `ON CONFLICT (notification_id, channel_id) DO NOTHING` is the fan-out
+// The `ON CONFLICT (notification_id, channel_id, mode) DO NOTHING` is the fan-out
 // idempotency guard (§G.5): a redelivered `notify.evaluate` re-derives the same
-// destinations and must not produce a second message on any of them. Zero rows
-// therefore means "already fanned out", which is success.
+// destinations and the same modes, and must not produce a second message for any
+// of them. Zero rows therefore means "already fanned out", which is success.
 //
-// ⚠ deliveries_fanout_uniq permits exactly ONE delivery per (notification,
-// channel). Where §H.6 asks for `update_root` PLUS `thread_reply`, the reply is
-// the delivery and the root refresh rides along inside the same claim — see
-// service.DispatchService. Creating two rows here would violate the constraint.
+// ⚠ MODE IS IN THE KEY ON PURPOSE. §H.6 asks several Reasons for `update_root`
+// AND `thread_reply` on the same destination, and while the key was
+// (notification_id, channel_id) only one of them could have a row. The root amend
+// was therefore performed as an unrecorded rider inside the reply's claim, which
+// meant a failed amend vanished and a successful one left `LastRootHash`
+// describing a card that had since changed. Each mode now carries its own row,
+// its own sequence and its own retry budget.
 func (r *DeliveryRepository) Create(
 	ctx context.Context, s db.TenantScope, in NewDelivery,
 ) (domain.Delivery, bool, error) {
@@ -163,7 +167,7 @@ func (r *DeliveryRepository) Create(
 	case err == nil:
 		return d, true, nil
 	case errors.Is(err, pgx.ErrNoRows):
-		existing, gerr := r.GetForChannel(ctx, s, in.NotificationID, in.ChannelID)
+		existing, gerr := r.GetForChannel(ctx, s, in.NotificationID, in.ChannelID, in.Mode)
 		if gerr != nil {
 			return domain.Delivery{}, false, gerr
 		}
@@ -171,6 +175,34 @@ func (r *DeliveryRepository) Create(
 	default:
 		return domain.Delivery{}, false, mapErr(err, "delivery_not_found", "create delivery")
 	}
+}
+
+const setThreadSeqSQL = `
+UPDATE notification_deliveries
+   SET thread_seq = $3, updated_at = $4
+ WHERE org_id = $1 AND id = $2 AND thread_seq IS NULL`
+
+// SetThreadSeq stamps the FIFO position onto a row this transaction just created.
+//
+// It is the second half of a two-statement allocation, and the order is the whole
+// point. `Create` is `ON CONFLICT DO NOTHING`, so allocating BEFORE it commits a
+// `next_seq++` with no row behind it on every re-run of `notify.evaluate` — a job
+// on an at-least-once queue whose re-runs are documented as normal. Every
+// delivery behind that hole then waits the full MaxWait before gap recovery steps
+// past it. Inserting first and stamping second means the unique index arbitrates
+// and only a genuinely new row ever consumes a number.
+//
+// The `thread_seq IS NULL` guard makes it write-once: a position is assigned in
+// the creating transaction and never moves afterwards.
+func (r *DeliveryRepository) SetThreadSeq(
+	ctx context.Context, s db.TenantScope, id uuid.UUID, seq int, now time.Time,
+) error {
+	if seq < 1 {
+		return mapErr(errors.New("a thread sequence starts at 1"),
+			"delivery_not_found", "set the delivery thread sequence")
+	}
+	_, err := r.db(ctx).Exec(ctx, setThreadSeqSQL, s.OrgID(), id, seq, now)
+	return mapErr(err, "delivery_not_found", "set the delivery thread sequence")
 }
 
 const getDeliverySQL = `
@@ -192,14 +224,17 @@ func (r *DeliveryRepository) Get(
 const getDeliveryForChannelSQL = `
 SELECT` + deliveryColumns + `
   FROM notification_deliveries
- WHERE org_id = $1 AND notification_id = $2 AND channel_id = $3`
+ WHERE org_id = $1 AND notification_id = $2 AND channel_id = $3 AND mode = $4`
 
-// GetForChannel reads the one delivery a notification has on a channel.
+// GetForChannel reads the one delivery a notification has on a channel IN ONE
+// MODE. The mode is part of the identity because a fact can legitimately produce
+// both a root amend and a reply on the same destination (§H.6).
 func (r *DeliveryRepository) GetForChannel(
-	ctx context.Context, s db.TenantScope, notificationID, channelID uuid.UUID,
+	ctx context.Context, s db.TenantScope,
+	notificationID, channelID uuid.UUID, mode domain.Mode,
 ) (domain.Delivery, error) {
 	d, err := scanDelivery(r.db(ctx).QueryRow(ctx, getDeliveryForChannelSQL,
-		s.OrgID(), notificationID, channelID))
+		s.OrgID(), notificationID, channelID, string(mode)))
 	if err != nil {
 		return domain.Delivery{}, mapErr(err, "delivery_not_found", "delivery")
 	}
@@ -298,13 +333,21 @@ UPDATE notification_deliveries
 
 // MarkSent records the provider handle. The `status = 'sending'` guard makes it
 // impossible for a late-returning duplicate worker to overwrite a newer result.
+//
+// ⚠ THE SECOND RESULT IS NOT DECORATION. False means the guard matched ZERO ROWS:
+// this worker's claim was gone — its lease expired and somebody else reclaimed the
+// row, or a recovery resolved it — and the message it just sent is now recorded
+// nowhere. Treating that as success is how oto forgets a delivery it made and
+// makes it again, which is a duplicate message to a human at 3am. The caller must
+// notice, must not go on to record the thread's root handle from a claim it no
+// longer holds, and must say so loudly.
 func (r *DeliveryRepository) MarkSent(
 	ctx context.Context, s db.TenantScope, id uuid.UUID,
 	messageID, conversationID string, raw json.RawMessage, now time.Time,
-) error {
+) (bool, error) {
 	if messageID == "" {
 		// deliveries_sent_ck: a sent delivery MUST carry the provider handle.
-		return mapErr(errors.New("a sent delivery must carry a provider message id"),
+		return false, mapErr(errors.New("a sent delivery must carry a provider message id"),
 			"delivery_not_found", "mark delivery sent")
 	}
 	var conv *string
@@ -314,9 +357,12 @@ func (r *DeliveryRepository) MarkSent(
 	if len(raw) == 0 {
 		raw = json.RawMessage(`{}`)
 	}
-	_, err := r.db(ctx).Exec(ctx, markSentSQL, s.OrgID(), id,
+	tag, err := r.db(ctx).Exec(ctx, markSentSQL, s.OrgID(), id,
 		messageID, conv, []byte(raw), now)
-	return mapErr(err, "delivery_not_found", "mark delivery sent")
+	if err != nil {
+		return false, mapErr(err, "delivery_not_found", "mark delivery sent")
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 const markFailedSQL = `
@@ -325,6 +371,11 @@ UPDATE notification_deliveries
  WHERE org_id = $1 AND id = $2`
 
 // MarkFailed records a retryable failure and when to try again.
+//
+// `next_attempt_at` is §G.6's schedule and it is READ: the dispatcher snoozes a
+// delivery whose next attempt is still in the future rather than claiming it
+// early. Without that read there would be two schedules of record — this one and
+// River's `retryPolicy` — and only one of them would ever apply.
 func (r *DeliveryRepository) MarkFailed(
 	ctx context.Context, s db.TenantScope, id uuid.UUID,
 	message string, class domain.ErrorClass, nextAttemptAt, now time.Time,

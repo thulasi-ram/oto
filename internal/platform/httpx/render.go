@@ -43,10 +43,20 @@ type ListEnvelope[T any] struct {
 }
 
 // JSON writes v as a JSON body with the given status.
+//
+// A 204 gets NO Content-Type. RFC 9110 §15.3.5 says a 204 has no content, and
+// advertising a media type for a body that cannot exist invites a strict client
+// to parse zero bytes as JSON and fail — the delete endpoints were shipping
+// `204 + application/json` and every one of them was a trap waiting for a
+// sufficiently literal HTTP library.
 func JSON(w http.ResponseWriter, r *http.Request, status int, v any) {
+	if status == http.StatusNoContent {
+		w.WriteHeader(status)
+		return
+	}
 	w.Header().Set("Content-Type", ContentTypeJSON)
 	w.WriteHeader(status)
-	if v == nil || status == http.StatusNoContent {
+	if v == nil {
 		return
 	}
 	enc := json.NewEncoder(w)

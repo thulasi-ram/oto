@@ -47,7 +47,7 @@ func New(cfg Config) (*Client, error) {
 
 	tr := cfg.Transport
 	if tr == nil {
-		tr, err = buildTransport(cfg.TLS)
+		tr, err = buildTransport(cfg.TLS, cfg.DialContext)
 		if err != nil {
 			return nil, errs.Wrap(err, errs.KindValidation, Code(cfg.ErrPrefix, CodeInvalidConfig),
 				messageFor(CodeInvalidConfig))

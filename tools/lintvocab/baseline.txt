@@ -1,0 +1,26 @@
+# AC-49 known debt — <path>\t<term>, one per line.
+#
+# These are violations that exist TODAY and whose fix belongs to a module other
+# than the one that introduced this gate. They are reported on every run and do
+# not fail the build. Nothing else is exempt: a violation in any other file, or
+# under any other term, fails immediately, so this list can only shrink. A line
+# here that stops matching is an error — the exemption cannot outlive the debt.
+#
+# ⛔ Do not add a line to buy silence. Add one only when the rename is a separate,
+# named change with an owner, and write the change down here.
+
+# SPEC §P-20: `escalate_after_seconds` must become `unacked_reminder_after_seconds`
+# on the wire, mirroring migration 00019 (which already renamed the column to
+# `unacked_reminder_after_s`) and `api/openapi/openapi.yaml` (already renamed).
+# What is left is the Go DTO and its mapper: rename the field, the JSON tag and
+# the four mapper references. Until then the server emits a field the contract
+# does not declare.
+internal/notification/api/dto.go	escalation
+internal/notification/api/mapper.go	escalation
+
+# The Slack provider's JSON Schema `description` says the mention list "is NOT a
+# rota". The sentence forbids the concept, but it ships to clients in
+# GET /api/v1/channel-types, so the lint sees a wire string rather than a
+# comment. Reword to "is not a schedule of people, and must never become
+# time-aware" and delete this line.
+internal/channels/providers/slack/schema.json	rota

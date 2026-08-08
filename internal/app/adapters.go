@@ -29,6 +29,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/id"
 	rulesdomain "github.com/thulasiram/oto/internal/rules/domain"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
+	sourcesrepo "github.com/thulasiram/oto/internal/sources/repository"
 	"github.com/thulasiram/oto/internal/sources/rulematch"
 	sourcesservice "github.com/thulasiram/oto/internal/sources/service"
 	streamingdomain "github.com/thulasiram/oto/internal/streaming/domain"
@@ -456,7 +457,18 @@ func (h sourceHealth) Healthy(ctx context.Context, s db.TenantScope, sourceID uu
 // no method here that reads one back because there is nothing to read.
 type ingestTokenIssuer struct {
 	tokens *identityrepo.APITokenRepository
-	clk    interface{ Now() time.Time }
+	// tx makes a rotation atomic. Nil degrades to two independent writes, which
+	// is what left a source with no working token at all; production wires it.
+	tx  *sourcesrepo.TxRunner
+	clk interface{ Now() time.Time }
+}
+
+// inTx runs fn in one transaction when a runner is wired, inline otherwise.
+func (i ingestTokenIssuer) inTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if i.tx == nil {
+		return fn(ctx)
+	}
+	return i.tx.InTx(ctx, fn)
 }
 
 func (i ingestTokenIssuer) IssueIngestToken(
@@ -466,22 +478,70 @@ func (i ingestTokenIssuer) IssueIngestToken(
 		return "", "", errs.Unavailable("identity_unavailable",
 			"the identity store is not wired in this deployment", 0)
 	}
-	// Rotation is revoke-then-mint, in that order: a window with two live tokens
-	// is a window in which a leaked one still works.
-	if err := i.RevokeIngestTokens(ctx, s, sourceID); err != nil {
+
+	// ⭐ MINT FIRST, REVOKE SECOND, BOTH IN ONE TRANSACTION.
+	//
+	// It used to revoke first and mint second, reasoning that a window with two
+	// live tokens is a window in which a leaked one still works. That reasoning is
+	// right about the window and wrong about the failure: revoke-then-mint means a
+	// mint that fails for ANY reason leaves the source with ZERO working
+	// credentials, and because Alertmanager treats 401 as permanent and never
+	// retries it, every alert sent afterwards is destroyed rather than delayed.
+	// That is precisely the silent loss ADR 0007 exists to prevent, and it is
+	// exactly what happened: one probe of `rotate-token` against the prefix bug
+	// revoked every live ingest token in the org and left nothing behind it.
+	//
+	// This order has no such failure. The two writes commit together, so an
+	// observer inside the transaction is the only thing that ever sees both
+	// tokens live, and a failure anywhere rolls the whole rotation back to "the
+	// old token still works". The atomic window is a transaction, not a race.
+	var (
+		secret string
+		prefix string
+	)
+	err := i.inTx(ctx, func(ctx context.Context) error {
+		s2, p2, err := i.mint(ctx, s, sourceID)
+		if err != nil {
+			return err
+		}
+		// Revoking by id EXCLUDES the token just minted, so the new credential is
+		// never revoked by the sweep that clears the old ones.
+		if err := i.revokeExcept(ctx, s, sourceID, p2.tokenID); err != nil {
+			return err
+		}
+		secret, prefix = s2, p2.prefix
+		return nil
+	})
+	if err != nil {
 		return "", "", err
 	}
+	return secret, prefix, nil
+}
 
+// mintedToken is what mint produced, so the revocation sweep can skip it.
+type mintedToken struct {
+	tokenID uuid.UUID
+	prefix  string
+}
+
+// mint inserts one fresh ingest token and returns its plaintext secret.
+func (i ingestTokenIssuer) mint(
+	ctx context.Context, s db.TenantScope, sourceID uuid.UUID,
+) (string, mintedToken, error) {
 	now := i.clk.Now().UTC()
 	secret := identitydomain.SecretPrefixIngest + id.Token(identityservice.SecretEntropyBytes)
 	sum := sha256.Sum256([]byte(secret))
 	hash, err := identitydomain.NewTokenHash(sum[:])
 	if err != nil {
-		return "", "", err
+		return "", mintedToken{}, err
 	}
+	// ⚠️ The split is KIND-RELATIVE. `oto_ingest_` is eleven characters, so this
+	// prefix is fifteen and not the twelve a PAT's is; a fixed twelve produced
+	// `oto_ingest_X` and failed api_tokens_prefix_ck on every single call, which
+	// is what made `POST /api/v1/sources` return 422 for the life of the product.
 	prefix, err := identitydomain.PrefixOfSecret(secret)
 	if err != nil {
-		return "", "", err
+		return "", mintedToken{}, err
 	}
 
 	token, err := identitydomain.NewAPIToken(identitydomain.NewAPITokenParams{
@@ -495,16 +555,26 @@ func (i ingestTokenIssuer) IssueIngestToken(
 		CreatedAt: now,
 	})
 	if err != nil {
-		return "", "", err
+		return "", mintedToken{}, err
 	}
 	if err := i.tokens.Insert(ctx, s, token); err != nil {
-		return "", "", err
+		return "", mintedToken{}, err
 	}
-	return secret, token.Prefix.String(), nil
+	return secret, mintedToken{tokenID: token.ID, prefix: token.Prefix.String()}, nil
 }
 
 func (i ingestTokenIssuer) RevokeIngestTokens(
 	ctx context.Context, s db.TenantScope, sourceID uuid.UUID,
+) error {
+	return i.revokeExcept(ctx, s, sourceID, uuid.Nil)
+}
+
+// revokeExcept revokes every live ingest token for the source except `keep`.
+//
+// The exclusion is what lets a rotation mint before it revokes: without it the
+// sweep would immediately revoke the token it was called to replace.
+func (i ingestTokenIssuer) revokeExcept(
+	ctx context.Context, s db.TenantScope, sourceID, keep uuid.UUID,
 ) error {
 	if i.tokens == nil {
 		return errs.Unavailable("identity_unavailable",
@@ -521,7 +591,7 @@ func (i ingestTokenIssuer) RevokeIngestTokens(
 			return err
 		}
 		for _, t := range tokens {
-			if t.SourceID != sourceID {
+			if t.SourceID != sourceID || (keep != uuid.Nil && t.ID == keep) {
 				continue
 			}
 			if _, err := i.tokens.Revoke(ctx, s, t.ID, now); err != nil {

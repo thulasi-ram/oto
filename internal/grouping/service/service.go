@@ -387,29 +387,49 @@ func (s *Service) Recompute(
 // Material means a count changed or the severity changed. Only a material change
 // bumps `state_version`, and only a bumped version lets a new Notification exist
 // (§C.7) — which is exactly what stops a repeat observation re-notifying.
+// It RE-READS AND RECOMPUTES when it loses the `state_version` compare-and-set.
+// Read-recompute-write at READ COMMITTED is exactly the shape the alerts reaper
+// got wrong: without the version predicate two concurrent recomputes both derive
+// version N+1 from N, both write it, and the loser's counts vanish while §C.7's
+// idempotency key claims both states are the same fact. Retrying is always
+// correct here because a rollup is a PURE PROJECTION of the current members —
+// recomputing it from a fresh read discards nothing.
 func (s *Service) recompute(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, at time.Time,
 ) (domain.Group, bool, error) {
-	g, err := s.groups.GetByID(ctx, scope, groupID)
-	if err != nil {
-		return domain.Group{}, false, err
+	for attempt := 1; ; attempt++ {
+		g, err := s.groups.GetByID(ctx, scope, groupID)
+		if err != nil {
+			return domain.Group{}, false, err
+		}
+		counts, severity, err := s.members.Rollup(ctx, scope, groupID)
+		if err != nil {
+			return domain.Group{}, false, err
+		}
+		next, material, err := g.WithRollup(counts, severity, at)
+		if err != nil {
+			return domain.Group{}, false, err
+		}
+		if !material {
+			return next, false, nil
+		}
+		err = s.groups.SetRollup(ctx, scope, next, g.StateVersion())
+		if err == nil {
+			return next, true, nil
+		}
+		if !errs.IsKind(err, errs.KindConflict) || attempt >= groupMaxAttempts {
+			return domain.Group{}, false, err
+		}
+		s.log.InfoContext(ctx, "grouping: rollup lost the state_version compare-and-set, recomputing",
+			"group_id", groupID, "attempt", attempt)
 	}
-	counts, severity, err := s.members.Rollup(ctx, scope, groupID)
-	if err != nil {
-		return domain.Group{}, false, err
-	}
-	next, material, err := g.WithRollup(counts, severity, at)
-	if err != nil {
-		return domain.Group{}, false, err
-	}
-	if !material {
-		return next, false, nil
-	}
-	if err := s.groups.SetRollup(ctx, scope, next); err != nil {
-		return domain.Group{}, false, err
-	}
-	return next, true, nil
 }
+
+// groupMaxAttempts bounds every optimistic-lock retry in this file. A generation
+// that loses three in a row is contending with a writer that is winning every
+// time; the conflict is returned and the caller's own retry budget takes over
+// rather than spinning a worker.
+const groupMaxAttempts = 3
 
 // ------------------------------------------------------------------- storm
 
@@ -438,7 +458,12 @@ func (s *Service) evaluateStorm(
 	if !changed {
 		return stormOutcome{group: g}, nil
 	}
-	if err := s.groups.SetStorm(ctx, scope, next); err != nil {
+	// The storm verdict was derived from `g`, so `g`'s version is what it is
+	// entitled to overwrite. A lost compare-and-set means the membership moved
+	// while the window was being counted; the caller's next Join re-evaluates
+	// against the newer generation rather than announcing a damping transition
+	// for counts that no longer exist.
+	if err := s.groups.SetStorm(ctx, scope, next, g.StateVersion()); err != nil {
 		return stormOutcome{}, err
 	}
 
@@ -524,7 +549,11 @@ func (s *Service) CloseIdle(ctx context.Context, scope db.TenantScope, limit int
 			if err != nil {
 				return err
 			}
-			if err := s.groups.Close(ctx, scope, closed); err != nil {
+			// `fresh` is what proved no member is still live, so `fresh`'s version
+			// is what the close is entitled to overwrite. A member that joined in
+			// between bumps it, the close is refused, and the live incident keeps
+			// its thread.
+			if err := s.groups.Close(ctx, scope, closed, fresh.StateVersion()); err != nil {
 				return err
 			}
 			if err := s.appendGroupEvent(ctx, scope, alerts.GroupEventRequest{

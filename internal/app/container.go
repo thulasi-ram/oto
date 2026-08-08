@@ -39,6 +39,8 @@ import (
 	"github.com/thulasiram/oto/internal/platform/config"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/jobs"
+	"github.com/thulasiram/oto/internal/platform/netguard"
+	"github.com/thulasiram/oto/internal/platform/ratelimit"
 	"github.com/thulasiram/oto/internal/platform/secrets"
 	"github.com/thulasiram/oto/internal/platform/telemetry"
 	rulesapi "github.com/thulasiram/oto/internal/rules/api"
@@ -89,6 +91,17 @@ type Container struct {
 	// Keyring is THE credential keyring (SPEC §D.8). One per process: two would
 	// mean two key-rotation stories for rows in one table.
 	Keyring *secrets.Keyring
+
+	// NetGuard is THE SSRF control (§C1/§C3). One per process, installed as the
+	// dialer of every outbound HTTP client that talks to a configured URL, so
+	// "which addresses may this deployment reach" has exactly one answer.
+	NetGuard *netguard.Guard
+
+	// LoginLimiter and LoginGate bound `POST /auth/login`: the first by rate per
+	// client address, the second by concurrent argon2id evaluations, which is what
+	// actually bounds the 19 MiB-per-verification memory cost.
+	LoginLimiter *ratelimit.Limiter
+	LoginGate    *ratelimit.Gate
 
 	// Jobs is both the db.Enqueuer every service writes through and, when
 	// WorkersEnabled, the worker runtime. Registry is what it was built over.
@@ -231,6 +244,22 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		logger.Warn("security.secret_key is not set: credential sealing is disabled and channels cannot be configured")
 	}
 
+	// ---- the login limits ------------------------------------------------
+	//
+	// ⛔ THEY ARE A DENIAL-OF-SERVICE CONTROL, not only an authentication one.
+	// `identity/service.Login` runs argon2id at 19 MiB on EVERY path — including
+	// the DummyVerify that makes an unknown address cost the same as a known one —
+	// so an unauthenticated caller allocates 19 MiB per in-flight request. The
+	// limiter bounds the rate per client address; the gate bounds how many of
+	// those evaluations are resident at once, which is the number that decides
+	// whether this endpoint can exhaust the pod.
+	c.LoginLimiter = ratelimit.New(ratelimit.Config{
+		Burst:  o.Config.Security.LoginRateBurst,
+		Refill: o.Config.Security.LoginRateRefill,
+		Clock:  clk,
+	})
+	c.LoginGate = ratelimit.NewGate(o.Config.Security.LoginMaxConcurrent)
+
 	// ---- identity, and the one authenticator in the process --------------
 	tokenRepo := identityrepo.NewAPITokenRepository(general)
 	c.Identity = identityservice.New(identityservice.Deps{
@@ -260,9 +289,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	c.ChannelRegistry = channelsregistry.Default(channelsregistry.Config{
 		Clock:      clk,
 		HTTPClient: o.HTTPClient,
+		// The webhook provider's own SSRF guard reads the SAME deployment-level
+		// switch as `netguard`, so an operator has one decision to make rather than
+		// two that can disagree. That provider still resolves before it dials — see
+		// the note in `netguard`'s doc about adopting it there.
+		AllowPrivateWebhookTargets: o.Config.Security.AllowPrivateTargets,
 	})
 	channelRepo := channelsrepo.NewChannelRepository(general, clk)
-	credentialRepo := channelsrepo.NewCredentialRepository(general, keyringSealer(c.Keyring), keyringUnsealer(c.Keyring), clk)
+	credentialRepo := channelsrepo.NewCredentialRepository(general, keyringSealer(c.Keyring), channelsUnsealer(c.Keyring), clk)
 	tester, err := channelsservice.NewTester(channelsservice.TesterOptions{
 		Store:    channelRepo,
 		Creds:    credentialRepo,
@@ -275,13 +309,38 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	c.ChannelTester = tester
 
+	// ---- the SSRF guard --------------------------------------------------
+	//
+	// ⭐ ONE GUARD FOR THE PROCESS, INSTALLED AS A DIALER. Every URL oto dials
+	// outbound is operator- or tenant-supplied, and oto dials it from inside the
+	// operator's network. The guard is built here so that "which addresses may
+	// this deployment reach" is answered in exactly one place, and it is handed to
+	// the client factory as `Dial` rather than run as a pre-flight check because
+	// only the dialer sees the address the socket actually connects to.
+	//
+	// `AllowPrivateTargets` is DEPLOYMENT-LEVEL and default closed. It is read from
+	// config and never from a row: a per-tenant version of this switch would be a
+	// per-tenant grant to read the host's metadata service.
+	c.NetGuard = netguard.New(netguard.Options{
+		AllowPrivate: o.Config.Security.AllowPrivateTargets,
+		Code:         "source_target_not_permitted",
+		Field:        "base_url",
+	})
+	if c.NetGuard.AllowsPrivate() {
+		logger.Warn("security.allow_private_targets is ON: oto will dial private, loopback and link-local addresses on behalf of any tenant")
+	}
+
 	// ---- sources: the upstream registry and the outbound clients ---------
 	sourceRepo := sourcesrepo.NewSourceRepository(general, clk)
 	clusterRepo := sourcesrepo.NewClusterRepository(general, clk)
+	sourceTx := sourcesrepo.NewTxRunner(general)
+	clientFactory := sourcesservice.NewClientFactory(clk)
+	clientFactory.Dial = c.NetGuard.DialContext
+	clientFactory.AllowInsecureTLS = o.Config.Security.AllowInsecureTLS
 	c.Sources, err = sourcesservice.New(sourcesservice.Options{
 		Repo:    sourceRepo,
-		Creds:   sourcesrepo.NewCredentialStore(general, keyringUnsealer(c.Keyring)),
-		Clients: sourcesservice.NewClientFactory(clk),
+		Creds:   sourcesrepo.NewCredentialStore(general, sourcesUnsealer(c.Keyring)),
+		Clients: clientFactory,
 		Clock:   clk,
 		Logger:  logger,
 	})
@@ -471,7 +530,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	c.enqueuer.set(c.Jobs)
 
-	c.buildRouters(channelRepo, credentialRepo, tokenRepo, sourceRepo, clusterRepo, enricherRegistry, clk)
+	c.buildRouters(channelRepo, credentialRepo, tokenRepo, sourceRepo, clusterRepo, sourceTx, enricherRegistry, clk)
 	return c, nil
 }
 
@@ -533,7 +592,7 @@ func (c *Container) buildNotification(
 		Events:        eventRepo,
 		Views:         c.Views,
 		Registry:      c.ChannelRegistry,
-		Unsealer:      keyringUnsealer(c.Keyring),
+		Unsealer:      dispatchUnsealer(c.Keyring),
 		Gates: notifrepo.NewOrderingGates(notifrepo.GatesConfig{
 			Pool:       general,
 			Clock:      clk,
@@ -626,12 +685,19 @@ func (c *Container) buildRouters(
 	tokenRepo *identityrepo.APITokenRepository,
 	sourceRepo *sourcesrepo.SourceRepository,
 	clusterRepo *sourcesrepo.ClusterRepository,
+	sourceTx *sourcesrepo.TxRunner,
 	enricherRegistry *enrichservice.Registry,
 	clk clock.Clock,
 ) {
 	c.routers = routerSet{
-		identity: identityapi.NewRouter(c.Identity, c.Auth,
-			identityapi.DefaultCookieConfig(c.Config.Security.SessionCookie), clk),
+		identity: identityapi.NewRouter(identityapi.Options{
+			Service: c.Identity,
+			Auth:    c.Auth,
+			Cookie:  identityapi.DefaultCookieConfig(c.Config.Security.SessionCookie),
+			Limiter: c.LoginLimiter,
+			Gate:    c.LoginGate,
+			Clock:   clk,
+		}),
 		alerts:   alertsapi.NewRouter(c.Alerts, clk),
 		grouping: groupingapi.NewRouter(c.Grouping, c.Alerts, clk),
 		rules:    rulesapi.NewRouter(c.Rules, c.Alerts, clk),
@@ -640,15 +706,24 @@ func (c *Container) buildRouters(
 			Registry: sourceRepo,
 			Clusters: clusterRepo,
 			Creds:    credentialRepo,
-			Tokens:   ingestTokenIssuer{tokens: tokenRepo, clk: clk},
+			Tokens:   ingestTokenIssuer{tokens: tokenRepo, tx: sourceTx, clk: clk},
 			// `POST /sources/{id}/reconcile` forces one pass now (§G.8). It answers
 			// 200 with `ok:false` for an upstream that is down, because "the source
 			// is unreachable" is a RESULT the operator asked for — and because the
 			// same pass has already recorded the failure in `source_health`, where
 			// three of them block the reaper (§B.4).
 			Reconcile: c.Reconciler,
-			Clock:     clk,
-			BaseURL:   c.Config.HTTP.BaseURL,
+			// One transaction for the source row and its ingest credential. They
+			// used to be independent commits, and a source without its token can
+			// never receive a webhook.
+			Tx: sourceTx,
+			// Configuration-time SSRF feedback. The DIALER is the control; this is
+			// so an operator who pastes a metadata-service URL sees a 422 naming the
+			// field rather than a probe that mysteriously returns someone else's data.
+			Guard:            c.NetGuard,
+			AllowInsecureTLS: c.Config.Security.AllowInsecureTLS,
+			Clock:            clk,
+			BaseURL:          c.Config.HTTP.BaseURL,
 		}),
 		channels: channelsapi.NewRouter(channelsapi.Options{
 			Registry: c.ChannelRegistry,

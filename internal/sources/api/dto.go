@@ -68,8 +68,10 @@ type SourceCreatedDTO struct {
 	// IngestToken is returned EXACTLY ONCE and is never retrievable again: only a
 	// sha256 of it is stored. Losing it means rotating.
 	IngestToken string `json:"ingest_token"`
-	// TokenPrefix is the first twelve characters, retained for display so the
-	// token can be identified later without being recoverable.
+	// TokenPrefix is the secret's kind literal plus four characters, retained for
+	// display so the token can be identified later without being recoverable.
+	// `oto_ingest_` is eleven characters, so an ingest prefix is fifteen — not the
+	// twelve a PAT's is.
 	TokenPrefix string `json:"token_prefix,omitempty"`
 	// WebhookURL is the absolute URL to paste into `webhook_config.url`.
 	WebhookURL string `json:"webhook_url,omitempty"`

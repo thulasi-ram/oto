@@ -26,12 +26,23 @@ const (
 	// ReasonSkippedDelivery: the delivery was a coalesced no-op update.
 	ReasonSkippedDelivery SkipReason = "skipped_delivery"
 	// ReasonMissingDelivery: the seq was allocated but no delivery row exists.
-	// The allocating transaction rolled back after `next_seq++` was visible to
-	// nobody but itself; the slot can never be filled.
+	// The allocating transaction rolled back after `next_seq++`; the slot can
+	// never be filled.
 	ReasonMissingDelivery SkipReason = "missing_delivery"
 	// ReasonThreadDead: the thread itself is terminal and nothing more will send.
 	ReasonThreadDead SkipReason = "thread_dead"
+	// ReasonAlreadySent: the slot WAS delivered and only the head had not caught
+	// up. It is NOT a skip and NOT a gap: nothing was lost, so it must never be
+	// recorded as `delivery.skipped` and must never raise the gap-recovery metric.
+	// It exists as a distinct reason precisely so that neither happens.
+	ReasonAlreadySent SkipReason = "already_sent"
 )
+
+// Anomalous reports whether this reason means something was NOT delivered.
+// `oto_thread_gap_recovered_total` counts only these: a head catching up with a
+// message that did land is convergence, not breakage, and counting it would make
+// "sustained non-zero means a channel is broken" untrue.
+func (r SkipReason) Anomalous() bool { return r != ReasonAlreadySent }
 
 // Slot describes what occupies one thread_seq.
 type Slot struct {
@@ -43,6 +54,9 @@ type Slot struct {
 	Resolved bool
 	// Sent is true only for status='sent'. Resolved-but-not-Sent is the gap.
 	Sent bool
+	// Skipped is true only for status='skipped': a deliberate non-send, which is
+	// not the same fact as a delivery that died and must not be labelled as one.
+	Skipped bool
 	// InFlight is true for status='sending': somebody claimed it and has not
 	// finished. UpdatedAt bounds how long that is believable.
 	InFlight  bool
@@ -213,13 +227,22 @@ type Recovery struct {
 	Advanced int
 	// From and To are last_sent_seq before and after.
 	From, To int
-	// StalledAt names the slot recovery stopped on, if it stopped on a claim that
-	// has outlived its lease. That delivery is AMBIGUOUS (SPEC §G.5): it may or
-	// may not have reached the provider, and only the dispatcher may decide to
-	// re-send it. Recovery deliberately refuses to skip it, because skipping a
-	// possibly-sent root would orphan every reply behind it.
-	StalledAt   int
-	StalledItem uuid.UUID
+	// StalledAt and StalledItem name the slot recovery stopped on: the delivery
+	// that now owns the head and is the only thing that can move it.
+	//
+	// THE CALLER MUST ACT ON THIS. Recovery deliberately refuses to skip the slot —
+	// skipping a possibly-sent root would orphan every reply behind it — so the
+	// head moves only when that delivery runs. The usual reason it has not is that
+	// its job is gone: discarded past its attempt ceiling, cancelled by an
+	// operator, or lost with the pod that held it. Re-enqueuing it is what turns
+	// "wait and hope" into progress, and it is why these fields exist.
+	//
+	// StalledInFlight distinguishes a live claim from a `pending`/`failed` row. A
+	// claim past its lease is the AMBIGUOUS case of SPEC §G.5: it may or may not
+	// have reached the provider, and only the dispatcher may decide to re-send it.
+	StalledAt       int
+	StalledItem     uuid.UUID
+	StalledInFlight bool
 }
 
 // Recover advances the thread's head past every finished-but-unsent slot.
@@ -252,9 +275,10 @@ func (g *Gate) Recover(ctx context.Context, threadID uuid.UUID) (Recovery, error
 
 		reason, advance := g.classifySlot(slot, th, now)
 		if !advance {
-			if slot.InFlight {
-				rec.StalledAt, rec.StalledItem = seq, slot.ItemID
-			}
+			// Report the blocking slot WHATEVER its status. Only reporting in-flight
+			// claims left the commonest stall — a `pending` or `failed` row whose job
+			// no longer exists — invisible to the one caller that could restart it.
+			rec.StalledAt, rec.StalledItem, rec.StalledInFlight = seq, slot.ItemID, slot.InFlight
 			break
 		}
 
@@ -262,10 +286,15 @@ func (g *Gate) Recover(ctx context.Context, threadID uuid.UUID) (Recovery, error
 			return rec, fmt.Errorf("ordering: advance thread %s to %d: %w", threadID, seq, err)
 		}
 
-		g.metrics.Recovered.WithLabelValues(string(reason)).Inc()
-		g.log.WarnContext(ctx, "ordering: advanced past an unsent slot",
-			"thread_id", threadID, "thread_seq", seq,
-			"delivery_id", slot.ItemID, "reason", string(reason))
+		if reason.Anomalous() {
+			g.metrics.Recovered.WithLabelValues(string(reason)).Inc()
+			g.log.WarnContext(ctx, "ordering: advanced past an unsent slot",
+				"thread_id", threadID, "thread_seq", seq,
+				"delivery_id", slot.ItemID, "reason", string(reason))
+		} else {
+			g.log.DebugContext(ctx, "ordering: head caught up with a slot that had already been sent",
+				"thread_id", threadID, "thread_seq", seq, "delivery_id", slot.ItemID)
+		}
 
 		rec.Advanced++
 		rec.To = seq
@@ -284,18 +313,26 @@ func (g *Gate) classifySlot(slot Slot, th Thread, now time.Time) (SkipReason, bo
 		return ReasonThreadDead, true
 
 	case !slot.Present:
-		// The allocating transaction rolled back after taking next_seq. Nothing
-		// will ever fill this slot: `next_seq` is a sequence-like allocator and
-		// the value is not returned to the pool. Advance immediately — waiting
-		// for a row that cannot exist is exactly the wedge we are preventing.
+		// No row holds this seq. Either the allocating transaction rolled back
+		// after taking the number, or it committed the allocation and never wrote
+		// the row. Either way nothing will ever fill the slot — the number is not
+		// returned to the pool — so advance immediately: waiting for a row that
+		// cannot exist is exactly the wedge we are preventing.
 		return ReasonMissingDelivery, true
 
 	case slot.Sent:
-		// Already sent; the head simply had not been advanced. Convergent.
+		// Already sent; the head simply had not been advanced. Convergent, and NOT
+		// a skip: labelling it one puts "oto skipped a delivery" on the timeline
+		// for a message the destination is currently displaying.
+		return ReasonAlreadySent, true
+
+	case slot.Skipped:
+		// A deliberate non-send — a coalesced no-op update, or a fact that arrived
+		// after its thread was frozen.
 		return ReasonSkippedDelivery, true
 
 	case slot.Resolved:
-		// dead or skipped: finished, and nothing reached the provider.
+		// dead: finished, and nothing reached the provider.
 		return ReasonDeadDelivery, true
 
 	case slot.InFlight && now.Sub(slot.UpdatedAt) <= g.lease:
@@ -308,6 +345,10 @@ func (g *Gate) classifySlot(slot Slot, th Thread, now time.Time) (SkipReason, bo
 		// is the AMBIGUOUS case of SPEC §G.5, which is re-sent with
 		// `ambiguous = true` rather than skipped. Under-delivering a firing alert
 		// is worse than a visible, labelled duplicate.
+		//
+		// Refusing to advance is only safe because Recovery reports the slot to the
+		// caller, which re-enqueues it. Without that this branch is a wedge: it
+		// declines to move and names nothing that would.
 		return "", false
 	}
 }

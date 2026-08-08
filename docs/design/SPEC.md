@@ -4334,16 +4334,32 @@ export async function get<S extends v.BaseSchema<any, any, any>>(
 **Response schemas use `v.looseObject`, form schemas use `v.strictObject`.** Additive server
 changes must never break a deployed UI; a typo in a form must never reach the server.
 
-#### L.8.1 Preventing Go ↔ TypeScript drift (four gates, all in CI)
+#### L.8.1 Preventing Go ↔ TypeScript drift (four gates)
 
-| Gate | Direction | Mechanism | Failure |
-|---|---|---|---|
-| G1 | Go DTO → OpenAPI | `test/contract/dto_schema_test.go` reflects every `*DTO`/`*Request`/`*Query` struct (including `validate` tags) and diffs the derived schema against `api/openapi/components/*.yaml` | CI fails on any diff |
-| G2 | Running server → OpenAPI | `schemathesis` replays generated requests against a seeded server and asserts every response validates | CI fails |
-| G3 | OpenAPI → TS types | `openapi-typescript` generates `web/src/api/generated/schema.d.ts`, **checked in**; CI regenerates and asserts no diff | CI fails |
-| G4 | OpenAPI → valibot | `pnpm gen:validators` emits `web/src/api/generated/validators.ts` from the OpenAPI components, **checked in**; CI regenerates and asserts no diff | CI fails |
+⚠️ **STATUS, as of the phase-4 conformance audit.** This section previously read
+"four gates, all in CI". That was a specification of intent read as a description of
+fact: three of the four did not exist, and the fourth was not wired into CI and failed
+292 lines when it was finally run — during which time the UI was typed against a
+contract three features behind the server. The `Built?` column is the truth; the rest of
+the table remains the requirement. Do not delete the unbuilt rows: they are still owed.
+
+| Gate | Direction | Mechanism | Failure | Built? |
+|---|---|---|---|---|
+| G1 | Go DTO → OpenAPI | `test/contract/dto_schema_test.go` reflects every `*DTO`/`*Request`/`*Query` struct (including `validate` tags) and diffs the derived schema against `api/openapi/components/*.yaml` | CI fails on any diff | **NO** |
+| G2 | Running server → OpenAPI | `schemathesis` replays generated requests against a seeded server and asserts every response validates | CI fails | **NO** |
+| G3 | OpenAPI → TS types | `openapi-typescript` generates `web/src/api/generated/schema.d.ts`, **checked in**; CI regenerates and asserts no diff | CI fails | **YES** — `npm run generate:check`, `ui` job |
+| G4 | OpenAPI → valibot | `npm run gen:validators` emits `web/src/api/generated/validators.ts` from the OpenAPI components, **checked in**; CI regenerates and asserts no diff | CI fails | **NO** |
+
+Two further gates the same audit required, and which now exist:
+
+| Gate | Mechanism | Built? |
+|---|---|---|
+| §L.8 `TestValidatorMatchesDDL` | `internal/platform/validate/ddl_test.go` parses `db/migrations/` for the last surviving definition of each named `CHECK` and asserts every exported pattern in `internal/platform/validate` is byte-identical to it. A pattern with no DDL counterpart must say in writing why. | **YES**, `go-test` job |
+| AC-49 vocabulary lint (§P-18) | `go run ./tools/lintvocab` over `internal/`, `web/src/` and `db/migrations/`: the banned on-call vocabulary and the forbidden person-subject columns, comments excluded and SQL string literals included (a `COMMENT ON COLUMN` ships to every operator). Known debt is enumerated in `tools/lintvocab/baseline.txt` and can only shrink. | **YES**, `vocabulary` job |
 
 **Hand-written valibot schemas are forbidden for API responses** — they must come from G4.
+Until G4 exists this rule is unenforced and violated: every valibot schema in `web/src`
+today is hand-written.
 Hand-written valibot schemas are *required* for forms, and each one must `v.pipe` into the
 generated request schema so the form cannot accept something the API would reject:
 

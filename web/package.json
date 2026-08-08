@@ -8,12 +8,12 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "generate": "openapi-typescript ../api/openapi/openapi.yaml -o src/api/generated/schema.d.ts",
     "generate:check": "openapi-typescript ../api/openapi/openapi.yaml -o node_modules/.cache/oto-schema.d.ts && diff -u src/api/generated/schema.d.ts node_modules/.cache/oto-schema.d.ts",
-    "verify": "npm run generate:check && tsc --noEmit && vite build"
+    "verify": "npm run generate:check && tsc --noEmit && vite build && vitest run --passWithNoTests"
   },
   "dependencies": {
     "@solidjs/router": "^0.15.3",

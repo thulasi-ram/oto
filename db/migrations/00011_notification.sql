@@ -110,6 +110,7 @@ CREATE TABLE notification_policies (
   reasons       TEXT[]      NOT NULL,              -- subset of §H.6 Reason values
   channel_ids   UUID[]      NOT NULL,
   throttle      JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- {"max":N,"window_s":S} per subject
+  -- vocab:allow — shipped schema as of this migration; the rename is 00019_unacked_reminder.sql. A historical migration is not edited, it is superseded.
   escalate_after_s INT,                            -- NULL = no escalation; else unacked-for seconds
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -123,6 +124,7 @@ CREATE TABLE notification_policies (
   CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
                                          AND array_position(channel_ids, NULL) IS NULL),
   CONSTRAINT policies_throttle_ck CHECK (jsonb_typeof(throttle) = 'object'),
+  -- vocab:allow — shipped schema as of this migration; the rename is 00019_unacked_reminder.sql. A historical migration is not edited, it is superseded.
   CONSTRAINT policies_esc_ck      CHECK (escalate_after_s IS NULL OR escalate_after_s BETWEEN 60 AND 86400),
   CONSTRAINT policies_time_ck     CHECK (updated_at >= created_at)
 );
@@ -139,6 +141,7 @@ COMMENT ON COLUMN notification_policies.matchers IS 'Label matchers, at most 32:
 COMMENT ON COLUMN notification_policies.reasons IS 'Which §H.6 Reason values this policy reacts to. 1..32 entries, no NULLs.';
 COMMENT ON COLUMN notification_policies.channel_ids IS 'Fan-out targets, 1..16 Channel ids. A plain UUID[] rather than a join table because it is read whole, on every evaluation, and never queried by member.';
 COMMENT ON COLUMN notification_policies.throttle IS 'Per-subject rate cap: {"max":N,"window_s":S}. Throttling yields suppressed_reason=throttled, which is a VISIBLE UI state.';
+-- vocab:allow — shipped schema as of this migration; the rename is 00019_unacked_reminder.sql. A historical migration is not edited, it is superseded.
 COMMENT ON COLUMN notification_policies.escalate_after_s IS
   'Unacked-for seconds before escalation.check fires one Reason=escalation notification, 60..86400. oto runs its own clock because Alertmanager repeat_interval defaults to FOUR HOURS (SPEC §G.9). NULL disables escalation.';
 
@@ -219,6 +222,7 @@ CREATE TABLE notifications (
   CONSTRAINT notifications_status_ck   CHECK (status IN ('pending','dispatched','partial','delivered','failed','suppressed')),
   CONSTRAINT notifications_reason_ck CHECK (reason IN
     ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
+     -- vocab:allow — the original §H.6 enum; 00018_notification_reasons.sql narrows it. History, not intent.
      'expired','refired','acked','unacked','enriched','rule_changed','comment','escalation','storm')),
   CONSTRAINT notifications_sver_ck   CHECK (state_version >= 1),
   CONSTRAINT notifications_idem_ck   CHECK (idempotency_key ~ '^[0-9a-f]{64}$'),

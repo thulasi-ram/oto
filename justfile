@@ -164,9 +164,13 @@ fmt:
     go fmt ./...
     go mod tidy
 
-# Build, vet and lint the Go tree.
+# Build, vet and lint the Go tree, including the gofmt check CI makes.
 [group('check')]
 lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unformatted="$(gofmt -l ./cmd ./internal ./pkg ./db ./test ./tools)"
+    if [ -n "$unformatted" ]; then echo "gofmt: $unformatted"; exit 1; fi
     go build ./...
     go vet ./...
     golangci-lint run ./...
@@ -198,9 +202,17 @@ generate:
 generate-check:
     cd {{web_dir}} && npm run generate:check
 
-# Everything CI runs.
+# SCOPE-BOUNDARY AC-49 (SPEC §P-18): the banned vocabulary and the forbidden
+# person-subject columns, over internal/, web/src/ and db/migrations/. Known debt
+# lives in tools/lintvocab/baseline.txt and can only shrink.
 [group('check')]
-ci: fmt lint generate-check test ui-build
+lint-vocabulary:
+    go run ./tools/lintvocab
+
+# Everything CI runs, in the order CI runs it. Keep this list and
+# .github/workflows/ci.yml in step -- a contributor's green must be CI's green.
+[group('check')]
+ci: lint lint-vocabulary generate-check test ui-build ui-test
 
 # Install the toolchain this repo expects.
 [group('check')]

@@ -236,4 +236,15 @@ type RenderOptions struct {
 	ShowFieldEmoji bool
 	BaseURL        string // oto's public URL, for deep links
 	MaxInstances   int    // default 10
+	// Continued marks a post_root that REPLACES a card this destination already
+	// had for this generation, rather than opening the conversation: the §H.9
+	// thread-pointer recovery, the reply-ceiling re-root, or a §G.5 re-send whose
+	// predecessor may still be sitting in the channel.
+	//
+	// It exists because oto's answer to an un-amendable card is to post a NEW one,
+	// and a new card with no marker reads to everybody in the room as a SECOND
+	// INCIDENT. A visibly continued card is a far better failure than a silently
+	// stale one — a human can see the first and cannot see the second — but only
+	// if it says so.
+	Continued bool
 }

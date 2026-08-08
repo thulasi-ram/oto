@@ -42,6 +42,25 @@ type Intent struct {
 type destination struct {
 	channel domain.Channel
 	plan    domain.Plan
+	// input is the §H.6 question, kept so that fanOut can ask it again once it
+	// knows whether a root card actually exists. Everything in it except
+	// ThreadExists is settled before any thread is touched.
+	input domain.PlanInput
+}
+
+// planInput is the §H.6 question for one destination.
+func planInput(
+	reason domain.Reason, c domain.Channel, rootExists, storm, flapping bool,
+) domain.PlanInput {
+	return domain.PlanInput{
+		Reason:        reason,
+		Verbosity:     c.EffectiveVerbosity(),
+		ThreadUpdates: c.ThreadUpdates,
+		Capabilities:  c.Capabilities,
+		ThreadExists:  rootExists,
+		StormMode:     storm,
+		Flapping:      flapping,
+	}
 }
 
 // NotificationService turns an Intent into a recorded Notification and its
@@ -107,7 +126,9 @@ type Result struct {
 	// Created is false when this exact intent had already been recorded. That is
 	// the §C.7 idempotency mechanism working, never an error.
 	Created bool
-	// Deliveries is how many fan-out rows now exist.
+	// Deliveries is how many fan-out rows THIS evaluation created. A re-run of an
+	// already-fanned-out intent reports 0, because it made nothing; counting the
+	// pre-existing rows would put an invented number on the timeline.
 	Deliveries int
 	// Suppressed carries the recorded reason when nothing was sent.
 	Suppressed domain.SuppressedReason
@@ -324,8 +345,13 @@ func (s *NotificationService) suppressors(
 	return sup, nil
 }
 
-// plan applies the §H.6 table to every live destination and collects the
-// per-destination suppressors as it goes.
+// plan answers ONE question per destination: does this fact reach it at all, and
+// if a reply was dropped, why?
+//
+// It deliberately does NOT decide the concrete rows. It cannot: §H.6's root
+// column turns on whether a root card already exists, and that is thread state
+// this method has no access to. `fanOut` re-applies the table against the thread
+// it just ensured — see modesFor — and that is where `Plan.Modes` becomes rows.
 func (s *NotificationService) plan(
 	reason domain.Reason, snap domain.Snapshot, match Match,
 ) ([]destination, domain.Suppressors) {
@@ -338,18 +364,12 @@ func (s *NotificationService) plan(
 	out := make([]destination, 0, len(match.Live))
 
 	for _, c := range match.Live {
-		p := domain.PlanFor(domain.PlanInput{
-			Reason:        reason,
-			Verbosity:     c.EffectiveVerbosity(),
-			ThreadUpdates: c.ThreadUpdates,
-			Capabilities:  c.Capabilities,
-			// ThreadExists is deliberately false here. The thread row is created
-			// inside the fan-out transaction below, and the mode is RE-DERIVED at
-			// claim time against the thread as it actually stands — which is the
-			// same reason the payload is rendered at claim time and not now.
-			StormMode: snap.Group.StormMode,
-			Flapping:  flapping,
-		})
+		// rootExists is false HERE, and only here: this pass answers "does this
+		// destination get anything", which the first-notification view answers
+		// conservatively and identically for every destination. The row-level
+		// decision is taken in fanOut against the real thread.
+		in := planInput(reason, c, false, snap.Group.StormMode, flapping)
+		p := domain.PlanFor(in)
 
 		if p.ReplyDropped {
 			switch p.ReplyDropReason {
@@ -364,7 +384,7 @@ func (s *NotificationService) plan(
 		if p.Empty() {
 			continue
 		}
-		out = append(out, destination{channel: c, plan: p})
+		out = append(out, destination{channel: c, plan: p, input: in})
 	}
 
 	// Deterministic order. It does not affect correctness — ordering is a
@@ -400,7 +420,30 @@ func (s *NotificationService) record(
 	return Result{Notification: stored, Created: created, Suppressed: stored.SuppressedReason}, nil
 }
 
-// fanOut creates one delivery per destination and enqueues its dispatch job.
+// fanOut creates ONE DELIVERY PER MODE per destination and enqueues its dispatch
+// job.
+//
+// §H.6 asks several Reasons for `update_root` AND `thread_reply` on the same
+// destination, and `deliveries_fanout_uniq` is keyed by
+// (notification_id, channel_id, mode) precisely so both can exist. Each gets its
+// own row, its own sequence, its own claim and its own retry budget — so a root
+// amend that fails is retried and dead-lettered like anything else, and a root
+// amend that SUCCEEDS becomes a `sent` delivery that `LastRootHash` can see.
+// Riding the amend along inside the reply's claim, which is what the single-row
+// constraint used to force, could do neither: a failure vanished into a log line
+// and a success left the cached hash describing a card that had since changed.
+//
+// The root mode is allocated FIRST, so the gate sends the amend before the reply
+// and a reader drawn to the thread by the reply finds a card that agrees with it.
+//
+// ORDER OF THE TWO WRITES IS ALSO LOAD-BEARING: the row is INSERTED FIRST and the
+// thread sequence is allocated only for a row this transaction actually created.
+// `Create` is `ON CONFLICT DO NOTHING` because `Evaluate` re-runs — it is a job
+// on an at-least-once queue and the fan-out deliberately runs again even when the
+// notification already existed. Allocating in front of that insert committed a
+// `next_seq++` with nothing behind it on every re-run, and every delivery queued
+// behind the empty slot then waited the full ordering MaxWait — fifteen minutes of
+// silence on a Slack thread — before gap recovery stepped past it.
 func (s *NotificationService) fanOut(
 	ctx context.Context, scope db.TenantScope, n domain.Notification,
 	dests []destination, now time.Time,
@@ -408,63 +451,103 @@ func (s *NotificationService) fanOut(
 	created := 0
 
 	for _, d := range dests {
-		mode := d.plan.PrimaryMode()
-		if mode == "" {
-			continue
-		}
-
 		var (
-			threadID *uuid.UUID
-			seq      int
+			threadID   *uuid.UUID
+			rootLanded bool
 		)
 		if needsThread(d.channel) {
 			th, err := s.threads.Ensure(ctx, scope, d.channel.ID, n.SubjectKind, n.SubjectID, now)
 			if err != nil {
 				return created, err
 			}
-			// THE SEQUENCE IS TAKEN HERE, inside the transaction that creates the
-			// delivery. That is the whole ordering design (§G.7): the number is
-			// allocated in the same transaction as the domain event that justified
-			// the message, so send order is causal order rather than the order two
-			// worker pods happened to wake up in.
-			seq, err = s.threads.AllocateSeq(ctx, scope, th.ID, now)
+			id := th.ID
+			threadID, rootLanded = &id, th.RootLanded()
+		}
+
+		for _, mode := range s.modesFor(d, rootLanded) {
+			made, err := s.createDelivery(ctx, scope, n, d, threadID, mode, now)
 			if err != nil {
 				return created, err
 			}
-			id := th.ID
-			threadID = &id
-		}
-
-		row, madeNew, err := s.deliveries.Create(ctx, scope, repository.NewDelivery{
-			ID:             uuid.New(),
-			NotificationID: n.ID,
-			ChannelID:      d.channel.ID,
-			ThreadID:       threadID,
-			ThreadSeq:      seq,
-			Mode:           mode,
-			CreatedAt:      now,
-		})
-		if err != nil {
-			return created, err
-		}
-		created++
-		if !madeNew {
-			// Already fanned out by an earlier run, and its job was enqueued in the
-			// same transaction as the row. Enqueuing a second one would be harmless
-			// but pointless: the claim would find nothing to take.
-			continue
-		}
-
-		// Enqueued INSIDE this transaction: the job and the row it names commit
-		// together or not at all (ADR 0001).
-		if _, err := s.enqueuer.Enqueue(ctx, jobs.DeliverDispatchArgs{
-			DeliveryID:  row.ID,
-			ChannelType: string(d.channel.Type),
-		}); err != nil {
-			return created, err
+			if made {
+				created++
+			}
 		}
 	}
 	return created, nil
+}
+
+// modesFor re-applies the §H.6 table now that the thread is known.
+//
+// ⚠ THE ROOT COLUMN OF THAT TABLE TURNS ON WHETHER A ROOT CARD EXISTS, and
+// nothing before this point can answer that. Asking with `ThreadExists: false`
+// collapses every root-touching Reason to a single `post_root` and drops its
+// reply as `fresh_root` — which is right for the FIRST notification and wrong for
+// every one after it. The mode is still RE-DERIVED again at claim time, because a
+// root can land or be lost in between; what cannot be deferred is HOW MANY ROWS
+// the fact needs, and that is decided here.
+func (s *NotificationService) modesFor(d destination, rootLanded bool) []domain.Mode {
+	in := d.input
+	in.ThreadExists = rootLanded
+	if p := domain.PlanFor(in); !p.Empty() {
+		return p.Modes
+	}
+	// The first pass said this destination gets something; the second must not
+	// silently disagree. Fall back to what was already decided.
+	if mode := d.plan.PrimaryMode(); mode != "" {
+		return []domain.Mode{mode}
+	}
+	return nil
+}
+
+// createDelivery writes one (notification, channel, mode) row, takes its sequence
+// and enqueues its job. It reports whether the row is new.
+func (s *NotificationService) createDelivery(
+	ctx context.Context, scope db.TenantScope, n domain.Notification,
+	d destination, threadID *uuid.UUID, mode domain.Mode, now time.Time,
+) (bool, error) {
+	row, madeNew, err := s.deliveries.Create(ctx, scope, repository.NewDelivery{
+		ID:             uuid.New(),
+		NotificationID: n.ID,
+		ChannelID:      d.channel.ID,
+		ThreadID:       threadID,
+		Mode:           mode,
+		CreatedAt:      now,
+	})
+	if err != nil {
+		return false, err
+	}
+	if !madeNew {
+		// Already fanned out by an earlier run, with its sequence taken and its job
+		// enqueued in the same transaction as the row. Nothing to allocate and
+		// nothing to enqueue: a second job would find nothing to claim.
+		return false, nil
+	}
+
+	if threadID != nil {
+		// THE SEQUENCE IS TAKEN HERE, inside the transaction that creates the
+		// delivery. That is the whole ordering design (§G.7): the number is
+		// allocated in the same transaction as the domain event that justified the
+		// message, so send order is causal order rather than the order two worker
+		// pods happened to wake up in.
+		seq, err := s.threads.AllocateSeq(ctx, scope, *threadID, now)
+		if err != nil {
+			return false, err
+		}
+		if err := s.deliveries.SetThreadSeq(ctx, scope, row.ID, seq, now); err != nil {
+			return false, err
+		}
+	}
+
+	// Enqueued INSIDE this transaction: the job and the row it names commit
+	// together or not at all (ADR 0001).
+	if _, err := s.enqueuer.Enqueue(ctx, jobs.DeliverDispatchArgs{
+		DeliveryID:  row.ID,
+		ChannelType: string(d.channel.Type),
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // needsThread reports whether this destination has a conversation oto must

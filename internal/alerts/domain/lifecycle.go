@@ -306,6 +306,14 @@ type TransitionResult struct {
 	// Occurrence is the updated AlertOccurrence. On T7 it is the UNCHANGED
 	// terminal occurrence: T7 opens a new episode, it does not revive an old one.
 	Occurrence Occurrence
+	// Before is the occurrence EXACTLY AS THE MACHINE READ IT — the pre-image this
+	// verdict was reached against.
+	//
+	// It exists so a caller can persist the edge as a compare-and-set without
+	// having to carry the pre-image alongside the result and hope the two stay in
+	// step. `PreconditionFor(r.Before)` is the guard, and it cannot name a row
+	// other than the one the decision was made from.
+	Before Occurrence
 	// OpensNewOccurrence marks T7. The caller must open a new occurrence with
 	// seq+1 and ReopenOf set to Occurrence.ID(), which appends its own
 	// `occurrence.opened` event.
@@ -383,6 +391,11 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		}
 		next.state = StateSuppressed
 		next.suppressionReason = cmd.SuppressionReason
+		// ⭐ A suppression is a COUNTED fact. suppress_count is reopen_count's twin
+		// for the suppressed path, and it is what gives T3 and T4 §C.8 dedupe keys
+		// that neither collapse two real suppressions nor split one across two
+		// passes. See the note above dedupeKeyFor.
+		next.suppressCount = o.suppressCount + 1
 		next.lastObservedAt = cmd.At.RecordedAt()
 		next.observe(cmd)
 
@@ -432,6 +445,7 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		return TransitionResult{
 			ID: rule.id, From: from, To: rule.to,
 			Occurrence:         o,
+			Before:             o,
 			OpensNewOccurrence: true,
 		}, nil
 
@@ -458,7 +472,7 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 	}
 
 	res := TransitionResult{
-		ID: rule.id, From: from, To: next.state, Occurrence: next,
+		ID: rule.id, From: from, To: next.state, Occurrence: next, Before: o,
 		DetectedBy: detectedBy(cmd.Actor.Kind()),
 		Clamped:    clampDelta > 0,
 		ClampSkew:  clampDelta,
@@ -677,9 +691,12 @@ func dedupeKeyFor(id TransitionID, o Occurrence) string {
 	case TransitionT1, TransitionT7:
 		return "occ:" + o.id.String() + ":opened"
 	case TransitionT3:
-		return "occ:" + o.id.String() + ":suppressed:" + o.lastObservedAt.UTC().Format(time.RFC3339Nano)
+		return "occ:" + o.id.String() + ":suppressed:" + strconv.Itoa(o.suppressCount)
 	case TransitionT4:
-		return "occ:" + o.id.String() + ":unsuppressed:" + o.lastObservedAt.UTC().Format(time.RFC3339Nano)
+		// The count of the suppression this edge is ENDING, which T4 leaves
+		// untouched — so the pair of keys for one suppression cycle carry the same
+		// ordinal and read as the two halves of one episode of silence.
+		return "occ:" + o.id.String() + ":unsuppressed:" + strconv.Itoa(o.suppressCount)
 	case TransitionT5:
 		return "occ:" + o.id.String() + ":resolved"
 	case TransitionT6:
@@ -690,6 +707,22 @@ func dedupeKeyFor(id TransitionID, o Occurrence) string {
 		return ""
 	}
 }
+
+// ⛔ T3 AND T4 KEY OFF A COUNTER, NEVER A CLOCK.
+//
+// They used to be built from `lastObservedAt`, which Apply sets to
+// `cmd.At.RecordedAt()` — the instant oto happened to process the observation.
+// Two concurrent reconciler passes over one occurrence therefore minted two
+// different keys and appended TWO `occurrence.suppressed` events for ONE
+// suppression, so §C.8's "a job replayed at least once appends the fact exactly
+// once" did not hold for the only two edges in the table that can repeat inside
+// an episode. An interim fix keyed off `sourceUpdatedAt`, which was stable across
+// concurrent passes but still a timestamp, and still upstream's to move.
+//
+// `suppress_count` (migration 00023) is the real answer, and it is the one T8 has
+// always had in `reopen_count`: two passes decided from the same pre-image both
+// compute the same ordinal, and a genuine T3 -> T4 -> T3 inside one episode
+// produces 1 then 2 and records both facts.
 
 // OpenOccurrenceParams opens a new AlertOccurrence — SPEC §B.3 T1 (the first
 // sighting of an alert_key, or a firing observation with no open occurrence) and

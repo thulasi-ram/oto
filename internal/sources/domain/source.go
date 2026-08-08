@@ -158,6 +158,17 @@ const (
 	// MaxTolerableSkew. Skew is measured and surfaced, never used to reject an
 	// event (C12).
 	WarnClockSkew = "clock_skew"
+	// WarnReconcileDisabled means `reconcile_enabled` is false for this source.
+	//
+	// ⭐ ADR 0006 CALLS THE RECONCILER MANDATORY. The flag survives because oto
+	// cannot always reach an Alertmanager's API — the ADR's own consequences
+	// section names outbound reachability as a requirement, and a source behind a
+	// one-way network path is a real deployment, not a misconfiguration. What the
+	// flag must never be is SILENT: with it off, Alertmanager's MuteStage drops
+	// silenced and inhibited alerts before any webhook fires, so oto can never
+	// observe suppression for this source and will render an upstream-muted alert
+	// as firing indefinitely. This warning is that fact, standing, on the source.
+	WarnReconcileDisabled = "reconcile_disabled"
 	// WarnPrometheusUnconfigured means no prometheus_url, so RuleSnapshots can
 	// only ever carry the expression decoded from generatorURL.
 	WarnPrometheusUnconfigured = "prometheus_not_configured"

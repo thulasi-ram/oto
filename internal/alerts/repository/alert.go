@@ -780,6 +780,25 @@ WHERE org_id = $1 AND id = $2`
 // never be observable apart. The GREATEST guards mirror alerts_seen_ck and
 // alerts_change_ck so that a skewed clock produces a clamped row rather than a
 // 23514 in the middle of an ingest batch.
+//
+// ⚠️ IT IS LAST-WRITER-WINS AND THAT IS ACCEPTED, because every caller is already
+// serialised by something stronger:
+//
+//   - `Service.observe` holds this alert's row lock from its `UpsertBatch`
+//     onwards, so two ingest or reconcile batches touching one alert cannot
+//     interleave here at all;
+//   - `Service.expire` reaches this line only after WINNING the occurrence's
+//     `state_version` compare-and-set, so a projection it writes describes a
+//     transition it actually made;
+//   - the acknowledge path reaches it only after winning `SetAck`'s version
+//     assertion, which is the guard that stopped it rewinding `state` and
+//     `current_occurrence_id` to a pre-resolution episode.
+//
+// Adding a version predicate here would therefore arbitrate between writers that
+// cannot race, at the cost of a second failure mode on the ingest hot path. What
+// it must NOT become is a write reachable without one of those three guarantees —
+// a new caller that reads an alert, thinks, and then writes this row is a caller
+// that needs its own compare-and-set first.
 func (r *AlertRepository) SetProjection(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, p domain.AlertProjection,
 ) error {

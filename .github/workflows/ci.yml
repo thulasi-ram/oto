@@ -77,7 +77,7 @@ jobs:
       - run: go test -race -count=1 ./...
 
   ui:
-    name: ui / lint + build + test
+    name: ui / gate G3 + lint + build + test
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -90,6 +90,38 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --no-audit --no-fund
+
+      # Gate G3 (SPEC §L.8.1): regenerate the TypeScript client from
+      # api/openapi/openapi.yaml and assert the checked-in copy is byte-identical.
+      # This gate existed and was never run; when it was finally run it produced
+      # 292 diff lines, and the UI had been typed against a contract three
+      # features behind the server for as long as that took. Drift now fails here,
+      # not in a browser.
+      - name: gate G3 — openapi -> ts client is not stale
+        run: npm run generate:check
+
       - run: npm run typecheck
       - run: npm run build
+
+      # `--passWithNoTests` lives in the script, not here: vitest exits 1 on an
+      # empty suite, which is how the ui job was red at HEAD from the commit that
+      # introduced it. An empty suite is a gap to fill, not a build to break.
       - run: npm run test
+
+  vocabulary:
+    name: scope / vocabulary (AC-49)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # SCOPE-BOUNDARY AC-49 / SPEC §P-18. oto is not an on-call product, and the
+      # vocabulary always drifts before the schema does: a word arrives, then the
+      # concept, then the column, then the rota. The gate scans internal/,
+      # web/src/ and db/migrations/ for the banned terms and the forbidden
+      # person-subject columns. Known debt is enumerated in
+      # tools/lintvocab/baseline.txt and can only shrink.
+      - run: go run ./tools/lintvocab

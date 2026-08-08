@@ -74,10 +74,12 @@ const REASONS: readonly NotificationReason[] = [
   "refired",
   "acked",
   "unacked",
+  "snoozed",
+  "unsnoozed",
   "enriched",
   "rule_changed",
   "comment",
-  "escalation",
+  "unacked_reminder",
   "storm",
 ];
 
@@ -93,12 +95,18 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   refired: "fired again",
   acked: "acknowledged",
   unacked: "acknowledgement withdrawn",
+  // The only two reasons a snooze does not itself suppress (§B.8.4): a damper
+  // that cannot announce itself is a silent mute.
+  snoozed: "snoozed",
+  unsnoozed: "snooze ended",
   enriched: "enrichment arrived",
   rule_changed: "rule changed",
   comment: "comment added",
-  // Note the wording: this is oto's own timer on an unacknowledged signal, not
-  // a human escalation chain. oto has no on-call and no notion of who is next.
-  escalation: "still firing and unacknowledged",
+  // Note the wording: this is oto's own timer on an unacknowledged signal, and
+  // it is ONE stage that ends at a channel. oto has no ladder, no rota and no
+  // notion of who is next — which is why the reason is not called what the rest
+  // of this industry calls it (SPEC §G.9.1, §A.1).
+  unacked_reminder: "still firing and unacknowledged",
   storm: "storm mode",
 };
 
@@ -234,8 +242,9 @@ const PolicyRow: Component<{
             </p>
           )}
         </Show>
-        <Show when={p().escalate_after_seconds}>
+        <Show when={p().unacked_reminder_after_seconds}>
           {(secs) => (
+            // vocab:allow — user-facing copy that DENIES the concept; the sentence exists to tell an operator oto will not page.
             <p title="oto's own clock on an unacknowledged signal. It broadcasts one reply in the existing thread; it does not page anyone and it does not know who is on call.">
               <span class="text-ink-subtle">if still unacknowledged after</span>{" "}
               {Math.round(secs() / 60)} minutes, say so once

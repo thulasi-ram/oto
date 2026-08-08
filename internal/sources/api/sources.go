@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/netguard"
 	"github.com/thulasiram/oto/internal/platform/validate"
 	"github.com/thulasiram/oto/internal/sources/domain"
 )
@@ -101,6 +103,13 @@ func (rt *Router) decorate(
 //
 // The ingest token is minted here and RETURNED EXACTLY ONCE. Only its sha256 is
 // stored, so it can be replaced but never recovered.
+//
+// ⭐ THE SOURCE AND ITS CREDENTIAL COMMIT TOGETHER OR NOT AT ALL. They used to be
+// three independent commits — seal the credential, insert the row, mint the token
+// — and when the mint failed the row stayed. The result was a source that the
+// settings screen shows as configured, whose webhook URL an operator has already
+// pasted into `webhook_config`, and which answers 401 to every alert forever.
+// Alertmanager does not retry a 4xx, so those alerts are simply gone.
 func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -130,25 +139,47 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	credentialID, err := rt.sealCredential(r.Context(), scope, dto.Credential)
-	if err != nil {
+	if err := rt.checkTLSSkipVerify(dto.TLSSkipVerify); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if err := rt.checkTargets(r.Context(), map[string]string{
+		"base_url":       dto.BaseURL,
+		"prometheus_url": dto.PrometheusURL,
+	}); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	src, err := rt.registry.Create(r.Context(), scope, dto.toDraft(credentialID))
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-
-	secret, prefix, err := rt.tokens.IssueIngestToken(r.Context(), scope, src.ID)
+	var (
+		src    domain.Source
+		secret string
+		prefix string
+	)
+	err = rt.inTx(r.Context(), func(ctx context.Context) error {
+		credentialID, cerr := rt.sealCredential(ctx, scope, dto.Credential)
+		if cerr != nil {
+			return cerr
+		}
+		created, cerr := rt.registry.Create(ctx, scope, dto.toDraft(credentialID))
+		if cerr != nil {
+			return cerr
+		}
+		s, p, terr := rt.tokens.IssueIngestToken(ctx, scope, created.ID)
+		if terr != nil {
+			return terr
+		}
+		src, secret, prefix = created, s, p
+		return nil
+	})
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
 	body := SourceCreatedDTO{
+		// Rendered AFTER the commit: the health and cluster joins are reads, and a
+		// read inside the writing transaction would see a world nobody else can.
 		Source:      rt.oneDTO(r.Context(), scope, src),
 		IngestToken: secret,
 		TokenPrefix: prefix,
@@ -212,24 +243,45 @@ func (rt *Router) updateSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A supplied credential ROTATES the existing secret in place when there is
-	// one, so the source never spends a moment pointing at nothing.
-	var credential **uuid.UUID
-	if dto.Credential != nil {
-		existing, gerr := rt.sources.Get(r.Context(), scope, id)
-		if gerr != nil {
-			httpx.WriteProblem(w, r, gerr)
-			return
-		}
-		newID, cerr := rt.rotateCredential(r.Context(), scope, existing.AuthCredentialID, dto.Credential)
-		if cerr != nil {
-			httpx.WriteProblem(w, r, cerr)
-			return
-		}
-		credential = &newID
+	if err := rt.checkTLSSkipVerify(dto.TLSSkipVerify); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	targets := map[string]string{}
+	if dto.BaseURL != nil {
+		targets["base_url"] = *dto.BaseURL
+	}
+	if dto.PrometheusURL.Supplied() {
+		targets["prometheus_url"] = dto.PrometheusURL.Value
+	}
+	if err := rt.checkTargets(r.Context(), targets); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
 	}
 
-	src, err := rt.registry.Update(r.Context(), scope, id, dto.toPatch(credential))
+	var src domain.Source
+	err = rt.inTx(r.Context(), func(ctx context.Context) error {
+		// A supplied credential ROTATES the existing secret in place when there is
+		// one, so the source never spends a moment pointing at nothing.
+		var credential **uuid.UUID
+		if dto.Credential != nil {
+			existing, gerr := rt.sources.Get(ctx, scope, id)
+			if gerr != nil {
+				return gerr
+			}
+			newID, cerr := rt.rotateCredential(ctx, scope, existing.AuthCredentialID, dto.Credential)
+			if cerr != nil {
+				return cerr
+			}
+			credential = &newID
+		}
+		updated, uerr := rt.registry.Update(ctx, scope, id, dto.toPatch(credential))
+		if uerr != nil {
+			return uerr
+		}
+		src = updated
+		return nil
+	})
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -306,6 +358,14 @@ func (rt *Router) testSource(w http.ResponseWriter, r *http.Request) {
 // with `401`, which Alertmanager treats as PERMANENT, so notifications sent in
 // that window are lost — which is why the contract tells the operator to update
 // the receiver promptly and why nothing here delays the revocation to be kind.
+//
+// ⛔ THE ONE THING IT MUST NEVER DO IS LEAVE ZERO WORKING TOKENS. The issuer used
+// to revoke first and mint second; a mint that failed for any reason therefore
+// revoked the source's only credential and left nothing in its place, and because
+// Alertmanager never retries a 401 the alerts sent afterwards were destroyed
+// rather than delayed — the precise failure ADR 0007 exists to prevent. The whole
+// rotation is now one transaction and mints before it revokes, so the failure
+// mode is "nothing changed" instead of "nothing works".
 func (rt *Router) rotateSourceIngestToken(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -320,12 +380,22 @@ func (rt *Router) rotateSourceIngestToken(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	src, err := rt.sources.Get(r.Context(), scope, id)
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	secret, prefix, err := rt.tokens.IssueIngestToken(r.Context(), scope, src.ID)
+	var (
+		src            domain.Source
+		secret, prefix string
+	)
+	err = rt.inTx(r.Context(), func(ctx context.Context) error {
+		found, gerr := rt.sources.Get(ctx, scope, id)
+		if gerr != nil {
+			return gerr
+		}
+		s, p, terr := rt.tokens.IssueIngestToken(ctx, scope, found.ID)
+		if terr != nil {
+			return terr
+		}
+		src, secret, prefix = found, s, p
+		return nil
+	})
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -439,6 +509,86 @@ func (rt *Router) oneDTO(ctx context.Context, scope db.TenantScope, src domain.S
 		health = &h
 	}
 	return sourceDTO(src, clusterKey, health)
+}
+
+// checkTargets refuses a URL that resolves somewhere oto must not dial.
+//
+// ⚠️ THIS IS FEEDBACK, NOT THE CONTROL. It runs here so an operator who pastes
+// `http://169.254.169.254` sees a 422 naming the field while they are still
+// looking at the form. The control is the guard installed as the outbound
+// transport's dialer, which re-checks the address the socket actually connected
+// to — a check performed here and a connection opened later are two independent
+// DNS resolutions, and a record served with TTL 0 gets to answer them
+// differently.
+//
+// Every supplied field is checked and every violation reported together: an
+// operator who got both URLs wrong should learn that once.
+func (rt *Router) checkTargets(ctx context.Context, targets map[string]string) error {
+	if rt.guard == nil {
+		return nil
+	}
+	// Sorted so the violation order is stable; a problem+json body whose field
+	// order changes between identical requests is a body no test can assert on.
+	fields := make([]string, 0, len(targets))
+	for field := range targets {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+
+	var violations []errs.Violation
+	for _, field := range fields {
+		raw := targets[field]
+		if raw == "" {
+			continue
+		}
+		err := rt.guard.CheckURL(ctx, raw)
+		if err == nil {
+			continue
+		}
+		if netguard.Undecided(err) {
+			// The guard could not look the host up. That is NOT permission and it is
+			// NOT a refusal: the dialer re-checks the address it actually connects
+			// to, every time, so an unresolvable name saved today is refused at the
+			// moment it would be dialled. Blocking the save instead would mean a DNS
+			// blip — or an operator configuring an in-cluster name from a laptop —
+			// makes oto impossible to configure.
+			continue
+		}
+		message := "this URL is not a permitted destination"
+		if e, ok := errs.As(err); ok && e.Message != "" {
+			message = e.Message
+		}
+		violations = append(violations, errs.Violation{
+			Field: field, Code: "forbidden_target", Message: message,
+		})
+	}
+	if len(violations) == 0 {
+		return nil
+	}
+	return errs.Validation("source_target_not_permitted",
+		"this source points at an address oto will not connect to", violations...)
+}
+
+// checkTLSSkipVerify refuses a tenant's attempt to turn off certificate
+// verification.
+//
+// ⛔ `tls_skip_verify` IS AN OPERATOR DECISION, NOT A TENANT'S. It disables
+// certificate verification on an outbound connection made by oto's process, from
+// oto's network — a decision about which certificates this DEPLOYMENT trusts. A
+// public create/update body could set it, which meant any org member could
+// downgrade oto's own TLS posture and then point the source at something they
+// wanted to man-in-the-middle. It is now gated on the deployment-level switch and
+// refused otherwise (§M2).
+func (rt *Router) checkTLSSkipVerify(requested *bool) error {
+	if requested == nil || !*requested || rt.allowNoTLSV {
+		return nil
+	}
+	return errs.Validation("tls_skip_verify_not_permitted",
+		"certificate verification is enforced by this deployment",
+		errs.Violation{
+			Field: "tls_skip_verify", Code: "forbidden",
+			Message: "this is a deployment-level setting and cannot be changed per source",
+		})
 }
 
 // sealCredential stores a supplied credential and returns its id, or nil.

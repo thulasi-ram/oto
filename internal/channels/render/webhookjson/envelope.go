@@ -22,9 +22,12 @@ const Schema = "oto.notification.v1"
 // holds. If this file ever needs a Slack affordance, the abstraction is wrong and
 // the SPEC changes first (R5).
 type Envelope struct {
-	Schema      string    `json:"schema"`
-	Reason      string    `json:"reason"`
-	Mode        string    `json:"mode"`
+	Schema string `json:"schema"`
+	Reason string `json:"reason"`
+	Mode   string `json:"mode"`
+	// Continued marks a root that REPLACES a card this destination already had for
+	// this generation (§H.9), so a consumer can tell a recovery from a new incident.
+	Continued   bool      `json:"continued,omitempty"`
 	DeliveredAt time.Time `json:"delivered_at"`
 
 	Org         Org                   `json:"org"`

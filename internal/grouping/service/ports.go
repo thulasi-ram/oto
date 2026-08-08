@@ -27,9 +27,14 @@ type GroupRepository interface {
 	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Group, error)
 	GetOpenByKey(ctx context.Context, s db.TenantScope, groupKey string) (domain.Group, bool, error)
 	OpenGeneration(ctx context.Context, s db.TenantScope, in repository.NewGeneration) (domain.Group, error)
-	SetRollup(ctx context.Context, s db.TenantScope, g domain.Group) error
-	SetStorm(ctx context.Context, s db.TenantScope, g domain.Group) error
-	Close(ctx context.Context, s db.TenantScope, g domain.Group) error
+	// The three writers below are COMPARE-AND-SET on `alert_groups.state_version`:
+	// `fromVersion` is the version the caller READ, and a write whose version has
+	// moved returns errs.KindConflict rather than clobbering the winner. The
+	// column already existed for §C.7's idempotency key; using it as the
+	// optimistic lock as well keeps one answer to "has this generation changed".
+	SetRollup(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error
+	SetStorm(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error
+	Close(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error
 	Touch(ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time) error
 	SetNotificationReason(ctx context.Context, s db.TenantScope, groupID uuid.UUID, reason string) error
 	StateVersion(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (int, error)

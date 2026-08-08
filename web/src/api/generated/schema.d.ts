@@ -487,6 +487,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/snoozes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Everything oto is currently quiet about, org-wide
+         * @description **Every active snooze in the org, with its expiry, soonest wake-up first.**
+         *
+         *     This is the counterweight that makes snooze safe to ship. §B.8.6 requires a persistent,
+         *     dismissible banner enumerating every quiet period in force "so a snooze cannot be forgotten" —
+         *     a damper nobody can enumerate is the silent suppression oto refuses to ship, arriving by the
+         *     back door. This endpoint is what that banner reads.
+         *
+         *     > ### ⛔ This is not `GET /api/v1/alerts?snoozed=true`, and that cannot be made into it
+         *     >
+         *     > That operation pages **alerts**. It answers *which alerts are quiet* and structurally cannot
+         *     > answer *who asked, why, and until when*, because those are facts about an `alert_snoozes`
+         *     > row and one alert has a whole history of them. Nor can it order by expiry, which is the one
+         *     > ordering a banner is read in. Use `?snoozed=true` to filter the alert list; use this to
+         *     > review the quiet periods themselves.
+         *
+         *     ### What "active" means here
+         *
+         *     A row appears while it is **open and its clock has not run out**, evaluated against **oto's**
+         *     clock rather than the caller's — a client whose clock is wrong must not be able to disagree
+         *     with the server about what is muted. A snooze whose time has passed but which the 60-second
+         *     expiry sweep has not yet closed is already gone from this list: it is no longer suppressing
+         *     anything, and listing it would overstate how quiet oto is.
+         *
+         *     Ended snoozes are **not** here. Per-alert history, including how each one finished, is at
+         *     `GET /api/v1/alerts/{id}/snoozes`.
+         *
+         *     ### Ordering
+         *
+         *     By `snoozed_until` ascending, so the banner reads as a countdown: what comes back first is at
+         *     the top. `remaining_seconds` is computed server-side against the same instant for every row on
+         *     the page, so the list never disagrees with itself about what time it is.
+         */
+        get: operations["listActiveSnoozes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/occurrences/{id}": {
         parameters: {
             query?: never;
@@ -1906,6 +1956,15 @@ export interface components {
         AckState: "unacked" | "acked";
         /**
          * @description Why an occurrence is suppressed. Non-null **if and only if** `state == "suppressed"`.
+         *
+         *     > ### ⛔ These are **Alertmanager's four reasons and nothing else**
+         *     >
+         *     > This enum mirrors upstream. It will never gain `snoozed`: a snooze is a human asking *oto*
+         *     > to be quiet, Alertmanager has never heard of it, and recording it here would report
+         *     > *"Alertmanager is suppressing this"* about a fact that exists only in oto's database.
+         *     > Snooze records itself as `NotificationSuppressedReason: snoozed` instead — oto's own
+         *     > notification-suppression vocabulary, which is the company it belongs in. An alert that is
+         *     > both silenced upstream and snoozed here shows **both**, because neither overrides the other.
          * @example silence
          * @enum {string|null}
          */
@@ -1935,20 +1994,43 @@ export interface components {
          * @description The closed set of timeline event types. Clients should treat an unrecognised value as
          *     forward-compatible and render its `summary`, but the server never invents a type: adding one
          *     requires a specification amendment.
+         *
+         *     `alert.snoozed` and `alert.unsnoozed` are the two snooze facts. They record what **oto's
+         *     notification behaviour** did and say nothing about the signal: the alert was firing before the
+         *     snooze, is firing during it, and is firing after it. `alert.snoozed` carries
+         *     `{snooze_id, until, note, duration_seconds}`; `alert.unsnoozed` carries
+         *     `{snooze_id, reason}` where the reason is `manual`, `expired` or `superseded`, and its
+         *     `actor_kind` is `user` for the first two spellings and `system` for an expiry.
+         *
+         *     Both are valid values of the `type=` filter on every timeline endpoint, which is how "show me
+         *     every quiet period on this alert" is asked for.
          * @example occurrence.opened
          * @enum {string}
          */
-        AlertEventType: "alert.created" | "alert.mutated" | "alert.flapping_started" | "alert.flapping_ended" | "occurrence.opened" | "occurrence.reopened" | "occurrence.suppressed" | "occurrence.unsuppressed" | "occurrence.resolved" | "occurrence.expired" | "occurrence.acknowledged" | "occurrence.unacknowledged" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "group.storm_started" | "group.storm_ended" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew";
+        AlertEventType: "alert.created" | "alert.mutated" | "alert.flapping_started" | "alert.flapping_ended" | "occurrence.opened" | "occurrence.reopened" | "occurrence.suppressed" | "occurrence.unsuppressed" | "occurrence.resolved" | "occurrence.expired" | "occurrence.acknowledged" | "occurrence.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "group.storm_started" | "group.storm_ended" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew";
         /**
          * @description Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
          *     is mapped onto this enum on ingest.
+         *
+         *     `unacked_reminder` is oto's ONE reminder stage (§G.9.1): the signal is still firing and still
+         *     unacknowledged, so oto says so once more in the existing thread. It replaced the value this enum
+         *     used to spell `escalation`, which is a scope-banned word (SPEC §A.1, CONTEXT.md §3) — an
+         *     escalation is a ladder that ends at a person, and oto's one stage ends at a CHANNEL. Migration
+         *     `00019_unacked_reminder.sql` rewrote the stored values and narrowed the DB CHECK; a client that
+         *     still sends `escalation` is rejected with 422 `unknown notification reason`.
+         *
+         *     `snoozed` and `unsnoozed` announce a quiet period beginning and ending. They are the **only two
+         *     reasons a snooze does not itself suppress** (§B.8.4): a damper that cannot announce itself is
+         *     the silent suppression oto refuses to ship. Everything else for that alert — including
+         *     `rule_changed`, which is otherwise never gated — is suppressed while the snooze holds, because
+         *     a partial mute is a confusing mute.
          *
          *     `repeat` is the single most important value: it means "nothing changed, this is a nag", and oto
          *     answers it by **updating the existing message and never posting a new one**.
          * @example fired
          * @enum {string}
          */
-        NotificationReason: "fired" | "new_alerts" | "some_resolved" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "enriched" | "rule_changed" | "comment" | "escalation" | "storm";
+        NotificationReason: "fired" | "new_alerts" | "some_resolved" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "unacked_reminder" | "storm";
         /**
          * @example delivered
          * @enum {string}
@@ -1958,10 +2040,33 @@ export interface components {
          * @description Why a Notification produced no delivery. Non-null **if and only if** `status == "suppressed"`.
          *     Suppression is always recorded and always visible — oto's silence must never be
          *     indistinguishable from "no alert".
+         *
+         *     **This is oto's own vocabulary, and it is not `SuppressionReason`.** The two are different
+         *     facts about different systems and are deliberately two enums:
+         *
+         *     - `SuppressionReason` mirrors **Alertmanager's four** reasons — `silence`, `inhibition`,
+         *       `mute_time_interval`, `active_time_interval` — and lives on the *occurrence*. It means
+         *       *Alertmanager is not delivering this*.
+         *     - This enum lives on the *notification* and means *oto chose not to send*.
+         *
+         *     > ### ⛔ `snoozed` belongs **here** and must never be added to `SuppressionReason`
+         *     >
+         *     > A snooze is a human asking oto to be quiet. Recording it as an Alertmanager suppression
+         *     > reason would make oto report *"Alertmanager is suppressing this"* about something
+         *     > Alertmanager has never heard of — a lie about the world, in the one place whose job is to
+         *     > mirror it. `state` never takes the value `snoozed` either. An alert that is both silenced
+         *     > upstream and snoozed here shows **both** facts, because neither overrides the other.
+         *
+         *     **The values are listed in precedence order.** When several apply, the **first match** is the
+         *     one recorded. `snoozed` outranks the automatic dampers because it is a deliberate human act
+         *     and therefore the most actionable explanation — "you snoozed this" tells an operator what to
+         *     do, where "flapping" only tells them what happened. It sits below `channel_disabled` and
+         *     `no_policy` because those two mean the message had nowhere to go at all, which is a truer
+         *     account of why nothing was sent.
          * @example throttled
          * @enum {string|null}
          */
-        NotificationSuppressedReason: "no_policy" | "throttled" | "storm" | "flapping" | "verbosity" | "channel_disabled" | "duplicate_render" | null;
+        NotificationSuppressedReason: "channel_disabled" | "no_policy" | "snoozed" | "storm" | "flapping" | "throttled" | "verbosity" | "duplicate_render" | null;
         /**
          * @description How one delivery materialises in the conversation. `update_root` is the primary mechanism;
          *     thread replies are the exception, gated by the channel's verbosity.
@@ -2001,9 +2106,10 @@ export interface components {
          *
          *     - `all` — every reply type.
          *     - `status_changes` *(default)* — ack, unack, suppressed, unsuppressed, expired, refired,
-         *       new_alerts, all_resolved, rule_changed, comment, escalation, storm.
-         *     - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, escalation, storm.
-         *     - `firing_only` — new_alerts, rule_changed, escalation, storm.
+         *       new_alerts, all_resolved, rule_changed, comment, unacked_reminder, storm.
+         *     - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, unacked_reminder,
+         *       storm.
+         *     - `firing_only` — new_alerts, rule_changed, unacked_reminder, storm.
          * @default status_changes
          * @example status_changes
          * @enum {string}
@@ -2250,6 +2356,22 @@ export interface components {
              * @example false
              */
             is_flapping: boolean;
+            /**
+             * @description The snooze currently in force, or `null` when the alert is awake. **Always present**,
+             *     including on list rows — `null` means *awake*, an absent key would mean *unknown*, and
+             *     those are different answers.
+             *
+             *     It sits **beside** `state` and `ack_state` and never inside them: the three are orthogonal
+             *     axes. A non-null `snooze` on a `firing` alert means *oto is holding its tongue about
+             *     something that is still happening* — render the alert as firing, at whatever severity it
+             *     has, and the snooze as a separate `:zzz:` badge with a countdown to `snoozed_until`.
+             *
+             *     **It is on the list row on purpose.** Snoozed alerts are not hidden from the default list
+             *     (§B.8.6), so without this field a row could not say whether it was quiet and an operator
+             *     would have to open every alert to find out — which is how a forgotten snooze becomes a
+             *     missed incident. The server batch-loads it for the whole page; it costs no `include=`.
+             */
+            snooze?: components["schemas"]["SnoozeDTO"] | null;
             /** @description Present only when the request asked for `include=current_occurrence`. */
             current_occurrence?: components["schemas"]["OccurrenceDTO"] | null;
             /** @description Present only when the request asked for `include=enrichments`. */
@@ -2274,19 +2396,10 @@ export interface components {
             /** @description The group generation the current occurrence belongs to. */
             group?: components["schemas"]["GroupRefDTO"] | null;
             delivery_summary?: components["schemas"]["DeliverySummaryDTO"];
-            /**
-             * @description The snooze currently in force, or `null` when the alert is awake.
-             *
-             *     It sits **beside** `state` and `ack_state` and never inside them: the three are
-             *     orthogonal axes. A non-null `snooze` on a `firing` alert means *oto is holding its
-             *     tongue about something that is still happening* — render the alert as firing and the
-             *     snooze as a separate badge with its countdown.
-             */
-            snooze?: components["schemas"]["SnoozeDTO"] | null;
         };
         /**
-         * @description One **contiguous firing episode** of an Alert. This is what you acknowledge and what you time
-         *     for MTTR.
+         * @description One **contiguous firing episode** of an Alert. This is what you acknowledge and whose firing
+         *     duration is measured.
          */
         OccurrenceDTO: {
             id: components["schemas"]["Uuid"];
@@ -2539,6 +2652,34 @@ export interface components {
             active: boolean;
         };
         /**
+         * @description One quiet period currently in force, as the org-wide view lists it: the snooze, the alert it
+         *     mutes, and how long is left.
+         *
+         *     A snoozed alert is still firing and still whatever severity it was — read `alert.state` for
+         *     what the world is doing, and this row only for what **oto's notifications** are doing.
+         */
+        ActiveSnoozeDTO: components["schemas"]["SnoozeDTO"] & {
+            alert_id: components["schemas"]["Uuid"];
+            alert_key: components["schemas"]["AlertKey"];
+            /**
+             * @description The Alert this snooze mutes, as a compact reference — enough to recognise it and open
+             *     it, never the whole row.
+             *
+             *     Null when the Alert could not be read. **The snooze is still listed**: a quiet period
+             *     whose subject is unreadable is still a quiet period somebody has to know about, and
+             *     dropping the row would hide exactly what this endpoint exists to surface.
+             */
+            alert?: components["schemas"]["AlertRefDTO"] | null;
+            /**
+             * Format: double
+             * @description How much quiet is left, computed against **oto's** clock, so a client with a skewed
+             *     clock cannot render a countdown that disagrees with the server about what is muted.
+             *     Never negative.
+             * @example 12480.5
+             */
+            remaining_seconds: number;
+        };
+        /**
          * @description **Give exactly one of `until` and `duration_seconds`.** Both is a `422` and neither is a `422`:
          *     there is no indefinite snooze and therefore no default window. The bounds — minimum 5 minutes,
          *     maximum 30 days — are identical in this document, in the domain constructor and in the database
@@ -2739,6 +2880,41 @@ export interface components {
              * @description Never exceeds `total_count`.
              */
             acked_count: number;
+            /**
+             * Format: int32
+             * @description How many **currently-joined member alerts** oto is holding its tongue about right now.
+             *
+             *     > ### ⛔ There is no group-level snooze, and this is not one
+             *     >
+             *     > `POST /alert-groups/{id}/snooze` is a **fan-out** of the per-alert primitive: it writes
+             *     > one snooze per currently-joined member and nothing at all onto the group. This count is
+             *     > the only place that fan-out's result is visible — without it the button could be pressed
+             *     > and never seen to have worked.
+             *
+             *     **Read it against `total_count`, not as a boolean.** "One of forty is muted" and "all
+             *     forty are" are different facts, and the group is wholly quiet only when the two are equal.
+             *     Alerts that join *after* the fan-out are not snoozed — a snooze is never predictive — so
+             *     this number falls behind `total_count` on its own as a storm grows, and that is correct.
+             *
+             *     It is computed at read time rather than stored, because whether a snooze is active is a
+             *     question about the clock: snoozes expire on their own, and a stored count would keep
+             *     claiming members were muted after they had woken.
+             * @example 3
+             */
+            snoozed_count: number;
+            /**
+             * @description When the **last** currently-snoozed member wakes — the instant after which nothing in this
+             *     generation is muted. Null when `snoozed_count` is zero.
+             *
+             *     It is the latest and not the earliest wake-up because the question a group header answers
+             *     is *"when does this stop being quiet"*, and the group is not done being quiet until its
+             *     last snoozed member resumes. Partial quiet before then is visible as
+             *     `snoozed_count < total_count`, which is why both are carried.
+             *
+             *     **Neither field changes how the group renders.** Colour, severity and the state counts
+             *     follow the members' `state`; a snoozed generation is still firing and is still listed.
+             */
+            snoozed_until?: components["schemas"]["Timestamp"] | null;
             /**
              * @description True while more than the storm threshold (default 25) distinct alerts have joined this
              *     generation inside the storm window (default 60 s). In storm mode the group posts exactly one
@@ -3013,8 +3189,19 @@ export interface components {
              */
             push_enabled: boolean;
             /**
-             * @description Whether the API v2 reconciler runs. Turning this off means suppression can never be
-             *     observed, because Alertmanager's mute stage hides suppressed alerts from webhooks entirely.
+             * @description Whether the API v2 reconciler runs (ADR 0006, amended). Defaults to `true` and should
+             *     stay on.
+             *
+             *     Turning it off is a DOCUMENTED, PERMANENT DEGRADATION of this source: Alertmanager's
+             *     mute stage drops silenced and inhibited alerts before any webhook fires, so
+             *     reconciliation is the only way oto can ever observe suppression. With it off, oto will
+             *     show an alert that is silenced upstream as `firing`, indefinitely, with no way to learn
+             *     otherwise; divergence accounting and `send_resolved` discovery stop as well. The source
+             *     then carries a standing `reconcile_disabled` warning on its health.
+             *
+             *     The switch exists because oto cannot always reach an Alertmanager's API - the reverse
+             *     direction is not implied by the webhook working - and a source that fails every
+             *     reconcile would be marked `unreachable`, which blocks expiry for its alerts forever.
              * @default true
              */
             reconcile_enabled: boolean;
@@ -3055,7 +3242,7 @@ export interface components {
              */
             ingest_token: string;
             /**
-             * @description The first twelve characters, retained for display so the token can be identified later.
+             * @description The kind literal plus four characters, retained for display so the token can be identified later.
              * @example oto_ingest_A9kZ
              */
             token_prefix?: string;
@@ -3261,8 +3448,8 @@ export interface components {
             renderer: components["schemas"]["RendererId"];
             verbosity: components["schemas"]["Verbosity"];
             /**
-             * @description When false, every delivery mode collapses to an in-place root update — except escalation,
-             *     which is always broadcast.
+             * @description When false, every delivery mode collapses to an in-place root update — except the
+             *     unacked reminder, which is always broadcast.
              * @default true
              */
             thread_updates: boolean;
@@ -3347,12 +3534,17 @@ export interface components {
             throttle?: components["schemas"]["ThrottleDTO"] | null;
             /**
              * Format: int32
-             * @description How long a group's oldest member may stay firing and unacked before one escalation is sent
-             *     as a broadcast reply. Alertmanager's own `repeat_interval` defaults to four hours, which is
-             *     far too slow for an unacknowledged critical, so oto runs its own clock. `null` disables it.
+             * @description How long a group's oldest member may stay firing and unacked before ONE reminder is sent as
+             *     a broadcast reply. Alertmanager's own `repeat_interval` defaults to four hours, which is far
+             *     too slow for an unacknowledged critical, so oto runs its own clock. `null` disables it.
+             *
+             *     ⛔ SCALAR, ONE STAGE, FOREVER (SPEC §G.9.1). It never becomes an array, a ladder or a stage
+             *     list, and its target is always the policy's own `channel_ids` — never a person. The field
+             *     was called `escalate_after_seconds` until migration `00019_unacked_reminder.sql`; the old
+             *     spelling named a concept oto does not have (SPEC §A.1, §P-20).
              * @example 900
              */
-            escalate_after_seconds?: number | null;
+            unacked_reminder_after_seconds?: number | null;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -3889,7 +4081,7 @@ export interface components {
             /** @example laptop CLI */
             name: string;
             /**
-             * @description The first twelve characters, so a token can be identified without revealing it.
+             * @description The kind literal plus four characters, so a token can be identified without revealing it.
              * @example oto_pat_AbCd
              */
             prefix: string;
@@ -4265,7 +4457,13 @@ export interface components {
             redact_annotations?: string[];
             /** @default true */
             push_enabled: boolean;
-            /** @default true */
+            /**
+             * @description Leave this on. Turning it off means oto can never observe a silenced or inhibited alert
+             *     for this source and will show upstream-muted alerts as firing indefinitely (ADR 0006,
+             *     amended). The source carries a standing `reconcile_disabled` health warning while it is
+             *     off.
+             * @default true
+             */
             reconcile_enabled: boolean;
             /**
              * Format: int32
@@ -4295,6 +4493,12 @@ export interface components {
             redact_labels?: string[];
             redact_annotations?: string[];
             push_enabled?: boolean;
+            /**
+             * @description Setting this to `false` is a permanent, documented degradation: oto can never observe a
+             *     silenced or inhibited alert for this source afterwards and will show upstream-muted
+             *     alerts as firing indefinitely (ADR 0006, amended). The source carries a standing
+             *     `reconcile_disabled` health warning while it is off.
+             */
             reconcile_enabled?: boolean;
             /** Format: int32 */
             reconcile_interval_seconds?: number;
@@ -4380,7 +4584,7 @@ export interface components {
             channel_ids: components["schemas"]["Uuid"][];
             throttle?: components["schemas"]["ThrottleDTO"];
             /** Format: int32 */
-            escalate_after_seconds?: number;
+            unacked_reminder_after_seconds?: number;
         };
         /** @description Partial update; every field is optional and only the supplied ones change. */
         UpdatePolicyRequest: {
@@ -4393,7 +4597,7 @@ export interface components {
             channel_ids?: components["schemas"]["Uuid"][];
             throttle?: components["schemas"]["ThrottleDTO"] | null;
             /** Format: int32 */
-            escalate_after_seconds?: number | null;
+            unacked_reminder_after_seconds?: number | null;
         };
         /**
          * @description Describe the fact to dry-run. Supply exactly one subject — `alert_id`, `occurrence_id` or
@@ -4452,6 +4656,11 @@ export interface components {
         };
         SnoozeHistoryResponse: {
             data: components["schemas"]["SnoozeHistoryDTO"][];
+            meta: components["schemas"]["Meta"];
+        };
+        ActiveSnoozeListResponse: {
+            data: components["schemas"]["ActiveSnoozeDTO"][];
+            page: components["schemas"]["PageInfo"];
             meta: components["schemas"]["Meta"];
         };
         OccurrenceListResponse: {
@@ -4868,6 +5077,25 @@ export interface components {
          */
         MatcherParam: string;
         /**
+         * @description Comma-separated `source_fingerprint` values, matched exactly.
+         *
+         *     **This is how a `group_by=fingerprint` roll-up bucket is opened.** `GET /api/v1/alerts/rollups`
+         *     can bucket on three axes — `alertname`, `namespace` and `fingerprint` — and the first two have
+         *     always had a matching list filter. Without this one the fingerprint bucket could be counted and
+         *     never drilled into, which is the one thing a roll-up exists to let a user do: the bucket key
+         *     goes straight back in here.
+         *
+         *     The fingerprint is Alertmanager's own identity for a label set, **recomputed locally rather
+         *     than trusted from the wire**, and it is the join key for upstream debugging — never oto's
+         *     product identity. To ask "is this the same alert?" in oto's own terms, filter on `alert_key`
+         *     by opening the alert directly.
+         *
+         *     Pair it with `cluster=` when you have the cluster: the index that serves this filter leads with
+         *     `(org_id, cluster_key, …)`, so the two together are a range read where the fingerprint alone is
+         *     an org-scoped one.
+         */
+        SourceFingerprintParam: components["schemas"]["SourceFingerprint"][];
+        /**
          * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
          *
          *     **Omitting it includes both, and that is the default on purpose.** A snooze is a fact about
@@ -5005,6 +5233,25 @@ export interface operations {
                 namespace?: string[];
                 /** @description Comma-separated alert names, matched exactly against the promoted `alertname` label. */
                 alertname?: string[];
+                /**
+                 * @description Comma-separated `source_fingerprint` values, matched exactly.
+                 *
+                 *     **This is how a `group_by=fingerprint` roll-up bucket is opened.** `GET /api/v1/alerts/rollups`
+                 *     can bucket on three axes — `alertname`, `namespace` and `fingerprint` — and the first two have
+                 *     always had a matching list filter. Without this one the fingerprint bucket could be counted and
+                 *     never drilled into, which is the one thing a roll-up exists to let a user do: the bucket key
+                 *     goes straight back in here.
+                 *
+                 *     The fingerprint is Alertmanager's own identity for a label set, **recomputed locally rather
+                 *     than trusted from the wire**, and it is the join key for upstream debugging — never oto's
+                 *     product identity. To ask "is this the same alert?" in oto's own terms, filter on `alert_key`
+                 *     by opening the alert directly.
+                 *
+                 *     Pair it with `cluster=` when you have the cluster: the index that serves this filter leads with
+                 *     `(org_id, cluster_key, …)`, so the two together are a range read where the fingerprint alone is
+                 *     an org-scoped one.
+                 */
+                source_fingerprint?: components["parameters"]["SourceFingerprintParam"];
                 /**
                  * @description Arbitrary label selector, expressed as `label[<name>]=<value>`. Values may be comma-separated
                  *     to OR them; distinct names AND together.
@@ -5145,6 +5392,25 @@ export interface operations {
                 namespace?: string[];
                 /** @description Comma-separated alert names. */
                 alertname?: string[];
+                /**
+                 * @description Comma-separated `source_fingerprint` values, matched exactly.
+                 *
+                 *     **This is how a `group_by=fingerprint` roll-up bucket is opened.** `GET /api/v1/alerts/rollups`
+                 *     can bucket on three axes — `alertname`, `namespace` and `fingerprint` — and the first two have
+                 *     always had a matching list filter. Without this one the fingerprint bucket could be counted and
+                 *     never drilled into, which is the one thing a roll-up exists to let a user do: the bucket key
+                 *     goes straight back in here.
+                 *
+                 *     The fingerprint is Alertmanager's own identity for a label set, **recomputed locally rather
+                 *     than trusted from the wire**, and it is the join key for upstream debugging — never oto's
+                 *     product identity. To ask "is this the same alert?" in oto's own terms, filter on `alert_key`
+                 *     by opening the alert directly.
+                 *
+                 *     Pair it with `cluster=` when you have the cluster: the index that serves this filter leads with
+                 *     `(org_id, cluster_key, …)`, so the two together are a range read where the fingerprint alone is
+                 *     an org-scoped one.
+                 */
+                source_fingerprint?: components["parameters"]["SourceFingerprintParam"];
                 /** @description Arbitrary label selector, identical in every respect to the one on `listAlerts`. */
                 label?: {
                     [key: string]: string;
@@ -5710,6 +5976,42 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listActiveSnoozes: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of active snoozes, soonest wake-up first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveSnoozeListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];

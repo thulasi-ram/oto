@@ -9,6 +9,10 @@
 //	oto api        the HTTP API only; jobs are enqueued, never worked
 //	oto worker     the job worker only; no listener
 //	oto migrate    apply every pending migration and exit
+//	oto bootstrap  create the first org, user and API token, then exit. THIS IS
+//	               THE INSTALL PATH: v1 has no org-creation API and no signup, so
+//	               a migrated database has no credential that can reach it until
+//	               this has run. It is not an HTTP route and must never become one.
 //	oto version    print the version and exit
 //
 // `api` and `worker` exist so a deployment can scale the two independently — a
@@ -87,6 +91,11 @@ func run() error {
 
 	if flag.Arg(0) == "migrate" {
 		return migrateUp(ctx, cfg.DB.URL, logger)
+	}
+	if flag.Arg(0) == "bootstrap" {
+		// It takes flag.Args()[1:] rather than the global flag set: `-config` is
+		// oto's and everything after the subcommand is the command's own.
+		return bootstrapCommand(ctx, cfg.DB.URL, flag.Args()[1:])
 	}
 
 	// 3. Telemetry: the Prometheus registry and, optionally, OTLP traces.
@@ -173,11 +182,13 @@ func modeOf(arg string) (mode, error) {
 		return mode{serveHTTP: false, runJobs: true, name: "worker"}, nil
 	case "migrate":
 		return mode{name: "migrate"}, nil
+	case "bootstrap":
+		return mode{name: "bootstrap"}, nil
 	case "version":
 		fmt.Println(versionString())
 		os.Exit(0)
 		return mode{}, nil
 	default:
-		return mode{}, fmt.Errorf("unknown subcommand %q; try: serve | api | worker | migrate | version", arg)
+		return mode{}, fmt.Errorf("unknown subcommand %q; try: serve | api | worker | migrate | bootstrap | version", arg)
 	}
 }

@@ -57,6 +57,7 @@ func (r *Renderer) Render(
 		Schema:      Schema,
 		Reason:      v.Reason,
 		Mode:        string(o.Mode),
+		Continued:   o.Continued,
 		DeliveredAt: at.UTC(),
 		Org:         Org{ID: v.Org.ID, Slug: v.Org.Slug, Name: v.Org.Name},
 		Group:       mapGroup(v.Group),

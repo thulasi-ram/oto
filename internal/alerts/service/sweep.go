@@ -31,6 +31,15 @@ type ReapResult struct {
 	// HeldSources names the sources responsible, so one `source.unreachable`
 	// banner can be raised per source rather than one per occurrence.
 	HeldSources []uuid.UUID
+	// Superseded is how many candidates were ABANDONED because the row had moved
+	// since the sweep read it: somebody else ended the episode, or a fresh
+	// observation pushed `source_ends_at` forward and the alert is demonstrably
+	// still live.
+	//
+	// THIS NUMBER IS ALSO A FEATURE. Every increment is one expiry that would have
+	// been fabricated over a row that disproved it, and a sustained non-zero value
+	// says the sweep is racing ingest hard enough to be worth looking at.
+	Superseded int
 }
 
 // Reap is the `occurrence.reap` sweep — SPEC §B.3 T6.
@@ -51,6 +60,16 @@ type ReapResult struct {
 //     including when the health port is not wired at all, when the source cannot
 //     be resolved, and when the health lookup itself fails. Every one of those is
 //     "oto does not know", and "oto does not know" must never end an episode.
+//
+// ⭐ THE CANDIDATE SCAN IS NOT A DECISION, AND IT DELIBERATELY TAKES NO LOCKS.
+// `ReapCandidates` runs outside any transaction and its result is several round
+// trips old by the time `expire` looks at it — source resolution and a health
+// lookup happen in between. Holding the scan's rows locked for that whole window
+// would serialise a storm against ingest, which is the one thing a background
+// sweep must never do. So the candidate list is treated as nothing more than a
+// LIST OF IDS TO RECONSIDER: `expire` re-reads each row inside its own small
+// transaction, re-runs the machine against THAT row, and writes as a
+// compare-and-set. Nothing decided out here reaches the database.
 func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (ReapResult, error) {
 	if limit <= 0 {
 		limit = DefaultSweepLimit
@@ -95,6 +114,8 @@ func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (Re
 		}
 		if expired {
 			res.Expired++
+		} else {
+			res.Superseded++
 		}
 	}
 
@@ -142,8 +163,31 @@ func (s *Service) sourceHealthy(ctx context.Context, scope db.TenantScope, sourc
 
 // expire moves ONE occurrence through T6, in its own transaction so that a
 // single failure cannot roll back a whole sweep.
+//
+// `candidate` is the STALE SNAPSHOT the sweep scan returned, and it is used for
+// exactly one thing: its id. Everything the verdict rests on is re-read inside
+// the transaction, because between the scan and here the sweep has made two more
+// round trips and a webhook has had every opportunity to land.
+//
+// It reports false — with no error — when the transition was abandoned: the row
+// had already moved, or the fresh row no longer justifies an expiry. That is a
+// normal outcome and the caller counts it as Superseded.
+//
+// ⚠️ LOCK ORDER: THIS TRANSACTION TAKES `alert_occurrences` BEFORE `alerts`.
+// `Service.observe` (lifecycle.go) takes them the OTHER WAY ROUND — `UpsertBatch`
+// locks the alert row before the occurrence is even read. The two orders form a
+// cycle, and today it is survivable only because neither side WAITS while holding
+// the other's row for long: the reaper's alerts write is the last statement in a
+// short transaction, and Postgres breaks a genuine cycle with a deadlock error
+// that the sweep logs and retries in sixty seconds.
+//
+// ⛔ ADDING AN EXPLICIT LOCK — `SELECT ... FOR UPDATE`, an advisory lock, a
+// widened transaction — TO EITHER SITE CLOSES THE CYCLE FOR REAL. If you need
+// one, make both sites take the two tables in the SAME order first, and say so in
+// both comments. The correctness of this file rests on the compare-and-set above,
+// not on a lock, precisely so that no lock has to be held across the sweep.
 func (s *Service) expire(
-	ctx context.Context, scope db.TenantScope, occ domain.Occurrence, now time.Time, cfg Settings,
+	ctx context.Context, scope db.TenantScope, candidate domain.Occurrence, now time.Time, cfg Settings,
 ) (bool, error) {
 	actor, err := domain.SystemActor(domain.ActorReaper)
 	if err != nil {
@@ -154,37 +198,80 @@ func (s *Service) expire(
 		return false, err
 	}
 
-	r, err := domain.Apply(occ, domain.TransitionCommand{
-		Trigger:      domain.TriggerReap,
-		Actor:        actor,
-		At:           at,
-		EventID:      id.New(),
-		ResolveGrace: cfg.ResolveGrace,
-		// The guard has already been answered above; the machine re-checks it
-		// because a state machine that trusts its caller is not a guard.
-		SourceHealthy: true,
-	})
-	if err != nil {
-		if errs.IsKind(err, errs.KindPrecondition) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	// ⛔ The assertion that makes rule 1 above mechanical rather than aspirational.
-	if r.To != domain.StateExpired || r.Occurrence.ResolveReason() != domain.ResolveTimeout {
-		return false, errs.Internal("reaper_would_fabricate_resolution",
-			errsInvariant("the reaper produced "+r.To.String()+"; only expired/timeout is permitted"))
-	}
-
+	expired := false
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		// ⭐ THE RE-READ. The candidate came from a scan that ran outside any
+		// transaction; this row is the one that will actually be overwritten.
+		fresh, err := s.occurrences.GetByID(ctx, scope, candidate.ID())
+		if err != nil {
+			if errs.IsKind(err, errs.KindNotFound) {
+				return nil // deleted under us; there is nothing to expire
+			}
+			return err
+		}
+
+		// ⛔⛔ THE ASSERTION THAT MAKES RULE 1 MECHANICAL RATHER THAN ASPIRATIONAL.
+		//
+		// It interrogates THE ROW ABOUT TO BE OVERWRITTEN. The version this
+		// replaces inspected the DOMAIN RESULT — `r.To == expired` — which is
+		// vacuously true for every T6 the machine can produce and therefore
+		// guarded nothing at all: the machine had been fed a stale occurrence,
+		// answered honestly about it, and the assertion nodded at an answer to the
+		// wrong question while `expired`/`timeout` went over a firing alert.
+		if reason := unreapable(fresh, now, cfg.ResolveGrace); reason != "" {
+			s.log.InfoContext(ctx, "alerts: reaper stood down, the row disproved the expiry",
+				"occurrence_id", fresh.ID(), "reason", reason)
+			return nil
+		}
+
+		// The machine now runs against the FRESH row, so its §B.4 grace check and
+		// the compare-and-set below are asking about the same instant in the same
+		// row's life.
+		r, err := domain.Apply(fresh, domain.TransitionCommand{
+			Trigger:      domain.TriggerReap,
+			Actor:        actor,
+			At:           at,
+			EventID:      id.New(),
+			ResolveGrace: cfg.ResolveGrace,
+			// The guard has already been answered above; the machine re-checks it
+			// because a state machine that trusts its caller is not a guard.
+			SourceHealthy: true,
+		})
+		if err != nil {
+			if errs.IsKind(err, errs.KindPrecondition) {
+				return nil
+			}
+			return err
+		}
+		if r.To != domain.StateExpired || r.Occurrence.ResolveReason() != domain.ResolveTimeout {
+			return errs.Internal("reaper_would_fabricate_resolution",
+				errsInvariant("the reaper produced "+r.To.String()+"; only expired/timeout is permitted"))
+		}
+
 		// No witnesses: the reaper has no observation, and an expiry names no
 		// suppressor. transitionOf clears the column, which is what T6 means —
 		// oto stopped hearing about the alert, not "Alertmanager is muting it".
+		// The precondition is `fresh`'s `state_version`, and `Observe` bumps that
+		// too — so a repeat webhook landing in the microseconds between the re-read
+		// above and this UPDATE loses the reaper its compare-and-set even though it
+		// moved no state letter. That is the intended reading: an occurrence oto has
+		// heard about since it read the row is not one oto has stopped hearing about.
 		trans := transitionOf(r, domain.SuppressedBy{})
 		if err := s.occurrences.Transition(ctx, scope, r.Occurrence.ID(), trans); err != nil {
+			// ⛔ ABANDON, never re-decide. The reaper is the one caller that must
+			// NOT retry a lost compare-and-set: every reason it can lose one is a
+			// reason not to expire — somebody ended the episode, or something was
+			// heard about an alert oto was about to declare silent. The sweep runs
+			// again in sixty seconds and will re-read from scratch, which is a
+			// strictly safer place to reconsider than a hot loop holding a verdict.
+			if errs.IsKind(err, errs.KindConflict) {
+				s.log.InfoContext(ctx, "alerts: reaper lost the compare-and-set, expiry abandoned",
+					"occurrence_id", r.Occurrence.ID())
+				return nil
+			}
 			return err
 		}
+
 		alert, err := s.alerts.GetByID(ctx, scope, r.Occurrence.AlertID())
 		if err != nil {
 			return err
@@ -203,19 +290,49 @@ func (s *Service) expire(
 		}); err != nil {
 			return err
 		}
-		_, err = s.enqueueNotify(ctx, scope, []notifyRequest{{
+		if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
 			groupID:      r.Occurrence.GroupID(),
 			reason:       reasonExpired,
 			alertID:      ptr(alert.ID()),
 			occurrenceID: ptr(r.Occurrence.ID()),
 			actor:        domain.ActorReaper.String(),
-		}})
-		return err
+		}}); err != nil {
+			return err
+		}
+		expired = true
+		return nil
 	})
 	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return expired, nil
+}
+
+// unreapable re-proves §B.3 T6's preconditions AGAINST THE ROW THE REAPER IS
+// ABOUT TO OVERWRITE, and names the one that failed. An empty string means the
+// row itself justifies the expiry.
+//
+// It is deliberately a duplicate of the checks inside domain.Apply's T6 arm. The
+// duplication is the point: Apply answers about whatever occurrence it is handed,
+// and the bug this guards was Apply being handed a snapshot that had stopped
+// being true. Asking the same questions of the row about to be written is the
+// only form of the question that cannot be answered about the wrong row.
+func unreapable(row domain.Occurrence, now time.Time, grace time.Duration) string {
+	switch {
+	case !row.IsOpen():
+		// The loudest case: overwriting a `resolved` with `expired` replaces a
+		// fact somebody upstream stated with one oto inferred, and leaves the
+		// append-only timeline permanently disagreeing with the projection.
+		return "occurrence is already " + row.State().String()
+	case row.SourceEndsAt().IsZero():
+		return "no upstream end time"
+	case !now.After(row.SourceEndsAt().Add(grace)):
+		// A fresh observation pushed `source_ends_at` forward. The alert is
+		// demonstrably still firing and there is nothing here to expire.
+		return "resolve_grace has not elapsed since source_ends_at"
+	default:
+		return ""
+	}
 }
 
 // -------------------------------------------------------------- snooze expiry

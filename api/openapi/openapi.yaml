@@ -25,7 +25,7 @@ info:
     | Resource | Means |
     |---|---|
     | **Alert** | The **identity of a label set** within `(org, cluster)`, keyed by `alert_key`. Created on first sight, survives resolution forever. The nearest analogue is Sentry's *Issue*. |
-    | **AlertOccurrence** | One **contiguous firing episode** of an Alert, addressed as `(alert_id, seq)`. This is what you acknowledge and what you time for MTTR. |
+    | **AlertOccurrence** | One **contiguous firing episode** of an Alert, addressed as `(alert_id, seq)`. This is what you acknowledge and whose firing duration is measured. |
     | **AlertEvent** | One **immutable thing that happened at one instant**. Append-only; this is the timeline. Every event carries two timestamps — `occurred_at` (the upstream claim, which is what the UI displays) and `recorded_at` (oto's own clock, which is what timelines are ordered by). They are never conflated, because upstream clock skew is measured rather than rejected. |
     | **AlertGroup** | One **generation of one Alertmanager notification group**, derived from `(source, receiver, groupLabels)`. It owns exactly one chat thread. Its `group_key` is oto's own durable hash and is stable across `alertmanager.yml` route edits. |
     | **RuleSnapshot** | A content-addressed capture of a Prometheus alerting rule (`expr`, `for`, `keep_firing_for`, labels, annotations) at fire time. Rule drift between occurrences is detected and surfaced. |
@@ -4844,11 +4844,18 @@ components:
         - enriched
         - rule_changed
         - comment
-        - escalation
+        - unacked_reminder
         - storm
       description: |
         Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
         is mapped onto this enum on ingest.
+
+        `unacked_reminder` is oto's ONE reminder stage (§G.9.1): the signal is still firing and still
+        unacknowledged, so oto says so once more in the existing thread. It replaced the value this enum
+        used to spell `escalation`, which is a scope-banned word (SPEC §A.1, CONTEXT.md §3) — an
+        escalation is a ladder that ends at a person, and oto's one stage ends at a CHANNEL. Migration
+        `00019_unacked_reminder.sql` rewrote the stored values and narrowed the DB CHECK; a client that
+        still sends `escalation` is rejected with 422 `unknown notification reason`.
 
         `snoozed` and `unsnoozed` announce a quiet period beginning and ending. They are the **only two
         reasons a snooze does not itself suppress** (§B.8.4): a damper that cannot announce itself is
@@ -4952,9 +4959,10 @@ components:
 
         - `all` — every reply type.
         - `status_changes` *(default)* — ack, unack, suppressed, unsuppressed, expired, refired,
-          new_alerts, all_resolved, rule_changed, comment, escalation, storm.
-        - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, escalation, storm.
-        - `firing_only` — new_alerts, rule_changed, escalation, storm.
+          new_alerts, all_resolved, rule_changed, comment, unacked_reminder, storm.
+        - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, unacked_reminder,
+          storm.
+        - `firing_only` — new_alerts, rule_changed, unacked_reminder, storm.
       examples: [status_changes]
 
     ChannelHealthStatus:
@@ -5475,8 +5483,8 @@ components:
             display upstream's.
           examples: [412]
       description: |
-        One **contiguous firing episode** of an Alert. This is what you acknowledge and what you time
-        for MTTR.
+        One **contiguous firing episode** of an Alert. This is what you acknowledge and whose firing
+        duration is measured.
 
     OccurrenceDetailDTO:
       allOf:
@@ -6608,8 +6616,19 @@ components:
           type: boolean
           default: true
           description: |
-            Whether the API v2 reconciler runs. Turning this off means suppression can never be
-            observed, because Alertmanager's mute stage hides suppressed alerts from webhooks entirely.
+            Whether the API v2 reconciler runs (ADR 0006, amended). Defaults to `true` and should
+            stay on.
+
+            Turning it off is a DOCUMENTED, PERMANENT DEGRADATION of this source: Alertmanager's
+            mute stage drops silenced and inhibited alerts before any webhook fires, so
+            reconciliation is the only way oto can ever observe suppression. With it off, oto will
+            show an alert that is silenced upstream as `firing`, indefinitely, with no way to learn
+            otherwise; divergence accounting and `send_resolved` discovery stop as well. The source
+            then carries a standing `reconcile_disabled` warning on its health.
+
+            The switch exists because oto cannot always reach an Alertmanager's API - the reverse
+            direction is not implied by the webhook working - and a source that fails every
+            reconcile would be marked `unreachable`, which blocks expiry for its alerts forever.
         reconcile_interval_seconds:
           type: integer
           format: int32
@@ -6676,7 +6695,7 @@ components:
         token_prefix:
           type: string
           pattern: '^oto_(pat|ingest)_[A-Za-z0-9]{4}$'
-          description: The first twelve characters, retained for display so the token can be identified later.
+          description: The kind literal plus four characters, retained for display so the token can be identified later.
           examples: ['oto_ingest_A9kZ']
         webhook_url:
           type: string
@@ -6976,8 +6995,8 @@ components:
           type: boolean
           default: true
           description: |
-            When false, every delivery mode collapses to an in-place root update — except escalation,
-            which is always broadcast.
+            When false, every delivery mode collapses to an in-place root update — except the
+            unacked reminder, which is always broadcast.
         show_field_emoji:
           type: boolean
           default: true
@@ -7119,15 +7138,20 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ThrottleDTO'
             - type: 'null'
-        escalate_after_seconds:
+        unacked_reminder_after_seconds:
           type: ['integer', 'null']
           format: int32
           minimum: 60
           maximum: 86400
           description: |
-            How long a group's oldest member may stay firing and unacked before one escalation is sent
-            as a broadcast reply. Alertmanager's own `repeat_interval` defaults to four hours, which is
-            far too slow for an unacknowledged critical, so oto runs its own clock. `null` disables it.
+            How long a group's oldest member may stay firing and unacked before ONE reminder is sent as
+            a broadcast reply. Alertmanager's own `repeat_interval` defaults to four hours, which is far
+            too slow for an unacknowledged critical, so oto runs its own clock. `null` disables it.
+
+            ⛔ SCALAR, ONE STAGE, FOREVER (SPEC §G.9.1). It never becomes an array, a ladder or a stage
+            list, and its target is always the policy's own `channel_ids` — never a person. The field
+            was called `escalate_after_seconds` until migration `00019_unacked_reminder.sql`; the old
+            spelling named a concept oto does not have (SPEC §A.1, §P-20).
           examples: [900]
         created_at:
           $ref: '#/components/schemas/Timestamp'
@@ -7976,7 +8000,7 @@ components:
         prefix:
           type: string
           pattern: '^oto_(pat|ingest)_[A-Za-z0-9]{4}$'
-          description: The first twelve characters, so a token can be identified without revealing it.
+          description: The kind literal plus four characters, so a token can be identified without revealing it.
           examples: ['oto_pat_AbCd']
         source_id:
           oneOf:
@@ -8598,6 +8622,11 @@ components:
         reconcile_enabled:
           type: boolean
           default: true
+          description: |
+            Leave this on. Turning it off means oto can never observe a silenced or inhibited alert
+            for this source and will show upstream-muted alerts as firing indefinitely (ADR 0006,
+            amended). The source carries a standing `reconcile_disabled` health warning while it is
+            off.
         reconcile_interval_seconds:
           type: integer
           format: int32
@@ -8657,6 +8686,11 @@ components:
           type: boolean
         reconcile_enabled:
           type: boolean
+          description: |
+            Setting this to `false` is a permanent, documented degradation: oto can never observe a
+            silenced or inhibited alert for this source afterwards and will show upstream-muted
+            alerts as firing indefinitely (ADR 0006, amended). The source carries a standing
+            `reconcile_disabled` health warning while it is off.
         reconcile_interval_seconds:
           type: integer
           format: int32
@@ -8807,7 +8841,7 @@ components:
             $ref: '#/components/schemas/Uuid'
         throttle:
           $ref: '#/components/schemas/ThrottleDTO'
-        escalate_after_seconds:
+        unacked_reminder_after_seconds:
           type: integer
           format: int32
           minimum: 60
@@ -8853,7 +8887,7 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ThrottleDTO'
             - type: 'null'
-        escalate_after_seconds:
+        unacked_reminder_after_seconds:
           type: ['integer', 'null']
           format: int32
           minimum: 60

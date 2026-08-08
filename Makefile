@@ -50,6 +50,17 @@ generate: ## Run go generate and regenerate the TypeScript API client
 
 ## -------------------------------------------------------------------- quality
 
+.PHONY: fmt-check
+fmt-check: ## Fail if anything is unformatted or go.mod is untidy (what CI checks)
+	@unformatted="$$(gofmt -l ./cmd ./internal ./pkg ./db ./test ./tools)"; \
+	if [ -n "$$unformatted" ]; then echo "gofmt: $$unformatted"; exit 1; fi
+	go mod tidy
+	git diff --exit-code -- go.mod go.sum
+
+.PHONY: vet
+vet: ## go vet the whole tree
+	go vet ./...
+
 .PHONY: lint
 lint: ## Run golangci-lint (installs it on first use)
 	@command -v golangci-lint >/dev/null 2>&1 \
@@ -60,8 +71,16 @@ lint: ## Run golangci-lint (installs it on first use)
 test: ## Run the Go test suite (integration tests need Docker)
 	go test -race -count=1 ./...
 
+.PHONY: lint-vocabulary
+lint-vocabulary: ## SCOPE-BOUNDARY AC-49: no on-call vocabulary in internal/, web/src/, db/migrations/
+	go run ./tools/lintvocab
+
+.PHONY: generate-check
+generate-check: ## Gate G3 (SPEC §L.8.1): the checked-in TS client must match openapi.yaml
+	cd $(WEB_DIR) && npm run generate:check
+
 .PHONY: ci
-ci: fmt lint build test ui-build ## Everything CI runs, in order
+ci: fmt-check lint vet lint-vocabulary generate-check build test ui-build ui-test ## Everything CI runs, in order
 
 ## ------------------------------------------------------------------- database
 

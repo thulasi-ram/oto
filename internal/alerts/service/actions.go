@@ -115,7 +115,11 @@ func (s *Service) setAck(
 				change.Note = &note
 			}
 		}
-		if err := s.occurrences.SetAck(ctx, scope, next.ID(), change); err != nil {
+		// The version `occ` was read at. If the episode resolved or expired while
+		// the human was deciding, this fails with a conflict rather than stamping
+		// an acknowledgement on a closed episode and rewinding the alert
+		// projection to its pre-resolution state.
+		if err := s.occurrences.SetAck(ctx, scope, next.ID(), change, occ.StateVersion()); err != nil {
 			return err
 		}
 

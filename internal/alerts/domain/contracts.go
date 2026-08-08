@@ -298,7 +298,10 @@ type Transition struct {
 	SourceEndsAt    *time.Time
 	SourceUpdatedAt *time.Time
 	ReopenCount     *int
-	Value           *float64
+	// SuppressCount is the post-image `suppress_count`. T3 increments it; every
+	// other edge leaves it alone, and nil means "do not write this column".
+	SuppressCount *int
+	Value         *float64
 	// DetectedBy names the witness, and is what makes T4's event honest about
 	// whether a reconcile pass or a webhook proved suppression had ended.
 	DetectedBy ObservationSource
@@ -306,6 +309,60 @@ type Transition struct {
 	// upstream clock. It is surfaced on the event payload and accumulated into
 	// source_health.clock_skew_ms. Measured, never rejected (C12).
 	Clamped bool
+
+	// Expected is the PRE-IMAGE this edge was computed from. It is REQUIRED, and
+	// a repository MUST refuse a Transition without one — see
+	// TransitionPrecondition.
+	Expected TransitionPrecondition
+}
+
+// TransitionPrecondition is the row as it looked when the §B.3 machine read it,
+// and it is what turns the persisted edge into a COMPARE-AND-SET.
+//
+// ⭐⭐ THIS IS THE MECHANISM THAT STOPS A RESOLUTION BEING FABRICATED.
+//
+// Every §B.3 edge is a read, a decision and a write, and `db.Tx` runs at READ
+// COMMITTED. Without a precondition the loser of a race blocks on the row lock,
+// re-evaluates nothing but `id`, and then overwrites the winner with a verdict
+// reached against state that has since changed. Three real consequences, all
+// traced: the reaper stamping `expired`/`timeout` on an occurrence a webhook
+// just proved is firing; the reaper clobbering a genuine `resolved` from ingest;
+// and a reconciler T3 resurrecting `suppressed` over an ingest T5 and erasing
+// `ended_at`, which puts a closed episode back inside occ_one_open_idx.
+//
+// Carrying the pre-image on the Transition itself — rather than as an optional
+// argument some call site can forget — is deliberate: the repository refuses a
+// Transition whose State is zero, so a new call site CANNOT write an unguarded
+// state change.
+//
+// ⭐ IT IS ONE FIELD, AND THAT IS THE POINT. This began as a four-column
+// pre-image — state, ended_at, source_ends_at, reopen_count — because the schema
+// offered nothing better. `alert_occurrences.state_version` (migration 00023) now
+// does, and collapsing onto it is stronger rather than merely cheaper: a
+// multi-column pre-image can be PARTIALLY specified, so a future call site could
+// assert three of the four, read as guarded in review, and still lose the one
+// column that mattered. A single version cannot be half-asserted.
+//
+// ⛔ EVERY WRITE THAT MOVES A DECISION INPUT MUST BUMP IT, and that includes
+// `Observe` — a T2 repeat observation changes no state letter but moves
+// `source_ends_at`, which is the entire input to the §B.4 grace check. A version
+// that tracked only state changes would leave the reaper's compare-and-set blind
+// to precisely the webhook that disproves the expiry.
+type TransitionPrecondition struct {
+	// StateVersion is the `state_version` the machine read. It is REQUIRED: zero
+	// means this Transition was never bound to a pre-image at all, and the
+	// repository refuses it rather than writing unguarded.
+	StateVersion int
+}
+
+// PreconditionFor renders the compare-and-set pre-image of an occurrence.
+//
+// It is the ONLY way a TransitionPrecondition should be built: hand-assembling
+// one is how a caller ends up asserting a pre-image that is not the one it
+// actually decided against, which is worse than no precondition at all because it
+// looks guarded.
+func PreconditionFor(o Occurrence) TransitionPrecondition {
+	return TransitionPrecondition{StateVersion: o.StateVersion()}
 }
 
 // AckChange carries both directions of T9/T10. Ack fields are all-or-nothing

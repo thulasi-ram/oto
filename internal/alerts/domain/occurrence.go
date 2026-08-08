@@ -45,6 +45,14 @@ type Occurrence struct {
 	reopenCount   int
 	reopenOf      uuid.UUID
 
+	// stateVersion is the row's optimistic lock. It is READ from the database and
+	// asserted on write; the machine never sets it, because a version the domain
+	// invented would guard nothing.
+	stateVersion int
+	// suppressCount is how many times this episode has ENTERED `suppressed`. It is
+	// reopenCount's analogue for the suppressed path.
+	suppressCount int
+
 	ackState     AckState
 	ackedBy      uuid.UUID
 	ackedByLabel string
@@ -85,6 +93,13 @@ type OccurrenceParams struct {
 	// ReopenOf is the previous occurrence when T7 followed a close.
 	ReopenOf uuid.UUID
 
+	// StateVersion is `alert_occurrences.state_version` as read. A zero value
+	// rehydrates as 1 (the column's DEFAULT), so an in-memory occurrence built for
+	// a test is still a legal compare-and-set subject.
+	StateVersion int
+	// SuppressCount is `alert_occurrences.suppress_count` as read.
+	SuppressCount int
+
 	AckState     AckState
 	AckedBy      uuid.UUID
 	AckedByLabel string
@@ -115,6 +130,12 @@ func NewOccurrence(p OccurrenceParams) (Occurrence, error) {
 	}
 	if p.ReopenCount < 0 {
 		return Occurrence{}, errs.New(errs.KindValidation, "min", "reopen_count must be >= 0")
+	}
+	if p.SuppressCount < 0 {
+		return Occurrence{}, errs.New(errs.KindValidation, "min", "suppress_count must be >= 0")
+	}
+	if p.StateVersion < 0 {
+		return Occurrence{}, errs.New(errs.KindValidation, "min", "state_version must be >= 1")
 	}
 	if !p.State.IsOpen() && !p.State.IsTerminal() {
 		return Occurrence{}, errs.New(errs.KindValidation, "required", "occurrence state is required")
@@ -147,6 +168,8 @@ func NewOccurrence(p OccurrenceParams) (Occurrence, error) {
 		resolveReason:     p.ResolveReason,
 		reopenCount:       p.ReopenCount,
 		reopenOf:          p.ReopenOf,
+		stateVersion:      max(p.StateVersion, 1),
+		suppressCount:     p.SuppressCount,
 		ackState:          p.AckState,
 		ackedBy:           p.AckedBy,
 		ackedByLabel:      strings.TrimSpace(p.AckedByLabel),
@@ -288,6 +311,15 @@ func (o Occurrence) ReopenCount() int { return o.reopenCount }
 
 // ReopenOf is the previous occurrence a T7 re-fire followed, or uuid.Nil.
 func (o Occurrence) ReopenOf() uuid.UUID { return o.reopenOf }
+
+// StateVersion is the row's optimistic lock (occ_sver_ck, >= 1). It is the whole
+// compare-and-set predicate for a §B.3 transition: see TransitionPrecondition.
+func (o Occurrence) StateVersion() int { return o.stateVersion }
+
+// SuppressCount is how many times this episode has entered `suppressed`. It is
+// what makes T3 and T4's §C.8 dedupe keys stable, exactly as ReopenCount does for
+// T8 — a suppression is a COUNTED fact, not a timestamped one.
+func (o Occurrence) SuppressCount() int { return o.suppressCount }
 
 // AckState is what humans have done. It is orthogonal to State.
 func (o Occurrence) AckState() AckState { return o.ackState }

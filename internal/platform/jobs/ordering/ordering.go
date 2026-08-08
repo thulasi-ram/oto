@@ -50,6 +50,13 @@ type Item struct {
 	Seq int
 	// NeedsRoot is true for every mode except post_root: a reply or an in-place
 	// update has nothing to attach to until the root message exists.
+	//
+	// ⚠ IT MUST BE THE RE-DERIVED MODE, NEVER THE MODE STORED ON THE ROW. The row's
+	// mode was chosen when the intent was minted; the sender re-derives it against
+	// the thread as it actually stands and turns a reply with no root into a fresh
+	// root post. A gate fed the stale mode blocks on precisely the condition the
+	// sender knows how to repair, which is how a thread wedges with no root and no
+	// way to grow one.
 	NeedsRoot bool
 	// CreatedAt is when the delivery row was written. It bounds how long this
 	// item is allowed to wait before the gate stops waiting and recovers.
@@ -96,11 +103,18 @@ type Policy struct {
 	PredecessorWait time.Duration
 	// MaxWait bounds total waiting for one item.
 	//
-	// This bound is the reason a snooze loop cannot become an infinite loop. A
-	// River snooze does NOT consume an attempt, by design — an item waiting its
-	// turn has not failed — which also means the attempt ceiling can never end
-	// the wait. MaxWait is the only thing that does, and past it the gate stops
-	// waiting and asks for recovery instead.
+	// A River snooze does NOT consume an attempt, by design — an item waiting its
+	// turn has not failed — which also means the attempt ceiling can never end the
+	// wait. MaxWait is what does: past it the gate stops waiting and returns
+	// ActionRecoverThread.
+	//
+	// ⚠ MaxWait BOUNDS THE WAIT, NOT THE WEDGE. Returning ActionRecoverThread only
+	// moves the obligation to the caller: if the caller answers a recovery that
+	// advanced nothing with another snooze, the loop is unbounded again and the
+	// attempt ceiling still cannot end it. The contract is therefore explicit —
+	// A CALLER THAT RECEIVES ActionRecoverThread AND CANNOT MAKE PROGRESS MUST
+	// REACH A TERMINAL OUTCOME FOR THE ITEM. That, plus Recover, is what makes
+	// "a poisoned message can never wedge a thread forever" true.
 	MaxWait time.Duration
 }
 
@@ -187,6 +201,16 @@ func Decide(item Item, th Thread, now time.Time, p Policy) Decision {
 		// The slot is already resolved: a duplicate worker, or a redelivery after
 		// gap recovery already advanced past this item. Exit quietly.
 		return Decision{Action: ActionOutOfOrder, Reason: "already_resolved"}
+
+	case item.NeedsRoot && !th.RootLanded && item.Seq == th.LastSentSeq+1:
+		// THIS ITEM IS THE HEAD AND THERE IS NO ROOT. Every earlier slot is already
+		// resolved, so nothing left in the thread can post one: a root delivery that
+		// died terminally advanced the head without landing anything. Waiting here is
+		// waiting for a message nobody will ever send, and because a snooze consumes
+		// no attempt the wait would never end — the exact wedge §G.7.3 forbids. Ask
+		// for recovery NOW rather than after MaxWait; the caller re-derives the mode
+		// and posts a fresh root.
+		return Decision{Action: ActionRecoverThread, Reason: "root_never_landed"}
 
 	case item.NeedsRoot && !th.RootLanded:
 		if waited(item, now) > p.MaxWait {

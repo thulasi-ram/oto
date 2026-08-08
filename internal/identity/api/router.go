@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -30,6 +31,26 @@ type IdentityService interface {
 // Compile-time proof that the service satisfies the port this layer declares.
 var _ IdentityService = (*service.Service)(nil)
 
+// LoginLimiter is the port this layer declares for login rate limiting,
+// satisfied by `*platform/ratelimit.Limiter`.
+//
+// It reports whether the caller may attempt a login, and how long until it may
+// try again. `Reset` is called after a SUCCESSFUL login so a person who mistyped
+// their password four times does not pay for it on the fifth attempt that works.
+type LoginLimiter interface {
+	Allow(key string) (bool, time.Duration)
+	Reset(key string)
+}
+
+// LoginGate bounds how many password verifications run CONCURRENTLY, satisfied
+// by `*platform/ratelimit.Gate`. It is a separate port from LoginLimiter because
+// it answers a different question: the limiter bounds the rate, the gate bounds
+// the resident memory of everything currently in flight.
+type LoginGate interface {
+	Acquire() bool
+	Release()
+}
+
 // Router mounts the Identity surface of SPEC §E.2.
 //
 // ⛔ THE INGEST ENDPOINT IS NOT HERE AND MUST NOT BE. `POST
@@ -37,23 +58,46 @@ var _ IdentityService = (*service.Service)(nil)
 // auth, on its own pool, mounted by `ingestion/api` outside every group below.
 // A session cookie must never be able to post alerts.
 type Router struct {
-	svc    IdentityService
-	auth   *authn.Middleware
-	cookie CookieConfig
-	clk    clock.Clock
+	svc     IdentityService
+	auth    *authn.Middleware
+	cookie  CookieConfig
+	limiter LoginLimiter
+	gate    LoginGate
+	clk     clock.Clock
+}
+
+// Options are the identity router's dependencies.
+type Options struct {
+	Service IdentityService
+	// Auth is passed IN rather than constructed here because `internal/app`
+	// mounts the same instance in front of every other module's routes: there is
+	// one authenticator in the process, and a second one would be a second place a
+	// credential rule could be written differently.
+	Auth   *authn.Middleware
+	Cookie CookieConfig
+	// Limiter bounds the login RATE. Nil means unlimited, which is what shipped
+	// and is a documented gap rather than a choice; production always wires it.
+	Limiter LoginLimiter
+	// Gate bounds concurrent password verifications, which is what actually
+	// bounds argon2id's 19 MiB-per-evaluation memory cost.
+	Gate  LoginGate
+	Clock clock.Clock
 }
 
 // NewRouter builds the identity router.
-//
-// The middleware is passed IN rather than constructed here because
-// `internal/app` mounts the same instance in front of every other module's
-// routes: there is one authenticator in the process, and a second one would be a
-// second place a credential rule could be written differently.
-func NewRouter(svc IdentityService, auth *authn.Middleware, cookie CookieConfig, clk clock.Clock) *Router {
+func NewRouter(o Options) *Router {
+	clk := o.Clock
 	if clk == nil {
 		clk = clock.New()
 	}
-	return &Router{svc: svc, auth: auth, cookie: cookie.normalise(), clk: clk}
+	return &Router{
+		svc:     o.Service,
+		auth:    o.Auth,
+		cookie:  o.Cookie.normalise(),
+		limiter: o.Limiter,
+		gate:    o.Gate,
+		clk:     clk,
+	}
 }
 
 // Middleware is the authenticator this router was built with, so

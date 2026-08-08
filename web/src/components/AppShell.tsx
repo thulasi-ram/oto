@@ -256,8 +256,9 @@ export const AppShell: ParentComponent = (props) => {
       </main>
 
       <footer class="shrink-0 border-t border-line px-4 py-1.5 text-[10px] text-ink-subtle">
-        oto · alert history for Prometheus · {year()} — oto records what your cluster reported. It
-        does not page anyone and it does not know who is on call.
+        oto · alert history for Prometheus · {year()} — oto records what your cluster reported.{" "}
+        {/* vocab:allow — the footer states the scope boundary to the operator; it denies the concept it names. */}
+        It does not page anyone and it does not know who is on call.
       </footer>
     </div>
   );

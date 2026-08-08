@@ -33,9 +33,11 @@
 ALTER TABLE notifications ADD CONSTRAINT notifications_reason_expand_ck CHECK (reason IN
   ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
    'expired','refired','acked','unacked','snoozed','unsnoozed','enriched','rule_changed',
+   -- vocab:allow — the expand/backfill/contract rename itself must name the value it is retiring, or it cannot retire it.
    'comment','unacked_reminder','storm','escalation'));
 
 -- 2. backfill ----------------------------------------------------------------
+-- vocab:allow — the expand/backfill/contract rename itself must name the value it is retiring, or it cannot retire it.
 UPDATE notifications SET reason = 'unacked_reminder', updated_at = now() WHERE reason = 'escalation';
 
 -- 3. contract ----------------------------------------------------------------
@@ -52,6 +54,7 @@ ALTER TABLE notifications ADD  CONSTRAINT notifications_suppmap_ck CHECK (suppre
   suppressed_reason IN ('no_policy','throttled','storm','flapping','snoozed','verbosity',
                         'channel_disabled','duplicate_render'));
 
+-- vocab:allow — the column comment names the retired value once, to say it is retired.
 COMMENT ON COLUMN notifications.reason IS
   'The §H.6 Reason enum. Together with the channel verbosity it decides update-in-place versus thread reply. unacked_reminder is oto ONE reminder stage (§G.9.1); never escalation, which is a scope-banned word (§A.1). snoozed and unsnoozed announce a snooze beginning and ending, and are the ONLY two reasons a snooze does not suppress (§B.8.4): a snooze that cannot announce itself is the silent suppression §B.6 forbids.';
 COMMENT ON COLUMN notifications.suppressed_reason IS

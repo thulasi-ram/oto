@@ -166,9 +166,15 @@ RETURNING next_seq - 1`
 // dispatch, say — would order sends by worker scheduling instead, which is not
 // an order anybody wants to explain to an operator.
 //
-// A rolled-back allocation leaves a permanent hole. That is fine and expected:
-// `next_seq` is an allocator, not a counter, and gap recovery advances the head
-// past a slot no delivery will ever fill (ordering.ReasonMissingDelivery).
+// ⚠ IT MUST ALSO BE CALLED ONLY WHEN A ROW WAS ACTUALLY CREATED. `next_seq` is a
+// plain column, not a sequence: a ROLLBACK undoes `next_seq = next_seq + 1`, and
+// a concurrent allocator blocks on the row lock until then and re-uses the
+// number, so an aborted transaction leaves no hole at all. What DOES leave one is
+// a COMMITTED allocation with no delivery behind it — which is what an
+// unconditional call in front of an `ON CONFLICT DO NOTHING` insert produces on
+// every re-run of an at-least-once job. Gap recovery can heal that hole, but only
+// after something has waited for it, so the fix is not to punch it: see
+// service.fanOut, which inserts first and allocates only for a row it created.
 func (r *ThreadRepository) AllocateSeq(
 	ctx context.Context, s db.TenantScope, threadID uuid.UUID, now time.Time,
 ) (int, error) {
@@ -390,6 +396,7 @@ func (o *OrderingStore) SlotAt(
 		ItemID:    id,
 		Resolved:  st.Resolved(),
 		Sent:      st == domain.DeliverySent,
+		Skipped:   st == domain.DeliverySkipped,
 		InFlight:  st == domain.DeliverySending,
 		UpdatedAt: updatedAt,
 	}, nil
@@ -406,22 +413,38 @@ func (o *OrderingStore) SlotAt(
 // delivery state per alert precisely so that oto's silence is never
 // indistinguishable from "no alert" — a head that moved on with no record of
 // what it moved past would recreate exactly that ambiguity.
+//
+// ⚠ ordering.ReasonAlreadySent IS NOT A SKIP. The head is catching up with a
+// message the destination is currently displaying; writing `delivery.skipped` for
+// it would put a false statement into an append-only timeline that the rest of
+// the system treats as the truth. That reason advances the head and records
+// nothing else.
 func (o *OrderingStore) Advance(
 	ctx context.Context, threadID uuid.UUID, seq int, itemID uuid.UUID, reason ordering.SkipReason,
 ) error {
+	// GREATEST keeps `updated_at` MONOTONIC. This is the one write in the module
+	// that stamps the DATABASE's clock onto a row whose other timestamps came from
+	// the caller's, and `threads_time_ck`/`deliveries_time_ck` compare the two: a
+	// pod a second ahead of Postgres would otherwise fail gap recovery on a
+	// constraint, which is the liveness path failing for a clock reason.
 	const advance = `
 UPDATE channel_threads
-   SET last_sent_seq = GREATEST(last_sent_seq, $3), updated_at = now()
+   SET last_sent_seq = GREATEST(last_sent_seq, $3),
+       updated_at    = GREATEST(updated_at, now())
  WHERE org_id = $1 AND id = $2 AND $3 < next_seq`
 	if _, err := o.db(ctx).Exec(ctx, advance, o.scope.OrgID(), threadID, seq); err != nil {
 		return mapErr(err, "thread_not_found", "advance the thread sequence")
+	}
+
+	if !reason.Anomalous() {
+		return nil
 	}
 
 	if itemID != uuid.Nil {
 		const skip = `
 UPDATE notification_deliveries
    SET status = 'skipped', error = $3, error_class = NULL,
-       next_attempt_at = NULL, updated_at = now()
+       next_attempt_at = NULL, updated_at = GREATEST(updated_at, now())
  WHERE org_id = $1 AND id = $2 AND status IN ('pending','failed')`
 		if _, err := o.db(ctx).Exec(ctx, skip, o.scope.OrgID(), itemID, string(reason)); err != nil {
 			return mapErr(err, "delivery_not_found", "mark a skipped delivery")

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -39,7 +40,20 @@ type Options struct {
 	Creds     CredentialWriter
 	Tokens    IngestTokenIssuer
 	Reconcile Reconciler
-	Clock     clock.Clock
+	// Tx makes a source and its ingest token one commit. A nil Tx degrades to
+	// two commits, which is what this endpoint used to do and what left orphan
+	// sources behind; production always wires it.
+	Tx UnitOfWork
+	// Guard refuses a base or Prometheus URL that resolves somewhere oto must not
+	// dial. Nil means no configuration-time feedback — the dialer still refuses.
+	Guard AddressGuard
+	// AllowInsecureTLS is a DEPLOYMENT-LEVEL switch, never a tenant's.
+	// `tls_skip_verify` disables certificate verification on an outbound
+	// connection, which is a decision about the operator's own network trust, not
+	// about one org's source. With this false, a request that sets the flag is
+	// refused (§M2).
+	AllowInsecureTLS bool
+	Clock            clock.Clock
 	// BaseURL is oto's public root, used to render the absolute `webhook_url` an
 	// operator pastes into `webhook_config`. Empty means the response carries the
 	// path only, which is still actionable.
@@ -49,14 +63,17 @@ type Options struct {
 // Router serves the Sources tag: sources, their health, their probes and the
 // clusters they belong to.
 type Router struct {
-	sources   SourceReader
-	registry  SourceRegistry
-	clusters  ClusterRegistry
-	creds     CredentialWriter
-	tokens    IngestTokenIssuer
-	reconcile Reconciler
-	clk       clock.Clock
-	baseURL   string
+	sources     SourceReader
+	registry    SourceRegistry
+	clusters    ClusterRegistry
+	creds       CredentialWriter
+	tokens      IngestTokenIssuer
+	reconcile   Reconciler
+	tx          UnitOfWork
+	guard       AddressGuard
+	allowNoTLSV bool
+	clk         clock.Clock
+	baseURL     string
 }
 
 // NewRouter builds the sources HTTP surface.
@@ -66,15 +83,27 @@ func NewRouter(o Options) *Router {
 		clk = clock.New()
 	}
 	return &Router{
-		sources:   o.Sources,
-		registry:  o.Registry,
-		clusters:  o.Clusters,
-		creds:     o.Creds,
-		tokens:    o.Tokens,
-		reconcile: o.Reconcile,
-		clk:       clk,
-		baseURL:   strings.TrimRight(o.BaseURL, "/"),
+		sources:     o.Sources,
+		registry:    o.Registry,
+		clusters:    o.Clusters,
+		creds:       o.Creds,
+		tokens:      o.Tokens,
+		reconcile:   o.Reconcile,
+		tx:          o.Tx,
+		guard:       o.Guard,
+		allowNoTLSV: o.AllowInsecureTLS,
+		clk:         clk,
+		baseURL:     strings.TrimRight(o.BaseURL, "/"),
 	}
+}
+
+// inTx runs fn in one transaction when a unit of work is wired, and inline
+// otherwise.
+func (rt *Router) inTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if rt.tx == nil {
+		return fn(ctx)
+	}
+	return rt.tx.InTx(ctx, fn)
 }
 
 // Register mounts every route this package owns onto r, which `internal/app` has

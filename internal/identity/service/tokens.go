@@ -35,7 +35,7 @@ type IssuedToken struct {
 // IssueToken mints a PAT for the calling user.
 //
 // The secret is `oto_pat_` plus 256 bits of crypto/rand; the row stores its
-// sha256 and the twelve-character display prefix. There is no field on
+// sha256 and the display prefix. There is no field on
 // domain.APIToken that could hold the plaintext, so "the secret is never stored"
 // is a property of the types rather than a habit of this function.
 func (s *Service) IssueToken(

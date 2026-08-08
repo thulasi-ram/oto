@@ -96,14 +96,30 @@ func Recover(next http.Handler) http.Handler {
 	})
 }
 
-// CORS configures cross-origin access for the SolidJS dev server and any
-// configured UI origin. An empty origin list disables CORS entirely.
+// CORS configures cross-origin access for whatever UI origins the DEPLOYMENT
+// names. An empty origin list disables CORS entirely, and that is the default.
+//
+// ⛔ `AllowCredentials` IS TRUE, WHICH MAKES THE ORIGIN LIST A CREDENTIAL
+// BOUNDARY. Every origin here can read authenticated responses with the user's
+// session cookie attached, so a convenience default belongs to no deployment: it
+// used to be `http://localhost:5173`, meaning any install that never set
+// OTO_HTTP_CORS_ORIGINS trusted a page served off a developer's laptop.
+//
+// A wildcard is refused rather than passed through. Browsers reject `*` with
+// credentials anyway, so honouring it would produce a policy that silently works
+// for nobody while looking permissive in the config.
 func CORS(cfg config.HTTPConfig) func(http.Handler) http.Handler {
-	if len(cfg.CORSOrigins) == 0 {
+	origins := make([]string, 0, len(cfg.CORSOrigins))
+	for _, o := range cfg.CORSOrigins {
+		if o := strings.TrimSpace(o); o != "" && o != "*" {
+			origins = append(origins, o)
+		}
+	}
+	if len(origins) == 0 {
 		return func(next http.Handler) http.Handler { return next }
 	}
 	return cors.Handler(cors.Options{
-		AllowedOrigins:   cfg.CORSOrigins,
+		AllowedOrigins:   origins,
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", HeaderRequestID, "Idempotency-Key", "Last-Event-ID"},
 		ExposedHeaders:   []string{HeaderRequestID, "Retry-After"},
