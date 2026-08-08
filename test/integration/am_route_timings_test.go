@@ -194,10 +194,15 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 	}
 }
 
-// TestMigration00028IsReversible. Expand/contract (CONTEXT.md §6) is only a
+// TestTheTopTwoMigrationsAreReversible. Expand/contract (CONTEXT.md §6) is only a
 // property if the contract half actually runs: a migration nobody has rolled back
 // is a migration nobody can deploy on a Friday.
-func TestMigration00028IsReversible(t *testing.T) {
+//
+// It rolls back BOTH of the top two — 00029's delivery-roll-up index and 00028's
+// timing columns — because `migrate.Down` reverts exactly one, and a test that
+// pinned the count would have silently stopped testing 00028 the day 00029
+// landed.
+func TestTheTopTwoMigrationsAreReversible(t *testing.T) {
 	env := newEnv(t)
 	dsn := env.cfg.DB.URL
 
@@ -205,13 +210,27 @@ func TestMigration00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 28 {
-		t.Fatalf("latest migration is %d, want 28 — this test pins the number so that a "+
-			"second migration claiming 00028 is caught here", latest)
+	if latest != 29 {
+		t.Fatalf("latest migration is %d, want 29 — this test pins the number so that a "+
+			"second migration claiming the same version is caught here", latest)
 	}
 
+	// 00029 down: the partial index behind the occurrence delivery roll-up goes.
 	if err := migrate.Down(env.ctx, dsn); err != nil {
-		t.Fatalf("goose down: %v", err)
+		t.Fatalf("goose down 00029: %v", err)
+	}
+	var indexes int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM pg_indexes WHERE indexname = 'notif_occurrence_idx'`).Scan(&indexes); err != nil {
+		t.Fatalf("introspect indexes: %v", err)
+	}
+	if indexes != 0 {
+		t.Fatal("notif_occurrence_idx survived the down migration")
+	}
+
+	// 00028 down: the six route-timing columns go with it.
+	if err := migrate.Down(env.ctx, dsn); err != nil {
+		t.Fatalf("goose down 00028: %v", err)
 	}
 	var n int
 	if err := env.pool.QueryRow(env.ctx,
@@ -225,6 +244,13 @@ func TestMigration00028IsReversible(t *testing.T) {
 
 	if err := migrate.Up(env.ctx, dsn); err != nil {
 		t.Fatalf("goose up again: %v", err)
+	}
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM pg_indexes WHERE indexname = 'notif_occurrence_idx'`).Scan(&indexes); err != nil {
+		t.Fatalf("introspect indexes: %v", err)
+	}
+	if indexes != 1 {
+		t.Fatal("notif_occurrence_idx did not come back on the way up")
 	}
 }
 

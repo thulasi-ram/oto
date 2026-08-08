@@ -2524,7 +2524,7 @@ export interface components {
             source?: components["schemas"]["SourceRefDTO"] | null;
             /** @description The group generation the current occurrence belongs to. */
             group?: components["schemas"]["GroupRefDTO"] | null;
-            delivery_summary?: components["schemas"]["DeliverySummaryDTO"];
+            delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
         /**
          * @description One **contiguous firing episode** of an Alert. This is what you acknowledge and whose firing
@@ -2611,7 +2611,7 @@ export interface components {
             group?: components["schemas"]["GroupRefDTO"] | null;
             rule?: components["schemas"]["RuleSnapshotDTO"] | null;
             enrichments?: components["schemas"]["EnrichmentDTO"][];
-            delivery_summary?: components["schemas"]["DeliverySummaryDTO"];
+            delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
         /** @description A compact Alert reference, embedded where a full `AlertDTO` would be wasteful. */
         AlertRefDTO: {
@@ -2916,6 +2916,20 @@ export interface components {
         /**
          * @description Delivery roll-up for one subject, so the UI can show **per alert** whether anyone was actually
          *     told. A non-zero `dead` count is a product signal, not a footnote.
+         *
+         *     ⛔ **It is required on all four detail responses** — `GET /alerts/{id}`, `GET /occurrences/{id}`,
+         *     `GET /alert-groups/{id}` and `GET /notifications/{id}` — and an **all-zero roll-up is an answer,
+         *     never an omission**. "Nobody has been told anything about this" is the single most important thing
+         *     this object says: it is what a suppressed notification looks like, and what an alert no policy
+         *     matched looks like. The field was declared on those four schemas and emitted by none of them for
+         *     as long as it was optional, which made oto's silence indistinguishable from "no alert" — the exact
+         *     failure the field exists to prevent, hidden by the fact that every schema validator still passed.
+         *
+         *     Scope, per subject: an **alert's** roll-up covers the intents that name the alert *and* the
+         *     intents about every group generation it has been a member of, because oto notifies about
+         *     generations and counting only the alert-scoped reasons would report zero for almost every alert
+         *     that fired. An **occurrence's** is the same, narrowed to one episode. A **group's** is the
+         *     generation's own fan-out. A **notification's** is its own deliveries and nothing else.
          */
         DeliverySummaryDTO: {
             /** Format: int32 */
@@ -3082,7 +3096,7 @@ export interface components {
             top_alerts?: components["schemas"]["AlertRefDTO"][];
             /** @description Where this generation is being narrated, one entry per channel. */
             threads?: components["schemas"]["ChannelThreadDTO"][];
-            delivery_summary?: components["schemas"]["DeliverySummaryDTO"];
+            delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
         /** @description A compact group reference. */
         GroupRefDTO: {
@@ -3445,13 +3459,7 @@ export interface components {
              * @example 0
              */
             divergence_count: number;
-            /**
-             * @description The source's own `group_wait`, `group_interval` and `repeat_interval`, read off the
-             *     configuration it publishes. `null` until oto has managed to parse that configuration once —
-             *     which is a different fact from "oto parsed it and it states none of them", and the two are
-             *     kept apart deliberately.
-             */
-            route_timings?: components["schemas"]["RouteTimingsDTO"] | null;
+            route_timings: components["schemas"]["RouteTimingsDTO"];
             /** @description Standing, non-fatal problems that an operator should see in the UI. */
             warnings: ({
                 /** @example send_resolved_false */
@@ -3464,22 +3472,51 @@ export interface components {
             updated_at: components["schemas"]["Timestamp"];
         };
         /**
-         * @description What an Alertmanager says about **its own** batching, read from `config.original` on the status
-         *     call oto already makes.
+         * @description Where one route timing's number came from.
          *
-         *     **Observed, never typed in.** Every oto tuning knob is a function of these three numbers: a
-         *     `refire_grace` below `group_interval` is unreachable and every re-fire opens a new Slack thread; a
-         *     `storm_window` below `group_wait` cannot see a burst; a `flap_threshold` above the observable
-         *     ceiling is dead code that looks correctly configured. Asking an operator to enter them by hand
-         *     produced an answer that was unshared, unvalidated, and silently wrong the moment somebody edited
-         *     `alertmanager.yml`.
+         *     - `observed` — the value was **present in the source's own configuration**;
+         *     - `default_applies` — the key was **absent**, so Alertmanager's documented default governs. The
+         *       value is carried and this label says where it came from;
+         *     - `unknown` — oto could not read or parse the configuration at all, so it cannot even say whether
+         *       a value was stated. This is the only state that carries no number.
          *
-         *     ⛔ **`null` means unknown, and unknown is not a default.** A client must never substitute
-         *     Alertmanager's documented 30s / 5m / 4h. Alertmanager marshals all three as `omitempty` pointers,
-         *     so a stock `alertmanager.yml` — which sets none of them — publishes none of them, and the defaults
-         *     are applied later, in `dispatch.NewRoute`, where the status endpoint cannot see them. The whole
-         *     purpose of these numbers is to tell an operator when one of their knobs can never fire, and a
-         *     confident wrong number destroys that while an honest gap does not.
+         *     ⛔ **`default_applies` must never render as `observed`.** Alertmanager does not publish its own
+         *     defaults: `group_wait`, `group_interval` and `repeat_interval` are `omitempty` pointers and the
+         *     30s / 5m / 4h values are applied later, in `dispatch.NewRoute`, where the status endpoint cannot
+         *     see them. So a stock `alertmanager.yml` states none of the three — and reporting that as `unknown`
+         *     made the tuning guidance useless for the commonest install while claiming to be the careful
+         *     answer. Absence *is* an observation, and what it implies is documented.
+         *
+         *     The arithmetic is equally valid for both: a 2m re-fire grace is just as unreachable under a
+         *     defaulted 5m `group_interval` as under a configured one. What differs is **what the operator does
+         *     about it** — edit a line in `alertmanager.yml`, or accept that no such line exists — which is why
+         *     the two must stay distinguishable wherever they are shown.
+         * @example observed
+         * @enum {string}
+         */
+        TimingProvenance: "observed" | "default_applies" | "unknown";
+        /** @description One route timing with the provenance of its number. */
+        RouteTimingDTO: {
+            provenance: components["schemas"]["TimingProvenance"];
+            /**
+             * Format: int64
+             * @description The duration in force, in milliseconds. Null **exactly when** `provenance` is `unknown`.
+             *     Milliseconds because `group_wait: 500ms` is legal and seconds would round it to "notify
+             *     immediately"; `0` is a real setting and is never a stand-in for "not known".
+             * @example 30000
+             */
+            value_ms: number | null;
+        };
+        /**
+         * @description What governs an Alertmanager's batching, and **how oto knows** — read from `config.original` on the
+         *     status call oto already makes, per field, with its provenance.
+         *
+         *     **Observed or derived, never typed in.** Every oto tuning knob is a function of these three
+         *     numbers: a `refire_grace` below `group_interval` is unreachable and every re-fire opens a new Slack
+         *     thread; a `storm_window` below `group_wait` cannot see a burst; a `flap_threshold` above the
+         *     observable ceiling is dead code that looks correctly configured. Asking an operator to enter them
+         *     by hand produced an answer that was unshared, unvalidated, and silently wrong the moment somebody
+         *     edited `alertmanager.yml`.
          *
          *     ⚠️ **Per-route limitation.** oto reports the **top-level route** — what governs every alert
          *     matching no more specific route, and exactly what `docs/setup/tuning.md` tells an operator to read.
@@ -3488,30 +3525,9 @@ export interface components {
          *     `child_routes_with_timings` is how that limitation is made countable rather than buried.
          */
         RouteTimingsDTO: {
-            /**
-             * Format: int64
-             * @description The **top-level route's** `group_wait`, in milliseconds: the delay before the first
-             *     notification for a new group. It is a floor on alert→Slack latency oto cannot improve, and any
-             *     flap shorter than it is invisible to oto entirely. `null` means **not observed**.
-             * @example 10000
-             */
-            group_wait_ms: number | null;
-            /**
-             * Format: int64
-             * @description The **top-level route's** `group_interval`, in milliseconds. It is the clock rate of oto's
-             *     whole view of the world: oto does not learn of a change to an existing group faster than this,
-             *     so every oto duration should be read as a multiple of it. `null` means **not observed**.
-             * @example 30000
-             */
-            group_interval_ms: number | null;
-            /**
-             * Format: int64
-             * @description The **top-level route's** `repeat_interval`, in milliseconds. It is what produces
-             *     `notification_reason: "repeat interval elapsed"`, which oto maps to an update-only delivery.
-             *     `null` means **not observed**.
-             * @example 14400000
-             */
-            repeat_interval_ms: number | null;
+            group_wait: components["schemas"]["RouteTimingDTO"];
+            group_interval: components["schemas"]["RouteTimingDTO"];
+            repeat_interval: components["schemas"]["RouteTimingDTO"];
             /**
              * @description Which route the three durations above describe. `top_level` is the only value in v1; the field
              *     exists so that a client rendering it need not change if a later version resolves per-route
@@ -3529,13 +3545,28 @@ export interface components {
              * @description How many of those descendants state a `group_wait`, `group_interval` or `repeat_interval` of
              *     their own. **A non-zero value here means the three durations above do not govern every alert**:
              *     these settings are per-route and inherited, so the values that actually apply depend on which
-             *     route matched. Show this caveat wherever the numbers are shown.
+             *     route matched. Show this caveat wherever the numbers are shown, and say plainly that only the
+             *     top-level route is evaluated in v1.
              */
             child_routes_with_timings: number;
             /**
-             * @description When the three were last read off the source. Deliberately **not** `updated_at`, which moves on
-             *     every probe including ones that could not reach the source at all — rendering that beside a
-             *     stale reading would claim it is fresh.
+             * @description The Alertmanager version any `default_applies` field is attributed to — the version the source
+             *     itself reported where oto has one. Null when no field defaulted.
+             * @example 0.28.1
+             */
+            defaults_from_version: string | null;
+            /**
+             * @description False when the source runs a release newer than the one oto checked Alertmanager's constants
+             *     against, or when the version could not be read. A client should then say "the default oto last
+             *     verified" rather than asserting the source's own — the defaults are upstream constants oto
+             *     copies, and a copy can go stale.
+             */
+            defaults_verified: boolean;
+            /**
+             * @description When the configuration was last read off the source, and null **exactly when** nothing has ever
+             *     been read — which is the same condition that makes all three `unknown`. Deliberately **not**
+             *     `updated_at`, which moves on every probe including ones that could not reach the source at all;
+             *     rendering that beside a stale reading would claim it is fresh.
              */
             observed_at: components["schemas"]["Timestamp"] | null;
         };
@@ -3825,7 +3856,8 @@ export interface components {
         };
         /** @description One intent with every materialisation of it. */
         NotificationDetailDTO: components["schemas"]["NotificationDTO"] & {
-            deliveries?: components["schemas"]["DeliveryDTO"][];
+            delivery_summary: components["schemas"]["DeliverySummaryDTO"];
+            deliveries: components["schemas"]["DeliveryDTO"][];
             group?: components["schemas"]["GroupRefDTO"] | null;
             alert?: components["schemas"]["AlertRefDTO"] | null;
         };

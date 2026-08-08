@@ -193,6 +193,36 @@ func notificationDTO(n service.NotificationSummary) NotificationDTO {
 	return dto
 }
 
+// deliverySummaryDTO renders one subject's fan-out health.
+//
+// ⛔ IT NEVER RETURNS NIL AND THE CALLER NEVER OMITS IT. An all-zero summary is a
+// real answer — "nobody has been told anything about this" — and it is the answer
+// an operator most needs when Slack is quiet. Omitting the field instead, which
+// is what oto did until now, makes that state indistinguishable from a page that
+// simply never computed it.
+//
+// `skipped` is counted BOTH separately and inside `sent`, exactly as the contract
+// describes: a skipped delivery means the destination already shows this content,
+// which is a healthy quiet thread rather than a failure.
+func deliverySummaryDTO(r service.DeliveryRollup) DeliverySummaryDTO {
+	out := DeliverySummaryDTO{
+		Total:   int32(r.Total),   //nolint:gosec // bounded by the fan-out
+		Sent:    int32(r.Sent),    //nolint:gosec // bounded by the fan-out
+		Failed:  int32(r.Failed),  //nolint:gosec // bounded by the fan-out
+		Dead:    int32(r.Dead),    //nolint:gosec // bounded by the fan-out
+		Skipped: int32(r.Skipped), //nolint:gosec // bounded by the fan-out
+		Pending: int32(r.Pending), //nolint:gosec // bounded by the fan-out
+	}
+	if r.LastErrorClass != "" {
+		out.LastErrorClass = strPtr(r.LastErrorClass)
+	}
+	if r.LastSentAt != nil {
+		v := r.LastSentAt.UTC()
+		out.LastSentAt = &v
+	}
+	return out
+}
+
 func snoozeDTO(s domain.Snooze) SnoozeDTO {
 	return SnoozeDTO{
 		ID:             s.ID(),

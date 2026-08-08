@@ -765,9 +765,14 @@ func (c *Container) buildRouters(
 			Gate:    c.LoginGate,
 			Clock:   clk,
 		}),
-		alerts:   alertsapi.NewRouter(c.Alerts, clk),
-		grouping: groupingapi.NewRouter(c.Grouping, c.Alerts, clk),
-		rules:    rulesapi.NewRouter(c.Rules, c.Alerts, clk),
+		alerts: alertsapi.NewRouter(c.Alerts, clk),
+		// The third argument is `delivery_summary` on the group card: was anybody
+		// told about this generation, and did it land. It is late enough in the
+		// build that `c.NotifyHistory` is real; when the notification module is
+		// absent the adapter answers all-zero rather than nil.
+		grouping: groupingapi.NewRouter(c.Grouping, c.Alerts,
+			groupDeliveryRollups{svc: c.NotifyHistory}, clk),
+		rules: rulesapi.NewRouter(c.Rules, c.Alerts, clk),
 		sources: sourcesapi.NewRouter(sourcesapi.Options{
 			Sources:  c.Sources,
 			Registry: sourceRepo,

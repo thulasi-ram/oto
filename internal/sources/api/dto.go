@@ -112,36 +112,57 @@ type SourceHealthDTO struct {
 	// DivergenceCount is the canary for every correctness bug in the system.
 	DivergenceCount int32 `json:"divergence_count"`
 
-	// RouteTimings are the source's OWN group_wait, group_interval and
-	// repeat_interval, read off its running configuration. nil until oto has
-	// managed to parse that configuration once.
-	RouteTimings *RouteTimingsDTO `json:"route_timings"`
+	// RouteTimings are the source's group_wait, group_interval and
+	// repeat_interval with the provenance of each: read off its running
+	// configuration, supplied by Alertmanager's documented default, or unknown.
+	//
+	// ⭐ IT IS ALWAYS PRESENT. It used to be null until oto had parsed a config
+	// once, which forced every client to write the same "have we looked yet"
+	// branch and then a second one for "we looked and it said nothing". The three
+	// provenance states carry both facts inside the object, so the object itself
+	// never has to be absent.
+	RouteTimings RouteTimingsDTO `json:"route_timings"`
 
 	Warnings  []HealthWarningDTO `json:"warnings"`
 	UpdatedAt time.Time          `json:"updated_at"`
 }
 
-// RouteTimingsDTO is what an Alertmanager says about its own batching.
+// RouteTimingDTO is ONE route timing with the provenance of its number.
 //
-// ⭐ IT IS OBSERVED, NEVER TYPED IN. Every oto tuning knob is a function of these
-// three numbers (docs/setup/tuning.md), and until now the tuning screen asked an
-// operator to enter them by hand and kept the answer in one browser's
-// localStorage — unshared, unvalidated, and silently wrong the moment somebody
-// edited `alertmanager.yml`. These come from the source itself, on the status
-// call oto already makes.
+// ⛔ THE PROVENANCE IS NOT DECORATION AND MUST BE RENDERED. `observed` and
+// `default_applies` carry equally valid arithmetic — a 2m re-fire grace is just
+// as unreachable under a defaulted 5m `group_interval` as under a configured one
+// — but they call for different actions, so a client that renders them
+// identically has thrown away the only part of this that is advice. `unknown`
+// carries no number at all.
+type RouteTimingDTO struct {
+	// Provenance is `observed`, `default_applies` or `unknown`.
+	Provenance string `json:"provenance"`
+	// ValueMS is the duration in force, in milliseconds, and is null exactly when
+	// Provenance is `unknown`. Milliseconds because `group_wait: 500ms` is legal
+	// and seconds would round it to "notify immediately".
+	ValueMS *int64 `json:"value_ms"`
+}
+
+// RouteTimingsDTO is what governs an Alertmanager's batching, and how oto knows.
 //
-// ⛔ null MEANS UNKNOWN, AND UNKNOWN IS NOT A DEFAULT. A client must never
-// substitute Alertmanager's documented 30s / 5m / 4h: Alertmanager omits an unset
-// value from the config it publishes and applies the default later, where the
-// status endpoint cannot see it. The whole point of these numbers is to say when
-// one of oto's knobs can never fire, and a confident wrong number destroys that.
+// ⭐ IT IS OBSERVED OR DERIVED, NEVER TYPED IN. Every oto tuning knob is a
+// function of these three numbers (docs/setup/tuning.md), and the tuning screen
+// used to ask an operator to enter them by hand and keep the answer in one
+// browser's localStorage — unshared, unvalidated, and silently wrong the moment
+// somebody edited `alertmanager.yml`. These come from the source itself, on the
+// status call oto already makes.
+//
+// ⛔ A `default_applies` FIELD IS NOT A GUESS AND IS NOT AN OBSERVATION. Absence
+// from the published configuration is itself an observation, and what it implies
+// is documented: Alertmanager applies 30s / 5m / 4h in `dispatch.NewRoute`.
+// Reporting that as `unknown` — which oto used to do — made the common case, a
+// stock install, useless, while claiming to be the careful answer.
 type RouteTimingsDTO struct {
-	// GroupWaitMS, GroupIntervalMS and RepeatIntervalMS are the TOP-LEVEL route's,
-	// in milliseconds. Milliseconds because `group_wait: 500ms` is legal and
-	// seconds would round it to "notify immediately".
-	GroupWaitMS      *int64 `json:"group_wait_ms"`
-	GroupIntervalMS  *int64 `json:"group_interval_ms"`
-	RepeatIntervalMS *int64 `json:"repeat_interval_ms"`
+	// GroupWait, GroupInterval and RepeatInterval are the TOP-LEVEL route's.
+	GroupWait      RouteTimingDTO `json:"group_wait"`
+	GroupInterval  RouteTimingDTO `json:"group_interval"`
+	RepeatInterval RouteTimingDTO `json:"repeat_interval"`
 	// Route names which route the three above describe. It is `top_level` and
 	// nothing else in v1 — the field exists so that a client rendering it never
 	// has to be changed if a later version resolves per-route values.
@@ -151,9 +172,18 @@ type RouteTimingsDTO struct {
 	// specific route and the numbers above do not govern them.
 	ChildRoutes            int32 `json:"child_routes"`
 	ChildRoutesWithTimings int32 `json:"child_routes_with_timings"`
-	// ObservedAt is when these were last read off the source. It is deliberately
-	// NOT `updated_at`: that moves on every probe, including ones that could not
-	// reach the source, so showing it here would claim a stale reading is fresh.
+	// DefaultsFromVersion is the Alertmanager version any `default_applies` field
+	// is attributed to, and is null when no field defaulted. It is the source's
+	// own reported version where oto has one.
+	DefaultsFromVersion *string `json:"defaults_from_version"`
+	// DefaultsVerified is false when the source is newer than the release oto
+	// checked Alertmanager's constants against, so a client can say "the default
+	// oto last verified" rather than asserting the source's own.
+	DefaultsVerified bool `json:"defaults_verified"`
+	// ObservedAt is when the configuration was last read off the source, and is
+	// null exactly when nothing has ever been read. It is deliberately NOT
+	// `updated_at`: that moves on every probe, including ones that could not reach
+	// the source, so showing it here would claim a stale reading is fresh.
 	ObservedAt *time.Time `json:"observed_at"`
 }
 

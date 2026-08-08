@@ -55,15 +55,19 @@ type AMStatus struct {
 // and be given contradictory guidance. The source already tells oto, on a call
 // oto already makes.
 //
-// ⛔ EVERY DURATION IS A POINTER AND nil MEANS UNKNOWN. It must NEVER be filled
-// in with Alertmanager's documented defaults (30s / 5m / 4h). Alertmanager
-// marshals these three as `omitempty` pointers, so a config that sets none of
-// them — which is what a stock `alertmanager.yml` looks like — reports none of
-// them; the defaults are applied later, in `dispatch.NewRoute`, where the status
-// endpoint cannot see them. Substituting the documented value would turn "oto
-// does not know" into a confident number, and the entire purpose of this data is
-// to tell an operator when one of their knobs can never fire. A confident wrong
-// number defeats that. An honest gap does not.
+// ⛔ EVERY DURATION IS A POINTER AND nil MEANS "THE CONFIGURATION STATED NOTHING".
+// It is an OBSERVATION, and Alertmanager's documented defaults are never written
+// into it. Alertmanager marshals these three as `omitempty` pointers, so a config
+// that sets none of them — which is what a stock `alertmanager.yml` looks like —
+// reports none of them; the defaults are applied later, in `dispatch.NewRoute`,
+// where the status endpoint cannot see them.
+//
+// What that absence MEANS is decided at read time, by `Resolve`, which turns it
+// into `default_applies` and carries the documented value beside a label saying
+// where it came from (see timings.go). Keeping the derivation out of storage is
+// what lets the whole estate be corrected by one deploy if Alertmanager ever
+// moves a default, and is what keeps "stated 5m" distinguishable from "stated
+// nothing, so 5m governs" forever.
 type RouteTimings struct {
 	// GroupWait is the delay before the FIRST notification for a new group. It is
 	// a floor on alert→Slack latency that oto cannot improve, and any flap shorter
@@ -94,7 +98,10 @@ type RouteTimings struct {
 	ChildrenWithTimings int
 }
 
-// Known reports whether any of the three durations was observed at all.
+// Known reports whether any of the three durations was STATED by the source's
+// own configuration. It is a question about the observation, not about what is in
+// force — a config that states none of them still runs on Alertmanager's
+// defaults, which is what `Resolve` reports.
 func (t RouteTimings) Known() bool {
 	return t.GroupWait != nil || t.GroupInterval != nil || t.RepeatInterval != nil
 }

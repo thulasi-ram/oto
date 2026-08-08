@@ -98,36 +98,47 @@ func healthDTO(h domain.SourceHealth) SourceHealthDTO {
 	}
 }
 
-// routeTimingsDTO renders the source's own batching timings, or nil.
+// routeTimingsDTO renders what governs this source's batching, and how oto knows.
 //
-// ⛔ NIL WHEN THE CONFIG HAS NEVER BEEN PARSED, and three nulls when it has been
-// parsed and states none of the three. The two are different facts and the
-// contract keeps them apart: the first is "oto has not looked", the second is
-// "oto looked and this Alertmanager is running on built-in defaults it does not
-// publish". Neither is ever rendered as a number.
-func routeTimingsDTO(h domain.SourceHealth) *RouteTimingsDTO {
-	if h.RouteTimingsAt == nil {
-		return nil
-	}
-	return &RouteTimingsDTO{
-		GroupWaitMS:            durationMSPtr(h.RouteTimings.GroupWait),
-		GroupIntervalMS:        durationMSPtr(h.RouteTimings.GroupInterval),
-		RepeatIntervalMS:       durationMSPtr(h.RouteTimings.RepeatInterval),
+// ⛔ THE DERIVATION HAPPENS HERE, ON READ, AND NOWHERE ELSE. `source_health`
+// stores only what was observed — NULL for a key the configuration did not state
+// — and `domain.RouteTimings.Resolve` turns that absence into `default_applies`
+// with the documented value beside it. Storing the derived number would fuse
+// "stated 5m" and "stated nothing" into one row forever, and would need a
+// backfill the day Alertmanager moves a default instead of a deploy.
+//
+// `h.RouteTimingsAt` is the load-bearing input: it is the ONLY record of whether
+// oto has ever managed to read this source's configuration, and therefore the
+// only thing that separates `unknown` from `default_applies`.
+func routeTimingsDTO(h domain.SourceHealth) RouteTimingsDTO {
+	resolved := h.RouteTimings.Resolve(h.RouteTimingsAt != nil, h.AMVersion)
+
+	out := RouteTimingsDTO{
+		GroupWait:              routeTimingDTO(resolved.GroupWait),
+		GroupInterval:          routeTimingDTO(resolved.GroupInterval),
+		RepeatInterval:         routeTimingDTO(resolved.RepeatInterval),
 		Route:                  RouteTopLevel,
-		ChildRoutes:            int32(h.RouteTimings.ChildRoutes),         //nolint:gosec // bounded by source_health_am_timings_ck
-		ChildRoutesWithTimings: int32(h.RouteTimings.ChildrenWithTimings), //nolint:gosec // bounded by source_health_am_timings_ck
+		ChildRoutes:            int32(resolved.ChildRoutes),         //nolint:gosec // bounded by source_health_am_timings_ck
+		ChildRoutesWithTimings: int32(resolved.ChildrenWithTimings), //nolint:gosec // bounded by source_health_am_timings_ck
+		DefaultsVerified:       resolved.DefaultsVerified,
 		ObservedAt:             utcPtr(h.RouteTimingsAt),
 	}
+	if resolved.DefaultsFromVersion != "" {
+		v := resolved.DefaultsFromVersion
+		out.DefaultsFromVersion = &v
+	}
+	return out
 }
 
-// durationMSPtr renders a nullable duration as nullable milliseconds. nil in,
-// nil out: this is the boundary that must not invent a number.
-func durationMSPtr(d *time.Duration) *int64 {
-	if d == nil {
-		return nil
+// routeTimingDTO renders one provenanced timing. An `unknown` field carries NO
+// number: this is the boundary that must not invent one.
+func routeTimingDTO(t domain.RouteTiming) RouteTimingDTO {
+	out := RouteTimingDTO{Provenance: string(t.Provenance)}
+	if t.Known() {
+		ms := t.Value.Milliseconds()
+		out.ValueMS = &ms
 	}
-	ms := d.Milliseconds()
-	return &ms
+	return out
 }
 
 // probeDTO maps a probe result onto the wire.

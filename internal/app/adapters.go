@@ -17,6 +17,7 @@ import (
 	enrichdomain "github.com/thulasiram/oto/internal/enrichment/domain"
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
+	groupingapi "github.com/thulasiram/oto/internal/grouping/api"
 	groupingdomain "github.com/thulasiram/oto/internal/grouping/domain"
 	groupingservice "github.com/thulasiram/oto/internal/grouping/service"
 	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
@@ -186,6 +187,79 @@ func (r notificationReader) ListForAlert(
 		})
 	}
 	return out, cursor, nil
+}
+
+// DeliveryRollupForAlert is `alerts/service.NotificationReader`'s roll-up half.
+//
+// ⭐ THE STRUCT COPY IS THE WHOLE COST OF §I.1, AND IT IS WORTH PAYING TWICE.
+// With no notification module wired the answer is an all-zero roll-up, which is
+// the truth for that deployment — nothing delivers, so nothing was delivered —
+// rather than an omitted field, which is the ambiguity `delivery_summary` exists
+// to remove.
+func (r notificationReader) DeliveryRollupForAlert(
+	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+) (alertsservice.DeliveryRollup, error) {
+	return r.rollup(ctx, s, notifrepo.RollupAlert, alertID)
+}
+
+// DeliveryRollupForOccurrence is the same question narrowed to one episode.
+func (r notificationReader) DeliveryRollupForOccurrence(
+	ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID,
+) (alertsservice.DeliveryRollup, error) {
+	return r.rollup(ctx, s, notifrepo.RollupOccurrence, occurrenceID)
+}
+
+func (r notificationReader) rollup(
+	ctx context.Context, s db.TenantScope, subject notifrepo.RollupSubject, id uuid.UUID,
+) (alertsservice.DeliveryRollup, error) {
+	if r.svc == nil {
+		return alertsservice.DeliveryRollup{}, nil
+	}
+	got, err := r.svc.DeliveryRollup(ctx, s, subject, id)
+	if err != nil {
+		return alertsservice.DeliveryRollup{}, err
+	}
+	return alertsservice.DeliveryRollup{
+		Total:          got.Total,
+		Sent:           got.Sent,
+		Failed:         got.Failed,
+		Dead:           got.Dead,
+		Skipped:        got.Skipped,
+		Pending:        got.Pending,
+		LastErrorClass: got.LastErrorClass,
+		LastSentAt:     got.LastSentAt,
+	}, nil
+}
+
+// groupDeliveryRollups is `grouping/api.DeliveryRollupReader`.
+//
+// A group generation is the subject oto actually notifies about — the intents are
+// keyed on it — so this is the least derived of the three roll-ups and the one an
+// operator reads first when a channel has gone quiet.
+type groupDeliveryRollups struct {
+	svc *notifservice.HistoryService
+}
+
+func (g groupDeliveryRollups) DeliveryRollupForGroup(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+) (groupingapi.DeliveryRollup, error) {
+	if g.svc == nil {
+		return groupingapi.DeliveryRollup{}, nil
+	}
+	got, err := g.svc.DeliveryRollup(ctx, s, notifrepo.RollupGroup, groupID)
+	if err != nil {
+		return groupingapi.DeliveryRollup{}, err
+	}
+	return groupingapi.DeliveryRollup{
+		Total:          got.Total,
+		Sent:           got.Sent,
+		Failed:         got.Failed,
+		Dead:           got.Dead,
+		Skipped:        got.Skipped,
+		Pending:        got.Pending,
+		LastErrorClass: got.LastErrorClass,
+		LastSentAt:     got.LastSentAt,
+	}, nil
 }
 
 // subjectResolver is `notification/api.SubjectResolver`: it maps an alert or an
@@ -731,6 +805,24 @@ func (l *lateNotificationReader) ListForAlert(
 		return nil, db.Cursor{}, nil
 	}
 	return l.inner.ListForAlert(ctx, s, alertID, p)
+}
+
+func (l *lateNotificationReader) DeliveryRollupForAlert(
+	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+) (alertsservice.DeliveryRollup, error) {
+	if l == nil {
+		return alertsservice.DeliveryRollup{}, nil
+	}
+	return l.inner.DeliveryRollupForAlert(ctx, s, alertID)
+}
+
+func (l *lateNotificationReader) DeliveryRollupForOccurrence(
+	ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID,
+) (alertsservice.DeliveryRollup, error) {
+	if l == nil {
+		return alertsservice.DeliveryRollup{}, nil
+	}
+	return l.inner.DeliveryRollupForOccurrence(ctx, s, occurrenceID)
 }
 
 // ---------------------------------------------------------------- job scopes

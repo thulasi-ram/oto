@@ -381,6 +381,37 @@ func (s *Service) Notifications(
 	return NotificationResult{Notifications: items, Cursor: cur}, nil
 }
 
+// DeliveryRollupForAlert serves the `delivery_summary` of `GET /alerts/{id}`.
+//
+// ⭐ THE FIELD WAS DECLARED AND NEVER EMITTED. It is optional in the schema, so
+// every contract validator passed and the gap was invisible for as long as it
+// existed. What it costs is the one thing oto sells: a user who sees no Slack
+// message cannot otherwise tell "nothing fired" from "four deliveries died".
+//
+// With no notification module wired, the answer is an all-zero roll-up rather
+// than an omitted field. That is honest — this deployment delivers nothing, so
+// nothing was delivered — and it keeps the field's presence unconditional, which
+// is what stops it from silently disappearing again.
+func (s *Service) DeliveryRollupForAlert(
+	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
+) (DeliveryRollup, error) {
+	if s.notifications == nil {
+		return DeliveryRollup{}, nil
+	}
+	return s.notifications.DeliveryRollupForAlert(ctx, scope, alertID)
+}
+
+// DeliveryRollupForOccurrence serves the `delivery_summary` of
+// `GET /occurrences/{id}` — the same question narrowed to one firing episode.
+func (s *Service) DeliveryRollupForOccurrence(
+	ctx context.Context, scope db.TenantScope, occurrenceID uuid.UUID,
+) (DeliveryRollup, error) {
+	if s.notifications == nil {
+		return DeliveryRollup{}, nil
+	}
+	return s.notifications.DeliveryRollupForOccurrence(ctx, scope, occurrenceID)
+}
+
 // SnoozeHistory serves the §B.8.6 snooze history for one Alert. Membership of a
 // snooze is history, not a boolean: the org-wide banner that makes the feature
 // safe is built from these rows.

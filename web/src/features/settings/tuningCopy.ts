@@ -21,15 +21,24 @@
  *      screen says that and does not manufacture a threshold.
  *   3. **The values are relative to the operator's own `alertmanager.yml`.**
  *      That is the single most valuable thing this screen can say, so it is said
- *      inline at each knob rather than in a help page. oto has no access to
- *      `alertmanager.yml`, so the four numbers everything depends on are entered
- *      by the operator and held in this browser — see `AmRef`.
+ *      inline at each knob rather than in a help page. The three numbers
+ *      everything depends on are READ off the source — `SourceHealthDTO.
+ *      route_timings` — with the provenance of each carried beside it, so a
+ *      verdict can say whether it is arguing from the operator's own setting or
+ *      from Alertmanager's documented default. They were typed into a form and
+ *      kept in one browser's localStorage until this screen was rebuilt; see
+ *      `AmRef`.
  *
  * Vocabulary here is bound by SCOPE-BOUNDARY §3 and enforced by
  * `tools/lintvocab`. Notably: the unacked reminder is a reminder, never a
  * ladder; oto measures a signal's **firing duration**, never anyone's response.
  */
-import type { ReminderMention, ReminderMentionSeverity, Verbosity } from "~/api/types";
+import type {
+  ReminderMention,
+  ReminderMentionSeverity,
+  TimingProvenance,
+  Verbosity,
+} from "~/api/types";
 import { duration } from "~/lib/format";
 
 /* -------------------------------------------------------------------------- */
@@ -37,38 +46,69 @@ import { duration } from "~/lib/format";
 /* -------------------------------------------------------------------------- */
 
 /**
- * The four upstream numbers every oto duration is a multiple of.
+ * One upstream timing, with the provenance oto served for it.
  *
- * oto cannot read these. It has no access to `alertmanager.yml` and no access to
- * the rule files, and the read API it does have (`listSilences`, the rules
- * mirror) does not carry route timing. So they are entered here, stored in this
- * browser only, and never sent anywhere — which is also why `confirmed` exists:
- * guidance computed from *assumed* defaults must say so.
+ * ⛔ THE PROVENANCE IS NOT A FOOTNOTE. `observed` and `default_applies` produce
+ * identical arithmetic — a 2m re-fire grace is just as unreachable under a
+ * defaulted 5m `group_interval` as under a configured one — but they call for
+ * different actions. Under `observed` there is a line in `alertmanager.yml` to
+ * change; under `default_applies` there is no such line, and the operator either
+ * adds one or moves the oto knob instead. Rendering them the same throws away
+ * the only part of this screen that is advice.
  */
-export interface AmRef {
-  /** `route.group_wait` — delay before the FIRST notification for a new group. */
-  readonly group_wait_s: number;
-  /** `route.group_interval` — the clock rate of oto's whole view of the world. */
-  readonly group_interval_s: number;
-  /** `route.repeat_interval` — gap before re-sending an UNCHANGED group. */
-  readonly repeat_interval_s: number;
-  /** The `for:` of the rules that actually misbehave, not the average. */
-  readonly rule_for_s: number;
-  /** False until an operator has actually entered their own numbers. */
-  readonly confirmed: boolean;
+export interface AmTiming {
+  /** The duration in force. `null` exactly when `provenance` is `unknown`. */
+  readonly seconds: number | null;
+  readonly provenance: TimingProvenance;
 }
 
-/** Alertmanager's own defaults (`dispatch/route.go`), plus a typical `for:`. */
-export const AM_DEFAULTS: AmRef = {
-  group_wait_s: 30,
-  group_interval_s: 300,
-  repeat_interval_s: 14_400,
-  rule_for_s: 300,
-  confirmed: false,
-};
+/**
+ * The upstream numbers every oto duration is a multiple of, for ONE source.
+ *
+ * ⭐ THEY ARE READ, NEVER TYPED IN. This used to be four inputs whose values were
+ * kept in one browser's `localStorage`: unshared, so the person beside you saw
+ * different guidance; unvalidated, so nothing checked them against the cluster;
+ * and silently wrong the moment somebody edited `alertmanager.yml`. oto reads all
+ * three off `config.original` on the status call it already makes, and serves
+ * them on `SourceHealthDTO.route_timings`.
+ *
+ * ⚠️ ONLY THE TOP-LEVEL ROUTE IS EVALUATED. All three settings are per-route and
+ * inherited, so the values governing a particular alert are the ones on the route
+ * that MATCHED it. `childRoutesWithTimings` is that limitation made countable and
+ * is stated wherever these numbers are shown.
+ */
+export interface AmRef {
+  readonly sourceId: string;
+  readonly sourceName: string;
+  readonly groupWait: AmTiming;
+  readonly groupInterval: AmTiming;
+  readonly repeatInterval: AmTiming;
+  /** How many descendant routes exist, and how many state a timing of their own. */
+  readonly childRoutes: number;
+  readonly childRoutesWithTimings: number;
+  /** When the configuration was last read off the source. Null if never. */
+  readonly observedAt: string | null;
+  /** The Alertmanager version any defaulted field is attributed to. */
+  readonly defaultsFromVersion: string | null;
+  /** False when the source is newer than the release oto checked the constants against. */
+  readonly defaultsVerified: boolean;
+}
 
+/**
+ * The rules' `for:`, as a STATED ASSUMPTION rather than an input.
+ *
+ * ⛔ oto does not read your rule files, and this screen no longer pretends it can
+ * be told. A per-browser number for this was the same unshared, unvalidated
+ * localStorage value as the other three, and it fed the flap guidance — so two
+ * operators could be given contradictory verdicts about the same rule. Five
+ * minutes is the commonest `for:` in the wild and is what the flap arithmetic
+ * assumes; every verdict that depends on it says so in the same sentence.
+ */
+export const ASSUMED_RULE_FOR_S = 300;
+
+/** The three fields, with why each one governs what it governs. */
 export interface AmFieldCopy {
-  readonly key: "group_wait_s" | "group_interval_s" | "repeat_interval_s" | "rule_for_s";
+  readonly key: "groupWait" | "groupInterval" | "repeatInterval";
   readonly label: string;
   readonly source: string;
   readonly why: string;
@@ -76,30 +116,43 @@ export interface AmFieldCopy {
 
 export const AM_FIELDS: readonly AmFieldCopy[] = [
   {
-    key: "group_wait_s",
+    key: "groupWait",
     label: "group_wait",
     source: "route.group_wait in alertmanager.yml",
     why: "A floor on alert-to-Slack latency that oto cannot improve. It also hides the fastest flaps entirely: an alert that resolves before group_wait elapses produces no notification at all, and oto cannot damp, count or report what it is never told about.",
   },
   {
-    key: "group_interval_s",
+    key: "groupInterval",
     label: "group_interval",
     source: "route.group_interval",
     why: "The clock rate of oto's whole view of the world. oto never learns about a change to an existing group faster than this, so every duration below should be read as a multiple of it rather than as an absolute time.",
   },
   {
-    key: "repeat_interval_s",
+    key: "repeatInterval",
     label: "repeat_interval",
     source: "route.repeat_interval",
     why: "Produces the notification oto delivers as an update rather than a new message — the single largest noise reduction oto provides, and it needs no tuning. Its consequence is that an unacknowledged critical is re-sent only this often, which is why oto runs its own unacked-reminder clock.",
   },
-  {
-    key: "rule_for_s",
-    label: "rule for:",
-    source: "the for: clause of the rules that actually misbehave",
-    why: "The hard floor on how fast an alert can possibly oscillate, and what makes the flap thresholds either meaningful or dead code. If your rules range from 0s to 1h, no single global flap threshold is correct for all of them — tune for the ones that misbehave.",
-  },
 ];
+
+/** The duration to compute with, or null when oto genuinely cannot say. */
+export function amSeconds(t: AmTiming): number | null {
+  return t.provenance === "unknown" ? null : t.seconds;
+}
+
+/**
+ * How a timing is named inside a verdict.
+ *
+ * "your group_interval of 5m" and "Alertmanager's default group_interval of 5m"
+ * are the same number and different instructions, and this is the one function
+ * that keeps them apart in every sentence on the screen.
+ */
+export function amPhrase(label: string, t: AmTiming): string {
+  const value = duration(t.seconds ?? 0);
+  return t.provenance === "observed"
+    ? `your ${label} of ${value}`
+    : `Alertmanager's default ${label} of ${value}`;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Knob descriptions                                                          */
@@ -175,8 +228,15 @@ export interface KnobCopy {
   readonly risks: readonly [Risk, Risk];
   /** The standing relationship to the customer's own config. Always shown. */
   readonly amRule: string;
-  /** Evaluated against the entered Alertmanager numbers on every keystroke. */
-  readonly guide?: (value: number, am: AmRef, num: (key: KnobKey) => number) => Guidance;
+  /**
+   * Evaluated against the SOURCE'S OWN Alertmanager numbers on every keystroke.
+   *
+   * It returns `null` when the arithmetic cannot be done — a timing whose
+   * provenance is `unknown` has no number, and inventing one is exactly what this
+   * screen stopped doing. A defaulted timing DOES produce a verdict, because the
+   * default is what governs; the wording says whose number it is.
+   */
+  readonly guide?: (value: number, am: AmRef, num: (key: KnobKey) => number) => Guidance | null;
 }
 
 export interface KnobGroup {
@@ -215,23 +275,25 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     amRule:
       "Start from group_interval and give it real headroom: 2 x group_interval is the hard floor, 3 x is a reasonable default. Below one group_interval the knob does nothing at all. Then check the top end against how long your incidents actually last — if a typical one is genuinely gone in ten minutes, a ten-minute window will merge distinct incidents.",
     guide: (v, am) => {
-      const gi = am.group_interval_s;
+      const gi = amSeconds(am.groupInterval);
+      if (gi === null) return null;
+      const named = amPhrase("group_interval", am.groupInterval);
       if (v < gi) {
         return {
           level: "inert",
-          text: `Unreachable. Shorter than your group_interval of ${duration(gi)}, so the window has always expired before oto can hear about a re-fire. Every re-fire will open a new Slack thread.`,
+          text: `Unreachable. Shorter than ${named}, so the window has always expired before oto can hear about a re-fire. Every re-fire will open a new Slack thread.`,
           suggest: gi * 3,
         };
       }
       if (v < gi * 2) {
         return {
           level: "tight",
-          text: `Below the 2 x group_interval floor (${duration(gi * 2)}). Reachable only by a re-fire that lands in the very first batch after the resolve.`,
+          text: `Below the 2 x group_interval floor (${duration(gi * 2)}), measured against ${named}. Reachable only by a re-fire that lands in the very first batch after the resolve.`,
           suggest: gi * 3,
         };
       }
       return ok(
-        `${(v / gi).toFixed(1)} x group_interval — above the 2 x floor. The doc's suggested default is 3 x (${duration(gi * 3)}).`,
+        `${(v / gi).toFixed(1)} x group_interval — above the 2 x floor, against ${named}. The doc's suggested default is 3 x (${duration(gi * 3)}).`,
       );
     },
   },
@@ -254,11 +316,13 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     amRule:
       "Keep it at or above group_interval, and consider aligning it with the re-fire grace. If it is much shorter than the re-fire grace, a re-fire inside the grace window still finds a closed group — and gets a new root message anyway.",
     guide: (v, am, num) => {
-      const gi = am.group_interval_s;
+      const gi = amSeconds(am.groupInterval);
+      if (gi === null) return null;
+      const named = amPhrase("group_interval", am.groupInterval);
       if (v < gi) {
         return {
           level: "inert",
-          text: `Below group_interval (${duration(gi)}). A generation can close between two batches of one incident.`,
+          text: `Below ${named}. A generation can close between two batches of one incident.`,
           suggest: gi,
         };
       }
@@ -270,7 +334,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
           suggest: refire,
         };
       }
-      return ok(`At or above group_interval (${duration(gi)}), and not shorter than the re-fire grace.`);
+      return ok(`At or above ${named}, and not shorter than the re-fire grace.`);
     },
   },
 
@@ -324,24 +388,29 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     amRule:
       "The for: trap. Every resolved-to-firing edge needs the rule condition to hold for its whole for: duration first, and oto only sees a change when Alertmanager sends one. The observable ceiling in a window W is about 2 x W / (for + group_interval); set the threshold at roughly half of it. For long-for: rules do not lower the threshold to 2 — two transitions is a normal deploy. Widen the window instead.",
     guide: (v, am, num) => {
+      const gi = amSeconds(am.groupInterval);
+      if (gi === null) return null;
       const w = num("flap_window_s");
-      const cadence = am.rule_for_s + am.group_interval_s;
+      const cadence = ASSUMED_RULE_FOR_S + gi;
       const ceiling = Math.floor((2 * w) / cadence);
+      // oto does not read rule files, so the `for:` half of this arithmetic is an
+      // assumption and every verdict below says so in the same breath.
+      const basis = `an assumed for: of ${duration(ASSUMED_RULE_FOR_S)} and ${amPhrase("group_interval", am.groupInterval)}`;
       if (v > ceiling) {
         return {
           level: "inert",
-          text: `Unreachable. With for: ${duration(am.rule_for_s)} and group_interval ${duration(am.group_interval_s)}, a ${duration(w)} window can contain at most about ${ceiling} transition${ceiling === 1 ? "" : "s"} oto is able to observe. The damper can never engage — it is dead code that looks configured. Widen the window rather than lowering the threshold.`,
+          text: `Unreachable. With ${basis}, a ${duration(w)} window can contain at most about ${ceiling} transition${ceiling === 1 ? "" : "s"} oto is able to observe. The damper can never engage — it is dead code that looks configured. Widen the window rather than lowering the threshold.`,
         };
       }
       if (v > Math.floor(ceiling / 2)) {
         return {
           level: "tight",
-          text: `Reachable but only just: the observable ceiling in a ${duration(w)} window is about ${ceiling}, and the doc puts a workable threshold at roughly half of that.`,
+          text: `Reachable but only just: with ${basis}, the observable ceiling in a ${duration(w)} window is about ${ceiling}, and the doc puts a workable threshold at roughly half of that.`,
           suggest: Math.max(3, Math.floor(ceiling / 2)),
         };
       }
       return ok(
-        `About half the observable ceiling of ${ceiling} for a ${duration(w)} window at for: ${duration(am.rule_for_s)}.`,
+        `About half the observable ceiling of ${ceiling} for a ${duration(w)} window, with ${basis}.`,
       );
     },
   },
@@ -364,24 +433,28 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     amRule:
       "For a rule with a long for:, widen this rather than lowering the threshold: flap_window is about flap_threshold x (for + group_interval) x 2. With for: 10m and group_interval 5m, a 3h window makes a threshold of 5 describe something genuinely pathological instead of something impossible.",
     guide: (v, am, num) => {
-      const gi = am.group_interval_s;
+      const gi = amSeconds(am.groupInterval);
+      if (gi === null) return null;
+      const named = amPhrase("group_interval", am.groupInterval);
       if (v < gi) {
         return {
           level: "inert",
-          text: `Shorter than group_interval (${duration(gi)}). The window cannot contain two transitions oto is able to observe, so no threshold is reachable.`,
+          text: `Shorter than ${named}. The window cannot contain two transitions oto is able to observe, so no threshold is reachable.`,
           suggest: gi * 2,
         };
       }
       const t = num("flap_threshold");
-      const need = Math.round(t * (am.rule_for_s + gi) * 2);
+      const need = Math.round(t * (ASSUMED_RULE_FOR_S + gi) * 2);
       if (Number.isFinite(t) && v < need) {
         return {
           level: "tight",
-          text: `A threshold of ${t} needs roughly ${duration(need)} to be reachable at for: ${duration(am.rule_for_s)} and group_interval ${duration(gi)}.`,
+          text: `A threshold of ${t} needs roughly ${duration(need)} to be reachable at an assumed for: of ${duration(ASSUMED_RULE_FOR_S)} and ${named}.`,
           suggest: need,
         };
       }
-      return ok(`Wide enough for a threshold of ${t} at for: ${duration(am.rule_for_s)}.`);
+      return ok(
+        `Wide enough for a threshold of ${t} at an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}, against ${named}.`,
+      );
     },
   },
 
@@ -403,22 +476,26 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     amRule:
       "Keep it at or above group_interval. Two to four times group_interval is the useful range.",
     guide: (v, am) => {
-      const gi = am.group_interval_s;
+      const gi = amSeconds(am.groupInterval);
+      if (gi === null) return null;
+      const named = amPhrase("group_interval", am.groupInterval);
       if (v < gi) {
         return {
           level: "tight",
-          text: `Below group_interval (${duration(gi)}). It cannot produce more digests than the upstream produces batches — it only jitters when they land.`,
+          text: `Below ${named}. It cannot produce more digests than the upstream produces batches — it only jitters when they land.`,
           suggest: gi * 3,
         };
       }
       if (v > gi * 4) {
         return {
           level: "tight",
-          text: `Above 4 x group_interval (${duration(gi * 4)}), which is the top of the useful range. The digest starts arriving after anyone cared.`,
+          text: `Above 4 x group_interval (${duration(gi * 4)}), measured against ${named}, which is the top of the useful range. The digest starts arriving after anyone cared.`,
           suggest: gi * 3,
         };
       }
-      return ok(`${(v / gi).toFixed(1)} x group_interval — inside the useful 2 x to 4 x range.`);
+      return ok(
+        `${(v / gi).toFixed(1)} x group_interval — inside the useful 2 x to 4 x range, against ${named}.`,
+      );
     },
   },
 
@@ -462,22 +539,26 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     amRule:
       "It must be longer than group_wait, and about 2 x group_wait is the shipped shape. If you have raised group_wait to reduce noise, raise this with it, or storm mode triggers inconsistently depending on where a burst falls relative to the batch boundary.",
     guide: (v, am) => {
-      const gw = am.group_wait_s;
+      const gw = amSeconds(am.groupWait);
+      if (gw === null) return null;
+      const named = amPhrase("group_wait", am.groupWait);
       if (v <= gw) {
         return {
           level: "inert",
-          text: `Not longer than group_wait (${duration(gw)}). A burst Alertmanager is still batching arrives in a single delivery after this window closes, so it never looks like a burst.`,
+          text: `Not longer than ${named}. A burst Alertmanager is still batching arrives in a single delivery after this window closes, so it never looks like a burst.`,
           suggest: gw * 2,
         };
       }
       if (v < gw * 2) {
         return {
           level: "tight",
-          text: `Above group_wait but below the 2 x shape the default uses (${duration(gw * 2)}). Storm detection will depend on where a burst falls relative to the batch boundary.`,
+          text: `Above ${named} but below the 2 x shape the default uses (${duration(gw * 2)}). Storm detection will depend on where a burst falls relative to the batch boundary.`,
           suggest: gw * 2,
         };
       }
-      return ok(`${(v / gw).toFixed(1)} x group_wait — comfortably past the batch boundary.`);
+      return ok(
+        `${(v / gw).toFixed(1)} x group_wait — comfortably past the batch boundary, against ${named}.`,
+      );
     },
   },
 
@@ -499,15 +580,19 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     amRule:
       "Keep it at or above group_interval, otherwise storm mode flickers across consecutive batches. The shipped 10m is 2 x the Alertmanager default.",
     guide: (v, am) => {
-      const gi = am.group_interval_s;
+      const gi = amSeconds(am.groupInterval);
+      if (gi === null) return null;
+      const named = amPhrase("group_interval", am.groupInterval);
       if (v < gi) {
         return {
           level: "inert",
-          text: `Below group_interval (${duration(gi)}). Storm mode will flicker on and off across consecutive batches.`,
+          text: `Below ${named}. Storm mode will flicker on and off across consecutive batches.`,
           suggest: gi * 2,
         };
       }
-      return ok(`${(v / gi).toFixed(1)} x group_interval — no flicker across consecutive batches.`);
+      return ok(
+        `${(v / gi).toFixed(1)} x group_interval — no flicker across consecutive batches, against ${named}.`,
+      );
     },
   },
 
@@ -537,16 +622,16 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
           "Unset. A policy that names no delay of its own produces no reminder at all. This is not the same as zero seconds.",
         );
       }
-      const ri = am.repeat_interval_s;
+      const ri = amSeconds(am.repeatInterval);
+      if (ri === null) return null;
+      const named = amPhrase("repeat_interval", am.repeatInterval);
       if (v >= ri) {
         return {
           level: "tight",
-          text: `At or beyond your repeat_interval (${duration(ri)}). Alertmanager will already have re-sent the unchanged group before oto's reminder fires, so the reminder adds nothing the channel was not just told.`,
+          text: `At or beyond ${named}. Alertmanager will already have re-sent the unchanged group before oto's reminder fires, so the reminder adds nothing the channel was not just told.`,
         };
       }
-      return ok(
-        `Fires well inside your repeat_interval of ${duration(ri)}, which is the point of having this clock at all.`,
-      );
+      return ok(`Fires well inside ${named}, which is the point of having this clock at all.`);
     },
   },
 

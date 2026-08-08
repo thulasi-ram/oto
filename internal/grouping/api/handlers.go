@@ -68,7 +68,7 @@ func (rt *Router) getAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	httpx.Data(w, r, http.StatusOK, rt.detailDTO(r, scope, detail), started)
+	rt.writeDetail(w, r, scope, detail, started)
 }
 
 // ackAlertGroup is `POST /api/v1/alert-groups/{id}/ack`.
@@ -112,7 +112,7 @@ func (rt *Router) ackAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	httpx.Data(w, r, http.StatusOK, rt.detailDTO(r, scope, detail), started)
+	rt.writeDetail(w, r, scope, detail, started)
 }
 
 // commentOnAlertGroup is `POST /api/v1/alert-groups/{id}/comments`.
@@ -201,7 +201,7 @@ func (rt *Router) snoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	httpx.Data(w, r, http.StatusOK, rt.detailDTO(r, scope, detail), started)
+	rt.writeDetail(w, r, scope, detail, started)
 }
 
 // unsnoozeAlertGroup is `POST /api/v1/alert-groups/{id}/unsnooze`: end the
@@ -239,7 +239,7 @@ func (rt *Router) unsnoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	httpx.Data(w, r, http.StatusOK, rt.detailDTO(r, scope, detail), started)
+	rt.writeDetail(w, r, scope, detail, started)
 }
 
 // snoozeUntil resolves the two spellings of "how long", refusing both and
@@ -383,14 +383,41 @@ func (rt *Router) subjectNoParamCheck(r *http.Request) (db.TenantScope, uuid.UUI
 	return scope, id, nil
 }
 
-// detailDTO renders the generation, its severity roll-up and a bounded member
-// preview.
-func (rt *Router) detailDTO(r *http.Request, scope db.TenantScope, d service.Detail) GroupDetailDTO {
+// writeDetail renders one generation, or the problem that stopped it.
+//
+// It exists because the delivery roll-up is the one part of this page that must
+// NOT be swallowed. A member alert that cannot be read is skipped — a card that
+// is short is better than a card that refuses — but a delivery roll-up that could
+// not be read is oto claiming silence it never checked, which is the precise
+// failure `delivery_summary` was added to prevent.
+func (rt *Router) writeDetail(
+	w http.ResponseWriter, r *http.Request, scope db.TenantScope,
+	d service.Detail, started time.Time,
+) {
+	dto, err := rt.detailDTO(r, scope, d)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, dto, started)
+}
+
+// detailDTO renders the generation, its severity roll-up, a bounded member
+// preview and the fan-out health of the generation's own notifications.
+func (rt *Router) detailDTO(
+	r *http.Request, scope db.TenantScope, d service.Detail,
+) (GroupDetailDTO, error) {
 	dto := GroupDetailDTO{
 		GroupDTO:       groupDTO(d.Group, d.Snooze),
 		SeverityCounts: map[string]int32{},
 		TopAlerts:      []AlertRefDTO{},
 	}
+
+	rollup, err := rt.deliveryRollup(r, scope, d.Group.ID())
+	if err != nil {
+		return GroupDetailDTO{}, err
+	}
+	dto.DeliverySummary = deliverySummaryDTO(rollup)
 	for _, m := range sortedMembers(d.Members) {
 		if len(dto.TopAlerts) >= maxTopAlerts {
 			break
@@ -404,7 +431,45 @@ func (rt *Router) detailDTO(r *http.Request, scope db.TenantScope, d service.Det
 			dto.SeverityCounts[sev]++
 		}
 	}
-	return dto
+	return dto, nil
+}
+
+// deliveryRollup reads the generation's fan-out health through the cross-domain
+// port. With no port wired the answer is all zeroes, which is exactly what a
+// deployment running without the notification module delivers.
+func (rt *Router) deliveryRollup(
+	r *http.Request, scope db.TenantScope, groupID uuid.UUID,
+) (DeliveryRollup, error) {
+	if rt.rollups == nil {
+		return DeliveryRollup{}, nil
+	}
+	return rt.rollups.DeliveryRollupForGroup(r.Context(), scope, groupID)
+}
+
+// deliverySummaryDTO renders the fan-out health onto the wire.
+//
+// `skipped` is counted BOTH separately and inside `sent`, as the contract
+// describes: a skipped delivery means the destination already shows exactly this
+// content — a coalesced no-op update — and reporting it as a failure would make a
+// healthy, quiet thread look broken.
+func deliverySummaryDTO(r DeliveryRollup) DeliverySummaryDTO {
+	out := DeliverySummaryDTO{
+		Total:   int32(r.Total),   //nolint:gosec // bounded by the fan-out
+		Sent:    int32(r.Sent),    //nolint:gosec // bounded by the fan-out
+		Failed:  int32(r.Failed),  //nolint:gosec // bounded by the fan-out
+		Dead:    int32(r.Dead),    //nolint:gosec // bounded by the fan-out
+		Skipped: int32(r.Skipped), //nolint:gosec // bounded by the fan-out
+		Pending: int32(r.Pending), //nolint:gosec // bounded by the fan-out
+	}
+	if r.LastErrorClass != "" {
+		v := r.LastErrorClass
+		out.LastErrorClass = &v
+	}
+	if r.LastSentAt != nil {
+		v := r.LastSentAt.UTC()
+		out.LastSentAt = &v
+	}
+	return out
 }
 
 // alert resolves one member alert through the cross-domain port. A member whose

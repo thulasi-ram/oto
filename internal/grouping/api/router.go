@@ -48,6 +48,31 @@ type AlertReader interface {
 	Get(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (alerts.AlertDetail, error)
 }
 
+// DeliveryRollupReader answers "did this generation's notifications land".
+//
+// ⛔ It is declared HERE, by the consumer (CONTEXT.md §5.4), and satisfied by an
+// adapter over `notification/service` in internal/app. `grouping` never imports
+// `notification`: a group card must still render in a deployment with
+// notifications wired out, and it does — with an all-zero roll-up, which is the
+// truth for that deployment.
+type DeliveryRollupReader interface {
+	DeliveryRollupForGroup(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (DeliveryRollup, error)
+}
+
+// DeliveryRollup is the fan-out health of one group generation, in this
+// package's own terms.
+type DeliveryRollup struct {
+	Total   int
+	Sent    int
+	Failed  int
+	Dead    int
+	Skipped int
+	Pending int
+
+	LastErrorClass string
+	LastSentAt     *time.Time
+}
+
 // Compile-time proof that the services satisfy the ports this layer declares.
 var (
 	_ GroupService = (*service.Service)(nil)
@@ -56,18 +81,21 @@ var (
 
 // Router serves the Groups tag.
 type Router struct {
-	svc    GroupService
-	alerts AlertReader
-	clk    clock.Clock
+	svc     GroupService
+	alerts  AlertReader
+	rollups DeliveryRollupReader
+	clk     clock.Clock
 }
 
 // NewRouter builds the groups HTTP surface. alertReader may be nil, in which case
-// member alerts render as an empty page rather than failing the request.
-func NewRouter(svc GroupService, alertReader AlertReader, clk clock.Clock) *Router {
+// member alerts render as an empty page rather than failing the request;
+// rollupReader may be nil, in which case the delivery roll-up is all zeroes —
+// which is what a deployment with no notification module actually delivers.
+func NewRouter(svc GroupService, alertReader AlertReader, rollupReader DeliveryRollupReader, clk clock.Clock) *Router {
 	if clk == nil {
 		clk = clock.New()
 	}
-	return &Router{svc: svc, alerts: alertReader, clk: clk}
+	return &Router{svc: svc, alerts: alertReader, rollups: rollupReader, clk: clk}
 }
 
 // Register mounts every route this package owns onto r, already rooted at

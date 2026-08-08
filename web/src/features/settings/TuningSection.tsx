@@ -11,18 +11,25 @@
  *      one. The copy lives in `tuningCopy.ts` and is taken from
  *      `docs/setup/tuning.md` — this screen must not contradict that page.
  *
- *   2. **The Alertmanager relationship is inline and live.** Almost every value
- *      here is only meaningful as a multiple of the customer's own
- *      `group_wait` / `group_interval` / `repeat_interval` and their rules'
- *      `for:`. A re-fire grace shorter than `group_interval` is unreachable; a
- *      flap threshold of 5-in-30m is unreachable for a rule with `for: 10m`.
- *      oto cannot read those four numbers, so the operator enters them once and
- *      every knob is checked against them on each keystroke.
+ *   2. **The Alertmanager relationship is inline, live and PROVENANCED.** Almost
+ *      every value here is only meaningful as a multiple of the source's own
+ *      `group_wait` / `group_interval` / `repeat_interval`. A re-fire grace
+ *      shorter than `group_interval` is unreachable at any value. oto reads those
+ *      three off each source's published configuration and serves them on
+ *      `SourceHealthDTO.route_timings`, each with one of three states —
+ *      `observed`, `default_applies`, `unknown` — and this screen renders all
+ *      three differently. They were four inputs kept in one browser's
+ *      `localStorage` until this rewrite: unshared, unvalidated, and silently
+ *      wrong the moment somebody edited `alertmanager.yml`.
  *
  *   3. **Origin is the primary fact, not a footnote.** An operator debugging a
- *      noisy Slack needs to see instantly which values are theirs. Each knob is
- *      badged, the count is at the top, and there is a filter that hides
- *      everything stock.
+ *      noisy Slack needs to see instantly which values are theirs, which are
+ *      oto's, and which this deployment's own configuration is forcing. Each knob
+ *      is badged with `default` / `org` / `config`; a `config` knob is READ-ONLY
+ *      and names the environment variable or file key that owns it; and an org
+ *      override that configuration is shadowing is shown BESIDE the value in
+ *      force, never hidden — a stored number nobody can see is a number that
+ *      takes effect the day somebody deletes a config key.
  *
  *   4. **Reset removes the override; it never writes the default back.** Those
  *      are different facts — "600 because we chose it" and "600 because that is
@@ -48,13 +55,16 @@ import {
   type JSX,
 } from "solid-js";
 
-import { orphanViolations, violationsByField } from "~/api/client";
-import { getOrgSettings, updateOrgSettings } from "~/api/endpoints";
+import { ApiError, orphanViolations, violationsByField } from "~/api/client";
+import { getOrgSettings, listSources, updateOrgSettings } from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import type {
   OrgSettingsView,
+  RouteTiming,
   SettingBound,
   SettingOrigin,
+  Source,
+  TimingProvenance,
   UpdateOrgSettingsRequest,
 } from "~/api/types";
 import { Dialog, DialogBody } from "~/components/ui/Dialog";
@@ -70,10 +80,11 @@ import {
   cx,
 } from "~/components/ui/primitives";
 import { ErrorBanner, ErrorState, Skeleton } from "~/components/ui/states";
+import { RelativeTime } from "~/components/Time";
 import { duration } from "~/lib/format";
 import {
-  AM_DEFAULTS,
   AM_FIELDS,
+  ASSUMED_RULE_FOR_S,
   KNOBS,
   KNOB_GROUPS,
   MENTION_LIST_MAX,
@@ -84,52 +95,59 @@ import {
   isNumeric,
   readValue,
   unitSuffix,
+  type AmFieldCopy,
   type AmRef,
+  type AmTiming,
   type Guidance,
   type KnobCopy,
   type KnobKey,
 } from "./tuningCopy";
 
 /* -------------------------------------------------------------------------- */
-/* The Alertmanager reference, held locally                                   */
+/* The Alertmanager reference, READ from each source                          */
 /* -------------------------------------------------------------------------- */
 
 /**
- * oto has no access to `alertmanager.yml` and the API carries nothing about the
- * customer's route timing, so these four numbers live in this browser. That is a
- * real limitation and the panel says so rather than implying oto knows.
+ * ⛔ THERE IS NO localStorage HERE, AND THERE IS NO FORM.
+ *
+ * These three numbers used to be typed into this screen and kept under
+ * `oto.tuning.alertmanager.v1` in whichever browser happened to be open. That is
+ * unshared (the person beside you was given different guidance), unvalidated
+ * (nothing ever checked them against the cluster), and silently wrong the moment
+ * somebody edited `alertmanager.yml`. oto reads them off `config.original` on the
+ * status call it already makes, per source, and serves them on
+ * `SourceHealthDTO.route_timings` with the provenance of each.
  */
-const AM_STORAGE_KEY = "oto.tuning.alertmanager.v1";
 
-function loadAmRef(): AmRef {
-  try {
-    const raw = globalThis.localStorage?.getItem(AM_STORAGE_KEY);
-    if (raw === null || raw === undefined) return AM_DEFAULTS;
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return AM_DEFAULTS;
-    const rec = parsed as Record<string, unknown>;
-    const pick = (k: keyof AmRef, fallback: number): number => {
-      const v = rec[k];
-      return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback;
-    };
-    return {
-      group_wait_s: pick("group_wait_s", AM_DEFAULTS.group_wait_s),
-      group_interval_s: pick("group_interval_s", AM_DEFAULTS.group_interval_s),
-      repeat_interval_s: pick("repeat_interval_s", AM_DEFAULTS.repeat_interval_s),
-      rule_for_s: pick("rule_for_s", AM_DEFAULTS.rule_for_s),
-      confirmed: rec["confirmed"] === true,
-    };
-  } catch {
-    return AM_DEFAULTS;
-  }
+/** Turn one source's served health into the reference the guidance argues from. */
+function amRefOf(source: Source): AmRef | null {
+  const timings = source.health?.route_timings;
+  if (timings === undefined) return null;
+  const asTiming = (t: RouteTiming): AmTiming => ({
+    provenance: t.provenance,
+    // `value_ms` is null exactly when the provenance is `unknown`, and
+    // milliseconds because `group_wait: 500ms` is legal upstream.
+    seconds: t.value_ms === null ? null : t.value_ms / 1000,
+  });
+  return {
+    sourceId: source.id,
+    sourceName: source.name,
+    groupWait: asTiming(timings.group_wait),
+    groupInterval: asTiming(timings.group_interval),
+    repeatInterval: asTiming(timings.repeat_interval),
+    childRoutes: timings.child_routes,
+    childRoutesWithTimings: timings.child_routes_with_timings,
+    observedAt: timings.observed_at ?? null,
+    defaultsFromVersion: timings.defaults_from_version ?? null,
+    defaultsVerified: timings.defaults_verified,
+  };
 }
 
-function saveAmRef(next: AmRef): void {
-  try {
-    globalThis.localStorage?.setItem(AM_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    /* A browser with storage denied still gets a working screen for this session. */
-  }
+/** How usable a reference is, for picking which source the guidance argues from. */
+function knownCount(am: AmRef): number {
+  return [am.groupWait, am.groupInterval, am.repeatInterval].filter(
+    (t) => t.provenance !== "unknown",
+  ).length;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -153,10 +171,25 @@ function asStringList(raw: unknown): readonly string[] {
 /* -------------------------------------------------------------------------- */
 
 interface Ctl {
-  readonly am: () => AmRef;
+  /** The reference the guidance argues from, or null when no source can supply one. */
+  readonly am: () => AmRef | null;
   /** Present in the served payload at all. False for a key the contract dropped. */
   readonly supported: (key: KnobKey) => boolean;
   readonly origin: (key: KnobKey) => SettingOrigin | null;
+  /**
+   * The env var or file key that owns a `config` knob. Non-null EXACTLY for
+   * origin `config` — a badge reading "managed by configuration" with no key
+   * beside it tells an operator only that they cannot fix it here.
+   */
+  readonly configKey: (key: KnobKey) => string | null;
+  /**
+   * This org's own override where declarative configuration is overriding it.
+   * It is still stored and takes effect the moment the config key is removed,
+   * which is exactly why it is shown rather than hidden.
+   */
+  readonly shadowed: (key: KnobKey) => unknown;
+  /** True when the deployment's configuration owns this knob: the control is read-only. */
+  readonly managed: (key: KnobKey) => boolean;
   readonly bound: (key: KnobKey) => SettingBound | null;
   readonly served: (key: KnobKey) => unknown;
   readonly text: (key: KnobKey) => string;
@@ -183,7 +216,36 @@ export const TuningSection: Component = () => {
     queryFn: ({ signal }: { signal: AbortSignal }) => getOrgSettings({ signal }),
   }));
 
-  const [am, setAm] = createSignal<AmRef>(loadAmRef());
+  // The upstream timings, read per source. This is the query that replaced four
+  // number inputs and a localStorage key.
+  const sources = useQuery(() => ({
+    queryKey: qk.settings.sources(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listSources({ signal }),
+  }));
+
+  const refs = createMemo<readonly AmRef[]>(() =>
+    (sources.data?.data ?? []).map(amRefOf).filter((r): r is AmRef => r !== null),
+  );
+
+  const [basisId, setBasisId] = createSignal<string | null>(null);
+
+  /**
+   * Which source the guidance argues from.
+   *
+   * ⚠️ IT IS ONE SOURCE, NAMED, AND NEVER A BLEND. Two Alertmanagers can batch
+   * differently, and averaging them — or silently picking one — would produce a
+   * verdict about a cluster the reader is not looking at. The default is the
+   * source that can answer the most of the three; the operator can switch, and
+   * the panel says which one every verdict below is about.
+   */
+  const am = (): AmRef | null => {
+    const all = refs();
+    if (all.length === 0) return null;
+    const chosen = all.find((r) => r.sourceId === basisId());
+    if (chosen !== undefined) return chosen;
+    return [...all].sort((a, b) => knownCount(b) - knownCount(a))[0] ?? null;
+  };
+
   const [edits, setEdits] = createSignal<Draft>({});
   const [resets, setResets] = createSignal<readonly KnobKey[]>([]);
   const [onlyOverrides, setOnlyOverrides] = createSignal(false);
@@ -203,6 +265,13 @@ export const TuningSection: Component = () => {
   const served = (key: KnobKey): unknown => bag()[key];
   const origin = (key: KnobKey): SettingOrigin | null => view.data?.origins[key] ?? null;
   const bound = (key: KnobKey): SettingBound | null => view.data?.bounds[key] ?? null;
+
+  // `config_keys` carries a key ONLY for origin `config`, so its presence is the
+  // answer to "can I change this here, and if not, where?".
+  const configKey = (key: KnobKey): string | null => view.data?.config_keys[key] ?? null;
+  const managed = (key: KnobKey): boolean => origin(key) === "config";
+  const shadowed = (key: KnobKey): unknown =>
+    (view.data?.shadowed as Readonly<Record<string, unknown>> | undefined)?.[key];
 
   const servedText = (key: KnobKey): string => {
     const raw = served(key);
@@ -329,6 +398,11 @@ export const TuningSection: Component = () => {
     const body: Record<string, unknown> = {};
     for (const key of Object.keys(KNOBS) as KnobKey[]) {
       if (!supported(key)) continue;
+      // ⛔ A CONFIG-MANAGED KEY IS NEVER IN THE BODY. The control is read-only,
+      // so this should be unreachable; it is belt as well as braces, because the
+      // server answers 409 for the whole write and one stray key would refuse the
+      // other nine changes with it.
+      if (managed(key)) continue;
       if (resets().includes(key)) continue;
       const raw = edits()[key];
       if (raw === undefined) continue;
@@ -337,7 +411,11 @@ export const TuningSection: Component = () => {
       if (same(parsed, served(key))) continue;
       body[key] = parsed;
     }
-    const queued = resets().filter((k) => supported(k));
+    // A reset is refused for a managed key too, and for the same reason: "return
+    // this to oto's default" cannot happen while configuration is forcing a
+    // value, and unlike a write a reset would also destroy the shadowed override
+    // underneath — the one value that comes back if the config key is removed.
+    const queued = resets().filter((k) => supported(k) && !managed(k));
     if (queued.length > 0) body["reset"] = [...queued];
     return body as UpdateOrgSettingsRequest;
   };
@@ -367,6 +445,10 @@ export const TuningSection: Component = () => {
   const overrideKeys = createMemo(() =>
     (Object.keys(KNOBS) as KnobKey[]).filter((k) => supported(k) && origin(k) === "org"),
   );
+  const managedKeys = createMemo(() => (Object.keys(KNOBS) as KnobKey[]).filter(managed));
+  const shadowedKeys = createMemo(() =>
+    (Object.keys(KNOBS) as KnobKey[]).filter((k) => shadowed(k) !== undefined),
+  );
   const knownKeys = createMemo(() => (Object.keys(KNOBS) as KnobKey[]).filter(supported));
 
   /* ---- unsaved-change awareness ----------------------------------------- */
@@ -392,6 +474,9 @@ export const TuningSection: Component = () => {
     am,
     supported,
     origin,
+    configKey,
+    shadowed,
+    managed,
     bound,
     served,
     text,
@@ -409,11 +494,12 @@ export const TuningSection: Component = () => {
   return (
     <div class="flex flex-col gap-4 pb-24">
       <AlertmanagerPanel
-        value={am()}
-        onChange={(next) => {
-          setAm(next);
-          saveAmRef(next);
-        }}
+        sources={refs()}
+        basis={am()}
+        pending={sources.isPending}
+        error={sources.isError ? sources.error : null}
+        onRetry={() => void sources.refetch()}
+        onChooseBasis={setBasisId}
       />
 
       <Switch>
@@ -431,28 +517,79 @@ export const TuningSection: Component = () => {
           <OriginSummary
             total={knownKeys().length}
             overrides={overrideKeys().length}
+            managed={managedKeys().length}
+            shadowed={shadowedKeys().length}
             onlyOverrides={onlyOverrides()}
             setOnlyOverrides={setOnlyOverrides}
           />
 
           <Show when={save.error !== null}>
             <ErrorBanner error={save.error}>
-              <div class="flex flex-col gap-1">
-                <span class="font-medium">oto refused the write, and nothing was changed.</span>
-                <span class="text-ink-muted">
-                  The bounds are enforced on the server against the merged state, so a value can be
-                  refused even though every field on this screen looked legal on its own.
-                </span>
-                <For each={orphans()}>{(o) => <span class="text-ink-muted">{o}</span>}</For>
-              </div>
+              <Switch>
+                {/*
+                  ⛔ THE 409 SHOULD BE UNREACHABLE FROM THIS SCREEN — every
+                  config-managed control is read-only and its key is excluded
+                  from the body. If it happens anyway, the deployment's
+                  configuration changed under the open tab, and the useful
+                  answer is WHICH KEY to go and edit, not "the request failed".
+                */}
+                <Match when={managedByConfig(save.error)}>
+                  <div class="flex flex-col gap-1">
+                    <span class="font-medium">
+                      This deployment's configuration owns one of these settings, so nothing was
+                      changed.
+                    </span>
+                    <span class="text-ink-muted">
+                      Configuration beats an org override on purpose: without it somebody edits a
+                      value here, the next deploy reverts it, and nobody can work out why. Change it
+                      where it is set, or remove that key to hand the setting back to this org.
+                    </span>
+                    <For each={managedViolations(save.error)}>
+                      {(v) => (
+                        <span class="text-ink">
+                          <code class="font-mono text-[11px]">{v.field}</code> — {v.message}
+                        </span>
+                      )}
+                    </For>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      class="mt-1 self-start"
+                      onClick={() => void view.refetch()}
+                    >
+                      Reload what is in force
+                    </Button>
+                  </div>
+                </Match>
+                <Match when={true}>
+                  <div class="flex flex-col gap-1">
+                    <span class="font-medium">oto refused the write, and nothing was changed.</span>
+                    <span class="text-ink-muted">
+                      The bounds are enforced on the server against the merged state, so a value can
+                      be refused even though every field on this screen looked legal on its own.
+                    </span>
+                    <For each={orphans()}>{(o) => <span class="text-ink-muted">{o}</span>}</For>
+                  </div>
+                </Match>
+              </Switch>
             </ErrorBanner>
           </Show>
 
           <For each={KNOB_GROUPS}>
             {(group) => {
+              // A SHADOWED key counts as "this org has changed something": the
+              // org wrote it, it is still stored, and hiding it behind a filter
+              // labelled "what this org has changed" is how somebody spends an
+              // afternoon on a number they can see in the database and never in
+              // force.
               const keys = (): readonly KnobKey[] =>
                 group.keys.filter(
-                  (k) => supported(k) && (!onlyOverrides() || origin(k) === "org" || dirty(k)),
+                  (k) =>
+                    supported(k) &&
+                    (!onlyOverrides() ||
+                      origin(k) === "org" ||
+                      shadowed(k) !== undefined ||
+                      dirty(k)),
                 );
               return (
                 <Show when={keys().length > 0}>
@@ -470,7 +607,14 @@ export const TuningSection: Component = () => {
             }}
           </For>
 
-          <Show when={onlyOverrides() && overrideKeys().length === 0 && dirtyKeys().length === 0}>
+          <Show
+            when={
+              onlyOverrides() &&
+              overrideKeys().length === 0 &&
+              shadowedKeys().length === 0 &&
+              dirtyKeys().length === 0
+            }
+          >
             <Panel class="px-3 py-8 text-center">
               <p class="text-[13px] font-medium text-ink">This org has changed nothing.</p>
               <p class="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-ink-muted">
@@ -515,90 +659,222 @@ export const TuningSection: Component = () => {
 /* The Alertmanager reference panel                                           */
 /* -------------------------------------------------------------------------- */
 
-const AlertmanagerPanel: Component<{
-  readonly value: AmRef;
-  readonly onChange: (next: AmRef) => void;
-}> = (props) => {
-  const set = (key: keyof AmRef, raw: string): void => {
-    const n = Number.parseInt(raw.trim(), 10);
-    if (!Number.isFinite(n) || n <= 0) return;
-    props.onChange({ ...props.value, [key]: n, confirmed: true });
+/**
+ * The three provenance states, rendered so they can never be confused.
+ *
+ * `observed` is the operator's own line in `alertmanager.yml`. `default_applies`
+ * is Alertmanager's documented value governing because no such line exists — the
+ * number is real and the arithmetic below is valid, but there is nothing to edit
+ * upstream. `unknown` carries no number at all, and is the only state that
+ * withdraws guidance rather than qualifying it.
+ */
+const ProvenanceBadge: Component<{ readonly provenance: TimingProvenance }> = (props) => {
+  const copy = (): { label: string; title: string; tone: string } => {
+    switch (props.provenance) {
+      case "observed":
+        return {
+          label: "from your config",
+          title:
+            "This value is stated in the route your oto receiver is attached to. Changing it means editing alertmanager.yml.",
+          tone: "border-accent-border bg-accent-fill font-semibold text-ink",
+        };
+      case "default_applies":
+        return {
+          label: "Alertmanager default",
+          title:
+            "Your configuration states nothing for this, so Alertmanager's documented default governs. It is applied in dispatch.NewRoute, which is why the status endpoint does not publish it. The arithmetic below is valid — there is simply no line in alertmanager.yml to change.",
+          tone: "border-line-strong bg-raised text-ink",
+        };
+      default:
+        return {
+          label: "unknown",
+          title:
+            "oto could not read or parse this source's configuration, so it cannot say what governs — not even that a default applies. Every verdict that depends on this number is withheld.",
+          tone: "border-line bg-sunken text-ink-subtle",
+        };
+    }
   };
 
   return (
-    <Panel>
-      <PanelHeader class="flex-col items-start gap-0.5">
-        <PanelTitle>Your Alertmanager</PanelTitle>
-        <p class="text-[11px] leading-snug text-ink-muted">
-          Read these out of the route your oto receiver is attached to, parents included. Every
-          duration below this panel is a multiple of them, not an absolute time.
-        </p>
-      </PanelHeader>
-
-      <div class="border-b border-line px-3 py-2">
-        <p class="text-[12px] leading-relaxed text-ink-muted">
-          <span class="font-medium text-ink">oto cannot read these.</span> It has no access to your{" "}
-          <code class="font-mono text-[11px] text-ink">alertmanager.yml</code> and no API that
-          carries your route timing, so these four numbers are entered here and kept in this browser
-          only. They are never sent anywhere and they change nothing — they exist so the guidance
-          below can be arithmetic instead of a guess.
-          <Show when={!props.value.confirmed}>
-            <span class="mt-1 block rounded-[4px] border border-line-strong bg-raised px-2 py-1 font-medium text-ink">
-              Assumed, not yours. These are Alertmanager's own defaults. Until you enter your real
-              values every verdict below is about a cluster that may not be yours.
-            </span>
-          </Show>
-        </p>
-      </div>
-
-      <div class="grid gap-3 px-3 py-3 md:grid-cols-2">
-        <For each={AM_FIELDS}>
-          {(f) => (
-            <Field
-              id={`am-${f.key}`}
-              label={`${f.label} — ${duration(props.value[f.key])}`}
-              hint={f.why}
-            >
-              {(a) => (
-                <div class="flex items-center gap-2">
-                  <Input
-                    {...a}
-                    type="number"
-                    min={1}
-                    inputmode="numeric"
-                    class="max-w-28"
-                    value={String(props.value[f.key])}
-                    onInput={(e) => set(f.key, e.currentTarget.value)}
-                  />
-                  <span class="shrink-0 text-[11px] text-ink-subtle">seconds</span>
-                </div>
-              )}
-            </Field>
-          )}
-        </For>
-      </div>
-
-      <div class="flex items-center justify-between gap-3 border-t border-line bg-raised px-3 py-2">
-        <p class="text-[11px] leading-snug text-ink-subtle">
-          One more thing no number can capture: if your{" "}
-          <code class="font-mono text-ink-muted">group_by</code> contains a per-replica label such as{" "}
-          <code class="font-mono text-ink-muted">instance</code> or{" "}
-          <code class="font-mono text-ink-muted">pod</code>, storm collapse is unreachable at any
-          threshold, because no group ever accumulates members. That fix is in{" "}
-          <code class="font-mono text-ink-muted">alertmanager.yml</code>, not on this screen.
-        </p>
-        <Button
-          size="sm"
-          variant="ghost"
-          class="shrink-0"
-          onClick={() => props.onChange(AM_DEFAULTS)}
-        >
-          Use Alertmanager defaults
-        </Button>
-      </div>
-    </Panel>
+    <span
+      class={cx(
+        "inline-flex shrink-0 items-center gap-1 rounded-[3px] border px-1.5 py-px text-[11px] leading-4",
+        copy().tone,
+      )}
+      title={copy().title}
+    >
+      {copy().label}
+    </span>
   );
 };
+
+/** One timing cell: the number, then where the number came from. */
+const TimingCell: Component<{ readonly field: AmFieldCopy; readonly am: AmRef }> = (props) => {
+  const timing = (): AmTiming => props.am[props.field.key];
+  return (
+    <div class="flex min-w-0 flex-col gap-1">
+      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <code class="font-mono text-[11px] text-ink-muted">{props.field.label}</code>
+        <span class="text-[13px] font-medium text-ink tabular-nums">
+          {timing().provenance === "unknown" ? "—" : duration(timing().seconds)}
+        </span>
+        <ProvenanceBadge provenance={timing().provenance} />
+      </div>
+      <p class="text-[11px] leading-snug text-ink-subtle">{props.field.why}</p>
+    </div>
+  );
+};
+
+/** One source's three timings, with its caveats. */
+const SourceTimings: Component<{
+  readonly am: AmRef;
+  readonly isBasis: boolean;
+  readonly onChoose: () => void;
+}> = (props) => (
+  <li class={cx("border-b border-line px-3 py-3 last:border-b-0", props.isBasis && "bg-accent-fill/40")}>
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-[13px] font-medium text-ink">{props.am.sourceName}</span>
+        <Show when={props.isBasis}>
+          <span class="rounded-[3px] border border-accent-border bg-accent-fill px-1.5 py-px text-[11px] font-semibold leading-4 text-ink">
+            guidance below uses this source
+          </span>
+        </Show>
+      </div>
+      <div class="flex items-center gap-2 text-[11px] text-ink-subtle">
+        <Show
+          when={props.am.observedAt !== null}
+          fallback={<span>never read</span>}
+        >
+          <span>
+            read <RelativeTime value={props.am.observedAt} label="Configuration last read" />
+          </span>
+        </Show>
+        <Show when={!props.isBasis}>
+          <Button size="sm" variant="ghost" onClick={props.onChoose}>
+            Use this source
+          </Button>
+        </Show>
+      </div>
+    </div>
+
+    <div class="mt-2 grid gap-3 md:grid-cols-3">
+      <For each={AM_FIELDS}>{(f) => <TimingCell field={f} am={props.am} />}</For>
+    </div>
+
+    {/*
+      ⚠️ THE v1 BOUNDARY, STATED RATHER THAN IMPLIED. All three settings are
+      per-route and inherited, so the values governing a PARTICULAR alert are the
+      ones on the route that matched it. oto evaluates the top-level route only,
+      and resolving per alert would mean re-implementing Alertmanager's matcher
+      tree — regex matchers, `continue: true`, mute time intervals — and being
+      wrong in a way nobody could see.
+    */}
+    <Show when={props.am.childRoutes > 0}>
+      <p class="mt-2 rounded-[4px] border border-line px-2 py-1 text-[11px] leading-snug text-ink-muted">
+        <span class="font-medium text-ink">Top-level route only. </span>
+        {props.am.childRoutesWithTimings} of {props.am.childRoutes} child route
+        {props.am.childRoutes === 1 ? "" : "s"}{" "}
+        {props.am.childRoutesWithTimings === 1 ? "states" : "state"} a timing of its own, and oto
+        does not evaluate {props.am.childRoutesWithTimings === 1 ? "it" : "them"} in this version.
+        Alerts matching{" "}
+        {props.am.childRoutesWithTimings === 1 ? "that route" : "those routes"} are batched by
+        different numbers, and the guidance below does not cover them.
+      </p>
+    </Show>
+
+    <Show when={props.am.defaultsFromVersion !== null}>
+      <p class="mt-2 text-[11px] leading-snug text-ink-subtle">
+        Defaulted values are Alertmanager{" "}
+        <span class="font-mono">{props.am.defaultsFromVersion}</span>&apos;s documented 30s / 5m / 4h.
+        <Show when={!props.am.defaultsVerified}>
+          {" "}
+          <span class="text-ink-muted">
+            oto has not verified those constants for this release — they are upstream values oto
+            copies, and this source is newer than the one they were last checked against.
+          </span>
+        </Show>
+      </p>
+    </Show>
+  </li>
+);
+
+const AlertmanagerPanel: Component<{
+  readonly sources: readonly AmRef[];
+  readonly basis: AmRef | null;
+  readonly pending: boolean;
+  readonly error: unknown;
+  readonly onRetry: () => void;
+  readonly onChooseBasis: (id: string) => void;
+}> = (props) => (
+  <Panel>
+    <PanelHeader class="flex-col items-start gap-0.5">
+      <PanelTitle>Your Alertmanager</PanelTitle>
+      <p class="text-[11px] leading-snug text-ink-muted">
+        Read from each source&apos;s own running configuration on the status call oto already makes.
+        Every duration below this panel is a multiple of these, not an absolute time.
+      </p>
+    </PanelHeader>
+
+    <Switch>
+      <Match when={props.pending}>
+        <div class="flex flex-col gap-2 px-3 py-3">
+          <Skeleton class="h-2.5 w-40" />
+          <Skeleton class="h-2 w-full" />
+        </div>
+      </Match>
+
+      <Match when={props.error !== null}>
+        <div class="px-3 py-3">
+          <ErrorState error={props.error} onRetry={props.onRetry} />
+        </div>
+      </Match>
+
+      <Match when={props.sources.length === 0}>
+        <div class="px-3 py-6 text-center">
+          <p class="text-[13px] font-medium text-ink">No source has been read yet.</p>
+          <p class="mx-auto mt-1 max-w-lg text-[12px] leading-relaxed text-ink-muted">
+            Every duration on this screen is a multiple of an Alertmanager&apos;s{" "}
+            <code class="font-mono text-[11px]">group_wait</code>,{" "}
+            <code class="font-mono text-[11px]">group_interval</code> and{" "}
+            <code class="font-mono text-[11px]">repeat_interval</code>. Add a source under Sources
+            and clusters, and oto reads all three off its published configuration — the guidance
+            below turns on by itself. It is deliberately not something you can type in here: a
+            number entered by hand is unshared, unchecked, and wrong the moment somebody edits{" "}
+            <code class="font-mono text-[11px]">alertmanager.yml</code>.
+          </p>
+        </div>
+      </Match>
+
+      <Match when={true}>
+        <ul>
+          <For each={props.sources}>
+            {(ref) => (
+              <SourceTimings
+                am={ref}
+                isBasis={props.basis?.sourceId === ref.sourceId}
+                onChoose={() => props.onChooseBasis(ref.sourceId)}
+              />
+            )}
+          </For>
+        </ul>
+      </Match>
+    </Switch>
+
+    <div class="border-t border-line bg-raised px-3 py-2">
+      <p class="text-[11px] leading-snug text-ink-subtle">
+        oto does not read your rule files, so every verdict that depends on a rule&apos;s{" "}
+        <code class="font-mono text-ink-muted">for:</code> assumes{" "}
+        {duration(ASSUMED_RULE_FOR_S)} and says so where it is used. And one thing no number
+        captures: if your <code class="font-mono text-ink-muted">group_by</code> contains a
+        per-replica label such as <code class="font-mono text-ink-muted">instance</code> or{" "}
+        <code class="font-mono text-ink-muted">pod</code>, storm collapse is unreachable at any
+        threshold, because no group ever accumulates members. That fix is in{" "}
+        <code class="font-mono text-ink-muted">alertmanager.yml</code>, not on this screen.
+      </p>
+    </div>
+  </Panel>
+);
 
 /* -------------------------------------------------------------------------- */
 /* Origin summary                                                             */
@@ -607,6 +883,8 @@ const AlertmanagerPanel: Component<{
 const OriginSummary: Component<{
   readonly total: number;
   readonly overrides: number;
+  readonly managed: number;
+  readonly shadowed: number;
   readonly onlyOverrides: boolean;
   readonly setOnlyOverrides: (next: boolean) => void;
 }> = (props) => (
@@ -615,8 +893,24 @@ const OriginSummary: Component<{
       <span class="font-medium">
         {props.overrides} of {props.total}
       </span>{" "}
-      {props.overrides === 1 ? "value is" : "values are"} this org's own. The rest are oto's shipped
-      defaults and will follow them if oto moves them.
+      {props.overrides === 1 ? "value is" : "values are"} this org&apos;s own. The rest are oto&apos;s
+      shipped defaults and will follow them if oto moves them.
+      <Show when={props.managed > 0}>
+        {" "}
+        <span class="font-medium">
+          {props.managed} {props.managed === 1 ? "is" : "are"} set by this deployment&apos;s
+          configuration
+        </span>{" "}
+        and cannot be changed here.
+      </Show>
+      <Show when={props.shadowed > 0}>
+        {" "}
+        <span class="font-medium">
+          {props.shadowed} of this org&apos;s overrides{" "}
+          {props.shadowed === 1 ? "is" : "are"} being overridden
+        </span>{" "}
+        by that configuration — still stored, and back in force the moment the config key goes.
+      </Show>
     </p>
     <Checkbox
       checked={props.onlyOverrides}
@@ -627,33 +921,90 @@ const OriginSummary: Component<{
 );
 
 /* -------------------------------------------------------------------------- */
+/* The 409 this screen should never be able to trigger                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `409 setting_managed_by_config`.
+ *
+ * Every managed control on this screen is read-only and its key is stripped from
+ * the body, so reaching this means the deployment's configuration changed while
+ * the tab was open. The recovery is to say WHICH KEY owns the value — the server
+ * puts it in a violation per key — rather than to render a generic failure and
+ * leave the operator hunting through a Helm chart.
+ */
+function managedByConfig(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "setting_managed_by_config";
+}
+
+function managedViolations(err: unknown): readonly { field: string; message: string }[] {
+  if (!(err instanceof ApiError)) return [];
+  return err.violations.map((v) => ({ field: v.field, message: v.message }));
+}
+
+/* -------------------------------------------------------------------------- */
 /* One knob                                                                   */
 /* -------------------------------------------------------------------------- */
 
-const OriginBadge: Component<{ readonly origin: SettingOrigin | null }> = (props) => (
-  <span
-    class={cx(
-      "inline-flex shrink-0 items-center gap-1 rounded-[3px] border px-1.5 py-px text-[11px] leading-4",
-      props.origin === "org"
-        ? "border-accent-border bg-accent-fill font-semibold text-ink"
-        : "border-line bg-surface text-ink-subtle",
-    )}
-    title={
-      props.origin === "org"
-        ? "This org wrote this value. It will not follow oto's shipped default if that moves."
-        : "oto's shipped default is in force. This org has never written this key."
+/**
+ * Where the value in force came from: oto's default, this org, or this
+ * deployment's configuration.
+ *
+ * ⭐ `config` IS NOT A THIRD SHADE OF "override". It beats an org override, it
+ * cannot be changed here, and the key that owns it is named on the badge —
+ * because "managed by configuration" with no key beside it tells an operator only
+ * that they cannot fix it, and turns a five-second edit into an archaeology
+ * exercise across a Helm chart, a values file and a Deployment's env block.
+ */
+const OriginBadge: Component<{
+  readonly origin: SettingOrigin | null;
+  readonly configKey: string | null;
+}> = (props) => {
+  const copy = (): { label: string; title: string; tone: string; dot: string } => {
+    switch (props.origin) {
+      case "config":
+        return {
+          label: "managed by configuration",
+          title:
+            `This deployment's configuration sets this value${props.configKey === null ? "" : ` through ${props.configKey}`}. ` +
+            "It beats an org override on purpose: without that, somebody edits a value here, the next deploy reverts it, and nobody can work out why it changed back.",
+          tone: "border-line-strong bg-raised font-semibold text-ink",
+          dot: "bg-ink-muted",
+        };
+      case "org":
+        return {
+          label: "override",
+          title:
+            "This org wrote this value. It will not follow oto's shipped default if that moves.",
+          tone: "border-accent-border bg-accent-fill font-semibold text-ink",
+          dot: "bg-accent",
+        };
+      default:
+        return {
+          label: "oto default",
+          title: "oto's shipped default is in force. This org has never written this key.",
+          tone: "border-line bg-surface text-ink-subtle",
+          dot: "border border-line-strong",
+        };
     }
-  >
+  };
+
+  return (
     <span
-      aria-hidden="true"
       class={cx(
-        "size-1.5 rounded-full",
-        props.origin === "org" ? "bg-accent" : "border border-line-strong",
+        "inline-flex shrink-0 items-center gap-1 rounded-[3px] border px-1.5 py-px text-[11px] leading-4",
+        copy().tone,
       )}
-    />
-    {props.origin === "org" ? "override" : "oto default"}
-  </span>
-);
+      title={copy().title}
+    >
+      <span aria-hidden="true" class={cx("size-1.5 rounded-full", copy().dot)} />
+      {copy().label}
+      <Show when={props.origin === "config" && props.configKey !== null}>
+        <code class="font-mono text-[10px] text-ink-muted">{props.configKey}</code>
+      </Show>
+    </span>
+  );
+};
 
 const Note: Component<{ readonly kind: "warn" | "quiet"; readonly children: JSX.Element }> = (
   props,
@@ -673,6 +1024,19 @@ const Note: Component<{ readonly kind: "warn" | "quiet"; readonly children: JSX.
     {props.children}
   </p>
 );
+
+/**
+ * A shadowed override, rendered in the same units as the value in force.
+ *
+ * It is deliberately not a bare number: "900" and "15m" are the same fact and
+ * only one of them can be compared at a glance with the 600s beside it.
+ */
+function shadowedText(knob: KnobCopy, raw: unknown): string {
+  if (typeof raw === "number") return readValue(knob.kind, raw);
+  if (typeof raw === "boolean") return raw ? "on" : "off";
+  if (Array.isArray(raw)) return JSON.stringify(raw);
+  return String(raw);
+}
 
 const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (props) => {
   const key = (): KnobKey => props.knob.key;
@@ -714,13 +1078,22 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
     return servedNum() === bound.min || servedNum() === bound.max;
   };
 
+  /**
+   * The live verdict, or nothing.
+   *
+   * ⛔ IT IS WITHHELD, NEVER GUESSED. With no source read, or with the timing it
+   * depends on `unknown`, there is no number to argue from and the row says so
+   * once at the foot of the panel rather than inventing an Alertmanager. A
+   * `default_applies` timing DOES produce a verdict — the default is what governs
+   * — and the wording names it as Alertmanager's rather than the operator's.
+   */
   const guidance = (): Guidance | null => {
     const g = props.knob.guide;
-    if (g === undefined) return null;
+    const am = ctl().am();
+    if (g === undefined || am === null) return null;
     const v = ctl().num(key());
     if (!Number.isFinite(v)) return null;
-    const result = g(v, ctl().am(), (k) => ctl().num(k));
-    return result.level === "ok" && !ctl().am().confirmed ? null : result;
+    return g(v, am, (k) => ctl().num(k));
   };
 
   const error = (): string | undefined => ctl().localError(key()) ?? ctl().serverError(key());
@@ -746,7 +1119,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
         <div class="flex min-w-0 flex-col gap-2">
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-[13px] font-medium text-ink">{props.knob.label}</span>
-            <OriginBadge origin={ctl().origin(key())} />
+            <OriginBadge origin={ctl().origin(key())} configKey={ctl().configKey(key())} />
           </div>
 
           <Switch>
@@ -754,7 +1127,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
               <Checkbox
                 id={id()}
                 checked={ctl().text(key()) === "true"}
-                disabled={ctl().resetQueued(key())}
+                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                 onChange={(next) => ctl().setText(key(), next ? "true" : "false")}
                 label={
                   <span class="text-[12px]">
@@ -772,7 +1145,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
                   <Select
                     {...a}
                     value={ctl().text(key())}
-                    disabled={ctl().resetQueued(key())}
+                    disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                     onChange={(e) => ctl().setText(key(), e.currentTarget.value)}
                   >
                     <For each={VERBOSITY_OPTIONS}>
@@ -789,7 +1162,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
                   <Select
                     {...a}
                     value={ctl().text(key())}
-                    disabled={ctl().resetQueued(key())}
+                    disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                     onChange={(e) => ctl().setText(key(), e.currentTarget.value)}
                   >
                     <For
@@ -808,7 +1181,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
               <MentionListField
                 id={id()}
                 value={ctl().text(key())}
-                disabled={ctl().resetQueued(key())}
+                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                 error={error()}
                 onChange={(next) => ctl().setText(key(), next)}
               />
@@ -825,7 +1198,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
                       class="max-w-28"
                       min={b()?.min}
                       max={b()?.max}
-                      disabled={ctl().resetQueued(key())}
+                      disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                       value={ctl().text(key())}
                       onInput={(e) => ctl().setText(key(), e.currentTarget.value)}
                     />
@@ -854,8 +1227,42 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
             </p>
           </Show>
 
+          {/*
+            ⭐ THE SHADOWED OVERRIDE, SHOWN AND NOT HIDDEN. "You have 900s stored
+            and OTO_TUNING_REFIRE_GRACE_S is forcing 600s" is actionable; showing
+            only the 600 leaves a number sitting in Postgres that nobody can see
+            and that takes effect the moment somebody deletes the config key.
+          */}
+          <Show when={ctl().shadowed(key()) !== undefined}>
+            <Note kind="warn">
+              Your override of{" "}
+              <span class="font-mono">{shadowedText(props.knob, ctl().shadowed(key()))}</span> is
+              being overridden by{" "}
+              <code class="font-mono">{ctl().configKey(key()) ?? "this deployment's configuration"}</code>
+              {" = "}
+              <span class="font-mono">{shadowedText(props.knob, ctl().served(key()))}</span>. It is
+              still stored and comes back in force the moment that key is removed.
+            </Note>
+          </Show>
+
+          <Show when={ctl().managed(key())}>
+            <Note kind="quiet">
+              Read-only here. Change it where it is set —{" "}
+              <code class="font-mono">{ctl().configKey(key()) ?? "this deployment's configuration"}</code>{" "}
+              — or remove that key to hand the setting back to this org. oto refuses a write to a
+              managed key rather than storing a number that is never in force and reverts, visibly,
+              on the next deploy.
+            </Note>
+          </Show>
+
           <div class="flex flex-wrap items-center gap-2">
-            <Show when={ctl().origin(key()) === "org"}>
+            {/*
+              ⛔ NO RESET ON A MANAGED KEY. The server refuses one with the same
+              409 as a write, and for a sharper reason: unlike a write, a reset
+              would destroy the shadowed override underneath — the one value that
+              comes back if the config key is removed.
+            */}
+            <Show when={ctl().origin(key()) === "org" && !ctl().managed(key())}>
               <Button
                 size="sm"
                 variant={ctl().resetQueued(key()) ? "primary" : "secondary"}

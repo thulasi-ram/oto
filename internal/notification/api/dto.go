@@ -79,6 +79,14 @@ type DeliverySummaryDTO struct {
 	// Pending is queued plus in flight. `pending` and `sending` both count: from
 	// the outside they are the same answer — nobody has been told YET.
 	Pending int32 `json:"pending"`
+
+	// LastErrorClass is the class of the most recent delivery error in this
+	// fan-out, absent when nothing failed. It is what turns "one died" into "one
+	// died because the token expired", which is the difference between a number
+	// and an action.
+	LastErrorClass *string `json:"last_error_class,omitempty"`
+	// LastSentAt is when anything in this fan-out last reached a destination.
+	LastSentAt *time.Time `json:"last_sent_at,omitempty"`
 }
 
 // NotificationDTO is the channel-agnostic INTENT to communicate one fact.

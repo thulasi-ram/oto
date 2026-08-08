@@ -197,6 +197,17 @@ func (rt *Router) getAlert(w http.ResponseWriter, r *http.Request) {
 		dto.EnrichmentSummary = append(dto.EnrichmentSummary, enrichmentSummaryDTO(e))
 	}
 
+	// ⭐ THE ANSWER TO "WAS ANYBODY TOLD". A failure to read it FAILS THE REQUEST
+	// rather than quietly omitting the field: an alert page that renders without
+	// a delivery roll-up is the exact false silence this field exists to prevent,
+	// and a caller cannot distinguish "no deliveries" from "we could not look".
+	rollup, err := rt.svc.DeliveryRollupForAlert(r.Context(), scope, detail.Alert.ID())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	dto.DeliverySummary = deliverySummaryDTO(rollup)
+
 	httpx.Data(w, r, http.StatusOK, dto, started)
 }
 
@@ -302,6 +313,17 @@ func (rt *Router) getOccurrence(w http.ResponseWriter, r *http.Request) {
 			dto.Enrichments = append(dto.Enrichments, enrichmentDTO(e))
 		}
 	}
+
+	// The episode-scoped answer to "was anybody told". Unlike the enrichments
+	// above, a failure here is NOT swallowed: an absent enrichment is a missing
+	// nicety, an absent delivery roll-up is oto claiming silence it has not
+	// checked.
+	rollup, err := rt.svc.DeliveryRollupForOccurrence(r.Context(), scope, occ.ID())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	dto.DeliverySummary = deliverySummaryDTO(rollup)
 
 	httpx.Data(w, r, http.StatusOK, dto, started)
 }
@@ -665,6 +687,17 @@ func (rt *Router) writeAlertDetail(
 			dto.EnrichmentSummary = append(dto.EnrichmentSummary, enrichmentSummaryDTO(e))
 		}
 	}
+	// The snooze verbs return the same schema as `GET /alerts/{id}`, so they
+	// carry the same delivery roll-up. A field that is present on one rendering
+	// of a schema and absent on another is the drift this whole DTO layer exists
+	// to prevent.
+	rollup, err := rt.svc.DeliveryRollupForAlert(r.Context(), scope, detail.Alert.ID())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	dto.DeliverySummary = deliverySummaryDTO(rollup)
+
 	httpx.Data(w, r, http.StatusOK, dto, started)
 }
 

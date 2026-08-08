@@ -10,9 +10,11 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// HistoryStore reads the notification history of one alert.
+// HistoryStore reads the notification history of one alert, and the delivery
+// roll-up of one alert, occurrence or group generation.
 type HistoryStore interface {
 	ListForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, page db.Keyset) ([]repository.Summary, db.Cursor, error)
+	DeliveryRollupFor(ctx context.Context, s db.TenantScope, subject repository.RollupSubject, id uuid.UUID) (repository.DeliveryRollup, error)
 }
 
 // HistoryService answers "was anybody told about this alert, and did it land?"
@@ -56,4 +58,29 @@ func (s *HistoryService) ListForAlert(
 			errs.Violation{Field: "alert_id", Code: "required", Message: "an alert id is required"})
 	}
 	return s.store.ListForAlert(ctx, scope, alertID, page)
+}
+
+// DeliveryRollup answers "was anybody told about this, and did it land?" for one
+// alert, one occurrence or one group generation.
+//
+// ⭐ IT IS WHAT STOPS OTO'S SILENCE FROM LOOKING LIKE "NO ALERT". A user who sees
+// nothing in Slack has two very different situations to tell apart — nothing
+// fired, or four deliveries died — and from outside the database they look
+// identical. The four detail responses that declare `delivery_summary` all get
+// their counts from here.
+//
+// A subject with no deliveries returns ZEROES, which is an answer and not an
+// absence: a suppressed notification, an alert no policy matched, and a
+// deployment with notifications wired out all legitimately produce it, and the
+// status beside it says which.
+func (s *HistoryService) DeliveryRollup(
+	ctx context.Context, scope db.TenantScope,
+	subject repository.RollupSubject, id uuid.UUID,
+) (repository.DeliveryRollup, error) {
+	if id == uuid.Nil {
+		return repository.DeliveryRollup{}, errs.Validation("subject_required",
+			"a delivery roll-up is about one subject",
+			errs.Violation{Field: "id", Code: "required", Message: "a subject id is required"})
+	}
+	return s.store.DeliveryRollupFor(ctx, scope, subject, id)
 }

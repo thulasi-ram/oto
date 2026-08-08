@@ -79,7 +79,11 @@ type AlertDetailDTO struct {
 	AlertDTO
 	CurrentOccurrence *OccurrenceDTO         `json:"current_occurrence"`
 	EnrichmentSummary []EnrichmentSummaryDTO `json:"enrichment_summary"`
-	DeliverySummary   *DeliverySummaryDTO    `json:"delivery_summary,omitempty"`
+	// DeliverySummary is NOT a pointer and carries NO omitempty, and both are
+	// deliberate. The field spent its whole life declared here and emitted
+	// nowhere: optional in the schema, so every validator passed and the absence
+	// was invisible. A value type makes omitting it structurally impossible.
+	DeliverySummary DeliverySummaryDTO `json:"delivery_summary"`
 }
 
 // RuleSnapshotRef is the pointer this package may carry to a rule snapshot.
@@ -132,9 +136,11 @@ type SuppressedByDTO struct {
 // the snapshot whole.
 type OccurrenceDetailDTO struct {
 	OccurrenceDTO
-	Alert           *AlertRefDTO        `json:"alert,omitempty"`
-	Enrichments     []EnrichmentDTO     `json:"enrichments"`
-	DeliverySummary *DeliverySummaryDTO `json:"delivery_summary,omitempty"`
+	Alert       *AlertRefDTO    `json:"alert,omitempty"`
+	Enrichments []EnrichmentDTO `json:"enrichments"`
+	// DeliverySummary is a value type for the same reason as on AlertDetailDTO:
+	// an optional field that nothing emitted is a contract that lies quietly.
+	DeliverySummary DeliverySummaryDTO `json:"delivery_summary"`
 }
 
 // AlertRefDTO renders `AlertRefDTO`: a compact Alert reference.

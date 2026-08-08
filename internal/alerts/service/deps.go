@@ -161,6 +161,32 @@ type EnrichmentSummary struct {
 // entirely disabled, which is how the first correctness tests run.
 type NotificationReader interface {
 	ListForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) ([]NotificationSummary, db.Cursor, error)
+	// DeliveryRollupForAlert counts every delivery anybody made about this alert
+	// — the intents that name the alert AND the intents about the group
+	// generations it has been part of, because oto notifies about generations.
+	DeliveryRollupForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (DeliveryRollup, error)
+	// DeliveryRollupForOccurrence is the same question narrowed to one episode.
+	DeliveryRollupForOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (DeliveryRollup, error)
+}
+
+// DeliveryRollup is the alerts-side view of one subject's fan-out health.
+//
+// ⭐ IT IS THE FIELD THAT STOPS OTO'S SILENCE FROM LOOKING LIKE "NO ALERT".
+// `delivery_summary` was declared on four detail responses and emitted by none of
+// them; being optional in the schema, every validator passed and the absence was
+// invisible. A user who sees no Slack message must be able to tell "nothing
+// fired" from "four deliveries died", and nothing else on the page can say it.
+type DeliveryRollup struct {
+	Total   int
+	Sent    int
+	Failed  int
+	Dead    int
+	Skipped int
+	Pending int
+	// LastErrorClass turns "one died" into "one died because the token expired".
+	LastErrorClass string
+	// LastSentAt is when anything about this subject last reached a destination.
+	LastSentAt *time.Time
 }
 
 // NotificationSummary is the alerts-side view of one notification intent and the

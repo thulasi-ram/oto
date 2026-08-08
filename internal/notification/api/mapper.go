@@ -77,16 +77,22 @@ func notificationDTO(n domain.Notification, summary *DeliverySummaryDTO) Notific
 	return out
 }
 
-// summarise folds a fan-out into the counts the list carries.
+// summarise folds a fan-out into the counts the detail view carries.
 //
 // A `skipped` delivery counts as SENT: it means the destination already shows
 // exactly this content — a coalesced no-op update — and reporting it as a failure
 // would make a healthy, quiet thread look broken.
+//
+// ⛔ AN EMPTY FAN-OUT RETURNS AN ALL-ZERO SUMMARY AND NEVER nil. It used to
+// return nil, which — with `omitempty` on the field — silently dropped
+// `delivery_summary` from the response for exactly the intents where it matters
+// most: a SUPPRESSED notification has no deliveries at all, and "oto formed this
+// intent and told nobody" is precisely the fact an operator is on this page to
+// learn. An omitted field made that indistinguishable from a server that never
+// computed one.
 func summarise(ds []domain.Delivery) *DeliverySummaryDTO {
-	if len(ds) == 0 {
-		return nil
-	}
 	out := DeliverySummaryDTO{Total: int32(len(ds))} //nolint:gosec // bounded by the fan-out
+	var lastErrorAt time.Time
 	for _, d := range ds {
 		switch d.Status {
 		case domain.DeliverySkipped:
@@ -103,6 +109,19 @@ func summarise(ds []domain.Delivery) *DeliverySummaryDTO {
 			// and claimed is a worker-scheduling detail, and a fan-out health
 			// summary is not where it belongs.
 			out.Pending++
+		}
+
+		if d.SentAt != nil && (out.LastSentAt == nil || d.SentAt.After(*out.LastSentAt)) {
+			v := d.SentAt.UTC()
+			out.LastSentAt = &v
+		}
+		// The LAST error wins, ordered by when the delivery last moved, so a
+		// fan-out that has since recovered on one channel still reports the class
+		// of the failure that is standing on another.
+		if d.ErrorClass != "" && (out.LastErrorClass == nil || !d.UpdatedAt.Before(lastErrorAt)) {
+			v := string(d.ErrorClass)
+			out.LastErrorClass = &v
+			lastErrorAt = d.UpdatedAt
 		}
 	}
 	return &out

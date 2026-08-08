@@ -65,14 +65,44 @@ type GroupDTO struct {
 
 // GroupDetailDTO renders `GroupDetailDTO`.
 //
-// `source`, `threads` and `delivery_summary` are optional properties of the
-// contract schema and are NOT embedded: they belong to `sources`, `channels` and
-// `notification`, and CONTEXT.md §5.4 forbids this package from naming another
-// domain's types.
+// `source` and `threads` are optional properties of the contract schema and are
+// NOT embedded: they belong to `sources` and `channels`, and CONTEXT.md §5.4
+// forbids this package from naming another domain's types.
+//
+// `delivery_summary` IS carried, through a consumer-declared port rather than an
+// import. A group generation is the thing oto actually notifies about — the
+// intents are keyed on it — so a group card that could not say whether its own
+// fan-out landed was the emptiest instance of a field declared four times and
+// emitted nowhere.
 type GroupDetailDTO struct {
 	GroupDTO
 	SeverityCounts map[string]int32 `json:"severity_counts"`
 	TopAlerts      []AlertRefDTO    `json:"top_alerts"`
+	// DeliverySummary is a value type with no omitempty: an all-zero roll-up is
+	// the answer "nobody was told", which is the one an operator most needs when
+	// a channel is quiet, and it must never be confused with a field the server
+	// skipped.
+	DeliverySummary DeliverySummaryDTO `json:"delivery_summary"`
+}
+
+// DeliverySummaryDTO renders `DeliverySummaryDTO` for a group generation.
+//
+// ⛔ IT IS DECLARED HERE rather than imported from `notification/api` or
+// `alerts/api`, for the same reason `SnoozeDTO` below is: CONTEXT.md §5.5 gives
+// each module its own wire types and §5.1 forbids one `api` package depending on
+// another's. The json tags are byte-identical to the single `DeliverySummaryDTO`
+// schema in openapi.yaml, which is what makes them one type on the wire without
+// making them one type in Go.
+type DeliverySummaryDTO struct {
+	Total   int32 `json:"total"`
+	Sent    int32 `json:"sent"`
+	Failed  int32 `json:"failed"`
+	Dead    int32 `json:"dead"`
+	Skipped int32 `json:"skipped"`
+	Pending int32 `json:"pending"`
+
+	LastErrorClass *string    `json:"last_error_class,omitempty"`
+	LastSentAt     *time.Time `json:"last_sent_at,omitempty"`
 }
 
 // AlertRefDTO renders `AlertRefDTO`: a compact Alert reference.

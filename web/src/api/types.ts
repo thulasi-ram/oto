@@ -93,6 +93,21 @@ export type Source = S["SourceDTO"];
 export type SourceRef = S["SourceRefDTO"];
 export type SourceCreated = S["SourceCreatedDTO"];
 export type SourceHealth = S["SourceHealthDTO"];
+/**
+ * What governs one Alertmanager's batching, and **how oto knows** — the three
+ * top-level route timings, each with its provenance. Read from the source's
+ * published configuration; never typed in.
+ */
+export type RouteTimings = S["RouteTimingsDTO"];
+/** One route timing plus where its number came from. */
+export type RouteTiming = S["RouteTimingDTO"];
+/**
+ * `observed` (the source's config states it), `default_applies` (the config is
+ * silent, so Alertmanager's documented default governs) or `unknown` (oto could
+ * not read the config at all). **`default_applies` must never render as
+ * `observed`**: the arithmetic is the same, the operator's next move is not.
+ */
+export type TimingProvenance = S["TimingProvenance"];
 export type SourceTest = S["SourceTestDTO"];
 export type ReconcileResult = S["ReconcileResultDTO"];
 export type ChannelTypeDescriptor = S["ChannelTypeDTO"];

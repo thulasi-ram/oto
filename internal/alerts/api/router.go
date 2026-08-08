@@ -34,6 +34,13 @@ type AlertService interface {
 	OccurrenceTimeline(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
 	Enrichments(ctx context.Context, s db.TenantScope, alertID uuid.UUID) ([]service.EnrichmentSummary, error)
 	Notifications(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) (service.NotificationResult, error)
+	// The two delivery roll-ups behind `delivery_summary` on the alert and
+	// occurrence detail views. They are on this interface — rather than being
+	// derived from `Notifications` in the handler — because the roll-up covers
+	// the GROUP generations an alert has been part of as well as the intents that
+	// name it, and paging a list to add up its rows would be both wrong and N+1.
+	DeliveryRollupForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (service.DeliveryRollup, error)
+	DeliveryRollupForOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (service.DeliveryRollup, error)
 	LabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]domain.LabelCount, error)
 	LabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]domain.LabelCount, error)
 	Acknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Occurrence, error)

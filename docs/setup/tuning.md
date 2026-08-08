@@ -92,13 +92,24 @@ contradictory guidance about the same cluster.
 
 Three things to know about what you will see there:
 
-- **`null` means oto has not been told, and oto will not guess.** Alertmanager omits any of the three
-  that your config does not set, and applies its own `30s` / `5m` / `4h` defaults later, somewhere the
-  status endpoint cannot see. So a stock `alertmanager.yml` reports all three as unknown. oto shows
-  `unknown` rather than printing Alertmanager's documented default as though it had observed it — the
-  entire value of these numbers is telling you when one of your knobs can never fire, and a confident
-  wrong number destroys that. **If you want oto to know them, state them explicitly in your
-  `alertmanager.yml`**, even at their default values.
+- **Every field carries its own `provenance`, and there are three of them.** Alertmanager omits any of
+  the three that your config does not set, and applies its own `30s` / `5m` / `4h` defaults later, in
+  `dispatch.NewRoute`, somewhere the status endpoint cannot see. So a stock `alertmanager.yml` publishes
+  none of them — which is why the answer is not a nullable number:
+
+  | `provenance` | means | what you do about it |
+  | --- | --- | --- |
+  | `observed` | the value is stated in your configuration | change it in `alertmanager.yml` |
+  | `default_applies` | your configuration states nothing, so Alertmanager's documented default governs | there is no line to change; state one explicitly, or move the oto knob |
+  | `unknown` | oto could not read or parse the configuration at all | fix the source; every verdict that depends on this number is withheld |
+
+  A `default_applies` field carries the number as well as the label, and the guidance uses it: the
+  arithmetic is exactly as valid as for an observed value — a 2m re-fire grace is just as unreachable
+  under a defaulted 5m `group_interval` as under a configured one — and the wording says whose number it
+  is arguing from, because that is what changes your next move. It is **never** rendered as though oto
+  had observed it. `defaults_from_version` names the Alertmanager release the defaults are attributed
+  to, and `defaults_verified` is false when your source is newer than the release oto last checked those
+  upstream constants against.
 - **⚠️ oto reports the TOP-LEVEL route only.** All three settings are per-route and inherited, so the
   values that actually govern a given alert are the ones on the route that matched it — which depends on
   that alert's labels. oto reports the top-level route, which is what governs everything matching no more
