@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210107,"nonce":"otbqin7YVgvW50Fhf56ZGhIG7h8=","title":"Ingestion bounds B1-B17 exist as constants and are asserted by nothing","was":"**What is wrong.** `internal/ingestion/domain/bounds.go` defines B1–B17 as named"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210108,"nonce":"wjV0z+yZufe/mCcCwkTfXynEEzs=","added":["high","testing"],"removed":null}]}
