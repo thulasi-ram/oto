@@ -93,24 +93,33 @@ type PrometheusClient interface {
 // the reconciler must be exercisable against an httptest.Server and a pair of
 // fakes, with no database and no job queue.
 
-// AlertObserver is THE STATE MACHINE (SPEC §B.3), satisfied by
-// `*alerts/service.Service`.
+// AlertObserver is THE ONE WRITE PATH INTO `alerts` — the ingest orchestrator
+// that `internal/app` builds over the alerts state machine and `grouping`.
 //
-// ⛔ THE RECONCILER IS NOT A SECOND WRITE PATH (C18, ADR 0006). It produces
-// Observations and hands them to the same method the webhook path hands them to;
-// there is exactly one place `alerts` is written. What the reconciler adds is the
-// only WITNESS that can see suppression begin — `Observation.Source` is
-// `reconciler`, and §B.3's T3 admits no other actor.
+// ⛔ THE RECONCILER IS NOT A SECOND WRITE PATH (C18, ADR 0006). It deliberately
+// takes the SAME port `ingestion/service` takes, so a reconciler-recovered alert
+// joins a group generation and earns a notification exactly as a webhook-borne
+// one does. Feeding `alerts/service` directly would have been a second path that
+// silently produced groupless alerts — recorded, and never told to anybody.
+//
+// What the reconciler adds is the only WITNESS that can see suppression begin:
+// `Observation.Source` is `reconciler`, and §B.3's T3 admits no other actor.
 //
 // ObserveBatch is idempotent by construction: the alert upsert is ON CONFLICT and
 // every event it appends is claimed through `alert_event_keys` first (§C.8). A
 // pass that runs twice against an unchanged upstream therefore costs two HTTP
 // calls and writes nothing the first pass did not.
 type AlertObserver interface {
-	ObserveBatch(ctx context.Context, s db.TenantScope, obs []alerts.Observation, opt alertsvc.ObserveOptions) (alertsvc.ObserveResult, error)
-	// List is the oto side of the §G.8.4 divergence check: which alert identities
-	// does oto currently believe are live? It is a READ; nothing about divergence
-	// accounting writes anything.
+	ObserveBatch(ctx context.Context, s db.TenantScope, obs []alerts.Observation) (int, error)
+}
+
+// AlertReader is the oto side of the §G.8.4 divergence check: which alert
+// identities does oto currently believe are live? Satisfied by
+// `*alerts/service.Service`.
+//
+// It is a separate port from AlertObserver because it is a READ — nothing about
+// divergence accounting writes anything, and a port that could would invite one.
+type AlertReader interface {
 	List(ctx context.Context, s db.TenantScope, q alertsvc.ListQuery) (alertsvc.ListResult, error)
 }
 

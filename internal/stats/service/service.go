@@ -36,6 +36,10 @@ const (
 type StatsRepository interface {
 	AlertQuality(ctx context.Context, s db.TenantScope, f repository.QualityFilter, limit int) ([]repository.QualityRow, bool, error)
 	Overview(ctx context.Context, s db.TenantScope, since, until time.Time, clusters []string) (domain.Overview, error)
+	// RollupDay is the ONE write in this module: it recomputes and REPLACES one
+	// UTC day of `alert_quality_daily` (ADR 0014). `asOf` is oto's clock, injected
+	// so an open episode's firing duration is reproducible.
+	RollupDay(ctx context.Context, s db.TenantScope, day time.Time, asOf time.Time) (int, error)
 }
 
 // Deps is the explicit dependency set.

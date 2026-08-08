@@ -49,8 +49,13 @@ type AlertLister interface {
 type Deps struct {
 	Silences SilenceRepository
 	Alerts   AlertLister
-	Clock    clock.Clock
-	Logger   *slog.Logger
+	// Sources reads the upstream silences for `silences.sync`. Optional: without
+	// it the module still SERVES the mirror, it just never refreshes it.
+	Sources SilenceSource
+	// Mirror is the write half of `silences`, reachable from the sync job only.
+	Mirror SilenceMirror
+	Clock  clock.Clock
+	Logger *slog.Logger
 }
 
 // Service is the silences module's read logic.
@@ -58,10 +63,12 @@ type Deps struct {
 // ⛔ It NEVER calls time.Now(). Every clock reading comes from the injected
 // clock.
 type Service struct {
-	repo   SilenceRepository
-	alerts AlertLister
-	clock  clock.Clock
-	log    *slog.Logger
+	repo    SilenceRepository
+	alerts  AlertLister
+	sources SilenceSource
+	mirror  SilenceMirror
+	clock   clock.Clock
+	log     *slog.Logger
 }
 
 // New builds the silences service, refusing a dependency set that cannot work.
@@ -78,7 +85,14 @@ func New(d Deps) (*Service, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{repo: d.Silences, alerts: d.Alerts, clock: clk, log: logger}, nil
+	return &Service{
+		repo:    d.Silences,
+		alerts:  d.Alerts,
+		sources: d.Sources,
+		mirror:  d.Mirror,
+		clock:   clk,
+		log:     logger,
+	}, nil
 }
 
 // Now is the service's clock reading, in UTC.

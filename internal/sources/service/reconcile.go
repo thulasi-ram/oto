@@ -46,6 +46,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/jobs"
+	"github.com/thulasiram/oto/internal/sources/client/alertmanager"
 	"github.com/thulasiram/oto/internal/sources/domain"
 )
 
@@ -112,6 +113,7 @@ const redactedValue = "[redacted]"
 type Reconciler struct {
 	sources  *Service
 	alerts   AlertObserver
+	read     AlertReader
 	clusters ClusterReader
 	orgs     TenantLister
 	enq      db.Enqueuer
@@ -124,8 +126,12 @@ type ReconcilerOptions struct {
 	// Sources is the read side: the probe, the AM client factory, `alert_sources`
 	// and `source_health`.
 	Sources *Service
-	// Alerts is the §B.3 state machine.
+	// Alerts is the one write path into `alerts` — the ingest orchestrator, so a
+	// recovered alert joins a group and earns a notification like any other.
 	Alerts AlertObserver
+	// Read is the alert list, for divergence accounting only. Optional: without it
+	// the pass still observes, it just reports zero divergence.
+	Read AlertReader
 	// Clusters resolves `cluster_key`, which participates in alert identity.
 	Clusters ClusterReader
 	// Orgs enumerates tenants for the fan-out. Optional: without it the
@@ -163,6 +169,7 @@ func NewReconciler(o ReconcilerOptions) (*Reconciler, error) {
 	return &Reconciler{
 		sources:  o.Sources,
 		alerts:   o.Alerts,
+		read:     o.Read,
 		clusters: o.Clusters,
 		orgs:     o.Orgs,
 		enq:      o.Enqueuer,
@@ -284,7 +291,7 @@ func (r *Reconciler) Reconcile(
 	// afterwards would show every recovery as agreement.
 	before := r.openAlertKeys(ctx, scope, clusterKey)
 
-	obs, rejected := r.observations(ctx, src, clusterKey, upstream)
+	obs, rejected := r.observations(ctx, scope, src, clusterKey, upstream)
 	out.Observed = len(obs)
 	for _, o := range obs {
 		if o.Status == statusSuppressed {
@@ -296,7 +303,7 @@ func (r *Reconciler) Reconcile(
 			"source_id", src.ID, "skipped", rejected)
 	}
 
-	clampSkew, err := r.apply(ctx, scope, obs)
+	err = r.apply(ctx, scope, obs)
 	if err != nil {
 		// RETRYABLE, and deliberately NOT recorded as an upstream failure: oto
 		// could see the source perfectly well. Leaving `consecutive_failures`
@@ -328,11 +335,8 @@ func (r *Reconciler) Reconcile(
 	out.OK = true
 	out.FinishedAt = r.clk.Now().UTC()
 
-	// C12: the clamp skew the state machine measured is folded into the same EWMA
-	// as the `Date`-header skew. Skew is measured and surfaced, never rejected.
-	if clampSkew > 0 {
-		health.ClockSkew = ewma(health.ClockSkew, clampSkew)
-	}
+	// ApplyProbe has already folded this pass's `Date`-header skew into the EWMA
+	// (C12). Skew is measured and surfaced, never used to reject an observation.
 	health.DivergenceCount = out.DivergenceCount
 	r.stamp(&health, out.FinishedAt, reconcileOK)
 	if err := r.sources.repo.SaveHealth(ctx, scope, health); err != nil {
@@ -359,31 +363,22 @@ func (r *Reconciler) stamp(h *domain.SourceHealth, at time.Time, status string) 
 	h.UpdatedAt = when
 }
 
-// apply hands the Observations to the state machine, in bounded transactions, and
-// returns the largest §B.3.2 clamp skew the machine reported.
+// apply hands the Observations to the one write path into `alerts`, in bounded
+// transactions.
 //
 // A chunk that fails aborts the pass and is retried by the job's own budget
 // (§G.6). It is safe to retry from the start: the alert upsert is ON CONFLICT and
 // every event is claimed through `alert_event_keys` first, so a re-applied chunk
 // writes nothing twice.
-func (r *Reconciler) apply(
-	ctx context.Context, scope db.TenantScope, obs []alerts.Observation,
-) (time.Duration, error) {
-	var worst time.Duration
+func (r *Reconciler) apply(ctx context.Context, scope db.TenantScope, obs []alerts.Observation) error {
 	for start := 0; start < len(obs); start += ObserveChunkSize {
 		end := min(start+ObserveChunkSize, len(obs))
-		res, err := r.alerts.ObserveBatch(ctx, scope, obs[start:end], alertsvc.ObserveOptions{})
-		if err != nil {
-			return worst, errs.Wrap(err, errs.KindUnavailable, CodeReconcileFailed,
+		if _, err := r.alerts.ObserveBatch(ctx, scope, obs[start:end]); err != nil {
+			return errs.Wrap(err, errs.KindUnavailable, CodeReconcileFailed,
 				"the observations from this pass could not be applied")
 		}
-		for _, o := range res.Outcomes {
-			if o.Clamped && o.ClampSkew > worst {
-				worst = o.ClampSkew
-			}
-		}
 	}
-	return worst, nil
+	return nil
 }
 
 // openAlertKeys reads the alert identities oto currently believes are live in
@@ -403,6 +398,9 @@ func (r *Reconciler) openAlertKeys(
 	ctx context.Context, scope db.TenantScope, clusterKey alerts.ClusterKey,
 ) map[string]struct{} {
 	out := make(map[string]struct{}, 128)
+	if r.read == nil {
+		return out
+	}
 	q := alertsvc.ListQuery{
 		Filter: alerts.AlertFilter{
 			// firing AND suppressed: a suppressed alert is still live upstream, and
@@ -414,7 +412,7 @@ func (r *Reconciler) openAlertKeys(
 	}
 
 	for len(out) < MaxDivergenceScan {
-		res, err := r.alerts.List(ctx, scope, q)
+		res, err := r.read.List(ctx, scope, q)
 		if err != nil {
 			r.log.WarnContext(ctx, "sources: divergence accounting skipped, alert list unavailable",
 				"cluster_key", clusterKey.String(), "error", err)
@@ -455,9 +453,11 @@ const (
 // currently active; absence is absence, and absence is `expired`'s business, not
 // this function's (§B.2).
 func (r *Reconciler) observations(
-	ctx context.Context, src domain.Source, clusterKey alerts.ClusterKey, upstream []domain.GettableAlert,
+	ctx context.Context, scope db.TenantScope, src domain.Source,
+	clusterKey alerts.ClusterKey, upstream []domain.GettableAlert,
 ) ([]alerts.Observation, int) {
 	now := r.clk.Now().UTC()
+	groups := r.groupLabels(ctx, scope, src)
 	out := make([]alerts.Observation, 0, len(upstream))
 	rejected := 0
 
@@ -501,12 +501,20 @@ func (r *Reconciler) observations(
 			}
 		}
 
+		// §C.4: a reconciler-sourced observation's `receiver` is "" and its
+		// groupLabels are the AM ALERT GROUP's labels. An alert that belongs to no
+		// group upstream (an unprocessed one) carries neither, and the orchestrator
+		// records it without a generation rather than inventing one.
+		grp := groups[a.Fingerprint]
+
 		out = append(out, alerts.Observation{
 			// ⭐ THE LOAD-BEARING FIELD. `reconciler` is what admits T3 (§B.3.1);
 			// no other value in this enum may enter `suppressed`.
-			Source:    alerts.ObservedByReconciler,
-			SourceID:  src.ID,
-			ClusterID: src.ClusterID,
+			Source:      alerts.ObservedByReconciler,
+			SourceID:    src.ID,
+			ClusterID:   src.ClusterID,
+			Receiver:    grp.receiver,
+			GroupLabels: grp.labels,
 			// BatchID is deliberately zero. A reconcile pass is not a batch: there
 			// is no raw payload to keep, nothing to replay, and no `ingest_batches`
 			// row it could point at (C18).
@@ -537,6 +545,55 @@ func (r *Reconciler) observations(
 		})
 	}
 	return out, rejected
+}
+
+// upstreamGroup is one alert's notification group as Alertmanager reports it.
+type upstreamGroup struct {
+	receiver string
+	labels   map[string]string
+}
+
+// groupLabels reads `GET /api/v2/alerts/groups` and indexes each member alert's
+// group by Alertmanager's own fingerprint.
+//
+// ⭐ WHY A SECOND CALL. §C.4 says a reconciler-sourced observation's group labels
+// are "the AM alert group's labels", and `GET /api/v2/alerts` does not carry
+// them. Without this, every alert the reconciler recovered would land in one
+// degenerate per-source group — recorded, and threaded into a Slack conversation
+// that means nothing.
+//
+// ⛔ AM's own `groupKey` is NOT read here even though the endpoint could supply
+// it. It embeds the route path, changes on every `alertmanager.yml` reload, and is
+// unescaped and unbounded (C3). oto's §C.4 key is computed from the group LABELS,
+// which are stable.
+//
+// A failure DEGRADES, it does not fail the pass: the suppression truth in the
+// alert set is the correctness, and the group is the delivery. Losing the alert
+// to protect the notification would be exactly backwards.
+func (r *Reconciler) groupLabels(
+	ctx context.Context, scope db.TenantScope, src domain.Source,
+) map[string]upstreamGroup {
+	out := map[string]upstreamGroup{}
+
+	groups, err := r.sources.AlertGroups(ctx, scope, src.ID, alertmanager.AlertGroupFilter{
+		Active: true, Silenced: true, Inhibited: true, Muted: true,
+	})
+	if err != nil {
+		r.log.WarnContext(ctx, "sources: reconcile could not read alert groups; observing without group labels",
+			"source_id", src.ID, "code", errs.CodeOf(err))
+		return out
+	}
+
+	for _, g := range groups {
+		info := upstreamGroup{receiver: g.Receiver, labels: g.Labels}
+		for _, a := range g.Alerts {
+			if a.Fingerprint == "" {
+				continue
+			}
+			out[a.Fingerprint] = info
+		}
+	}
+	return out
 }
 
 // suppressionReasonFor maps Alertmanager's three witnesses onto its four
