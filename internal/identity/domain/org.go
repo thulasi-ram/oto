@@ -24,10 +24,64 @@ type Org struct {
 	// lets the API say "600, and you chose it" rather than just "600" — see
 	// SettingsPatch. A caller that renders Settings without consulting this is
 	// showing a number nobody can act on.
+	//
+	// ⚠️ AN OVERRIDE HERE MAY NOT BE THE VALUE IN FORCE. Declarative wins over it,
+	// and the override is deliberately kept anyway — see Declarative and
+	// Shadowed.
 	Overrides SettingsPatch
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt *time.Time
+	// Declarative is what the DEPLOYMENT states, and it beats both the override
+	// and the shipped default. It is not per-tenant and is not stored in Postgres:
+	// it comes from this process's own configuration and is identical for every
+	// org this process serves.
+	Declarative Declarative
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   *time.Time
+}
+
+// WithDeclarative overlays the deployment's declarative tuning and RECOMPUTES the
+// effective settings.
+//
+// ⭐ IT IS THE ONLY WAY THE TWO CAN BE ATTACHED, and the recompute is why. An Org
+// whose Declarative said one thing while its Settings still held the pre-overlay
+// number would be an Org that reports an origin for a value it is not using —
+// precisely the divergence this whole surface exists to make impossible.
+func (o Org) WithDeclarative(d Declarative) Org {
+	o.Declarative = d
+	// Declarative merges OVER the org's own, because Merge takes every non-nil
+	// field from its argument. That single call is the precedence rule.
+	o.Settings = o.Overrides.Merge(d.Patch()).Settings()
+	return o
+}
+
+// Origin reports where this org's effective value for k comes from: `config` when
+// the deployment forces it, `org` when this tenant wrote it, `default` otherwise.
+func (o Org) Origin(k SettingKey) Origin {
+	if o.Declarative.Manages(k) {
+		return OriginConfig
+	}
+	return o.Overrides.Origin(k)
+}
+
+// ConfigKey returns the config key forcing k, or "" when nothing is.
+func (o Org) ConfigKey(k SettingKey) string { return o.Declarative.ConfigKey(k) }
+
+// Shadowed is the org's own overrides that are NOT in force, because
+// configuration is forcing something else.
+//
+// ⭐ IT IS RETURNED SO THE OPERATOR CAN SEE BOTH NUMBERS. "You have an override of
+// 900s, but configuration is forcing 600s" is an answer somebody can act on;
+// showing only the 600 leaves the 900 sitting in the database, invisible, waiting
+// to take effect the moment the config key is removed.
+func (o Org) Shadowed() SettingsPatch {
+	var out SettingsPatch
+	for _, k := range o.Declarative.Keys() {
+		if o.Overrides.Origin(k) != OriginOrg {
+			continue
+		}
+		out = out.Merge(o.Overrides.only(k))
+	}
+	return out
 }
 
 // Settings is one org's tuning of the lifecycle machine, the dampers and

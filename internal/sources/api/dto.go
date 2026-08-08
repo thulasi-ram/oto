@@ -112,9 +112,53 @@ type SourceHealthDTO struct {
 	// DivergenceCount is the canary for every correctness bug in the system.
 	DivergenceCount int32 `json:"divergence_count"`
 
+	// RouteTimings are the source's OWN group_wait, group_interval and
+	// repeat_interval, read off its running configuration. nil until oto has
+	// managed to parse that configuration once.
+	RouteTimings *RouteTimingsDTO `json:"route_timings"`
+
 	Warnings  []HealthWarningDTO `json:"warnings"`
 	UpdatedAt time.Time          `json:"updated_at"`
 }
+
+// RouteTimingsDTO is what an Alertmanager says about its own batching.
+//
+// ⭐ IT IS OBSERVED, NEVER TYPED IN. Every oto tuning knob is a function of these
+// three numbers (docs/setup/tuning.md), and until now the tuning screen asked an
+// operator to enter them by hand and kept the answer in one browser's
+// localStorage — unshared, unvalidated, and silently wrong the moment somebody
+// edited `alertmanager.yml`. These come from the source itself, on the status
+// call oto already makes.
+//
+// ⛔ null MEANS UNKNOWN, AND UNKNOWN IS NOT A DEFAULT. A client must never
+// substitute Alertmanager's documented 30s / 5m / 4h: Alertmanager omits an unset
+// value from the config it publishes and applies the default later, where the
+// status endpoint cannot see it. The whole point of these numbers is to say when
+// one of oto's knobs can never fire, and a confident wrong number destroys that.
+type RouteTimingsDTO struct {
+	// GroupWaitMS, GroupIntervalMS and RepeatIntervalMS are the TOP-LEVEL route's,
+	// in milliseconds. Milliseconds because `group_wait: 500ms` is legal and
+	// seconds would round it to "notify immediately".
+	GroupWaitMS      *int64 `json:"group_wait_ms"`
+	GroupIntervalMS  *int64 `json:"group_interval_ms"`
+	RepeatIntervalMS *int64 `json:"repeat_interval_ms"`
+	// Route names which route the three above describe. It is `top_level` and
+	// nothing else in v1 — the field exists so that a client rendering it never
+	// has to be changed if a later version resolves per-route values.
+	Route string `json:"route"`
+	// ChildRoutes and ChildRoutesWithTimings are the caveat, made countable: a
+	// non-zero ChildRoutesWithTimings means some alerts are batched by a more
+	// specific route and the numbers above do not govern them.
+	ChildRoutes            int32 `json:"child_routes"`
+	ChildRoutesWithTimings int32 `json:"child_routes_with_timings"`
+	// ObservedAt is when these were last read off the source. It is deliberately
+	// NOT `updated_at`: that moves on every probe, including ones that could not
+	// reach the source, so showing it here would claim a stale reading is fresh.
+	ObservedAt *time.Time `json:"observed_at"`
+}
+
+// RouteTopLevel is the only value RouteTimingsDTO.Route takes in v1.
+const RouteTopLevel = "top_level"
 
 // SourceTestDTO is the result of probing a source's status endpoint.
 //

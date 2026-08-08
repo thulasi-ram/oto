@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +28,7 @@ import (
 	groupingrepo "github.com/thulasiram/oto/internal/grouping/repository"
 	groupingservice "github.com/thulasiram/oto/internal/grouping/service"
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
+	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
 	"github.com/thulasiram/oto/internal/ingestion"
@@ -59,6 +61,24 @@ import (
 	streamingrepo "github.com/thulasiram/oto/internal/streaming/repository"
 	streamingservice "github.com/thulasiram/oto/internal/streaming/service"
 )
+
+// declarativeTuning resolves this process's declarative tuning layer.
+//
+// It is the ONE place `platform/config`'s TuningEntry and `identity/domain`'s
+// DeclaredEntry meet, and that is why it lives in the composition root: the
+// loader must not know what a tuning key means, and the domain must not know
+// where configuration comes from. The mapping is four lines, and paying four
+// lines here is what keeps both of those true.
+func declarativeTuning(cfg config.Config) (identitydomain.Declarative, error) {
+	entries := cfg.TuningEntries()
+	declared := make([]identitydomain.DeclaredEntry, 0, len(entries))
+	for _, e := range entries {
+		declared = append(declared, identitydomain.DeclaredEntry{
+			Key: e.Key, ConfigKey: e.ConfigKey, Value: e.Value,
+		})
+	}
+	return identitydomain.NewDeclarative(declared)
+}
 
 // Container holds every long-lived dependency, wired by explicit constructors.
 // There is no codegen and no runtime DI container: the dependency graph of oto is
@@ -267,17 +287,36 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	c.LoginGate = ratelimit.NewGate(o.Config.Security.LoginMaxConcurrent)
 
 	// ---- identity, and the one authenticator in the process --------------
+	//
+	// ⭐ THE DECLARATIVE TUNING LAYER IS RESOLVED HERE AND FAILS THE BOOT. An
+	// unknown key, an unparseable value or one outside its bound stops the process
+	// with the config key named, rather than starting a pod whose values file
+	// contains a line that silently does nothing (identity/domain.Declarative).
+	declarative, err := declarativeTuning(o.Config)
+	if err != nil {
+		return nil, err
+	}
 	tokenRepo := identityrepo.NewAPITokenRepository(general)
 	c.Identity = identityservice.New(identityservice.Deps{
-		Orgs:       identityrepo.NewOrgRepository(general),
-		Users:      identityrepo.NewUserRepository(general),
-		Tokens:     tokenRepo,
-		Sessions:   identityrepo.NewSessionRepository(general),
-		Slack:      identityrepo.NewSlackIdentityRepository(general),
-		Clock:      clk,
-		Logger:     logger,
-		SessionTTL: o.Config.Security.SessionTTL,
+		Orgs:        identityrepo.NewOrgRepository(general),
+		Users:       identityrepo.NewUserRepository(general),
+		Tokens:      tokenRepo,
+		Sessions:    identityrepo.NewSessionRepository(general),
+		Slack:       identityrepo.NewSlackIdentityRepository(general),
+		Clock:       clk,
+		Logger:      logger,
+		SessionTTL:  o.Config.Security.SessionTTL,
+		Declarative: declarative,
 	})
+	if !declarative.Empty() {
+		keys := declarative.Keys()
+		names := make([]string, 0, len(keys))
+		for _, k := range keys {
+			names = append(names, string(k)+"="+declarative.ConfigKey(k))
+		}
+		logger.Info("identity: tuning keys are set by this deployment's configuration and cannot be changed over the API",
+			"keys", strings.Join(names, " "))
+	}
 	c.Auth = authn.NewMiddleware(c.Identity, o.Config.Security.SessionCookie)
 	settings := orgSettings{svc: c.Identity}
 

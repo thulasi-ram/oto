@@ -11,8 +11,9 @@ configuration you already have.
 > **Status:** these are org-level settings (`orgs.settings`, SPEC §D.1) with the defaults below, and
 > they are **editable per org over the API**:
 >
-> - `GET /api/v1/org/settings` returns each **effective** value, its **origin** (`org` if you set it,
->   `default` if oto did) and the **bounds** the server will accept, with the reason for each.
+> - `GET /api/v1/org/settings` returns each **effective** value, its **origin** (`default`, `org` or
+>   `config`), the **config key** behind any `config` origin, any **shadowed** override, and the
+>   **bounds** the server will accept, with the reason for each.
 > - `PATCH /api/v1/org/settings` writes them. It is a partial write — an omitted key is left alone —
 >   and `"reset": ["refire_grace_s"]` returns a key to oto's default.
 >
@@ -25,10 +26,93 @@ configuration you already have.
 
 ---
 
+## Setting these from configuration (Helm, a values file, environment variables)
+
+**If you run oto under IaC, put the tuning in your configuration and it wins.** Precedence is:
+
+```
+shipped default   →   org override (Postgres)   →   declarative configuration   (highest)
+```
+
+Declarative wins because that is the GitOps expectation: if it is in the values file, the values file is
+the truth. The failure this removes is the silent one — somebody edits a number in the UI, the next
+deploy reverts it, and nobody can work out why the setting changed back, because nothing anywhere said
+the deployment had an opinion.
+
+Every key on this page can be set either way. In a config file:
+
+```yaml
+tuning:
+  refire_grace_s: 900
+  flap_window_s: 10800
+  default_verbosity: firing_only
+  broadcast_on_resolved: true
+  unacked_reminder_mention_list: ["<@U012AB3CD>", "<!subteam^S01ABCDEF>"]
+```
+
+or as environment variables — the key, upper-cased, behind `OTO_TUNING_`:
+
+```
+OTO_TUNING_REFIRE_GRACE_S=900
+OTO_TUNING_FLAP_WINDOW_S=10800
+OTO_TUNING_DEFAULT_VERBOSITY=firing_only
+OTO_TUNING_UNACKED_REMINDER_MENTION_LIST=<@U012AB3CD>,<!subteam^S01ABCDEF>
+```
+
+An environment variable beats a file key for the same setting, and the API reports whichever one is
+actually in force.
+
+**What you get, and what you give up:**
+
+- `GET /api/v1/org/settings` reports the key's origin as **`config`** and names the exact key in
+  `config_keys` — `OTO_TUNING_REFIRE_GRACE_S` or `tuning.refire_grace_s`. A "managed by configuration"
+  badge with no key beside it would just be a wall; this is where you go to change it.
+- **`PATCH` on that key is refused with `409`**, and the problem names the config key. It is not accepted
+  and quietly reverted, because that is precisely the mystery this exists to end.
+- **An org override you already had is kept and shown.** If your org wrote `900` and configuration now
+  forces `600`, the response reports the effective `600` with origin `config` **and** the shadowed `900`
+  under `shadowed`. Delete the config key and the `900` takes effect again — nothing was destroyed on
+  your behalf, and nothing is hidden.
+- **The bounds still apply.** Configuration is authoritative about *which* value is in force, not about
+  which values are legal: `refire_grace_s: 0` is refused from a values file exactly as it is from `curl`.
+- **A bad key fails the boot**, with the config key named. An unknown key, an unparseable value or one
+  outside its bound stops the process rather than starting a pod whose values file contains a line that
+  silently does nothing.
+
+---
+
 ## First: the three Alertmanager numbers everything depends on
 
-Read these out of your `alertmanager.yml` before touching anything in oto. They are per-route, so read
-the route your oto receiver is attached to, including anything inherited from the parent route.
+**oto reads these for you, per source.** `GET /api/v1/sources` returns them under
+`health.route_timings`, taken from the running configuration each Alertmanager publishes at
+`/api/v2/status`, refreshed on every reconcile pass, with the time they were last observed. They are
+never typed in and never stored in a browser — the previous design asked an operator to enter them and
+kept the answer in `localStorage`, which meant two people could open the same screen and be given
+contradictory guidance about the same cluster.
+
+Three things to know about what you will see there:
+
+- **`null` means oto has not been told, and oto will not guess.** Alertmanager omits any of the three
+  that your config does not set, and applies its own `30s` / `5m` / `4h` defaults later, somewhere the
+  status endpoint cannot see. So a stock `alertmanager.yml` reports all three as unknown. oto shows
+  `unknown` rather than printing Alertmanager's documented default as though it had observed it — the
+  entire value of these numbers is telling you when one of your knobs can never fire, and a confident
+  wrong number destroys that. **If you want oto to know them, state them explicitly in your
+  `alertmanager.yml`**, even at their default values.
+- **⚠️ oto reports the TOP-LEVEL route only.** All three settings are per-route and inherited, so the
+  values that actually govern a given alert are the ones on the route that matched it — which depends on
+  that alert's labels. oto reports the top-level route, which is what governs everything matching no more
+  specific route. Beside it you get `child_routes` and `child_routes_with_timings`: **if the second is
+  non-zero, some of your alerts are batched differently and the numbers above them do not describe those
+  alerts.** Resolving the per-alert value would mean re-implementing Alertmanager's matcher tree,
+  including `continue: true` and regex matchers, and being wrong invisibly, so oto states the limitation
+  instead of pretending to.
+- **`observed_at` is not `updated_at`.** It moves only when the numbers beside it were genuinely read, so
+  a stale reading looks stale.
+
+The rest of this section is what those three numbers mean. They are per-route, so if you are reading
+`alertmanager.yml` by hand, read the route your oto receiver is attached to, including anything
+inherited from the parent route.
 
 ```yaml
 route:

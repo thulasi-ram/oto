@@ -39,6 +39,17 @@ type healthRow struct {
 	clockSkewMS     int64
 	divergenceCount int32
 
+	// The three timings are NULLABLE and stay nullable all the way to the wire:
+	// NULL means oto has not observed the value, which is a different fact from
+	// "Alertmanager's default applies", and collapsing the two would print a
+	// number oto never saw (see 00028_am_route_timings.sql).
+	amGroupWaitMS      *int64
+	amGroupIntervalMS  *int64
+	amRepeatIntervalMS *int64
+	amChildRoutes      int32
+	amChildWithTimings int32
+	amRouteTimingsAt   *time.Time
+
 	warnings  []byte
 	updatedAt time.Time
 }
@@ -46,14 +57,42 @@ type healthRow struct {
 const healthColumns = `
 	source_id, org_id, status, last_push_at, last_reconcile_at, last_reconcile_status,
 	last_error, consecutive_failures, am_version, send_resolved, clock_skew_ms,
-	divergence_count, warnings, updated_at`
+	divergence_count, am_group_wait_ms, am_group_interval_ms, am_repeat_interval_ms,
+	am_child_routes, am_child_routes_with_timings, am_route_timings_at,
+	warnings, updated_at`
 
 func (r *healthRow) scanDest() []any {
 	return []any{
 		&r.sourceID, &r.orgID, &r.status, &r.lastPushAt, &r.lastReconcileAt,
 		&r.lastReconcileStatus, &r.lastError, &r.consecutiveFailures, &r.amVersion,
-		&r.sendResolved, &r.clockSkewMS, &r.divergenceCount, &r.warnings, &r.updatedAt,
+		&r.sendResolved, &r.clockSkewMS, &r.divergenceCount,
+		&r.amGroupWaitMS, &r.amGroupIntervalMS, &r.amRepeatIntervalMS,
+		&r.amChildRoutes, &r.amChildWithTimings, &r.amRouteTimingsAt,
+		&r.warnings, &r.updatedAt,
 	}
+}
+
+// msDuration turns a nullable millisecond column into a nullable duration.
+// nil in, nil out — this is the boundary that must not invent a value.
+func msDuration(ms *int64) *time.Duration {
+	if ms == nil {
+		return nil
+	}
+	d := time.Duration(*ms) * time.Millisecond
+	return &d
+}
+
+// durationMS is msDuration's inverse, for the write path. A NEGATIVE duration
+// becomes NULL rather than a 23514 against source_health_am_timings_ck: no parse
+// path can produce one, so it would be an oto bug, and failing a whole reconcile
+// pass over a display number is the wrong blast radius. "Unknown" is the honest
+// rendering of a value oto cannot believe.
+func durationMS(d *time.Duration) *int64 {
+	if d == nil || *d < 0 {
+		return nil
+	}
+	ms := d.Milliseconds()
+	return &ms
 }
 
 func (r *healthRow) toDomain() (domain.SourceHealth, error) {
@@ -91,8 +130,16 @@ func (r *healthRow) toDomain() (domain.SourceHealth, error) {
 		SendResolved:        r.sendResolved,
 		ClockSkew:           time.Duration(r.clockSkewMS) * time.Millisecond,
 		DivergenceCount:     int(r.divergenceCount),
-		Warnings:            warnings,
-		UpdatedAt:           r.updatedAt,
+		RouteTimings: domain.RouteTimings{
+			GroupWait:           msDuration(r.amGroupWaitMS),
+			GroupInterval:       msDuration(r.amGroupIntervalMS),
+			RepeatInterval:      msDuration(r.amRepeatIntervalMS),
+			ChildRoutes:         int(r.amChildRoutes),
+			ChildrenWithTimings: int(r.amChildWithTimings),
+		},
+		RouteTimingsAt: r.amRouteTimingsAt,
+		Warnings:       warnings,
+		UpdatedAt:      r.updatedAt,
 	}, nil
 }
 
@@ -173,8 +220,10 @@ const saveHealthSQL = `
 INSERT INTO source_health (source_id, org_id, status, last_push_at, last_reconcile_at,
                            last_reconcile_status, last_error, consecutive_failures,
                            am_version, send_resolved, clock_skew_ms, divergence_count,
+                           am_group_wait_ms, am_group_interval_ms, am_repeat_interval_ms,
+                           am_child_routes, am_child_routes_with_timings, am_route_timings_at,
                            warnings, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 ON CONFLICT (source_id) DO UPDATE SET
     status                = EXCLUDED.status,
     last_push_at          = EXCLUDED.last_push_at,
@@ -186,6 +235,12 @@ ON CONFLICT (source_id) DO UPDATE SET
     send_resolved         = EXCLUDED.send_resolved,
     clock_skew_ms         = EXCLUDED.clock_skew_ms,
     divergence_count      = EXCLUDED.divergence_count,
+    am_group_wait_ms      = EXCLUDED.am_group_wait_ms,
+    am_group_interval_ms  = EXCLUDED.am_group_interval_ms,
+    am_repeat_interval_ms = EXCLUDED.am_repeat_interval_ms,
+    am_child_routes       = EXCLUDED.am_child_routes,
+    am_child_routes_with_timings = EXCLUDED.am_child_routes_with_timings,
+    am_route_timings_at   = EXCLUDED.am_route_timings_at,
     warnings              = EXCLUDED.warnings,
     updated_at            = EXCLUDED.updated_at`
 
@@ -232,12 +287,26 @@ func (r *SourceRepository) SaveHealth(ctx context.Context, s db.TenantScope, h d
 		updatedAt = r.clock.Now()
 	}
 
+	// source_health_am_timings_ck refuses a negative count and refuses more
+	// timing-bearing children than there are children. Both would be a parser bug
+	// rather than a caller's fault, so they are clamped here into the honest
+	// shape rather than turned into a 23514 that fails a whole reconcile pass over
+	// a display counter.
+	childRoutes, childWithTimings := h.RouteTimings.ChildRoutes, h.RouteTimings.ChildrenWithTimings
+	childRoutes = max(childRoutes, 0)
+	childWithTimings = min(max(childWithTimings, 0), childRoutes)
+
 	_, err = r.db(ctx).Exec(ctx, saveHealthSQL,
 		h.SourceID, s.OrgID(), string(h.Status), timePtr(derefTime(h.LastPushAt)),
 		timePtr(derefTime(h.LastReconcileAt)), nilIfEmpty(h.LastReconcileStatus),
 		nilIfEmpty(lastError), int32(h.ConsecutiveFailures), //nolint:gosec // guarded above
 		nilIfEmpty(h.AMVersion), h.SendResolved, h.ClockSkew.Milliseconds(),
-		int32(h.DivergenceCount), warnings, updatedAt.UTC()) //nolint:gosec // guarded above
+		int32(h.DivergenceCount), //nolint:gosec // guarded above
+		durationMS(h.RouteTimings.GroupWait), durationMS(h.RouteTimings.GroupInterval),
+		durationMS(h.RouteTimings.RepeatInterval),
+		int32(childRoutes), int32(childWithTimings), //nolint:gosec // clamped above
+		timePtr(derefTime(h.RouteTimingsAt)),
+		warnings, updatedAt.UTC())
 	if err != nil {
 		return mapErr(err, "sources_not_found", "write source health")
 	}

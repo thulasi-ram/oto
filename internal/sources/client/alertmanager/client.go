@@ -212,6 +212,10 @@ func (c *Client) StatusDetail(ctx context.Context) (Status, error) {
 	out.Receivers = cfg.Receivers
 	out.AM.ResolveTimeout = cfg.ResolveTimeout
 	out.AM.SendResolved = cfg.SendResolved
+	// The source's own batching timings, which are the numbers every oto knob has
+	// to be derived from. A config that names none of them leaves this zero, and
+	// zero here means UNKNOWN in every field — see domain.RouteTimings.
+	out.AM.RouteTimings = cfg.Timings
 	return out, nil
 }
 

@@ -92,9 +92,42 @@ func healthDTO(h domain.SourceHealth) SourceHealthDTO {
 		SendResolved:        h.SendResolved,
 		ClockSkewMS:         h.ClockSkew.Milliseconds(),
 		DivergenceCount:     int32(h.DivergenceCount), //nolint:gosec // bounded by source_health_div_ck
+		RouteTimings:        routeTimingsDTO(h),
 		Warnings:            warnings,
 		UpdatedAt:           h.UpdatedAt.UTC(),
 	}
+}
+
+// routeTimingsDTO renders the source's own batching timings, or nil.
+//
+// ⛔ NIL WHEN THE CONFIG HAS NEVER BEEN PARSED, and three nulls when it has been
+// parsed and states none of the three. The two are different facts and the
+// contract keeps them apart: the first is "oto has not looked", the second is
+// "oto looked and this Alertmanager is running on built-in defaults it does not
+// publish". Neither is ever rendered as a number.
+func routeTimingsDTO(h domain.SourceHealth) *RouteTimingsDTO {
+	if h.RouteTimingsAt == nil {
+		return nil
+	}
+	return &RouteTimingsDTO{
+		GroupWaitMS:            durationMSPtr(h.RouteTimings.GroupWait),
+		GroupIntervalMS:        durationMSPtr(h.RouteTimings.GroupInterval),
+		RepeatIntervalMS:       durationMSPtr(h.RouteTimings.RepeatInterval),
+		Route:                  RouteTopLevel,
+		ChildRoutes:            int32(h.RouteTimings.ChildRoutes),         //nolint:gosec // bounded by source_health_am_timings_ck
+		ChildRoutesWithTimings: int32(h.RouteTimings.ChildrenWithTimings), //nolint:gosec // bounded by source_health_am_timings_ck
+		ObservedAt:             utcPtr(h.RouteTimingsAt),
+	}
+}
+
+// durationMSPtr renders a nullable duration as nullable milliseconds. nil in,
+// nil out: this is the boundary that must not invent a number.
+func durationMSPtr(d *time.Duration) *int64 {
+	if d == nil {
+		return nil
+	}
+	ms := d.Milliseconds()
+	return &ms
 }
 
 // probeDTO maps a probe result onto the wire.

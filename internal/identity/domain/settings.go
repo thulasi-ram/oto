@@ -440,6 +440,33 @@ func (p SettingsPatch) Origin(k SettingKey) Origin {
 	return OriginDefault
 }
 
+// only returns a patch carrying just this key's value, or an empty patch when
+// the key is not set. It is how Org.Shadowed assembles "the overrides that are
+// not in force" one key at a time, without a second enumeration of the key set.
+func (p SettingsPatch) only(k SettingKey) SettingsPatch {
+	var out SettingsPatch
+	if src := (&p).intPtr(k); src != nil {
+		if *src != nil {
+			v := **src
+			*(&out).intPtr(k) = &v
+		}
+		return out
+	}
+	switch k {
+	case KeyDefaultVerbosity:
+		out.DefaultVerbosity = p.DefaultVerbosity
+	case KeyBroadcastOnResolved:
+		out.BroadcastOnResolved = p.BroadcastOnResolved
+	case KeyUnackedReminderMention:
+		out.UnackedReminderMention = p.UnackedReminderMention
+	case KeyUnackedReminderMentionList:
+		out.UnackedReminderMentionList = p.UnackedReminderMentionList
+	case KeyUnackedReminderMentionMinSeverity:
+		out.UnackedReminderMentionMinSeverity = p.UnackedReminderMentionMinSeverity
+	}
+	return out
+}
+
 // Overridden returns the keys this org has written, in a stable order.
 func (p SettingsPatch) Overridden() []SettingKey {
 	out := make([]SettingKey, 0, len(settingBounds)+2)

@@ -1664,13 +1664,26 @@ export interface paths {
          *
          *     - `settings` — the **effective** value, the one oto is using right now: this org's overrides
          *       folded onto the shipped defaults and clamped to their bounds.
-         *     - `origins` — per key, `org` or `default`. Returning the effective value alone is the version of
-         *       configurability that is *worse than none*: a screen showing `600` cannot tell an operator
-         *       whether their org chose 600 or is riding oto's default, and those two answers behave
-         *       identically today and diverge the moment the default moves.
+         *     - `origins` — per key, `default`, `org` or `config`. Returning the effective value alone is the
+         *       version of configurability that is *worse than none*: a screen showing `600` cannot tell an
+         *       operator whether their org chose 600, whether the deployment is forcing it, or whether they are
+         *       riding oto's default, and those answers behave identically today and diverge the moment
+         *       anything moves.
+         *     - `config_keys` — for every key whose origin is `config`, **which environment variable or file
+         *       key set it**. A badge reading "managed by configuration" with no key beside it tells an operator
+         *       they cannot change the value here and nothing about where they can.
+         *     - `shadowed` — this org's own overrides that are **not in force** because configuration is forcing
+         *       something else. "You have an override of 900s, but configuration is forcing 600s" is actionable;
+         *       hiding the 900 leaves a number in the database that nobody can see and that takes effect the
+         *       moment somebody deletes the config key.
          *     - `bounds` — the server-side range of every integer key, **with the reason for it**, so a form can
          *       be generated from the same table the server rejects with and cannot offer a value the API will
          *       refuse.
+         *
+         *     **Precedence is shipped default → org override → declarative configuration, highest last.**
+         *     Declarative wins because that is the GitOps expectation: if it is in the values file, the values
+         *     file is the truth, and anything else means the cluster drifts from the repository that is supposed
+         *     to describe it.
          */
         get: operations["getOrgSettings"];
         put?: never;
@@ -1690,6 +1703,14 @@ export interface paths {
          *     write cannot slip a value past by relying on a key it did not send, and the result is stored only
          *     if the whole merged state is legal. A `refire_grace_s` of `0` is refused whatever a UI would have
          *     allowed — that value is a Slack thread per transition.
+         *
+         *     **A key this deployment's configuration manages is refused with `409`**, and the problem's
+         *     `violations` name the environment variable or file key that owns it. It is not accepted-and-ignored
+         *     and it is not accepted-and-overridden-on-read: both of those store a number the operator will see
+         *     in the database, never see in force, and have no way to explain when it "changes back" on the next
+         *     deploy. A `reset` naming a managed key is refused for the same reason, and additionally because a
+         *     reset would destroy the shadowed override underneath — the one value that returns if the config key
+         *     is ever removed.
          *
          *     **It takes effect immediately and everywhere.** Nothing between this write and the notify worker's
          *     next evaluation holds a copy of these numbers, so there is no restart, no cache flush, and no
@@ -3424,6 +3445,13 @@ export interface components {
              * @example 0
              */
             divergence_count: number;
+            /**
+             * @description The source's own `group_wait`, `group_interval` and `repeat_interval`, read off the
+             *     configuration it publishes. `null` until oto has managed to parse that configuration once —
+             *     which is a different fact from "oto parsed it and it states none of them", and the two are
+             *     kept apart deliberately.
+             */
+            route_timings?: components["schemas"]["RouteTimingsDTO"] | null;
             /** @description Standing, non-fatal problems that an operator should see in the UI. */
             warnings: ({
                 /** @example send_resolved_false */
@@ -3434,6 +3462,82 @@ export interface components {
                 [key: string]: unknown;
             })[];
             updated_at: components["schemas"]["Timestamp"];
+        };
+        /**
+         * @description What an Alertmanager says about **its own** batching, read from `config.original` on the status
+         *     call oto already makes.
+         *
+         *     **Observed, never typed in.** Every oto tuning knob is a function of these three numbers: a
+         *     `refire_grace` below `group_interval` is unreachable and every re-fire opens a new Slack thread; a
+         *     `storm_window` below `group_wait` cannot see a burst; a `flap_threshold` above the observable
+         *     ceiling is dead code that looks correctly configured. Asking an operator to enter them by hand
+         *     produced an answer that was unshared, unvalidated, and silently wrong the moment somebody edited
+         *     `alertmanager.yml`.
+         *
+         *     ⛔ **`null` means unknown, and unknown is not a default.** A client must never substitute
+         *     Alertmanager's documented 30s / 5m / 4h. Alertmanager marshals all three as `omitempty` pointers,
+         *     so a stock `alertmanager.yml` — which sets none of them — publishes none of them, and the defaults
+         *     are applied later, in `dispatch.NewRoute`, where the status endpoint cannot see them. The whole
+         *     purpose of these numbers is to tell an operator when one of their knobs can never fire, and a
+         *     confident wrong number destroys that while an honest gap does not.
+         *
+         *     ⚠️ **Per-route limitation.** oto reports the **top-level route** — what governs every alert
+         *     matching no more specific route, and exactly what `docs/setup/tuning.md` tells an operator to read.
+         *     Resolving the value for a *particular* alert would mean re-implementing Alertmanager's matcher
+         *     tree, including `continue: true` and regex matchers, and being wrong in a way nobody could see.
+         *     `child_routes_with_timings` is how that limitation is made countable rather than buried.
+         */
+        RouteTimingsDTO: {
+            /**
+             * Format: int64
+             * @description The **top-level route's** `group_wait`, in milliseconds: the delay before the first
+             *     notification for a new group. It is a floor on alert→Slack latency oto cannot improve, and any
+             *     flap shorter than it is invisible to oto entirely. `null` means **not observed**.
+             * @example 10000
+             */
+            group_wait_ms: number | null;
+            /**
+             * Format: int64
+             * @description The **top-level route's** `group_interval`, in milliseconds. It is the clock rate of oto's
+             *     whole view of the world: oto does not learn of a change to an existing group faster than this,
+             *     so every oto duration should be read as a multiple of it. `null` means **not observed**.
+             * @example 30000
+             */
+            group_interval_ms: number | null;
+            /**
+             * Format: int64
+             * @description The **top-level route's** `repeat_interval`, in milliseconds. It is what produces
+             *     `notification_reason: "repeat interval elapsed"`, which oto maps to an update-only delivery.
+             *     `null` means **not observed**.
+             * @example 14400000
+             */
+            repeat_interval_ms: number | null;
+            /**
+             * @description Which route the three durations above describe. `top_level` is the only value in v1; the field
+             *     exists so that a client rendering it need not change if a later version resolves per-route
+             *     values.
+             * @enum {string}
+             */
+            route: "top_level";
+            /**
+             * Format: int32
+             * @description How many descendant routes sit below the top-level one, at any depth.
+             */
+            child_routes: number;
+            /**
+             * Format: int32
+             * @description How many of those descendants state a `group_wait`, `group_interval` or `repeat_interval` of
+             *     their own. **A non-zero value here means the three durations above do not govern every alert**:
+             *     these settings are per-route and inherited, so the values that actually apply depend on which
+             *     route matched. Show this caveat wherever the numbers are shown.
+             */
+            child_routes_with_timings: number;
+            /**
+             * @description When the three were last read off the source. Deliberately **not** `updated_at`, which moves on
+             *     every probe including ones that could not reach the source at all — rendering that beside a
+             *     stale reading would claim it is fresh.
+             */
+            observed_at: components["schemas"]["Timestamp"] | null;
         };
         /** @description The result of probing a source's status endpoint. A read-only probe; it changes nothing upstream. */
         SourceTestDTO: {
@@ -5045,34 +5149,109 @@ export interface components {
             why: string;
         };
         /**
-         * @description Where an effective value came from. `org` means this org wrote it and it overrides the shipped
-         *     default; `default` means oto's own value is in force and will follow oto's default if that moves.
+         * @description Where an effective value came from, in precedence order:
          *
-         *     It is a two-value enum on purpose. There is one tenant level and one shipped default, so
-         *     "inherited from a parent" is an answer to a question oto does not have.
+         *     - `default` — oto's shipped value is in force and will follow oto's default if that moves;
+         *     - `org` — this org wrote it and it overrides the shipped default;
+         *     - `config` — **this deployment's own configuration** is forcing it, it beats an org override, and
+         *       a `PATCH` naming this key is refused with `409`.
+         *
+         *     `config` exists because operators run oto under IaC. Without it, somebody edits a value in the UI,
+         *     the next deploy reverts it, and nobody can work out why the setting changed back — the deployment
+         *     had an opinion and nothing anywhere said so. Look the key up in `config_keys` to find out where it
+         *     is set.
+         *
+         *     There is still no hierarchy: one tenant level, one shipped default, one deployment. "Inherited
+         *     from a parent org" remains an answer to a question oto does not have.
          * @example default
          * @enum {string}
          */
-        SettingOrigin: "default" | "org";
+        SettingOrigin: "default" | "org" | "config";
         /**
          * @description The effective tuning **and** where each value came from. The pairing is the feature: an effective
-         *     value with no origin cannot be acted on, because "600 because we chose it" and "600 because
-         *     that is what oto ships" behave identically today and diverge the moment the default moves.
+         *     value with no origin cannot be acted on, because "600 because we chose it", "600 because the
+         *     deployment forces it" and "600 because that is what oto ships" behave identically today and
+         *     diverge the moment anything moves.
+         *
+         *     Precedence is **shipped default → org override → declarative configuration**, highest last.
          */
         OrgSettingsViewDTO: {
             settings: components["schemas"]["OrgSettingsDTO"];
-            /** @description Per settings key, whether the effective value is this org's own or oto's default. */
+            /**
+             * @description Per settings key, whether the effective value is oto's default, this org's own, or this
+             *     deployment's configuration.
+             */
             origins: {
                 [key: string]: components["schemas"]["SettingOrigin"];
             };
             /**
+             * @description Per key whose origin is `config`, the environment variable or file key that set it —
+             *     `OTO_TUNING_REFIRE_GRACE_S` or `tuning.refire_grace_s`. **Keys with any other origin are
+             *     absent**, so a present key means "this is where to go and change it".
+             *
+             *     Without this, "managed by configuration" is a wall: it tells an operator they cannot fix the
+             *     value here and nothing about where they can, which turns a five-second edit into an
+             *     archaeology exercise across a Helm chart, a values file and a Deployment's env block.
+             * @example {
+             *       "refire_grace_s": "OTO_TUNING_REFIRE_GRACE_S"
+             *     }
+             */
+            config_keys: {
+                [key: string]: string;
+            };
+            shadowed: components["schemas"]["OrgSettingsPatchDTO"];
+            /**
              * @description Per integer settings key, the range the server will accept. Keys that are not integers
              *     (`default_verbosity`, `broadcast_on_resolved`) are absent; their legal values are their own
-             *     schema's.
+             *     schema's. The bounds apply to a declarative value too: configuration is authoritative about
+             *     *which* value is in force, not about which values are legal.
              */
             bounds: {
                 [key: string]: components["schemas"]["SettingBoundDTO"];
             };
+        };
+        /**
+         * @description A **partial** tuning: every field is optional and an absent field means "this key is not set".
+         *
+         *     As `shadowed` on `OrgSettingsViewDTO` it carries the org's own overrides that are **not in force**,
+         *     because this deployment's configuration is forcing something else. Only shadowed keys are present,
+         *     so an empty object means nothing this org wrote is being overridden. The values are still stored in
+         *     `orgs.settings` and take effect again the moment the corresponding config key is removed — which is
+         *     exactly why they are shown rather than hidden.
+         *
+         *     No bounds are stated here: these are values already stored, and the read path *clamps* rather than
+         *     rejects, so a value written before a bound existed can never fail this response.
+         */
+        OrgSettingsPatchDTO: {
+            /** Format: int32 */
+            refire_grace_s?: number;
+            /** Format: int32 */
+            resolve_grace_s?: number;
+            /** Format: int32 */
+            group_close_delay_s?: number;
+            /** Format: int32 */
+            flap_threshold?: number;
+            /** Format: int32 */
+            flap_window_s?: number;
+            /** Format: int32 */
+            flap_digest_interval_s?: number;
+            /** Format: int32 */
+            storm_threshold?: number;
+            /** Format: int32 */
+            storm_window_s?: number;
+            /** Format: int32 */
+            storm_cooldown_s?: number;
+            /** Format: int32 */
+            raw_retention_days?: number;
+            /** Format: int32 */
+            event_retention_months?: number;
+            /** Format: int32 */
+            unacked_reminder_after_s?: number;
+            default_verbosity?: components["schemas"]["Verbosity"];
+            broadcast_on_resolved?: boolean;
+            unacked_reminder_mention?: components["schemas"]["ReminderMention"];
+            unacked_reminder_mention_list?: string[];
+            unacked_reminder_mention_min_severity?: components["schemas"]["ReminderMentionSeverity"];
         };
         OrgSettingsViewResponse: {
             data: components["schemas"]["OrgSettingsViewDTO"];
@@ -8336,7 +8515,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The effective tuning, its origins and its bounds. */
+            /** @description The effective tuning, its origins, its config keys, its shadowed overrides and its bounds. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8374,6 +8553,20 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            /**
+             * @description `409 setting_managed_by_config` — one or more of the keys named in this write are set by
+             *     **this deployment's own configuration**, which beats an org override. Each `violation` carries
+             *     the settings key in `field` and the config key that owns it in `message`; change it there, or
+             *     remove that key to hand the setting back to this org.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];

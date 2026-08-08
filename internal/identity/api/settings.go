@@ -12,11 +12,19 @@ import (
 // The org-settings surface: the read that says WHAT IS IN FORCE AND WHY, and the
 // write that was missing.
 //
-// ⭐ THE READ RETURNS THREE THINGS, AND ALL THREE ARE THE FEATURE:
+// ⭐ THE READ RETURNS FIVE THINGS, AND ALL FIVE ARE THE FEATURE:
 //
-//	settings — the EFFECTIVE value, the one the hot path is using right now;
-//	origins  — `org` or `default`, per key;
-//	bounds   — the server-side range, per key, and the reason for it.
+//	settings    — the EFFECTIVE value, the one the hot path is using right now;
+//	origins     — `default`, `org` or `config`, per key;
+//	config_keys — for a `config` key, WHICH env var or file key set it;
+//	shadowed    — the org override a `config` key is overriding, still stored;
+//	bounds      — the server-side range, per key, and the reason for it.
+//
+// The last two arrived with the declarative layer, and they exist for the same
+// reason as the first three. A badge reading "managed by configuration" with no
+// key beside it tells an operator only that they cannot fix it here; a shadowed
+// override that is hidden rather than shown is a number sitting in Postgres that
+// nobody can see and that will take effect the moment a config key is deleted.
 //
 // Returning the effective value alone is the version of configurability that is
 // worse than none: a screen showing `600` cannot tell an operator whether their
@@ -27,14 +35,88 @@ import (
 
 // OrgSettingsViewDTO is the body of `GET /api/v1/org/settings`.
 type OrgSettingsViewDTO struct {
-	// Settings are the effective values — overrides folded onto oto's defaults
-	// and clamped to their bounds. This is what oto is actually doing.
+	// Settings are the effective values — overrides folded onto oto's defaults,
+	// declarative configuration folded over both, and the result clamped to its
+	// bounds. This is what oto is actually doing.
 	Settings OrgSettingsDTO `json:"settings"`
-	// Origins says, per key, whether the effective value is this org's own
-	// (`org`) or oto's shipped default (`default`).
+	// Origins says, per key, whether the effective value is oto's shipped default
+	// (`default`), this org's own (`org`), or this deployment's configuration
+	// (`config`).
 	Origins map[string]string `json:"origins"`
+	// ConfigKeys names, for every key whose origin is `config`, the environment
+	// variable or file key that set it.
+	//
+	// ⭐ WITHOUT IT THE BADGE IS A WALL. "Managed by configuration" tells an
+	// operator they cannot change the value here and nothing about where they
+	// can, which turns a five-second edit into an archaeology exercise across a
+	// Helm chart, a values file and a Deployment's env block. Keys with any other
+	// origin are ABSENT, not empty — a present key means "this is where to go".
+	ConfigKeys map[string]string `json:"config_keys"`
+	// Shadowed is this org's own overrides that are NOT in force, because
+	// configuration is forcing something else. Only shadowed keys are present.
+	//
+	// ⭐ IT IS THE OTHER HALF OF THE SAME ANSWER. "You have an override of 900s,
+	// but configuration is forcing 600s" is actionable; showing only the 600
+	// leaves a stored 900 invisible, still in the database, and ready to take
+	// effect the moment somebody deletes the config key.
+	Shadowed OrgSettingsPatchDTO `json:"shadowed"`
 	// Bounds is the server-side range of every integer key, with the reason.
 	Bounds map[string]SettingBoundDTO `json:"bounds"`
+}
+
+// OrgSettingsPatchDTO is a PARTIAL settings body: every field is optional and an
+// absent field means "this key is not set".
+//
+// It is the shape of what an org WROTE rather than of what is in force, which is
+// why it cannot reuse OrgSettingsDTO: that type renders a complete, effective
+// tuning, and a complete tuning cannot express "this org set two keys and nothing
+// else".
+type OrgSettingsPatchDTO struct {
+	RefireGraceS        *int `json:"refire_grace_s,omitempty"`
+	ResolveGraceS       *int `json:"resolve_grace_s,omitempty"`
+	GroupCloseDelayS    *int `json:"group_close_delay_s,omitempty"`
+	FlapThreshold       *int `json:"flap_threshold,omitempty"`
+	FlapWindowS         *int `json:"flap_window_s,omitempty"`
+	FlapDigestIntervalS *int `json:"flap_digest_interval_s,omitempty"`
+	StormThreshold      *int `json:"storm_threshold,omitempty"`
+	StormWindowS        *int `json:"storm_window_s,omitempty"`
+	StormCooldownS      *int `json:"storm_cooldown_s,omitempty"`
+	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
+	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
+
+	UnackedReminderAfterS *int    `json:"unacked_reminder_after_s,omitempty"`
+	DefaultVerbosity      *string `json:"default_verbosity,omitempty"`
+	BroadcastOnResolved   *bool   `json:"broadcast_on_resolved,omitempty"`
+
+	UnackedReminderMention            *string   `json:"unacked_reminder_mention,omitempty"`
+	UnackedReminderMentionList        *[]string `json:"unacked_reminder_mention_list,omitempty"`
+	UnackedReminderMentionMinSeverity *string   `json:"unacked_reminder_mention_min_severity,omitempty"`
+}
+
+// toOrgSettingsPatchDTO renders what an org wrote, field for field. It defaults
+// nothing: an absent pointer stays absent, because the whole content of this
+// type is which keys are set.
+func toOrgSettingsPatchDTO(p domain.SettingsPatch) OrgSettingsPatchDTO {
+	return OrgSettingsPatchDTO{
+		RefireGraceS:          p.RefireGraceS,
+		ResolveGraceS:         p.ResolveGraceS,
+		GroupCloseDelayS:      p.GroupCloseDelayS,
+		FlapThreshold:         p.FlapThreshold,
+		FlapWindowS:           p.FlapWindowS,
+		FlapDigestIntervalS:   p.FlapDigestIntervalS,
+		StormThreshold:        p.StormThreshold,
+		StormWindowS:          p.StormWindowS,
+		StormCooldownS:        p.StormCooldownS,
+		RawRetentionDays:      p.RawRetentionDays,
+		EventRetentionMonth:   p.EventRetentionMonth,
+		UnackedReminderAfterS: p.UnackedReminderAfterS,
+		DefaultVerbosity:      p.DefaultVerbosity,
+		BroadcastOnResolved:   p.BroadcastOnResolved,
+
+		UnackedReminderMention:            p.UnackedReminderMention,
+		UnackedReminderMentionList:        p.UnackedReminderMentionList,
+		UnackedReminderMentionMinSeverity: p.UnackedReminderMentionMinSeverity,
+	}
 }
 
 // SettingBoundDTO is one knob's accepted range and the argument for it.
@@ -166,8 +248,12 @@ func (r UpdateOrgSettingsRequest) toDomain() (domain.SettingsPatch, []domain.Set
 // origin for a value it is not showing.
 func toOrgSettingsViewDTO(o domain.Org) OrgSettingsViewDTO {
 	origins := make(map[string]string, len(domain.AllSettingKeys()))
+	configKeys := map[string]string{}
 	for _, k := range domain.AllSettingKeys() {
-		origins[string(k)] = string(o.Overrides.Origin(k))
+		origins[string(k)] = string(o.Origin(k))
+		if ck := o.ConfigKey(k); ck != "" {
+			configKeys[string(k)] = ck
+		}
 	}
 
 	bounds := make(map[string]SettingBoundDTO, len(domain.IntKeys()))
@@ -180,9 +266,11 @@ func toOrgSettingsViewDTO(o domain.Org) OrgSettingsViewDTO {
 	}
 
 	return OrgSettingsViewDTO{
-		Settings: toOrgSettingsDTO(o.Settings),
-		Origins:  origins,
-		Bounds:   bounds,
+		Settings:   toOrgSettingsDTO(o.Settings),
+		Origins:    origins,
+		ConfigKeys: configKeys,
+		Shadowed:   toOrgSettingsPatchDTO(o.Shadowed()),
+		Bounds:     bounds,
 	}
 }
 
@@ -212,6 +300,11 @@ func (rt *Router) getOrgSettings(w http.ResponseWriter, r *http.Request) {
 // MERGED state, so a write cannot slip a value past by relying on a key it did
 // not send, and a `refire_grace_s` of 0 is refused here whatever the UI would
 // have allowed — that value is a Slack thread per transition.
+//
+// ⛔ A KEY THE DEPLOYMENT'S CONFIGURATION MANAGES IS REFUSED WITH 409, and the
+// problem's violations name the config key that owns it. Accepting the write
+// would store a number that is never in force and that reverts, visibly, on the
+// next deploy — the exact mystery the declarative layer exists to end.
 //
 // It takes effect immediately and everywhere: nothing between this write and the
 // notify worker's next evaluation holds a copy of these numbers, so there is no

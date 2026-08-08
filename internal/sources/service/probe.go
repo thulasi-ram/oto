@@ -43,6 +43,15 @@ type ProbeResult struct {
 	SendResolved *bool
 	// MutedReceivers are the receivers with send_resolved disabled (C15).
 	MutedReceivers []string
+	// RouteTimings are the source's own group_wait, group_interval and
+	// repeat_interval. Every field is nil until observed, and nil stays nil: oto
+	// never substitutes Alertmanager's documented defaults (domain.RouteTimings).
+	RouteTimings domain.RouteTimings
+	// RouteTimingsObserved reports whether this probe actually read the running
+	// configuration. It is FALSE for an unreachable source and for one whose
+	// config would not parse, and it is what stops a failed probe from erasing
+	// the last numbers oto did manage to observe.
+	RouteTimingsObserved bool
 	// ClockSkew is oto's clock minus the upstream's Date header.
 	ClockSkew time.Duration
 
@@ -167,6 +176,14 @@ func (s *Service) probeSource(ctx context.Context, scope db.TenantScope, src dom
 			})
 		}
 		res.SendResolved = &anySends
+
+		// The source's own batching timings, straight off the config it just
+		// handed over. They are recorded even when all three are absent: "we read
+		// the configuration and it states none of them" is a genuine observation,
+		// and it is the observation that tells an operator their Alertmanager is
+		// running on built-in defaults oto cannot see.
+		res.RouteTimings = st.AM.RouteTimings
+		res.RouteTimingsObserved = true
 	}
 
 	if st.ClusterName != "" && st.AM.ClusterStatus != "" && st.AM.ClusterStatus != "ready" {
@@ -276,6 +293,19 @@ func ApplyProbe(h domain.SourceHealth, src domain.Source, res ProbeResult) domai
 	h.LastError = ""
 	h.AMVersion = res.AlertmanagerVersion
 	h.SendResolved = res.SendResolved
+
+	// ⚠️ THE TIMINGS ARE REPLACED ONLY BY A PROBE THAT ACTUALLY READ THEM. A probe
+	// that reached the source but could not parse its configuration leaves the
+	// last observed set — and the timestamp beside it — exactly where they were,
+	// so the screen shows an honestly stale reading rather than blanking three
+	// numbers because of one bad parse. When they ARE read, they are replaced
+	// WHOLESALE, absences included: a key removed from `alertmanager.yml` must
+	// become unknown again, not linger as the last value oto happened to see.
+	if res.RouteTimingsObserved {
+		h.RouteTimings = res.RouteTimings
+		at := res.CheckedAt.UTC()
+		h.RouteTimingsAt = &at
+	}
 
 	if res.ClockSkew != 0 {
 		h.ClockSkew = ewma(h.ClockSkew, res.ClockSkew)

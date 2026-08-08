@@ -225,6 +225,20 @@ type SourceHealth struct {
 	// It is the canary for every correctness bug in the system (SPEC §G.8.4).
 	DivergenceCount int
 
+	// RouteTimings are this source's OWN group_wait, group_interval and
+	// repeat_interval, observed from its running configuration rather than typed
+	// in by a human. nil in any field means UNKNOWN and must stay unknown.
+	RouteTimings RouteTimings
+	// RouteTimingsAt is when the three were last read off the source, on oto's
+	// clock. It is nil until the first successful parse.
+	//
+	// ⚠️ IT IS A SEPARATE TIMESTAMP FROM UpdatedAt ON PURPOSE. `updated_at` moves
+	// on every probe, including the ones that could not reach the source or could
+	// not parse its config; this one moves only when the numbers beside it were
+	// actually observed. A screen that showed `updated_at` beside a stale set of
+	// timings would claim they were fresh.
+	RouteTimingsAt *time.Time
+
 	Warnings  []HealthWarning
 	UpdatedAt time.Time
 }

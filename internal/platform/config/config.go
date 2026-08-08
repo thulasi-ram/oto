@@ -41,6 +41,18 @@ type Config struct {
 	Retention RetentionConfig `koanf:"retention"`
 	Slack     SlackConfig     `koanf:"slack"`
 	Security  SecurityConfig  `koanf:"security"`
+
+	// tuning is the DECLARATIVE per-org tuning layer, harvested from `tuning.*`
+	// and OTO_TUNING_* (see tuning.go). It is unexported, and that is load-bearing
+	// twice over: koanf's structs provider and mapstructure both ignore it, so the
+	// provenance recorded on every entry cannot be clobbered by a stray
+	// `OTO_TUNING` of its own; and nothing can read it without going through
+	// TuningEntries, which hands back a copy.
+	//
+	// There is no typed struct here on purpose. The closed key set, the value
+	// types and the bounds live in `identity/domain`, and a second copy in
+	// `platform` would be a second copy that can disagree.
+	tuning []TuningEntry
 }
 
 // HTTPConfig configures the public HTTP surface.
@@ -328,6 +340,15 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config: unmarshal: %w", err)
 	}
 
+	// The declarative tuning layer is harvested separately, because the merged
+	// koanf above cannot say WHICH provider set a key and "managed by
+	// configuration" without a key to go and edit is a wall, not an answer.
+	tuning, err := loadTuning(path)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.tuning = tuning
+
 	if err := Validate(cfg); err != nil {
 		return Config{}, err
 	}
@@ -338,6 +359,11 @@ func Load(path string) (Config, error) {
 // underscore that yields a known section; everything after it is one flat key.
 var sections = []string{
 	"http", "db", "log", "telemetry", "jobs", "ingest", "retention", "slack", "security",
+	// `tuning` carries no field on Config: it is harvested by loadTuning and typed
+	// by identity/domain. It is named here anyway so that OTO_TUNING_REFIRE_GRACE_S
+	// resolves to `tuning.refire_grace_s` in the merged instance too, and a values
+	// file and an env var describe the same path everywhere in the process.
+	TuningSection,
 }
 
 func envKeyToPath(key string) string {

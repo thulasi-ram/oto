@@ -44,7 +44,7 @@ func (s *Service) Me(ctx context.Context, scope db.TenantScope, p authn.Principa
 		return MeView{}, unauthenticated()
 	}
 
-	view := MeView{Principal: p, Org: org}
+	view := MeView{Principal: p, Org: org.WithDeclarative(s.declarative)}
 	if p.UserID == uuid.Nil {
 		return view, nil
 	}
@@ -80,8 +80,18 @@ func (s *Service) Me(ctx context.Context, scope db.TenantScope, p authn.Principa
 // is the one nobody notices: an operator raises `storm_threshold` during an
 // incident, watches nothing change, and has no way to tell whether the setting is
 // wrong or merely stale.
+//
+// ⭐ IT OVERLAYS THE DECLARATIVE LAYER, AND EVERY CALLER GETS THE OVERLAY. That
+// is the whole reason the overlay lives here rather than in the api layer: the
+// notify worker and the settings screen read the same Org through the same
+// method, so a value the screen labels "managed by configuration" is by
+// construction the value the hot path is using.
 func (s *Service) GetOrg(ctx context.Context, scope db.TenantScope) (domain.Org, error) {
-	return s.orgs.Get(ctx, scope)
+	org, err := s.orgs.Get(ctx, scope)
+	if err != nil {
+		return domain.Org{}, err
+	}
+	return org.WithDeclarative(s.declarative), nil
 }
 
 // UpdateOrgSettings applies a partial write to this org's tuning and returns the
@@ -92,6 +102,12 @@ func (s *Service) GetOrg(ctx context.Context, scope db.TenantScope) (domain.Org,
 // value past by relying on a key it did not send — and the result is written only
 // if the whole merged state is legal. A UI that also checks is a nicety; a
 // request from `curl` gets the same answer.
+//
+// ⛔⛔ A KEY THE DEPLOYMENT MANAGES IS REFUSED WITH 409, NAMING THE CONFIG KEY.
+// It is not accepted-and-ignored and it is not accepted-and-overridden-on-read:
+// both of those store a number the operator will see in the database, never see
+// in force, and have no way to explain. The 409 says which line of which values
+// file to edit instead, which is the only useful answer.
 func (s *Service) UpdateOrgSettings(
 	ctx context.Context, scope db.TenantScope, next domain.SettingsPatch, reset []domain.SettingKey,
 ) (domain.Org, error) {
@@ -103,11 +119,68 @@ func (s *Service) UpdateOrgSettings(
 		return domain.Org{}, unauthenticated()
 	}
 
+	if err := s.refuseDeclarative(next, reset); err != nil {
+		return domain.Org{}, err
+	}
+
 	merged := current.Overrides.Clear(reset...).Merge(next)
 	if err := merged.Validate(); err != nil {
 		return domain.Org{}, err
 	}
-	return s.orgs.UpdateSettings(ctx, scope, merged)
+	org, err := s.orgs.UpdateSettings(ctx, scope, merged)
+	if err != nil {
+		return domain.Org{}, err
+	}
+	return org.WithDeclarative(s.declarative), nil
+}
+
+// CodeSettingManagedByConfig is the problem `code` a write to a
+// declaratively-managed key receives. It is stable and distinguishable so a UI
+// can react to it without parsing prose.
+const CodeSettingManagedByConfig = "setting_managed_by_config"
+
+// refuseDeclarative rejects a write — or a reset — that names a key the
+// deployment is managing.
+//
+// A RESET IS REFUSED TOO, and for the same reason a write is. "Return this key to
+// oto's default" cannot happen while configuration is forcing a value, so
+// accepting it would report success for something that did not occur; and unlike
+// a write, a reset also DESTROYS the shadowed override underneath, which is the
+// one thing that would come back if the config key were removed.
+//
+// Every offending key is reported in one response, with its config key. Refusing
+// them one at a time is how a caller with four managed keys learns about them
+// over four round trips.
+func (s *Service) refuseDeclarative(next domain.SettingsPatch, reset []domain.SettingKey) error {
+	if s.declarative.Empty() {
+		return nil
+	}
+
+	named := map[domain.SettingKey]bool{}
+	for _, k := range next.Overridden() {
+		named[k] = true
+	}
+	for _, k := range reset {
+		named[k] = true
+	}
+
+	var v []errs.Violation
+	for _, k := range domain.AllSettingKeys() {
+		if !named[k] || !s.declarative.Manages(k) {
+			continue
+		}
+		v = append(v, errs.Violation{
+			Field: string(k), Code: "managed_by_config",
+			Message: "this value is set by " + s.declarative.ConfigKey(k) +
+				" and the deployment's configuration wins; change it there, or remove that key to hand the setting back to this org",
+		})
+	}
+	if len(v) == 0 {
+		return nil
+	}
+	return errs.Conflict(CodeSettingManagedByConfig,
+		"one or more of these settings are set by this deployment's configuration and cannot be changed over the API").
+		WithViolations(v...)
 }
 
 // GetUser returns one user within the caller's org. v1 has no RBAC: any member

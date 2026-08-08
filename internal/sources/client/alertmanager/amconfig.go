@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/thulasiram/oto/internal/sources/domain"
 )
 
 // MaxConfigBytes caps the `config.original` YAML blob that GET /api/v2/status
@@ -33,6 +35,10 @@ type ParsedConfig struct {
 	SendResolved map[string]bool
 	// Receivers is every receiver name in declaration order.
 	Receivers []string
+	// Timings are the top-level route's group_wait, group_interval and
+	// repeat_interval, as the source itself reports them. See
+	// `sources/domain.RouteTimings` for why every field is a pointer.
+	Timings domain.RouteTimings
 }
 
 // sendResolvedDefaults are Alertmanager's per-integration defaults for
@@ -61,6 +67,7 @@ func parseConfig(original string) (ParsedConfig, error) {
 
 	var doc struct {
 		Global    map[string]any   `yaml:"global"`
+		Route     map[string]any   `yaml:"route"`
 		Receivers []map[string]any `yaml:"receivers"`
 	}
 	if err := yaml.Unmarshal([]byte(original), &doc); err != nil {
@@ -73,6 +80,8 @@ func parseConfig(original string) (ParsedConfig, error) {
 		}
 	}
 
+	out.Timings = routeTimings(doc.Route)
+
 	out.SendResolved = make(map[string]bool, len(doc.Receivers))
 	for _, r := range doc.Receivers {
 		name := asString(r["name"])
@@ -83,6 +92,84 @@ func parseConfig(original string) (ParsedConfig, error) {
 		out.SendResolved[name] = receiverSendsResolved(r)
 	}
 	return out, nil
+}
+
+// timingFields are the three per-route batching settings oto reads, spelled as
+// Alertmanager spells them.
+var timingFields = []string{"group_wait", "group_interval", "repeat_interval"}
+
+// routeTimings reads the top-level route's three timings and counts how many
+// descendants set their own.
+//
+// ⛔ IT READS THE TOP-LEVEL ROUTE, AND THAT IS A DELIBERATE v1 BOUNDARY.
+// Resolving the value that governs a PARTICULAR alert would mean evaluating
+// Alertmanager's matcher tree — regex matchers, `continue: true`, mute time
+// intervals and inheritance — against that alert's labels, which is a second
+// implementation of somebody else's routing engine and would be wrong in a way
+// nobody could see. The top-level route is the value in force for every alert
+// that matches no more specific route, it is exactly what the tuning guide tells
+// an operator to read, and `ChildrenWithTimings` says out loud when it is not the
+// whole picture.
+func routeTimings(route map[string]any) domain.RouteTimings {
+	var out domain.RouteTimings
+	if len(route) == 0 {
+		return out
+	}
+
+	if d, ok := promDurationField(route, "group_wait"); ok {
+		out.GroupWait = &d
+	}
+	if d, ok := promDurationField(route, "group_interval"); ok {
+		out.GroupInterval = &d
+	}
+	if d, ok := promDurationField(route, "repeat_interval"); ok {
+		out.RepeatInterval = &d
+	}
+
+	walkChildRoutes(route, &out)
+	return out
+}
+
+// walkChildRoutes counts the descendants of one route and how many of them state
+// a timing of their own. It recurses to the whole tree, because a timing three
+// levels down still governs whatever matches it.
+func walkChildRoutes(route map[string]any, out *domain.RouteTimings) {
+	kids, ok := route["routes"].([]any)
+	if !ok {
+		return
+	}
+	for _, item := range kids {
+		child, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out.ChildRoutes++
+		for _, f := range timingFields {
+			if _, has := promDurationField(child, f); has {
+				out.ChildrenWithTimings++
+				break
+			}
+		}
+		walkChildRoutes(child, out)
+	}
+}
+
+// promDurationField reads one Prometheus duration off a route.
+//
+// An ABSENT key and an UNPARSEABLE value both report false, which is the same
+// answer — oto does not know — and neither is allowed to become a number. A zero
+// duration, however, is a real setting (`group_wait: 0s` means "notify at once")
+// and is reported as observed, which is why the test is `ok` rather than `d > 0`.
+func promDurationField(route map[string]any, field string) (time.Duration, bool) {
+	raw, present := route[field]
+	if !present {
+		return 0, false
+	}
+	d, err := ParsePromDuration(asString(raw))
+	if err != nil || d < 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 // receiverSendsResolved reports the effective send_resolved for one receiver:

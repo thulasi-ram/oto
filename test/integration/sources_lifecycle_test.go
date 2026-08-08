@@ -327,7 +327,12 @@ type env struct {
 // newEnv brings up a real Postgres, migrates it, and wires the real container
 // and the real route table over it. Nothing here writes SQL of its own — that is
 // the point.
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
+
+// newEnvWith is newEnv with a hook that adjusts the Config before the container
+// is built. It exists for the declarative-tuning test, which is ABOUT the
+// configuration and therefore cannot take the default one.
+func newEnvWith(t *testing.T, tweak func(*config.Config)) *env {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("integration test needs Docker")
@@ -366,6 +371,9 @@ func newEnv(t *testing.T) *env {
 	// 202, and a worker pool would make this test about River rather than about
 	// the accept contract.
 	cfg.Jobs.Enabled = true
+	if tweak != nil {
+		tweak(&cfg)
+	}
 
 	pools, err := db.Open(ctx, cfg.DB)
 	if err != nil {

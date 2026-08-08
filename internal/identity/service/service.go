@@ -49,6 +49,16 @@ type Deps struct {
 	// DefaultSessionTTL: there is no configuration that yields a session which
 	// never expires.
 	SessionTTL time.Duration
+
+	// Declarative is the deployment's own tuning, and it BEATS every org override
+	// (see identity/domain.Declarative). It is process-wide rather than per-tenant
+	// because it describes the deployment, not a customer, and the zero value —
+	// "configuration states nothing" — is every install that has not opted in.
+	//
+	// It is injected already validated. `NewDeclarative` refuses an unusable
+	// configuration at boot, which is the only moment a bad values file is cheap
+	// to find out about.
+	Declarative domain.Declarative
 }
 
 // Service is the identity module's business logic. It MINTS the authn.Principal
@@ -64,6 +74,11 @@ type Service struct {
 	clk        clock.Clock
 	log        *slog.Logger
 	sessionTTL time.Duration
+	// declarative is overlaid onto EVERY org read this service performs. Doing it
+	// here, once, is what makes the hot path and the settings screen agree: there
+	// is no second place an Org is assembled, so there is no path by which a
+	// caller can obtain an Org whose Settings ignore the deployment.
+	declarative domain.Declarative
 }
 
 // Compile-time proof that the service satisfies the port the auth middleware
@@ -91,15 +106,16 @@ func New(d Deps) *Service {
 	}
 
 	return &Service{
-		orgs:       d.Orgs,
-		users:      d.Users,
-		tokens:     d.Tokens,
-		sessions:   d.Sessions,
-		slack:      d.Slack,
-		hasher:     hasher,
-		clk:        clk,
-		log:        logger,
-		sessionTTL: ttl,
+		orgs:        d.Orgs,
+		users:       d.Users,
+		tokens:      d.Tokens,
+		sessions:    d.Sessions,
+		slack:       d.Slack,
+		hasher:      hasher,
+		clk:         clk,
+		log:         logger,
+		sessionTTL:  ttl,
+		declarative: d.Declarative,
 	}
 }
 
