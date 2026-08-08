@@ -14,6 +14,8 @@ import (
 
 	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
+	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
+	channelsservice "github.com/thulasiram/oto/internal/channels/service"
 	enrichdomain "github.com/thulasiram/oto/internal/enrichment/domain"
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
@@ -1096,4 +1098,141 @@ func groupingKey(o alertsdomain.Observation) string {
 		b.WriteString(o.GroupLabels[name])
 	}
 	return b.String()
+}
+
+// ------------------------------------------------- slack interactions (§H.8)
+
+// THE THREE ADAPTERS AN ACKNOWLEDGE BUTTON NEEDS.
+//
+// `channels` is the LAST module in the dependency direction (SPEC §I.1), and an
+// inbound button press is the one thing that runs the other way: it has to reach
+// back into `grouping` to write the receipt and into `identity` to name the
+// human. Rather than widen the channels module's imports — which would put an
+// arrow from the end of the chain to its middle in every future reader's head —
+// the ports are declared in primitives and adapted HERE, which is the one place
+// allowed to know both sides.
+
+// slackConversations adapts the channels repository onto the port
+// `channels/service` declares for tenant resolution.
+//
+// The two SlackDestination types are structurally identical and deliberately
+// separate: the repository's is a row-shaped fact and the service's is a port
+// vocabulary, and collapsing them would make the service import the repository.
+type slackConversations struct {
+	channels *channelsrepo.ChannelRepository
+}
+
+func (c slackConversations) ResolveSlackConversation(
+	ctx context.Context, teamID, conversationID string,
+) (channelsservice.SlackDestination, error) {
+	if c.channels == nil {
+		return channelsservice.SlackDestination{}, errs.Unavailable("channels_unavailable",
+			"the channel store is not wired in this deployment", 0)
+	}
+	d, err := c.channels.ResolveSlackConversation(ctx, teamID, conversationID)
+	if err != nil {
+		return channelsservice.SlackDestination{}, err
+	}
+	return channelsservice.SlackDestination{OrgID: d.OrgID, ChannelID: d.ChannelID}, nil
+}
+
+// slackActors adapts `identity/service` onto the actor port.
+//
+// ⭐ IT RECORDS THE SIGHTING AS WELL AS READING IT. `RecordSlackIdentity` upserts
+// on `slack_identities_uniq (org_id, team_id, slack_user_id)` and refreshes the
+// denormalised handle — which is exactly what that table's own comment says it is
+// for: "a repeat sighting of the same Slack member is not a conflict, it is the
+// same person pressing a button again". The row is what a settings screen later
+// offers to LINK, so an install where nobody has linked anything still
+// accumulates the identities that make linking a one-click job.
+//
+// ⛔ IT IS ORG-SCOPED, and never the unscoped ResolveBySlackUser. One workspace
+// may be connected to two oto tenants; resolving across them would attribute a
+// press in one tenant's channel to the other tenant's user. The scope comes from
+// the CHANNEL, which the operator configured, so the answer is always "who is
+// this Slack member inside the org that owns this conversation".
+type slackActors struct {
+	identity *identityservice.Service
+}
+
+func (a slackActors) SlackActor(
+	ctx context.Context, s db.TenantScope, teamID, slackUserID, handle string,
+) (channelsservice.SlackActor, error) {
+	if a.identity == nil {
+		return channelsservice.SlackActor{}, nil
+	}
+
+	si, err := a.identity.RecordSlackIdentity(ctx, s, teamID, slackUserID, handle)
+	if err != nil {
+		return channelsservice.SlackActor{}, err
+	}
+	if !si.Linked() {
+		// The normal state for anybody who has not linked their account, and a
+		// SUCCESS: the caller records the ack against the Slack member.
+		return channelsservice.SlackActor{}, nil
+	}
+
+	user, err := a.identity.GetUser(ctx, s, si.UserID)
+	if err != nil {
+		// Linked to a user this org can no longer read — disabled, or removed. The
+		// link is stale, not the press: fall back to the Slack handle rather than
+		// losing the acknowledgement.
+		if errs.IsKind(err, errs.KindNotFound) {
+			return channelsservice.SlackActor{}, nil
+		}
+		return channelsservice.SlackActor{}, err
+	}
+	// The email, because that is what every other human actor's label is on this
+	// timeline — the UI ack path labels by principal email — and two spellings of
+	// the same person would read as two people.
+	return channelsservice.SlackActor{UserID: user.ID, Label: user.Email.String()}, nil
+}
+
+// slackGroupActions adapts `grouping/service` onto the narrow verb port.
+//
+// ⛔ ONE VERB. The port could name `Snooze` and `Comment` too — the service has
+// them — and it deliberately does not: what a chat button may do is a product
+// decision, and the narrowest possible port is where that decision is legible.
+type slackGroupActions struct {
+	grouping *groupingservice.Service
+}
+
+func (g slackGroupActions) GroupExists(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+) (bool, error) {
+	if g.grouping == nil {
+		return false, errs.Unavailable("grouping_unavailable",
+			"the grouping service is not wired in this deployment", 0)
+	}
+	// StateVersion is the cheapest scoped read that proves existence: one indexed
+	// column, one row, and it answers NotFound for a group in another tenant —
+	// which is the answer that matters.
+	if _, err := g.grouping.StateVersion(ctx, s, groupID); err != nil {
+		if errs.IsKind(err, errs.KindNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (g slackGroupActions) AcknowledgeGroup(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+	actorKind, actorID, actorLabel string,
+) (channelsservice.GroupAckResult, error) {
+	if g.grouping == nil {
+		return channelsservice.GroupAckResult{}, errs.Unavailable("grouping_unavailable",
+			"the grouping service is not wired in this deployment", 0)
+	}
+	// No note. A Slack button carries no text field, and inventing one — "acked
+	// from Slack" — would put oto's words on a human's timeline entry.
+	res, err := g.grouping.Acknowledge(ctx, s, groupID, actorKind, actorID, actorLabel, "")
+	if err != nil {
+		return channelsservice.GroupAckResult{}, err
+	}
+	return channelsservice.GroupAckResult{
+		Members:      res.Members,
+		Applied:      res.Applied,
+		SkippedCodes: res.SkippedCodes,
+	}, nil
 }

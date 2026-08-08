@@ -21,13 +21,21 @@ import "time"
 //
 // Unknown fields are simply dropped from this struct; the RAW body is what is
 // persisted, so nothing is actually lost by not modelling them.
+//
+// ⛔ `externalURL` IS NOT MODELLED, and its absence is a decision. It is the
+// Alertmanager UI root, it arrives free on every notification, and it was
+// decoded here and read by nothing — but the trustworthy spelling of that same
+// fact is `alert_sources.base_url`, which an operator configured, which the SSRF
+// guard vetted, and which is already what builds the Silence link on a Slack
+// card. Deep-linking a human from oto's UI to a URL supplied by the body of an
+// inbound webhook is a redirect an upstream gets to choose. It stays in the
+// persisted raw payload, where it is evidence rather than a link.
 type Envelope struct {
 	Version           string            `json:"version"`
 	GroupKey          string            `json:"groupKey"`
 	TruncatedAlerts   int               `json:"truncatedAlerts"`
 	Status            string            `json:"status"`
 	Receiver          string            `json:"receiver"`
-	ExternalURL       string            `json:"externalURL"`
 	GroupLabels       map[string]string `json:"groupLabels"`
 	CommonLabels      map[string]string `json:"commonLabels"`
 	CommonAnnotations map[string]string `json:"commonAnnotations"`

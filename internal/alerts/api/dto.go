@@ -161,9 +161,14 @@ type AlertRefDTO struct {
 // The two timestamps are never conflated. `occurred_at` is the upstream claim and
 // is what the UI displays; `recorded_at` is oto's own clock and is what the
 // timeline is ordered by (SPEC C12).
+//
+// ⛔ THERE IS NO `seq`. It was declared as the `ui_events.seq` a polling client
+// echoes back in `?since_seq=`, and it was set by nothing — while no operation
+// returning this DTO accepts `since_seq` either. A client following the
+// documented resume protocol read `null` forever and could never advance its
+// cursor. Timelines page by `cursor`, which is served.
 type AlertEventDTO struct {
 	ID           uuid.UUID      `json:"id"`
-	Seq          *int64         `json:"seq"`
 	AlertID      *uuid.UUID     `json:"alert_id"`
 	OccurrenceID *uuid.UUID     `json:"occurrence_id"`
 	GroupID      *uuid.UUID     `json:"group_id"`

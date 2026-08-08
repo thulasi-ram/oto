@@ -93,6 +93,15 @@ func (c *Container) handlers() jobs.Handlers {
 		// metrics are keyed on.
 		SourceReconcile: sourcesworker.SourceReconcile(c.Reconciler, c.Sources, c.Logger),
 
+		// ⭐ slack.interaction (§H.8) — the Acknowledge button, off the request.
+		//
+		// Slack gives an endpoint three seconds before it tells the user "This app
+		// is not responding". Resolving the tenant, checking the group and acking
+		// every open member is several round trips, so the HTTP handler answers
+		// 200 and enqueues, and this is where the work lands. It carries the
+		// highest priority oto has, because a human is watching the card.
+		SlackInteraction: c.applySlackInteraction,
+
 		// silences.sync — the read-only mirror (R3). It carries the comment, the
 		// creator and the expiry that let oto say WHY something is quiet, which is
 		// the half of suppression the reconciler cannot see.
@@ -110,6 +119,22 @@ func (c *Container) handlers() jobs.Handlers {
 		c.NotifyWorkers.Register(&h)
 	}
 	return h
+}
+
+// applySlackInteraction is `slack.interaction` (§H.8).
+//
+// ⛔ IT IS THE ONE HANDLER HERE WITH NO ORG FAN-OUT AND NO TenantScope ARGUMENT,
+// because the tenant is what the job resolves FIRST: an interaction payload
+// names a Slack workspace and a conversation, never an org, so the scope is an
+// OUTPUT of the work rather than an input to it. Everything after that
+// resolution is scoped exactly like every other write in oto.
+func (c *Container) applySlackInteraction(ctx context.Context, job *jobs.Job[jobs.SlackInteractionArgs]) error {
+	if c.SlackInteractions == nil {
+		// A deployment with the endpoint mounted and no consumer is the defect
+		// this job exists to fix. Fail loudly rather than dropping the press.
+		return jobs.ErrNotImplemented(jobs.KindSlackInteraction)
+	}
+	return c.SlackInteractions.Apply(ctx, job.Args)
 }
 
 // sweepLimit bounds one tick's work per tenant. A sweep that is not bounded is a

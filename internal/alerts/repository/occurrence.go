@@ -96,6 +96,20 @@ func (r *occurrenceRow) toDomain() (domain.Occurrence, error) {
 			return domain.Occurrence{}, errs.Internal("occurrence_resolve_reason_invalid", err)
 		}
 	}
+	// `suppressed_by` was SELECTed and scanned here for its whole life and then
+	// never unmarshalled, so the one column that answers "which silence is muting
+	// this?" reached no read path at all.
+	//
+	// A malformed value is NOT fatal. The column is Alertmanager's raw attribution
+	// and the occurrence is legible without it; refusing to rehydrate an alert
+	// because a foreign system wrote an unexpected shape into an advisory column
+	// would take the whole signal off the screen to protect a deep link.
+	var suppressedBy domain.SuppressedBy
+	if len(r.suppressedBy) > 0 {
+		if err := suppressedBy.UnmarshalJSON(r.suppressedBy); err != nil {
+			suppressedBy = domain.SuppressedBy{}
+		}
+	}
 
 	o, err := domain.NewOccurrence(domain.OccurrenceParams{
 		ID:                r.id,
@@ -105,6 +119,7 @@ func (r *occurrenceRow) toDomain() (domain.Occurrence, error) {
 		Seq:               int(r.seq),
 		State:             state,
 		SuppressionReason: sup,
+		SuppressedBy:      suppressedBy,
 		StartedAt:         r.startedAt,
 		EndedAt:           timeOrZero(r.endedAt),
 		LastObservedAt:    r.lastObservedAt,

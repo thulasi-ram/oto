@@ -833,8 +833,15 @@ type AckCommand struct {
 	At    ObservationTime
 	// EventID is the uuidv7 for the appended event.
 	EventID uuid.UUID
-	// Note is the free-text note left with an acknowledgement, at most
-	// MaxAckNoteBytes.
+	// Note is the free-text note left with an acknowledgement OR with a manual
+	// un-acknowledgement, at most MaxAckNoteBytes.
+	//
+	// The two land in different places, and that is not an accident. An ack note
+	// is a property of the acknowledgement, so it is stored on the occurrence
+	// (`ack_note`) and cleared when the ack is dropped. An unack note describes a
+	// withdrawal that leaves nothing behind to hang it on, so it lands in the
+	// `occurrence.unacknowledged` event payload — the timeline, which is the only
+	// record that keeps a fact after the state it described is gone.
 	Note string
 	// Reason explains an un-acknowledgement: "manual" or "new_occurrence".
 	Reason  string
@@ -931,6 +938,10 @@ func (o Occurrence) Unacknowledge(cmd AckCommand) (Occurrence, []Event, error) {
 		return Occurrence{}, nil, errs.Newf(errs.KindValidation, "enum",
 			"unack reason must be one of: manual, new_occurrence (got %q)", reason)
 	}
+	if len(cmd.Note) > MaxAckNoteBytes {
+		return Occurrence{}, nil, errs.Newf(errs.KindValidation, "max_length",
+			"unack note must have at most %d characters", MaxAckNoteBytes)
+	}
 
 	next := o
 	next.ackState = AckStateUnacked
@@ -943,6 +954,14 @@ func (o Occurrence) Unacknowledge(cmd AckCommand) (Occurrence, []Event, error) {
 	}
 
 	payload := map[string]any{"reason": reason}
+	// ⭐ The withdrawal note goes ON THE TIMELINE, because the occurrence has
+	// nowhere left to keep it: `ack_note` describes the acknowledgement that is
+	// being removed and is cleared four lines above. "Un-acking, it's back" is
+	// the most useful sentence anybody types at 3am, and it used to be bound,
+	// length-validated by the handler and then dropped on the floor.
+	if cmd.Note != "" {
+		payload["note"] = cmd.Note
+	}
 	for k, v := range cmd.Payload {
 		payload[k] = v
 	}

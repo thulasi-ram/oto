@@ -76,8 +76,18 @@ func scanSlackIdentity(dst *slackIdentityRow, scan func(...any) error) error {
 // It deliberately does NOT touch user_id or linked_at. Linking is a separate,
 // explicit transition (see Link) because slack_identities_link_ck makes the pair
 // all-or-nothing, and an upsert that could half-write it would be a 23514.
+//
+// ⛔ `AS si` IS LOAD-BEARING AND IT WAS MISSING. `slackIdentityColumns` is
+// `si.`-qualified because every SELECT in this file joins under that alias — and
+// a RETURNING clause can only name columns of the table the statement touched,
+// which an unaliased INSERT calls `slack_identities`. Without the alias this
+// statement raised `42P01: missing FROM-clause entry for table "si"` on EVERY
+// call, so `Upsert` had never once succeeded. Nothing noticed, because until the
+// Slack Acknowledge button was wired to a consumer this method had no callers at
+// all: the table existed, the repository existed, and the only code path that
+// would have exercised it was the one that did nothing.
 const upsertSlackIdentitySQL = `
-INSERT INTO slack_identities (id, org_id, team_id, slack_user_id, slack_handle, created_at)
+INSERT INTO slack_identities AS si (id, org_id, team_id, slack_user_id, slack_handle, created_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT ON CONSTRAINT slack_identities_uniq
 DO UPDATE SET slack_handle = EXCLUDED.slack_handle
@@ -191,10 +201,14 @@ func (r *SlackIdentityRepository) ResolveBySlackUser(
 
 // linkSlackIdentitySQL writes both halves of slack_identities_link_ck in one
 // statement. There is no path that writes one without the other.
+//
+// `AS si` for the same reason `upsertSlackIdentitySQL` needs it: the shared
+// column list is alias-qualified, and an unaliased UPDATE has no `si` to name.
+// This statement carried the identical defect and had never succeeded either.
 const linkSlackIdentitySQL = `
-UPDATE slack_identities
+UPDATE slack_identities AS si
    SET user_id = $3, linked_at = $4
- WHERE org_id = $1 AND id = $2
+ WHERE si.org_id = $1 AND si.id = $2
 RETURNING ` + slackIdentityColumns
 
 // Link binds an identity to an oto user within the caller's org.

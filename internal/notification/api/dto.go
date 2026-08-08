@@ -145,9 +145,15 @@ type DeliveryDTO struct {
 	Attempts      int32      `json:"attempts"`
 	NextAttemptAt *time.Time `json:"next_attempt_at"`
 
+	// The provider's own handles for the message oto posted. Together they are
+	// what an in-place update addresses.
+	//
+	// ⛔ THERE IS NO `Permalink`. One was declared here and written by nothing:
+	// oto stores no permalink column, `chat.postMessage` does not return one, and
+	// building a Slack archive URL needs a workspace domain oto never asks for. A
+	// `format: uri` field that is always null is a deep link that never links.
 	ProviderMessageID      *string `json:"provider_message_id"`
 	ProviderConversationID *string `json:"provider_conversation_id"`
-	Permalink              *string `json:"permalink"`
 
 	Error      *string `json:"error"`
 	ErrorClass *string `json:"error_class"`

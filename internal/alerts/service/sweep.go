@@ -385,7 +385,8 @@ func (s *Service) ExpireSnoozes(
 			if err != nil {
 				return err
 			}
-			_, evs, err := s.endSnooze(ctx, scope, snz, actor, domain.SnoozeEndedExpired, at)
+			// An expiry is the reaper's, and the reaper has nothing to say.
+			_, evs, err := s.endSnooze(ctx, scope, snz, actor, domain.SnoozeEndedExpired, at, "")
 			if err != nil {
 				return err
 			}

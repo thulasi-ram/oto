@@ -209,10 +209,21 @@ generate-check:
 lint-vocabulary:
     go run ./tools/lintvocab
 
+# A struct field with no production writer or no production reader, a json tag
+# that does not round-trip with openapi.yaml, and an exported New* with no
+# caller outside its own file are all the same defect: code that compiles, lints
+# and is wired to nothing. Known debt lives in tools/lintreach/baseline.txt and
+# can only shrink; `//oto:reachable-ok <reason>` is the escape hatch and an
+# unused one is an error.
+# The unreachable-feature gate: declarations wired to nothing.
+[group('check')]
+lint-reachability:
+    go run ./tools/lintreach
+
 # Everything CI runs, in the order CI runs it. Keep this list and
 # .github/workflows/ci.yml in step -- a contributor's green must be CI's green.
 [group('check')]
-ci: lint lint-vocabulary generate-check test ui-build ui-test
+ci: lint lint-vocabulary lint-reachability generate-check test ui-build ui-test
 
 # Install the toolchain this repo expects.
 [group('check')]

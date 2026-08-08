@@ -37,7 +37,7 @@ type GroupService interface {
 	// NOT snoozed — a snooze is never predictive, and a group-level mute would
 	// silence alerts nobody has ever seen (§B.8.3).
 	Snooze(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string) (service.FanOutResult, error)
-	Unsnooze(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel string) (service.FanOutResult, error)
+	Unsnooze(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, note string) (service.FanOutResult, error)
 }
 
 // AlertReader is the cross-domain port that turns a member id into an Alert.

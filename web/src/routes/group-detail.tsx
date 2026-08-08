@@ -6,11 +6,17 @@
  * Reusing it means the two screens can never drift in how they present a clock
  * skew or an unknown event type.
  *
- * The chat threads are the interesting extra. oto's database is the memory of
- * the conversation — **oto never reads the chat provider back** — so a thread
- * marked `dead` here means oto has already stopped trying and posted a fresh
- * root elsewhere, and saying that plainly is the difference between a confusing
- * silence and an explained one.
+ * "Who was told" is the interesting extra. A group generation is the thing oto
+ * actually notifies about — the intents are keyed on it — so whether its fan-out
+ * landed is a fact about THIS screen and nowhere else.
+ *
+ * This panel used to be "Where this is being narrated", listing chat threads
+ * from `GroupDetailDTO.threads`. That field was in the contract, was rendered
+ * here, and was emitted by no server code at all: there was no ChannelThreadDTO
+ * in oto's Go tree, so the panel was permanently in its empty state and a group
+ * being actively discussed in Slack looked identical to one nobody had been told
+ * about. `delivery_summary` answers the question the panel was reaching for,
+ * from data the group module can actually see.
  */
 import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { A, useParams } from "@solidjs/router";
@@ -25,7 +31,7 @@ import {
   unsnoozeAlertGroup,
 } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { AlertEvent, ChannelThread, SnoozeRequest, TimelineQuery } from "~/api/types";
+import type { AlertEvent, DeliverySummary, SnoozeRequest, TimelineQuery } from "~/api/types";
 import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 import { RelativeTime } from "~/components/Time";
 import { AckChip, SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
@@ -35,18 +41,6 @@ import { EmptyState, ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/co
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
-
-const THREAD_DEAD_REASON: Record<string, string> = {
-  channel_not_found: "the channel no longer exists",
-  is_archived: "the channel was archived",
-  message_not_found: "the root message was deleted",
-  not_in_channel: "oto was removed from the channel",
-  token_revoked: "the token was revoked",
-  account_inactive: "the account was deactivated",
-  edit_window_closed: "the provider's edit window closed",
-  cannot_reply_to_message: "the provider refused a reply",
-  restricted_action_thread_locked: "the thread was locked",
-};
 
 export default function GroupDetailRoute() {
   const params = useParams<{ id: string }>();
@@ -307,24 +301,12 @@ export default function GroupDetailRoute() {
                   </Switch>
                 </Panel>
 
-                {/* Threads */}
+                {/* Who was told */}
                 <Panel>
                   <PanelHeader>
-                    <PanelTitle>Where this is being narrated</PanelTitle>
+                    <PanelTitle>Who was told</PanelTitle>
                   </PanelHeader>
-                  <Show
-                    when={(g().threads ?? []).length > 0}
-                    fallback={
-                      <EmptyState
-                        title="No chat thread for this generation."
-                        body="Either no policy routed it anywhere, or the first message has not been posted yet."
-                      />
-                    }
-                  >
-                    <ul>
-                      <For each={g().threads ?? []}>{(t) => <ThreadRow thread={t} />}</For>
-                    </ul>
-                  </Show>
+                  <DeliveryRollup summary={g().delivery_summary} />
                 </Panel>
 
                 {/* Group labels */}
@@ -363,36 +345,46 @@ export default function GroupDetailRoute() {
   );
 }
 
-const ThreadRow = (props: { readonly thread: ChannelThread }) => {
-  const t = (): ChannelThread => props.thread;
+/**
+ * The generation's fan-out, in one line.
+ *
+ * An all-zero roll-up is an ANSWER — "nobody was told" — and is stated as a
+ * sentence rather than five zeros, because a row of zeros reads as "no data
+ * yet" and this screen's whole job is to distinguish the two.
+ */
+const DeliveryRollup = (props: { readonly summary: DeliverySummary }) => {
+  const s = (): DeliverySummary => props.summary;
   return (
-    <li class="border-b border-line px-3 py-2 last:border-b-0">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[12px] font-medium text-ink">{t().channel_name ?? "channel"}</span>
-        <Chip>{t().channel_type ?? "unknown"}</Chip>
-        <Chip>{t().state}</Chip>
-        <span class="text-[11px] text-ink-subtle">{t().reply_count} replies</span>
-        <Show when={t().permalink}>
-          {(link) => (
-            <a
-              href={link()}
-              target="_blank"
-              rel="noreferrer noopener"
-              class="ml-auto text-[11px] text-accent hover:underline"
-            >
-              Open ↗
-            </a>
+    <div class="px-3 py-2">
+      <div class="flex flex-wrap items-center gap-1.5">
+        <Chip>{s().sent} sent</Chip>
+        <Chip>{s().pending} pending</Chip>
+        <Chip>{s().skipped} skipped</Chip>
+        <Chip>{s().failed} failed</Chip>
+        <Chip>{s().dead} gave up</Chip>
+        <Show when={s().last_sent_at}>
+          {(at) => (
+            <span class="ml-auto text-[11px] text-ink-subtle">
+              last sent <RelativeTime value={at()} label="Last sent" /> ago
+            </span>
           )}
         </Show>
       </div>
-      <Show when={t().dead_reason}>
-        {(reason) => (
-          <p class="mt-1 border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink">
-            This thread is dead — {THREAD_DEAD_REASON[reason()] ?? reason()}. oto posted a fresh root
-            message elsewhere rather than wedging the queue; every other channel kept flowing.
-          </p>
-        )}
+
+      <Show when={s().dead > 0}>
+        <p class="mt-2 rounded-[4px] border border-line-strong border-l-[3px] border-l-ink bg-sunken px-2 py-1.5 text-[12px] font-medium leading-snug text-ink">
+          {s().dead} {s().dead === 1 ? "delivery" : "deliveries"} gave up permanently. Nobody was
+          told through {s().dead === 1 ? "that channel" : "those channels"}.
+          {s().last_error_class ? ` Last error class: ${s().last_error_class}.` : ""}
+        </p>
       </Show>
-    </li>
+
+      <Show when={s().total === 0}>
+        <p class="mt-2 text-[12px] leading-snug text-ink-muted">
+          No notification was even attempted for this generation. That usually means no policy
+          matched it — which is worth knowing, because it is indistinguishable from silence.
+        </p>
+      </Show>
+    </div>
   );
 };

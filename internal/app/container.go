@@ -14,6 +14,7 @@ import (
 	alertsrepo "github.com/thulasiram/oto/internal/alerts/repository"
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
 	channelsapi "github.com/thulasiram/oto/internal/channels/api"
+	slackprovider "github.com/thulasiram/oto/internal/channels/providers/slack"
 	channelsregistry "github.com/thulasiram/oto/internal/channels/registry"
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
 	channelsservice "github.com/thulasiram/oto/internal/channels/service"
@@ -153,6 +154,11 @@ type Container struct {
 	StreamBridge    *streamingservice.Bridge
 	ChannelRegistry *channelsregistry.Registry
 	ChannelTester   *channelsservice.Tester
+	// SlackInteractions consumes verified Slack block actions (§H.8). It is
+	// reachable from TWO places on purpose — the HTTP endpoint enqueues through
+	// it, the `slack.interaction` worker applies through it — which is what keeps
+	// the three-second rule and the work on opposite sides of one type.
+	SlackInteractions *channelsservice.InteractionService
 
 	Notify          *notifservice.NotificationService
 	Dispatch        *notifservice.DispatchService
@@ -570,6 +576,29 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		return nil, err
 	}
 
+	// ---- inbound Slack: the Acknowledge button (§H.8) --------------------
+	//
+	// ⭐ IT IS BUILT BEFORE THE QUEUE because the queue registers its handler, and
+	// AFTER grouping and identity because it calls both. Nothing about it is
+	// optional in a deployment that renders the button: a card carrying an
+	// Acknowledge nobody consumes is worse than a card with no button at all.
+	c.SlackInteractions, err = channelsservice.NewInteractionService(channelsservice.InteractionOptions{
+		Conversations: slackConversations{channels: channelRepo},
+		Actors:        slackActors{identity: c.Identity},
+		Groups:        slackGroupActions{grouping: c.Grouping},
+		Enqueuer:      c.enqueuer,
+		// The ephemeral reply goes to Slack's own `response_url`, which needs no
+		// token and no scope — which is why oto can tell a user "that already
+		// resolved" without asking the operator for anything the manifest does
+		// not already request.
+		Notice: slackprovider.NewNotice(o.HTTPClient),
+		Clock:  clk,
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	// ---- the queue, last, because it needs every handler -----------------
 	if err := c.buildJobs(ctx, general, reg, clk, logger); err != nil {
 		return nil, err
@@ -802,10 +831,17 @@ func (c *Container) buildRouters(
 			Channels: channelRepo,
 			Creds:    credentialRepo,
 			Tester:   c.ChannelTester,
-			// ⛔ Interactions is NIL: no package consumes a verified Slack
-			// block-action payload yet. The endpoint verifies its HMAC and then
-			// answers 503 rather than acknowledging work nobody will do.
-			Interactions:  nil,
+			// ⭐ THE ACKNOWLEDGE BUTTON, WIRED. It was `nil` here for the whole of
+			// the product's life, and the comment that stood in its place claimed
+			// the endpoint "answers 503"; it did not — it verified the HMAC and
+			// answered 200 with an empty body, so every press showed the user a
+			// tick and did nothing at all. The only action oto asks of a human was
+			// a no-op that looked like it worked, which is worse than no button:
+			// it teaches people that acknowledging is pointless.
+			//
+			// The consumer enqueues and returns. Everything an acknowledgement
+			// actually costs happens on `slack.interaction`, off the request.
+			Interactions:  c.SlackInteractions,
 			SigningSecret: c.Config.Slack.SigningSecret,
 			Clock:         clk,
 		}),

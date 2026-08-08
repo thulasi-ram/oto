@@ -194,15 +194,20 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 	}
 }
 
-// TestTheTopTwoMigrationsAreReversible. Expand/contract (CONTEXT.md §6) is only a
-// property if the contract half actually runs: a migration nobody has rolled back
-// is a migration nobody can deploy on a Friday.
+// TestTheTopThreeMigrationsAreReversible. Expand/contract (CONTEXT.md §6) is only
+// a property if the contract half actually runs: a migration nobody has rolled
+// back is a migration nobody can deploy on a Friday.
 //
-// It rolls back BOTH of the top two — 00029's delivery-roll-up index and 00028's
-// timing columns — because `migrate.Down` reverts exactly one, and a test that
-// pinned the count would have silently stopped testing 00028 the day 00029
+// It rolls back all three of the top migrations — 00030's dropped
+// `rate_limit_buckets`, 00029's delivery-roll-up index and 00028's timing
+// columns — because `migrate.Down` reverts exactly one, and a test that pinned
+// the count would have silently stopped testing the older ones the day a new one
 // landed.
-func TestTheTopTwoMigrationsAreReversible(t *testing.T) {
+//
+// ⭐ 00030 is a DROP, so its Down is a CREATE, and that is the direction most
+// likely to be written carelessly and never run. Rolling it back here is what
+// proves an operator can undeploy the migration that removed a table.
+func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 	env := newEnv(t)
 	dsn := env.cfg.DB.URL
 
@@ -210,9 +215,32 @@ func TestTheTopTwoMigrationsAreReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 29 {
-		t.Fatalf("latest migration is %d, want 29 — this test pins the number so that a "+
+	if latest != 30 {
+		t.Fatalf("latest migration is %d, want 30 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here", latest)
+	}
+
+	// The table 00030 dropped is gone at the top of the stack.
+	buckets := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_tables WHERE tablename = 'rate_limit_buckets'`).Scan(&n); err != nil {
+			t.Fatalf("introspect rate_limit_buckets: %v", err)
+		}
+		return n
+	}
+	if buckets() != 0 {
+		t.Fatal("rate_limit_buckets is still present at migration 30; 00030 is supposed to drop it")
+	}
+
+	// 00030 down: the table comes back, empty, exactly as 00014 left it.
+	if err := migrate.Down(env.ctx, dsn); err != nil {
+		t.Fatalf("goose down 00030: %v", err)
+	}
+	if buckets() != 1 {
+		t.Fatal("rate_limit_buckets did not come back on the way down; the Down of a DROP " +
+			"is a CREATE, and an unrunnable one makes the migration undeployable")
 	}
 
 	// 00029 down: the partial index behind the occurrence delivery roll-up goes.
@@ -251,6 +279,9 @@ func TestTheTopTwoMigrationsAreReversible(t *testing.T) {
 	}
 	if indexes != 1 {
 		t.Fatal("notif_occurrence_idx did not come back on the way up")
+	}
+	if buckets() != 0 {
+		t.Fatal("rate_limit_buckets survived the way back up")
 	}
 }
 

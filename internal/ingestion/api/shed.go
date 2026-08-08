@@ -44,10 +44,11 @@ type ShedConfig struct {
 	// than the pool can serve converts a bounded queue in oto into an unbounded
 	// one in pgx, where it is invisible and where the wait is not measured.
 	MaxInFlight int
-	// Wait is how long a request may wait for a slot before it is shed. It mirrors
-	// `db.ingest_acquire_timeout` (500 ms, §G.10): oto would rather answer 503 in
-	// half a second and let Alertmanager retry inside its ~5-minute budget than
-	// hold a connection open for five.
+	// Wait is how long a request may wait for a slot before it is shed. It IS
+	// `ingest.acquire_timeout` (500 ms by default, §G.10) — pgxpool has no
+	// acquisition timeout of its own, so this gate is where that budget is
+	// enforced: oto would rather answer 503 in half a second and let Alertmanager
+	// retry inside its ~5-minute budget than hold a connection open for five.
 	Wait time.Duration
 	// MaxQueueDepth is the `ingest` backlog above which new batches are shed.
 	// Zero disables depth-based shedding.

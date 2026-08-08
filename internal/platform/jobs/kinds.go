@@ -40,10 +40,13 @@ func AllQueues() []string {
 // written into `river_job.kind` and are matched by workers on the other side of a
 // deploy. Renaming one strands every queued job of that kind.
 const (
-	KindIngestProcessBatch    = "ingest.process_batch"
-	KindEnrichRun             = "enrich.run"
-	KindNotifyEvaluate        = "notify.evaluate"
-	KindDeliverDispatch       = "deliver.dispatch"
+	KindIngestProcessBatch = "ingest.process_batch"
+	KindEnrichRun          = "enrich.run"
+	KindNotifyEvaluate     = "notify.evaluate"
+	KindDeliverDispatch    = "deliver.dispatch"
+	// KindSlackInteraction is one verified Slack block action, taken off the HTTP
+	// request so the endpoint can answer inside Slack's three-second window.
+	KindSlackInteraction      = "slack.interaction"
 	KindSourceReconcile       = "source.reconcile"
 	KindSilencesSync          = "silences.sync"
 	KindOccurrenceReap        = "occurrence.reap"

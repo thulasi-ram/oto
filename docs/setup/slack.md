@@ -2,9 +2,13 @@
 
 oto uses a **Slack app you create in your own workspace**. There is no OAuth flow,
 no "Add to Slack" button, no Slack Marketplace listing and no oto-operated service
-in the middle. You create an app, install it, and paste three credentials into your
+in the middle. You create an app, install it, and paste two credentials into your
 own oto configuration. That is the whole integration. The reasoning is in
 [ADR 0018](../adr/0018-slack-distribution-model.md).
+
+> **If you want the Acknowledge button on alert cards to work, [section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button)
+> is not optional and Socket Mode is not an option.** oto implements one
+> interactivity transport: a public HTTPS Request URL with a signing secret.
 
 Budget about ten minutes.
 
@@ -63,33 +67,78 @@ and this is not one.
 
 ---
 
-## 3. Create the app-level token (Socket Mode)
+## 3. Turn on interactivity — required for the Acknowledge button
 
-Socket Mode is oto's default transport because a self-hosted install usually has
-no inbound HTTPS. oto dials **out** to Slack over a WebSocket and receives button
-presses on it — no ingress rule, no TLS certificate, no public URL.
+> **⛔ Read this section even if you skip every other one.**
+>
+> **Socket Mode is not implemented.** There is no WebSocket client anywhere in
+> oto. `OTO_SLACK_MODE` still *defaults* to `socket`, and `OTO_SLACK_APP_TOKEN`
+> is still *accepted* — but nothing reads either of them, so a deployment left on
+> the defaults posts alert cards whose **Acknowledge button nothing is listening
+> for**. The press is delivered to a Slack app with no Request URL, and the user
+> sees a failure.
+>
+> **Interactivity in oto v1 means a public HTTPS Request URL plus a signing
+> secret. There is no second option.** If you cannot expose one, oto still works
+> — alerts, grouping, cards, threads, the whole delivery path — you simply have
+> no buttons, and you acknowledge from oto's own UI instead.
+>
+> You do **not** need an app-level (`xapp-`) token. Do not generate one; it has
+> no reader.
 
-App-level token scopes **cannot be declared in a manifest** (the manifest schema
-covers only bot and user OAuth scopes), so this one step is manual:
+### 3.1 Point Slack at your oto
 
-1. **Basic Information → App-Level Tokens → Generate Token and Scopes.**
-2. Name it something like `oto-socket`.
-3. Add the scope **`connections:write`**.
-4. Generate. Copy the `xapp-…` value.
+1. Make oto reachable at a public HTTPS URL (an ingress, a load balancer, a
+   tunnel — oto does not care which).
+2. In the Slack app: **Interactivity & Shortcuts → Interactivity → On.**
+3. Set **Request URL** to:
 
-That is the second credential.
+   ```
+   https://<your-oto-host>/api/v1/integrations/slack/interactions
+   ```
 
----
+4. Save. Slack does **not** verify the URL on save for interactivity, so a typo
+   here surfaces later as a button that fails rather than as an error now.
 
-## 4. Copy the signing secret
+### 3.2 Copy the signing secret
 
 **Basic Information → App Credentials → Signing Secret → Show.**
 
-That is the third credential. It is only used by the **HTTP** interactivity
-transport, which verifies an HMAC over the raw request body. In Socket Mode the
-socket is pre-authenticated and no signature check exists, so you can skip this if
-you are staying on Socket Mode. Copy it anyway — it costs nothing and it is what
-you will need the day you move behind an ingress.
+This is the second credential, and in HTTP mode it is **mandatory**. Every
+interaction is authenticated by an HMAC-SHA256 over the **raw** request body,
+compared in constant time, with anything more than five minutes from oto's clock
+refused in either direction. There is no other authentication on that endpoint —
+Slack has no session and no token — so the signing secret *is* the door.
+
+oto **refuses to boot** with `mode=http` and an empty signing secret. That is
+deliberate: an empty secret would accept forged requests, which means anyone on
+the internet could acknowledge anyone's alert.
+
+### 3.3 Set the two switches
+
+```bash
+OTO_SLACK_ENABLED=true
+OTO_SLACK_MODE=http          # `socket` is accepted and does nothing
+OTO_SLACK_SIGNING_SECRET=... # MUST be non-empty when OTO_SLACK_MODE=http
+```
+
+### What the button actually does
+
+Pressing **Acknowledge** records a receipt on every still-open alert in that
+group: *a human has seen this*. It is not an assignment, it does not change the
+alert's state, and it does not say who is looking at it — an acked alert is still
+firing, still whatever severity it was, and every surface keeps rendering it that
+way. The card's colour and label change, and the acknowledgement appears on the
+alert's timeline.
+
+If the Slack member who pressed it is linked to an oto user, the timeline names
+that user. **If they are not, the acknowledgement is still recorded**, attributed
+to their Slack handle — losing a real acknowledgement because somebody has not
+onboarded would be worse than the missing link.
+
+oto answers Slack's request **before** it does any of that work, so a slow
+database shows up as a card that updates a moment late, never as *"This app is
+not responding"*.
 
 ---
 
@@ -98,17 +147,20 @@ you will need the day you move behind an ingress.
 | Slack value | Starts with | oto config field | Env var | Notes |
 |---|---|---|---|---|
 | Bot User OAuth Token | `xoxb-` | channel credential, `kind: "slack_bot_token"` | — | Per channel, stored in the database, sealed |
-| App-Level Token | `xapp-` | `slack.app_token` | `OTO_SLACK_APP_TOKEN` | Process-level; Socket Mode only |
-| Signing Secret | *(32 hex chars)* | `slack.signing_secret` | `OTO_SLACK_SIGNING_SECRET` | Process-level; **required** in HTTP mode |
+| Signing Secret | *(32 hex chars)* | `slack.signing_secret` | `OTO_SLACK_SIGNING_SECRET` | Process-level; **required**, and the only thing authenticating the interactions endpoint |
 
 Plus the two switches:
 
 ```bash
 OTO_SLACK_ENABLED=true
-OTO_SLACK_MODE=socket        # or `http`
-OTO_SLACK_APP_TOKEN=xapp-...
-OTO_SLACK_SIGNING_SECRET=... # MUST be non-empty when OTO_SLACK_MODE=http
+OTO_SLACK_MODE=http
+OTO_SLACK_SIGNING_SECRET=...
 ```
+
+**Not in the table, on purpose:** `OTO_SLACK_APP_TOKEN` / `slack.app_token`. The
+key is still accepted by the config loader and **is read by nothing** — it exists
+for a Socket Mode client that was never built. Setting it has no effect. It will
+be removed.
 
 oto refuses to boot with `mode=http` and an empty signing secret. That is
 deliberate: an empty secret would accept forged requests, which means anyone on
@@ -127,8 +179,7 @@ Content-Type: application/json
   "config": {
     "team_id": "T9TK3CUKW",
     "conversation_id": "C0123456789",
-    "conversation_name": "platform-alerts",
-    "transport": "socket_mode"
+    "conversation_name": "platform-alerts"
   },
   "credential": {
     "kind": "slack_bot_token",
@@ -154,8 +205,8 @@ All three are secret material and all three are treated as such.
   *which kind* of credential is attached and *when it was last rotated*. There is
   no endpoint, anywhere, that returns a credential value. Nothing in the web UI
   can display one.
-- The app-level token and signing secret are process configuration and live
-  wherever you put your other environment secrets.
+- The signing secret is process configuration and lives wherever you put your
+  other environment secrets.
 
 **oto transmits these to exactly one place: `slack.com`.** There is no telemetry
 endpoint, no license server, no phone-home, and no oto-operated relay. This is a
@@ -196,11 +247,16 @@ it a member.
 2. The channel row should show the workspace and bot identity (`connected to Acme
    Corp as @oto`) rather than a bare green tick.
 3. **In Slack:** fire a test alert and press **Acknowledge** on the card. The
-   button should stop showing a spinner within three seconds, and the card's
-   status line should change to `~Firing~ → Acked by @you`.
+   button should settle immediately, and the card should change to its
+   acknowledged colour and label with your name against it. The same
+   acknowledgement appears on the alert's timeline in oto.
+
+   This only works if [section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button)
+   is done. With `OTO_SLACK_MODE=socket` — still the default — nothing is
+   listening and the press fails.
 
 If the button spins and then shows *"This app is not responding"*, interactivity
-is not reaching oto — jump to the Socket Mode row in the table below.
+is not reaching oto — see the table below.
 
 ---
 
@@ -260,10 +316,13 @@ messages than expected — look at flap and storm damping in
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Button spins, then *"This app is not responding"*, Socket Mode | oto is not connected to the socket. | Check `OTO_SLACK_ENABLED=true`, `OTO_SLACK_MODE=socket`, and that `OTO_SLACK_APP_TOKEN` holds an `xapp-` token **with the `connections:write` scope**. A token generated without that scope authenticates and then fails to open a connection. |
-| Same, HTTP mode | Slack cannot reach `POST /api/v1/integrations/slack/interactions`, or the signature check is failing. | Confirm the **Interactivity → Request URL** in the Slack app matches your public URL. Confirm `OTO_SLACK_SIGNING_SECRET` matches **Basic Information → Signing Secret** exactly. oto reports every verification failure identically on purpose (telling an attacker which half of a forgery to fix is not helpful), so check oto's logs for the specific `slack_signature_*` reason. |
+| Button spins, then *"This app is not responding"* | **By far the most common cause: `OTO_SLACK_MODE` is still `socket`.** Socket Mode is not implemented, so nothing is listening for the press. | Set `OTO_SLACK_MODE=http`, set a signing secret, and configure the Request URL. See [section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button). Generating an `xapp-` token will **not** help; nothing reads it. |
+| Same, already on `mode=http` | Slack cannot reach `POST /api/v1/integrations/slack/interactions`, or the signature check is failing. | Confirm the **Interactivity → Request URL** matches your public URL exactly, path included. Confirm `OTO_SLACK_SIGNING_SECRET` matches **Basic Information → Signing Secret**. oto reports every verification failure identically on purpose (telling an attacker which half of a forgery to fix is not helpful), so check oto's logs for the specific `slack_signature_*` reason. |
 | Signature failures that come and go | Clock drift. oto rejects any request whose timestamp is more than five minutes from its own clock, in either direction. | Fix NTP on the oto host. |
-| Button works, but the ack is attributed to a bare Slack handle instead of an oto user | That Slack member is not linked to an oto user. | Link the identity in oto's user settings. oto deliberately records the ack anyway rather than refusing it — losing an acknowledgement because of a missing link would be worse. |
+| Button settles, but the card never changes | The press was recorded and the follow-up notification has not gone out. The card is updated through the normal delivery path — deliberately, so thread ordering and rate limiting still apply — so a backed-up `notify` or `deliver_slack` queue delays it. | Check the Deliveries view and the queue depth metrics. The acknowledgement itself is already on the alert's timeline; only the card is late. |
+| oto replies *"oto has no channel configured for this conversation"* | The press came from a Slack conversation no oto channel points at. oto resolves the tenant from `(team_id, conversation_id)` and will not guess. | Create an oto channel whose `config.conversation_id` is that channel's ID, in the right organisation. |
+| oto replies *"already acknowledged"* | Somebody got there first — possibly you, twice. | Nothing to fix. An acknowledgement is a receipt, and the first one is the fact on the record. |
+| Button works, but the ack is attributed to a bare Slack handle instead of an oto user | That Slack member is not linked to an oto user **in the organisation that owns this channel**. The mapping is per-organisation on purpose: one workspace can serve two oto tenants, and a link in one must not attribute a press in the other. | Link the identity in oto's user settings. oto records the ack either way rather than refusing it — losing an acknowledgement because of a missing link would be worse. The first press already stored the Slack identity, so linking is a pick-from-a-list rather than typing a member id. |
 
 ### `invalid_blocks`, `msg_too_long`, `too_many_attachments`
 
@@ -273,17 +332,23 @@ would not accept. The delivery is dead on arrival and oto alerts on itself
 
 ---
 
-## If you need HTTP instead of Socket Mode
+## Why there is no Socket Mode
 
-Socket Mode caps at 10 concurrent connections per app and is not permitted for
-Slack Marketplace apps. Neither constrains a self-hosted install, so switch only if
-you already have public HTTPS ingress and want horizontal scale beyond that.
+Socket Mode is the transport most self-hosted installs would prefer: oto would
+dial **out** to Slack over a WebSocket and receive button presses on it, with no
+ingress rule, no TLS certificate and no public URL. The documentation used to say
+that was the default. **It was never built** — there is no WebSocket client in
+oto, and `OTO_SLACK_APP_TOKEN` has no reader.
 
-1. Set `OTO_SLACK_MODE=http` and a non-empty `OTO_SLACK_SIGNING_SECRET`.
-2. In the Slack app: **Interactivity & Shortcuts → Request URL** →
-   `https://<your-oto-host>/api/v1/integrations/slack/interactions`.
-3. Turn **Socket Mode** off in the Slack app.
-4. Set `transport: "http"` on the oto channel config.
+Until it exists, interactivity means an HTTPS Request URL and a signing secret.
+If you cannot expose one, run oto without buttons: alerts, grouping, cards,
+threads and delivery all work unchanged, and you acknowledge from oto's own UI.
 
-Both transports run behind one handler, so behaviour is identical and a bug fixed
-in one is fixed in both.
+Two related leftovers you may notice, both inert:
+
+- **`OTO_SLACK_MODE=socket`** is still the default and still accepted. It
+  disables the HTTP interactions endpoint and enables nothing in its place.
+- **`transport` in a channel's config** (`socket_mode` | `http`) is accepted by
+  the config schema and read by nothing. It was never a per-channel decision:
+  one oto process either has a Request URL or it does not. Leave it out of new
+  channel configs; existing ones are harmless.

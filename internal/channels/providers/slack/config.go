@@ -30,7 +30,25 @@ type Config struct {
 	ConversationID string `json:"conversation_id"`
 	// ConversationName is display only and may be stale by the time it is read.
 	ConversationName string `json:"conversation_name"`
-	// Transport selects Socket Mode or HTTP for interactivity (§H.8).
+	// Transport is DEPRECATED, IGNORED, and kept only so that a config written by
+	// an earlier release still validates against `additionalProperties: false`.
+	//
+	// ⛔ IT NEVER MEANT ANYTHING, AND THAT IS THE BUG. It was schema-validated and
+	// rendered into the settings form, so an operator could pick "Socket Mode",
+	// save it, and believe they had chosen how button presses reach oto — while
+	// nothing anywhere read the value and no socket client existed to honour it.
+	// A setting that has no effect is worse than a missing one: it answers the
+	// question the operator was asking, incorrectly.
+	//
+	// Interactivity is a DEPLOYMENT fact, not a per-channel one: `slack.mode`
+	// plus a signing secret, because one process either has a public Request URL
+	// or it does not. Removal is deliberately staged — this release stops reading
+	// and defaulting it, a later one drops it from the schema and strips it from
+	// stored rows — because N and N+1 run simultaneously and a property removed
+	// from the schema in one step would fail validation on rows the previous
+	// release is still writing.
+	//
+	// Deprecated: ignored; interactivity is configured on the deployment.
 	Transport string `json:"transport"`
 	// MaxInstances is how many member instances the card renders inline.
 	MaxInstances int `json:"max_instances"`
@@ -46,22 +64,25 @@ type Config struct {
 	LinkNames bool `json:"link_names"`
 }
 
-// Transports.
+// The two values `transport` may still carry. They are the SCHEMA'S vocabulary,
+// retained so that a stored config written by an earlier release keeps
+// validating; nothing in oto branches on either of them.
+//
+// ⚠️ THERE IS NO SOCKET MODE CLIENT ANYWHERE IN THIS CODEBASE, and `slack.mode`
+// nevertheless defaults to `socket`. A deployment that leaves both at their
+// defaults renders an Acknowledge button that nothing is listening for — which
+// is precisely the defect the interactions consumer exists to fix, arriving by a
+// different road. docs/setup/slack.md says so in those words, and until a socket
+// listener is built the honest configuration is `OTO_SLACK_MODE=http` plus a
+// Request URL.
+//
+// ADR 0018 forecloses a Slack Marketplace listing outright — it needs a stable
+// client ID, client secret and redirect URL, none of which is a property of an
+// operator oto has — so the pressure a listing would apply here does not exist.
 const (
-	// TransportSocketMode is the default for self-hosted: no public ingress and
-	// no signature verification, because the socket is pre-authenticated (§H.8).
+	// TransportSocketMode is accepted and ignored. Deprecated.
 	TransportSocketMode = "socket_mode"
-	// TransportHTTP is for the install that ALREADY has public ingress and would
-	// rather oto used it than hold a second outbound WebSocket open.
-	//
-	// ⚠️ It is NOT here for a Slack Marketplace listing. ADR 0018 forecloses the
-	// Marketplace outright — a listing needs a stable client ID, client secret and
-	// redirect URL, all of which are properties of an operator oto does not have,
-	// and a listing would additionally FORBID Socket Mode, which is the transport
-	// the majority of self-hosted installs actually want. The real justification is
-	// the mundane one: an install with an ingress controller in front of oto can
-	// point Slack's interactivity request URL at it and be done, with no extra
-	// egress path to approve.
+	// TransportHTTP is accepted and ignored. Deprecated.
 	TransportHTTP = "http"
 )
 
@@ -81,9 +102,11 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 			"the slack channel config could not be decoded")
 	}
 
-	if c.Transport == "" {
-		c.Transport = TransportSocketMode
-	}
+	// ⛔ `transport` IS NOT DEFAULTED. It used to be filled in with
+	// `socket_mode` here, which manufactured a value nothing read and made a
+	// config that had never mentioned interactivity look like one that had chosen
+	// it. Leaving it empty is the truth: this channel expresses no opinion,
+	// because the field never carried one.
 	if c.MaxInstances == 0 {
 		c.MaxInstances = 10
 	}

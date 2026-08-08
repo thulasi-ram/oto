@@ -25,6 +25,21 @@ const RESOLVE_REASON: Record<NonNullable<ResolveReason>, string> = {
   timeout: "oto stopped hearing about it",
 };
 
+/**
+ * The upstream objects doing the suppressing, joined for display.
+ *
+ * `suppression_reason` says a silence is muting the alert; `suppressed_by` says
+ * WHICH one, and that is the half an operator can act on — it is the id you
+ * paste into Alertmanager to find who silenced it and until when. It is
+ * populated only while the episode is suppressed, and it returns undefined
+ * rather than an empty array so `<Show>` treats "nobody named" as absent (an
+ * empty array is truthy).
+ */
+const suppressors = (by: Occurrence["suppressed_by"]): string | undefined => {
+  const ids = [...(by?.silenced_by ?? []), ...(by?.inhibited_by ?? []), ...(by?.muted_by ?? [])];
+  return ids.length > 0 ? ids.join(", ") : undefined;
+};
+
 const SUPPRESSION_NOTE: Record<string, string> = {
   silence: "an Alertmanager silence",
   inhibition: "an inhibition rule",
@@ -103,6 +118,17 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
                     <Show when={occ.suppression_reason}>
                       {(reason) => (
                         <span>suppressed by {SUPPRESSION_NOTE[reason()] ?? reason()}</span>
+                      )}
+                    </Show>
+
+                    <Show when={suppressors(occ.suppressed_by)}>
+                      {(ids) => (
+                        <span
+                          class="font-mono"
+                          title="The Alertmanager objects doing the suppressing, as Alertmanager named them: silence ids, inhibiting alert fingerprints, mute intervals."
+                        >
+                          {ids()}
+                        </span>
                       )}
                     </Show>
 

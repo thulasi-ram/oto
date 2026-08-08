@@ -30,6 +30,11 @@ type Occurrence struct {
 
 	state             State
 	suppressionReason SuppressionReason
+	// suppressedBy is `alert_occurrences.suppressed_by`: the ids Alertmanager
+	// named — `silencedBy`, `inhibitedBy`, `mutedBy` — on the observation that
+	// suppressed this episode. It answers WHICH silence is muting the alert,
+	// which `suppression_reason` alone never could.
+	suppressedBy SuppressedBy
 
 	// oto clock
 	startedAt      time.Time
@@ -79,6 +84,9 @@ type OccurrenceParams struct {
 
 	State             State
 	SuppressionReason SuppressionReason
+	// SuppressedBy is `alert_occurrences.suppressed_by` as read. It is carried
+	// only while the occurrence is suppressed; see the SuppressedBy accessor.
+	SuppressedBy SuppressedBy
 
 	StartedAt      time.Time
 	EndedAt        time.Time
@@ -162,6 +170,7 @@ func NewOccurrence(p OccurrenceParams) (Occurrence, error) {
 		seq:               p.Seq,
 		state:             p.State,
 		suppressionReason: p.SuppressionReason,
+		suppressedBy:      p.SuppressedBy,
 		startedAt:         p.StartedAt.UTC(),
 		lastObservedAt:    p.LastObservedAt.UTC(),
 		sourceStartsAt:    p.SourceStartsAt.UTC(),
@@ -283,6 +292,23 @@ func (o Occurrence) State() State { return o.state }
 
 // SuppressionReason says why the occurrence is suppressed, set only while it is.
 func (o Occurrence) SuppressionReason() SuppressionReason { return o.suppressionReason }
+
+// SuppressedBy names WHICH upstream objects are suppressing this episode:
+// Alertmanager's `silencedBy`, `inhibitedBy` and `mutedBy`, all three.
+//
+// ⛔ IT IS EMPTY UNLESS THE OCCURRENCE IS SUPPRESSED, and the gate is here rather
+// than at every write site for the same reason `occ_suppress_ck` ties
+// `suppression_reason` to `state = 'suppressed'`: witnesses left behind on an
+// occurrence that is demonstrably firing would make oto keep saying "silenced by
+// <id>" about an alert nobody is silencing. The persistence path clears the
+// column on every non-suppressed edge; this makes a row written before it did —
+// or by anything else — read the same way.
+func (o Occurrence) SuppressedBy() SuppressedBy {
+	if o.state != StateSuppressed {
+		return SuppressedBy{}
+	}
+	return o.suppressedBy
+}
 
 // StartedAt is oto's clock reading when the episode opened.
 func (o Occurrence) StartedAt() time.Time { return o.startedAt }

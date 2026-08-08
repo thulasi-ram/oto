@@ -3,6 +3,7 @@ package app
 import (
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
 	channelsapi "github.com/thulasiram/oto/internal/channels/api"
+	slackprovider "github.com/thulasiram/oto/internal/channels/providers/slack"
 	channelsregistry "github.com/thulasiram/oto/internal/channels/registry"
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
 	channelsservice "github.com/thulasiram/oto/internal/channels/service"
@@ -86,6 +87,17 @@ var (
 	_ sourcesapi.CredentialWriter   = (*channelsrepo.CredentialRepository)(nil)
 	_ channelsapi.ChannelStore      = (*channelsrepo.ChannelRepository)(nil)
 	_ channelsservice.InstanceStore = (*channelsrepo.ChannelRepository)(nil)
+
+	// --- the Acknowledge button: four seams, all of them load-bearing --------
+	//
+	// The first is the one that was NIL for the product's whole life. If it stops
+	// compiling, every Acknowledge button in every Slack workspace goes back to
+	// showing a tick and doing nothing, and nothing else in the build would say so.
+	_ channelsapi.SlackInteractions      = (*channelsservice.InteractionService)(nil)
+	_ channelsservice.SlackNotice        = (*slackprovider.Notice)(nil)
+	_ channelsservice.SlackActors        = slackActors{}
+	_ channelsservice.AlertGroups        = slackGroupActions{}
+	_ channelsservice.SlackConversations = slackConversations{}
 
 	// --- sources: the write side the API declares, the read side the service is
 	_ sourcesapi.SourceRegistry  = (*sourcesrepo.SourceRepository)(nil)

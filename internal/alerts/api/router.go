@@ -44,7 +44,7 @@ type AlertService interface {
 	LabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]domain.LabelCount, error)
 	LabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]domain.LabelCount, error)
 	Acknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Occurrence, error)
-	Unacknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor) (domain.Occurrence, error)
+	Unacknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Occurrence, error)
 	Comment(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, body string) (domain.Event, error)
 
 	// ⛔ THE THIRD HUMAN VERB (§E.1.1, §B.8). Snooze writes NOTIFICATION state,
@@ -52,7 +52,7 @@ type AlertService interface {
 	// and every surface keeps rendering it that way. There is still no Resolve,
 	// no Close and no Dismiss on this interface, and there never will be.
 	Snooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, until time.Time, note string) (domain.Snooze, error)
-	Unsnooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor) (domain.Snooze, error)
+	Unsnooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Snooze, error)
 	SnoozeHistory(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Snooze, error)
 	// ActiveSnoozes is the ORG-WIDE §B.8.6 view: everything oto is currently
 	// quiet about, soonest wake-up first. It is what the persistent banner is

@@ -393,6 +393,14 @@ type UnsnoozeCommand struct {
 	Reason SnoozeEndReason
 	// EventID is the uuidv7 for the `alert.unsnoozed` event.
 	EventID uuid.UUID
+	// Note is the free-text note recorded with a MANUAL wake-up, at most
+	// MaxSnoozeNoteBytes. It lands in the `alert.unsnoozed` event payload:
+	// `alert_snoozes` has a `note` column, but that one belongs to the snooze
+	// that was requested, and overwriting it would rewrite the reason the quiet
+	// period was asked for with the reason it was ended.
+	//
+	// An `expired` end has no human behind it and therefore no note.
+	Note    string
 	Payload map[string]any
 }
 
@@ -431,6 +439,10 @@ func (s Snooze) End(cmd UnsnoozeCommand) (Snooze, []Event, error) {
 		return Snooze{}, nil, errs.Newf(errs.KindInternal, "wrong_actor",
 			"a %s snooze end requires a human actor", cmd.Reason)
 	}
+	if len(cmd.Note) > MaxSnoozeNoteBytes {
+		return Snooze{}, nil, errs.Newf(errs.KindValidation, "max_length",
+			"unsnooze note must have at most %d characters", MaxSnoozeNoteBytes)
+	}
 
 	next := s
 	next.endedAt = notBefore(cmd.At.RecordedAt(), s.snoozedAt)
@@ -438,10 +450,17 @@ func (s Snooze) End(cmd UnsnoozeCommand) (Snooze, []Event, error) {
 	next.endedBy = actorUUID(cmd.Actor)
 	next.endedByLabel = cmd.Actor.Label()
 
-	payload := mergePayload(cmd.Payload, map[string]any{
+	base := map[string]any{
 		"snooze_id": next.id.String(),
 		"reason":    cmd.Reason.String(),
-	})
+	}
+	// The wake-up note, on the timeline. The contract calls it "Optional note
+	// recorded with the wake-up"; it was bound and validated by the handler and
+	// then discarded, so nothing was recorded anywhere.
+	if cmd.Note != "" {
+		base["note"] = cmd.Note
+	}
+	payload := mergePayload(cmd.Payload, base)
 
 	ev, err := NewEvent(EventParams{
 		ID:        cmd.EventID,

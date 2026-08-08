@@ -132,14 +132,23 @@ func New(d Deps) (*Module, error) {
 // one connection for its transaction, so admitting more than the pool can serve
 // only moves the queue from a place where it is measured into a place where it is
 // not.
+//
+// Wait is `ingest.acquire_timeout` — the ingest pool's acquisition budget of
+// §G.10, and the ONLY place it is enforced. It used to be the literal below and
+// the configured value was read by nothing, so an operator who shortened the
+// budget during an incident shortened nothing.
 func shedConfig(cfg config.IngestConfig, poolMaxConns int32) api.ShedConfig {
 	retry := cfg.RetryAfter
 	if retry <= 0 {
 		retry = 5 * time.Second
 	}
+	wait := cfg.AcquireTimeout
+	if wait <= 0 {
+		wait = 500 * time.Millisecond
+	}
 	return api.ShedConfig{
 		MaxInFlight:   int(poolMaxConns),
-		Wait:          500 * time.Millisecond,
+		Wait:          wait,
 		MaxQueueDepth: api.DefaultMaxQueueDepth,
 		DepthInterval: api.DefaultDepthInterval,
 		RetryAfter:    retry,

@@ -75,12 +75,16 @@ test: ## Run the Go test suite (integration tests need Docker)
 lint-vocabulary: ## SCOPE-BOUNDARY AC-49: no on-call vocabulary in internal/, web/src/, db/migrations/
 	go run ./tools/lintvocab
 
+.PHONY: lint-reachability
+lint-reachability: ## The unreachable-feature gate: fields, contract keys and constructors wired to nothing
+	go run ./tools/lintreach
+
 .PHONY: generate-check
 generate-check: ## Gate G3 (SPEC §L.8.1): the checked-in TS client must match openapi.yaml
 	cd $(WEB_DIR) && npm run generate:check
 
 .PHONY: ci
-ci: fmt-check lint vet lint-vocabulary generate-check build test ui-build ui-test ## Everything CI runs, in order
+ci: fmt-check lint vet lint-vocabulary lint-reachability generate-check build test ui-build ui-test ## Everything CI runs, in order
 
 ## ------------------------------------------------------------------- database
 

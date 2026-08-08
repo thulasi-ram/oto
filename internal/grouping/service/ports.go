@@ -100,7 +100,7 @@ type MemberActions interface {
 	// query that can return a different row than the one just appended.
 	CommentAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, body string) (kernel.Event, error)
 	SnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string) error
-	UnsnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel string) error
+	UnsnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, note string) error
 }
 
 // StreamAppender publishes a `group.upserted` frame onto the SSE spine, inside

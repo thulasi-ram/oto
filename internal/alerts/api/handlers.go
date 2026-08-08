@@ -439,12 +439,15 @@ func (rt *Router) unackAlert(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if _, err := optionalBody[UnackRequest](w, r); err != nil {
+	body, err := optionalBody[UnackRequest](w, r)
+	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	occ, err := rt.svc.Unacknowledge(r.Context(), scope, id, actor)
+	// `note` is carried through to the `occurrence.unacknowledged` event. It used
+	// to be bound here, length-validated here, and then thrown away.
+	occ, err := rt.svc.Unacknowledge(r.Context(), scope, id, actor, body.Note)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -531,12 +534,13 @@ func (rt *Router) unsnoozeAlert(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if _, err := optionalBody[UnsnoozeRequest](w, r); err != nil {
+	body, err := optionalBody[UnsnoozeRequest](w, r)
+	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	if _, err := rt.svc.Unsnooze(r.Context(), scope, id, actor); err != nil {
+	if _, err := rt.svc.Unsnooze(r.Context(), scope, id, actor, body.Note); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}

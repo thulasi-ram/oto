@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -14,21 +13,26 @@ import (
 )
 
 // EnricherDTO renders `EnricherDTO`: one registered enricher with its phase,
-// version and observed health.
+// version and configured budget.
 //
 // Every json tag is byte-identical to api/openapi/openapi.yaml.
+//
+// ⛔ IT CARRIES EXACTLY WHAT THE REGISTRY KNOWS. `display_name`,
+// `cache_hit_rate`, `success_rate`, `p95_duration_ms` and `last_run_at` were
+// declared here, `omitempty` so their absence was invisible to every validator,
+// and populated by nothing — for the same reason `health_status` answers
+// `unknown` (see listEnrichers): the rolling counters live in the pipeline's
+// Prometheus metrics and are not readable from the registry this endpoint
+// serves. Five fields quietly asserting they worked, next to one comment
+// explaining why the sixth could not, is how a resource documented as returning
+// "observed health" comes to return none of it.
 type EnricherDTO struct {
-	Name          string     `json:"name"`
-	DisplayName   string     `json:"display_name,omitempty"`
-	Version       int32      `json:"version"`
-	Phase         int32      `json:"phase"`
-	TimeoutMS     int32      `json:"timeout_ms,omitempty"`
-	Enabled       bool       `json:"enabled"`
-	HealthStatus  string     `json:"health_status,omitempty"`
-	CacheHitRate  *float32   `json:"cache_hit_rate,omitempty"`
-	SuccessRate   *float32   `json:"success_rate,omitempty"`
-	P95DurationMS *int32     `json:"p95_duration_ms,omitempty"`
-	LastRunAt     *time.Time `json:"last_run_at,omitempty"`
+	Name         string `json:"name"`
+	Version      int32  `json:"version"`
+	Phase        int32  `json:"phase"`
+	TimeoutMS    int32  `json:"timeout_ms,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	HealthStatus string `json:"health_status,omitempty"`
 }
 
 // Registry is the port this layer declares for itself, satisfied by

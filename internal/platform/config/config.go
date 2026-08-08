@@ -89,10 +89,17 @@ type DBConfig struct {
 	IngestSharePercent int   `koanf:"ingest_share_percent" validate:"gt=0,lte=100"`
 	IngestMinConns     int32 `koanf:"ingest_min_conns"     validate:"gte=1"`
 
+	// The statement timeouts are the only per-pool budgets pgx can enforce for
+	// us: they are set as `statement_timeout` runtime parameters on every
+	// connection the pool opens (see platform/db.open).
+	//
+	// ⛔ THERE IS NO ACQUISITION TIMEOUT HERE, and there never was one that
+	// worked. pgxpool has no such setting — `Acquire` waits on the caller's
+	// context and nothing else — so a `db.ingest_acquire_timeout` key could only
+	// ever have been read by whoever bounds the wait, which is the ingest
+	// shedder. It lives there now, as `ingest.acquire_timeout`.
 	IngestStatementTimeout  time.Duration `koanf:"ingest_statement_timeout"  validate:"gt=0"`
-	IngestAcquireTimeout    time.Duration `koanf:"ingest_acquire_timeout"    validate:"gt=0"`
 	GeneralStatementTimeout time.Duration `koanf:"general_statement_timeout" validate:"gt=0"`
-	GeneralAcquireTimeout   time.Duration `koanf:"general_acquire_timeout"   validate:"gt=0"`
 
 	MaxConnLifetime time.Duration `koanf:"max_conn_lifetime" validate:"gt=0"`
 	MaxConnIdleTime time.Duration `koanf:"max_conn_idle_time" validate:"gt=0"`
@@ -126,8 +133,19 @@ func (c DBConfig) GeneralPoolSize() int32 {
 type LogConfig struct {
 	Level  string `koanf:"level"  validate:"required,oneof=debug info warn error"`
 	Format string `koanf:"format" validate:"required,oneof=json text"`
-	// RedactLabels are label keys whose values are redacted before persistence and logging.
-	RedactLabels []string `koanf:"redact_labels"`
+	// ⛔ THERE IS NO PROCESS-WIDE `redact_labels` HERE. There used to be, and
+	// `.env.example` promised it blanked label values before the raw payload was
+	// persisted; nothing read it, so it blanked nothing and the promise was a
+	// privacy claim oto did not keep.
+	//
+	// Redaction is per-source and it is real: `alert_sources.redact_labels` and
+	// `redact_annotations` are glob patterns applied by `ingestion/decode.Redactor`
+	// BEFORE `ingest_batches.payload` is written (§C.9.2, `ingestion/service.Accept`),
+	// and again by the reconciler. Which labels carry customer identifiers is a
+	// property of the upstream that emits them, so that is where the setting
+	// belongs — and a second, process-wide list would be a second definition of
+	// "sensitive" that can disagree with the first.
+	//
 	// SourceLocation adds the caller file:line to every record. Costly; off by default.
 	SourceLocation bool `koanf:"source_location"`
 }
@@ -155,13 +173,32 @@ type JobsConfig struct {
 }
 
 // IngestConfig configures the webhook accept path. SPEC §C.9 and §G.2.
+//
+// ⛔ THE B1-B17 BOUNDS ARE NOT HERE AND ARE NOT CONFIGURABLE. `max_batch_bytes`,
+// `max_alerts`, `max_labels` and `max_label_bytes` were declared here, published
+// in `.env.example`, validated at boot — and read by nothing, while the enforced
+// limits sat in `ingestion/domain.bounds` as constants. `OTO_INGEST_MAX_ALERTS`
+// even advertised 5000 against an enforced truncation point of 10000, so an
+// operator lowering a cap mid-incident changed nothing and was told nothing.
+//
+// They are constants because each is BOUND TO SOMETHING ELSE THAT CANNOT MOVE
+// WITH AN ENVIRONMENT VARIABLE: `MaxAlertsPerBatch` is `ingest_batches_count_ck`,
+// `MaxBodyBytes` is `ingest_batches_bytes_ck`, and `MaxLabelsPerAlert` is
+// `alerts/domain.MaxLabels`, which the LabelSet constructor and a DDL CHECK both
+// enforce. A knob that can disagree with the CHECK it is supposed to describe
+// turns a rejected alert into a 500.
 type IngestConfig struct {
-	MaxBatchBytes int64 `koanf:"max_batch_bytes" validate:"gt=0"`
-	MaxAlerts     int   `koanf:"max_alerts"      validate:"gt=0"`
-	MaxLabels     int   `koanf:"max_labels"      validate:"gt=0"`
-	MaxLabelBytes int   `koanf:"max_label_bytes" validate:"gt=0"`
 	// RetryAfter is the Retry-After sent with a 503. Never 429, never 4xx (C4).
 	RetryAfter time.Duration `koanf:"retry_after" validate:"gt=0"`
+	// AcquireTimeout is how long a webhook may wait for an ingest slot before it
+	// is shed with a 503 (§G.10). It is the ingest pool's acquisition budget, and
+	// the shedder is what enforces it — pgxpool has no acquire timeout of its
+	// own, which is why this is `ingest.acquire_timeout` and not a `db.*` key.
+	//
+	// Lower it and oto gives up on a queued webhook sooner, spending less of
+	// Alertmanager's ~5-minute retry budget on waiting; raise it and oto holds
+	// the upstream's connection open for longer before answering.
+	AcquireTimeout time.Duration `koanf:"acquire_timeout" validate:"gt=0"`
 }
 
 // RetentionConfig configures the partition drop schedule.
@@ -244,18 +281,15 @@ func Default() Config {
 			IngestSharePercent:      25,
 			IngestMinConns:          4,
 			IngestStatementTimeout:  2 * time.Second,
-			IngestAcquireTimeout:    500 * time.Millisecond,
 			GeneralStatementTimeout: 15 * time.Second,
-			GeneralAcquireTimeout:   5 * time.Second,
 			MaxConnLifetime:         time.Hour,
 			MaxConnIdleTime:         30 * time.Minute,
 			ConnectTimeout:          5 * time.Second,
 			AutoMigrate:             false,
 		},
 		Log: LogConfig{
-			Level:        "info",
-			Format:       "json",
-			RedactLabels: []string{},
+			Level:  "info",
+			Format: "json",
 		},
 		Telemetry: TelemetryConfig{
 			MetricsEnabled:  true,
@@ -275,11 +309,8 @@ func Default() Config {
 			RescueAfter:   time.Hour,
 		},
 		Ingest: IngestConfig{
-			MaxBatchBytes: 8 << 20,
-			MaxAlerts:     5000,
-			MaxLabels:     64,
-			MaxLabelBytes: 2048,
-			RetryAfter:    10 * time.Second,
+			RetryAfter:     10 * time.Second,
+			AcquireTimeout: 500 * time.Millisecond,
 		},
 		Retention: RetentionConfig{
 			RawPayloads: 14 * 24 * time.Hour,

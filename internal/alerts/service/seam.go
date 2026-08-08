@@ -200,13 +200,13 @@ func (s *Service) SnoozeAs(
 // UnsnoozeAs is Unsnooze with the actor described in primitives.
 func (s *Service) UnsnoozeAs(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
-	actorKind, actorID, actorLabel string,
+	actorKind, actorID, actorLabel, note string,
 ) error {
 	actor, err := humanActor(actorKind, actorID, actorLabel)
 	if err != nil {
 		return err
 	}
-	_, err = s.Unsnooze(ctx, scope, alertID, actor)
+	_, err = s.Unsnooze(ctx, scope, alertID, actor, note)
 	return err
 }
 

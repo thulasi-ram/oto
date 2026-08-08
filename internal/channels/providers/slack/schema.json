@@ -21,8 +21,9 @@
       "maxLength": 80, "pattern": "^[^#][a-z0-9_-]*$"
     },
     "transport": {
-      "type": "string", "title": "Interactivity transport",
-      "enum": ["socket_mode", "http"], "default": "socket_mode"
+      "type": "string", "title": "Interactivity transport (deprecated, ignored)",
+      "enum": ["socket_mode", "http"],
+      "description": "IGNORED. Interactivity is a property of the DEPLOYMENT, not of one channel: it is OTO_SLACK_MODE plus a signing secret, and one process either has a Request URL or it does not. Socket Mode is not implemented at all. The field is still accepted so that configs written by earlier releases keep validating; it will be removed once no stored config carries it."
     },
     "max_instances": {
       "type": "integer", "title": "Instances rendered inline",

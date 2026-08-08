@@ -1545,17 +1545,10 @@ CREATE TABLE ui_events (
 ) PARTITION BY RANGE (at);
 CREATE INDEX ui_ev_org_idx ON ui_events (org_id, seq);
 
-CREATE TABLE rate_limit_buckets (
-  bucket_key  TEXT        PRIMARY KEY,             -- "slack:{team_id}:{channel_id}"
-  tokens      DOUBLE PRECISION NOT NULL,
-  capacity    DOUBLE PRECISION NOT NULL,
-  refill_per_s DOUBLE PRECISION NOT NULL,
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT rate_limit_key_ck    CHECK (length(bucket_key) BETWEEN 1 AND 256),
-  CONSTRAINT rate_limit_tokens_ck CHECK (tokens >= 0 AND tokens <= capacity),
-  CONSTRAINT rate_limit_cap_ck    CHECK (capacity > 0),
-  CONSTRAINT rate_limit_refill_ck CHECK (refill_per_s > 0)
-);
+-- There was a `rate_limit_buckets` table here. It was created by 00014_ops.sql,
+-- described in §G.6 as the pre-call gate on Slack sends, and read or written by
+-- no code at any point. It is dropped in 00030_drop_rate_limit_buckets.sql; see
+-- §G.6 for why the reactive Retry-After path is the answer instead.
 
 -- Alert-hygiene accounting. TEAM/ALERT SCOPED ONLY. NEVER PER-PERSON (R8).
 CREATE TABLE alert_quality_daily (
@@ -2846,7 +2839,9 @@ The binding resolution:
 
 `config_invalid` and `auth_expired` never retry. They are the difference between "Slack is flaky" and "your token was revoked three days ago and nobody noticed" — the second is a product feature.
 
-Slack rate limiting is additionally gated **before** the call by a Postgres token bucket in `rate_limit_buckets`, keyed `slack:{team_id}:{channel_id}`, capacity 3, refill 1/s (`chat.postMessage` is ~1 msg/s/channel). `ModeUpdateRoot` bypasses the per-channel bucket and uses a separate `slack:{team_id}:update` bucket at 45/min (Tier 3, headroom below 50).
+Slack rate limiting is handled **reactively**, by the `rate_limited` row above: Slack's `Retry-After` is honoured exactly, and 20 attempts is the ceiling before `dead`.
+
+> ⛔ There is **no pre-emptive token bucket**. This paragraph used to specify one — a Postgres bucket in `rate_limit_buckets`, keyed `slack:{team_id}:{channel_id}`, capacity 3, refill 1/s — and the table existed, fully commented, in `00014_ops.sql`. No code ever read or wrote it, so the shared-across-pods budget it described did not exist and the only limiter in oto (`platform/ratelimit`) is in-process and per-pod. The table is dropped in `00030_drop_rate_limit_buckets.sql`; the reactive path is the one that is real, and it is distributed for free because Slack is the thing counting. A pre-emptive shared budget, if it is ever wanted, needs a dedicated store rather than a write on the delivery path into the database the alert pipeline depends on.
 
 ### G.7 Ordering guarantees
 

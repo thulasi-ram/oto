@@ -125,3 +125,32 @@ jobs:
       # person-subject columns. Known debt is enumerated in
       # tools/lintvocab/baseline.txt and can only shrink.
       - run: go run ./tools/lintvocab
+
+  reachability:
+    name: scope / reachability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # The unreachable-feature gate. This codebase was written against a
+      # specification and barely executed until late, and the defect that
+      # produced is not dead code: it is a setting the operator sets that no
+      # branch reads, a response field the contract promises that no line
+      # populates, a service fully implemented and never constructed. Every one
+      # of the fifteen-plus known instances was found by RUNNING the product.
+      # This job finds them by reading it: zero-write / zero-read struct fields,
+      # json tags that do not round-trip with api/openapi/openapi.yaml, and
+      # exported New* constructors with no caller outside their own file.
+      #
+      # It needs the build cache populated, because imports are resolved from
+      # export data rather than a second type-check of the world.
+      #
+      # Known debt is enumerated in tools/lintreach/baseline.txt and can only
+      # shrink; a baseline line that stops matching is an error, so a paid debt
+      # cannot keep its exemption.
+      - run: go build ./...
+      - run: go run ./tools/lintreach

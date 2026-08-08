@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -36,15 +37,27 @@ const (
 	// slackMaxBody bounds the form body. The contract caps the `payload` field at
 	// 1 MB; the envelope around it is small.
 	slackMaxBody int64 = 2 << 20
+	// slackDispatchBudget bounds the work that happens AFTER the 200 has gone out.
+	//
+	// It is not what the user waits on — the response is already flushed — it is
+	// what stops a wedged database from pinning an HTTP worker once nobody is
+	// listening any more.
+	slackDispatchBudget = 10 * time.Second
 )
 
 // receiveSlackInteraction serves POST /api/v1/integrations/slack/interactions.
 //
-// ⛔ THIS IS THE HTTP TRANSPORT AND IT IS UNUSED IN THE DEFAULT DEPLOYMENT.
-// Socket Mode is the default for self-hosted oto because it removes the
-// public-ingress requirement entirely; HTTP mode is a configuration flag. Both
-// transports run behind ONE handler — the port below — so behaviour is identical
-// and a bug fixed in one is fixed in both.
+// ⛔ THIS IS THE HTTP TRANSPORT, AND IT IS THE ONLY ONE THAT EXISTS TODAY.
+// `slack.mode` still defaults to `socket`, because Socket Mode is what a
+// self-hosted install with no public ingress wants — but no socket listener is
+// built, so a deployment that wants working buttons must run `mode=http` behind
+// a Request URL. docs/setup/slack.md says so in those words; a comment claiming
+// two transports while one is wired is how an operator ends up with a card whose
+// button nothing is listening for.
+//
+// When the socket transport is built it MUST terminate on the port below rather
+// than growing a consumer of its own. One handler is what keeps a bug fixed in
+// one transport fixed in both.
 //
 // ⛔ THE SLACK SDK IS NOT IMPORTED HERE. It lives only in
 // `channels/providers/slack`. The signature is verified with `crypto/hmac`
@@ -97,22 +110,53 @@ func (rt *Router) receiveSlackInteraction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if rt.interactions != nil {
-		if err := rt.interactions.Handle(r.Context(), payload); err != nil {
-			// ⛔ A handler failure MUST NOT become a non-2xx. Slack retries a
-			// non-2xx and shows the user a failure banner; the interaction has
-			// already been recorded as received, and oto's own queues own the
-			// retry. Logging it is the correct response.
-			log.From(r.Context()).Error("channels: Slack interaction handler failed", "error", err)
-		}
-	}
+	// ⭐⭐ THE 200 GOES OUT FIRST, AND THE ORDER IS THE FEATURE.
+	//
+	// It used to go out last, after the consumer had run. That is fine while the
+	// consumer does nothing — which is precisely what it did — and it is a
+	// three-second timer the moment it does anything real. Flushing here means
+	// the user's button settles immediately and every subsequent line runs with
+	// nobody waiting on it, so the worst a slow Postgres can produce is a card
+	// that updates late, never "This app is not responding".
 	writeSlackAck(w)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	if rt.interactions == nil {
+		return
+	}
+
+	// ⛔ THE CONTEXT IS DETACHED FROM THE REQUEST. Slack may close the connection
+	// the instant it has the 200, and a cancelled context would abort the enqueue
+	// somewhere between "the user saw success" and "oto recorded anything" — the
+	// exact silent loss this endpoint is being fixed for. It keeps the request's
+	// VALUES (the logger, the request id) and drops only its cancellation.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), slackDispatchBudget)
+	defer cancel()
+
+	if err := rt.interactions.Handle(ctx, payload); err != nil {
+		// ⛔ A handler failure MUST NOT become a non-2xx — and now it cannot, the
+		// status is already on the wire. That is the right outcome and not merely
+		// a consequence: Slack retries a non-2xx and shows the user a failure
+		// banner, while oto's own queues own the retry.
+		log.From(r.Context()).Error("channels: Slack interaction handler failed", "error", err)
+	}
 }
 
 // writeSlackAck sends the empty 200 Slack requires. The body is deliberately
 // empty: Slack needs only a prompt 2xx, and anything else would be rendered.
+//
+// ⛔ `Content-Length: 0` IS LOAD-BEARING, and leaving it out quietly undoes the
+// flush above. Without it Go must use chunked transfer encoding, and a chunked
+// response is not COMPLETE until its terminating chunk — which is written when
+// the handler returns, i.e. after the asynchronous work. Slack's client would
+// have the status line within milliseconds and still sit waiting for the end of
+// a body that is already empty, so the three-second timer would keep running
+// against work the flush was supposed to have escaped. Declaring the length
+// makes the response finished at the moment it is flushed.
 func writeSlackAck(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(http.StatusOK)
 }
 

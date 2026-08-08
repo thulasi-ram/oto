@@ -84,7 +84,6 @@ export type DeliverySummary = S["DeliverySummaryDTO"];
 export type Group = S["GroupDTO"];
 export type GroupDetail = S["GroupDetailDTO"];
 export type GroupRef = S["GroupRefDTO"];
-export type ChannelThread = S["ChannelThreadDTO"];
 export type RuleSnapshot = S["RuleSnapshotDTO"];
 export type RuleChange = S["RuleChangeDTO"];
 export type RuleHistory = S["RuleHistoryDTO"];

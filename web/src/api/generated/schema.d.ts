@@ -1782,9 +1782,10 @@ export interface paths {
          * @description Receives interactions from the alert card — the acknowledge and unacknowledge buttons, and the
          *     no-op acknowledgements every URL button still requires.
          *
-         *     **This is the HTTP transport, and it is unused in the default deployment.** Socket Mode is the
-         *     default for self-hosted oto because it removes the public-ingress requirement entirely; HTTP mode
-         *     is a configuration flag. Both transports run behind one handler, so behaviour is identical.
+         *     **This is the only interactivity transport oto implements.** `slack.mode` still defaults to
+         *     `socket`, but no Socket Mode client exists: a deployment that wants working buttons must set
+         *     `OTO_SLACK_MODE=http`, configure a non-empty signing secret, and point the Slack app's
+         *     **Interactivity Request URL** at this endpoint.
          *
          *     Requests are authenticated by Slack's HMAC signature over the **raw** body, verified in constant
          *     time, with requests older than five minutes rejected to defeat replay. Every interaction is
@@ -2630,13 +2631,6 @@ export interface components {
          */
         AlertEventDTO: {
             id: components["schemas"]["Uuid"];
-            /**
-             * Format: int64
-             * @description The stream sequence of the `ui_events` row this event produced, when it produced one. Lets a
-             *     polling client resume with `?since_seq=`.
-             * @example 918274
-             */
-            seq?: number | null;
             alert_id?: components["schemas"]["Uuid"] | null;
             occurrence_id?: components["schemas"]["Uuid"] | null;
             group_id?: components["schemas"]["Uuid"] | null;
@@ -3079,7 +3073,16 @@ export interface components {
             /** @description Non-null **if and only if** `state == "closed"`. */
             closed_at?: components["schemas"]["Timestamp"] | null;
         };
-        /** @description One group generation with its roll-up counts, member preview and chat threads. */
+        /**
+         * @description One group generation with its roll-up counts and member preview.
+         *
+         *     > There is no `threads` array. It was declared here, rendered by the UI's group screen, and
+         *     > emitted by nothing — no `ChannelThreadDTO` existed on the server at all, so the Threads
+         *     > panel was permanently in its empty state and a group that WAS being narrated in Slack
+         *     > looked exactly like one that was not. `delivery_summary` answers the question that panel
+         *     > was reaching for — did this generation's fan-out land — from data the group module can
+         *     > actually see.
+         */
         GroupDetailDTO: components["schemas"]["GroupDTO"] & {
             source?: components["schemas"]["SourceRefDTO"] | null;
             /**
@@ -3094,8 +3097,6 @@ export interface components {
             };
             /** @description A bounded preview of member alerts. Use `/alert-groups/{id}/alerts` for the full list. */
             top_alerts?: components["schemas"]["AlertRefDTO"][];
-            /** @description Where this generation is being narrated, one entry per channel. */
-            threads?: components["schemas"]["ChannelThreadDTO"][];
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
         /** @description A compact group reference. */
@@ -3107,40 +3108,6 @@ export interface components {
             title: string;
             state: components["schemas"]["GroupState"];
             storm_mode?: boolean;
-        };
-        /**
-         * @description The binding of one AlertGroup generation to one provider conversation anchor. oto's database is
-         *     the memory of the conversation — **oto never reads the chat provider back** to reconstruct its
-         *     own state.
-         */
-        ChannelThreadDTO: {
-            id: components["schemas"]["Uuid"];
-            channel_id: components["schemas"]["Uuid"];
-            channel_name?: string;
-            channel_type?: components["schemas"]["ChannelType"];
-            /**
-             * @description The provider's conversation id (for Slack, the channel id `C…`), **taken from the API
-             *     response, never from the request**.
-             * @example C7F2X9QLM
-             */
-            provider_conversation_id?: string | null;
-            /** @description The root message handle. For Slack this is the root `ts`, always a string. */
-            provider_thread_id?: components["schemas"]["SlackTs"] | null;
-            /** Format: int32 */
-            reply_count: number;
-            /** @enum {string} */
-            state: "opening" | "open" | "frozen" | "dead";
-            /**
-             * @description Non-null **if and only if** `state == "dead"`. A dead thread never wedges the queue: oto
-             *     posts a fresh root with a `continued` marker and every other channel keeps flowing.
-             * @enum {string|null}
-             */
-            dead_reason?: "channel_not_found" | "is_archived" | "message_not_found" | "not_in_channel" | "token_revoked" | "account_inactive" | "edit_window_closed" | "cannot_reply_to_message" | "restricted_action_thread_locked" | null;
-            /**
-             * Format: uri
-             * @description A deep link to the conversation, when the provider exposes one.
-             */
-            permalink?: string | null;
         };
         /**
          * @description A POINTER to the rule snapshot that was captured at fire time, and nothing more.
@@ -3691,7 +3658,6 @@ export interface components {
              *       "team_id": "T9TK3CUKW",
              *       "conversation_id": "C7F2X9QLM",
              *       "conversation_name": "sre-alerts",
-             *       "transport": "socket_mode",
              *       "max_instances": 10
              *     }
              */
@@ -3887,9 +3853,16 @@ export interface components {
             next_attempt_at?: components["schemas"]["Timestamp"] | null;
             /** @description Non-null whenever `status == "sent"`. */
             provider_message_id?: string | null;
+            /**
+             * @description The provider's conversation id. Together with `provider_message_id` it is the handle oto
+             *     keeps for the message it posted.
+             *
+             *     > There is no `permalink`. One was declared here and written by nothing: oto stores no
+             *     > permalink column, `chat.postMessage` does not return one, and constructing a Slack
+             *     > archive URL needs a workspace domain oto never asks for. A `format: uri` field that is
+             *     > always `null` is a deep link that never links.
+             */
             provider_conversation_id?: string | null;
-            /** Format: uri */
-            permalink?: string | null;
             /** @description Non-null whenever `status` is `failed` or `dead`. */
             error?: string | null;
             error_class?: components["schemas"]["DeliveryErrorClass"];
@@ -3911,7 +3884,13 @@ export interface components {
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
-        /** @description One delivery including the payload that was actually rendered. */
+        /**
+         * @description One delivery including the payload that was actually rendered.
+         *
+         *     > There is no `thread`. It referenced a `ChannelThreadDTO` schema that had no Go type behind
+         *     > it anywhere in oto, so the property could never be emitted. `thread_id` and `thread_seq`
+         *     > above are served and are what identify the conversation this delivery belongs to.
+         */
         DeliveryDetailDTO: components["schemas"]["DeliveryDTO"] & {
             /**
              * @description The exact provider-native payload, persisted **before** the network call. When outbound
@@ -3933,7 +3912,6 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             notification?: components["schemas"]["NotificationDTO"] | null;
-            thread?: components["schemas"]["ChannelThreadDTO"] | null;
         };
         /**
          * @description A **dry run**: "given this alert, who is told, where, and rendered how." It runs the real policy
@@ -4046,12 +4024,18 @@ export interface components {
              */
             alert_count: number;
         };
-        /** @description A registered enricher with its phase, version and observed health. */
+        /**
+         * @description A registered enricher with its phase, version and configured budget.
+         *
+         *     > `display_name`, `cache_hit_rate`, `success_rate`, `p95_duration_ms` and `last_run_at` were
+         *     > declared here and populated by nothing — the registry knows an enricher's name, version,
+         *     > phase and timeout, and that is all it knows. They are gone rather than permanently absent;
+         *     > the observed-health half of this resource will return when there is a store to read it
+         *     > from. Scrape `oto_enrichment_*` for the rates and latencies in the meantime.
+         */
         EnricherDTO: {
             /** @example prom.rule */
             name: string;
-            /** @example Rule snapshot */
-            display_name?: string;
             /** Format: int32 */
             version: number;
             phase: components["schemas"]["EnrichmentPhase"];
@@ -4062,19 +4046,14 @@ export interface components {
              */
             timeout_ms?: number;
             enabled: boolean;
-            /** @enum {string} */
-            health_status?: "healthy" | "degraded" | "failing" | "unknown";
             /**
-             * Format: float
-             * @description Rolling cache hit rate over the recent window.
-             * @example 0.82
+             * @description Always `unknown` today, and honestly so: the rolling health counters live in the
+             *     pipeline's Prometheus metrics and are not readable from the registry this endpoint
+             *     serves. It is declared because an invented `healthy` would be worse than an admitted
+             *     `unknown`.
+             * @enum {string}
              */
-            cache_hit_rate?: number | null;
-            /** Format: float */
-            success_rate?: number | null;
-            /** Format: int32 */
-            p95_duration_ms?: number | null;
-            last_run_at?: components["schemas"]["Timestamp"] | null;
+            health_status?: "healthy" | "degraded" | "failing" | "unknown";
         };
         /**
          * @description The dashboard roll-up: open counts, delivery health and source health. Deliberately contains no

@@ -235,6 +235,71 @@ func (NotifyUnackedReminderArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
 }
 
+// ------------------------------------------------------- channels (inbound)
+
+// SlackInteractionArgs carries ONE verified Slack block action off the HTTP
+// request and onto a queue.
+//
+// Queue: notify · Priority: CRITICAL · Retry: retryable (12) · Payload v1
+//
+// ⛔ IT EXISTS BECAUSE OF SLACK'S THREE-SECOND RULE (§H.8). An interaction that
+// is not acknowledged within three seconds shows the user "This app is not
+// responding", and resolving the org, reading the group's members and writing an
+// acknowledgement is several round trips to Postgres. The endpoint therefore
+// answers 200 the moment the HMAC verifies and enqueues this, so a slow database
+// costs a late card, never a failed button.
+//
+// ⛔ EVERY FIELD IS COPIED FROM THE SIGNED ENVELOPE AND NONE OF IT IS AUTHORITY.
+// `Value` is an opaque UUID (S8) resolved against oto's own tables, and the org
+// is resolved from TeamID + ChannelID — never from anything the button carries.
+// The signature proved the envelope came from Slack; it proved nothing about
+// what the envelope may do.
+//
+// IDEMPOTENCY KEY: none of its own, deliberately. The acknowledgement itself is
+// idempotent in the domain — `Occurrence.Acknowledge` refuses an already-acked
+// episode with `already_acked` — so a replayed payload, a double-click and a
+// retried job all converge on the same row. The uniqueness window the producer
+// applies is a convenience that collapses a byte-identical replay while the
+// first job is still in flight; it is not the correctness mechanism (§G.5).
+type SlackInteractionArgs struct {
+	Payload
+	// ActionID is the button's stable id, e.g. `oto.ack`. It is the dispatch key.
+	ActionID string `json:"action_id"`
+	// Value is the button's opaque identifier — an alert group id for `oto.ack`.
+	Value string `json:"value"`
+	// TeamID and ChannelID are the Slack workspace and conversation the press
+	// came from. TOGETHER THEY RESOLVE THE TENANT, and nothing else may.
+	TeamID    string `json:"team_id"`
+	ChannelID string `json:"channel_id"`
+	// SlackUserID is the member who pressed it; SlackUserName is their display
+	// name at press time, denormalised so a timeline entry survives a rename.
+	SlackUserID   string `json:"slack_user_id"`
+	SlackUserName string `json:"slack_user_name,omitempty"`
+	// MessageTS is the root message the button sits on, for correlation in logs.
+	MessageTS string `json:"message_ts,omitempty"`
+	// ResponseURL is Slack's one-shot reply channel for this interaction. It is
+	// how oto tells the user that an action could not apply, and it needs no
+	// token and no scope. Empty means the user gets no reply.
+	ResponseURL string `json:"response_url,omitempty"`
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (SlackInteractionArgs) Kind() string { return KindSlackInteraction }
+
+// InsertOpts pins the queue, priority and retry ceiling of this job type.
+//
+// PriorityCritical is the whole point: a human pressed a button and is watching
+// the card. It rides the notify queue because what it produces is a notification
+// — the acked card — and giving it a queue of its own would buy an isolation
+// boundary against nothing.
+func (SlackInteractionArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       QueueNotify,
+		Priority:    PriorityCritical,
+		MaxAttempts: MaxAttemptsRetryable,
+	}
+}
+
 // ---------------------------------------------------------------- sources
 
 // SourceReconcileArgs runs the mandatory Alertmanager v2 reconciler for one

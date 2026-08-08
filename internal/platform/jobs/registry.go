@@ -134,6 +134,7 @@ type Handlers struct {
 	DeliverDispatch    Handler[DeliverDispatchArgs]
 	SourceReconcile    Handler[SourceReconcileArgs]
 	SilencesSync       Handler[SilencesSyncArgs]
+	SlackInteraction   Handler[SlackInteractionArgs]
 
 	OccurrenceReap        Handler[OccurrenceReapArgs]
 	GroupClose            Handler[GroupCloseArgs]
@@ -181,6 +182,13 @@ func RegisterAll(r *Registry, h Handlers) error {
 		func() error {
 			return Register(r, Spec{Queue: QueueDeliverSlack, PayloadVersion: 1, Timeout: 30 * time.Second},
 				orStub(h.DeliverDispatch, KindDeliverDispatch))
+		},
+		func() error {
+			// 15 s, and shorter than every other kind here on purpose: a human
+			// pressed a button and is watching the card. A press that cannot be
+			// applied in fifteen seconds is better retried than left hanging.
+			return Register(r, Spec{Queue: QueueNotify, PayloadVersion: 1, Timeout: 15 * time.Second},
+				orStub(h.SlackInteraction, KindSlackInteraction))
 		},
 		func() error {
 			return Register(r, Spec{Queue: QueueReconcile, PayloadVersion: 1, Timeout: 60 * time.Second},

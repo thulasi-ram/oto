@@ -233,6 +233,26 @@ type FanOutResult struct {
 	// cannot be acknowledged, and that is a normal outcome, not a failure of the
 	// request.
 	Applied int
+	// SkippedCodes counts the members that REFUSED the verb, keyed by the stable
+	// errs code of the refusal.
+	//
+	// ⭐ It exists because "nothing happened" has more than one honest
+	// explanation, and a caller that has to tell a human which one it was cannot
+	// get it from a count. `already_acked` means somebody got there first;
+	// `no_open_occurrence` means every episode has already resolved or expired.
+	// Those are different sentences, and a surface that cannot say which — the
+	// Slack Acknowledge button, in particular — is back to being a button that
+	// silently does nothing.
+	SkippedCodes map[string]int
+}
+
+// Skipped is the total number of members that refused the verb.
+func (r FanOutResult) Skipped() int {
+	n := 0
+	for _, c := range r.SkippedCodes {
+		n += c
+	}
+	return n
 }
 
 // Acknowledge serves `POST /api/v1/alert-groups/{id}/ack`: ack every OPEN member
@@ -317,10 +337,10 @@ func (s *Service) Snooze(
 // each currently-joined member.
 func (s *Service) Unsnooze(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
-	actorKind, actorID, actorLabel string,
+	actorKind, actorID, actorLabel, note string,
 ) (FanOutResult, error) {
 	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
-		return s.actions.UnsnoozeAs(ctx, scope, alertID, actorKind, actorID, actorLabel)
+		return s.actions.UnsnoozeAs(ctx, scope, alertID, actorKind, actorID, actorLabel, note)
 	})
 }
 
@@ -354,6 +374,17 @@ func (s *Service) fanOut(
 
 		if err := apply(ctx, m.AlertID); err != nil {
 			if errs.IsKind(err, errs.KindPrecondition) || errs.IsKind(err, errs.KindNotFound) {
+				// The refusal is recorded rather than merely tolerated: the CODE
+				// is the only thing that can tell a human "somebody already acked
+				// this" apart from "it resolved while you were reading it".
+				code := errs.CodeOf(err)
+				if code == "" {
+					code = "refused"
+				}
+				if res.SkippedCodes == nil {
+					res.SkippedCodes = map[string]int{}
+				}
+				res.SkippedCodes[code]++
 				continue
 			}
 			return FanOutResult{}, err

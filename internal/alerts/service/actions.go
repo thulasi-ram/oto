@@ -46,10 +46,15 @@ func (s *Service) Acknowledge(
 }
 
 // Unacknowledge drops an acknowledgement a human placed (T10, reason `manual`).
+//
+// `note` is the human's explanation for the withdrawal. It does NOT go back onto
+// the occurrence — `ack_note` describes the acknowledgement being removed and is
+// cleared by the transition — it goes onto the timeline, in the
+// `occurrence.unacknowledged` event payload.
 func (s *Service) Unacknowledge(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor,
+	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
 ) (domain.Occurrence, error) {
-	return s.setAck(ctx, scope, alertID, actor, "", false, domain.UnackReasonManual)
+	return s.setAck(ctx, scope, alertID, actor, note, false, domain.UnackReasonManual)
 }
 
 func (s *Service) setAck(
@@ -310,7 +315,9 @@ func (s *Service) Snooze(
 		if active, ok, err := s.snoozes.GetActive(ctx, scope, alertID); err != nil {
 			return err
 		} else if ok {
-			_, evs, err := s.endSnooze(ctx, scope, active, actor, domain.SnoozeEndedSuperseded, at)
+			// No note: the incumbent is being replaced, not woken, and the note the
+			// human typed belongs to the snooze they are creating.
+			_, evs, err := s.endSnooze(ctx, scope, active, actor, domain.SnoozeEndedSuperseded, at, "")
 			if err != nil {
 				return err
 			}
@@ -370,8 +377,10 @@ func (s *Service) Snooze(
 }
 
 // Unsnooze ends an active snooze early (§B.8.3).
+//
+// `note` is recorded with the wake-up, in the `alert.unsnoozed` event payload.
 func (s *Service) Unsnooze(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor,
+	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
 ) (domain.Snooze, error) {
 	if actor.IsZero() || !actor.Kind().IsHuman() {
 		return domain.Snooze{}, errs.Validation("actor_required", "an unsnooze requires a human actor")
@@ -397,7 +406,7 @@ func (s *Service) Unsnooze(
 			return err
 		}
 
-		ended, evs, err := s.endSnooze(ctx, scope, active, actor, domain.SnoozeEndedManual, at)
+		ended, evs, err := s.endSnooze(ctx, scope, active, actor, domain.SnoozeEndedManual, at, note)
 		if err != nil {
 			return err
 		}
@@ -430,12 +439,13 @@ func (s *Service) Unsnooze(
 // approved.
 func (s *Service) endSnooze(
 	ctx context.Context, scope db.TenantScope, snz domain.Snooze, actor domain.Actor,
-	reason domain.SnoozeEndReason, at domain.ObservationTime,
+	reason domain.SnoozeEndReason, at domain.ObservationTime, note string,
 ) (domain.Snooze, []domain.Event, error) {
 	next, evs, err := snz.End(domain.UnsnoozeCommand{
 		Actor:   actor,
 		At:      at,
 		Reason:  reason,
+		Note:    note,
 		EventID: id.New(),
 	})
 	if err != nil {

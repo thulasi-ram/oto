@@ -65,15 +65,25 @@ type GroupDTO struct {
 
 // GroupDetailDTO renders `GroupDetailDTO`.
 //
-// `source` and `threads` are optional properties of the contract schema and are
-// NOT embedded: they belong to `sources` and `channels`, and CONTEXT.md §5.4
-// forbids this package from naming another domain's types.
+// `source` is an optional property of the contract schema and is NOT embedded:
+// it belongs to `sources`, and CONTEXT.md §5.4 forbids this package from naming
+// another domain's types.
 //
 // `delivery_summary` IS carried, through a consumer-declared port rather than an
 // import. A group generation is the thing oto actually notifies about — the
 // intents are keyed on it — so a group card that could not say whether its own
 // fan-out landed was the emptiest instance of a field declared four times and
 // emitted nowhere.
+//
+// ⛔ `threads` IS GONE FROM THE CONTRACT, and this comment used to be the reason
+// it survived. It said `threads` was "NOT embedded" for layering reasons — while
+// no `ChannelThreadDTO` existed anywhere in oto's Go tree, so there was nothing
+// to embed and nothing to port to. The UI's group screen rendered the array,
+// permanently empty, which made a generation being actively discussed in Slack
+// indistinguishable from one nobody had been told about. A layering note is not
+// a reason to keep declaring a field; if the thread list is wanted back, it
+// arrives the way `delivery_summary` did, as a port this package declares and
+// the composition root satisfies.
 type GroupDetailDTO struct {
 	GroupDTO
 	SeverityCounts map[string]int32 `json:"severity_counts"`
@@ -166,9 +176,14 @@ type SnoozeDTO struct {
 // `occurred_at` is the upstream claim the UI displays; `recorded_at` is oto's own
 // clock and is what the list is ordered by. The two are never conflated, because
 // upstream clock skew is measured and badged rather than corrected away.
+//
+// ⛔ THERE IS NO `seq`. It was declared as the `ui_events.seq` a polling client
+// echoes back in `?since_seq=`, and it was set by nothing — while no operation
+// returning this DTO accepts `since_seq` either. A client following the
+// documented resume protocol read `null` forever and could never advance its
+// cursor. Timelines page by `cursor`, which is served.
 type AlertEventDTO struct {
 	ID           uuid.UUID      `json:"id"`
-	Seq          *int64         `json:"seq"`
 	AlertID      *uuid.UUID     `json:"alert_id"`
 	OccurrenceID *uuid.UUID     `json:"occurrence_id"`
 	GroupID      *uuid.UUID     `json:"group_id"`

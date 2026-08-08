@@ -224,12 +224,15 @@ func (rt *Router) unsnoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if _, err := optionalBody[UnsnoozeRequest](w, r); err != nil {
+	body, err := optionalBody[UnsnoozeRequest](w, r)
+	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	if _, err := rt.svc.Unsnooze(r.Context(), scope, id, kind, actorID, label); err != nil {
+	// The note is recorded on every member's timeline, the same way the group
+	// snooze note is: the fan-out is of the primitive, note and all.
+	if _, err := rt.svc.Unsnooze(r.Context(), scope, id, kind, actorID, label, body.Note); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}

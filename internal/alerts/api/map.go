@@ -82,6 +82,16 @@ func occurrenceDTO(o domain.Occurrence, now time.Time) OccurrenceDTO {
 	if r := o.SuppressionReason(); !r.IsZero() {
 		dto.SuppressionReason = strPtr(r.String())
 	}
+	// The witnesses, when Alertmanager named any. `suppression_reason: silenced`
+	// says a silence is muting the alert; this says WHICH one, which is the half
+	// an operator can act on.
+	if sb := o.SuppressedBy(); !sb.IsZero() {
+		dto.SuppressedBy = &SuppressedByDTO{
+			SilencedBy:  sb.SilencedBy,
+			InhibitedBy: sb.InhibitedBy,
+			MutedBy:     sb.MutedBy,
+		}
+	}
 	if r := o.ResolveReason(); !r.IsZero() {
 		dto.ResolveReason = strPtr(r.String())
 	}
