@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210107,"nonce":"a620FZYNxnab7ZIF3Gb5MBWtvxc=","title":"A 500-alert storm recomputes the group rollup 500 times","was":"**What is wrong.** The group rollup is recomputed once per opened occurrence."}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210107,"nonce":"SHztaiQ6GS1JHPaSQm/0x6BS9ZE=","added":["high","perf"],"removed":null}]}
