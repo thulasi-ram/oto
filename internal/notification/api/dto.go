@@ -49,15 +49,15 @@ type PolicyDTO struct {
 	ChannelIDs []uuid.UUID  `json:"channel_ids"`
 	Throttle   *ThrottleDTO `json:"throttle"`
 
-	// EscalateAfterSeconds is the wire name the published contract uses for oto's
-	// ONE reminder stage. The stored column, the domain field and every comment
-	// in this codebase say `unacked_reminder`, because "escalation" is a
-	// scope-banned word (CONTEXT.md §3): an escalation is a LADDER that ends at a
-	// PERSON, and this is a SCALAR that ends at a CHANNEL.
+	// UnackedReminderAfterSeconds is oto's ONE reminder stage, in seconds. Wire,
+	// column (`unacked_reminder_after_s`, migration 00019), domain field and
+	// contract all spell it the same way; the older spelling named a LADDER that
+	// ends at a PERSON, and this is a SCALAR that ends at a CHANNEL
+	// (CONTEXT.md §3, SPEC §P-20).
 	//
 	// ⛔ IT IS AND STAYS A SCALAR. ONE STAGE, FOREVER (SPEC §G.9.1). The moment it
 	// is an array, oto is an on-call product and FR-1 has been crossed.
-	EscalateAfterSeconds *int32 `json:"escalate_after_seconds"`
+	UnackedReminderAfterSeconds *int32 `json:"unacked_reminder_after_seconds"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -66,10 +66,19 @@ type PolicyDTO struct {
 // DeliverySummaryDTO is the fan-out health of one intent, so that "was anybody
 // told about this?" is answerable without a second request.
 type DeliverySummaryDTO struct {
-	Total  int32 `json:"total"`
+	Total int32 `json:"total"`
+	// Sent counts `skipped` too. A coalesced no-op update means the destination
+	// already shows exactly this content, and reporting it as anything but
+	// delivered would make a healthy quiet thread look broken.
 	Sent   int32 `json:"sent"`
 	Failed int32 `json:"failed"`
 	Dead   int32 `json:"dead"`
+	// Skipped is the subset of Sent that was a deliberate no-op, broken out so
+	// "nothing was actually posted" is answerable without a second request.
+	Skipped int32 `json:"skipped"`
+	// Pending is queued plus in flight. `pending` and `sending` both count: from
+	// the outside they are the same answer — nobody has been told YET.
+	Pending int32 `json:"pending"`
 }
 
 // NotificationDTO is the channel-agnostic INTENT to communicate one fact.
@@ -215,10 +224,9 @@ type CreatePolicyRequest struct {
 	ChannelIDs []uuid.UUID  `json:"channel_ids" validate:"required,min=1,max=16,unique"`
 	Throttle   *ThrottleDTO `json:"throttle,omitempty"`
 
-	// EscalateAfterSeconds is the contract's wire name for the ONE unacked
-	// reminder stage. See PolicyDTO for why the name here and the name everywhere
-	// else differ.
-	EscalateAfterSeconds *int32 `json:"escalate_after_seconds,omitempty" validate:"omitempty,min=60,max=86400"`
+	// UnackedReminderAfterSeconds is the ONE unacked reminder stage, in seconds.
+	// See PolicyDTO: scalar, one stage, forever.
+	UnackedReminderAfterSeconds *int32 `json:"unacked_reminder_after_seconds,omitempty" validate:"omitempty,min=60,max=86400"`
 }
 
 // UpdatePolicyRequest is the partial update.
@@ -231,19 +239,19 @@ type UpdatePolicyRequest struct {
 	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=32,unique"`
 	ChannelIDs *[]uuid.UUID  `json:"channel_ids,omitempty" validate:"omitempty,min=1,max=16,unique"`
 
-	// Throttle and EscalateAfterSeconds are nullable in the contract: an explicit
-	// `null` CLEARS the damper, which is a different request from omitting the
-	// field. NullableThrottle and NullableInt32 keep that distinction while
-	// leaving `httpx.Bind` the only door a body comes through.
-	Throttle             NullableThrottle `json:"throttle,omitempty"`
-	EscalateAfterSeconds NullableInt32    `json:"escalate_after_seconds,omitempty"`
+	// Throttle and UnackedReminderAfterSeconds are nullable in the contract: an
+	// explicit `null` CLEARS the damper, which is a different request from
+	// omitting the field. NullableThrottle and NullableInt32 keep that
+	// distinction while leaving `httpx.Bind` the only door a body comes through.
+	Throttle                    NullableThrottle `json:"throttle,omitempty"`
+	UnackedReminderAfterSeconds NullableInt32    `json:"unacked_reminder_after_seconds,omitempty"`
 }
 
 // IsEmpty reports whether the request asks for nothing.
 func (r UpdatePolicyRequest) IsEmpty() bool {
 	return r.Name == nil && r.Priority == nil && r.Enabled == nil &&
 		r.Matchers == nil && r.Reasons == nil && r.ChannelIDs == nil &&
-		!r.Throttle.Set && !r.EscalateAfterSeconds.Set
+		!r.Throttle.Set && !r.UnackedReminderAfterSeconds.Set
 }
 
 // PolicyPreviewRequest describes the fact to dry-run.

@@ -158,6 +158,12 @@ type Container struct {
 	// enqueuer is the late-bound outbox handed to every service before the job
 	// client exists. See lateEnqueuer.
 	enqueuer *lateEnqueuer
+	// streamMetrics is the ONE registered streaming collector set. It is held on
+	// the container because the hub, the bridge and the SSE handler are built in
+	// three different places and must all increment the SAME collectors —
+	// building a second set is not a duplicate metric, it is a metric nothing
+	// scrapes.
+	streamMetrics *streamingservice.Metrics
 }
 
 // routerSet is every domain's HTTP surface, held so routes.go can mount them.
@@ -277,6 +283,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 
 	// ---- streaming: the durable log, the hub, the LISTEN/NOTIFY bridge ---
 	streamMetrics := streamingservice.NewMetrics(reg)
+	c.streamMetrics = streamMetrics
 	c.Streaming = streamingservice.NewService(streamingrepo.NewEventRepository(general), clk, logger)
 	c.StreamHub = streamingservice.NewHub(streamingservice.HubConfig{
 		Logger:  logger,
@@ -289,10 +296,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	c.ChannelRegistry = channelsregistry.Default(channelsregistry.Config{
 		Clock:      clk,
 		HTTPClient: o.HTTPClient,
-		// The webhook provider's own SSRF guard reads the SAME deployment-level
-		// switch as `netguard`, so an operator has one decision to make rather than
-		// two that can disagree. That provider still resolves before it dials — see
-		// the note in `netguard`'s doc about adopting it there.
+		// The webhook provider builds a `netguard` guard from this SAME
+		// deployment-level switch and installs it as the DIALER on every channel's
+		// transport, exactly as the Alertmanager and Prometheus clients do. One
+		// decision for the operator, one SSRF control for the process.
 		AllowPrivateWebhookTargets: o.Config.Security.AllowPrivateTargets,
 	})
 	channelRepo := channelsrepo.NewChannelRepository(general, clk)
@@ -603,6 +610,11 @@ func (c *Container) buildNotification(
 		BaseURL:  c.Config.HTTP.BaseURL,
 		Clock:    clk,
 		Logger:   logger,
+		// ⭐ `oto_delivery_claim_lost_total` is an ALERT, not a statistic: every
+		// increment is a message that exists in somebody's channel with no `sent`
+		// row behind it. Left unregistered it was a counter nothing could scrape,
+		// which is the same as not having it.
+		Metrics: notifservice.NewMetrics(reg),
 	}); err != nil {
 		return err
 	}
@@ -757,7 +769,11 @@ func (c *Container) buildRouters(
 			streamingapi.ScopeResolverFunc(func(ctx context.Context) (db.TenantScope, error) {
 				_, s, err := authn.Scope(ctx)
 				return s, err
-			}), clk, c.Logger, streamingservice.NewMetrics(nil)),
+				// ⭐ THE REGISTERED SET, not a fresh one. The SSE handler is the
+				// only place `oto_stream_resync_total{reason=...}` is incremented for
+				// a client-driven resync; handed its own unregistered collectors,
+				// every one of those increments was invisible to /metrics.
+			}), clk, c.Logger, c.streamMetrics),
 		ingestion: c.Ingestion,
 	}
 }

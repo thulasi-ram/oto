@@ -143,7 +143,10 @@ func TestGateBoundsConcurrencyAndNeverBlocks(t *testing.T) {
 	t.Parallel()
 
 	g := NewGate(2)
-	if !g.Acquire() || !g.Acquire() {
+	// Both calls must run: Acquire has a side effect, so this is "take the two
+	// slots the gate has", not a redundant condition.
+	first, second := g.Acquire(), g.Acquire()
+	if !first || !second {
 		t.Fatal("the gate refused inside its own capacity")
 	}
 

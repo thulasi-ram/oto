@@ -26,6 +26,11 @@ type Config struct {
 	Env     string `koanf:"env"      validate:"required,oneof=dev staging prod"`
 	Service string `koanf:"service"  validate:"required"`
 	Version string `koanf:"version"`
+	// Commit and BuildDate are stamped by the linker (see the Makefile's LDFLAGS)
+	// and passed through here so GET /api/v1/version can answer "which build is
+	// this" without importing package main. Empty in a `go run` build.
+	Commit    string `koanf:"commit"`
+	BuildDate string `koanf:"build_date"`
 
 	HTTP      HTTPConfig      `koanf:"http"`
 	DB        DBConfig        `koanf:"db"`

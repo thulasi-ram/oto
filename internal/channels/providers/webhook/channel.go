@@ -14,14 +14,24 @@ import (
 
 	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
+	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/netguard"
 )
 
 const providerName = "webhook"
 
-// maxResponseBytes bounds what oto reads back. A receiver's response body is
-// never interesting beyond a diagnostic snippet, and an unbounded read is a
-// denial-of-service against oto by its own configuration.
+// maxResponseBytes bounds what oto reads back before giving up on draining the
+// body. The bytes are COUNTED AND DISCARDED, never kept — an unbounded read is a
+// denial-of-service against oto by its own configuration, and a kept one is
+// worse (see recordResponse).
 const maxResponseBytes = 4096
+
+// maxRetryAfter caps what a receiver may ask oto to wait.
+//
+// `Retry-After` is upstream-controlled, and an unbounded one is a receiver — or
+// whatever an SSRF pointed oto at — parking a firing alert's notification for a
+// year. Anything longer is clamped; the backoff schedule owns the rest (§G.6).
+const maxRetryAfter = time.Hour
 
 // Channel is one generic webhook destination.
 //
@@ -32,7 +42,7 @@ const maxResponseBytes = 4096
 type Channel struct {
 	cfg    Config
 	client *http.Client
-	guard  *Guard
+	guard  *netguard.Guard
 	clock  clock.Clock
 }
 
@@ -65,9 +75,13 @@ func (c *Channel) Amend(
 func (c *Channel) send(
 	ctx context.Context, msg domain.RenderedMessage, deliveryID string,
 ) (domain.DeliverResult, error) {
-	// Re-checked on every send, not just at configuration time: DNS can be
-	// re-pointed at a link-local address long after the config was saved.
-	if err := c.guard.CheckURL(ctx, c.cfg.URL); err != nil {
+	// Checked again here so a target that is ALREADY known-bad fails as
+	// `config_invalid` (permanent, visible, fixable) rather than as a dial error
+	// twelve retries later. It is NOT the control — the guard's dialer under
+	// c.client is, and it re-checks the address the socket connects to, which is
+	// why an UNDECIDED answer is passed through to the dial rather than treated
+	// as a refusal.
+	if err := c.guard.CheckURL(ctx, c.cfg.URL); err != nil && !netguard.Undecided(err) {
 		return domain.DeliverResult{}, &domain.Error{
 			Class: domain.ClassConfigInvalid, Provider: providerName,
 			Code: "target_not_allowed", Cause: err,
@@ -102,16 +116,21 @@ func (c *Channel) send(
 		req.Header.Set(k, v)
 	}
 
+	started := c.clock.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return domain.DeliverResult{}, classifyTransport(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	// ⛔ THE BODY IS COUNTED AND DISCARDED. It is drained (bounded) so the
+	// connection can be reused, and then it is gone. See recordResponse for why
+	// not one byte of it may be kept.
+	bodyBytes, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+	elapsed := c.clock.Now().Sub(started)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return domain.DeliverResult{}, classifyStatus(resp, body)
+		return domain.DeliverResult{}, classifyStatus(resp, bodyBytes)
 	}
 
 	return domain.DeliverResult{
@@ -122,7 +141,7 @@ func (c *Channel) send(
 			ProviderKey: deliveryID,
 		},
 		DeliveredAt: c.clock.Now().UTC(),
-		Raw:         rawResult(resp.StatusCode, body),
+		Raw:         recordResponse(resp.StatusCode, bodyBytes, elapsed),
 	}, nil
 }
 
@@ -149,11 +168,12 @@ func (c *Channel) Close() error {
 
 // classifyStatus maps an HTTP status onto the port's ErrorClass.
 //
-// 429 honours Retry-After exactly; 5xx retries; 4xx is permanent, because
+// 429 honours Retry-After (clamped); 5xx retries; 4xx is permanent, because
 // retrying a request the receiver has already rejected twelve times is how a
 // notification backlog becomes an outage.
-func classifyStatus(resp *http.Response, body []byte) *domain.Error {
-	cause := fmt.Errorf("webhook responded %d: %s", resp.StatusCode, snippet(body))
+func classifyStatus(resp *http.Response, bodyBytes int64) *domain.Error {
+	cause := fmt.Errorf("webhook responded %d (%d body bytes, not recorded)",
+		resp.StatusCode, bodyBytes)
 	code := "http_" + strconv.Itoa(resp.StatusCode)
 
 	switch {
@@ -186,6 +206,17 @@ func classifyStatus(resp *http.Response, body []byte) *domain.Error {
 }
 
 func classifyTransport(err error) *domain.Error {
+	// ⭐ A GUARD REFUSAL IS NOT A NETWORK BLIP. The SSRF guard now lives in the
+	// DIALER, so its refusal surfaces here, wrapped in a *url.Error, rather than
+	// from the pre-flight check. Left to the default it would be classified
+	// `retryable` and re-dialled a dozen times — a blocked target retried on a
+	// backoff instead of shown to the operator as the configuration error it is.
+	if e, ok := errs.As(err); ok && e.Kind == errs.KindValidation {
+		return &domain.Error{
+			Class: domain.ClassConfigInvalid, Provider: providerName,
+			Code: "target_not_allowed", Cause: err,
+		}
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &domain.Error{Class: domain.ClassRetryable, Provider: providerName, Code: "timeout", Cause: err}
 	}
@@ -201,27 +232,45 @@ func retryAfter(resp *http.Response) time.Duration {
 		return 0
 	}
 	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
-		return time.Duration(secs) * time.Second
+		return clampRetryAfter(time.Duration(secs) * time.Second)
 	}
 	if t, err := http.ParseTime(v); err == nil {
 		if d := time.Until(t); d > 0 {
-			return d
+			return clampRetryAfter(d)
 		}
 	}
 	return 0
 }
 
-func snippet(body []byte) string {
-	s := strings.TrimSpace(string(body))
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > 200 {
-		s = s[:200] + "…"
+func clampRetryAfter(d time.Duration) time.Duration {
+	if d > maxRetryAfter {
+		return maxRetryAfter
 	}
-	return s
+	return d
 }
 
-func rawResult(status int, body []byte) json.RawMessage {
-	raw, err := json.Marshal(map[string]any{"status": status, "body": snippet(body)})
+// recordResponse is what `provider_response` on GET /deliveries/{id} shows.
+//
+// ⛔ IT MUST NEVER CARRY ONE BYTE THE RECEIVER SENT. The webhook URL is
+// operator-supplied and oto dials it from inside the operator's network; the
+// guard makes reaching an internal address hard, but a channel pointed at a
+// merely-unintended target must not additionally hand its response back through
+// the API. A body snippet here made every webhook an SSRF READ primitive: the
+// attacker did not just cause the request, they got the answer. Status code,
+// body SIZE and round-trip time answer "did it arrive, was it healthy, was it
+// slow" — which is what debugging a delivery actually needs — and none of the
+// three is a channel for content.
+//
+// A "redacted" or truncated snippet is NOT an acceptable middle ground. 200
+// characters of an internal page is still an internal page, and redaction that
+// has to guess what is sensitive in an unknown upstream's output is redaction
+// that will be wrong.
+func recordResponse(status int, bodyBytes int64, elapsed time.Duration) json.RawMessage {
+	raw, err := json.Marshal(map[string]any{
+		"status":      status,
+		"body_bytes":  bodyBytes,
+		"duration_ms": elapsed.Milliseconds(),
+	})
 	if err != nil {
 		return nil
 	}

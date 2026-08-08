@@ -14,21 +14,25 @@ var (
 	BuildDate = ""
 )
 
-func versionString() string {
-	commit := Commit
-	if commit == "" {
-		if bi, ok := debug.ReadBuildInfo(); ok {
-			for _, s := range bi.Settings {
-				if s.Key == "vcs.revision" {
-					commit = s.Value
-				}
+// commitHash is the linker-stamped commit, falling back to the one the toolchain
+// embeds for a `go build` inside a repository.
+func commitHash() string {
+	if Commit != "" {
+		return Commit
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" {
+				return s.Value
 			}
 		}
 	}
-	if commit == "" {
-		commit = "unknown"
-	}
-	return fmt.Sprintf("oto %s (commit %s, built %s, %s)", Version, commit, orUnknown(BuildDate), runtime.Version())
+	return ""
+}
+
+func versionString() string {
+	return fmt.Sprintf("oto %s (commit %s, built %s, %s)",
+		Version, orUnknown(commitHash()), orUnknown(BuildDate), runtime.Version())
 }
 
 func orUnknown(s string) string {

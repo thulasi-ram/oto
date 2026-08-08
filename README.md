@@ -69,7 +69,9 @@ internal/<domain> api / service / repository / domain — see CONTEXT.md §5
 pkg/alertkey/     canonical label serialisation and the identity keys
 db/migrations/    goose SQL, expand/contract only
 web/              Vite 6 + SolidJS + TypeScript strict + Tailwind v4
-deploy/           compose and alertmanager config. ⚠️ `deploy/helm/` and
+deploy/           compose, alertmanager config, and `slack/manifest.yaml` — the
+                  Slack app manifest a customer pastes into Slack, with every
+                  requested scope justified and sourced. ⚠️ `deploy/helm/` and
                   `deploy/prometheus/` are EMPTY DIRECTORIES: the Helm chart of
                   SPEC acceptance criterion 31 (`helm install oto` as the entire
                   install) is not built yet, and neither is the sample
@@ -110,6 +112,16 @@ wrong — not the rule.
 - `docs/design/SPEC.md` — binding specification. Implement it literally.
 - `docs/design/domain-research.md` — verified ground truth about Alertmanager and Slack.
 - `docs/adr/` — amendments. The SPEC changes only through an ADR in the same commit.
+- `docs/setup/slack.md` — connecting a workspace: the three credentials, and what to do about
+  every Slack error oto classifies. Paste `deploy/slack/manifest.yaml` into Slack's
+  "Create an app from manifest" flow rather than ticking scopes by hand.
+- `docs/setup/tuning.md` — `refire_grace`, the flap and storm thresholds, and how the right value
+  for each is derived from your own `alertmanager.yml` and your rules' `for:` durations.
+
+## Licence
+
+MIT — see `LICENSE` and [ADR 0019](docs/adr/0019-mit-licence.md). No `ee/` directory, no feature
+behind a licence key, no CLA.
 
 Issue tracking lives in the repository itself via [`git-bug`](https://github.com/git-bug/git-bug):
 `git-bug bug` lists, `git-bug bug new` files.

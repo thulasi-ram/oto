@@ -76,6 +76,10 @@ func run() error {
 	if cfg.Version == "dev" && Version != "" {
 		cfg.Version = Version
 	}
+	// The linker stamps these; GET /api/v1/version reads them off the Config
+	// because internal/app cannot import package main.
+	cfg.Commit = commitHash()
+	cfg.BuildDate = BuildDate
 
 	// 2. Logging.
 	logger := log.New(cfg.Log, os.Stdout).With(

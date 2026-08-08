@@ -2376,8 +2376,11 @@ export interface components {
             current_occurrence?: components["schemas"]["OccurrenceDTO"] | null;
             /** @description Present only when the request asked for `include=enrichments`. */
             enrichments?: components["schemas"]["EnrichmentDTO"][] | null;
-            /** @description Present only when the request asked for `include=rule`. */
-            rule?: components["schemas"]["RuleSnapshotDTO"] | null;
+            /**
+             * @description Present only when the request asked for `include=rule`, and a REFERENCE — see
+             *     `RuleSnapshotRefDTO`. `GET /api/v1/alerts/{id}/rule` serves the snapshot whole.
+             */
+            rule?: components["schemas"]["RuleSnapshotRefDTO"] | null;
         };
         /**
          * @description One Alert expanded with its current occurrence, its enrichment summary, the rule as it was at
@@ -2998,6 +3001,23 @@ export interface components {
              * @description A deep link to the conversation, when the provider exposes one.
              */
             permalink?: string | null;
+        };
+        /**
+         * @description A POINTER to the rule snapshot that was captured at fire time, and nothing more.
+         *
+         *     `include=rule` on an alert answers "which snapshot", not "what did it say". Two reasons, and
+         *     both are deliberate. First, `RuleSnapshotDTO` carries `expr` (up to 64 KiB) plus the full
+         *     label and annotation maps, and embedding that in every row of a 200-alert list is the payload
+         *     explosion `include=` exists to make opt-in — a ref keeps the option usable. Second, the alerts
+         *     module may not name the rules module's types (CONTEXT.md §5, layering rule 4/5), and a
+         *     hand-copied fifteen-field duplicate of `RuleSnapshotDTO` living in `alerts/api` would be the
+         *     second copy that drifts.
+         *
+         *     `GET /api/v1/alerts/{id}/rule` serves the snapshot whole — with its **history**, which is the
+         *     richer answer this API is actually for.
+         */
+        RuleSnapshotRefDTO: {
+            id: components["schemas"]["Uuid"];
         };
         /**
          * @description A content-addressed capture of an alerting rule at a point in time — **the differentiator**.

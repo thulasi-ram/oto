@@ -9,6 +9,7 @@ import (
 
 	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
+	"github.com/thulasiram/oto/internal/platform/netguard"
 )
 
 // capabilities is CapRichLayout and NOTHING ELSE (§H.10).
@@ -30,7 +31,7 @@ const (
 
 // Provider mints generic webhook Channels.
 type Provider struct {
-	guard     *Guard
+	guard     *netguard.Guard
 	clock     clock.Clock
 	transport http.RoundTripper
 }
@@ -44,6 +45,10 @@ type Options struct {
 	AllowPrivateTargets bool
 	// Transport overrides the HTTP transport, for tests.
 	Transport http.RoundTripper
+	// Guard overrides the SSRF guard, which is how a test models an attacker's
+	// DNS — a TTL-0 name that alternates public → link-local — without a DNS
+	// server. Nil builds the production guard from AllowPrivateTargets.
+	Guard *netguard.Guard
 }
 
 // NewProvider builds the webhook provider.
@@ -52,8 +57,19 @@ func NewProvider(o Options) *Provider {
 	if clk == nil {
 		clk = clock.New()
 	}
+	guard := o.Guard
+	if guard == nil {
+		// ⭐ ONE SSRF CONTROL FOR THE PROCESS. `Code` and `Field` place a refusal
+		// where the settings form can render it: the webhook URL lives at
+		// `config/url`, and a blocked target is a config error, not an outage.
+		guard = netguard.New(netguard.Options{
+			AllowPrivate: o.AllowPrivateTargets,
+			Code:         "config_invalid",
+			Field:        "url",
+		})
+	}
 	return &Provider{
-		guard:     NewGuard(o.AllowPrivateTargets),
+		guard:     guard,
 		clock:     clk,
 		transport: o.Transport,
 	}
@@ -75,6 +91,13 @@ func (p *Provider) Descriptor() domain.Descriptor {
 // ValidateConfig checks a stored config against the schema, then applies the two
 // rules a JSON Schema cannot express (§L.5): no Authorization header, and no
 // loopback, link-local or private target unless the operator opted in.
+//
+// ⚠️ The URL check here is FAST FEEDBACK, not the control. The control is the
+// guard's dialer, installed on every channel's transport by httpClient. That is
+// why an UNDECIDED answer — the host did not resolve from this machine, right
+// now — is accepted: refusing to save `receiver.monitoring.svc` because a laptop
+// cannot resolve it would make oto unconfigurable, and the dialer refuses the
+// address it actually reaches regardless.
 func (p *Provider) ValidateConfig(ctx context.Context, raw json.RawMessage) error {
 	cfg, err := ParseConfig(raw)
 	if err != nil {
@@ -83,7 +106,17 @@ func (p *Provider) ValidateConfig(ctx context.Context, raw json.RawMessage) erro
 	if err := CheckHeaders(cfg.Headers); err != nil {
 		return err
 	}
-	return p.guard.CheckURL(ctx, cfg.URL)
+	return p.checkTarget(ctx, cfg.URL)
+}
+
+// checkTarget runs the configuration-time URL check, tolerating an undecided
+// answer. See ValidateConfig.
+func (p *Provider) checkTarget(ctx context.Context, raw string) error {
+	err := p.guard.CheckURL(ctx, raw)
+	if err == nil || netguard.Undecided(err) {
+		return nil
+	}
+	return err
 }
 
 // Open mints a Channel.
@@ -101,7 +134,7 @@ func (p *Provider) Open(
 	if err := CheckHeaders(parsed.Headers); err != nil {
 		return nil, err
 	}
-	if err := p.guard.CheckURL(ctx, parsed.URL); err != nil {
+	if err := p.checkTarget(ctx, parsed.URL); err != nil {
 		return nil, err
 	}
 
@@ -113,6 +146,12 @@ func (p *Provider) Open(
 	}, nil
 }
 
+// httpClient builds the per-channel client.
+//
+// ⭐ THIS IS WHERE THE SSRF CONTROL LIVES. `guard.DialContext` resolves the host
+// itself, checks EVERY candidate address, and dials a checked IP LITERAL — so
+// there is no second resolution for a TTL-0 rebind to poison, and the guard
+// covers redirects and reused connections that a pre-flight check never saw.
 func (p *Provider) httpClient(cfg Config, cred domain.Credential) *http.Client {
 	base := p.transport
 	if base == nil {
@@ -124,6 +163,10 @@ func (p *Provider) httpClient(cfg Config, cred domain.Credential) *http.Client {
 				// never the default and never global.
 				clone.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // operator opt-in, documented in the schema
 			}
+			clone.DialContext = p.guard.DialContext
+			// A proxy would dial the proxy rather than the target, which takes the
+			// guard out of the path silently. oto never proxies a webhook.
+			clone.Proxy = nil
 			base = clone
 		} else {
 			base = http.DefaultTransport

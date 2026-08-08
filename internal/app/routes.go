@@ -100,12 +100,13 @@ func (c *Container) Router() http.Handler {
 
 	// GET /api/v1/version is in the contract and belongs to no domain, so it is
 	// answered here rather than given a module of its own.
+	//
+	// It goes through httpx.Data like every other v1 endpoint: `{data, meta}` is
+	// the contract's envelope for EVERY successful response, and an endpoint that
+	// answers a bare object is one the generated client cannot read.
 	v1.Get("/version", func(w http.ResponseWriter, req *http.Request) {
-		httpx.JSON(w, req, http.StatusOK, map[string]any{
-			"version": c.Config.Version,
-			"service": c.Config.Service,
-			"env":     c.Config.Env,
-		})
+		started := time.Now()
+		httpx.Data(w, req, http.StatusOK, c.versionDTO(), started)
 	})
 
 	r.Mount("/api/v1", v1)
@@ -159,21 +160,7 @@ func (c *Container) mountOps(r chi.Router) {
 	// Readiness. Reports the truth about dependencies; a failure here removes the
 	// pod from the load balancer without killing it.
 	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
-		body := map[string]any{"status": "ok"}
-		status := http.StatusOK
-
-		if c.Pools == nil {
-			status = http.StatusServiceUnavailable
-			body["status"] = "unavailable"
-			body["db"] = "not initialised"
-		} else if err := c.Pools.Ping(req.Context(), 2*time.Second); err != nil {
-			status = http.StatusServiceUnavailable
-			body["status"] = "unavailable"
-			body["db"] = err.Error()
-		} else {
-			body["db"] = "ok"
-			body["pools"] = c.Pools.Stats()
-		}
+		body, status := c.readiness(req.Context())
 		httpx.JSON(w, req, status, body)
 	})
 

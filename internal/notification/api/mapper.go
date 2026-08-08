@@ -12,10 +12,9 @@ import (
 
 // policyDTO maps a policy onto the wire.
 //
-// The wire name `escalate_after_seconds` comes from the published contract; the
-// field it reads is `UnackedReminderAfter`, which is what the column, the domain
-// and this codebase call it. The two names are reconciled here, in one function,
-// rather than by renaming the concept back.
+// The wire name `unacked_reminder_after_seconds` and the domain field
+// `UnackedReminderAfter` now agree; only the unit differs, and the seconds ⇄
+// Duration conversion happens here and nowhere else.
 func policyDTO(p domain.Policy) PolicyDTO {
 	matchers := make([]MatcherDTO, 0, len(p.Matchers))
 	for _, m := range p.Matchers {
@@ -49,7 +48,7 @@ func policyDTO(p domain.Policy) PolicyDTO {
 	}
 	if p.UnackedReminderAfter > 0 {
 		v := int32(p.UnackedReminderAfter / time.Second) //nolint:gosec // bounded by policies_reminder_ck
-		out.EscalateAfterSeconds = &v
+		out.UnackedReminderAfterSeconds = &v
 	}
 	return out
 }
@@ -90,12 +89,20 @@ func summarise(ds []domain.Delivery) *DeliverySummaryDTO {
 	out := DeliverySummaryDTO{Total: int32(len(ds))} //nolint:gosec // bounded by the fan-out
 	for _, d := range ds {
 		switch d.Status {
-		case domain.DeliverySent, domain.DeliverySkipped:
+		case domain.DeliverySkipped:
+			out.Sent++
+			out.Skipped++
+		case domain.DeliverySent:
 			out.Sent++
 		case domain.DeliveryFailed:
 			out.Failed++
 		case domain.DeliveryDead:
 			out.Dead++
+		case domain.DeliveryPending, domain.DeliverySending:
+			// Both are "nobody has been told YET". The distinction between queued
+			// and claimed is a worker-scheduling detail, and a fan-out health
+			// summary is not where it belongs.
+			out.Pending++
 		}
 	}
 	return &out
@@ -169,8 +176,8 @@ func (r CreatePolicyRequest) toDraft() (domain.PolicyDraft, error) {
 		t := toThrottle(*r.Throttle)
 		d.Throttle = &t
 	}
-	if r.EscalateAfterSeconds != nil {
-		v := time.Duration(*r.EscalateAfterSeconds) * time.Second
+	if r.UnackedReminderAfterSeconds != nil {
+		v := time.Duration(*r.UnackedReminderAfterSeconds) * time.Second
 		d.UnackedReminderAfter = &v
 	}
 	return d, nil
@@ -209,10 +216,10 @@ func (r UpdatePolicyRequest) toPatch() (domain.PolicyPatch, error) {
 		}
 		p.Throttle = &t
 	}
-	if r.EscalateAfterSeconds.Set {
+	if r.UnackedReminderAfterSeconds.Set {
 		var d *time.Duration
-		if r.EscalateAfterSeconds.Value != nil {
-			v := time.Duration(*r.EscalateAfterSeconds.Value) * time.Second
+		if r.UnackedReminderAfterSeconds.Value != nil {
+			v := time.Duration(*r.UnackedReminderAfterSeconds.Value) * time.Second
 			d = &v
 		}
 		p.UnackedReminderAfter = &d

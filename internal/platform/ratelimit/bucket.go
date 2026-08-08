@@ -46,10 +46,10 @@ func (c Config) normalise() Config {
 	if c.TTL <= 0 {
 		c.TTL = DefaultTTL
 	}
-	if min := time.Duration(c.Burst) * c.Refill; c.TTL < min {
+	if fullRefill := time.Duration(c.Burst) * c.Refill; c.TTL < fullRefill {
 		// An idle bucket evicted before it has refilled would hand a blocked key a
 		// full burst back for free, which is the whole limit undone.
-		c.TTL = min
+		c.TTL = fullRefill
 	}
 	if c.MaxKeys <= 0 {
 		c.MaxKeys = DefaultMaxKeys

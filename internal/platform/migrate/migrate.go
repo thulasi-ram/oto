@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -18,6 +19,43 @@ const Dialect = "postgres"
 
 // Files returns the embedded migration filesystem.
 func Files() (fs.FS, error) { return migrations.FS, nil }
+
+// Latest is the highest version number this BINARY carries, read from the
+// embedded filenames alone.
+//
+// It takes no database and no connection, which is the point: /readyz needs to
+// compare "what this binary expects" against "what this database has" on every
+// probe, and opening a second connection per probe to ask goose would make the
+// readiness check a load source of its own.
+func Latest() (int64, error) {
+	entries, err := migrations.FS.ReadDir(".")
+	if err != nil {
+		return 0, fmt.Errorf("migrate: read embedded dir: %w", err)
+	}
+	var latest int64
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		v, err := goose.NumericComponent(e.Name())
+		if err != nil {
+			return 0, fmt.Errorf("migrate: %s: %w", e.Name(), err)
+		}
+		if v > latest {
+			latest = v
+		}
+	}
+	if latest == 0 {
+		return 0, fmt.Errorf("migrate: no embedded migrations")
+	}
+	return latest, nil
+}
+
+// FormatVersion renders a version the way the contract spells it: the migration
+// filename's five-digit prefix, e.g. `00025`.
+func FormatVersion(v int64) string {
+	return fmt.Sprintf("%05d", v)
+}
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	sub, err := Files()

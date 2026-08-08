@@ -23,8 +23,9 @@ var (
 //
 // It is configured with RegisterTagNameFunc so that EVERY reported field path is
 // the JSON name the caller actually sent, never the Go field name. That is not
-// optional: a violation naming `EscalateAfterS` instead of
-// `escalate_after_seconds` cannot be mapped onto a form control (§L.8.2).
+// optional: a violation naming `UnackedReminderAfterSeconds` instead of
+// `unacked_reminder_after_seconds` cannot be mapped onto a form control
+// (§L.8.2).
 //
 // The oto-specific rules of §L.2.1 are registered here, once. A rule registered
 // anywhere else is invisible to the tag→code map and would surface as `invalid`.

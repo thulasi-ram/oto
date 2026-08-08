@@ -136,13 +136,13 @@ type PlanInput struct {
 // Plan is the decision: which modes this fact produces on this destination, and
 // why any reply was dropped.
 //
-// ⚠ `notification_deliveries` is UNIQUE on (notification_id, channel_id), so one
-// fact produces AT MOST ONE delivery row per destination — while §H.6 asks
-// several Reasons for `update_root` PLUS `thread_reply`. The two are reconciled
-// by PrimaryMode / RootRefresh: the reply is the delivery, and the root amend
-// rides along inside the same claim, under the same thread lock, in the same
-// transaction. Both facts reach the destination exactly once, the card stays
-// current, and the schema's fan-out idempotency guard still means what it says.
+// ⭐ EVERY MODE IN `Modes` GETS ITS OWN DELIVERY ROW. `deliveries_fanout_uniq` is
+// UNIQUE on (notification_id, channel_id, MODE) since migration 00024, precisely
+// so §H.6's `update_root` PLUS `thread_reply` can both exist. It did not always
+// work that way: the root amend used to ride along inside the reply's claim
+// writing no row at all, and a failed amend then vanished with no retry and no
+// dead-letter while the card stayed stale forever. `Modes` is the whole answer
+// now — there is no primary mode and no passenger.
 type Plan struct {
 	// Modes are the modes this fact produces, root first, reply second. Empty
 	// means this fact produces nothing on this destination.
@@ -159,27 +159,28 @@ type Plan struct {
 // Empty reports that this destination gets nothing.
 func (p Plan) Empty() bool { return len(p.Modes) == 0 }
 
-// PrimaryMode is the mode the delivery row records: the reply when there is one,
-// otherwise the root touch. The reply is chosen because it is the message that
-// is NEW — the amend is an edit of something already recorded on the thread.
+// PrimaryMode is the ONE mode that still stands for this plan when the modes
+// have to be re-derived and the second derivation disagrees with the first: the
+// reply when there is one, otherwise the root touch. The reply is chosen because
+// it is the message that is NEW — the amend is an edit of something already
+// recorded on the thread.
+//
+// Its ONE caller is `NotificationService.modesFor`, which re-applies the §H.6
+// table once the thread is known. If that second pass says "nothing", the first
+// pass has already promised this destination something, and silently delivering
+// nothing is the worse failure — so the primary mode is what gets sent.
+//
+// ⛔ It is NOT "the mode the delivery row records". Since migration 00024 every
+// mode gets its own row; a caller reaching for this to pick one is reintroducing
+// the amend-with-no-row bug that migration exists to fix.
+//
+// (`RootRefresh`, its counterpart, was deleted: it named the passenger half of a
+// pairing that no longer exists.)
 func (p Plan) PrimaryMode() Mode {
 	if len(p.Modes) == 0 {
 		return ""
 	}
 	return p.Modes[len(p.Modes)-1]
-}
-
-// RootRefresh is the root amend that must accompany the primary mode, or "" when
-// the primary mode IS the root touch.
-//
-// It is never `post_root`: PlanFor drops the reply whenever the root has to be
-// posted fresh, because a brand-new card already says everything the reply would
-// have said and posting both would be two messages for one fact.
-func (p Plan) RootRefresh() Mode {
-	if len(p.Modes) < 2 {
-		return ""
-	}
-	return p.Modes[0]
 }
 
 // PlanFor applies the §H.6 decision table plus the §H.10 capability negotiation.

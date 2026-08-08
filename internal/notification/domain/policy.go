@@ -331,14 +331,17 @@ func (p Policy) Validate() error {
 	if (p.Throttle.Max > 0) != (p.Throttle.Window > 0) {
 		v = append(v, errs.Violation{
 			Field: "throttle", Code: "incomplete",
-			Message: "a throttle needs both max and window_s, or neither",
+			Message: "a throttle needs both max and window_seconds, or neither",
 		})
 	}
 
 	if p.UnackedReminderAfter != 0 &&
 		(p.UnackedReminderAfter < MinUnackedReminderAfter || p.UnackedReminderAfter > MaxUnackedReminderAfter) {
 		v = append(v, errs.Violation{
-			Field: "unacked_reminder_after_s", Code: "range",
+			// The JSON name, not the column name. A violation path is what the
+			// settings form maps onto a control (CONTEXT.md §5b, SPEC §L.8.2), and
+			// `unacked_reminder_after_s` is a field no client has ever been sent.
+			Field: "unacked_reminder_after_seconds", Code: "range",
 			Message: "the unacked reminder delay is 60 to 86400 seconds, or unset",
 		})
 	}

@@ -5306,9 +5306,11 @@ components:
           description: Present only when the request asked for `include=enrichments`.
         rule:
           oneOf:
-            - $ref: '#/components/schemas/RuleSnapshotDTO'
+            - $ref: '#/components/schemas/RuleSnapshotRefDTO'
             - type: 'null'
-          description: Present only when the request asked for `include=rule`.
+          description: |
+            Present only when the request asked for `include=rule`, and a REFERENCE — see
+            `RuleSnapshotRefDTO`. `GET /api/v1/alerts/{id}/rule` serves the snapshot whole.
       description: |
         An Alert — the **identity of a label set** within an org and cluster, not a single firing. It is
         created on first sight and survives every resolution; `state` and `ack_state` here are
@@ -6306,6 +6308,27 @@ components:
     # ---------------------------------------------------------------------------------------------
     # Rules
     # ---------------------------------------------------------------------------------------------
+
+    RuleSnapshotRefDTO:
+      type: object
+      required: [id]
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+      description: |
+        A POINTER to the rule snapshot that was captured at fire time, and nothing more.
+
+        `include=rule` on an alert answers "which snapshot", not "what did it say". Two reasons, and
+        both are deliberate. First, `RuleSnapshotDTO` carries `expr` (up to 64 KiB) plus the full
+        label and annotation maps, and embedding that in every row of a 200-alert list is the payload
+        explosion `include=` exists to make opt-in — a ref keeps the option usable. Second, the alerts
+        module may not name the rules module's types (CONTEXT.md §5, layering rule 4/5), and a
+        hand-copied fifteen-field duplicate of `RuleSnapshotDTO` living in `alerts/api` would be the
+        second copy that drifts.
+
+        `GET /api/v1/alerts/{id}/rule` serves the snapshot whole — with its **history**, which is the
+        richer answer this API is actually for.
 
     RuleSnapshotDTO:
       type: object

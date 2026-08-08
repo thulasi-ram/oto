@@ -30,7 +30,7 @@
     },
     "mention_on_reminder": {
       "type": "array", "title": "Mention on unacked reminder",
-      "description": "A FIXED audience mentioned when an unacked reminder fires. Usergroups, individuals, !here and !channel are all permitted. This list is NOT a rota: it must never become time-aware (§G.9.1).",
+      "description": "A FIXED audience mentioned when an unacked reminder fires. Usergroups, individuals, !here and !channel are all permitted. This list is not a schedule of people, and must never become time-aware (§G.9.1).",
       "maxItems": 10, "uniqueItems": true,
       "items": { "type": "string", "pattern": "^(<!subteam\\^S[A-Z0-9]+>|<@[UW][A-Z0-9]+>|!here|!channel)$" }
     },

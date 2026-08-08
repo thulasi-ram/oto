@@ -1,0 +1,225 @@
+# oto — Slack app manifest
+#
+# HOW TO USE THIS FILE
+#   https://api.slack.com/apps → "Create New App" → "From an app manifest"
+#   → pick your workspace → paste this file → Create.
+#   Full setup guide: docs/setup/slack.md
+#
+# WHAT THIS APP IS
+#   An INTERNAL, customer-built Slack app (ADR 0018). You create it in your own
+#   workspace, it is installed only there, and oto never talks to any oto-operated
+#   service. There is no OAuth flow, no client secret and no token refresh: you
+#   paste three credentials into your own oto config and that is the whole of it.
+#
+# HOW TO READ THE SCOPE LIST
+#   Every scope below is justified by a specific Slack API method that oto's code
+#   actually calls. The complete set of methods oto can invoke is fixed by the
+#   `API` interface in `internal/channels/providers/slack/channel.go`, which has
+#   exactly four methods. There is nothing else. In particular oto NEVER reads
+#   Slack back — no conversations.history, no conversations.replies, no search.
+#   oto's own database is its memory of Slack (ADR 0008).
+#
+#   Each scope cites the Slack documentation page that states the requirement.
+#   Scopes deliberately NOT requested are listed at the bottom with the reason,
+#   because a reviewer should be able to see what was declined as well as what
+#   was asked for.
+
+display_information:
+  name: oto
+  description: Alert-first Alertmanager notifications, updated in place instead of reposted.
+  long_description: >-
+    oto turns Prometheus Alertmanager webhooks into one live Slack card per alert
+    group. When an alert changes, oto edits the existing message rather than
+    posting a new one, so a channel shows the current state of the world instead
+    of a scrollback of stale notifications. Threads carry the detail; the card
+    carries the answer to "do I need to act?". oto stores alert history, rule
+    definitions captured at fire time, and acknowledgements. It is self-hosted:
+    this app talks only to your own oto instance and to Slack.
+  background_color: "#1f2933"
+
+features:
+  bot_user:
+    # oto posts as a bot user. Everything it sends is attributed to this name.
+    display_name: oto
+    # `always_online: false` lets Slack show the bot's real connection state.
+    always_online: false
+
+  app_home:
+    # oto has no App Home surface and no DM conversation with users. All three
+    # tabs are off so the app cannot be mistaken for something that reads DMs.
+    home_tab_enabled: false
+    messages_tab_enabled: false
+    messages_tab_read_only_enabled: true
+
+oauth_config:
+  scopes:
+    bot:
+      # ---------------------------------------------------------------------
+      # chat:write — "Send messages as your Slack app"
+      #
+      # WHY: this is the whole product. It covers BOTH verbs oto uses:
+      #   * chat.postMessage — the root alert card, thread replies, and the
+      #     broadcast reply used by the unacked reminder (SPEC §H.5).
+      #   * chat.update      — editing the existing card in place. ADR 0008
+      #     makes this the PRIMARY verb: it is Tier 3 (50+/min) where
+      #     chat.postMessage is ~1 message/second/channel, and it is what keeps
+      #     one current card in the channel instead of twelve stale ones.
+      #
+      # CODE: Channel.Deliver / Channel.Amend,
+      #       internal/channels/providers/slack/channel.go
+      #
+      # SOURCE (chat.postMessage, "Bot token: chat:write"):
+      #   https://docs.slack.dev/reference/methods/chat.postMessage/
+      # SOURCE (chat.update, "Bot token: chat:write"):
+      #   https://docs.slack.dev/reference/methods/chat.update/
+      # SOURCE (scope description):
+      #   https://docs.slack.dev/reference/scopes/chat.write/
+      # STATUS: VERIFIED
+      - chat:write
+
+      # ---------------------------------------------------------------------
+      # channels:read — "View basic information about public channels in a
+      #                 workspace"
+      #
+      # WHY: oto calls conversations.info once at channel configuration time and
+      # again on every health probe, to prove the destination exists, is not
+      # archived, and is visible to the bot BEFORE an alert depends on it. It
+      # also returns the conversation id Slack itself uses, which is what oto
+      # stores — a configured id can be stale or ambiguous.
+      #
+      # This reads channel METADATA only (name, archived flag, id). It does not
+      # read messages; no scope requested here permits that.
+      #
+      # CODE: Channel.ResolveConversation / Channel.Probe,
+      #       internal/channels/providers/slack/channel.go
+      #
+      # SOURCE (conversations.info required bot scopes):
+      #   https://docs.slack.dev/reference/methods/conversations.info/
+      # SOURCE (scope description):
+      #   https://docs.slack.dev/reference/scopes/channels.read/
+      # STATUS: VERIFIED
+      - channels:read
+
+      # ---------------------------------------------------------------------
+      # groups:read — "View basic information about private channels that your
+      #               Slack app has been added to"
+      #
+      # WHY: the same conversations.info call, for the case where the alert
+      # destination is a PRIVATE channel. Note the scope's own wording: it is
+      # limited to private channels the app has been explicitly added to. It
+      # grants nothing over private channels oto has not been invited into.
+      #
+      # Remove this line if every oto destination in your workspace is public.
+      #
+      # SOURCE (conversations.info required bot scopes):
+      #   https://docs.slack.dev/reference/methods/conversations.info/
+      # SOURCE (scope description):
+      #   https://docs.slack.dev/reference/scopes/groups.read/
+      # STATUS: VERIFIED
+      - groups:read
+
+      # ---------------------------------------------------------------------
+      # CONDITIONAL — im:read, mpim:read
+      #
+      # conversations.info additionally lists `im:read` and `mpim:read`, which
+      # apply when the conversation is a direct message or a group DM. oto's
+      # channel config schema (internal/channels/providers/slack/schema.json)
+      # permits a `D…` conversation id, so this configuration is representable.
+      #
+      # They are NOT granted by default because alert destinations are normally
+      # channels, and the failure is loud and early rather than at 3am: without
+      # them, conversations.info on a DM returns `missing_scope`, which oto
+      # classifies as an auth failure and surfaces during the channel health
+      # probe — i.e. at configuration time, before any alert depends on it.
+      #
+      # Uncomment ONLY if you intend to point an oto channel at a DM.
+      #
+      # SOURCE: https://docs.slack.dev/reference/methods/conversations.info/
+      # STATUS: VERIFIED (requirement), deliberately omitted (policy)
+      # - im:read
+      # - mpim:read
+
+settings:
+  # Socket Mode: oto opens an outbound WebSocket to Slack and receives the
+  # Acknowledge button press over it. No public ingress, no inbound firewall
+  # rule, no TLS certificate, no Slack-side auto-disable on deploy. This is the
+  # default and the reason a self-hosted install works behind a firewall
+  # (ADR 0018, SPEC §H.8).
+  #
+  # ⚠️ Socket Mode ALSO needs an app-level token carrying the `connections:write`
+  # scope. That token CANNOT be declared in a manifest — the manifest schema
+  # documents only `oauth_config.scopes.bot` and `.user`. You must create it by
+  # hand after installing: Basic Information → App-Level Tokens → Generate →
+  # add scope `connections:write`. It is the `xapp-…` value.
+  #
+  # SOURCE (connections:write, "app-level tokens only", grants apps.connections.open):
+  #   https://docs.slack.dev/reference/scopes/connections.write/
+  # SOURCE (manifest documents only bot/user scope arrays):
+  #   https://docs.slack.dev/reference/app-manifest/
+  socket_mode_enabled: true
+
+  # Interactivity must be on for the Acknowledge button to deliver a
+  # `block_actions` payload at all. With Socket Mode enabled the payload arrives
+  # over the WebSocket and `request_url` is omitted — set it (and set
+  # socket_mode_enabled to false) only if you are running oto behind public
+  # HTTPS ingress and want the HTTP transport instead. See docs/setup/slack.md.
+  #
+  # Every URL button and every URL overflow option in oto's card ALSO delivers an
+  # interaction payload that must be acknowledged, which is why this switch is
+  # required even though only one button does real work (SPEC §H.1 S9).
+  interactivity:
+    is_enabled: true
+    # request_url: https://oto.example.com/api/v1/integrations/slack/interactions
+
+  # oto subscribes to ZERO Slack events. It does not watch messages, joins,
+  # reactions or channel changes. There is deliberately no `event_subscriptions`
+  # block: oto is a one-way producer of alert facts plus one inbound button.
+
+  # No token rotation. Bot tokens for an internal app do not expire, and the
+  # refresh machinery exists to serve OAuth-distributed apps, which this is not
+  # (ADR 0018).
+  token_rotation_enabled: false
+
+  # Not an Enterprise Grid org-wide app. Install to a single workspace.
+  org_deploy_enabled: false
+
+# ---------------------------------------------------------------------------
+# SCOPES DELIBERATELY NOT REQUESTED — please check these off too
+#
+# chat:write.public — "Send messages to channels your Slack app isn't a member
+#   of". REFUSED. It would let oto post into any public channel in the
+#   workspace without being invited, which is a far larger blast radius than
+#   the product needs. oto requires an explicit `/invite @oto`; Slack's
+#   `not_in_channel` error is classified as a terminal state transition and
+#   surfaces in oto's UI telling the operator to invite the bot.
+#   SOURCE: https://docs.slack.dev/reference/scopes/chat.write.public/  [VERIFIED]
+#
+# users:read / users:read.email — REFUSED. oto attributes an acknowledgement by
+#   reading `team.id` and `user.id` out of the SIGNED interaction payload and
+#   resolving them against its own `slack_identities` table. It makes no Slack
+#   API call to identify a human and never reads the workspace directory.
+#   (SPEC §H.8 sketches an email-match fallback; it is not implemented, and if
+#   it ever is, it would require `users:read.email` and a separate review.)
+#   SOURCE: https://docs.slack.dev/reference/scopes/users.read.email/  [VERIFIED]
+#
+# channels:history / groups:history / conversations.replies — REFUSED, and this
+#   is architectural rather than cautious. oto never reads Slack back to
+#   reconstruct its own state; the `(channel_id, ts)` pair in oto's database is
+#   the memory of Slack (ADR 0008). No read scope can ever be needed.
+#
+# channels:join — REFUSED. oto does not add itself to channels. A human invites
+#   it, which is an auditable act in the channel's own history.
+#
+# reactions:write, files:write, im:write, usergroups:read, commands — REFUSED.
+#   oto adds no reactions, uploads no files, opens no DMs, resolves no
+#   usergroup memberships (mention targets are literal ids from oto's own
+#   config) and registers no slash commands.
+#
+# NO SCOPE NEEDED (listed so a reviewer is not surprised to see the call):
+#   auth.test — "No scopes required". oto calls it to prove a token is alive and
+#     to show "connected to <workspace> as @oto" in the settings UI.
+#     SOURCE: https://docs.slack.dev/reference/methods/auth.test/  [VERIFIED]
+#   apps.connections.open — "No scopes required" as a method; authorised by the
+#     app-level token's `connections:write` scope described above.
+#     SOURCE: https://docs.slack.dev/reference/methods/apps.connections.open/  [VERIFIED]
+# ---------------------------------------------------------------------------
