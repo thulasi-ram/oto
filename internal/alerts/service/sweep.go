@@ -296,7 +296,7 @@ func (s *Service) expire(
 			alertID:      ptr(alert.ID()),
 			occurrenceID: ptr(r.Occurrence.ID()),
 			actor:        domain.ActorReaper.String(),
-		}}); err != nil {
+		}}, nil); err != nil {
 			return err
 		}
 		expired = true

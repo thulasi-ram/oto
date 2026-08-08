@@ -69,9 +69,57 @@ type GroupFacts struct {
 	// card counts, and storm mode is a VISIBLE state, never a silent suppression.
 	StormCount int
 
+	// NotificationReason is `alert_groups.last_notification_reason` — the wire
+	// value Alertmanager put on the most recent batch for this generation (§H.6).
+	// It is Alertmanager's statement about its OWN delivery, kept verbatim, and it
+	// is reconciled against oto's transition-derived Reason at evaluation time.
+	NotificationReason string
+
+	// FiringSince is the UPSTREAM start of this generation: the earliest
+	// `alert_occurrences.source_starts_at` among the members that are still live.
+	//
+	// ⛔ IT IS NOT `FirstSeenAt`. `FirstSeenAt` is when OTO first heard about the
+	// group, and the gap between the two is oto's own latency plus Alertmanager's
+	// `group_wait` — twenty-one minutes in the first live run. A card that says
+	// "Started 18:17" when the alert started at 17:56 has told an operator
+	// something false about how long an outage has lasted, which is the one number
+	// they act on at 03:00.
+	FiringSince time.Time
+
+	// AlertmanagerURL is the source's `base_url`. It is what the Silence and
+	// "Open in Alertmanager" deep links are built from (§H.3, R3): oto never
+	// writes a silence, it only shows you where to write one.
+	AlertmanagerURL string
+
 	FirstSeenAt    time.Time
 	LastActivityAt time.Time
 	ClosedAt       *time.Time
+}
+
+// StartedAt is the instant the card means by "Started": upstream's own
+// `startsAt` when oto has one, and oto's first sighting when it does not.
+//
+// The fallback is honest rather than convenient — a group whose members have no
+// recorded upstream start really is only known to oto from when oto saw it — and
+// it is one function so that every renderer, the API and the UI answer the
+// question the same way.
+func (g GroupFacts) StartedAt() time.Time {
+	if !g.FiringSince.IsZero() {
+		return g.FiringSince
+	}
+	return g.FirstSeenAt
+}
+
+// AllResolved reports whether every member of this generation has stopped
+// firing and stopped being suppressed, with at least one of them resolved.
+//
+// It is the fact behind §H.6's `all alerts resolved` row, and oto derives it
+// from its OWN membership rather than trusting the wire value alone: the
+// counts are a projection of the occurrences oto has recorded, and they cannot
+// disagree with the card they render.
+func (g GroupFacts) AllResolved() bool {
+	return g.TotalCount > 0 && g.FiringCount == 0 && g.SuppressedCount == 0 &&
+		g.ResolvedCount > 0 && g.ResolvedCount+g.ExpiredCount >= g.TotalCount
 }
 
 // Open reports whether this generation is still live.
@@ -193,12 +241,41 @@ type ActorFacts struct {
 	Label string
 }
 
+// TransitionFact is one entry of the group's state trail — a §B.3 edge that a
+// human reading the card at 03:00 would want to see happened.
+//
+// ⭐ IT EXISTS BECAUSE `chat.update` IS BOTH SILENT AND DESTRUCTIVE. ADR 0008
+// makes the root card the CURRENT state and the thread the history, which is
+// exactly right if you are in the thread. In the channel, a firing card mutates
+// into a resolved one with no notification and no trace: somebody scrolling past
+// sees a calm green card and cannot tell that anything ever happened, when it
+// fired, or for how long. The owner's words on watching it: "it means something
+// happened and we don't know."
+//
+// The trail is the fix that keeps `chat.update` as the primary verb. The card
+// stops being a live gauge that forgets, and becomes a live gauge that keeps its
+// receipt.
+type TransitionFact struct {
+	// Type is the `alert_events.type` value, e.g. `occurrence.resolved`.
+	Type string
+	// At is the UPSTREAM clock (`occurred_at`), which is what a human reads.
+	At time.Time
+	// ActorLabel is who caused it, when a human did. ACTOR, NEVER SUBJECT.
+	ActorLabel string
+}
+
 // Snapshot is the whole read model for one delivery.
 type Snapshot struct {
 	Org    OrgFacts
 	Group  GroupFacts
 	Alerts []AlertFacts
 	Focus  *AlertFacts
+	// Trail is the group's state history, oldest first, already capped.
+	Trail []TransitionFact
+	// NotificationCount is how many non-suppressed notifications oto has sent
+	// about this group. It is a fact about OTO's behaviour, and the receipt on a
+	// terminal card is the right place to answer "how loud was this?".
+	NotificationCount int
 	// Occurrence is the focused firing episode, when there is one.
 	Occurrence *OccurrenceFacts
 	Rule       *RuleFacts

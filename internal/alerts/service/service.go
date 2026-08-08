@@ -263,7 +263,28 @@ type notifyRequest struct {
 // promise" true (§G.1). A request whose group is unknown is DROPPED, not
 // guessed: `notifications.group_id` is NOT NULL and a fabricated group would
 // mint an intent about nothing.
-func (s *Service) enqueueNotify(ctx context.Context, scope db.TenantScope, reqs []notifyRequest) (int, error) {
+// awaitingEnrichment is the set of occurrence ids whose inline enrichment pass
+// was queued in this same transaction; their `fired` evaluation is scheduled at
+// the end of the pre-notification budget instead of immediately.
+//
+// ⭐ THIS IS THE FIX FOR "THE RULE IS NOT ON THE FIRST CARD" AND IT IS A JOB
+// SCHEDULE, NOT A LONGER BUDGET. §F.3 already says the inline phase "runs inside
+// the pre-notification budget"; nothing enforced the ordering, so `enrich.run`
+// and `notify.evaluate` were enqueued together and raced. `notify.evaluate` won,
+// the first card had no rule block, and the PromQL snapshot — the one thing oto
+// has that nothing else does — appeared later under a SILENT `chat.update` that
+// nobody is notified about.
+//
+// The delay is a CEILING and almost never paid in full: the pipeline enqueues
+// the same evaluation the instant its inline pass completes, and the two collapse
+// on `notifications_idem_uniq` (§C.7). What is left is the guarantee that matters
+// — if the enrich worker is dead, backed up, or the org has enrichment switched
+// off, the card still goes out, without the rule, at the budget's edge. Silence
+// is never the degradation.
+func (s *Service) enqueueNotify(
+	ctx context.Context, scope db.TenantScope, reqs []notifyRequest,
+	awaitingEnrichment map[uuid.UUID]struct{},
+) (int, error) {
 	if s.enqueuer == nil || len(reqs) == 0 {
 		return 0, nil
 	}
@@ -279,14 +300,21 @@ func (s *Service) enqueueNotify(ctx context.Context, scope db.TenantScope, reqs 
 			v = s.groupStateVersion(ctx, scope, r.groupID)
 			versions[r.groupID] = v
 		}
-		out = append(out, db.JobRequest{Args: jobs.NotifyEvaluateArgs{
+		req := db.JobRequest{Args: jobs.NotifyEvaluateArgs{
 			GroupID:      r.groupID,
 			Reason:       r.reason,
 			StateVersion: v,
 			AlertID:      r.alertID,
 			OccurrenceID: r.occurrenceID,
 			Actor:        r.actor,
-		}})
+		}}
+		if r.reason == reasonFired && r.occurrenceID != nil {
+			if _, waiting := awaitingEnrichment[*r.occurrenceID]; waiting {
+				req.Opts = append(req.Opts,
+					db.WithScheduledAt(s.Now().Add(jobs.PreNotificationBudget)))
+			}
+		}
+		out = append(out, req)
 	}
 	if len(out) == 0 {
 		return 0, nil

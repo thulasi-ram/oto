@@ -165,7 +165,7 @@ threshold is correct for all of them; tune for the rules that actually misbehave
 
 ---
 
-## `refire_grace` — default **600s (10 minutes)**, accepted range **60–86400**
+## `refire_grace` — default **600s (10 minutes)**, accepted range **600–86400**
 
 **What it does.** An alert resolves, then the same `alert_key` fires again. `refire_grace` decides
 whether that is *the same problem coming back* or *a new problem*:
@@ -207,15 +207,29 @@ refire_grace  ≈  3 × group_interval          (a reasonable default)
 
 | Your `group_interval` | Sane `refire_grace` |
 |---|---|
-| `30s` | `5m` (the default is fine, and generous) |
+| `30s` | `10m` (the shipped default, and the floor) |
 | `5m` *(Alertmanager default)* | **`10m`–`15m`** — the shipped default of 10m is exactly `2 ×` |
 | `15m` | `30m`–`45m` |
 
-**The server refuses anything below 60s or above 86400s.** The floor is the arithmetic above made
-binding: a grace window shorter than a minute is shorter than any `group_interval` worth running, so
-it is unreachable and every re-fire opens a new thread — the exact failure this knob exists to prevent.
-Zero is a Slack thread per transition. The ceiling is the "history that lies" failure: beyond a day,
-two separate incidents merge into one occurrence.
+**The server refuses anything below 600s or above 86400s, and the floor is *derived*, not chosen.**
+
+> **`refire_grace` must be at least twice oto's ingest replay window (5 minutes), so the floor is 600s.**
+
+oto suppresses a *replayed* webhook batch — an HA Alertmanager sibling, a retry after a 5xx — using a
+content-addressed dedup key over `(source, groupKey, receiver, notification_reason, {fingerprint:status})`
+for 5 minutes. A re-fire whose alert set has not changed produces the **same key**. So a `refire_grace`
+at or below the replay window is unreachable for a second, sharper reason than `group_interval`:
+
+- a re-fire inside the grace is also inside the replay window, and is dropped at ingest before the
+  state machine can classify it;
+- a re-fire the replay window lets through is, by the same arithmetic, already outside the grace.
+
+The two windows used to be **exactly equal** (both 10 minutes), which made the reopen path unreachable
+by construction — the first live verification run had to alter the alert set, changing the dedup key,
+to exercise it at all. Doubling gives every legal configuration a band at least 5 minutes wide in
+which a re-fire is both *observable* and *inside the grace*. Zero is a Slack thread per transition.
+The ceiling is the "history that lies" failure: beyond a day, two separate incidents merge into one
+occurrence.
 
 Then sanity-check the top end against how long your incidents actually last. If a typical incident is
 resolved and genuinely gone in under ten minutes, a ten-minute grace window will merge distinct

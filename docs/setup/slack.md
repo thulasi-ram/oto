@@ -26,11 +26,29 @@ The manifest is commented with a justification for every scope it asks for, and 
 list of the scopes it deliberately does **not** ask for. If your security team
 reviews app installs, that file is the document to send them.
 
-**What it requests:** `chat:write`, `channels:read`, `groups:read`. Nothing else.
-Notably absent: `chat:write.public` (oto must be invited to a channel, it cannot
-post itself into any public channel), `users:read` (oto never reads your member
-directory) and every `*:history` scope (oto never reads messages back — see
-[ADR 0008](../adr/0008-slack-update-in-place-primary.md)).
+**What it requests: `chat:write`. That is the entire list.**
+
+It asks for one scope because oto makes exactly three Slack calls —
+`chat.postMessage`, `chat.update` and `auth.test` — and the third needs no scope
+at all. The first live verification run is what fixed the number: it proved those
+three were the only calls, and the manifest was trimmed to match.
+
+Notably absent:
+
+- `chat:write.public` — oto must be invited to a channel; it cannot post itself
+  into any public channel in the workspace.
+- `channels:read` / `groups:read` — **requested until the live run, and never
+  used.** They served one `conversations.info` probe that had zero callers. oto no
+  longer calls `conversations.info` at all.
+- `users:read` — oto never reads your member directory. An acknowledgement is
+  attributed from the signed interaction payload.
+- every `*:history` scope — oto never reads messages back (see
+  [ADR 0008](../adr/0008-slack-update-in-place-primary.md)).
+- `files:write`, `incoming-webhook` — oto uploads nothing and posts under a bot
+  token to destinations configured in oto, not to an install-time channel picker.
+
+If you installed oto before this change, the extra scopes are harmless but
+pointless: reinstall from the current manifest to drop them.
 
 ---
 
@@ -157,8 +175,9 @@ design: oto does **not** request `chat:write.public`, so it can only reach chann
 a human has explicitly let it into. That invite is an auditable event in the
 channel's own history.
 
-For a **private** channel, the invite is also what makes `groups:read` apply — the
-scope only covers private channels the app has been added to.
+A **private** channel works the same way and needs no extra scope: `chat:write`
+lets oto post to any conversation it is a member of, and the invite is what makes
+it a member.
 
 ---
 
@@ -166,10 +185,14 @@ scope only covers private channels the app has been added to.
 
 1. **In oto:** `POST /api/v1/channels/{id}/test`, or the **Test** button on the
    channel in the settings UI. This runs the same probe oto uses for health: an
-   `auth.test` to prove the token is alive, then a `conversations.info` to prove
-   the bot can actually see the destination. The two fail differently on purpose —
-   a token that works but a channel oto was removed from is the common real-world
-   failure, and it should not read as "your token is broken".
+   `auth.test`, which proves the token is alive and needs no scope.
+
+   It deliberately does **not** check that the destination exists — that would
+   cost `channels:read` and `groups:read`, and oto learns the same thing at the
+   first delivery: `channel_not_found`, `is_archived` and `not_in_channel` are all
+   terminal, and oto marks the channel degraded and tells you which one it was
+   rather than retrying into a wall. So a green probe means "the token works";
+   send a test alert to prove the destination.
 2. The channel row should show the workspace and bot identity (`connected to Acme
    Corp as @oto`) rather than a bare green tick.
 3. **In Slack:** fire a test alert and press **Acknowledge** on the card. The
@@ -208,7 +231,7 @@ silence must never be indistinguishable from "there was no alert".
 | `invalid_auth`, `not_authed` | The token is malformed, empty, or not a bot token. Also produced by HTTP 401/403. | Confirm you pasted the `xoxb-` **Bot User OAuth Token**, not the `xapp-` app token and not the signing secret. |
 | `token_revoked` | Someone uninstalled the app, or revoked the token in the Slack admin. | Reinstall the app and rotate the credential on the oto channel. |
 | `account_inactive` | The workspace or the bot's account is deactivated. | Slack admin question, not an oto one. |
-| `missing_scope`, `no_permission` | The app is missing a scope it needs for the call it just made. In practice this is almost always `groups:read` on a private channel, or `im:read` on a DM destination. | Compare the app's installed scopes against `deploy/slack/manifest.yaml`. Add the missing one under **OAuth & Permissions**, then **reinstall the app** — Slack does not apply new scopes to an existing installation until you do. |
+| `missing_scope`, `no_permission` | The app is missing a scope it needs for the call it just made. Since the scope list is one item long this should now only mean `chat:write` itself is missing — e.g. the app was installed from an older manifest, or a scope was un-ticked by hand. | Compare the app's installed scopes against `deploy/slack/manifest.yaml`. Add the missing one under **OAuth & Permissions**, then **reinstall the app** — Slack does not apply new scopes to an existing installation until you do. |
 | `not_allowed_token_type` | An app-level (`xapp-`) or user (`xoxp-`) token was supplied where a bot token belongs. | Use the `xoxb-` token. |
 
 These never retry either. "Your token was revoked three days ago and nobody

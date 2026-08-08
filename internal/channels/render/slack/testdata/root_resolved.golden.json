@@ -1,0 +1,173 @@
+{
+  "text": ":white_check_mark: [RESOLVED] OtoSmokeTest — AUTOMATED TEST from oto — please ignore. This is oto's end-to-end smoke test against a synthetic alert… Severity critical, team observability, resolved at 18:17 UTC. Runbook: https://example.com/runbooks/OtoSmokeTest",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "metadata": {
+    "event_type": "oto_alert_group",
+    "event_payload": {
+      "generation": 1,
+      "group_id": "019fe297-d84f-7599-b5b2-1f231749104a",
+      "reason": "all_resolved"
+    }
+  },
+  "attachments": [
+    {
+      "color": "#2eb886",
+      "fallback": "[RESOLVED] OtoSmokeTest",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_title_19267386c7",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":white_check_mark: *<http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a|OtoSmokeTest>*  ·  `smoke-test`\n_AUTOMATED TEST from oto — please ignore. This is oto's end-to-end smoke test against a synthetic alert; no real service is affected._"
+          }
+        },
+        {
+          "type": "section",
+          "block_id": "oto_body_19267386c7",
+          "text": {
+            "type": "mrkdwn",
+            "text": "Synthetic test alert produced by oto's first live Slack verification run. Nothing is wrong. The card you are looking at is the thing under test."
+          }
+        },
+        {
+          "type": "section",
+          "block_id": "oto_fields_19267386c7",
+          "fields": [
+            {
+              "type": "mrkdwn",
+              "text": "*Status*\n:white_check_mark: ~Acked~ → Resolved"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Severity*\n:rotating_light: critical"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Service*\n`oto-smoke`"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Namespace*\n`observability`"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Started*\n<!date^1786125369^{time}|17:56 UTC>"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Duration*\n21m 10s"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Resolved*\n<!date^1786126639^{time}|18:17 UTC>"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Instances affected*\n2 instances"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Notifications*\n3 sent"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Acknowledged*\n:eyes: yes — `ram@example.com`, <!date^1786125549^{time}|17:59 UTC>"
+            }
+          ]
+        },
+        {
+          "type": "section",
+          "block_id": "oto_members_19267386c7",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*Affected instances*\n• `oto-smoke-b2` — resolved\n• `oto-smoke-a1` — resolved"
+          }
+        },
+        {
+          "type": "context",
+          "block_id": "oto_trail_19267386c7",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": ":red_circle: <!date^1786125369^{time}|17:56 UTC> fired  →  :eyes: <!date^1786125549^{time}|17:59 UTC> acked by `ram@example.com`  →  :white_check_mark: <!date^1786126639^{time}|18:17 UTC> resolved  ·  total 21m 10s"
+            }
+          ]
+        },
+        {
+          "type": "context",
+          "block_id": "oto_rule_19267386c7",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": ":mag: `sum(rate(oto_smoke_requests_total{code=~\"5..\"}[5m])) / sum(rate(oto_smoke_requests_total[5m])) &gt; 0.05`   `for: 5m`"
+            }
+          ]
+        },
+        {
+          "type": "actions",
+          "block_id": "oto_actions_19267386c7",
+          "elements": [
+            {
+              "type": "overflow",
+              "action_id": "oto.more",
+              "options": [
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":blue_book: Show timeline",
+                    "emoji": true
+                  },
+                  "url": "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":chart_with_upwards_trend: Open in Prometheus",
+                    "emoji": true
+                  },
+                  "url": "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":bell: Open in Alertmanager",
+                    "emoji": true
+                  },
+                  "url": "https://am.example.com/#/alerts?filter=%7Balertname%3D%22OtoSmokeTest%22%2C+cluster%3D%22smoke-test%22%7D"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":scroll: Rule history",
+                    "emoji": true
+                  },
+                  "url": "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":label: Show all labels",
+                    "emoji": true
+                  },
+                  "value": "labels|019fe297-d84f-7599-b5b2-1f231749104a"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "context",
+          "block_id": "oto_footer_19267386c7",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": "oto  ·  `gk_4vbuj1c49jbpf`  ·  receiver `oto-smoke`  ·  _all alerts resolved_  ·  oto first saw it <!date^1786126629^{time}|18:17 UTC> (21m later)  ·  updated <!date^1786126641^{time}|18:17 UTC>"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

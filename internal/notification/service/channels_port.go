@@ -89,6 +89,10 @@ type (
 	ActorView = chdomain.ActorView
 	// Action is one interactive affordance on a card.
 	Action = chdomain.Action
+	// PreviousState is the state the card showed before this delivery (§H.4).
+	PreviousState = chdomain.PreviousState
+	// TrailEntry is one transition on the card's state trail (§H.4).
+	TrailEntry = chdomain.TrailEntry
 	// Links are the deep links a card offers.
 	Links = chdomain.Links
 )

@@ -180,3 +180,58 @@ func ReasonFromWire(wire string) (Reason, WireVerdict) {
 		return "", WireUnmapped
 	}
 }
+
+// ReconcileWithWire applies the §H.6 table to a Reason that was derived from
+// oto's OWN per-alert transitions, using Alertmanager's `notification_reason`
+// as the group-level authority it is.
+//
+// ⭐ THIS IS §H.6's ONLY CALLER OF ReasonFromWire, AND IT IS WHERE THE TWO
+// VOCABULARIES MEET. They answer different questions and both are needed:
+//
+//   - oto's transitions know WHAT CHANGED about one alert. They are the only
+//     source for `acked`, `refired`, `expired`, `suppressed` — facts Alertmanager
+//     cannot see or does not have a word for.
+//   - Alertmanager's `notification_reason` knows WHY THIS BATCH WAS DELIVERED
+//     about a whole group. It is the only source that can tell a first fire from
+//     a member joining a group that was already notified, because the per-alert
+//     view of both is identical: an occurrence opened.
+//
+// Before this existed, `new_alerts`, `all_resolved` and `repeat` were CHECK
+// constraint values nothing could ever write — the first live run posted a fully
+// resolved card whose footer read "some alerts resolved", which is false.
+//
+// The reconciliation is deliberately NARROW. The wire value may only widen a
+// reason to the group-scoped sibling that describes the same delivery; it may
+// never contradict an observed transition, because oto saw that and Alertmanager
+// did not. An unknown or absent wire value changes nothing: an Alertmanager
+// below 0.32.0 sends no field at all and must not lose its notifications for it.
+func ReconcileWithWire(derived Reason, wire string, allResolved bool) Reason {
+	mapped, verdict := ReasonFromWire(wire)
+
+	switch derived {
+	case ReasonSomeResolved:
+		// oto watched ONE alert resolve. Whether that was the LAST one is a fact
+		// about the group's membership, which oto projects itself — so the counts
+		// decide and the wire value is corroboration, not authority. §H.6 makes the
+		// difference load-bearing: `some_resolved` is update-only, `all_resolved`
+		// earns a thread reply and may be broadcast.
+		if allResolved || (verdict == WireMapped && mapped == ReasonAllResolved) {
+			return ReasonAllResolved
+		}
+		return derived
+
+	case ReasonFired:
+		// An occurrence opened. Whether it opened a group or JOINED one that had
+		// already been notified is a distinction only Alertmanager can draw:
+		// oto sees an identical transition either way, and guessing from the member
+		// count would turn three alerts firing in one first batch into three
+		// "more instances now firing" replies and no root card at all.
+		if verdict == WireMapped && mapped == ReasonNewAlerts {
+			return ReasonNewAlerts
+		}
+		return derived
+
+	default:
+		return derived
+	}
+}

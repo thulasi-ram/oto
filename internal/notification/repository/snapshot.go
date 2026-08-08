@@ -47,13 +47,32 @@ func (r *SnapshotRepository) db(ctx context.Context) db.Querier { return db.From
 const orgFactsSQL = `SELECT id, slug, name FROM orgs WHERE id = $1`
 
 const groupFactsSQL = `
-SELECT id, group_key, generation, coalesce(source_group_key,''), receiver,
-       group_labels, title, state, coalesce(severity,''), state_version,
-       firing_count, suppressed_count, resolved_count, expired_count,
-       total_count, acked_count, storm_mode, storm_since,
-       first_seen_at, last_activity_at, closed_at
-  FROM alert_groups
- WHERE org_id = $1 AND id = $2`
+SELECT g.id, g.group_key, g.generation, coalesce(g.source_group_key,''), g.receiver,
+       g.group_labels, g.title, g.state, coalesce(g.severity,''), g.state_version,
+       g.firing_count, g.suppressed_count, g.resolved_count, g.expired_count,
+       g.total_count, g.acked_count, g.storm_mode, g.storm_since,
+       coalesce(g.last_notification_reason,''), coalesce(s.base_url,''),
+       g.first_seen_at, g.last_activity_at, g.closed_at
+  FROM alert_groups g
+  LEFT JOIN alert_sources s ON s.id = g.source_id
+ WHERE g.org_id = $1 AND g.id = $2`
+
+// groupFiringSinceSQL is the UPSTREAM start of the generation (§H.3 "Started").
+//
+// It is `min(source_starts_at)` over the members that are still live, because
+// that — not oto's `first_seen_at` — is when the thing an operator is being
+// woken up about actually began. `started_at` is the fallback for an occurrence
+// whose upstream sent no usable `startsAt`; taking the two in one `least` keeps
+// a member with a missing upstream time from dropping out of the aggregate
+// entirely.
+//
+// It reads every occurrence of the GENERATION rather than only the live ones, so
+// a resolved card's Duration still spans the whole episode. `occ_group_idx`
+// (org_id, group_id, started_at DESC) is the index it uses.
+const groupFiringSinceSQL = `
+SELECT min(least(o.source_starts_at, o.started_at))
+  FROM alert_occurrences o
+ WHERE o.org_id = $1 AND o.group_id = $2`
 
 const memberAlertsSQL = `
 SELECT a.id, a.alert_key, a.source_fingerprint, a.alertname,
@@ -118,6 +137,49 @@ SELECT rs.id, rs.rule_fingerprint, rs.rule_file, rs.rule_group, rs.rule_name,
  ORDER BY o.seq DESC
  LIMIT 1`
 
+// MaxTrailEntries bounds the state trail rendered on a card (§H.4).
+//
+// A long-lived flapping alert would otherwise grow the trail without bound and
+// blow the section budget; the renderer elides the middle rather than the end,
+// because the first transition and the last are the two a reader needs.
+const MaxTrailEntries = 12
+
+// groupTrailSQL reads the group's own state history.
+//
+// The type list is CLOSED and short on purpose: this is the card's receipt, not
+// the timeline. `alert.mutated`, the enrichment events and the notification
+// events are all real history and all belong in oto's timeline view; putting
+// them here would turn a four-line trail into a scrollback and teach people to
+// ignore it.
+//
+// Ordered by `recorded_at` — oto's clock, which is the causal order — and
+// DISPLAYED by `occurred_at`, which is upstream's. Conflating the two is how a
+// skewed cluster gets a trail that reads backwards.
+const groupTrailSQL = `
+SELECT type, occurred_at, coalesce(actor_label,'')
+  FROM alert_events
+ WHERE org_id = $1 AND group_id = $2
+   AND type IN ('occurrence.opened','occurrence.reopened','occurrence.suppressed',
+                'occurrence.unsuppressed','occurrence.resolved','occurrence.expired',
+                'occurrence.acknowledged','occurrence.unacknowledged',
+                'group.opened','group.closed','group.storm_started','group.storm_ended')
+ ORDER BY recorded_at DESC, id DESC
+ LIMIT $3`
+
+// groupNotificationsSQL counts what oto has SAID about this group.
+//
+// "How loud was this?" is a question about oto's own behaviour, and oto is the
+// only thing that can answer it — it belongs on the receipt beside how long the
+// outage lasted. Suppressed intents are excluded: they are notifications oto
+// decided NOT to send, and counting them would report noise that never happened.
+//
+// `notif_subject_idx (org_id, subject_kind, subject_id, …)` serves it.
+const groupNotificationsSQL = `
+SELECT count(*)
+  FROM notifications
+ WHERE org_id = $1 AND subject_kind = 'alert_group' AND subject_id = $2
+   AND status <> 'suppressed'`
+
 const enrichmentsSQL = `
 SELECT enricher, status, payload, warnings, coalesce(error,''), computed_at
   FROM enrichments
@@ -156,7 +218,53 @@ func (r *SnapshotRepository) Snapshot(
 	if err := r.readOccurrence(ctx, s, q, &snap); err != nil {
 		return domain.Snapshot{}, err
 	}
+	r.readTrail(ctx, s, q.GroupID, &snap)
+	r.readNotificationCount(ctx, s, q.GroupID, &snap)
 	return snap, nil
+}
+
+// readNotificationCount records how many notifications oto has sent about this
+// group. It degrades to zero, which the renderer suppresses (S11).
+func (r *SnapshotRepository) readNotificationCount(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID, snap *domain.Snapshot,
+) {
+	var n int
+	if err := r.db(ctx).QueryRow(ctx, groupNotificationsSQL, s.OrgID(), groupID).Scan(&n); err == nil {
+		snap.NotificationCount = n
+	}
+}
+
+// readTrail loads the group's state history for the card's receipt (§H.4).
+//
+// A failure DEGRADES to no trail rather than failing the snapshot. The trail is
+// what makes a resolved card legible; a card with no trail is a regression, and a
+// card that never renders is an alert nobody sees.
+func (r *SnapshotRepository) readTrail(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID, snap *domain.Snapshot,
+) {
+	rows, err := r.db(ctx).Query(ctx, groupTrailSQL, s.OrgID(), groupID, MaxTrailEntries)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var out []domain.TransitionFact
+	for rows.Next() {
+		var f domain.TransitionFact
+		if err := rows.Scan(&f.Type, &f.At, &f.ActorLabel); err != nil {
+			return
+		}
+		out = append(out, f)
+	}
+	if rows.Err() != nil {
+		return
+	}
+	// The query reads newest-first so the LIMIT keeps the RECENT end; the card
+	// reads oldest-first because that is the order the story happened in.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	snap.Trail = out
 }
 
 func (r *SnapshotRepository) readOrg(
@@ -177,6 +285,7 @@ func (r *SnapshotRepository) readGroup(
 		&labels, &g.Title, &g.State, &g.Severity, &g.StateVersion,
 		&g.FiringCount, &g.SuppressedCount, &g.ResolvedCount, &g.ExpiredCount,
 		&g.TotalCount, &g.AckedCount, &g.StormMode, &g.StormSince,
+		&g.NotificationReason, &g.AlertmanagerURL,
 		&g.FirstSeenAt, &g.LastActivityAt, &g.ClosedAt,
 	)
 	if err != nil {
@@ -187,6 +296,16 @@ func (r *SnapshotRepository) readGroup(
 		// The storm card counts the alerts that joined this generation. Anything
 		// else would understate a collapse that is, by definition, about volume.
 		g.StormCount = g.TotalCount
+	}
+
+	// The upstream start is read separately and DEGRADES to zero rather than
+	// failing the snapshot: a card that renders "Started — unknown" is a small
+	// loss, and a card that does not render at all because an aggregate went
+	// wrong is an alert nobody sees.
+	var since *time.Time
+	if err := r.db(ctx).QueryRow(ctx, groupFiringSinceSQL, s.OrgID(), groupID).Scan(&since); err == nil &&
+		since != nil {
+		g.FiringSince = since.UTC()
 	}
 	return nil
 }

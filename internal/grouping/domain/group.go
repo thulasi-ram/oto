@@ -478,6 +478,22 @@ func (g Group) Touch(now time.Time) Group {
 // Rendering it ONCE, at write time, is what stops the Slack card and the UI
 // disagreeing about what a group is called — and what stops the timeline reading
 // differently after somebody edits a label.
+//
+// ⛔ IT IS A NAME, NOT A LABEL DUMP. The first live Slack run titled a card
+// `alertname=OtoSmokeTest, cluster=smoke-test`, which is a serialised map where
+// §H.3 asks for the alert's NAME with the cluster as a separate chip. An operator
+// scanning a channel at 03:00 reads the first two words of a title; spending them
+// on the string "alertname=" is spending them on nothing.
+//
+// So: when the group is grouped by `alertname` — which is Alertmanager's own
+// default `group_by` and therefore the overwhelming case — the title IS the
+// alertname, and the two labels the card renders elsewhere (`cluster` as the
+// title chip, `namespace`/`service` as fields) are dropped from it rather than
+// repeated. Anything LEFT OVER is genuinely distinguishing (two groups of one
+// alertname must not share a title), so it is appended as `k=v`.
+//
+// Without an `alertname` there is no name to use and the `k=v` rendering is the
+// honest fallback: it is ugly, and it is what the group actually is.
 func Title(groupLabels map[string]string, fallback string) string {
 	if len(groupLabels) == 0 {
 		return truncateTitle(fallbackTitle(fallback))
@@ -488,21 +504,49 @@ func Title(groupLabels map[string]string, fallback string) string {
 	}
 	sort.Strings(names)
 
-	// `alertname` leads when present: it is what a human recognises the group by.
-	if _, ok := groupLabels["alertname"]; ok {
-		names = append([]string{"alertname"}, without(names, "alertname")...)
+	alertname := strings.TrimSpace(groupLabels[LabelAlertName])
+	if alertname == "" {
+		var b strings.Builder
+		for i, n := range names {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(n)
+			b.WriteString("=")
+			b.WriteString(groupLabels[n])
+		}
+		return truncateTitle(b.String())
 	}
 
 	var b strings.Builder
-	for i, n := range names {
-		if i > 0 {
-			b.WriteString(", ")
+	b.WriteString(alertname)
+	for _, n := range names {
+		if _, shown := titleElidedLabels[n]; shown {
+			continue
 		}
+		if strings.TrimSpace(groupLabels[n]) == "" {
+			continue
+		}
+		b.WriteString(", ")
 		b.WriteString(n)
 		b.WriteString("=")
 		b.WriteString(groupLabels[n])
 	}
 	return truncateTitle(b.String())
+}
+
+// LabelAlertName is the label that names the rule, and therefore the group.
+const LabelAlertName = "alertname"
+
+// titleElidedLabels are the group labels the CARD already renders somewhere
+// other than the title: `cluster` is the chip beside it (§H.3), `namespace` and
+// `service` are their own fields. Repeating them in the title costs the width
+// that the alert's own name needs.
+var titleElidedLabels = map[string]struct{}{
+	LabelAlertName: {},
+	"cluster":      {},
+	"namespace":    {},
+	"service":      {},
 }
 
 func fallbackTitle(fallback string) string {
@@ -517,16 +561,6 @@ func truncateTitle(s string) string {
 		return s
 	}
 	return s[:MaxTitleBytes-1] + "…"
-}
-
-func without(xs []string, drop string) []string {
-	out := make([]string, 0, len(xs))
-	for _, x := range xs {
-		if x != drop {
-			out = append(out, x)
-		}
-	}
-	return out
 }
 
 // The two sort keys `GET /api/v1/alert-groups` accepts, and nothing else.

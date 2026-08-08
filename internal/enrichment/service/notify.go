@@ -81,3 +81,45 @@ func (n *QueueNotifier) NotifyEnriched(ctx context.Context, _ db.TenantScope, no
 	_, err := n.enqueuer.Enqueue(ctx, args, db.WithUniquePeriod(n.debounce))
 	return err
 }
+
+// ReasonFired is the §H.6 Reason for a first notification. It is named here
+// because the inline pass RELEASES one; it never mints one.
+const ReasonFired = "fired"
+
+// NotifyPreNotificationReady enqueues the `fired` evaluation `alerts` deferred.
+//
+// It is enqueued with NO delay and NO uniqueness window: the correctness
+// mechanism is `notifications_idem_uniq`, not the queue, and asking the queue to
+// collapse this onto the backstop it is trying to overtake would defeat the
+// point. A duplicate evaluation is cheap and idempotent; a card that waits the
+// full budget when the rule was ready in 80 ms is not.
+func (n *QueueNotifier) NotifyPreNotificationReady(
+	ctx context.Context, _ db.TenantScope, notice PreNotificationNotice,
+) error {
+	if n.enqueuer == nil {
+		return errs.New(errs.KindInternal, "enrichment_no_enqueuer",
+			"the pre-notification notifier was built without a queue")
+	}
+	if notice.GroupID == uuid.Nil {
+		// No group means no card to post; `alerts` did not enqueue an evaluation
+		// either, so there is nothing to release.
+		return nil
+	}
+
+	args := jobs.NotifyEvaluateArgs{
+		GroupID:      notice.GroupID,
+		Reason:       ReasonFired,
+		StateVersion: notice.StateVersion,
+	}
+	if notice.AlertID != uuid.Nil {
+		alertID := notice.AlertID
+		args.AlertID = &alertID
+	}
+	if notice.OccurrenceID != uuid.Nil {
+		occurrenceID := notice.OccurrenceID
+		args.OccurrenceID = &occurrenceID
+	}
+
+	_, err := n.enqueuer.Enqueue(ctx, args)
+	return err
+}

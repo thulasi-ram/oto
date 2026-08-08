@@ -4249,11 +4249,15 @@ export interface components {
              * Format: int32
              * @description A re-fire inside this window reopens the existing occurrence instead of opening a new one.
              *
-             *     **The floor is 60, not 0.** Below a minute the window is shorter than any useful Alertmanager
-             *     `group_interval`, so it is unreachable and *every* re-fire opens a new generation and a
-             *     brand-new Slack root message — the wall of near-identical messages oto exists to prevent,
-             *     produced by a setting that looks like it should have prevented it. Zero would be a Slack
-             *     thread per transition.
+             *     **The floor is 600, and it is derived rather than chosen: it is twice oto's ingest replay
+             *     window.** A replayed webhook batch — an HA Alertmanager sibling, a retry after a 5xx — is
+             *     suppressed for 5 minutes by its content-addressed dedup key. A re-fire whose alert set is
+             *     unchanged produces the *same* dedup key, so a `refire_grace` at or below that window can
+             *     never be reached: every re-fire oto is still able to observe is, by arithmetic, already
+             *     outside the grace, and *every* re-fire therefore opens a new generation and a brand-new
+             *     Slack root message — the wall of near-identical messages oto exists to prevent, produced by
+             *     a setting that looks like it should have prevented it. Zero would be a Slack thread per
+             *     transition.
              * @default 600
              */
             refire_grace_s: number;

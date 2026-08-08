@@ -17,13 +17,19 @@ import (
 //
 // It is an interface for two reasons. It makes the Channel testable without a
 // workspace, and it makes the surface auditable: everything oto can do to Slack is
-// these four methods. Note what is NOT here — conversations.history. oto NEVER
-// reads Slack back; oto's database is the memory of Slack (C9).
+// these THREE methods, and the manifest in deploy/slack requests exactly the one
+// scope they need between them (`chat:write`; `auth.test` needs none).
+//
+// ⛔ NOTHING HERE READS SLACK. No conversations.history, no conversations.replies,
+// no conversations.info, no search. oto's database is the memory of Slack (C9,
+// ADR 0008), and every read method that appears here is a read scope somebody has
+// to justify to a workspace admin. `GetConversationInfoContext` was here, was
+// called only by a probe nothing invoked, and cost `channels:read` + `groups:read`
+// for it; it is gone and so are they.
 type API interface {
 	PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error)
 	UpdateMessageContext(ctx context.Context, channelID, timestamp string, options ...slack.MsgOption) (string, string, string, error)
 	AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error)
-	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
 }
 
 // Channel is one configured Slack destination.
@@ -188,46 +194,28 @@ func (c *Channel) amend(
 	}, nil
 }
 
-// Probe verifies the credential and the destination without sending anything.
+// Probe verifies the CREDENTIAL without sending anything. It is one call:
+// `auth.test`, which Slack documents as requiring NO SCOPE AT ALL.
 //
-// It is two calls on purpose: auth.test proves the token is alive, and
-// conversations.info proves the bot can see the conversation. A channel that
-// passes the first and fails the second is the common real-world failure — the
-// app was removed from the channel — and the two produce different health states.
+// ⛔ IT NO LONGER READS `conversations.info`, AND THAT IS A SCOPE DECISION, NOT
+// AN OVERSIGHT. Confirming the destination exists cost `channels:read` and
+// `groups:read` — two workspace-wide metadata read scopes on an app whose entire
+// job is to write two message types. The first live run proved the runtime needs
+// exactly `chat.postMessage`, `chat.update` and `auth.test`, and the probe was
+// the only thing keeping the read scopes in the manifest.
+//
+// What is lost is learning "the bot was removed from this channel" at
+// configuration time rather than at delivery time. It is a small loss and it is
+// already covered: §H.9 classifies `channel_not_found`, `is_archived` and
+// `not_in_channel` as TERMINAL, marks the thread dead, sets the channel
+// `degraded` and surfaces it in the UI with the fix. Paying two read scopes to
+// learn the same fact a few minutes earlier is not a trade worth making for an
+// app a security reviewer has to approve.
 func (c *Channel) Probe(ctx context.Context) error {
 	if _, err := c.api.AuthTestContext(ctx); err != nil {
 		return classify(err)
 	}
-	if _, err := c.ResolveConversation(ctx); err != nil {
-		return err
-	}
 	return nil
-}
-
-// ResolveConversation confirms the configured conversation exists and returns the
-// id Slack itself uses for it. A conversation that is archived or invisible to the
-// bot fails here with a terminal class, so the operator learns at configuration
-// time rather than during an outage.
-func (c *Channel) ResolveConversation(ctx context.Context) (string, error) {
-	info, err := c.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
-		ChannelID: c.cfg.ConversationID,
-	})
-	if err != nil {
-		return "", classify(err)
-	}
-	if info == nil || info.ID == "" {
-		return "", &domain.Error{
-			Class: domain.ClassPermanent, Provider: providerName,
-			Code: "channel_not_found", Cause: errors.New("slack returned no conversation"),
-		}
-	}
-	if info.IsArchived {
-		return "", &domain.Error{
-			Class: domain.ClassPermanent, Provider: providerName,
-			Code: "is_archived", Cause: errors.New("the slack conversation is archived"),
-		}
-	}
-	return info.ID, nil
 }
 
 // Close releases the Channel. The SDK client holds no pooled state oto owns, so

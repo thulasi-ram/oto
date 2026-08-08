@@ -13,14 +13,17 @@ import (
 
 // ⛔⛔ THE MENTION MUST BE IN THE TOP-LEVEL `text`, AND THIS FILE IS WHY.
 //
-// SPEC §H.1 S3 puts every oto block inside exactly ONE attachment, because that
-// attachment is the only way to get the colour bar. Slack's in-channel
-// `thread_broadcast` reference "cannot contain attachments or message buttons"
-// (ADR 0020). So a mention rendered into a block is not merely un-notifying in
-// the channel — it is not present in the channel copy at all. The reminder is the
-// one message oto sends whose whole purpose is to reach somebody who has not
-// engaged, and putting its mention where the channel cannot see it would be a
-// feature that does nothing while appearing to work.
+// SPEC §H.1 S3 puts every oto block inside exactly ONE attachment. The original
+// argument was that Slack's in-channel `thread_broadcast` reference "cannot
+// contain attachments or message buttons", so a mention in a block would not be
+// present in the channel copy at all — and a live workspace has since shown the
+// attachment surviving (ADR 0020, Amendment 4).
+//
+// The rule is unchanged, on the ground it always had: THE TOP-LEVEL TEXT IS WHAT
+// A PUSH NOTIFICATION SHOWS AND WHAT A SCREEN READER ANNOUNCES. The reminder is
+// the one message oto sends whose whole purpose is to reach somebody who has not
+// engaged, and a mention their phone never shows them is a feature that does
+// nothing while appearing to work.
 //
 // This is a rendering rule that reads as a style preference and is not one, which
 // is exactly the kind of rule that gets refactored away. Hence a test.

@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
 )
@@ -11,7 +12,7 @@ import (
 // renderRoot builds the card that is posted once per AlertGroup generation and
 // then amended in place for its entire life (§H.3, ADR 0008).
 //
-// The layout is deliberately calm and dense. Seven blocks against a ceiling of
+// The layout is deliberately calm and dense. Eight blocks against a ceiling of
 // fifty, one colour, one emoji, one bold title that is also the deep link. An
 // operator reading it at 03:00 should be able to answer "what, where, how bad,
 // how long, what do I do" without scrolling and without clicking.
@@ -27,6 +28,9 @@ func (r *Renderer) renderRoot(v *domain.NotificationView, o domain.RenderOptions
 	}
 	blocks = append(blocks, r.fieldsBlock(v, o, state, now, nonce))
 	if b, ok := r.membersBlock(v, o, state, nonce); ok {
+		blocks = append(blocks, b)
+	}
+	if b, ok := r.trailBlock(v, state, nonce); ok {
 		blocks = append(blocks, b)
 	}
 	if b, ok := r.ruleBlock(v, state, nonce); ok {
@@ -64,7 +68,11 @@ func (r *Renderer) titleBlock(v *domain.NotificationView, o domain.RenderOptions
 	}
 
 	head := leadEmoji(v, state) + " *" + link(v.Links.Group, truncateRunes(title, 140)) + "*"
-	if cluster := v.Group.ClusterKey; cluster != "" {
+	// The cluster is a CHIP beside the name, never part of it (§H.3). It comes
+	// from the group's own cluster key when oto has one and from the `cluster`
+	// group label when it does not — the first live run had only the label, so the
+	// chip was empty and the cluster ended up dumped into the title instead.
+	if cluster := clusterChip(v); cluster != "" {
 		head += "  ·  " + code(cluster)
 	}
 	if state == CardStorm {
@@ -112,34 +120,110 @@ func (r *Renderer) fieldsBlock(
 	add("Severity", severityValue(v, o))
 	add("Service", code(firstNonEmpty(v.Group.GroupLabels["service"], focusField(v, func(a domain.AlertView) string { return a.Service }))))
 	add("Namespace", code(firstNonEmpty(v.Group.GroupLabels["namespace"], focusField(v, func(a domain.AlertView) string { return a.Namespace }))))
-	add("Started", slackDate(v.Group.FirstSeenAt))
+	// ⛔ UPSTREAM'S `startsAt`, NOT OTO'S FIRST SIGHTING. They differ by oto's
+	// ingest latency plus Alertmanager's `group_wait`, which was twenty-one
+	// minutes in the first live run, and "Started 18:17" for a thing that started
+	// at 17:56 is a false statement about how long an outage has lasted.
+	add("Started", slackDate(groupStart(v)))
 	add(durationLabel(state), durationValue(v, state, now))
+
+	// ⭐ THE TERMINAL CARD IS A RECEIPT, NOT A BLANK STATE (§H.4, amended).
+	//
+	// `chat.update` is silent, so a channel reader watches a red card turn green
+	// with no notification and no trace and cannot tell that anything happened.
+	// These four fields are what makes the last version of the card readable as a
+	// closed ticket: when it ended, what it hit, how loud oto was about it, and
+	// whether a human had already picked it up. They are ordered after `Duration`
+	// so §H.7's ten-field budget sheds `Flapping` and `Team` first, which are the
+	// two that matter least once it is over.
+	if state.IsTerminal() {
+		add(terminalTimeLabel(state), slackDate(v.Group.LastActivityAt))
+		add("Instances affected", instancesAffected(v))
+		if v.Notifications > 0 {
+			add("Notifications", plural(v.Notifications, "sent", "sent"))
+		}
+		add("Acknowledged", acknowledgedValue(v))
+	}
+
 	if n, ok := flappingCount(v); ok {
 		add("Flapping", ":arrows_counterclockwise: "+plural(n, "transition", "transitions"))
 	}
-	add("Team", escape(v.Group.GroupLabels["team"]))
+	// `team` is almost never a group-by label, so reading only the group labels
+	// meant this field NEVER rendered. It is on the alert, which is where the
+	// routing that produced the card came from.
+	add("Team", escape(labelOf(v, "team")))
 
 	return fieldsBlock(blockID("fields", nonce), fields)
+}
+
+func terminalTimeLabel(state CardState) string {
+	if state == CardExpired {
+		return "Last seen"
+	}
+	return "Resolved"
+}
+
+// instancesAffected is what the episode actually hit. It counts EVERY member of
+// the generation, not the capped render list.
+func instancesAffected(v *domain.NotificationView) string {
+	if v.Group.TotalCount <= 0 {
+		return ""
+	}
+	return plural(v.Group.TotalCount, "instance", "instances")
+}
+
+// acknowledgedValue records whether a human had taken this before it ended.
+//
+// ⛔ ACTOR, NEVER SUBJECT (ADR 0013). It says who acted on the signal; it is not
+// a fact about a person's workload, it is not assignment, and "no" is a fact
+// about the SIGNAL — that it resolved without anybody looking — which is one of
+// the more useful things a receipt can tell an operator the next morning.
+func acknowledgedValue(v *domain.NotificationView) string {
+	if v.Occurrence != nil && v.Occurrence.AckedAt != nil {
+		who := actorLabel(v)
+		if who == "" && v.Occurrence.AckedByLabel != "" {
+			who = code(v.Occurrence.AckedByLabel)
+		}
+		out := ":eyes: yes"
+		if who != "" {
+			out += " — " + who
+		}
+		return out + ", " + slackDate(*v.Occurrence.AckedAt)
+	}
+	if v.Group.AckedCount > 0 {
+		return ":eyes: yes"
+	}
+	return "no — it resolved unacknowledged"
 }
 
 // membersBlock lists the affected instances, capped at MaxInstances with an
 // explicit "and N more".
 //
-// It is dropped once the card is terminal and replaced by a single count in storm
-// mode: a list of 214 instances nobody will read is not information (§H.4, S11).
+// ⛔ IT IS NO LONGER DROPPED WHEN THE CARD GOES TERMINAL, AND THAT REVERSAL IS
+// THE POINT (§H.4, amended). §H.4 used to call the member list "zero information
+// once resolved". That is true only for a reader who watched it happen. For
+// everybody else — which is everybody in the channel, because `chat.update` is
+// silent — the resolved card IS the record, and dropping the members made the
+// card LEAST informative at exactly the moment it became the only thing left.
+// A resolved card should read like a closed ticket, not an empty one.
+//
+// Storm mode still collapses to a count: a list of 214 instances nobody will read
+// is not information, and the count plus the link is the faithful summary (S11).
 func (r *Renderer) membersBlock(
 	v *domain.NotificationView, o domain.RenderOptions, state CardState, nonce string,
 ) (Block, bool) {
-	if state.IsTerminal() {
-		return Block{}, false
-	}
 	if state == CardStorm {
 		text := "*Affected instances*\n" + plural(v.Group.TotalCount, "alert", "alerts") +
 			" in this group. " + link(v.Links.Group, "See them all in oto") + "."
 		return sectionBlock(blockID("members", nonce), truncateSection(text, v.Links.Group)), true
 	}
-	if len(v.Alerts) <= 1 {
-		// One instance is zero information: the title already named it (S11).
+	if len(v.Alerts) <= 1 && !state.IsTerminal() {
+		// One instance is zero information WHILE IT IS LIVE: the title already named
+		// it (S11). On a terminal card it is the record of what was affected, and
+		// "which box was it?" is the first question anybody asks afterwards.
+		return Block{}, false
+	}
+	if len(v.Alerts) == 0 {
 		return Block{}, false
 	}
 
@@ -172,8 +256,18 @@ func (r *Renderer) membersBlock(
 
 // ruleBlock shows what the rule said at the moment this occurrence fired. It is
 // oto's defensible differentiator, and it costs one quiet context line.
+//
+// ⛔ IT SURVIVES THE CARD GOING TERMINAL, AND IT USED TO BE DROPPED. §H.4 said to
+// shed the rule on resolve as "zero information once resolved". The opposite is
+// true: the rule snapshot is THE RECORD OF WHY THIS FIRED, and the moment it
+// matters most is afterwards, when somebody asks whether the threshold was
+// sensible or when it last changed. Dropping it deleted the one thing oto has
+// that nothing else does, from the one message that outlives the incident.
+//
+// Storm mode still drops it, because a storm card is about volume and is
+// explicitly not about any one rule.
 func (r *Renderer) ruleBlock(v *domain.NotificationView, state CardState, nonce string) (Block, bool) {
-	if state.IsTerminal() || state == CardStorm || v.Rule == nil {
+	if state == CardStorm || v.Rule == nil {
 		return Block{}, false
 	}
 	expr := oneLine(v.Rule.Expr)
@@ -188,6 +282,146 @@ func (r *Renderer) ruleBlock(v *domain.NotificationView, state CardState, nonce 
 		text += "   :scroll: " + link(v.Links.Timeline, "the rule changed since the last occurrence")
 	}
 	return contextBlock(blockID("rule", nonce), Text{Type: TypeMrkdwn, Text: truncateField(text, v.Links.Group)}), true
+}
+
+// trailBlock is the card's RECEIPT: the state trail, in one context line.
+//
+//	:red_circle: 09:14 fired → :eyes: 09:17 acked by @ram → :white_check_mark: 09:22 resolved · 8m
+//
+// ⭐ IT EXISTS BECAUSE `chat.update` IS SILENT AND DESTRUCTIVE. ADR 0008 makes
+// the root the current state and the thread the history — right for a reader in
+// the thread, and useless to the far larger number of people who only ever see
+// the channel. They watch a red card become a green card with no notification and
+// no trace, and, in the owner's words on seeing it happen: "it means something
+// happened and we don't know."
+//
+// The trail is the answer that does not cost a message. It is one context block,
+// it is re-rendered on every update, and it keeps `chat.update` as the primary
+// verb: the goal is to stop the update erasing the story, not to start posting
+// more of them.
+//
+// It is rendered in EVERY state, not only the terminal ones. A card that grows
+// its history only at the end teaches nobody to look for it.
+func (r *Renderer) trailBlock(v *domain.NotificationView, state CardState, nonce string) (Block, bool) {
+	if state == CardStorm || len(v.Trail) < 2 {
+		// One entry is not a trail: it says "it fired", which the Started field
+		// already said better (S11).
+		return Block{}, false
+	}
+
+	entries := v.Trail
+	elided := 0
+	if len(entries) > maxTrailShown {
+		// ⛔ ELIDE THE MIDDLE, NEVER THE END. A long-lived flapper's trail is
+		// unbounded, and the two entries a reader needs are the FIRST (when did this
+		// begin) and the LAST (what is it now). Truncating the tail would throw away
+		// the second one to keep transitions nobody is asking about.
+		head := entries[:maxTrailHead]
+		tail := entries[len(entries)-maxTrailTail:]
+		elided = len(entries) - len(head) - len(tail)
+		merged := make([]domain.TrailEntry, 0, maxTrailShown)
+		merged = append(merged, head...)
+		merged = append(merged, tail...)
+		entries = merged
+	}
+
+	parts := make([]string, 0, len(entries)+1)
+	for i, e := range entries {
+		if elided > 0 && i == maxTrailHead {
+			parts = append(parts, "_… "+strconv.Itoa(elided)+" more_")
+		}
+		parts = append(parts, trailEmoji(e.Kind)+" "+slackDate(e.At)+" "+trailVerb(e.Kind)+trailActor(e))
+	}
+
+	text := strings.Join(parts, "  →  ")
+	if span := trailSpan(v, state); span != "" {
+		text += "  ·  " + span
+	}
+	return contextBlock(blockID("trail", nonce),
+		Text{Type: TypeMrkdwn, Text: truncateField(text, v.Links.Group)}), true
+}
+
+// The trail's budget. Twelve entries reach the renderer (MaxTrailEntries); six
+// are shown, weighted to the recent end because that is where the current state
+// is.
+const (
+	maxTrailHead  = 2
+	maxTrailTail  = 4
+	maxTrailShown = maxTrailHead + maxTrailTail
+)
+
+func trailEmoji(kind string) string {
+	switch kind {
+	case "fired", "refired":
+		return ":red_circle:"
+	case "acked":
+		return ":eyes:"
+	case "unacked":
+		return ":arrow_uturn_left:"
+	case "suppressed":
+		return ":mute:"
+	case "unsuppressed":
+		return ":speaker:"
+	case "resolved":
+		return ":white_check_mark:"
+	case "expired":
+		return ":grey_question:"
+	case "storm":
+		return ":zap:"
+	case "storm_ended":
+		return ":wind_blowing_face:"
+	default:
+		return ":white_circle:"
+	}
+}
+
+func trailVerb(kind string) string {
+	switch kind {
+	case "fired":
+		return "fired"
+	case "refired":
+		return "re-fired"
+	case "acked":
+		return "acked"
+	case "unacked":
+		return "un-acked"
+	case "suppressed":
+		return "silenced"
+	case "unsuppressed":
+		return "silence ended"
+	case "resolved":
+		return "resolved"
+	case "expired":
+		return "expired"
+	case "storm":
+		return "storm damping on"
+	case "storm_ended":
+		return "storm damping off"
+	default:
+		return kind
+	}
+}
+
+// trailActor attributes a transition a human caused. ACTOR, NEVER SUBJECT: a
+// person appears here as metadata about an action, never as the topic (ADR 0013).
+func trailActor(e domain.TrailEntry) string {
+	if e.Actor == "" {
+		return ""
+	}
+	return " by " + code(e.Actor)
+}
+
+// trailSpan closes the receipt with the total, which is the number somebody
+// writing the post-mortem copies out.
+func trailSpan(v *domain.NotificationView, state CardState) string {
+	if !state.IsTerminal() {
+		return ""
+	}
+	start, end := groupStart(v), v.Group.LastActivityAt
+	if start.IsZero() || end.IsZero() || !end.After(start) {
+		return ""
+	}
+	return "total " + humanDuration(end.Sub(start))
 }
 
 // actionsBlock renders at most four elements: up to three buttons and one
@@ -225,7 +459,7 @@ func (r *Renderer) actionsBlock(v *domain.NotificationView, state CardState, non
 		}
 	}
 
-	if of, ok := overflowMenu(v, state); ok {
+	if of, ok := overflowMenu(v); ok {
 		elements = append(elements, of)
 	}
 	if len(elements) == 0 {
@@ -238,7 +472,7 @@ func (r *Renderer) actionsBlock(v *domain.NotificationView, state CardState, non
 // is a place to look, never a thing to change. Each option still delivers an
 // interaction payload that the handler must ack with a 200 (S9), which is why the
 // action id is in the oto.noop.* family.
-func overflowMenu(v *domain.NotificationView, state CardState) (Action, bool) {
+func overflowMenu(v *domain.NotificationView) (Action, bool) {
 	opts := make([]OverflowOption, 0, 5)
 	addOpt := func(label, url, value string) {
 		if len(opts) >= 5 || (url == "" && value == "") {
@@ -251,15 +485,19 @@ func overflowMenu(v *domain.NotificationView, state CardState) (Action, bool) {
 		})
 	}
 
+	// ⛔ THE OVERFLOW DOES NOT SHRINK WHEN THE CARD GOES TERMINAL. The BUTTONS do —
+	// Acknowledge is meaningless on something that is over — but every one of these
+	// is a PLACE TO LOOK, and the moment a reader most needs to look is after it
+	// ended. The old code dropped Prometheus, Alertmanager and the label list on
+	// resolve, which made the only surviving record of the incident the least
+	// navigable version of it (§H.4, amended).
 	addOpt(":blue_book: Show timeline", v.Links.Timeline, "")
-	if !state.IsTerminal() {
-		addOpt(":chart_with_upwards_trend: Open in Prometheus", v.Links.Prometheus, "")
-		addOpt(":bell: Open in Alertmanager", v.Links.Alertmanager, "")
-	}
+	addOpt(":chart_with_upwards_trend: Open in Prometheus", v.Links.Prometheus, "")
+	addOpt(":bell: Open in Alertmanager", v.Links.Alertmanager, "")
 	if v.Rule != nil {
 		addOpt(":scroll: Rule history", v.Links.Group, "")
 	}
-	if !state.IsTerminal() && v.Group.ID != "" {
+	if v.Group.ID != "" {
 		addOpt(":label: Show all labels", "", "labels|"+v.Group.ID)
 	}
 
@@ -288,6 +526,14 @@ func (r *Renderer) footerBlock(v *domain.NotificationView, o domain.RenderOption
 	}
 	if state == CardAcknowledged && v.Occurrence != nil && v.Occurrence.AckedAt != nil {
 		parts = append(parts, "acked "+slackDate(*v.Occurrence.AckedAt))
+	}
+	// The `Started` field is UPSTREAM's clock. When oto heard about it materially
+	// later — `group_wait`, a retry, a backed-up queue — that gap is itself a fact
+	// worth having, and the footer is where oto's own provenance belongs. Under a
+	// minute it is noise and is dropped (S11).
+	if lag := observationLag(v); lag >= time.Minute {
+		parts = append(parts, "oto first saw it "+slackDate(v.Group.FirstSeenAt)+
+			" ("+humanDuration(lag)+" later)")
 	}
 	parts = append(parts, "updated "+slackDate(now))
 	if o.Continued {
@@ -394,17 +640,32 @@ func durationLabel(state CardState) string {
 	}
 }
 
+// groupStart is what the ROOT CARD means by "Started": the upstream start of the
+// whole generation, falling back to oto's first sighting when upstream gave none.
+func groupStart(v *domain.NotificationView) time.Time {
+	if !v.Group.StartedAt.IsZero() {
+		return v.Group.StartedAt
+	}
+	return v.Group.FirstSeenAt
+}
+
+// durationValue is "Firing for", and it is A FACT ABOUT THE GROUP.
+//
+// ⛔ IT IS NOT THE TRIGGERING ALERT'S OCCURRENCE DURATION, WHICH IS WHAT IT USED
+// TO BE. The root card is about a generation; the occurrence in the view is
+// whichever alert's episode happened to mint this notification, and for a `fired`
+// intent that episode is milliseconds old. The first live run therefore rendered
+// "Firing for: under a second" on a group that had been firing for eighty
+// seconds — a card that misstates the length of an outage is worse than one that
+// omits it, because an operator triages on that number.
+//
+// The group's own clock is used in every state, and it starts at UPSTREAM's
+// `startsAt` so the number agrees with the `Started` field directly above it.
 func durationValue(v *domain.NotificationView, state CardState, now time.Time) string {
 	if state == CardExpired {
 		return slackDate(v.Group.LastActivityAt)
 	}
-	if v.Occurrence != nil && v.Occurrence.Duration > 0 {
-		return humanDuration(v.Occurrence.Duration)
-	}
-	start := v.Group.FirstSeenAt
-	if v.Occurrence != nil && !v.Occurrence.StartedAt.IsZero() {
-		start = v.Occurrence.StartedAt
-	}
+	start := groupStart(v)
 	if start.IsZero() {
 		return ""
 	}
@@ -416,6 +677,36 @@ func durationValue(v *domain.NotificationView, state CardState, now time.Time) s
 		return ""
 	}
 	return humanDuration(end.Sub(start))
+}
+
+// observationLag is how long after the signal started oto first heard about it.
+// A negative or unknown gap is zero: a clock that ran backwards is measured
+// elsewhere (C12) and is not something to print on a card.
+func observationLag(v *domain.NotificationView) time.Duration {
+	if v.Group.StartedAt.IsZero() || v.Group.FirstSeenAt.IsZero() {
+		return 0
+	}
+	if !v.Group.FirstSeenAt.After(v.Group.StartedAt) {
+		return 0
+	}
+	return v.Group.FirstSeenAt.Sub(v.Group.StartedAt)
+}
+
+// clusterChip is the code-formatted cluster beside the title (§H.3).
+func clusterChip(v *domain.NotificationView) string {
+	return firstNonEmpty(v.Group.ClusterKey, v.Group.GroupLabels["cluster"],
+		focusField(v, func(a domain.AlertView) string { return a.ClusterKey }),
+		focusField(v, func(a domain.AlertView) string { return a.Labels["cluster"] }))
+}
+
+// labelOf reads a label from the group labels first, then from the alert the
+// card is about. Group labels are only the subset Alertmanager grouped by, so a
+// renderer that reads nothing else silently drops every other label a card wants.
+func labelOf(v *domain.NotificationView, name string) string {
+	if s := strings.TrimSpace(v.Group.GroupLabels[name]); s != "" {
+		return s
+	}
+	return focusField(v, func(a domain.AlertView) string { return a.Labels[name] })
 }
 
 // rootText is the complete sentence that becomes the push notification, the
@@ -443,31 +734,40 @@ func rootText(v *domain.NotificationView, state CardState) string {
 
 	if s := oneLine(annotation(v, "summary", "description", "message")); s != "" {
 		b.WriteString(" — ")
-		b.WriteString(truncateRunes(s, 120))
+		// Cut on a clause boundary, and let endSentence decide the terminator: the
+		// old code appended "." to a string that already ended in "…", which is how
+		// "…no real service…." reached a real Slack channel.
+		b.WriteString(endSentence(truncateClause(s, 120)))
 	} else if v.Group.TotalCount > 0 {
 		b.WriteString(" — ")
-		b.WriteString(countPhrase(v))
+		b.WriteString(endSentence(countPhrase(v)))
+	} else {
+		b.WriteString(".")
 	}
-	b.WriteString(".")
 
 	facts := make([]string, 0, 3)
 	if v.Group.Severity != "" {
 		facts = append(facts, "Severity "+v.Group.Severity)
 	}
-	if team := v.Group.GroupLabels["team"]; team != "" {
+	if team := labelOf(v, "team"); team != "" {
 		facts = append(facts, "team "+team)
 	}
 	facts = append(facts, stateClause(v, state))
 	b.WriteString(" ")
-	b.WriteString(joinNonEmpty(", ", facts...))
-	b.WriteString(".")
+	b.WriteString(endSentence(joinNonEmpty(", ", facts...)))
 
-	if v.Links.Runbook != "" {
-		b.WriteString(" Runbook: ")
-		b.WriteString(v.Links.Runbook)
+	sentence := oneLine(b.String())
+
+	// The runbook is appended only if the WHOLE of it fits. A URL cut at a
+	// boundary is still a broken URL, and a broken link is worse than no link: it
+	// looks clickable and is not.
+	if u := v.Links.Runbook; u != "" {
+		tail := " Runbook: " + u
+		if utf8.RuneCountInString(sentence)+utf8.RuneCountInString(tail) <= otoTopLevelText {
+			return sentence + tail
+		}
 	}
-
-	return truncateRunes(strings.Join(strings.Fields(b.String()), " "), otoTopLevelText)
+	return truncateClause(sentence, otoTopLevelText)
 }
 
 func stateClause(v *domain.NotificationView, state CardState) string {
@@ -479,13 +779,13 @@ func stateClause(v *domain.NotificationView, state CardState) string {
 	case CardSuppressed:
 		return "silenced since " + plainClock(v.Group.LastActivityAt)
 	case CardAcknowledged:
-		return "acknowledged, firing since " + plainClock(v.Group.FirstSeenAt)
+		return "acknowledged, firing since " + plainClock(groupStart(v))
 	case CardStorm:
 		return "storm damping on since " + plainClock(v.Group.LastActivityAt)
 	case CardFiring:
-		return "firing since " + plainClock(v.Group.FirstSeenAt)
+		return "firing since " + plainClock(groupStart(v))
 	default:
-		return "firing since " + plainClock(v.Group.FirstSeenAt)
+		return "firing since " + plainClock(groupStart(v))
 	}
 }
 

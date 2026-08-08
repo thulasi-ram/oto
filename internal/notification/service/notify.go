@@ -255,6 +255,15 @@ func (s *NotificationService) evaluate(
 		return Result{}, err
 	}
 
+	// §H.6, and the ONE place the wire table is applied. The intent arrived
+	// carrying a Reason derived from ONE alert's transition; this is the first
+	// moment the whole group is in scope, so it is the only moment at which
+	// "one alert resolved" can become "all alerts resolved". Everything
+	// downstream — the mode plan, the verbosity gate, the broadcast decision,
+	// the footer phrase and the idempotency key — reads the reconciled value.
+	in.Reason = domain.ReconcileWithWire(
+		in.Reason, snap.Group.NotificationReason, snap.Group.AllResolved())
+
 	n := s.mint(scope, in, snap, now)
 
 	match, err := s.policies.Evaluate(ctx, scope, MatchRequest{

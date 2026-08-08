@@ -106,18 +106,44 @@ func (b Bound) Clamp(v int) int {
 	}
 }
 
+// MinRefireGraceSeconds is `refire_grace_s`'s floor, and it is DERIVED rather
+// than chosen: it is twice the §C.5 ingest replay window
+// (`ingestion/domain.DedupTTL`, 5 minutes).
+//
+// Twice, not once, so that the reachable band is as wide as the window it has to
+// clear. At the floor a re-fire between 5 and 10 minutes after a resolve is both
+// visible to ingest and inside the grace, which is the T8 case; below the floor
+// that band is empty and `refire_grace` is a control with no effect.
+//
+// ⛔ It is not imported from `ingestion` — a settings vocabulary must not depend
+// on the ingest path — so the two numbers are tied by a test that imports both
+// (`TestTheReplayWindowIsStrictlyInsideRefireGrace`) rather than by a compile
+// error. Change one and that test tells you about the other.
+const MinRefireGraceSeconds = 600
+
 // settingBounds is the table. Every integer key has an entry; a key with no entry
 // is a key nothing can validate, so `Validate` treats a miss as a bug rather than
 // as permission.
 var settingBounds = map[SettingKey]Bound{
-	// A grace window below a minute is shorter than any Alertmanager
-	// `group_interval` worth running, so the window is unreachable and EVERY
-	// re-fire opens a new generation and a new Slack root message — precisely the
-	// wall of near-identical messages oto exists to prevent, produced by a setting
-	// that looks like it should have prevented it (docs/setup/tuning.md). Zero is
-	// forbidden outright: it is a Slack thread per transition.
-	KeyRefireGrace: {Min: 60, Max: 86400,
-		Why: "seconds, 60..86400: below a minute the window is shorter than any useful group_interval and every re-fire opens a new Slack thread; above a day two separate incidents merge into one occurrence and the history lies"},
+	// ⛔ THE FLOOR IS `2 × ingest_dedup`'s REPLAY WINDOW, AND THE COUPLING IS THE
+	// POINT OF THE NUMBER.
+	//
+	// §C.5 suppresses a replayed batch — an HA sibling, a retry — for
+	// `ingestion/domain.DedupTTL`. A re-fire whose alert set is unchanged produces
+	// a byte-identical dedup key, so a `refire_grace` at or below that window makes
+	// T8 UNREACHABLE: every re-fire oto can still observe is, by arithmetic,
+	// already outside the grace and opens a new generation and a new Slack root —
+	// precisely the wall of near-identical messages oto exists to prevent, produced
+	// by a setting that looks like it should have prevented it.
+	//
+	// They WERE equal (both ten minutes) and the first live tester had to alter the
+	// alert set to exercise re-fire at all. `MinRefireGrace` is derived from the
+	// replay window rather than picked, so raising one without the other cannot
+	// silently re-close the gap; `TestTheReplayWindowIsStrictlyInsideRefireGrace`
+	// pins the relationship. Zero remains forbidden outright: it is a Slack thread
+	// per transition. See docs/setup/tuning.md.
+	KeyRefireGrace: {Min: MinRefireGraceSeconds, Max: 86400,
+		Why: "seconds, 600..86400: the floor is twice the §C.5 ingest replay window, because a re-fire inside that window is dropped as a duplicate delivery and the grace can never be reached; above a day two separate incidents merge into one occurrence and the history lies"},
 	KeyResolveGrace: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: must exceed the EndsAt lease Prometheus refreshes (typically 3-4 minutes) or one missed scrape looks like an expiry"},
 	KeyGroupCloseDelay: {Min: 60, Max: 86400,

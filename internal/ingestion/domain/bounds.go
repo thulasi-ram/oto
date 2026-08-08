@@ -89,12 +89,34 @@ const (
 	MaxEndsAtFuture = 365 * 24 * time.Hour
 )
 
-// DedupTTL is how long a `ingest_dedup` row suppresses a replay (SPEC §C.5).
+// DedupTTL is how long an `ingest_dedup` row suppresses a replay (SPEC §C.5).
 //
-// Ten minutes comfortably exceeds `n_peers × cluster.peer-timeout` (45 s for a
-// three-node cluster) and leaves margin inside Alertmanager's ~5-minute retry
-// budget, so both an HA sibling and a retry after a partition land inside it.
-const DedupTTL = 10 * time.Minute
+// It covers `n_peers × cluster.peer-timeout` (45 s for a three-node cluster) and
+// Alertmanager's own retry backoff, whose ceiling is ~5 minutes, so both an HA
+// sibling and a retry after a partition land inside it. It is a TRANSPORT
+// window: its only job is to recognise the same delivery arriving twice.
+//
+// ⛔ IT MUST STAY STRICTLY BELOW `refire_grace`, AND THAT IS NOT A COINCIDENCE
+// TO BE PRESERVED BY LUCK. It was ten minutes, and `refire_grace` defaults to
+// ten minutes, so the two windows were exactly equal — which made the T8 re-fire
+// path UNREACHABLE by construction:
+//
+//   - a re-fire inside `refire_grace` is, by the equality, also inside the replay
+//     window, so it was dropped at ingest and the state machine never saw it;
+//   - a re-fire the replay window let through was, by the same equality, already
+//     outside `refire_grace`, so it opened a new generation (T7) instead.
+//
+// The first live tester had to alter the alert set — changing the dedup key — to
+// exercise re-fire at all. The relationship is now enforced from the other end:
+// `MinRefireGrace` in `identity/domain` is `2 × DedupTTL`, so every legal
+// configuration leaves a window at least this wide in which a re-fire is both
+// OBSERVABLE and INSIDE the grace. `TestTheReplayWindowIsStrictlyInsideRefireGrace`
+// pins the two constants together.
+//
+// The transport window is the one that yielded, because it has a known lower
+// bound (a peer timeout and a retry budget, both properties of Alertmanager) while
+// `refire_grace` is a product setting an operator owns.
+const DedupTTL = 5 * time.Minute
 
 // RetryAfter is the `Retry-After` sent with every 503 on this path (§G.2).
 // Never a 429, and never a 4xx for anything transient.

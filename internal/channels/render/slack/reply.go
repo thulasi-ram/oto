@@ -56,13 +56,13 @@ func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOption
 	}
 
 	// ⛔⛔ THE MENTION IS ADDED TO THE TOP-LEVEL `text` ONLY, AND THE SENTENCE IS
-	// BUILT WITHOUT IT FIRST (ADR 0020).
+	// BUILT WITHOUT IT FIRST (ADR 0020, Amendment 4).
 	//
 	// The attachment's own `fallback` and the delivery `summary` are copies of the
 	// sentence used for notification previews and for the timeline; a mention in
 	// either is a duplicate of a thing that only means something in one position.
-	// The top-level text is the ONLY place a broadcast can carry it, because
-	// Slack's in-channel `thread_broadcast` reference carries no attachment at all.
+	// The top-level text is the ONLY place a mention reaches a push notification,
+	// which is the whole point of mentioning somebody.
 	sentence := replyText(v, nil)
 	text := replyText(v, o.Mentions)
 
@@ -182,10 +182,9 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 		}
 		body += ".*"
 		// ⛔ NO MENTION HERE. It goes in the TOP-LEVEL `text` — see replyText.
-		// This body lives inside an attachment (§H.1 S3), and Slack strips
-		// attachments from the in-channel `thread_broadcast` reference, so a
-		// mention placed here would be invisible in the channel even if it
-		// notified. ADR 0020.
+		// A mention inside a block does not reach a push notification, and a
+		// reminder that does not reach the phone of somebody who has NOT engaged
+		// is not a reminder. ADR 0020, Amendment 4.
 		body += " — " + link(v.Links.Group, "open in oto")
 
 	case reasonStorm:
@@ -409,23 +408,50 @@ func nameList(alerts []domain.AlertView, o domain.RenderOptions) string {
 // replyText is the reply's own complete sentence. A thread reply's push
 // notification is read exactly as often as the root's, and by the same people.
 //
-// ⛔⛔ ADR 0020 RENDERING RULE 4 MAKES THIS CORRECTNESS, NOT STYLE. When a reply
-// broadcasts, Slack delivers a `thread_broadcast` reference into the channel, and
-// that reference "cannot contain attachments or message buttons". SPEC §H.1 S3
-// puts ALL of oto's blocks inside one attachment — so for a broadcasting reply
-// THIS STRING IS VERY NEARLY EVERYTHING A CHANNEL READER SEES. No colour bar, no
-// Acknowledge button, no blocks. A broadcast whose text reads "Re-fired" is a
-// broadcast that communicates nothing.
+// ⛔⛔ ADR 0020 RENDERING RULE 4 MAKES THIS CORRECTNESS, NOT STYLE, AND
+// AMENDMENT 4 MAKES IT CORRECTNESS FOR A BETTER REASON THAN IT FIRST HAD.
+//
+// The rule was derived from Slack documenting the in-channel `thread_broadcast`
+// reference as unable to carry attachments or buttons — which would have made
+// this string very nearly everything a channel reader sees. A live workspace
+// contradicts that: the attachment is returned intact by `conversations.history`
+// and the colour bar was observed rendering. Colour is therefore a PROGRESSIVE
+// ENHANCEMENT (5a) and buttons are UNVERIFIED (5b), and oto depends on neither.
+//
+// The rule stands because of what has never been in question: THIS STRING IS THE
+// PUSH NOTIFICATION ON A LOCKED PHONE AND THE TEXT A SCREEN READER ANNOUNCES.
+// Neither has ever rendered a colour bar. A broadcast whose text reads "Re-fired"
+// is a broadcast that communicates nothing to the person it woke up.
 func replyText(v *domain.NotificationView, mentions []string) string {
 	title := v.Group.Title
 	if title == "" {
 		title = v.Group.GroupLabels["alertname"]
 	}
 	out := replyLead(v.Reason) + " " + title
-	if v.Group.ClusterKey != "" {
-		out += " on " + v.Group.ClusterKey
+	if cluster := clusterChip(v); cluster != "" {
+		out += " on " + cluster
 	}
 	out += "."
+
+	// ⛔⛔ THE FACTS CLAUSE IS WHAT MAKES ADR 0020's RULE 4 TRUE RATHER THAN
+	// ASPIRATIONAL. The first live run broadcast
+	//
+	//	":repeat: Re-fired: alertname=OtoSmokeTest, cluster=smoke-test"
+	//
+	// into a channel — no severity, no duration, no state. Rule 4 says a
+	// broadcast's top-level text must be SELF-SUFFICIENT because the in-channel
+	// copy carries no colour bar and no buttons, and that string fails its own
+	// rule: it names a thing and says nothing about it. A reader in the channel
+	// cannot tell whether to open the thread, which is the only action a broadcast
+	// asks for.
+	//
+	// The same clause is added to every reply, not only the broadcasting ones. A
+	// thread reply's push notification is read by the same people through the same
+	// surface, and a rule that only holds for the replies that happen to broadcast
+	// is a rule that breaks the first time the broadcast set changes.
+	if facts := replyFacts(v); facts != "" {
+		out += " " + endSentence(facts)
+	}
 
 	// ⛔⛔ THE MENTION LIVES HERE AND NOWHERE ELSE (ADR 0020). Everything the
 	// renderer builds for the thread sits inside ONE attachment (§H.1 S3, the only
@@ -443,7 +469,53 @@ func replyText(v *domain.NotificationView, mentions []string) string {
 	if m := mentionList(mentions); m != "" {
 		out += " " + m
 	}
-	return truncateRunes(oneLine(out), otoTopLevelText)
+	return truncateClause(oneLine(out), otoTopLevelText)
+}
+
+// replyFacts is the severity-and-duration clause every reply's top-level text
+// carries, in words rather than in colour.
+//
+// §H.2 encodes severity as colour AND emoji precisely because colour alone fails
+// accessibility; a broadcast's in-channel reference has NEITHER, so words are all
+// that is left. The duration answers the question the reader actually has, which
+// is not "what happened" — the lead already said that — but "how bad is this and
+// how long has it been going on".
+func replyFacts(v *domain.NotificationView) string {
+	state := cardState(v)
+	facts := make([]string, 0, 3)
+
+	if sev := v.Group.Severity; sev != "" {
+		facts = append(facts, "Severity "+sev)
+	}
+	if team := labelOf(v, "team"); team != "" {
+		facts = append(facts, "team "+team)
+	}
+
+	switch v.Reason {
+	case reasonAllResolved:
+		if d := resolvedAfter(v); d != "" {
+			facts = append(facts, "resolved after "+d)
+		}
+	case reasonRefired:
+		// "It came back, and it came back fast" is the whole reason a re-fire
+		// broadcasts at all (ADR 0020, Amendment 1). Saying how fast is the point.
+		if v.Occurrence != nil && v.Occurrence.Duration > 0 {
+			facts = append(facts, "firing again after "+humanDuration(v.Occurrence.Duration))
+		} else {
+			facts = append(facts, "firing again since "+plainClock(groupStart(v)))
+		}
+	case reasonExpired:
+		facts = append(facts, "last seen at "+plainClock(v.Group.LastActivityAt))
+	case reasonUnackedReminder:
+		if d := unackedFor(v); d != "" {
+			facts = append(facts, "unacknowledged for "+d)
+		}
+		facts = append(facts, "firing since "+plainClock(groupStart(v)))
+	default:
+		facts = append(facts, stateClause(v, state))
+	}
+
+	return joinNonEmpty(", ", facts...)
 }
 
 func replyLead(reason string) string {

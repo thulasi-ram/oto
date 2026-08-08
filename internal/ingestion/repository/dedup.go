@@ -38,11 +38,32 @@ func (r *DedupRepository) db(ctx context.Context) db.Querier { return db.FromCon
 // `ON CONFLICT DO NOTHING` is not error handling here: a duplicate is the
 // idempotency mechanism working as designed (§G.5), so it must never surface as
 // an error, least of all as a 409.
+// ⭐ THE HORIZON IS A PREDICATE, NOT A SWEEPER'S SCHEDULE.
+//
+// The `ON CONFLICT DO UPDATE … WHERE ingest_dedup.seen_at < $5` is the whole of
+// domain.DedupTTL as far as behaviour is concerned. It used to be DO NOTHING,
+// which meant a key suppressed replays until the `retention.prune` job happened
+// to delete it — so the real window was "ten minutes, or however long the sweeper
+// has been down", and a `notify.evaluate` decision could not be reasoned about
+// from constants. A row past the horizon is REFRESHED and the new batch wins,
+// which is the same answer the sweeper would eventually have given, taken at read
+// time where it is deterministic.
+//
+// A row inside the horizon fails the WHERE, so the CTE returns nothing and the
+// outer SELECT reports the batch that already owns the key. The two branches are
+// mutually exclusive by construction, which is why this is still one statement
+// and still race-free: a read-then-write is a race two pods lose simultaneously.
+//
+// `ON CONFLICT` is not error handling here: a duplicate is the idempotency
+// mechanism working as designed (§G.5), so it must never surface as an error,
+// least of all as a 409.
 const claimSQL = `
 WITH claimed AS (
   INSERT INTO ingest_dedup (source_id, dedup_key, batch_id, seen_at)
   VALUES ($1, $2, $3, $4)
-  ON CONFLICT (source_id, dedup_key) DO NOTHING
+  ON CONFLICT (source_id, dedup_key) DO UPDATE
+     SET batch_id = EXCLUDED.batch_id, seen_at = EXCLUDED.seen_at
+   WHERE ingest_dedup.seen_at < $5
   RETURNING batch_id
 )
 SELECT batch_id, true  FROM claimed
@@ -53,16 +74,21 @@ SELECT batch_id, false FROM ingest_dedup
 LIMIT 1`
 
 // Claim inserts the dedup key, or reports the batch that already owns it.
+//
+// A key last seen more than domain.DedupTTL ago does NOT suppress: the same alert
+// set arriving again after the replay window is the same alert set FIRING again,
+// and the whole point of `refire_grace` being twice this wide is that oto's state
+// machine gets to decide which of those it is.
 func (r *DedupRepository) Claim(
 	ctx context.Context, sourceID uuid.UUID, dedupKey string, batchID uuid.UUID, at time.Time,
 ) (domain.DedupHit, error) {
 	var hit domain.DedupHit
-	err := r.db(ctx).QueryRow(ctx, claimSQL, sourceID, dedupKey, batchID, at).
+	err := r.db(ctx).QueryRow(ctx, claimSQL, sourceID, dedupKey, batchID, at, at.Add(-domain.DedupTTL)).
 		Scan(&hit.BatchID, &hit.Inserted)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The conflicting row was pruned between the failed insert and the read.
-		// That window is ten minutes wide and this is the only thing in it, so
+		// That window is microseconds wide and this is the only thing in it, so
 		// treating it as "we won" is both rare and safe: the batch is recorded once
 		// and processing is idempotent regardless (§G.5).
 		return domain.DedupHit{BatchID: batchID, Inserted: true}, nil

@@ -159,7 +159,7 @@ func (s *Service) setAck(
 			alertID:      ptr(alert.ID()),
 			occurrenceID: ptr(next.ID()),
 			actor:        actor.Label(),
-		}}); err != nil {
+		}}, nil); err != nil {
 			return err
 		}
 
@@ -240,7 +240,7 @@ func (s *Service) Comment(
 				alertID:      ptr(alert.ID()),
 				occurrenceID: ptr(occ.ID()),
 				actor:        actor.Label(),
-			}}); err != nil {
+			}}, nil); err != nil {
 				return err
 			}
 		}
@@ -519,7 +519,7 @@ func (s *Service) notifySnoozeChange(
 		alertID:      ptr(alertID),
 		occurrenceID: ptr(occ.ID()),
 		actor:        actor,
-	}})
+	}}, nil)
 	return err
 }
 

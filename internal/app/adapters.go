@@ -929,7 +929,10 @@ func (o alertObserver) ObserveBatch(
 		if err != nil {
 			return applied, err
 		}
-		res, err := o.svc.ObserveBatch(ctx, s, part, alertsservice.ObserveOptions{GroupID: groupID})
+		res, err := o.svc.ObserveBatch(ctx, s, part, alertsservice.ObserveOptions{
+			GroupID:     groupID,
+			GroupReason: groupReasonFor(part[0].NotificationReason),
+		})
 		if err != nil {
 			return applied, err
 		}
@@ -939,6 +942,28 @@ func (o alertObserver) ObserveBatch(
 		}
 	}
 	return applied, nil
+}
+
+// groupReasonFor applies the §H.6 wire table to the batch as a whole, for the
+// one row no per-alert transition can reach.
+//
+// `repeat interval elapsed` means Alertmanager is telling oto the same thing
+// again: nothing transitioned, so `alerts` produces no Reason and — until this
+// existed — no notification at all, which left the card's "Firing for" frozen at
+// whatever it said hours ago. §H.6 answers it with a root UPDATE and NEVER a
+// repost, and that single rule is the largest noise reduction oto has over stock
+// Alertmanager and Grafana Alerting, both of which repost.
+//
+// Every other wire value either has a transition behind it (so `alerts` already
+// said it, and this must not say it twice) or is `none`/absent (so there is
+// nothing to say). This is the composition root, which is the only layer allowed
+// to know both Alertmanager's vocabulary and oto's.
+func groupReasonFor(wire string) string {
+	reason, verdict := notifdomain.ReasonFromWire(wire)
+	if verdict == notifdomain.WireMapped && reason == notifdomain.ReasonRepeat {
+		return string(notifdomain.ReasonRepeat)
+	}
+	return ""
 }
 
 // resolveGroup opens or rejoins the §C.4 generation these observations belong to.

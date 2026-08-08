@@ -2969,6 +2969,9 @@ Implemented in `internal/channels/render/slack`. **Every renderer is a pure func
 | S12 | `block_id` is regenerated on every render (`oto_<block>_<render_nonce>`), because Slack advises a new `block_id` per message iteration. | Research B1 |
 | S13 | All timestamps use `<!date^<epoch>^{time}|09:14 UTC>` so they render in each viewer's timezone. Durations are computed server-side and re-rendered on update. | Research B9 |
 | S14 | Start a **fresh root card** when a thread exceeds **30 replies** (`channel_threads.reply_count`), linking back to the previous thread. | Research B8b/Knock |
+| S15 | The title is the alert's **NAME**, never a serialised label map. `cluster` is the chip beside it, `namespace`/`service` are fields; only labels the card shows nowhere else are appended as `k=v`. A title reading `alertname=X, cluster=Y` spends the two words an operator actually reads on the string `alertname=`. | Live run |
+| S16 | **`Started` is upstream's `startsAt`, and `Firing for` is measured from it, over the GROUP.** oto's own first sighting is a different fact — it lags by `group_wait` plus ingest latency, twenty-one minutes in the first live run — and belongs in the footer, if anywhere. A duration taken from the triggering alert's occurrence describes that alert, not the outage, and reads `under a second` on a group that has been firing for eighty. | Live run |
+| S17 | Prose in the top-level `text` is cut at a **sentence or clause boundary**, and the terminator is never stacked on an ellipsis. `…no real service…. Severity critical` is what a naive rune cut plus a caller's own full stop produces, and it reads as software that ran out of something. | Live run |
 
 ### H.2 Palettes (binding)
 
@@ -3070,7 +3073,7 @@ Posted once per **AlertGroup generation**. Updated in place for its entire life.
 }
 ```
 
-**Block budget: 7 base blocks.** Ceiling is 50. Render at most `MaxInstances` (default 10) member instances inline, then `_… and N more_`.
+**Block budget: 8 base blocks** (title, body, fields, members, **trail**, rule, actions, footer). Ceiling is 50. Render at most `MaxInstances` (default 10) member instances inline, then `_… and N more_`. The trail is a `context` block and is suppressed until there are at least two transitions to show (S11).
 
 **The Silence button is a URL deep link into the Alertmanager UI (R3).** It performs no API call and creates no oto state. It is `oto.noop.silence` and MUST be acked (S9).
 
@@ -3080,8 +3083,8 @@ Posted once per **AlertGroup generation**. Updated in place for its entire life.
 |---|---|---|---|---|---|
 | **Acknowledged** | `#daa038` | `:eyes:` | `*Status*\n:eyes: ~Firing~ → Acked by <@U…>` | primary becomes `:arrow_uturn_left: Un-acknowledge` (`oto.unack`), **no** `style` | footer appends `· acked <!date^…^{time}\|…>` |
 | **Suppressed** | `#dddddd` | `:mute:` | `*Status*\n:mute: ~Firing~ → Silenced by <@U…> until <!date^…>` | Silence link → "View silence" link | Only ever set by the reconciler (C1) |
-| **Resolved** | `#2eb886` | `:white_check_mark:` | `*Status*\n:white_check_mark: ~Firing~ → Resolved`, plus `*Duration*\n21m 10s` | collapse to `Show timeline` + `Rule history` only | **Drop the members section and the rule context** — zero information once resolved (S11). Slack: "condense the message and remove buttons" after the flow completes. |
-| **Expired** | `#6b6b6b` | `:grey_question:` | `*Status*\n:grey_question: ~Firing~ → Expired — oto stopped hearing about this` | `Show timeline`, `Open in Alertmanager` | Must read as *"we lost sight"*, **never** as *"resolved"* |
+| **Resolved** | `#2eb886` | `:white_check_mark:` | `*Status*\n:white_check_mark: ~Firing~ → Resolved`, plus `*Duration*`, `*Resolved*`, `*Instances affected*`, `*Notifications*`, `*Acknowledged*` | **buttons** collapse (Acknowledge is meaningless once it is over); the **overflow keeps every link** | **KEEP the members section and the rule context.** See "the terminal card is a receipt" below. |
+| **Expired** | `#6b6b6b` | `:grey_question:` | `*Status*\n:grey_question: ~Firing~ → Expired — oto stopped hearing about this`, plus `*Last seen*` and the same receipt fields | buttons collapse; overflow keeps every link | Must read as *"we lost sight"*, **never** as *"resolved"* |
 | **Storm** | `#7b1fa2` | `:zap:` | `*Status*\n:zap: Storm — 214 alerts in this group in 60s` | `Show timeline` | Members section replaced by a count and a link. All per-alert replies suppressed. |
 | **Flapping** | *(current state colour)* | *(current)* | adds field `*Flapping*\n:arrows_counterclockwise: 31 transitions in 1h` | unchanged | Thread replies switch to one digest per `flap_digest_interval` |
 
@@ -3093,6 +3096,50 @@ Posted once per **AlertGroup generation**. Updated in place for its entire life.
 > §E.1.1 exists to prevent.** The same rule binds the UI (§B.8.6).
 
 **The strikethrough trick is binding.** On every state change the previous value is rendered struck through: `~Firing~ → Resolved`. A reader who saw the card an hour ago can tell what changed, at zero block cost.
+
+> ### ⭐ THE TERMINAL CARD IS A RECEIPT, NOT A BLANK STATE
+> **This supersedes the earlier guidance that a resolved card sheds its members and its rule
+> context.** That guidance called them "zero information once resolved". It is wrong, and the first
+> live run is where it showed:
+>
+> ADR 0008 says the root card is the CURRENT STATE and the thread is the HISTORY. That is right for a
+> reader who is *in* the thread, and it describes almost nobody. **`chat.update` is completely
+> silent** — no notification, no unread badge, no bump in the channel list — so a person scrolling
+> the channel sees a calm green card and cannot tell that anything ever happened, when it fired, or
+> for how long. The update is both silent *and* destructive. In the words of the owner watching a
+> firing card mutate into a resolved one: *"it means something happened and we don't know."*
+>
+> Shedding content made it worse: the card became **least informative at exactly the moment it
+> became the only remaining record.** A resolved card must read like a **closed ticket**, not an
+> empty one.
+>
+> **Binding, for `resolved` and `expired` alike:**
+>
+> 1. **Keep the rule snapshot.** It is the record of *why this fired*, and "was that threshold
+>    sensible?" is asked afterwards. Dropping it deleted oto's differentiator from the one message
+>    that outlives the incident.
+> 2. **Keep the affected instances**, or a faithful summary when the budget demands one (storm mode
+>    keeps its count-and-link form). "Which box was it?" is the first question the next morning.
+> 3. **State the episode** in the fields: `Started` (upstream `startsAt`), `Duration`, `Resolved` /
+>    `Last seen`, `Instances affected`, `Notifications` sent, and `Acknowledged` — including
+>    **"no — it resolved unacknowledged"**, which is a fact about the SIGNAL and one of the more
+>    useful things a receipt can carry. Attribution is ACTOR, NEVER SUBJECT (ADR 0013).
+> 4. **Render a state trail** — one `context` block, in every state, not only the terminal ones:
+>    ```
+>    :red_circle: 09:14 fired  →  :eyes: 09:17 acked by `ram@example.com`  →  :white_check_mark: 09:22 resolved  ·  total 8m
+>    ```
+>    It is built from the real `alert_events` transitions, including intermediate ones
+>    (`acked`, `suppressed`, `refired`). Consecutive duplicates collapse — twelve instances firing in
+>    one batch is one `fired`, not twelve. On a long-lived alert it **elides the MIDDLE and keeps
+>    both ends**: the first entry says when this began and the last says what it is now, and
+>    truncating the tail would throw the second one away.
+> 5. **Buttons collapse; links do not.** Acknowledge goes, because it is meaningless on something
+>    that is over. Every *place to look* — timeline, Prometheus, Alertmanager, rule history, all
+>    labels — stays in the overflow, because the moment a reader most needs to look is afterwards.
+>
+> **`chat.update` remains the primary verb.** The goal is to stop the update erasing the story, not
+> to start posting more messages; `broadcast_on_resolved` stays default-off (ADR 0020).
+> `TestTheResolvedCardIsAReceiptAndNotABlankState` and `root_resolved.golden.json` pin it.
 
 ### H.5 Thread reply types — exact structure
 
@@ -3122,6 +3169,36 @@ Replies are posted with `thread_ts = channel_threads.provider_thread_id` (the **
 ### H.6 `notification_reason` → Reason → mode decision table (BINDING)
 
 Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason`, and each `Reason` maps to a delivery mode. Empty `notification_reason` (AM < 0.32.0) falls back to diffing the incoming fingerprint set against `alert_group_members`.
+
+> ### Where the wire column is applied, and what it is allowed to decide
+>
+> The table below was unimplemented until the first live run exposed it: `ReasonFromWire` had **no
+> callers**, every Reason was derived from a per-alert transition, and `new_alerts`, `all_resolved`
+> and `repeat` were therefore CHECK-constraint values nothing could write. The consequence a human
+> saw was a fully resolved card whose footer read *"some alerts resolved"*.
+>
+> The two vocabularies answer different questions and **both are needed**:
+>
+> - **oto's transitions** know WHAT CHANGED about one alert. They are the only source for `acked`,
+>   `refired`, `expired` and `suppressed` — facts Alertmanager cannot see or has no word for.
+> - **`notification_reason`** knows WHY THIS BATCH WAS DELIVERED about a whole group. It is the only
+>   source that can tell a first fire from a member joining an already-notified group, because the
+>   per-alert view of both is identical: an occurrence opened.
+>
+> So the wire value is applied at **`notify.evaluate`** — the first moment a whole group is in scope
+> — by `domain.ReconcileWithWire`, reading `alert_groups.last_notification_reason`. It is
+> deliberately narrow, and these three rules are binding:
+>
+> 1. It may only **widen** a transition-derived Reason to the group-scoped sibling describing the
+>    same delivery (`fired → new_alerts`, `some_resolved → all_resolved`). It may never contradict an
+>    observed transition: oto saw that and Alertmanager did not.
+> 2. `some_resolved → all_resolved` is decided by **oto's own membership counts**, with the wire
+>    value as corroboration. The counts are a projection of the occurrences oto recorded, so they
+>    cannot disagree with the card that renders them.
+> 3. `repeat` has no transition behind it — nothing changed — so it is emitted from the ingest
+>    orchestrator when the wire value maps to it, and nowhere else. An absent or unknown wire value
+>    changes nothing at all: an Alertmanager below 0.32.0 sends no field, and must not lose its
+>    notifications for it.
 
 | AM `notification_reason` | oto `Reason` | Mode(s) | Verbosity gate |
 |---|---|---|---|

@@ -96,6 +96,30 @@ type Loaded struct {
 // finishing produce one amended card and one reply, never five replies.
 type Notifier interface {
 	NotifyEnriched(ctx context.Context, s db.TenantScope, n EnrichedNotice) error
+
+	// NotifyPreNotificationReady releases the FIRST notification for an occurrence
+	// whose inline pass has just finished (SPEC §F.3, ADR 0009).
+	//
+	// ⛔ ENRICHMENT IS NOT DECIDING THAT AN ALERT FIRED. `alerts` already decided
+	// that and already enqueued the evaluation, scheduled at the far end of the
+	// pre-notification budget as a backstop. This call only says "the budget is
+	// spent, you need not wait for me" — the two evaluations carry the same
+	// (group, reason, state_version) and collapse on `notifications_idem_uniq`
+	// (§C.7), so at most one card is ever posted no matter which arrives first, or
+	// whether this one arrives at all.
+	//
+	// It exists because the rule snapshot is the thing oto has that nothing else
+	// does, and a differentiator that lands on a later SILENT `chat.update` is a
+	// differentiator no human ever reads.
+	NotifyPreNotificationReady(ctx context.Context, s db.TenantScope, n PreNotificationNotice) error
+}
+
+// PreNotificationNotice names the occurrence whose pre-notification pass is over.
+type PreNotificationNotice struct {
+	GroupID      uuid.UUID
+	AlertID      uuid.UUID
+	OccurrenceID uuid.UUID
+	StateVersion int
 }
 
 // EnrichedNotice is the one coalesced fact the async phase reports.

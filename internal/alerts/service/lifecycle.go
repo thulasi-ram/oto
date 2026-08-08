@@ -25,6 +25,15 @@ import (
 type ObserveOptions struct {
 	// GroupID is the AlertGroup generation these observations join.
 	GroupID *uuid.UUID
+	// GroupReason is a GROUP-SCOPED §H.6 Reason the orchestrator derived from the
+	// batch itself rather than from any alert's transition — today, exactly
+	// `repeat`, which Alertmanager's `notification_reason` is the only witness to.
+	//
+	// ⛔ It is passed IN rather than derived here on purpose. Mapping
+	// Alertmanager's wire vocabulary onto oto's Reason enum is `notification`'s
+	// job (§H.6), and this module must not learn a second copy of that table.
+	// `alerts` is told the answer; it never asks the question.
+	GroupReason string
 }
 
 // ObserveOutcome is what one Observation did. It is the caller's audit of a
@@ -385,6 +394,19 @@ func (s *Service) observe(
 		outcomes = append(outcomes, out)
 	}
 
+	// A batch that changed nothing about any alert can still be a fact about the
+	// GROUP: `repeat interval elapsed` means Alertmanager is telling us the same
+	// thing again, and §H.6 turns that into a root UPDATE and never a repost. It
+	// is the largest noise reduction available to oto and it is the one Reason no
+	// per-alert transition can produce, because nothing transitioned.
+	if opt.GroupReason != "" && opt.GroupID != nil && *opt.GroupID != uuid.Nil {
+		notifies = append(notifies, notifyRequest{
+			groupID: *opt.GroupID,
+			reason:  opt.GroupReason,
+			actor:   string(domain.ActorIngest.String()),
+		})
+	}
+
 	written, err := s.appendEvents(ctx, scope, events)
 	if err != nil {
 		return ObserveResult{}, err
@@ -393,7 +415,19 @@ func (s *Service) observe(
 	if err != nil {
 		return ObserveResult{}, err
 	}
-	notifyN, err := s.enqueueNotify(ctx, scope, notifies)
+	// ⭐ PHASE ORDERING (SPEC §F.3). A `fired` evaluation for an episode that has
+	// just been queued for the INLINE enrichment pass is scheduled at the far end
+	// of the pre-notification budget rather than immediately, so the first card
+	// can carry the rule snapshot that pass captures. The pipeline releases it
+	// early the moment the pass finishes; this is only the backstop. See
+	// enqueueNotify.
+	deferred := map[uuid.UUID]struct{}{}
+	if enrichN > 0 {
+		for _, occID := range enrichIDs {
+			deferred[occID] = struct{}{}
+		}
+	}
+	notifyN, err := s.enqueueNotify(ctx, scope, notifies, deferred)
 	if err != nil {
 		return ObserveResult{}, err
 	}

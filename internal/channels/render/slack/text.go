@@ -118,6 +118,84 @@ func truncateRunes(s string, maxLen int) string {
 	return strings.TrimRight(string(out), " \t") + "…"
 }
 
+// clauseBreaks are the characters a sentence may be cut after without the cut
+// itself changing what the sentence says. `.` `!` `?` end one; `;` `:` and the
+// dashes end a clause; `,` is the last resort before falling back to a word.
+const clauseBreaks = ".!?;:—–"
+
+// truncateClause cuts prose at a boundary a human would have chosen.
+//
+// ⛔ IT IS NOT truncateRunes, AND THE DIFFERENCE IS THE DEFECT IT FIXES. The first
+// live run's push notification read
+//
+//	"…smoke test against a synthetic alert; no real service…. Severity critical"
+//
+// — cut mid-clause, then followed by the caller's own full stop, producing "….".
+// The top-level `text` is the push notification, the sidebar preview, the search
+// snippet and THE ONLY THING A SCREEN READER READS (S5). A sentence that stops
+// mid-clause reads as though oto ran out of something, which is exactly the
+// impression a tool being trusted at 03:00 must not give.
+//
+// The rules, in order: keep it whole if it fits; cut after the last sentence or
+// clause break in the last third of the budget; otherwise cut on a word boundary.
+// The trailing punctuation is absorbed into the ellipsis so no caller can produce
+// "….".
+func truncateClause(s string, maxLen int) string {
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 1 {
+		return "…"
+	}
+
+	runes := []rune(s)
+	head := runes[:maxLen-1]
+
+	// Look for a boundary in the last third: cutting at the very first full stop
+	// of a long paragraph would throw away most of the budget for tidiness.
+	floor := len(head) * 2 / 3
+	cut := -1
+	for i := len(head) - 1; i >= floor; i-- {
+		if strings.ContainsRune(clauseBreaks, head[i]) {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		for i := len(head) - 1; i >= floor; i-- {
+			if head[i] == ' ' || head[i] == ',' {
+				cut = i
+				break
+			}
+		}
+	}
+	if cut >= 0 {
+		head = head[:cut]
+	}
+
+	out := strings.TrimRight(string(head), " \t\n,;:—–.!?")
+	if out == "" {
+		return "…"
+	}
+	return out + "…"
+}
+
+// endSentence closes a sentence without ever producing "…." — an ellipsis is
+// already a terminator, and stacking a full stop on it is the visible signature
+// of a string that was cut by accident rather than on purpose.
+func endSentence(s string) string {
+	s = strings.TrimRight(s, " \t\n")
+	if s == "" {
+		return s
+	}
+	if strings.HasSuffix(s, "…") || strings.HasSuffix(s, ".") ||
+		strings.HasSuffix(s, "!") || strings.HasSuffix(s, "?") {
+		return s
+	}
+	return s + "."
+}
+
 // slackDate renders a timestamp as Slack's <!date> token so every viewer sees it
 // in their own timezone, with a UTC fallback for clients that cannot (S13).
 func slackDate(t time.Time) string {
@@ -250,12 +328,16 @@ func blockID(name, nonce string) string {
 // mentionList renders the resolved mention audience for an unacked reminder.
 //
 // ⛔⛔ ITS ONLY CALLER PUTS THE RESULT IN THE TOP-LEVEL `text`, AND THAT IS
-// CORRECTNESS, NOT STYLE (ADR 0020). §H.1 S3 puts every oto block inside one
-// attachment, and Slack's in-channel `thread_broadcast` reference "cannot contain
-// attachments or message buttons" — so a mention rendered into a block is not
-// merely un-notifying in the channel, it is not THERE. The top-level text is very
-// nearly all a channel reader sees, and it is the only position a mention can
-// occupy and still mean something.
+// CORRECTNESS, NOT STYLE (ADR 0020, Amendment 4).
+//
+// The original reason was that Slack documents the in-channel `thread_broadcast`
+// reference as unable to contain attachments, and §H.1 S3 puts every oto block
+// inside one — so a mention in a block would not be THERE at all. The live
+// workspace contradicts that: the attachment survives. The rule survives anyway,
+// on the stronger ground it always had — THE TOP-LEVEL TEXT IS WHAT A PUSH
+// NOTIFICATION SHOWS ON A LOCKED PHONE AND WHAT A SCREEN READER ANNOUNCES. A
+// mention nobody's phone shows them is a mention that did not happen, and that
+// has never depended on how Slack renders attachments.
 //
 // The tokens arrive in Slack's own wire form, already resolved and already gated
 // on severity by the org's mention policy. Anything that is not a recognised

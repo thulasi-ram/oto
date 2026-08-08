@@ -1,8 +1,18 @@
 # 0020 — Broadcast the transitions that must be seen
 
-**Status:** Accepted · 2026-08-08 · **Amended twice, both times by research** — see
-[Amendment 1](#amendment-1--the-set-narrows-to-two-and-the-storm-moves-to-the-channel) and
-[Amendment 2](#amendment-2--severity_raised-is-unreachable-and-has-been-deleted)
+**Status:** Accepted · 2026-08-08 · **Amended four times — three by research, once by a live
+Slack workspace** — see
+[Amendment 1](#amendment-1--the-set-narrows-to-two-and-the-storm-moves-to-the-channel),
+[Amendment 2](#amendment-2--severity_raised-is-unreachable-and-has-been-deleted) and
+[Amendment 4](#amendment-4--the-stripping-premise-did-not-survive-the-first-live-workspace)
+
+> ⚠️ **Read Amendment 4 before relying on anything below about the in-channel copy being
+> "stripped".** Slack's documentation says the `thread_broadcast` reference cannot carry attachments
+> *or* buttons. A live workspace says it is **half right**: the buttons really are gone, and the
+> attachment and its colour bar really do render. Both binding rules survive — **the top-level
+> `text` must be self-sufficient** and **no broadcast may depend on a button** — the first on
+> independent grounds, the second now on direct evidence.
+
 **Relates to:** [0008](0008-slack-update-in-place-primary.md) (`chat.update` is the primary verb),
 [0005](0005-durable-group-key-owns-the-slack-thread.md) (the group owns the thread),
 [0013](0013-alert-first-scope-boundary.md) (oto pages nobody)
@@ -36,7 +46,10 @@ conversation. Defaults to `false`."*
 ([chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/)) It is one API call, not
 two.
 
-**⚠️ The channel-visible artefact is a REFERENCE, not a copy — and it is stripped.** Slack delivers a
+**⚠️ The channel-visible artefact is a REFERENCE, not a copy — and it is stripped.**
+*(⛔ **CONTRADICTED BY OBSERVATION — see [Amendment 4](#amendment-4--the-stripping-premise-did-not-survive-the-first-live-workspace).**
+The paragraph is kept because two binding rules were derived from it and an argument needs its
+premise present.)* Slack delivers a
 `thread_broadcast` message subtype which is *"a pointer or reference to the actual thread and is meant
 more to be informational than to fully describe the message"*, and, decisively for oto:
 **"The reference cannot contain attachments or message buttons."**
@@ -144,6 +157,11 @@ because a resolve arrived quietly. Default off, one switch to turn on.
    severity colour bar, no Acknowledge button in the channel copy. The reply's own `text` must carry the
    severity in words and emoji, and the call to action is *open the thread*. Golden-file tests for
    broadcast reply types should assert the `text` alone is intelligible.
+
+   > ⛔ **SUPERSEDED BY AMENDMENT 4, IN HALF.** The colour bar *does* render. Rule 5 is now 5a
+   > (colour is a progressive enhancement, kept, never the only carrier of a fact) and 5b (no
+   > broadcast may depend on a button — still unverified, and binding either way). The conclusion —
+   > *must not depend on either* — is unchanged.
 
 ### One recorded escape hatch
 
@@ -434,6 +452,109 @@ shipped.** It has been deleted, and the audience is now one org-level setting wi
 
 ---
 
+## Amendment 4 — the stripping premise did not survive the first live workspace
+
+**2026-08-09. Observed in a real Slack workspace, not derived.**
+
+The Decision above turns on one documented sentence: the in-channel `thread_broadcast`
+reference **"cannot contain attachments or message buttons."** Two of this ADR's rendering rules
+(4 and 5), the mention placement in Amendment 3, and three ⛔ comments in
+`internal/channels/render/slack` were all derived from it. The first live Slack run contradicts it.
+
+### The three data points, all of them
+
+| # | Source | What it says |
+|---|---|---|
+| 1 | [Slack's documentation](https://docs.slack.dev/reference/events/message/thread_broadcast/) | The reference *"cannot contain attachments or message buttons"*. |
+| 2 | `conversations.history` against the live channel | The `thread_broadcast` message is returned **with its `attachments` array intact** — `id`, `blocks`, `color` and `fallback` all present, not stripped. |
+| 3 | A human looking at the message in their Slack client | **The colour bar renders. The buttons do not.** The root card and the resolved card both show their action buttons; the in-channel broadcast copy shows none. |
+
+Data point 2 was read by a person with their own workspace credentials during verification.
+**oto did not read it and must not be able to**: `channels:history` has been removed from
+`deploy/slack/manifest.yaml`, and oto's `API` interface has three methods, none of which reads.
+
+### The documentation is half right, and the halves have different consequences
+
+The sentence names two things and is correct about exactly one of them:
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| The reference **cannot contain message buttons** | ⭐ **TRUE.** | Data point 3: the broadcast has no buttons, while the root and resolved cards in the same channel do. |
+| The reference **cannot contain attachments** | ⛔ **FALSE, as rendered today.** | Data points 2 and 3: the attachment survives the API round trip and the colour bar is on screen. |
+
+That split is what the rest of this amendment is built on. It is more useful than "the docs are
+wrong", because the two halves fail in opposite directions: one is a documented restriction that
+turns out to be real, and the other is a documented restriction the client does not enforce — and
+only the first is safe to build on.
+
+### The ruling: colour is a progressive enhancement, never a carrier of meaning
+
+**Colour demonstrably renders today, so oto neither strips it nor works around it.** A broadcasting
+reply keeps its single attachment and its `color`, exactly as a thread reply does. There is nothing
+to change in the renderer and nothing to special-case.
+
+**But oto relies on it for nothing.** What renders is undocumented behaviour that Slack's own
+documentation contradicts — which is the weakest possible ground to stand a correctness property
+on. It can revert in any client release, on any platform, without notice or changelog, and the
+failure would be silent: a card that quietly stops carrying the one signal it used colour for.
+
+**Therefore rule 4 stands unchanged and binding: the top-level `text` of a broadcasting reply must
+be self-sufficient.** It is worth being explicit that this is *not* merely defensive book-keeping
+against a possible regression, because a rule kept "just in case" is a rule the next engineer
+deletes:
+
+> **The top-level `text` is what a screen reader announces and what a push notification shows on a
+> locked phone.** Neither has ever rendered a colour bar, on any client, in any release. A person
+> woken at 03:00 sees that string and nothing else. Rule 4 would be correct if data point 3 held
+> forever and Slack documented it in writing.
+
+The first live run failed rule 4 on its own broadcast — `":repeat: Re-fired: alertname=OtoSmokeTest,
+cluster=smoke-test"`, with no severity, no duration and no state. That is fixed
+(`replyFacts` in `internal/channels/render/slack/reply.go`), and it is fixed *because of the push
+notification*, not because of the colour bar.
+
+### Rule 5, split in two
+
+Rule 5 said *"a broadcasting reply carries no colour and no buttons, and must not depend on
+either."* Its premise is half wrong and its conclusion is entirely right. It is replaced by:
+
+**5a. Colour on a broadcast is a progressive enhancement.** It renders today (data point 3). It is
+kept, it is never the only carrier of a fact, and §H.2's rule that severity is *also* an emoji and
+*also* a word covers the case where it stops rendering.
+
+**5b. No broadcast may depend on a button — ⭐ CONFIRMED, not merely cautious.** The in-channel
+copy shows **no buttons at all**, observed side by side with a root card in the same channel that
+shows all of them. The documentation is right about this half, and `blocks` being present in the
+stored attachment (data point 2) is storage, not rendering. So there is no Acknowledge in the
+channel, and there never was: a broadcast's call to action is *open the thread*, and that must be
+true in words. (This is the happier of the two possible answers. An inert-looking button would have
+been worse than an absent one — a reader who presses Acknowledge and gets nothing learns to distrust
+every button oto renders.)
+
+### What is still unknown
+
+- **Client parity.** Data point 3 is one client. **Desktop, web, iOS and Android have not been
+  compared**, and Slack has shipped rendering differences between them before. Any future claim that
+  a broadcast "shows X" needs all four, or it is a claim about one person's laptop. This matters
+  most for the colour bar, which is the half that contradicts the documentation and is therefore the
+  half most likely to differ between clients or revert in a release.
+
+It is not worth blocking on, because no binding rule depends on the answer: rule 4 is grounded in
+push notifications and screen readers, and 5b is grounded in an observed absence. It is recorded so
+the next person does not mistake "one client showed it" for "Slack guarantees it" — which is the
+mirror image of the mistake this amendment exists to correct.
+
+### What does not change
+
+- The broadcast set (Amendment 1): `unacked_reminder` and `refired`, plus configurable
+  `all_resolved`.
+- The mention placement (Amendment 3). The mention stays in the top-level `text`. Its justification
+  shifts from *"a block is not present in the channel copy"* to *"the top-level text is the only
+  position that reaches a push notification"* — which was always the stronger half of the argument.
+- Constraints 1–3, and the one-way-door property of broadcasting.
+
+---
+
 ## Amendment log
 
 | # | Date | What changed | What forced it |
@@ -441,7 +562,11 @@ shipped.** It has been deleted, and the audience is now one org-level setting wi
 | 1 | 2026-08-08 | Broadcast set narrowed from four transitions to two; `storm` relocated to a once-per-channel latched notice | Product review: a storm is many alerts, so a per-group storm broadcast *is* the flood the damper prevents |
 | 2 | 2026-08-08 | `severity_raised` and migration `00027` deleted | `severity` is hashed into `alert_key` (§C.2), so a severity rise is a new Alert; verified against a real database |
 | 3 | 2026-08-08 | `unacked_reminder_mention` added, default `none`, gated on severity, rendered in the top-level `text` | Slack documents that `@here`/`@channel` do not notify in threads, so a default of `here` would ship a control that does nothing |
+| 4 | 2026-08-09 | The "stripped reference" premise is recorded as **half true**: buttons ARE stripped, attachments and colour are NOT. Rule 5 split into 5a (colour is a progressive enhancement) and 5b (no broadcast may depend on a button — now confirmed by observation); **rule 4 kept unchanged and re-justified from screen readers and push notifications** | A live workspace: `conversations.history` returns the `thread_broadcast` with `attachments` intact, and a human saw the colour bar render while the buttons did not |
 
-This ADR has now been revised twice by research after acceptance. That is the system working: the
-Decision was reached from documentation, the amendments were reached from the schema and from a
-database, and the parts of the original argument that survived are stronger for having been attacked.
+This ADR has now been revised three times after acceptance — twice by research and once by a real
+Slack workspace. That is the system working: the Decision was reached from documentation, the
+amendments were reached from the schema, from a database and finally from production, and the parts
+of the original argument that survived are stronger for having been attacked. Amendment 4 is the
+most instructive of the four, because the documentation was simply wrong and the rule it produced
+was right anyway — for a reason nobody had written down until they were forced to.

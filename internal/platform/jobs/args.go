@@ -68,6 +68,20 @@ func (IngestProcessBatchArgs) InsertOpts() river.InsertOpts {
 
 // ---------------------------------------------------------------- enrichment
 
+// PreNotificationBudget is how long a `fired` evaluation waits for the inline
+// enrichment pass before going out without it (SPEC §F.3's 2 000 ms).
+//
+// It lives here, next to the two job types it orders, because it is a fact about
+// the SCHEDULE and both producers must read the same number: `alerts` uses it as
+// the backstop delay on `notify.evaluate`, `enrichment` treats it as the ceiling
+// on the pass that releases that evaluation early.
+//
+// ⛔ IT IS A CEILING AND MUST NOT BE RAISED TO BUY MORE ENRICHMENT. Every
+// millisecond here is a millisecond an operator does not know their service is
+// down. An enricher that cannot fit belongs in the async phase, where its result
+// amends a card somebody has already read.
+const PreNotificationBudget = 2000 * time.Millisecond
+
 // EnrichRunArgs runs the budgeted enrichment pipeline for one occurrence.
 //
 // Queue: enrich · Priority: normal · Retry: retryable (12) · Payload v1

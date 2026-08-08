@@ -27,6 +27,18 @@ type NotificationView struct {
 	// Previous carries the state the card showed before this delivery, for the
 	// strikethrough trick (§H.4).
 	Previous *PreviousState
+	// Trail is the group's state history, oldest first — the card's receipt.
+	//
+	// ⭐ IT IS WHAT STOPS `chat.update` ERASING THE STORY (ADR 0008, §H.4). The
+	// root card is the current state and the thread is the history, which is right
+	// for a reader who is IN the thread. In the channel the update is silent and
+	// destructive: a firing card becomes a resolved card with no notification and
+	// no trace, and somebody scrolling past cannot tell that anything happened.
+	Trail []TrailEntry
+	// Notifications is how many notifications oto sent about this group. It is on
+	// the receipt because "how loud was this?" is a question about oto's own
+	// behaviour that only oto can answer.
+	Notifications int
 	// StormCount is greater than zero when the group is in storm mode. Storm mode
 	// is a VISIBLE state, never silent suppression.
 	StormCount int
@@ -53,8 +65,14 @@ type GroupView struct {
 	TotalCount      int
 	AckedCount      int
 	StormMode       bool
-	FirstSeenAt     time.Time
-	LastActivityAt  time.Time
+	// StartedAt is when the SIGNAL started, taken from upstream's own `startsAt`.
+	// FirstSeenAt is when OTO first heard about it. They are different facts and
+	// the card must not present the second as the first: the gap is oto's latency
+	// plus Alertmanager's `group_wait`, and it was twenty-one minutes in the first
+	// live run.
+	StartedAt      time.Time
+	FirstSeenAt    time.Time
+	LastActivityAt time.Time
 	// SourceGroupKey is Alertmanager's own groupKey. DISPLAY ONLY, NEVER PARSED:
 	// it is unescaped, unbounded, and changes on every alertmanager.yml reload (C3).
 	SourceGroupKey string
@@ -131,6 +149,19 @@ type ActorView struct{ Kind, ID, Label string }
 // PreviousState is the state the card showed before this delivery.
 type PreviousState struct {
 	State, AckState string
+}
+
+// TrailEntry is one transition on the card's state trail.
+//
+// Kind is a small closed vocabulary the renderer maps to an emoji and a verb —
+// `fired`, `acked`, `unacked`, `suppressed`, `unsuppressed`, `resolved`,
+// `expired`, `refired`, `storm`. It is deliberately NOT the raw
+// `alert_events.type`: the renderer must not learn another module's enum, and a
+// type it does not recognise is dropped rather than printed raw.
+type TrailEntry struct {
+	Kind  string
+	At    time.Time
+	Actor string
 }
 
 // Action is one interactive affordance on a card.

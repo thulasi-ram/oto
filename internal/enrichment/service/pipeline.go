@@ -148,6 +148,9 @@ type RunResult struct {
 	// Notified reports that the one coalesced `enriched` notification was
 	// requested. It is true at most once per async pass.
 	Notified bool
+	// Released reports that the deferred `fired` evaluation was let go early
+	// because this inline pass finished inside the pre-notification budget.
+	Released bool
 	Duration time.Duration
 }
 
@@ -273,6 +276,14 @@ func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest)
 
 	if phase == domain.PhaseInline {
 		out.Deferred = s.deferStragglers(ctx, req.OccurrenceID, out.Results)
+		// ⭐ THE FIRST CARD WAITS FOR THIS AND NOTHING ELSE. Releasing it here —
+		// after the results are stored, before anything slow — is what puts the rule
+		// snapshot on the message a human actually reads instead of on a silent
+		// `chat.update` some seconds later. It is released whatever the results
+		// were: an inline pass that found nothing has still spent the budget, and
+		// holding the card back for a rule that is not coming would be the exact
+		// delay §F.3 forbids.
+		out.Released = s.release(ctx, scope, loaded)
 	} else {
 		out.Notified = s.announce(ctx, scope, loaded, out.Results)
 	}
@@ -548,6 +559,35 @@ func (s *Service) announce(ctx context.Context, scope db.TenantScope, loaded Loa
 	}); err != nil {
 		s.log.WarnContext(ctx, "enrichment: could not request the enriched notification",
 			"group_id", loaded.GroupID, "error", err)
+		return false
+	}
+	return true
+}
+
+// release lets the deferred first notification go.
+//
+// A failure here is LOGGED AND SWALLOWED, and that is the whole reason the
+// backstop exists: if this enqueue fails, `alerts`' scheduled evaluation still
+// fires at the end of the budget and the operator still gets their card. The
+// degradation is a card a second or two later without a rule block, never a card
+// that never comes.
+func (s *Service) release(ctx context.Context, scope db.TenantScope, loaded Loaded) bool {
+	if s.notifier == nil || loaded.GroupID == uuid.Nil {
+		return false
+	}
+	occurrenceID := uuid.Nil
+	if occ, err := uuid.Parse(loaded.Subject.Occurrence.ID); err == nil {
+		occurrenceID = occ
+	}
+	if err := s.notifier.NotifyPreNotificationReady(ctx, scope, PreNotificationNotice{
+		GroupID:      loaded.GroupID,
+		AlertID:      loaded.AlertID,
+		OccurrenceID: occurrenceID,
+		StateVersion: loaded.StateVersion,
+	}); err != nil {
+		s.log.WarnContext(ctx, "enrichment: could not release the deferred first notification; "+
+			"the scheduled backstop will send it",
+			"group_id", loaded.GroupID, "occurrence_id", occurrenceID, "error", err)
 		return false
 	}
 	return true
