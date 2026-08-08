@@ -47,20 +47,56 @@ type settingsJSON struct {
 	StormCooldownS      *int `json:"storm_cooldown_s,omitempty"`
 	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
+
+	// The keys added when the tuning surface became editable. They are
+	// `omitempty` like the rest, so an org that has never opened the settings
+	// screen still stores `{}` and still reports every value as a DEFAULT.
+	UnackedReminderAfterS *int    `json:"unacked_reminder_after_s,omitempty"`
+	DefaultVerbosity      *string `json:"default_verbosity,omitempty"`
+	BroadcastOnResolved   *bool   `json:"broadcast_on_resolved,omitempty"`
 }
 
-func seconds(p *int) time.Duration {
-	if p == nil {
-		return 0
+// toPatch maps the stored blob onto the domain's override record. It is a
+// straight field-for-field copy and it must stay one: this is the boundary where
+// "absent" is still absent, and any defaulting done here would destroy the origin
+// before the domain ever saw it.
+func (s settingsJSON) toPatch() domain.SettingsPatch {
+	return domain.SettingsPatch{
+		RefireGraceS:          s.RefireGraceS,
+		ResolveGraceS:         s.ResolveGraceS,
+		GroupCloseDelayS:      s.GroupCloseDelayS,
+		FlapThreshold:         s.FlapThreshold,
+		FlapWindowS:           s.FlapWindowS,
+		FlapDigestIntervalS:   s.FlapDigestIntervalS,
+		StormThreshold:        s.StormThreshold,
+		StormWindowS:          s.StormWindowS,
+		StormCooldownS:        s.StormCooldownS,
+		RawRetentionDays:      s.RawRetentionDays,
+		EventRetentionMonth:   s.EventRetentionMonth,
+		UnackedReminderAfterS: s.UnackedReminderAfterS,
+		DefaultVerbosity:      s.DefaultVerbosity,
+		BroadcastOnResolved:   s.BroadcastOnResolved,
 	}
-	return time.Duration(*p) * time.Second
 }
 
-func count(p *int) int {
-	if p == nil {
-		return 0
+// fromPatch is toPatch's inverse, for the write path.
+func fromPatch(p domain.SettingsPatch) settingsJSON {
+	return settingsJSON{
+		RefireGraceS:          p.RefireGraceS,
+		ResolveGraceS:         p.ResolveGraceS,
+		GroupCloseDelayS:      p.GroupCloseDelayS,
+		FlapThreshold:         p.FlapThreshold,
+		FlapWindowS:           p.FlapWindowS,
+		FlapDigestIntervalS:   p.FlapDigestIntervalS,
+		StormThreshold:        p.StormThreshold,
+		StormWindowS:          p.StormWindowS,
+		StormCooldownS:        p.StormCooldownS,
+		RawRetentionDays:      p.RawRetentionDays,
+		EventRetentionMonth:   p.EventRetentionMonth,
+		UnackedReminderAfterS: p.UnackedReminderAfterS,
+		DefaultVerbosity:      p.DefaultVerbosity,
+		BroadcastOnResolved:   p.BroadcastOnResolved,
 	}
-	return *p
 }
 
 // toDomain maps the row onto the domain entity, explicitly and field by field.
@@ -79,25 +115,19 @@ func (r orgRow) toDomain() (domain.Org, error) {
 		}
 	}
 
+	// The patch is carried through UNCHANGED and the effective settings are
+	// DERIVED from it, rather than the two being built independently. One source
+	// means the origin the API reports and the value the hot path uses can never
+	// describe different worlds — which is the whole failure this reporting exists
+	// to prevent.
+	patch := s.toPatch()
+
 	return domain.Org{
-		ID:   r.id,
-		Slug: r.slug,
-		Name: r.name,
-		Settings: domain.Settings{
-			RefireGrace:        seconds(s.RefireGraceS),
-			ResolveGrace:       seconds(s.ResolveGraceS),
-			GroupCloseDelay:    seconds(s.GroupCloseDelayS),
-			FlapThreshold:      count(s.FlapThreshold),
-			FlapWindow:         seconds(s.FlapWindowS),
-			FlapDigestInterval: seconds(s.FlapDigestIntervalS),
-			StormThreshold:     count(s.StormThreshold),
-			StormWindow:        seconds(s.StormWindowS),
-			StormCooldown:      seconds(s.StormCooldownS),
-			RawRetention:       time.Duration(count(s.RawRetentionDays)) * 24 * time.Hour,
-			// Months are not a duration Postgres or Go agrees on; §D.1 stores a
-			// month count and oto reads it as 30 days, uniformly, everywhere.
-			EventRetention: time.Duration(count(s.EventRetentionMonth)) * 30 * 24 * time.Hour,
-		}.Normalise(),
+		ID:        r.id,
+		Slug:      r.slug,
+		Name:      r.name,
+		Settings:  patch.Settings(),
+		Overrides: patch,
 		CreatedAt: r.createdAt.UTC(),
 		UpdatedAt: r.updatedAt.UTC(),
 		DeletedAt: r.deletedAt,
@@ -127,6 +157,48 @@ SELECT o.id, o.slug, o.name, o.settings, o.created_at, o.updated_at, o.deleted_a
 func (r *OrgRepository) Get(ctx context.Context, s db.TenantScope) (domain.Org, error) {
 	var row orgRow
 	err := r.db(ctx).QueryRow(ctx, selectOrgSQL, s.OrgID()).
+		Scan(&row.id, &row.slug, &row.name, &row.settings, &row.createdAt, &row.updatedAt, &row.deletedAt)
+	if err != nil {
+		return domain.Org{}, mapErr(err, "org_not_found", "org")
+	}
+	return row.toDomain()
+}
+
+// updateSettingsSQL replaces the whole blob and returns the row it wrote.
+//
+// ⚠️ IT DOES NOT `jsonb_set` KEY BY KEY, and that is deliberate. The merge is
+// done in the domain, on a patch the service has already validated, so there is
+// exactly one place that decides what a partial write means. A SQL-side merge
+// would be a second such place — one that no test can reach without a database
+// and that no bound is checked by.
+//
+// `updated_at` moves on every write. It is what tells a second pod's next read
+// that its numbers are stale, and it is why no cache is needed to make a change
+// take effect.
+const updateSettingsSQL = `
+UPDATE orgs
+   SET settings   = $2,
+       updated_at = now()
+ WHERE id = $1
+   AND deleted_at IS NULL
+RETURNING id, slug, name, settings, created_at, updated_at, deleted_at`
+
+// UpdateSettings writes this org's overrides and returns the org as stored.
+//
+// It takes the WHOLE patch, already merged and already validated by the service.
+// A repository that accepted a partial patch would have to decide what a missing
+// key means, and that decision belongs to the domain.
+func (r *OrgRepository) UpdateSettings(
+	ctx context.Context, s db.TenantScope, p domain.SettingsPatch,
+) (domain.Org, error) {
+	blob, err := json.Marshal(fromPatch(p))
+	if err != nil {
+		// A patch that will not marshal is a mapper bug, never a caller's fault.
+		return domain.Org{}, mapErr(err, "org_settings_invalid", "org")
+	}
+
+	var row orgRow
+	err = r.db(ctx).QueryRow(ctx, updateSettingsSQL, s.OrgID(), blob).
 		Scan(&row.id, &row.slug, &row.name, &row.settings, &row.createdAt, &row.updatedAt, &row.deletedAt)
 	if err != nil {
 		return domain.Org{}, mapErr(err, "org_not_found", "org")

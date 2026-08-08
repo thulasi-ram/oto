@@ -54,15 +54,28 @@ const (
 	// ReasonStorm announces storm damping engaging. A VISIBLE state, never a
 	// silent suppression.
 	ReasonStorm Reason = "storm"
+	// ReasonSeverityRaised is an Alert's severity CLASS increasing —
+	// warning → critical (ADR 0020, migration 00027).
+	//
+	// ⭐ IT EXISTS BECAUSE THE MOST IMPORTANT CHANGE OTO CAN OBSERVE WAS THE ONE
+	// IT COULD NOT SAY. A severity bump used to arrive as part of `new_alerts` or
+	// as a bare root update, and a root update is `chat.update`, which is
+	// completely silent: the card went from amber to red and the channel was told
+	// nothing at all. Nobody would design that on purpose.
+	//
+	// A DECREASE is deliberately not a Reason. It is good news arriving quietly,
+	// which is exactly what update-in-place is for.
+	ReasonSeverityRaised Reason = "severity_raised"
 )
 
-// allReasons is the closed set, in the order migration 00018 declares it.
+// allReasons is the closed set, in the order migration 00018 declares it, with
+// `severity_raised` appended by migration 00027.
 var allReasons = []Reason{
 	ReasonFired, ReasonNewAlerts, ReasonSomeResolved, ReasonAllResolved,
 	ReasonRepeat, ReasonSuppressed, ReasonUnsuppressed, ReasonExpired,
 	ReasonRefired, ReasonAcked, ReasonUnacked, ReasonSnoozed, ReasonUnsnoozed,
 	ReasonEnriched, ReasonRuleChanged, ReasonComment, ReasonUnackedReminder,
-	ReasonStorm,
+	ReasonStorm, ReasonSeverityRaised,
 }
 
 // AllReasons returns the closed Reason set. The slice is freshly built so a
@@ -92,7 +105,11 @@ func (r Reason) String() string { return string(r) }
 // therefore REQUIRES an alert_id (notifications_focus_ck).
 func (r Reason) AlertScoped() bool {
 	switch r {
-	case ReasonAcked, ReasonUnacked, ReasonRefired, ReasonRuleChanged:
+	case ReasonAcked, ReasonUnacked, ReasonRefired, ReasonRuleChanged, ReasonSeverityRaised:
+		// A severity rise is a fact about ONE Alert's label, never about the
+		// group: two members of a group can move in opposite directions in the
+		// same batch, and a group-scoped severity Reason could not say which one
+		// moved.
 		return true
 	default:
 		return false

@@ -27,7 +27,7 @@ func (p policyStore) Get(context.Context, db.TenantScope, uuid.UUID) (domain.Pol
 }
 
 func (p policyStore) ListWithUnackedReminder(
-	context.Context, db.TenantScope,
+	context.Context, db.TenantScope, *int,
 ) ([]domain.Policy, error) {
 	return nil, nil
 }

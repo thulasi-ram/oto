@@ -81,6 +81,7 @@ const REASONS: readonly NotificationReason[] = [
   "comment",
   "unacked_reminder",
   "storm",
+  "severity_raised",
 ];
 
 const REASON_LABEL: Record<NotificationReason, string> = {
@@ -108,6 +109,11 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   // of this industry calls it (SPEC §G.9.1, §A.1).
   unacked_reminder: "still firing and unacknowledged",
   storm: "storm mode",
+  // ADR 0020. A RISE only — a fall has no reason and never will, because good
+  // news is allowed to arrive quietly. This is one of the transitions oto
+  // broadcasts into the channel, because chat.update is silent and without it
+  // the card goes from amber to red and nobody is told.
+  severity_raised: "severity raised",
 };
 
 export const PoliciesSection: Component = () => {

@@ -36,6 +36,10 @@ func toOrgSettingsDTO(s domain.Settings) OrgSettingsDTO {
 		RawRetentionDays:    int(s.RawRetention / (24 * time.Hour)),
 		// §D.1 stores a month count and oto reads a month as 30 days, uniformly.
 		EventRetentionMonth: int(s.EventRetention / (30 * 24 * time.Hour)),
+
+		UnackedReminderAfterS: int(s.UnackedReminderAfter / time.Second),
+		DefaultVerbosity:      s.DefaultVerbosity,
+		BroadcastOnResolved:   s.BroadcastOnResolved,
 	}
 }
 

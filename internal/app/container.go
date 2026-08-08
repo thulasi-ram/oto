@@ -558,6 +558,12 @@ func (c *Container) buildNotification(
 	c.NotifyScopes = notifrepo.NewScopeResolver(general)
 	c.notifConfigRepo = notifrepo.NewConfigRepository(general, clk)
 
+	// The same `orgs.settings` adapter the alerts and grouping modules read their
+	// tuning through. One adapter means one answer: the storm threshold that
+	// collapses a group and the broadcast policy that decides whether the collapse
+	// is announced cannot come from two different reads of the same row.
+	settings := orgSettings{svc: c.Identity}
+
 	var err error
 	if c.Policies, err = notifservice.NewPolicyService(policyRepo, channelRepo); err != nil {
 		return err
@@ -584,8 +590,12 @@ func (c *Container) buildNotification(
 		Snapshots:     snapshots,
 		Events:        eventRepo,
 		Enqueuer:      c.enqueuer,
-		Clock:         clk,
-		Logger:        logger,
+		// ADR 0020's broadcast policy and the org's fallback verbosity, read from
+		// `orgs.settings` on every evaluation — the same adapter the lifecycle and
+		// storm ports use.
+		Settings: settings,
+		Clock:    clk,
+		Logger:   logger,
 	}); err != nil {
 		return err
 	}
@@ -623,8 +633,10 @@ func (c *Container) buildNotification(
 		Policies:  policyRepo,
 		Reminders: reminderRepo,
 		Notifier:  c.Notify,
-		Clock:     clk,
-		Logger:    logger,
+		// The org's fallback reminder delay, for a policy that names none.
+		Settings: settings,
+		Clock:    clk,
+		Logger:   logger,
 	}); err != nil {
 		return err
 	}

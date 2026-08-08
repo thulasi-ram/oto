@@ -139,7 +139,10 @@ const (
 	// ModeThreadReply appends a reply to the group's thread. Replies are the
 	// exception, not the rule.
 	ModeThreadReply Mode = "thread_reply"
-	// ModeBroadcastReply surfaces a thread reply in-channel, for escalation.
+	// ModeBroadcastReply surfaces a thread reply in-channel (ADR 0020). It is for
+	// the transitions an on-call engineer would be angry to have missed, and it is
+	// IRREVERSIBLE: Slack documents nothing that un-broadcasts. Never an
+	// escalation — oto has one reminder stage and it reminds a CHANNEL (§G.9.1).
 	ModeBroadcastReply Mode = "broadcast_reply"
 )
 

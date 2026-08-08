@@ -58,6 +58,7 @@ var (
 	_ alertsservice.SourceHealth         = sourceHealth{}
 	_ alertsservice.SettingsReader       = orgSettings{}
 	_ groupingservice.SettingsReader     = orgSettings{}
+	_ notifservice.SettingsReader        = orgSettings{}
 	_ rulesservice.RuleLookup            = ruleLookup{}
 	_ enrichservice.SubjectLoader        = subjectLoader{}
 	_ enrichworker.ScopeResolver         = occurrenceScopes{}

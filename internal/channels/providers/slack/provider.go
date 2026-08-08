@@ -176,13 +176,34 @@ type Identity struct {
 // botToken pulls the delivery token out of an unsealed credential. It accepts a
 // couple of key spellings because the sealed blob's shape is the secret store's
 // business, not this package's.
+//
+// ⚠️ THE KIND CHECK IS LOAD-BEARING and it used to be a no-op: the branch tested
+// `cred.Kind != CredBotToken`, wrote `_ = cred.Kind` and fell through, so the
+// comment described an intent the code did not express. What it should have said
+// is the rule below.
+//
+// The two EXPLICIT spellings — `bot_token` and `slack_bot_token` — are read from a
+// credential of any Kind, because the comment's original claim is true: a blob
+// sealed as `slack_app_token` may legitimately carry the bot token alongside the
+// app token, and refusing it would break an install for a labelling detail.
+//
+// The two GENERIC spellings — `token` and `value` — are read ONLY from a blob that
+// is unlabelled or labelled `slack_bot_token`. A `slack_signing_secret` blob also
+// has a `value`, and that value is an HMAC secret, not a bearer token. The old
+// fall-through would have handed it to `slack.New` as one, producing an
+// `invalid_auth` that named the wrong credential — and, worse, putting the signing
+// secret in an Authorization header bound for Slack. A generic key is only as
+// meaningful as the Kind that frames it.
 func botToken(cred domain.Credential) string {
-	if cred.Kind != "" && cred.Kind != CredBotToken {
-		// A credential of another kind may still carry the bot token alongside
-		// the app token, so fall through to the value lookup rather than refusing.
-		_ = cred.Kind
+	for _, k := range []string{"bot_token", CredBotToken} {
+		if v := cred.Values[k]; v != "" {
+			return v
+		}
 	}
-	for _, k := range []string{"bot_token", CredBotToken, "token", "value"} {
+	if cred.Kind != "" && cred.Kind != CredBotToken {
+		return ""
+	}
+	for _, k := range []string{"token", "value"} {
 		if v := cred.Values[k]; v != "" {
 			return v
 		}

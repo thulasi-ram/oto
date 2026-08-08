@@ -19,8 +19,14 @@ const (
 	ModeUpdateRoot Mode = "update_root"
 	// ModeThreadReply appends a reply under the root.
 	ModeThreadReply Mode = "thread_reply"
-	// ModeBroadcastReply surfaces a thread reply in-channel. Reserved for
-	// unacked_reminder, which is deliberately louder than everything else.
+	// ModeBroadcastReply surfaces a thread reply in-channel — Slack's
+	// `reply_broadcast`, the API form of the "Also send to #channel" checkbox.
+	//
+	// It is decided by BroadcastPolicy over the TRANSITION and then modulated by
+	// the destination (ADR 0020); it used to be hard-coded to one Reason. It is
+	// IRREVERSIBLE, it costs a `chat.postMessage` against the ~1/second/channel
+	// budget, and its in-channel form carries NEITHER COLOUR NOR BUTTONS — see
+	// broadcast.go.
 	ModeBroadcastReply Mode = "broadcast_reply"
 )
 
@@ -131,6 +137,9 @@ type PlanInput struct {
 	// Flapping switches the group to update-only, with the digest reply owned by
 	// the flap damper rather than by each transition (§B.6).
 	Flapping bool
+	// Broadcast is the org's policy over which transitions surface in the channel
+	// (ADR 0020). The zero value is the approved default set.
+	Broadcast BroadcastPolicy
 }
 
 // Plan is the decision: which modes this fact produces on this destination, and
@@ -154,6 +163,14 @@ type Plan struct {
 	// ReplyDropReason is a short, stable label for why: "verbosity",
 	// "thread_updates", "no_threading", "storm", "flapping".
 	ReplyDropReason string
+	// BroadcastDamped reports that this transition WARRANTED a broadcast and got a
+	// quiet reply instead. It is not an error and not a suppression: the fact is
+	// still delivered on the thread. It is recorded because a damped broadcast is
+	// invisible by construction, and "oto decided not to shout" is exactly the
+	// kind of decision §B.6 refuses to take silently.
+	BroadcastDamped bool
+	// BroadcastDampReason is why: "storm", "flapping" or "no_capability".
+	BroadcastDampReason string
 }
 
 // Empty reports that this destination gets nothing.
@@ -208,15 +225,33 @@ func PlanFor(in PlanInput) Plan {
 	// reminder nobody sees is not a reminder. Where the destination cannot
 	// broadcast, it degrades to a plain reply, and where it cannot thread
 	// either, to a root update — loud enough to still be a reminder.
+	//
+	// ⛔ THE DAMPERS STILL BIND HERE, and they did not used to. This branch
+	// returned an UNCONDITIONAL broadcast, which meant a storm across two hundred
+	// unacknowledged alerts produced two hundred `chat.postMessage` calls into one
+	// channel — oto shouting, once per alert, about the fact that it had started
+	// being quiet. ADR 0020 constraint 3 permits exactly ONE broadcast in storm
+	// mode, the storm announcement itself. So the reminder is DAMPED, not dropped:
+	// it degrades to a quiet thread reply and the reminder still lands.
 	if in.Reason == ReasonUnackedReminder {
+		damp := dampReason(in)
+		mode := ModeThreadReply
 		switch {
-		case in.Capabilities.Has(CapBroadcast):
-			return Plan{Modes: []Mode{ModeBroadcastReply}}
-		case in.Capabilities.Has(CapThreading):
-			return Plan{Modes: []Mode{ModeThreadReply}}
-		default:
+		case !in.Capabilities.Has(CapThreading):
+			// Nothing to reply to. A root update is the loudest thing left.
 			return Plan{Modes: []Mode{ModeUpdateRoot}}
+		case damp == "":
+			if in.Capabilities.Has(CapBroadcast) {
+				mode = ModeBroadcastReply
+			} else {
+				damp = "no_capability"
+			}
 		}
+		p := Plan{Modes: []Mode{mode}}
+		if mode != ModeBroadcastReply && damp != "" {
+			p.BroadcastDamped, p.BroadcastDampReason = true, damp
+		}
+		return p
 	}
 
 	var p Plan
@@ -274,8 +309,50 @@ func PlanFor(in PlanInput) Plan {
 		return drop("no_threading")
 	}
 
+	// ---- broadcast -------------------------------------------------------
+	// The reply survives. ADR 0020 decides whether it surfaces in the channel:
+	// POLICY decides that the TRANSITION warrants it, and the destination's own
+	// gates — already passed above — decide whether this channel gets it. Broadcast
+	// never overrides a destination's volume setting; a channel that has opted out
+	// of thread replies does not receive louder ones.
+	//
+	// Reaching here means neither `storm` nor `flapping` dropped the reply, so the
+	// only damping left to apply is the storm announcement's own case: `ReasonStorm`
+	// is the one Reason that survives the storm gate, and it is the one broadcast
+	// ADR 0020 permits during a storm.
+	mode := ModeThreadReply
+	if in.Broadcast.Warrants(in.Reason) {
+		switch {
+		case in.Capabilities.Has(CapBroadcast):
+			mode = ModeBroadcastReply
+		default:
+			// §H.10 capability degradation: broadcast → reply. The fact still
+			// lands on the thread; only the channel-level summons is lost.
+			p.BroadcastDamped, p.BroadcastDampReason = true, "no_capability"
+		}
+	}
+
 	// A Reason with a reply but no root — `comment` — still needs the reply, and
 	// a destination that cannot amend has already had its root promoted above.
-	p.Modes = append(p.Modes, ModeThreadReply)
+	p.Modes = append(p.Modes, mode)
 	return p
+}
+
+// dampReason names the damper in force, or "" when none is.
+//
+// It exists so the reminder branch — which runs BEFORE the ordinary gates,
+// because `thread_updates` may not silence a reminder — asks the same question
+// those gates ask, in the same order. Storm outranks flapping for the same reason
+// §B.8.2 orders the suppressors: a storm is the louder fact about oto's own
+// behaviour, and it is the one an operator needs to see named.
+func dampReason(in PlanInput) string {
+	switch {
+	case in.StormMode && in.Reason != ReasonStorm:
+		return "storm"
+	case in.Flapping && in.Reason != ReasonRuleChanged:
+		// A flapping alert produces a digest, and a digest does not broadcast.
+		return "flapping"
+	default:
+		return ""
+	}
 }

@@ -69,8 +69,45 @@ func (s *Service) Me(ctx context.Context, scope db.TenantScope, p authn.Principa
 }
 
 // GetOrg returns the caller's org.
+//
+// ⭐ THIS IS THE HOT PATH FOR EVERY TUNING KNOB. `internal/app`'s `orgSettings`
+// adapter calls it once per lifecycle evaluation and once per storm evaluation,
+// and it goes STRAIGHT TO POSTGRES: there is no memo, no TTL and no process-local
+// copy anywhere between here and the row. That is what makes a settings change
+// take effect on the very next evaluation, in every pod, with no restart and no
+// invalidation message — and it is a property worth defending. If a cache is ever
+// added here it MUST carry a bounded TTL, because the failure it would introduce
+// is the one nobody notices: an operator raises `storm_threshold` during an
+// incident, watches nothing change, and has no way to tell whether the setting is
+// wrong or merely stale.
 func (s *Service) GetOrg(ctx context.Context, scope db.TenantScope) (domain.Org, error) {
 	return s.orgs.Get(ctx, scope)
+}
+
+// UpdateOrgSettings applies a partial write to this org's tuning and returns the
+// org as stored.
+//
+// ⛔ THE BOUNDS ARE ENFORCED HERE, and this is the only door. Validation runs on
+// the MERGED patch rather than on the incoming fragment, so a write cannot slip a
+// value past by relying on a key it did not send — and the result is written only
+// if the whole merged state is legal. A UI that also checks is a nicety; a
+// request from `curl` gets the same answer.
+func (s *Service) UpdateOrgSettings(
+	ctx context.Context, scope db.TenantScope, next domain.SettingsPatch, reset []domain.SettingKey,
+) (domain.Org, error) {
+	current, err := s.orgs.Get(ctx, scope)
+	if err != nil {
+		return domain.Org{}, err
+	}
+	if !current.Live() {
+		return domain.Org{}, unauthenticated()
+	}
+
+	merged := current.Overrides.Clear(reset...).Merge(next)
+	if err := merged.Validate(); err != nil {
+		return domain.Org{}, err
+	}
+	return s.orgs.UpdateSettings(ctx, scope, merged)
 }
 
 // GetUser returns one user within the caller's org. v1 has no RBAC: any member

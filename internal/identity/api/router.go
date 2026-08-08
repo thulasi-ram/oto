@@ -23,6 +23,9 @@ type IdentityService interface {
 	ExpireSession(ctx context.Context, scope db.TenantScope, p authn.Principal) error
 	Me(ctx context.Context, scope db.TenantScope, p authn.Principal) (service.MeView, error)
 
+	GetOrg(ctx context.Context, scope db.TenantScope) (domain.Org, error)
+	UpdateOrgSettings(ctx context.Context, scope db.TenantScope, p domain.SettingsPatch, reset []domain.SettingKey) (domain.Org, error)
+
 	ListTokens(ctx context.Context, scope db.TenantScope, p authn.Principal, k db.Keyset) ([]domain.APIToken, db.Cursor, error)
 	IssueToken(ctx context.Context, scope db.TenantScope, p authn.Principal, cmd service.CreateTokenCommand) (service.IssuedToken, error)
 	RevokeToken(ctx context.Context, scope db.TenantScope, tokenID uuid.UUID) error
@@ -126,12 +129,20 @@ func (rt *Router) Mount(r chi.Router) {
 	r.Group(func(g chi.Router) {
 		g.Use(rt.auth.Require)
 		g.Get("/me", rt.getCurrentPrincipal)
+		// Reading the tuning is a read: a token that can list alerts can see the
+		// numbers that decided how loudly they were announced.
+		g.Get("/org/settings", rt.getOrgSettings)
 	})
 
 	// sessionCookie only.
 	r.Group(func(g chi.Router) {
 		g.Use(rt.auth.RequireSession)
 		g.Post("/auth/logout", rt.logout)
+		// ⚠️ WRITING THE TUNING IS SESSION-ONLY. These numbers decide how much
+		// oto says and how much it withholds; a leaked ingest-adjacent token must
+		// not be able to raise `storm_threshold` and make the tool go quiet. It
+		// joins the same privilege boundary as minting credentials.
+		g.Patch("/org/settings", rt.updateOrgSettings)
 		g.Get("/api-tokens", rt.listAPITokens)
 		g.Post("/api-tokens", rt.createAPIToken)
 		g.Delete("/api-tokens/{id}", rt.revokeAPIToken)

@@ -48,18 +48,56 @@ type destination struct {
 	input domain.PlanInput
 }
 
+// OrgDefaults is the org-level tuning the §H.6 table consults, as distinct from
+// the per-channel switches on `channels`.
+//
+// It exists because two of §H.6's inputs are now org-configurable: which
+// transitions surface in the channel (ADR 0020) and what verbosity a Channel that
+// names none falls back to. Both are read ONCE per evaluation, so every
+// destination in one fan-out is judged against the same policy — a fan-out where
+// two channels disagreed about whether a storm warrants a broadcast would be very
+// hard to explain to the person reading the channel.
+type OrgDefaults struct {
+	Broadcast domain.BroadcastPolicy
+	// Verbosity is the fallback for a Channel with no verbosity of its own. Empty
+	// means the schema default.
+	Verbosity domain.Verbosity
+	// UnackedReminderAfter is the org's fallback delay for a policy that names
+	// none. Zero means the org sets none, which is what shipped.
+	//
+	// ⛔ ONE STAGE, FOREVER (§G.9.1). A scalar, and a FALLBACK — never a second
+	// threshold and never a ladder.
+	UnackedReminderAfter time.Duration
+}
+
+// SettingsReader reads one org's notification-level tuning from `orgs.settings`.
+// It is OPTIONAL: a nil reader, or one that fails, yields the shipped defaults,
+// because a settings lookup must never be able to stop a notification.
+type SettingsReader interface {
+	NotificationDefaults(ctx context.Context, s db.TenantScope) (OrgDefaults, error)
+}
+
 // planInput is the §H.6 question for one destination.
 func planInput(
-	reason domain.Reason, c domain.Channel, rootExists, storm, flapping bool,
+	reason domain.Reason, c domain.Channel, def OrgDefaults, rootExists, storm, flapping bool,
 ) domain.PlanInput {
+	// The channel's own setting wins; the org default is only consulted when the
+	// channel names nothing. Verbosity is a per-destination volume dial, and an
+	// org default that could override one would make a quiet channel loud from a
+	// screen nobody was looking at.
+	verbosity := c.Verbosity
+	if !verbosity.Valid() {
+		verbosity = def.Verbosity
+	}
 	return domain.PlanInput{
 		Reason:        reason,
-		Verbosity:     c.EffectiveVerbosity(),
+		Verbosity:     verbosity.Normalise(),
 		ThreadUpdates: c.ThreadUpdates,
 		Capabilities:  c.Capabilities,
 		ThreadExists:  rootExists,
 		StormMode:     storm,
 		Flapping:      flapping,
+		Broadcast:     def.Broadcast,
 	}
 }
 
@@ -74,6 +112,7 @@ type NotificationService struct {
 	snapshots     SnapshotSource
 	events        EventSink
 	enqueuer      Enqueuer
+	settings      SettingsReader
 	clk           clock.Clock
 	log           *slog.Logger
 }
@@ -88,8 +127,12 @@ type NotificationConfig struct {
 	Snapshots     SnapshotSource
 	Events        EventSink
 	Enqueuer      Enqueuer
-	Clock         clock.Clock
-	Logger        *slog.Logger
+	// Settings reads the org's notification tuning. OPTIONAL: nil means every org
+	// runs oto's shipped defaults, which is the correct degraded answer — a
+	// settings lookup must never be able to stop a notification.
+	Settings SettingsReader
+	Clock    clock.Clock
+	Logger   *slog.Logger
 }
 
 // NewNotificationService builds the service.
@@ -108,7 +151,7 @@ func NewNotificationService(cfg NotificationConfig) (*NotificationService, error
 	s := &NotificationService{
 		txr: cfg.Tx, policies: cfg.Policies, notifications: cfg.Notifications,
 		deliveries: cfg.Deliveries, threads: cfg.Threads, snapshots: cfg.Snapshots,
-		events: cfg.Events, enqueuer: cfg.Enqueuer,
+		events: cfg.Events, enqueuer: cfg.Enqueuer, settings: cfg.Settings,
 		clk: cfg.Clock, log: cfg.Logger,
 	}
 	if s.clk == nil {
@@ -218,7 +261,12 @@ func (s *NotificationService) evaluate(
 		return s.record(ctx, scope, n, reason, sup.All(), now)
 	}
 
-	dests, softSup := s.plan(in.Reason, snap, match)
+	// The org's tuning is read ONCE per evaluation, straight from `orgs.settings`
+	// — no cache sits in front of it, so a settings change takes effect on the
+	// very next evaluation in every pod, with no restart.
+	def := s.orgDefaults(ctx, scope)
+
+	dests, softSup := s.plan(ctx, in.Reason, snap, match, def)
 	if len(dests) == 0 {
 		reason, ok := softSup.Winner()
 		if !ok {
@@ -345,6 +393,34 @@ func (s *NotificationService) suppressors(
 	return sup, nil
 }
 
+// orgDefaults reads the org's notification tuning, degrading to oto's shipped
+// defaults on any failure.
+//
+// ⛔ IT NEVER RETURNS AN ERROR, and that is the rule this whole path is built
+// around: a settings lookup MUST NOT be able to stop an alert being announced. A
+// tenant whose settings row is unreadable gets the defaults and a warning in the
+// log, not silence in their Slack channel.
+func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantScope) OrgDefaults {
+	def := OrgDefaults{
+		Broadcast: domain.DefaultBroadcastPolicy(),
+		Verbosity: domain.VerbosityStatusChanges,
+	}
+	if s.settings == nil {
+		return def
+	}
+	got, err := s.settings.NotificationDefaults(ctx, scope)
+	if err != nil {
+		s.log.WarnContext(ctx, "notification: could not read org tuning, using defaults",
+			"org_id", scope.OrgID(), "error", err.Error())
+		return def
+	}
+	if got.Verbosity.Valid() {
+		def.Verbosity = got.Verbosity
+	}
+	def.Broadcast = got.Broadcast
+	return def
+}
+
 // plan answers ONE question per destination: does this fact reach it at all, and
 // if a reply was dropped, why?
 //
@@ -353,7 +429,7 @@ func (s *NotificationService) suppressors(
 // this method has no access to. `fanOut` re-applies the table against the thread
 // it just ensured — see modesFor — and that is where `Plan.Modes` becomes rows.
 func (s *NotificationService) plan(
-	reason domain.Reason, snap domain.Snapshot, match Match,
+	ctx context.Context, reason domain.Reason, snap domain.Snapshot, match Match, def OrgDefaults,
 ) ([]destination, domain.Suppressors) {
 	var sup domain.Suppressors
 	if !match.Routed() {
@@ -368,8 +444,19 @@ func (s *NotificationService) plan(
 		// destination get anything", which the first-notification view answers
 		// conservatively and identically for every destination. The row-level
 		// decision is taken in fanOut against the real thread.
-		in := planInput(reason, c, false, snap.Group.StormMode, flapping)
+		in := planInput(reason, c, def, false, snap.Group.StormMode, flapping)
 		p := domain.PlanFor(in)
+
+		if p.BroadcastDamped {
+			// ⭐ A DAMPED BROADCAST IS RECORDED, NEVER SILENT. ADR 0020 permits
+			// exactly one broadcast during a storm — the storm announcement — and
+			// this is the line where the other ninety-nine were turned down. The
+			// fact still lands on the thread, so this is not a suppression of the
+			// notification; it is oto accounting for its own quiet, which is what
+			// §B.6 requires of every damper it runs.
+			s.log.DebugContext(ctx, "notification: broadcast damped",
+				"reason", string(reason), "channel_id", c.ID, "damped_by", p.BroadcastDampReason)
+		}
 
 		if p.ReplyDropped {
 			switch p.ReplyDropReason {

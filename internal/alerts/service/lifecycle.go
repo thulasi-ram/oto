@@ -340,6 +340,32 @@ func (s *Service) observe(
 			}
 		}
 
+		// A severity RISE on an Alert oto already knew about (ADR 0020).
+		//
+		// ⭐ THIS IS THE TRANSITION THAT USED TO BE INVISIBLE. Everything else on
+		// this path either posts a root or is genuinely not news; a severity bump
+		// did neither — it arrived folded into `new_alerts` or as a bare root
+		// update, and a root update is `chat.update`, which is completely silent.
+		// The card went amber to red and the channel was told nothing.
+		//
+		// It rides the pre-upsert snapshot `priorAlerts` already reads for §B.3's
+		// material-change test, so it costs no extra query. It is emitted only
+		// when there IS an occurrence to point at: `notifications_focus_ck`
+		// requires an alert_id for this Reason, and a severity change on an alert
+		// with no live episode is a label edit nobody is waiting on.
+		if haveOcc && !results[i].WasInserted {
+			if was, ok := prior[alert.Key().String()]; ok &&
+				domain.Raised(was.Severity(), alert.Severity()) {
+				notifies = append(notifies, notifyRequest{
+					groupID:      groupOf(opt, occ),
+					reason:       reasonSeverityRaised,
+					alertID:      ptr(alert.ID()),
+					occurrenceID: ptr(occ.ID()),
+					actor:        actor.Kind().String(),
+				})
+			}
+		}
+
 		if haveOcc {
 			latest[alert.ID()] = occ
 			out.OccurrenceID = occ.ID()

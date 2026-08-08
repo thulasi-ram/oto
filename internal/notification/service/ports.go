@@ -37,7 +37,7 @@ type SnapshotSource interface {
 type PolicyStore interface {
 	ListLive(ctx context.Context, s db.TenantScope) ([]domain.Policy, error)
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Policy, error)
-	ListWithUnackedReminder(ctx context.Context, s db.TenantScope) ([]domain.Policy, error)
+	ListWithUnackedReminder(ctx context.Context, s db.TenantScope, orgDefaultSeconds *int) ([]domain.Policy, error)
 }
 
 // NotificationStore persists intents.

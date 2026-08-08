@@ -8,9 +8,20 @@ inert — or actively harmful — against `group_interval: 30s`.
 This page explains what each knob does, both ways it can be wrong, and how to derive a value from
 configuration you already have.
 
-> **Status:** these values are currently org-level settings (`orgs.settings`, SPEC §D.1) with the
-> defaults below. Making them editable per org in the UI is planned work, not shipped. Nothing here
-> describes a feature you can change from the web UI today.
+> **Status:** these are org-level settings (`orgs.settings`, SPEC §D.1) with the defaults below, and
+> they are **editable per org over the API**:
+>
+> - `GET /api/v1/org/settings` returns each **effective** value, its **origin** (`org` if you set it,
+>   `default` if oto did) and the **bounds** the server will accept, with the reason for each.
+> - `PATCH /api/v1/org/settings` writes them. It is a partial write — an omitted key is left alone —
+>   and `"reset": ["refire_grace_s"]` returns a key to oto's default.
+>
+> **The bounds below are enforced server-side, not by the form**, and they are checked against the
+> merged state. A change takes effect on the **next evaluation**: nothing caches these numbers, so
+> there is no restart and no window in which one pod runs the old tuning and another the new.
+>
+> Values already stored outside a bound are **clamped on read** rather than rejected, so a row written
+> before a bound existed can never fail an alert.
 
 ---
 
@@ -59,7 +70,7 @@ threshold is correct for all of them; tune for the rules that actually misbehave
 
 ---
 
-## `refire_grace` — default **600s (10 minutes)**
+## `refire_grace` — default **600s (10 minutes)**, accepted range **60–86400**
 
 **What it does.** An alert resolves, then the same `alert_key` fires again. `refire_grace` decides
 whether that is *the same problem coming back* or *a new problem*:
@@ -105,13 +116,19 @@ refire_grace  ≈  3 × group_interval          (a reasonable default)
 | `5m` *(Alertmanager default)* | **`10m`–`15m`** — the shipped default of 10m is exactly `2 ×` |
 | `15m` | `30m`–`45m` |
 
+**The server refuses anything below 60s or above 86400s.** The floor is the arithmetic above made
+binding: a grace window shorter than a minute is shorter than any `group_interval` worth running, so
+it is unreachable and every re-fire opens a new thread — the exact failure this knob exists to prevent.
+Zero is a Slack thread per transition. The ceiling is the "history that lies" failure: beyond a day,
+two separate incidents merge into one occurrence.
+
 Then sanity-check the top end against how long your incidents actually last. If a typical incident is
 resolved and genuinely gone in under ten minutes, a ten-minute grace window will merge distinct
 incidents; shorten it toward `2 × group_interval` and accept a few more threads.
 
 ---
 
-## Flap damping — `flap_threshold` **5**, `flap_window` **1800s (30m)**, `flap_digest_interval` **900s (15m)**
+## Flap damping — `flap_threshold` **5** (3–100), `flap_window` **1800s (30m)** (300–86400), `flap_digest_interval` **900s (15m)** (60–86400)
 
 **What it does.** `flap_score` is an EWMA of state transitions per hour. When an alert exceeds
 `flap_threshold` transitions within `flap_window`, oto marks it flapping and changes behaviour: the
@@ -165,6 +182,11 @@ flap_threshold  ≥  3                                   # below this, one deplo
 | `10m` | `5m` | ~4 | **raise `flap_window` instead** — see below |
 | `30m`+ | any | ~1 | flap damping is meaningless; leave it, it will never trigger |
 
+**The server refuses a threshold below 3**, for exactly this reason, and refuses one above 100 because
+at that point the damper is unreachable for any real rule and is dead code that looks configured. It
+also refuses a `flap_window` below 300s: a window shorter than one `group_interval` cannot contain two
+transitions oto is able to observe.
+
 For long-`for:` rules, do not lower the threshold to 2 — two transitions is a normal deploy, and you
 would be labelling healthy alerts as flapping. **Widen the window instead.** With `for: 10m`, a window
 of `3h` and a threshold of `5` describes something genuinely pathological, and the threshold becomes
@@ -182,7 +204,7 @@ not a digest.
 
 ---
 
-## Storm collapse — `storm_threshold` **25**, `storm_window` **60s**, `storm_cooldown` **600s (10m)**
+## Storm collapse — `storm_threshold` **25** (2–10000), `storm_window` **60s** (10–3600), `storm_cooldown` **600s (10m)** (60–86400)
 
 **What it does.** If more than `storm_threshold` distinct alerts join **one AlertGroup generation**
 within `storm_window`, the group enters storm mode: oto posts or updates exactly **one** root message
@@ -229,7 +251,12 @@ oto: group on the labels that describe the *problem*, not the ones that describe
   boundary.
 - **`storm_cooldown`** — how long the group must be quiet before normal per-alert behaviour resumes.
   Keep it **at or above `group_interval`**, otherwise storm mode will flicker on and off across
-  consecutive batches. The default `10m` is `2 ×` the Alertmanager default.
+  consecutive batches. The default `10m` is `2 ×` the Alertmanager default. The server refuses
+  anything below `60s`, which is the point at which the flicker becomes certain.
+
+**The server refuses a `storm_threshold` of 1.** A threshold of 1 collapses every group on its second
+member: permanent storm mode, every per-alert reply suppressed forever, which is silence wearing a
+damper's name.
 
 ---
 
@@ -286,6 +313,9 @@ broadcast — a reminder nobody sees is not a reminder.
 |---|---|---|---|
 | `resolve_grace_s` | `300` (5m) | How long past an alert's `EndsAt` lease oto waits before the reaper marks the occurrence **`expired`**. | Prometheus refreshes `EndsAt` on every send; the lease is typically `4 × scrape_interval` or `evaluation_interval` (commonly 3–4 minutes). Set `resolve_grace` **above** that lease, or a single missed scrape looks like an expiry. `5m` covers the usual case. |
 | `group_close_delay_s` | `300` (5m) | How long an AlertGroup stays `open` after its last member stops firing, before it closes. Closing a group is what makes the *next* fire open a new generation — and therefore a new Slack root message. | Keep it **at or above `group_interval`**, and consider aligning it with `refire_grace`. If `group_close_delay` is much shorter than `refire_grace`, a re-fire inside the grace window still finds a closed group. |
+| `unacked_reminder_after_s` | `0` (unset) | The org **default** a notification policy's own `unacked_reminder_after_s` falls back to when it is NULL. A policy with an opinion always wins. | **Zero means "no org default"**, which is what shipped — not "immediately". When set, the range is `60`–`86400`, mirroring `policies_reminder_ck` exactly. ⛔ One stage, forever (§G.9.1). |
+| `default_verbosity` | `status_changes` | The fallback for a Channel that names no verbosity of its own. A channel's own setting always wins — an org default can never make a quiet channel loud. | Set it to `firing_only` if most of your channels want the quietest setting and you would rather not repeat yourself. |
+| `broadcast_on_resolved` | `false` | Whether `all_resolved` is broadcast into the channel rather than posted quietly in the thread. | See **Broadcast**, above. It is the only broadcast that is configurable, because a broadcast cannot be un-sent. |
 | `raw_retention_days` | `14` | How long raw webhook payloads are kept before their partition is dropped. | Storage, not behaviour. Raise it if you debug ingestion often. |
 | `event_retention_months` | `13` | How long the event timeline is kept. | Thirteen months so year-on-year comparisons work. |
 

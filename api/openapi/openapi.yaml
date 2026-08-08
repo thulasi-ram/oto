@@ -3911,6 +3911,90 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/org/settings:
+    get:
+      operationId: getOrgSettings
+      summary: The org's tuning, each value with its origin
+      tags: [Identity]
+      description: |
+        The knobs that decide how loudly oto talks: `refire_grace`, the flap thresholds, the storm
+        damping policy, the unacked-reminder default, the fallback channel verbosity and the one
+        configurable broadcast.
+
+        **It returns three things, and all three are the point.**
+
+        - `settings` — the **effective** value, the one oto is using right now: this org's overrides
+          folded onto the shipped defaults and clamped to their bounds.
+        - `origins` — per key, `org` or `default`. Returning the effective value alone is the version of
+          configurability that is *worse than none*: a screen showing `600` cannot tell an operator
+          whether their org chose 600 or is riding oto's default, and those two answers behave
+          identically today and diverge the moment the default moves.
+        - `bounds` — the server-side range of every integer key, **with the reason for it**, so a form can
+          be generated from the same table the server rejects with and cannot offer a value the API will
+          refuse.
+      responses:
+        '200':
+          description: The effective tuning, its origins and its bounds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgSettingsViewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    patch:
+      operationId: updateOrgSettings
+      summary: Change the org's tuning
+      tags: [Identity]
+      security:
+        - sessionCookie: []
+      description: |
+        A **partial** write. Every field is optional and **an omitted key is left alone** — a settings API
+        where omission silently reverted to the default would revert nine settings every time somebody
+        changed one. To return a key to oto's shipped default, name it in `reset`; after that its origin
+        reports `default` again. An unknown name in `reset` is rejected, never ignored: a typo'd key that
+        was silently dropped is a reset the operator believes happened and did not.
+
+        **The bounds are enforced here, on the server.** They are checked against the *merged* state, so a
+        write cannot slip a value past by relying on a key it did not send, and the result is stored only
+        if the whole merged state is legal. A `refire_grace_s` of `0` is refused whatever a UI would have
+        allowed — that value is a Slack thread per transition.
+
+        **It takes effect immediately and everywhere.** Nothing between this write and the notify worker's
+        next evaluation holds a copy of these numbers, so there is no restart, no cache flush, and no
+        window in which one pod runs the old tuning and another the new.
+
+        Requires a **session**: these numbers decide how much oto says and how much it withholds, and a
+        leaked token must not be able to raise `storm_threshold` and make the tool go quiet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrgSettingsRequest'
+      responses:
+        '200':
+          description: The tuning as stored, with origins and bounds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgSettingsViewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/api-tokens:
     get:
       operationId: listApiTokens
@@ -4846,9 +4930,17 @@ components:
         - comment
         - unacked_reminder
         - storm
+        - severity_raised
       description: |
         Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
         is mapped onto this enum on ingest.
+
+        `severity_raised` is an Alert's severity **class** increasing — `warning` → `critical` (ADR 0020,
+        migration `00027_severity_raised_reason.sql`). It exists because oto's primary verb is
+        `chat.update`, and **`chat.update` is completely silent**: without this value the card went from
+        amber to red and the channel was told nothing at all. It is one of the transitions oto
+        **broadcasts** into the channel. A severity *decrease* has no value here and never will — good
+        news is allowed to arrive quietly, which is exactly what update-in-place is for.
 
         `unacked_reminder` is oto's ONE reminder stage (§G.9.1): the signal is still firing and still
         unacknowledged, so oto says so once more in the existing thread. It replaced the value this enum
@@ -4959,10 +5051,17 @@ components:
 
         - `all` — every reply type.
         - `status_changes` *(default)* — ack, unack, suppressed, unsuppressed, expired, refired,
-          new_alerts, all_resolved, rule_changed, comment, unacked_reminder, storm.
+          new_alerts, all_resolved, rule_changed, comment, unacked_reminder, storm, severity_raised.
         - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, unacked_reminder,
-          storm.
-        - `firing_only` — new_alerts, rule_changed, unacked_reminder, storm.
+          storm, severity_raised.
+        - `firing_only` — new_alerts, rule_changed, unacked_reminder, storm, severity_raised.
+
+        `severity_raised` is present at **every** level including the quietest: a channel that asked to
+        hear only about firing has asked to hear when something starts being worse. It is still a reply,
+        so `thread_updates: false` still silences it — verbosity is a volume dial, never an override.
+
+        A channel that names no verbosity falls back to its **org's** `default_verbosity`
+        (`GET /api/v1/org/settings`), and only then to `status_changes`.
       examples: [status_changes]
 
     ChannelHealthStatus:
@@ -7894,64 +7993,141 @@ components:
         refire_grace_s:
           type: integer
           format: int32
-          minimum: 0
+          minimum: 60
+          maximum: 86400
           default: 600
-          description: A re-fire inside this window reopens the existing occurrence instead of opening a new one.
+          description: |
+            A re-fire inside this window reopens the existing occurrence instead of opening a new one.
+
+            **The floor is 60, not 0.** Below a minute the window is shorter than any useful Alertmanager
+            `group_interval`, so it is unreachable and *every* re-fire opens a new generation and a
+            brand-new Slack root message — the wall of near-identical messages oto exists to prevent,
+            produced by a setting that looks like it should have prevented it. Zero would be a Slack
+            thread per transition.
         resolve_grace_s:
           type: integer
           format: int32
-          minimum: 0
+          minimum: 60
+          maximum: 86400
           default: 300
-          description: How long past its upstream end time an occurrence is held before the reaper may expire it.
+          description: |
+            How long past its upstream end time an occurrence is held before the reaper may expire it.
+            Must exceed the `EndsAt` lease Prometheus refreshes (typically 3–4 minutes), or a single
+            missed scrape looks like an expiry.
         group_close_delay_s:
           type: integer
           format: int32
-          minimum: 0
+          minimum: 60
+          maximum: 86400
           default: 300
+          description: Keep at or above `group_interval`, or a generation closes between two batches of one incident.
         flap_threshold:
           type: integer
           format: int32
-          minimum: 1
+          minimum: 3
+          maximum: 100
           default: 5
+          description: |
+            Transitions within `flap_window_s` before an alert is **marked** flapping. Below 3 a single
+            rolling deploy is mislabelled as flapping and a healthy alert is shown as noisy; above 100
+            the damper can never engage and is dead code that looks configured.
         flap_window_s:
           type: integer
           format: int32
-          minimum: 60
+          minimum: 300
+          maximum: 86400
           default: 1800
+          description: A window shorter than one `group_interval` cannot contain two transitions oto is able to observe.
         flap_digest_interval_s:
           type: integer
           format: int32
           minimum: 60
+          maximum: 86400
           default: 900
+          description: A digest more often than once a minute is not a digest.
         storm_threshold:
           type: integer
           format: int32
-          minimum: 1
+          minimum: 2
+          maximum: 10000
           default: 25
+          description: |
+            Distinct alerts joining one generation inside `storm_window_s` before the group collapses.
+            **The floor is 2:** a threshold of 1 puts every group into permanent storm mode and
+            suppresses every per-alert reply forever, which is silence wearing a damper's name.
         storm_window_s:
           type: integer
           format: int32
-          minimum: 1
+          minimum: 10
+          maximum: 3600
           default: 60
+          description: Must exceed `group_wait`, or a burst Alertmanager is still batching does not look like a burst.
         storm_cooldown_s:
           type: integer
           format: int32
-          minimum: 0
+          minimum: 60
+          maximum: 86400
           default: 600
+          description: Below a minute, storm mode flickers on and off across consecutive Alertmanager batches.
         raw_retention_days:
           type: integer
           format: int32
           minimum: 1
+          maximum: 365
           default: 14
           description: Raw ingested payloads age out by dropping whole partitions, never by deleting rows.
         event_retention_months:
           type: integer
           format: int32
           minimum: 1
+          maximum: 120
           default: 13
+        unacked_reminder_after_s:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 86400
+          default: 0
+          description: |
+            The org **default** an unacked-reminder delay falls back to when a notification policy names
+            none of its own. A policy that has an opinion always wins.
+
+            **Zero means "this org sets no default"**, which is what oto ships — a policy with no delay
+            of its own still produces no reminder. It does not mean "immediately". When set, the accepted
+            range is 60–86400, mirroring the `policies_reminder_ck` CHECK exactly.
+
+            ⛔ **One stage, forever** (§G.9.1). A scalar, never an array, never a ladder, and never a
+            target other than the policy's own `channel_ids`.
+        default_verbosity:
+          $ref: '#/components/schemas/Verbosity'
+        broadcast_on_resolved:
+          type: boolean
+          default: false
+          description: |
+            Whether `all_resolved` is **broadcast** into the channel rather than posted quietly in the
+            thread (ADR 0020). Default **off**.
+
+            It is the only broadcast that is configurable. The other four — `severity_raised`, `refired`,
+            `storm` and `unacked_reminder` — are fixed by policy, because **a broadcast cannot be
+            un-sent**: Slack documents nothing that removes a channel reference once made. The bar is
+            *"would an on-call engineer be angry to have missed this?"*, not *"is this interesting?"*, and
+            a channel that learns to scroll past oto's broadcasts has lost the only mechanism oto has for
+            genuine urgency.
+
+            Closure is genuinely welcome on a quiet channel. On a busy one it doubles traffic for the
+            least urgent fact oto has — nobody was ever woken because a resolve arrived quietly.
       description: |
-        Org-level tuning. **Grouping, flap damping and storm collapse are on by default** — oto defaults
-        to quiet, and every damping decision it makes is a visible state rather than a silent drop.
+        Org-level tuning, as **effective values**. **Grouping, flap damping and storm collapse are on by
+        default** — oto defaults to quiet, and every damping decision it makes is a visible state rather
+        than a silent drop.
+
+        Every bound above is enforced **server-side** on `PATCH /api/v1/org/settings`, not merely by the
+        settings form: the request that sets `refire_grace_s` to 0 arrives from `curl` long before it
+        arrives from a form. Values already stored outside a bound are **clamped on read** rather than
+        rejected, so a row written before a bound existed can never fail an alert.
+
+        To find out whether a value here is this org's own or oto's shipped default, read
+        `GET /api/v1/org/settings`, which returns the same numbers alongside their **origin**.
 
     UserDTO:
       type: object
@@ -9495,6 +9671,164 @@ components:
           $ref: '#/components/schemas/MeDTO'
         meta:
           $ref: '#/components/schemas/Meta'
+
+    SettingBoundDTO:
+      type: object
+      required: [min, max, why]
+      additionalProperties: false
+      properties:
+        min:
+          type: integer
+          format: int32
+        max:
+          type: integer
+          format: int32
+        why:
+          type: string
+          description: |
+            The argument for the range, in one sentence. It is rendered into the 422 an out-of-range
+            write receives, and returned here so a form can say the same thing *before* the write — a
+            caller told only "invalid" tries a different wrong number.
+      description: One knob's server-enforced range, with the reason it is what it is.
+
+    SettingOrigin:
+      type: string
+      enum: [default, org]
+      description: |
+        Where an effective value came from. `org` means this org wrote it and it overrides the shipped
+        default; `default` means oto's own value is in force and will follow oto's default if that moves.
+
+        It is a two-value enum on purpose. There is one tenant level and one shipped default, so
+        "inherited from a parent" is an answer to a question oto does not have.
+      examples: [default]
+
+    OrgSettingsViewDTO:
+      type: object
+      required: [settings, origins, bounds]
+      additionalProperties: false
+      properties:
+        settings:
+          $ref: '#/components/schemas/OrgSettingsDTO'
+        origins:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/SettingOrigin'
+          description: Per settings key, whether the effective value is this org's own or oto's default.
+        bounds:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/SettingBoundDTO'
+          description: |
+            Per integer settings key, the range the server will accept. Keys that are not integers
+            (`default_verbosity`, `broadcast_on_resolved`) are absent; their legal values are their own
+            schema's.
+      description: |
+        The effective tuning **and** where each value came from. The pairing is the feature: an effective
+        value with no origin cannot be acted on, because "600 because we chose it" and "600 because
+        that is what oto ships" behave identically today and diverge the moment the default moves.
+
+    OrgSettingsViewResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/OrgSettingsViewDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    UpdateOrgSettingsRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        refire_grace_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+        resolve_grace_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+        group_close_delay_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+        flap_threshold:
+          type: integer
+          format: int32
+          minimum: 3
+          maximum: 100
+        flap_window_s:
+          type: integer
+          format: int32
+          minimum: 300
+          maximum: 86400
+        flap_digest_interval_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+        storm_threshold:
+          type: integer
+          format: int32
+          minimum: 2
+          maximum: 10000
+        storm_window_s:
+          type: integer
+          format: int32
+          minimum: 10
+          maximum: 3600
+        storm_cooldown_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+        raw_retention_days:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 365
+        event_retention_months:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 120
+        unacked_reminder_after_s:
+          type: integer
+          format: int32
+          minimum: 60
+          maximum: 86400
+          description: |
+            The org default a notification policy inherits when it names no delay of its own. To remove
+            the default, name this key in `reset` rather than sending `0` — `0` is out of range here,
+            because a reminder delay of zero seconds is not a delay.
+
+            ⛔ **One stage, forever** (§G.9.1).
+        default_verbosity:
+          $ref: '#/components/schemas/Verbosity'
+        broadcast_on_resolved:
+          type: boolean
+          description: |
+            Broadcast `all_resolved` into the channel (ADR 0020). Default off, and the **only**
+            configurable broadcast — a broadcast cannot be un-sent.
+        reset:
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          items:
+            type: string
+            maxLength: 64
+          description: |
+            Settings keys to return to oto's shipped default. After a reset the key's origin reports
+            `default` again. An unknown key is rejected with 422, never ignored.
+          examples: [[refire_grace_s]]
+      description: |
+        A partial write. **An omitted key is left alone**; `reset` is the only way to return one to the
+        default. Every bound here is a copy of the server's own table and the server checks the *merged*
+        state regardless — this schema is a courtesy to the form, not the boundary.
 
     ApiTokenListResponse:
       type: object

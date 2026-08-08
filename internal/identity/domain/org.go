@@ -13,10 +13,18 @@ import (
 // Org is the tenant boundary. Every row in oto belongs to exactly one, directly
 // or transitively (SPEC §D.1).
 type Org struct {
-	ID        uuid.UUID
-	Slug      string
-	Name      string
-	Settings  Settings
+	ID   uuid.UUID
+	Slug string
+	Name string
+	// Settings are the EFFECTIVE values: this org's overrides folded onto oto's
+	// shipped defaults and clamped to their bounds. Everything on the hot path
+	// reads these and never reasons about where a number came from.
+	Settings Settings
+	// Overrides are what this org actually WROTE, and nothing else. It is what
+	// lets the API say "600, and you chose it" rather than just "600" — see
+	// SettingsPatch. A caller that renders Settings without consulting this is
+	// showing a number nobody can act on.
+	Overrides SettingsPatch
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt *time.Time
@@ -63,6 +71,27 @@ type Settings struct {
 	RawRetention time.Duration
 	// EventRetention is how long `alert_events` are kept.
 	EventRetention time.Duration
+
+	// UnackedReminderAfter is the org DEFAULT a notification policy inherits when
+	// its own `unacked_reminder_after_s` is NULL. Zero means the org sets no
+	// default, which is what shipped: a policy with no delay of its own has no
+	// reminder.
+	//
+	// ⛔ ONE STAGE, FOREVER (§G.9.1). A scalar, never an array, never a ladder,
+	// and never a target other than the policy's own channel_ids.
+	UnackedReminderAfter time.Duration
+
+	// DefaultVerbosity is the fallback for a Channel that names no verbosity. It
+	// is a `channels_verbosity_ck` value, held as a string because `identity` owns
+	// the tenant and must not depend on `notification`.
+	DefaultVerbosity string
+
+	// BroadcastOnResolved is ADR 0020's ONE configurable broadcast. Default off:
+	// closure is welcome, and on a busy channel it doubles traffic for the least
+	// urgent fact oto has — nobody was ever woken because a resolve arrived
+	// quietly. Every other broadcasting transition is fixed by policy, because a
+	// broadcast cannot be un-sent and the set is a product decision, not a dial.
+	BroadcastOnResolved bool
 }
 
 // The defaults of SPEC §D.1, restated as the values a brand-new org boots with.
@@ -80,6 +109,13 @@ const (
 	DefaultStormCooldown      = 600 * time.Second
 	DefaultRawRetention       = 14 * 24 * time.Hour
 	DefaultEventRetention     = 13 * 30 * 24 * time.Hour
+	// DefaultUnackedReminderAfter is ZERO, and the zero is the decision: oto ships
+	// no org-level reminder default, so a notification policy that names no delay
+	// still produces no reminder. Anything else would turn reminders on for every
+	// install that merely upgrades.
+	DefaultUnackedReminderAfter = 0 * time.Second
+	// DefaultBroadcastOnResolved is off (ADR 0020).
+	DefaultBroadcastOnResolved = false
 )
 
 // DefaultSettings is the tuning an org has until somebody changes it.
@@ -100,6 +136,10 @@ func DefaultSettings() Settings {
 		StormCooldown:      DefaultStormCooldown,
 		RawRetention:       DefaultRawRetention,
 		EventRetention:     DefaultEventRetention,
+
+		UnackedReminderAfter: DefaultUnackedReminderAfter,
+		DefaultVerbosity:     DefaultChannelVerbosity,
+		BroadcastOnResolved:  DefaultBroadcastOnResolved,
 	}
 }
 
@@ -144,6 +184,13 @@ func (s Settings) Normalise() Settings {
 	if s.EventRetention <= 0 {
 		s.EventRetention = d.EventRetention
 	}
+	if !channelVerbosities[s.DefaultVerbosity] {
+		s.DefaultVerbosity = d.DefaultVerbosity
+	}
+	// UnackedReminderAfter is deliberately NOT defaulted here: zero is a meaningful
+	// value for it — "this org sets no reminder default" — and rewriting it to a
+	// default would give every policy a reminder nobody asked for. Its BOUND is
+	// still enforced, on the write path and on SettingsPatch.Settings.
 	return s
 }
 

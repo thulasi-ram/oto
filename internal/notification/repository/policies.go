@@ -172,11 +172,23 @@ func (r *PolicyRepository) Get(ctx context.Context, s db.TenantScope, id uuid.UU
 	return row.toDomain()
 }
 
+// listReminderPoliciesSQL selects the policies a reminder could fire for.
+//
+// ⚠️ THE `COALESCE` IS THE ORG DEFAULT. `unacked_reminder_after_s` is NULL on a
+// policy that names no delay of its own, and a NULL used to mean "no reminder,
+// full stop". It now means "fall back to `orgs.settings.unacked_reminder_after_s`",
+// and $2 carries that value — or NULL when the org sets none, in which case the
+// COALESCE is NULL and the row is filtered out exactly as before. That is what
+// makes the org-level knob a genuine DEFAULT rather than a second, competing
+// setting: a policy that has an opinion still wins.
+//
+// ⛔ ONE STAGE, FOREVER (§G.9.1). $2 is a scalar and this is a fallback, not a
+// second threshold.
 const listReminderPoliciesSQL = `
 SELECT` + policyColumns + `
   FROM notification_policies
  WHERE org_id = $1 AND enabled AND deleted_at IS NULL
-   AND unacked_reminder_after_s IS NOT NULL
+   AND COALESCE(unacked_reminder_after_s, $2) IS NOT NULL
  ORDER BY priority ASC, created_at ASC, id ASC`
 
 // ListWithUnackedReminder returns the live policies that ask for the ONE
@@ -185,10 +197,11 @@ SELECT` + policyColumns + `
 // There is no "stage" parameter and there never will be. The reminder is
 // triggered by the SIGNAL's own unacked duration and delivered to the channels
 // the policy already routes to; it resolves nobody and pages nobody.
+// orgDefault is the org-level fallback in SECONDS, or nil when the org sets none.
 func (r *PolicyRepository) ListWithUnackedReminder(
-	ctx context.Context, s db.TenantScope,
+	ctx context.Context, s db.TenantScope, orgDefault *int,
 ) ([]domain.Policy, error) {
-	rows, err := r.db(ctx).Query(ctx, listReminderPoliciesSQL, s.OrgID())
+	rows, err := r.db(ctx).Query(ctx, listReminderPoliciesSQL, s.OrgID(), orgDefault)
 	if err != nil {
 		return nil, mapErr(err, "policy_not_found", "list reminder policies")
 	}

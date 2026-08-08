@@ -21,8 +21,14 @@ import (
 // site alone.
 
 // OrgReader reads the tenant root.
+//
+// ⚠️ UpdateSettings is the ONLY write on this port, and it writes exactly one
+// column. `orgs.slug` and `orgs.name` have no write path and are not missing one:
+// a tenant renaming itself invalidates every deep link oto has ever emitted, and
+// v1 has no RBAC to decide who may do it (R2).
 type OrgReader interface {
 	Get(ctx context.Context, s db.TenantScope) (domain.Org, error)
+	UpdateSettings(ctx context.Context, s db.TenantScope, p domain.SettingsPatch) (domain.Org, error)
 }
 
 // UserReader reads `users`.

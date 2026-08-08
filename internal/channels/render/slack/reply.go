@@ -31,6 +31,7 @@ const (
 	reasonComment         = "comment"
 	reasonUnackedReminder = "unacked_reminder"
 	reasonStorm           = "storm"
+	reasonSeverityRaised  = "severity_raised"
 
 	// System reply types. They have no Reason in the DDL because they are facts
 	// about oto's own delivery machinery, not about the signal (§H.5).
@@ -176,6 +177,20 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 		}
 		body += " — " + link(v.Links.Group, "open in oto")
 
+	case reasonSeverityRaised:
+		// ⛔ ADR 0020 RENDERING RULE 5: this reply BROADCASTS, and the in-channel
+		// reference Slack builds from it carries NEITHER THE ATTACHMENT NOR ITS
+		// BLOCKS — no colour bar, no Acknowledge button. So the severity is stated
+		// in WORDS and in an EMOJI, never left to the colour, and the call to
+		// action is "open the thread". The colour below is for the thread copy
+		// only; a reader who sees only the channel reference must lose nothing.
+		colour = CardFiring.Colour()
+		body = ":rotating_light: *Severity raised to " + escape(severityWord(v)) + "*"
+		if was := previousSeverity(v); was != "" {
+			body += " — was " + code(was)
+		}
+		body += ". " + link(v.Links.Group, "open in oto") + "."
+
 	case reasonStorm:
 		colour = CardStorm.Colour()
 		body = ":zap: *Storm damping on* — " + plural(v.StormCount, "alert", "alerts") +
@@ -298,6 +313,38 @@ func enricherLabel(name string) string {
 	return escape(strings.ReplaceAll(strings.Join(parts, " "), "_", " "))
 }
 
+// severityWord is the severity this reply is announcing, in WORDS.
+//
+// ⛔ ADR 0020 RENDERING RULE 5. The channel-visible form of a broadcast carries
+// no attachment, so it carries no colour bar: "the card went red" is a fact only
+// a thread reader gets. The word is the whole message for everybody else.
+//
+// It prefers the FOCUS — a severity rise is a fact about one Alert
+// (notifications_focus_ck) — and falls back to the group so the sentence is never
+// left with a hole in it.
+func severityWord(v *domain.NotificationView) string {
+	raw := ""
+	if v.Focus != nil {
+		raw = v.Focus.Severity
+	}
+	if raw == "" {
+		raw = v.Group.Severity
+	}
+	if raw == "" {
+		return "a higher severity"
+	}
+	return raw
+}
+
+// previousSeverity is the severity the card showed before, or "" when the view
+// does not carry one. The reply must read correctly either way.
+func previousSeverity(v *domain.NotificationView) string {
+	if v.Previous != nil {
+		return v.Previous.Severity
+	}
+	return ""
+}
+
 func commentPrefix(who string) string {
 	if who == "" {
 		return ""
@@ -396,12 +443,27 @@ func nameList(alerts []domain.AlertView, o domain.RenderOptions) string {
 
 // replyText is the reply's own complete sentence. A thread reply's push
 // notification is read exactly as often as the root's, and by the same people.
+//
+// ⛔⛔ ADR 0020 RENDERING RULE 4 MAKES THIS CORRECTNESS, NOT STYLE. When a reply
+// broadcasts, Slack delivers a `thread_broadcast` reference into the channel, and
+// that reference "cannot contain attachments or message buttons". SPEC §H.1 S3
+// puts ALL of oto's blocks inside one attachment — so for a broadcasting reply
+// THIS STRING IS VERY NEARLY EVERYTHING A CHANNEL READER SEES. No colour bar, no
+// Acknowledge button, no blocks. A broadcast whose text reads "Re-fired" is a
+// broadcast that communicates nothing.
 func replyText(v *domain.NotificationView) string {
 	title := v.Group.Title
 	if title == "" {
 		title = v.Group.GroupLabels["alertname"]
 	}
 	lead := replyLead(v.Reason)
+	if v.Reason == reasonSeverityRaised {
+		// The severity goes in the lead itself, because "Severity raised:" without
+		// the new value is the one thing a reader of the channel copy cannot look
+		// up without opening the thread — which is what this sentence is trying to
+		// make them decide to do.
+		lead = SeverityEmoji(severityWord(v)) + " Severity raised to " + severityWord(v) + ":"
+	}
 	out := lead + " " + title
 	if v.Group.ClusterKey != "" {
 		out += " on " + v.Group.ClusterKey
@@ -440,6 +502,10 @@ func replyLead(reason string) string {
 		return ":rotating_light: Still unacknowledged:"
 	case reasonStorm:
 		return ":zap: Storm damping on for:"
+	case reasonSeverityRaised:
+		// Overridden by replyText, which has the view and can name the severity.
+		// This is the fallback for a caller that has only the Reason.
+		return ":rotating_light: Severity raised for:"
 	case reasonDegraded:
 		return ":warning: oto could not update the thread for:"
 	case reasonContinued:

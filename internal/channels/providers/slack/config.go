@@ -49,7 +49,17 @@ const (
 	// TransportSocketMode is the default for self-hosted: no public ingress and
 	// no signature verification, because the socket is pre-authenticated (§H.8).
 	TransportSocketMode = "socket_mode"
-	// TransportHTTP is required for a Slack Marketplace listing.
+	// TransportHTTP is for the install that ALREADY has public ingress and would
+	// rather oto used it than hold a second outbound WebSocket open.
+	//
+	// ⚠️ It is NOT here for a Slack Marketplace listing. ADR 0018 forecloses the
+	// Marketplace outright — a listing needs a stable client ID, client secret and
+	// redirect URL, all of which are properties of an operator oto does not have,
+	// and a listing would additionally FORBID Socket Mode, which is the transport
+	// the majority of self-hosted installs actually want. The real justification is
+	// the mundane one: an install with an ingress controller in front of oto can
+	// point Slack's interactivity request URL at it and be done, with no extra
+	// egress path to approve.
 	TransportHTTP = "http"
 )
 

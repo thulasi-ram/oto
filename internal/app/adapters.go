@@ -22,6 +22,7 @@ import (
 	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -648,6 +649,45 @@ func (o orgSettings) Storm(ctx context.Context, s db.TenantScope) (groupingdomai
 		Cooldown:   cfg.StormCooldown,
 		CloseDelay: cfg.GroupCloseDelay,
 	}.Normalise(), nil
+}
+
+// NotificationDefaults serves `notification/service.SettingsReader` from
+// `orgs.settings`: which transitions surface in the channel (ADR 0020), the
+// fallback verbosity for a Channel that names none, and the fallback unacked
+// reminder delay for a policy that names none.
+//
+// ⛔ IT NEVER PROPAGATES A FAILURE, for the same reason as the two ports above:
+// a settings lookup must not be able to stop a notification. An unreadable
+// settings row yields oto's shipped defaults, which are the quiet-but-honest
+// ones.
+//
+// ⭐ THERE IS NO CACHE HERE, DELIBERATELY. Every evaluation reads the row, so a
+// settings change binds on the very next evaluation in every pod — no restart, no
+// invalidation message, and no window in which two pods disagree about how loud
+// oto should be. If a cache is ever added it MUST carry a bounded TTL: the
+// failure it would introduce is the silent one, where an operator raises
+// `storm_threshold` mid-incident, sees nothing change, and cannot tell a wrong
+// setting from a stale one.
+func (o orgSettings) NotificationDefaults(
+	ctx context.Context, s db.TenantScope,
+) (notifservice.OrgDefaults, error) {
+	def := notifservice.OrgDefaults{
+		Broadcast: notifdomain.DefaultBroadcastPolicy(),
+		Verbosity: notifdomain.VerbosityStatusChanges,
+	}
+	if o.svc == nil {
+		return def, nil
+	}
+	org, err := o.svc.GetOrg(ctx, s)
+	if err != nil {
+		return def, nil
+	}
+	cfg := org.Settings.Normalise()
+	return notifservice.OrgDefaults{
+		Broadcast:            notifdomain.BroadcastPolicy{Resolved: cfg.BroadcastOnResolved},
+		Verbosity:            notifdomain.Verbosity(cfg.DefaultVerbosity),
+		UnackedReminderAfter: cfg.UnackedReminderAfter,
+	}, nil
 }
 
 // ---------------------------------------------------------------- late binding

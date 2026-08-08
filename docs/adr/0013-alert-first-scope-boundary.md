@@ -61,7 +61,7 @@ Consequential rulings (delta list in SCOPE-BOUNDARY §5, applied by another agen
   banned words.
 - **`mention_on_escalation` → `mention_on_reminder`**, restricted to usergroups and `!here`/`!channel`.
   Individual `<@U…>` mentions are dropped: a static list of individuals oto pings is a rota with the
-  schedule hard-coded.
+  schedule hard-coded. **⚠️ SUPERSEDED — see the amendment below. Individual mentions ARE permitted.**
 - **Module map:** `incidents` and `oncall` move from DEFERRED-POST-V1 to **PERMANENTLY OUT**; the
   legitimate part of `incidents` is renamed **`correlation`** (machine-derived groupings over signals,
   no human create endpoint, no human-set state). `analytics` loses MTTA from its charter entirely.
@@ -111,6 +111,56 @@ tells the thing that pages.**
   quiet button a user has is muting the Slack channel — which also hides the real incident, the failure
   mode the memo calls fatal. A product whose ethic is "default to quiet" that ships no quiet button is
   inconsistent with itself. SCOPE-BOUNDARY §8 argues it belongs in **v1**.
+
+## Amendment — 2026-08-08: individual `@`-mentions on `mention_on_reminder` are permitted
+
+**This amends the §5 delta ruling above. The product owner overruled it. The code is correct as
+shipped; this section exists because the ADR was the stale half of the disagreement.**
+
+`internal/channels/providers/slack/schema.json` permits `<@U…>` / `<@W…>` alongside `<!subteam^S…>`,
+`!here` and `!channel`, capped at `maxItems: 10`. **Do not "fix" the schema or the pattern to match the
+original ruling.** They are the decision.
+
+**The reasoning.** The original ruling banned individual mentions because *"a static list of individuals
+oto pings is a rota with the schedule hard-coded"*. The analogy is seductive and it is wrong on the
+mechanism. What makes a rota a rota is that it is **time-aware and it moves** — the whole product is the
+schedule, the handover and the "who is on now" query. A fixed list of two names in a channel's config is
+none of those things. It is the same act as typing `@alice` into the channel by hand, which is what the
+person configuring oto will do anyway.
+
+And that is the operative point: **refusing `@alice` is paternalism users route around.** The routes are
+all worse than the thing being refused — a Slack workflow that reposts oto's messages with a mention, a
+usergroup created with one member in it and never updated, or a channel muted entirely because the one
+signal that mattered did not reach anyone. Each of those is *less* visible to oto, *less* legible to the
+next engineer, and *more* likely to rot than a two-name list in a config field oto validates.
+
+Meanwhile the door the boundary actually guards stays shut. FR-1 is not "oto never names a person"; it
+is "oto stores no present-tense fact *about* a person". `mention_on_reminder` is a property of the
+**channel**, not of any human in it: nobody is assigned, nobody is on call, no state is written to a
+person, and no row anywhere records that Alice is responsible for anything.
+
+**The anti-rota clause, which is the binding part of this amendment.** The permission is granted with
+these limits, and they are what keep it from becoming the thing it was feared to be:
+
+1. **Capped at a small N.** `maxItems: 10` today. A list that wants to be long is a list that wants to
+   be a rota; the cap is the tell, and it fires before the concept arrives.
+2. **Never time-aware.** No `time_of_day`, no `days_of_week`, no `timezone`, no second list, no
+   alternation, no "primary/secondary". These are the actual rota primitives and every one of them
+   remains banned.
+3. **Fixed, not derived.** The list is written by a human into a channel's config. It must never be
+   computed from a schedule, an external system, or oto's own data — the moment oto *decides* who to
+   mention, oto is doing on-call.
+4. **A mention is text, not a route.** It renders into one message on one already-routed reminder. It
+   creates no delivery, no retry, no acknowledgement obligation, no second stage — §G.9.1's one stage,
+   forever, is untouched.
+5. **Nothing is stored about the mentioned person.** No `mentioned_at`, no ack attribution derived from
+   the mention, no per-person counter anywhere. R8 is unchanged and unchangeable.
+
+**What did not change.** `escalation` is still a banned word. `unacked_reminder_after_s` is still a
+scalar and still one stage. `notification_policies.channel_ids` still references `channels` and nothing
+else. Multi-stage escalation is still refused, and this amendment is the argument for why it can be:
+letting a team mention the two people who actually care removes the pressure that would otherwise be
+spent arguing for a ladder.
 
 ## Alternatives rejected
 

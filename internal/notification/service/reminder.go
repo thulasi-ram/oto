@@ -36,6 +36,7 @@ type ReminderService struct {
 	policies  PolicyStore
 	reminders ReminderStore
 	notifier  *NotificationService
+	settings  SettingsReader
 	batch     int
 	clk       clock.Clock
 	log       *slog.Logger
@@ -46,6 +47,10 @@ type ReminderConfig struct {
 	Policies  PolicyStore
 	Reminders ReminderStore
 	Notifier  *NotificationService
+	// Settings reads the org's default reminder delay. OPTIONAL: nil means only a
+	// policy's own `unacked_reminder_after_s` can produce a reminder, which is
+	// exactly the behaviour that shipped.
+	Settings SettingsReader
 	// Batch caps how many groups one tick considers per org. Zero means 200.
 	Batch  int
 	Clock  clock.Clock
@@ -60,7 +65,7 @@ func NewReminderService(cfg ReminderConfig) (*ReminderService, error) {
 	}
 	s := &ReminderService{
 		policies: cfg.Policies, reminders: cfg.Reminders, notifier: cfg.Notifier,
-		batch: cfg.Batch, clk: cfg.Clock, log: cfg.Logger,
+		settings: cfg.Settings, batch: cfg.Batch, clk: cfg.Clock, log: cfg.Logger,
 	}
 	if s.batch <= 0 {
 		s.batch = 200
@@ -105,12 +110,28 @@ func (s *ReminderService) Sweep(ctx context.Context) (int, error) {
 
 // SweepOrg reminds one tenant's channels about signals nobody has acknowledged.
 func (s *ReminderService) SweepOrg(ctx context.Context, scope db.TenantScope) (int, error) {
-	policies, err := s.policies.ListWithUnackedReminder(ctx, scope)
+	// The org's fallback delay, for policies that name none of their own. It is
+	// read fresh on every tick — sixty seconds is the longest a change to it can
+	// take to bind, and there is no cache in front of it to make that longer.
+	orgDefault := s.orgReminderDefault(ctx, scope)
+
+	policies, err := s.policies.ListWithUnackedReminder(ctx, scope, orgDefault)
 	if err != nil {
 		return 0, err
 	}
 	if len(policies) == 0 {
 		return 0, nil
+	}
+	if orgDefault != nil {
+		// The SQL admitted these rows on the strength of the org default; give
+		// them that value, so the per-policy comparison below is asking about the
+		// delay that is actually in force. A policy with its own delay keeps it.
+		fallback := time.Duration(*orgDefault) * time.Second
+		for i := range policies {
+			if policies[i].UnackedReminderAfter <= 0 {
+				policies[i].UnackedReminderAfter = fallback
+			}
+		}
 	}
 
 	// One query serves every policy: the candidate set is "unacknowledged for
@@ -153,6 +174,31 @@ func (s *ReminderService) SweepOrg(ctx context.Context, scope db.TenantScope) (i
 		}
 	}
 	return sent, nil
+}
+
+// orgReminderDefault reads the org's fallback reminder delay in SECONDS, or nil
+// when the org sets none.
+//
+// ⛔ IT NEVER FAILS THE SWEEP. A settings lookup that could stop a reminder would
+// turn an unreadable settings row into silence on an unacknowledged critical,
+// which is the one outcome this service exists to prevent. On any error the
+// answer is nil — the pre-existing behaviour, where only a policy's own delay
+// produces a reminder.
+func (s *ReminderService) orgReminderDefault(ctx context.Context, scope db.TenantScope) *int {
+	if s.settings == nil {
+		return nil
+	}
+	def, err := s.settings.NotificationDefaults(ctx, scope)
+	if err != nil {
+		s.log.WarnContext(ctx, "notification: could not read the org reminder default",
+			"org_id", scope.OrgID(), "error", err.Error())
+		return nil
+	}
+	if def.UnackedReminderAfter <= 0 {
+		return nil
+	}
+	secs := int(def.UnackedReminderAfter / time.Second)
+	return &secs
 }
 
 // shortestThreshold is the earliest any policy would want to be reminded.

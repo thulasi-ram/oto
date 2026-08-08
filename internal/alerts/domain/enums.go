@@ -209,6 +209,44 @@ func (s Severity) String() string { return s.s }
 // IsZero reports whether the severity is unset.
 func (s Severity) IsZero() bool { return s.s == "" }
 
+// Rank orders the severity classes, and reports whether the value is ordered at
+// all.
+//
+// ⭐ `unknown` IS NOT THE BOTTOM OF THE SCALE — it is OFF the scale, and the
+// second result is how that is said. "oto has never seen this label" is not a
+// severity below `info`; it is the absence of a reading. Ranking it as zero would
+// make every rule that gains a `severity:` label look like an escalating alert,
+// which is the noise ADR 0020 exists to avoid buying.
+//
+// `page` and `critical` share a rank because §H.2 renders them identically: they
+// are two spellings of the same severity, and a rule that switches spelling has
+// not escalated.
+func (s Severity) Rank() (int, bool) {
+	switch s {
+	case SeverityCritical, SeverityPage:
+		return 3, true
+	case SeverityWarning:
+		return 2, true
+	case SeverityInfo, SeverityNone:
+		return 1, true
+	default:
+		return 0, false
+	}
+}
+
+// Raised reports whether `to` is a genuine increase over `from` (ADR 0020's
+// first broadcasting transition).
+//
+// It is FALSE whenever either side is unordered, which is the conservative
+// direction and the deliberate one: a broadcast cannot be un-sent, so the bar is
+// "an on-call engineer would be angry to have missed this", and nobody is angry
+// to have missed a label being added.
+func Raised(from, to Severity) bool {
+	a, aok := from.Rank()
+	b, bok := to.Rank()
+	return aok && bok && b > a
+}
+
 // SuppressionReason says why an AlertOccurrence is suppressed. It exists ONLY
 // while the occurrence is suppressed, and only the reconciler can set it (C1).
 type SuppressionReason struct{ s string }

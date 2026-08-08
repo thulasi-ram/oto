@@ -73,6 +73,15 @@ type OrgSettingsDTO struct {
 	StormCooldownS      int `json:"storm_cooldown_s"`
 	RawRetentionDays    int `json:"raw_retention_days"`
 	EventRetentionMonth int `json:"event_retention_months"`
+
+	// UnackedReminderAfterS is the org default a notification policy inherits when
+	// it names no delay. ZERO MEANS "no org default", which is what shipped — not
+	// "immediately". ⛔ ONE STAGE, FOREVER (§G.9.1).
+	UnackedReminderAfterS int `json:"unacked_reminder_after_s"`
+	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
+	DefaultVerbosity string `json:"default_verbosity"`
+	// BroadcastOnResolved is ADR 0020's one configurable broadcast, default off.
+	BroadcastOnResolved bool `json:"broadcast_on_resolved"`
 }
 
 // OrgDTO is the tenant boundary.
