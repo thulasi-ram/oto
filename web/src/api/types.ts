@@ -1,7 +1,7 @@
 /**
  * Ergonomic aliases over the generated contract types.
  *
- * `schema.d.ts` is produced by `openapi-typescript` from `docs/api/openapi.yaml`
+ * `schema.d.ts` is produced by `openapi-typescript` from `api/openapi/openapi.yaml`
  * and is CHECKED IN (SPEC §L.8.1 gate G3): `npm run generate` regenerates it and
  * CI asserts no diff. Nothing in this file may add a field the contract does not
  * have — if the UI needs something that is not here, the answer is an amendment

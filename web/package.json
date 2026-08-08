@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "generate": "openapi-typescript ../api/openapi/openapi.yaml -o src/api/generated/schema.d.ts",
+    "generate:check": "openapi-typescript ../api/openapi/openapi.yaml -o node_modules/.cache/oto-schema.d.ts && diff -u src/api/generated/schema.d.ts node_modules/.cache/oto-schema.d.ts",
+    "verify": "npm run generate:check && tsc --noEmit && vite build"
   },
   "dependencies": {
     "@solidjs/router": "^0.15.3",
