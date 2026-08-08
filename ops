@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210106,"nonce":"Y6eMq5KA9AiDZuvQzTBQHROQQWU=","title":"The UI has never run against the real backend, and live updates have never worked end to end","was":"**What is wrong.** The SolidJS app in `web/` has only ever been driven against a"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210106,"nonce":"wELWBMOaM+4iMDpaCbUrHgYyEgo=","added":["critical","ui"],"removed":null}]}
