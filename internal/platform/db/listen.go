@@ -82,6 +82,12 @@ func NewListener(pool *pgxpool.Pool, channel string, opts ListenerOptions) *List
 	return &Listener{pool: pool, channel: channel, opts: opts}
 }
 
+// healthySession is how long a listen session must survive before we treat the
+// connection as having genuinely worked and forget the accumulated backoff.
+// Comfortably longer than MaxBackoff, so a flapping connection cannot reset
+// itself by reconnecting briefly between failures.
+const healthySession = 60 * time.Second
+
 // Run listens until ctx is cancelled, invoking fn for every notification.
 //
 // fn runs on the listener goroutine and MUST NOT block: a slow handler stops the
@@ -100,7 +106,18 @@ func (l *Listener) Run(ctx context.Context, fn func(ctx context.Context, n Notif
 			return nil
 		}
 
+		started := time.Now()
 		err := l.session(ctx, fn)
+
+		// Reset the backoff after a session that actually worked. Without this
+		// the delay only ever climbs: a handful of unrelated blips over a long
+		// uptime pin the process at MaxBackoff for the rest of its life, and
+		// every subsequent reconnect — and the catch-up read that follows it —
+		// is delayed by the full 30s even though the database is healthy.
+		if time.Since(started) >= healthySession {
+			backoff = l.opts.MinBackoff
+		}
+
 		switch {
 		case ctx.Err() != nil:
 			return nil
