@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210109,"nonce":"V/Ae292XtIGroLRP3vZGaMA+eG0=","title":"Drift gates G1, G2 and G4 are specified as \"all in CI\" and do not exist","was":"**What is wrong.** SPEC §L.8.1 specifies four drift gates, \"all in CI\". Three do"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210109,"nonce":"2S90PjS5pgBZvSC9Whh67jJ8WYw=","added":["medium","testing"],"removed":null}]}
