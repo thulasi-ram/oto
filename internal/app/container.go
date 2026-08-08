@@ -415,7 +415,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Pools:    o.Pools,
 		Enqueuer: c.enqueuer,
 		Config:   o.Config.Ingest,
-		Alerts:   alertObserver{svc: c.Alerts},
+		Alerts:   alertObserver{svc: c.Alerts, grouping: c.Grouping, log: logger},
 		Clock:    clk,
 		Logger:   logger,
 		Registry: reg,

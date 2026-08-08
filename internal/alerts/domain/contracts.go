@@ -75,6 +75,38 @@ type Observation struct {
 	// SkewMS is ObservedAt - SourceStartsAt. Measured and surfaced, never a
 	// reason to reject an observation (C12).
 	SkewMS int64
+
+	// ---------------------------------------------------- the grouping inputs
+	//
+	// ⭐ The four fields below are CARRIED, NEVER READ, by this module. They are
+	// the §C.4 inputs the INGEST ORCHESTRATOR needs to resolve the AlertGroup
+	// generation at §G.4 step 4 — between the alert upsert and the state machine
+	// — and they travel on the Observation because the Observation is the only
+	// thing that crosses from `ingestion` to the orchestrator.
+	//
+	// ⛔ `alerts` must not import `grouping` to record a signal: an observation
+	// whose group could not be resolved is still recorded in full. The RESOLVED
+	// group comes back in through ObserveOptions.GroupID, which is why that field
+	// exists at all.
+
+	// Receiver is the Alertmanager receiver this webhook was delivered to. It is
+	// "" for a reconciler-sourced observation, which has no receiver (§C.4).
+	Receiver string
+	// GroupLabels are the labels Alertmanager grouped by — the second half of the
+	// durable §C.4 key. Empty is legal and hashes as the empty object.
+	GroupLabels map[string]string
+	// SourceGroupKey is Alertmanager's OWN `groupKey`, carried verbatim so it can
+	// be stored verbatim for observability.
+	//
+	// ⛔ IT IS NEVER PARSED, and it is never the group's identity. It embeds the
+	// route path, it is unescaped and unbounded, and it changes on every
+	// `alertmanager.yml` reload — a group keyed by it would be reborn, with a new
+	// Slack thread, every time an operator edited a route (§C.4).
+	SourceGroupKey string
+	// NotificationReason is Alertmanager's `notification_reason` for this
+	// delivery (C5), recorded on the generation and feeding the §H.6 table. Empty
+	// on Alertmanager older than 0.32.0.
+	NotificationReason string
 }
 
 // SuppressedBy mirrors Alertmanager's three suppression witnesses, as stored in

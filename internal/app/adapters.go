@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -685,31 +688,179 @@ func snapshotSource(repo *notifrepo.SnapshotRepository) notifservice.SnapshotSou
 // ---------------------------------------------------------------- ingestion
 
 // alertObserver is `ingestion/service.AlertObserver` — THE ONLY WRITE PATH INTO
-// `alerts` (§G.4, C18) — over `alerts/service.ObserveBatch`.
+// `alerts` (§G.4, C18) — and it is THE INGEST ORCHESTRATOR: the one place that
+// may know both `alerts` and `grouping`.
 //
-// It exists only because the two signatures differ by an options argument and a
-// result shape: ingestion counts what was applied and inspects nothing else, by
-// contract. The narrowness is deliberate on both sides.
+// ⭐ IT RESOLVES THE GROUP. §G.4 step 4 sits between the alert upsert and the
+// state machine, and it belongs here rather than inside `alerts` because a module
+// that records a signal must not depend on `grouping` to do it (depguard enforces
+// exactly that). The Observation carries the §C.4 inputs; this resolves them into
+// a generation and hands the id back in through `ObserveOptions.GroupID`.
 //
-// ⚠ GROUPING IS NOT RESOLVED HERE, AND IT CANNOT BE YET.
-// `ObserveOptions.GroupID` names the AlertGroup generation an observation joins,
-// and the §C.4 key needs the Alertmanager RECEIVER and the GROUP LABELS —
-// neither of which `alerts/domain.Observation` carries. Until that port widens,
-// every observation lands with no group, which means `notifications.group_id`
-// can never be filled and `notify.evaluate` is never enqueued. That is the one
-// gap between this wiring and an end-to-end alert, and it is left visible rather
-// than papered over with a fabricated group: a group minted from a guess would
-// own a Slack thread, and the wrong thread is worse than none.
+// ⭐ IT IS ALL ONE TRANSACTION. `ingestion` has already opened one on the ingest
+// pool before calling, and `db.Tx` nests, so the group, the occurrence, its
+// membership, the events and the `notify.evaluate` job commit together or not at
+// all. An alert whose group rolled back would own a Slack thread nobody could
+// find.
 type alertObserver struct {
-	svc *alertsservice.Service
+	svc      *alertsservice.Service
+	grouping *groupingservice.Service
+	log      *slog.Logger
 }
 
 func (o alertObserver) ObserveBatch(
 	ctx context.Context, s db.TenantScope, obs []alertsdomain.Observation,
 ) (int, error) {
-	res, err := o.svc.ObserveBatch(ctx, s, obs, alertsservice.ObserveOptions{})
-	if err != nil {
-		return 0, err
+	applied := 0
+	// One webhook carries exactly one notification group, so this is one partition
+	// and one ObserveBatch in the overwhelming case. It is a partition rather than
+	// an assumption because the reconciler feeds the same port with observations
+	// from many groups at once.
+	for _, part := range partitionByGroup(obs) {
+		groupID, err := o.resolveGroup(ctx, s, part[0])
+		if err != nil {
+			return applied, err
+		}
+		res, err := o.svc.ObserveBatch(ctx, s, part, alertsservice.ObserveOptions{GroupID: groupID})
+		if err != nil {
+			return applied, err
+		}
+		applied += len(res.Outcomes)
+		if err := o.joinMembers(ctx, s, groupID, part[0], res.Outcomes); err != nil {
+			return applied, err
+		}
 	}
-	return len(res.Outcomes), nil
+	return applied, nil
+}
+
+// resolveGroup opens or rejoins the §C.4 generation these observations belong to.
+//
+// ⛔ A VALIDATION failure DEGRADES rather than fails. Group labels that will never
+// pass their bounds would otherwise cost the whole batch on every one of its
+// retries, and losing the alert is far worse than recording it groupless: the
+// signal is kept in full, and only the notification intent is missed. Anything
+// else — an unreachable database, a conflict that could not be re-read — is
+// propagated, because a retry can fix it.
+func (o alertObserver) resolveGroup(
+	ctx context.Context, s db.TenantScope, sample alertsdomain.Observation,
+) (*uuid.UUID, error) {
+	if o.grouping == nil {
+		return nil, nil //nolint:nilnil // no grouping wired: record the signal, skip the intent.
+	}
+	g, err := o.grouping.Resolve(ctx, s, groupingservice.ResolveRequest{
+		SourceID:  sample.SourceID,
+		ClusterID: sample.ClusterID,
+		Receiver:  sample.Receiver,
+		// ⛔ SourceGroupKey is stored verbatim and NEVER parsed (§C.4).
+		GroupLabels:        sample.GroupLabels,
+		SourceGroupKey:     sample.SourceGroupKey,
+		NotificationReason: sample.NotificationReason,
+		At:                 sample.ObservedAt,
+	})
+	if err != nil {
+		if errs.IsKind(err, errs.KindValidation) {
+			o.log.WarnContext(ctx, "ingest: the group key could not be computed; recording the alert without a group",
+				"source_id", sample.SourceID, "receiver", sample.Receiver, "error", err)
+			return nil, nil //nolint:nilnil // degraded on purpose: see the doc comment.
+		}
+		return nil, err
+	}
+	id := g.ID()
+	return &id, nil
+}
+
+// joinMembers records the group membership of every episode this batch OPENED.
+//
+// Membership is what makes the generation's rollup — its counts, its severity,
+// its `state_version` — mean anything, and a card rendered over a group with no
+// members says "0 alerts" about an incident. Only a NEWLY OPENED occurrence
+// joins: a repeat observation of an episode that is already a member adds no
+// membership, and re-deriving the rollup for it once per scrape would be work
+// nobody reads.
+//
+// A batch that changed states without opening anything still re-derives the
+// rollup once, because a resolve moves a member out of `firing` and the group's
+// own state is a projection of exactly that.
+func (o alertObserver) joinMembers(
+	ctx context.Context, s db.TenantScope, groupID *uuid.UUID,
+	sample alertsdomain.Observation, outcomes []alertsservice.ObserveOutcome,
+) error {
+	if o.grouping == nil || groupID == nil {
+		return nil
+	}
+	at := sample.ObservedAt
+
+	joined := 0
+	for _, out := range outcomes {
+		if !out.OccurrenceOpened || out.OccurrenceID == uuid.Nil {
+			continue
+		}
+		if _, err := o.grouping.Join(ctx, s, *groupID, out.AlertID, out.OccurrenceID, at); err != nil {
+			return err
+		}
+		joined++
+	}
+	if joined > 0 {
+		return nil
+	}
+	for _, out := range outcomes {
+		if out.OccurrenceID != uuid.Nil && out.Transition != "" {
+			_, err := o.grouping.Recompute(ctx, s, *groupID, at)
+			return err
+		}
+	}
+	return nil
+}
+
+// partitionByGroup splits a batch into runs that share one §C.4 group identity,
+// preserving first-seen order so two runs of the same batch resolve in the same
+// order.
+//
+// The key is built from the same inputs the §C.4 hash is built from — source,
+// receiver and the group labels — rather than from the hash itself, so that a
+// label set which will not pass its bounds still partitions cleanly and fails
+// once, in Resolve, where the failure can be described.
+func partitionByGroup(obs []alertsdomain.Observation) [][]alertsdomain.Observation {
+	if len(obs) <= 1 {
+		if len(obs) == 0 {
+			return nil
+		}
+		return [][]alertsdomain.Observation{obs}
+	}
+
+	index := map[string]int{}
+	var parts [][]alertsdomain.Observation
+
+	for _, o := range obs {
+		k := groupingKey(o)
+		at, ok := index[k]
+		if !ok {
+			index[k] = len(parts)
+			parts = append(parts, []alertsdomain.Observation{o})
+			continue
+		}
+		parts[at] = append(parts[at], o)
+	}
+	return parts
+}
+
+// groupingKey renders the §C.4 inputs of one Observation as a comparable string.
+func groupingKey(o alertsdomain.Observation) string {
+	names := make([]string, 0, len(o.GroupLabels))
+	for name := range o.GroupLabels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString(o.SourceID.String())
+	b.WriteByte(0)
+	b.WriteString(o.Receiver)
+	for _, name := range names {
+		b.WriteByte(0)
+		b.WriteString(name)
+		b.WriteByte(0)
+		b.WriteString(o.GroupLabels[name])
+	}
+	return b.String()
 }

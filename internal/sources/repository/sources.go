@@ -259,6 +259,30 @@ func (r *SourceRepository) ListDue(ctx context.Context, s db.TenantScope, limit 
 	return out, nil
 }
 
+const resolveSourceOrgSQL = `SELECT org_id FROM alert_sources WHERE id = $1`
+
+// ResolveOrg returns the org that owns a source.
+//
+// ⚠️ THIS IS THE ONE METHOD IN THIS FILE WITHOUT A TenantScope, and it is the
+// same exception `ingestion/repository.BatchRepository.ResolveOrg` documents: the
+// `source.reconcile` and `silences.sync` payloads name a source id and no org
+// (§G.3), because a source id is globally unique and an org id in a payload is
+// one more thing that can go stale. The org therefore has to be DISCOVERED before
+// a scope can exist.
+//
+// It reads ONE column of ONE row addressed by its primary key and returns nothing
+// else. Every call the worker makes afterwards is scoped by what it returns.
+func (r *SourceRepository) ResolveOrg(ctx context.Context, sourceID uuid.UUID) (uuid.UUID, error) {
+	var orgID uuid.UUID
+	if err := r.db(ctx).QueryRow(ctx, resolveSourceOrgSQL, sourceID).Scan(&orgID); err != nil {
+		if isNoRows(err) {
+			return uuid.Nil, errs.NotFound("sources_not_found", "no such source")
+		}
+		return uuid.Nil, mapErr(err, "sources_not_found", "resolve the source's org")
+	}
+	return orgID, nil
+}
+
 // ------------------------------------------------------------------ writes
 
 const insertSourceSQL = `

@@ -12,6 +12,28 @@ import (
 	"github.com/thulasiram/oto/internal/platform/id"
 )
 
+// Sealer seals plaintext credential values for storage.
+//
+// ⭐ It is declared HERE, BY THE CONSUMER, and there is no implementation of it in
+// this module. `internal/platform/secrets.Keyring` is the one keyring in the
+// process (SPEC §D.8) and `internal/app` injects it; a self-contained copy used to
+// live in `seal.go` while `platform/secrets` was empty, and deleting that copy cost
+// nothing precisely because everything here depends on this interface and not on a
+// type.
+type Sealer interface {
+	// Seal returns the ciphertext and the keyring generation that produced it.
+	Seal(ctx context.Context, kind string, values map[string]string) ([]byte, int, error)
+}
+
+// Unsealer recovers plaintext credential values.
+//
+// The method set is byte-identical to `notification/service.CredentialUnsealer`
+// and `sources/repository.Unsealer` so that one concrete satisfies all three
+// without an adapter.
+type Unsealer interface {
+	Unseal(ctx context.Context, kind string, sealed []byte, keyVersion int) (map[string]string, error)
+}
+
 // CredentialKinds is the closed set of `channel_credentials.kind`
 // (channel_credentials_kind_ck). It is exported because the API layer validates
 // against it and a second copy would drift.

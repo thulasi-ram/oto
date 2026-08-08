@@ -200,6 +200,19 @@ func (s *Service) normalise(
 
 			ObservedAt: now,
 			SkewMS:     skew.Milliseconds(),
+
+			// The §C.4 grouping inputs, carried unchanged from the envelope so the
+			// orchestrator can resolve the AlertGroup generation (§G.4 step 4).
+			// Ingestion does not resolve it and must not learn how; it only refuses
+			// to throw away the four facts that make resolution possible.
+			//
+			// ⛔ SourceGroupKey is Alertmanager's raw `groupKey`. It is carried so it
+			// can be STORED VERBATIM for observability, and it is never parsed: it
+			// embeds the route path and does not survive an alertmanager.yml reload.
+			Receiver:           env.Receiver,
+			GroupLabels:        env.GroupLabels,
+			SourceGroupKey:     env.GroupKey,
+			NotificationReason: env.NotificationReason,
 		})
 	}
 

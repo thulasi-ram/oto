@@ -79,6 +79,25 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, id uuid.UUID) (
 	return s.source(ctx, scope, id)
 }
 
+// OrgForSource resolves the tenant that owns a source, for a worker whose job
+// payload names a source and no org (§G.3).
+//
+// It is the only method here that BUILDS a scope rather than being handed one,
+// and it is deliberately narrow: one id in, one scope out, and every subsequent
+// call the worker makes is bound by it.
+func (s *Service) OrgForSource(ctx context.Context, sourceID uuid.UUID) (db.TenantScope, error) {
+	orgID, err := s.repo.ResolveOrg(ctx, sourceID)
+	if err != nil {
+		return db.TenantScope{}, err
+	}
+	scope, err := db.NewTenantScope(orgID)
+	if err != nil {
+		return db.TenantScope{}, errs.Wrap(err, errs.KindInternal, CodeSourceNotFound,
+			"this source names an org that does not exist")
+	}
+	return scope, nil
+}
+
 // List returns a keyset page of sources.
 func (s *Service) List(ctx context.Context, scope db.TenantScope, f domain.SourceFilter, p db.Keyset) ([]domain.Source, db.Cursor, error) {
 	return s.repo.List(ctx, scope, f, p)

@@ -5,6 +5,8 @@ import (
 
 	"github.com/google/uuid"
 
+	alerts "github.com/thulasiram/oto/internal/alerts/domain"
+	alertsvc "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/sources/client/alertmanager"
 	"github.com/thulasiram/oto/internal/sources/client/prometheus"
@@ -42,6 +44,12 @@ type SourceRepository interface {
 	// not an event: it has no history and is the one table in the sources module
 	// that is UPDATEd rather than appended to.
 	SaveHealth(ctx context.Context, s db.TenantScope, h domain.SourceHealth) error
+
+	// ResolveOrg returns the org that owns a source. It is the ONE method here
+	// without a TenantScope, because the `source.reconcile` and `silences.sync`
+	// payloads name a source and no org, so the org must be discovered before a
+	// scope can exist. See the implementation's comment.
+	ResolveOrg(ctx context.Context, sourceID uuid.UUID) (uuid.UUID, error)
 }
 
 // CredentialStore unseals an outbound credential.
@@ -76,6 +84,53 @@ type PrometheusClient interface {
 
 	// BuildInfo reads GET /api/v1/status/buildinfo.
 	BuildInfo(ctx context.Context) (prometheus.BuildInfo, error)
+}
+
+// ---------------------------------------------------------------- reconciler
+//
+// The three ports below belong to `source.reconcile` (SPEC §G.8, ADR 0006). They
+// are declared here, by the consumer, for the same reason as everything above it:
+// the reconciler must be exercisable against an httptest.Server and a pair of
+// fakes, with no database and no job queue.
+
+// AlertObserver is THE STATE MACHINE (SPEC §B.3), satisfied by
+// `*alerts/service.Service`.
+//
+// ⛔ THE RECONCILER IS NOT A SECOND WRITE PATH (C18, ADR 0006). It produces
+// Observations and hands them to the same method the webhook path hands them to;
+// there is exactly one place `alerts` is written. What the reconciler adds is the
+// only WITNESS that can see suppression begin — `Observation.Source` is
+// `reconciler`, and §B.3's T3 admits no other actor.
+//
+// ObserveBatch is idempotent by construction: the alert upsert is ON CONFLICT and
+// every event it appends is claimed through `alert_event_keys` first (§C.8). A
+// pass that runs twice against an unchanged upstream therefore costs two HTTP
+// calls and writes nothing the first pass did not.
+type AlertObserver interface {
+	ObserveBatch(ctx context.Context, s db.TenantScope, obs []alerts.Observation, opt alertsvc.ObserveOptions) (alertsvc.ObserveResult, error)
+	// List is the oto side of the §G.8.4 divergence check: which alert identities
+	// does oto currently believe are live? It is a READ; nothing about divergence
+	// accounting writes anything.
+	List(ctx context.Context, s db.TenantScope, q alertsvc.ListQuery) (alertsvc.ListResult, error)
+}
+
+// ClusterReader resolves an AlertSource's Cluster, satisfied by
+// `*sources/repository.ClusterRepository`.
+//
+// `cluster_key` participates in ALERT IDENTITY (§C.2). A reconcile pass that
+// could not read it would compute a different `alert_key` from the webhook path
+// for the same label set and fork the history of everything it touched, so a
+// failure here fails the pass rather than degrading it.
+type ClusterReader interface {
+	Get(ctx context.Context, s db.TenantScope, clusterID uuid.UUID) (domain.Cluster, error)
+}
+
+// TenantLister enumerates every tenant for the periodic fan-out.
+//
+// The fan-out needs it because every repository method takes a db.TenantScope by
+// construction, and the periodic tick has no request to derive one from.
+type TenantLister interface {
+	Scopes(ctx context.Context) ([]db.TenantScope, error)
 }
 
 // ClientFactory builds the outbound clients for one Source.
