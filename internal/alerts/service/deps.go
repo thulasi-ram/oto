@@ -168,24 +168,48 @@ type NotificationReader interface {
 //
 // Delivery failure must be VISIBLE PER ALERT: oto's silence must never be
 // indistinguishable from "no alert" (CONTEXT.md §6).
+// ⛔ EVERY FIELD HERE IS EITHER SUPPLIED OR ABSENT — NEVER SUBSTITUTED. A
+// projection that reports a value it did not read is worse than one that reports
+// nothing, because the caller cannot tell the two apart. `UpdatedAt` used to be
+// rendered as `CreatedAt`, which made "this intent has never changed" and "this
+// intent changed a minute ago" indistinguishable on the wire.
 type NotificationSummary struct {
 	ID           uuid.UUID
 	GroupID      uuid.UUID
 	AlertID      *uuid.UUID
 	OccurrenceID *uuid.UUID
-	Reason       string
-	Status       string
+	// PolicyID is the notification_policy that routed this intent. It is nil when
+	// no policy matched — which is itself a fact worth showing, and is why
+	// SuppressedReason has a `no_policy` value.
+	PolicyID *uuid.UUID
+	Reason   string
+	Status   string
 	// SuppressedReason is oto's OWN vocabulary — no_policy, throttled, storm,
 	// flapping, snoozed, verbosity, channel_disabled, duplicate_render — and never
 	// Alertmanager's four suppression reasons (§B.8.2).
 	SuppressedReason string
 	StateVersion     int
 	CreatedAt        time.Time
+	// UpdatedAt is the last time the intent or its delivery roll-up moved. It is
+	// ZERO when the producer does not track one, and the mapper renders zero as
+	// JSON `null` rather than as CreatedAt.
+	UpdatedAt time.Time
 
 	DeliveriesTotal  int
 	DeliveriesSent   int
 	DeliveriesFailed int
 	DeliveriesDead   int
+	// DeliveriesSkipped is a coalesced no-op update — the destination already
+	// shows exactly this content. It is NOT a failure and it is NOT silence.
+	//
+	// A producer that folds skipped into DeliveriesSent (as the v1 notification
+	// read model does) leaves this zero, and zero is then an honest "none
+	// separately recorded" rather than an invented breakdown.
+	DeliveriesSkipped int
+	// DeliveriesPending is queued plus in-flight. A producer that leaves it zero
+	// gets the documented derivation Total-Sent-Failed-Dead, which is exact
+	// because those four plus pending exhaust the delivery states.
+	DeliveriesPending int
 }
 
 // GroupVersionReader answers the current `state_version` of one AlertGroup

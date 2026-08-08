@@ -48,8 +48,15 @@ type AlertRepository interface {
 	List(ctx context.Context, s db.TenantScope, f domain.AlertFilter, p db.Keyset) ([]domain.Alert, db.Cursor, error)
 	SetProjection(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p domain.AlertProjection) error
 	SetFlap(ctx context.Context, s db.TenantScope, alertID uuid.UUID, score float32, flapping bool) error
-	DistinctLabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]string, error)
-	DistinctLabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]string, error)
+	// The two discovery reads return the alert COUNT alongside each name and
+	// value. The contract has declared `alert_count` on both DTOs since the
+	// first draft; returning a bare []string is what left it permanently absent.
+	DistinctLabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]domain.LabelCount, error)
+	DistinctLabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]domain.LabelCount, error)
+	// Rollup is §E.3a: the alert list aggregated onto one axis, honouring EVERY
+	// filter the list itself honours. Keyset position is the bucket key, which is
+	// a total order because a bucket key appears exactly once.
+	Rollup(ctx context.Context, s db.TenantScope, f domain.AlertFilter, key domain.RollupKey, after string, limit int) ([]domain.AlertRollup, bool, error)
 }
 
 // OccurrenceRepository owns `alert_occurrences` — the table the authoritative

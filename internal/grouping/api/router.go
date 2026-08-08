@@ -25,11 +25,19 @@ import (
 // GroupService is the port this layer declares for itself, satisfied by
 // *service.Service.
 type GroupService interface {
-	List(ctx context.Context, s db.TenantScope, states []string, p db.Keyset) (service.ListResult, error)
+	List(ctx context.Context, s db.TenantScope, q service.ListQuery) (service.ListResult, error)
 	Get(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (service.Detail, error)
+	Members(ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset) (service.MemberResult, error)
 	Timeline(ctx context.Context, s db.TenantScope, groupID uuid.UUID, w db.TimeWindow, p db.Keyset) (alerts.TimelineResult, error)
 	Acknowledge(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, note string) (service.FanOutResult, error)
-	Comment(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, body string) (service.FanOutResult, error)
+	Comment(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, body string) (service.CommentResult, error)
+
+	// ⛔ The group snooze is a FAN-OUT OF THE SAME PRIMITIVE, never a new one:
+	// one snooze per CURRENTLY-JOINED member alert. Alerts that join later are
+	// NOT snoozed — a snooze is never predictive, and a group-level mute would
+	// silence alerts nobody has ever seen (§B.8.3).
+	Snooze(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string) (service.FanOutResult, error)
+	Unsnooze(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel string) (service.FanOutResult, error)
 }
 
 // AlertReader is the cross-domain port that turns a member id into an Alert.
@@ -73,6 +81,8 @@ func (rt *Router) Register(r chi.Router) {
 			r.Get("/timeline", rt.getAlertGroupTimeline)
 			r.Post("/ack", rt.ackAlertGroup)
 			r.Post("/comments", rt.commentOnAlertGroup)
+			r.Post("/snooze", rt.snoozeAlertGroup)
+			r.Post("/unsnooze", rt.unsnoozeAlertGroup)
 		})
 	})
 }
@@ -88,17 +98,28 @@ func (rt *Router) now() time.Time { return rt.clk.Now().UTC() }
 // outside it is `400 unknown_parameter`.
 var listGroupParams = []string{
 	"state", "severity", "cluster", "source_id", "receiver", "storm", "ack",
-	"since", "q", "sort", "limit", "cursor", "since_seq",
+	"since", "q", "sort", "limit", "cursor",
 }
 
-var timelineParams = []string{"type", "since", "until", "order", "limit", "cursor", "since_seq"}
+var timelineParams = []string{"type", "since", "until", "order", "limit", "cursor"}
 
-var simplePageParams = []string{"limit", "cursor", "since_seq"}
+// ⛔ `since_seq` is absent from all three allow-lists. It was accepted,
+// validated and then never pushed down — see the note in `alerts/api/helpers.go`
+// — and it is removed from the contract with the parsing.
+var simplePageParams = []string{"limit", "cursor"}
 
-func parseListGroups(r *http.Request) (ListGroupsQuery, db.Keyset, error) {
+// groupsListRequest is one parsed, validated `listAlertGroups` call.
+type groupsListRequest struct {
+	Query   ListGroupsQuery
+	Service service.ListQuery
+}
+
+// parseListGroups compiles the query into a filter the SERVICE applies, rather
+// than into a set of predicates the handler re-applies to a fetched page.
+func parseListGroups(r *http.Request) (groupsListRequest, error) {
 	p := httpx.NewParams(r, listGroupParams...)
 	if err := p.Err(); err != nil {
-		return ListGroupsQuery{}, db.Keyset{}, err
+		return groupsListRequest{}, err
 	}
 
 	q := ListGroupsQuery{
@@ -110,27 +131,61 @@ func parseListGroups(r *http.Request) (ListGroupsQuery, db.Keyset, error) {
 		Storm:    p.Bool("storm"),
 		Ack:      p.String("ack", ""),
 		Q:        p.String("q", ""),
-		Sort:     p.String("sort", "-last_activity_at"),
+		Sort:     p.String("sort", domain.SortLastActivityDesc),
 		Limit:    p.Limit(),
 		Cursor:   p.Cursor(),
-		SinceSeq: int64(p.Int("since_seq", 0)),
 	}
 	if p.Has("since") {
 		v := p.Time("since")
 		q.Since = &v
 	}
 	if err := p.Err(); err != nil {
-		return ListGroupsQuery{}, db.Keyset{}, err
+		return groupsListRequest{}, err
 	}
 	if _, err := httpx.BindEmpty(q); err != nil {
-		return ListGroupsQuery{}, db.Keyset{}, err
+		return groupsListRequest{}, err
 	}
 
-	cursor, err := httpx.DecodeCursor(q.Cursor, groupFilterHash(q))
-	if err != nil {
-		return ListGroupsQuery{}, db.Keyset{}, err
+	f := domain.GroupFilter{
+		States:      q.State,
+		Severities:  q.Severity,
+		ClusterKeys: q.Cluster,
+		Receiver:    q.Receiver,
+		Storm:       q.Storm,
+		Since:       q.Since,
+		Query:       q.Q,
 	}
-	return q, httpx.Keyset(q.Limit, cursor), nil
+	if q.SourceID != "" {
+		id, err := uuid.Parse(q.SourceID)
+		if err != nil {
+			return groupsListRequest{}, errs.Validation("validation_failed",
+				"1 field failed validation.", errs.Violation{
+					Field: "source_id", Code: "uuid", Message: "must be a UUID",
+				})
+		}
+		f.SourceID = &id
+	}
+	if q.Ack != "" {
+		// `acked` means EVERY member carries a receipt; `unacked` means at least
+		// one does not. Ack is orthogonal to state — an acked group is still
+		// firing — so this never touches `state` (§B.1).
+		fully := q.Ack == "acked"
+		f.FullyAcked = &fully
+	}
+	f.FilterHash = groupFilterHash(q)
+
+	cursor, err := httpx.DecodeCursor(q.Cursor, f.FilterHash)
+	if err != nil {
+		return groupsListRequest{}, err
+	}
+	return groupsListRequest{
+		Query: q,
+		Service: service.ListQuery{
+			Filter: f,
+			Sort:   q.Sort,
+			Page:   httpx.Keyset(q.Limit, cursor),
+		},
+	}, nil
 }
 
 // groupFilterHash binds a cursor to the filter it was minted under, so that
@@ -184,63 +239,12 @@ func actorOf(ctx context.Context) (kind, id, label string, err error) {
 	return ak.String(), p.ActorID(), p.ActorLabel(), nil
 }
 
-// matchesFilters applies the filters the grouping service does not push down.
+// ⛔ THERE IS NO POST-FILTER IN THIS PACKAGE, and there must never be one again.
 //
-// ⚠️ These are POST-FILTERS over one already-fetched keyset page. They are honest
-// about what they are: the service's List accepts only `state`, so severity,
-// cluster, source, receiver, storm, ack, free text and the time bound are applied
-// here. It is a service-signature gap, not a design: `grouping/service.List`
-// pushes only `state` down to SQL.
-func matchesFilters(g domain.Group, q ListGroupsQuery) bool {
-	if len(q.Severity) > 0 && !contains(q.Severity, g.Severity()) {
-		return false
-	}
-	if len(q.Cluster) > 0 && !contains(q.Cluster, g.GroupLabels()[clusterLabel]) {
-		return false
-	}
-	if q.SourceID != "" && g.SourceID().String() != q.SourceID {
-		return false
-	}
-	if q.Receiver != "" && g.Receiver() != q.Receiver {
-		return false
-	}
-	if q.Storm != nil && g.StormMode() != *q.Storm {
-		return false
-	}
-	if q.Since != nil && g.LastActivityAt().Before(*q.Since) {
-		return false
-	}
-	if q.Ack != "" {
-		c := g.Counts()
-		fullyAcked := c.Total > 0 && c.Acked >= c.Total
-		if (q.Ack == "acked") != fullyAcked {
-			return false
-		}
-	}
-	if q.Q != "" && !matchesText(g, q.Q) {
-		return false
-	}
-	return true
-}
-
-func matchesText(g domain.Group, needle string) bool {
-	needle = strings.ToLower(needle)
-	if strings.Contains(strings.ToLower(g.Title()), needle) {
-		return true
-	}
-	for k, v := range g.GroupLabels() {
-		if strings.Contains(strings.ToLower(k), needle) || strings.Contains(strings.ToLower(v), needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(xs []string, v string) bool {
-	for _, x := range xs {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}
+// Every predicate `listAlertGroups` accepts is compiled into domain.GroupFilter
+// above and applied by SQL BEFORE the LIMIT. Removing rows from an
+// already-fetched keyset page is not filtering, it is truncation: the page came
+// back holding `limit` rows, the predicate deleted most of them, and the caller
+// received a short page plus a cursor that had already stepped past everything
+// the predicate never got to look at. It is wrong on every page but the last,
+// and nothing on the screen says so.

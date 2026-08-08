@@ -291,18 +291,67 @@ func (s *Service) SnoozeHistory(
 	return s.snoozeHist.ListByAlert(ctx, scope, alertID, limit)
 }
 
-// LabelNames serves `GET /api/v1/labels` — the filter bar's typeahead.
+// LabelNames serves `GET /api/v1/labels` — the filter bar's typeahead, each name
+// with the number of alerts carrying it.
 func (s *Service) LabelNames(
 	ctx context.Context, scope db.TenantScope, prefix string, limit int,
-) ([]string, error) {
+) ([]domain.LabelCount, error) {
 	return s.alerts.DistinctLabelNames(ctx, scope, prefix, limit)
 }
 
 // LabelValues serves `GET /api/v1/labels/{name}/values`.
 func (s *Service) LabelValues(
 	ctx context.Context, scope db.TenantScope, name, prefix string, limit int,
-) ([]string, error) {
+) ([]domain.LabelCount, error) {
 	return s.alerts.DistinctLabelValues(ctx, scope, name, prefix, limit)
+}
+
+// RollupQuery is the compiled form of `GET /api/v1/alerts/rollups` (§E.3a).
+type RollupQuery struct {
+	Filter domain.AlertFilter
+	// By is the axis to bucket on. Required; the domain constructor has already
+	// refused anything outside the closed set.
+	By domain.RollupKey
+	// After is the keyset position: the bucket key of the last row of the
+	// previous page, "" for the first page.
+	After string
+	Limit int
+}
+
+// RollupResult is one page of roll-up buckets.
+type RollupResult struct {
+	Rollups []domain.AlertRollup
+	HasMore bool
+}
+
+// Rollups serves `GET /api/v1/alerts/rollups` — the alert list aggregated by
+// alertname, namespace or source fingerprint.
+//
+// ⭐ WHY THIS EXISTS. "Group alerts by name/namespace/fingerprint" is a product
+// requirement, and the only honest place to answer it is the server. A client
+// rolling up the rows it has loaded is right for exactly as long as the result
+// fits in one page and silently wrong afterwards — it reports "3 firing" for a
+// bucket with 300, and nothing about the screen says so.
+//
+// ⛔ A roll-up bucket is NOT an AlertGroup. `/alert-groups` is one generation of
+// one ALERTMANAGER NOTIFICATION GROUP; it has a row, a generation and a chat
+// thread. A roll-up is a view over the alert list and has none of those (§A.1).
+//
+// Every filter the list honours is honoured here, unchanged and by construction:
+// the aggregation wraps the same compiled filter the list passes down, so the
+// two can never drift into two answers to one question.
+func (s *Service) Rollups(
+	ctx context.Context, scope db.TenantScope, q RollupQuery,
+) (RollupResult, error) {
+	if q.By.IsZero() {
+		return RollupResult{}, errs.Validation("group_by_required",
+			"group_by must be one of: alertname, namespace, fingerprint")
+	}
+	buckets, hasMore, err := s.alerts.Rollup(ctx, scope, q.Filter, q.By, q.After, q.Limit)
+	if err != nil {
+		return RollupResult{}, err
+	}
+	return RollupResult{Rollups: buckets, HasMore: hasMore}, nil
 }
 
 // BindRuleSnapshot attaches the RuleSnapshot captured at fire time to an episode

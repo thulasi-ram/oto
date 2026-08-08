@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
 // This file is SPEC §F.5.2, literally: the parameter and result types the §F.5
@@ -184,8 +186,14 @@ type AlertFilter struct {
 	LabelsAll map[string]string
 	// LabelsAny is the IN form: labels @> {k:v1} OR labels @> {k:v2}.
 	LabelsAny map[string][]string
-	// LabelsNone is the NOT form: NOT (labels @> {…}).
-	LabelsNone map[string]string
+	// LabelsNone is the NOT form: NOT (labels @> {k:v1}) AND NOT (labels @> {k:v2}).
+	//
+	// It is multi-valued because `NOT (a OR b)` is `NOT a AND NOT b`, which is
+	// exactly what `label[!tier]=canary,staging` and `tier!~"canary|staging"`
+	// mean. A single-valued form would have to REFUSE both rather than
+	// under-filter, and refusing a predicate the containment index can answer is
+	// as wrong as degrading one it cannot.
+	LabelsNone map[string][]string
 	Since      *time.Time
 	// Query is full-text over alerts_text_idx.
 	Query string
@@ -275,6 +283,126 @@ type AckChange struct {
 	// Reason is "manual" or "new_occurrence" (UnackReasonManual,
 	// UnackReasonNewOccurrence).
 	Reason string
+}
+
+// ----------------------------------------------------------------- discovery
+
+// LabelCount is one row of the filter bar's typeahead: a distinct label name or
+// value, and HOW MANY ALERTS CARRY IT.
+//
+// The count is not decoration. A filter bar that offers a label matching nothing
+// wastes the one minute of an incident that matters most, and the contract has
+// always declared `alert_count` on both discovery DTOs — it was the server that
+// had nothing to put in it.
+type LabelCount struct {
+	// Value is the label name (for LabelNames) or the label value (for
+	// LabelValues).
+	Value string
+	// Count is how many Alerts in the caller's org carry it.
+	Count int
+}
+
+// ---------------------------------------------------------------- roll-ups
+
+// RollupKey names the axis an alert roll-up buckets on (§E.3a).
+//
+// ⛔ A roll-up is a VIEW over the alert list and is NEVER an AlertGroup. An
+// AlertGroup is one generation of one Alertmanager notification group, it owns a
+// chat thread and it has a row; a roll-up bucket has none of those and exists
+// only for the duration of one query (§A.1).
+type RollupKey struct{ s string }
+
+// The closed set of roll-up axes.
+var (
+	// RollupByAlertName buckets on the promoted `alertname` label.
+	RollupByAlertName = RollupKey{"alertname"}
+	// RollupByNamespace buckets on the promoted `namespace` label.
+	RollupByNamespace = RollupKey{"namespace"}
+	// RollupByFingerprint buckets on the §C.3 source fingerprint.
+	RollupByFingerprint = RollupKey{"fingerprint"}
+)
+
+// NewRollupKey parses a roll-up axis, refusing anything outside the closed set.
+//
+// The set is closed because each member has to be answerable from an index; an
+// arbitrary axis would be a GROUP BY over a sequential scan, which is the
+// failure ADR 0017 forbids.
+func NewRollupKey(s string) (RollupKey, error) {
+	switch s {
+	case RollupByAlertName.s, RollupByNamespace.s, RollupByFingerprint.s:
+		return RollupKey{s: s}, nil
+	default:
+		return RollupKey{}, errs.Newf(errs.KindValidation, "enum",
+			"group_by must be one of: alertname, namespace, fingerprint (got %q)", s)
+	}
+}
+
+// String renders the axis.
+func (k RollupKey) String() string { return k.s }
+
+// IsZero reports whether no axis was chosen.
+func (k RollupKey) IsZero() bool { return k.s == "" }
+
+// AlertRollup is one bucket of the §E.3a aggregation: every Alert that shares
+// one value of the chosen axis, counted by state.
+//
+// ⭐ The counts are over the WHOLE filtered result set, not over one page. That
+// is the entire reason this exists: a roll-up computed client-side over the rows
+// that happen to be loaded is a count that is quietly wrong, and a quietly wrong
+// count during an incident is worse than none.
+type AlertRollup struct {
+	// Key is the bucket value: the alertname, the namespace ("" when the alert
+	// carries none) or the source fingerprint.
+	Key string
+	// Total is every Alert in the bucket.
+	Total int
+	// The four §B.2 states, never merged. `resolved` and `expired` are different
+	// facts and collapsing them would hide the more interesting of the two.
+	Firing     int
+	Suppressed int
+	Resolved   int
+	Expired    int
+	// Acked is how many have a human receipt. Orthogonal to state: an acked
+	// alert is still firing (§B.1).
+	Acked int
+	// Flapping and Snoozed are the two damping facets, counted so the bucket can
+	// render them as the VISIBLE states §B.6 and §B.8.6 require.
+	Flapping int
+	Snoozed  int
+	// SeverityCounts is the RAW severity label to its count. Raw because
+	// operators filter on their own vocabulary (§L.4.2), which also means oto
+	// must not rank it — the client applies its own precedence.
+	SeverityCounts map[string]int
+	FirstSeenAt    time.Time
+	LastSeenAt     time.Time
+}
+
+// RollupState is the bucket's roll-up state: a bucket is as alive as its
+// liveliest member.
+//
+// `expired` outranks `resolved` because "we stopped hearing about this" is an
+// open question and "the upstream said it ended" is a closed one. An empty
+// bucket cannot exist — a bucket is created by having a member — so the zero
+// answer is unreachable and the fallback is the most conservative reading.
+func (r AlertRollup) RollupState() State {
+	switch {
+	case r.Firing > 0:
+		return StateFiring
+	case r.Suppressed > 0:
+		return StateSuppressed
+	case r.Expired > 0:
+		return StateExpired
+	default:
+		return StateResolved
+	}
+}
+
+// Unacked is how many members carry no human receipt.
+func (r AlertRollup) Unacked() int {
+	if r.Acked >= r.Total {
+		return 0
+	}
+	return r.Total - r.Acked
 }
 
 // -------------------------------------------------------------- small helpers

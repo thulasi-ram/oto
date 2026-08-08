@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -27,26 +28,25 @@ func (rt *Router) listAlertGroups(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	q, page, err := parseListGroups(r)
+	req, err := parseListGroups(r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	res, err := rt.svc.List(r.Context(), scope, q.State, page)
+	res, err := rt.svc.List(r.Context(), scope, req.Service)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
+	// Straight through. Every filter and the sort were applied in SQL — see the
+	// note at the foot of router.go about why nothing is discarded here.
 	out := make([]GroupDTO, 0, len(res.Groups))
 	for _, g := range res.Groups {
-		if !matchesFilters(g, q) {
-			continue
-		}
 		out = append(out, groupDTO(g))
 	}
-	httpx.List(w, r, out, httpx.PageOf(res.Cursor, q.Limit), started)
+	httpx.List(w, r, out, httpx.PageOf(res.Cursor, req.Query.Limit), started)
 }
 
 // getAlertGroup is `GET /api/v1/alert-groups/{id}` — one generation with its
@@ -136,21 +136,127 @@ func (rt *Router) commentOnAlertGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := rt.svc.Comment(r.Context(), scope, id, kind, actorID, label, body.Body); err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-
-	// Read the freshly appended entry back off the timeline rather than
-	// synthesising one: the timeline IS the record, and a response assembled
-	// from the request would be a claim about what was written instead of a
-	// reading of it.
-	ev, err := rt.latestComment(r, scope, id)
+	// The service returns the event it appended. Re-reading the timeline to find
+	// it — which this handler used to do — is a second query that can legitimately
+	// hand back somebody else's comment, appended a millisecond later, as if it
+	// were the caller's own.
+	res, err := rt.svc.Comment(r.Context(), scope, id, kind, actorID, label, body.Body)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	httpx.Data(w, r, http.StatusCreated, ev, started)
+	httpx.Data(w, r, http.StatusCreated, eventDTO(res.Event), started)
+}
+
+// snoozeAlertGroup is `POST /api/v1/alert-groups/{id}/snooze` (§B.8.3).
+//
+// ⛔ A FAN-OUT OF THE SAME PRIMITIVE, not a new one: one snooze per
+// CURRENTLY-JOINED member alert. Alerts that join the group later are NOT
+// snoozed. A snooze is never predictive, and a group-level mute would silence
+// alerts nobody has ever seen — that is the difference between a quiet button
+// and a blindfold.
+//
+// Nothing about the signals changes. Every member stays firing, stays whatever
+// severity it was, and stays in the default list.
+func (rt *Router) snoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, id, err := rt.subject(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	kind, actorID, label, err := actorOf(r.Context())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	body, err := httpx.Bind[SnoozeRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	until, err := rt.snoozeUntil(body)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	res, err := rt.svc.Snooze(r.Context(), scope, id, kind, actorID, label, until, body.Note)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if res.Members == 0 {
+		httpx.WriteProblem(w, r, errs.Precondition("no_group_members",
+			"this group has no currently-joined member alert to snooze"))
+		return
+	}
+
+	detail, err := rt.svc.Get(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, rt.detailDTO(r, scope, detail), started)
+}
+
+// unsnoozeAlertGroup is `POST /api/v1/alert-groups/{id}/unsnooze`: end the
+// snooze on each currently-joined member.
+//
+// A member that is not snoozed is SKIPPED rather than failing the request — the
+// same rule the group ack follows, and for the same reason: refusing the other
+// thirty-nine because one had already woken makes the button unusable in exactly
+// the situation it exists for.
+func (rt *Router) unsnoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, id, err := rt.subject(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	kind, actorID, label, err := actorOf(r.Context())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if _, err := optionalBody[UnsnoozeRequest](w, r); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	if _, err := rt.svc.Unsnooze(r.Context(), scope, id, kind, actorID, label); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	detail, err := rt.svc.Get(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, rt.detailDTO(r, scope, detail), started)
+}
+
+// snoozeUntil resolves the two spellings of "how long", refusing both and
+// neither. There is no indefinite snooze (§B.8.3).
+func (rt *Router) snoozeUntil(body SnoozeRequest) (time.Time, error) {
+	switch {
+	case body.Until != nil && body.DurationSeconds != nil:
+		return time.Time{}, errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{Field: "until", Code: "excluded_with",
+				Message: "give either until or duration_seconds, never both"})
+	case body.Until != nil:
+		return body.Until.UTC(), nil
+	case body.DurationSeconds != nil:
+		return rt.now().Add(time.Duration(*body.DurationSeconds) * time.Second), nil
+	default:
+		return time.Time{}, errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{Field: "until", Code: "required_without",
+				Message: "a snooze must end: give until or duration_seconds. " +
+					"There is no indefinite snooze"})
+	}
 }
 
 // getAlertGroupTimeline is `GET /api/v1/alert-groups/{id}/timeline` — the
@@ -186,9 +292,14 @@ func (rt *Router) getAlertGroupTimeline(w http.ResponseWriter, r *http.Request) 
 
 // listAlertGroupAlerts is `GET /api/v1/alert-groups/{id}/alerts`.
 //
-// Membership is read from the generation's current members, newest join first,
-// and each member alert is resolved through the `alerts` service port — never by
-// reaching into another domain's repository.
+// ⭐ The page comes from SQL. This handler used to call `Get()`, which
+// materialises the ENTIRE membership, then sort and slice it in Go — correct for
+// a group of forty and a full membership fetch for a storm of five thousand,
+// which is the one case the endpoint exists to survive. `Members` is now a
+// keyset read over `(joined_at DESC, occurrence_id DESC)`.
+//
+// Each member alert is still resolved through the `alerts` service port and
+// never by reaching into another domain's repository (CONTEXT.md §5.4).
 func (rt *Router) listAlertGroupAlerts(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -208,42 +319,40 @@ func (rt *Router) listAlertGroupAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := p.Limit()
+	if err := p.Err(); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	cursor, err := httpx.DecodeCursor(p.Cursor(), httpx.FilterHash())
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	detail, err := rt.svc.Get(r.Context(), scope, id)
+	res, err := rt.svc.Members(r.Context(), scope, id, httpx.Keyset(limit, cursor))
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	members := sortedMembers(detail.Members)
-	members = afterCursor(members, cursor)
-
-	out := make([]AlertDTO, 0, limit)
-	next := db.Cursor{Hash: cursor.Hash}
-	seen := map[uuid.UUID]struct{}{}
-	for _, m := range members {
+	// One Alert can hold several episodes in one generation over its lifetime;
+	// the LIST is of alerts, so a repeat is collapsed. The page boundary is the
+	// membership row's, not the deduplicated slice's, so a duplicate never
+	// silently shortens the next page.
+	out := make([]AlertDTO, 0, len(res.Members))
+	seen := make(map[uuid.UUID]struct{}, len(res.Members))
+	for _, m := range res.Members {
 		if _, dup := seen[m.AlertID()]; dup {
 			continue
 		}
 		seen[m.AlertID()] = struct{}{}
-		if len(out) == limit {
-			next.HasMore = true
-			break
-		}
 		a, ok := rt.alert(r, scope, m.AlertID())
 		if !ok {
 			continue
 		}
 		out = append(out, alertDTO(a))
-		next.SortKey = m.JoinedAt()
-		next.ID = m.AlertID()
 	}
-	httpx.List(w, r, out, httpx.PageOf(next, limit), started)
+	httpx.List(w, r, out, httpx.PageOf(res.Cursor, limit), started)
 }
 
 // ------------------------------------------------------------------ helpers
@@ -309,57 +418,18 @@ func (rt *Router) alert(r *http.Request, scope db.TenantScope, alertID uuid.UUID
 	return detail.Alert, true
 }
 
-// latestComment reads back the newest `comment.added` entry on the group
-// timeline.
-func (rt *Router) latestComment(
-	r *http.Request, scope db.TenantScope, groupID uuid.UUID,
-) (AlertEventDTO, error) {
-	res, err := rt.svc.Timeline(r.Context(), scope, groupID, db.TimeWindow{}, httpx.Keyset(50, db.Cursor{}))
-	if err != nil {
-		return AlertEventDTO{}, err
-	}
-	var newest *alertdomain.Event
-	for i := range res.Events {
-		e := res.Events[i]
-		if e.Type().String() != "comment.added" {
-			continue
-		}
-		if newest == nil || e.RecordedAt().After(newest.RecordedAt()) {
-			newest = &res.Events[i]
-		}
-	}
-	if newest == nil {
-		return AlertEventDTO{}, errs.Internal("comment_not_readable", errCommentUnreadable)
-	}
-	return eventDTO(*newest), nil
-}
-
-var errCommentUnreadable = errs.New(errs.KindInternal, "comment_not_readable",
-	"the comment was written but could not be read back")
-
-// sortedMembers orders membership newest join first, with the alert id as a
-// deterministic tiebreak so two identical requests produce the same page.
+// sortedMembers orders membership newest join first, with the occurrence id as a
+// deterministic tiebreak so two identical requests produce the same preview.
+//
+// It survives for `detailDTO`'s BOUNDED preview only, over a slice the service
+// already holds. The paginated list is SQL's job — see listAlertGroupAlerts.
 func sortedMembers(in []domain.Member) []domain.Member {
 	out := append([]domain.Member(nil), in...)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].JoinedAt().Equal(out[j].JoinedAt()) {
-			return out[i].AlertID().String() > out[j].AlertID().String()
+			return out[i].OccurrenceID().String() > out[j].OccurrenceID().String()
 		}
 		return out[i].JoinedAt().After(out[j].JoinedAt())
 	})
 	return out
-}
-
-// afterCursor drops everything at or before the caller's keyset position.
-func afterCursor(in []domain.Member, c db.Cursor) []domain.Member {
-	if c.IsZero() {
-		return in
-	}
-	for i, m := range in {
-		if m.JoinedAt().Before(c.SortKey) ||
-			(m.JoinedAt().Equal(c.SortKey) && m.AlertID().String() < c.ID.String()) {
-			return in[i:]
-		}
-	}
-	return nil
 }

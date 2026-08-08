@@ -278,6 +278,99 @@ func (r *SnapshotRepository) ListByKey(ctx context.Context, s db.TenantScope, ke
 	return out, nil
 }
 
+// ListPage returns one KEYSET PAGE of a rule's capture history, newest first.
+//
+// ⭐ It exists because `listRuleSnapshots` used to be served from `History()`,
+// which is capped at DefaultHistoryLimit and returns the whole slice: the handler
+// then took the first `limit` of them, set `has_more` if there were more, and
+// emitted `next_cursor: null` — a page-one-only list whose second page could
+// never be asked for. A rule edited two hundred and one times had a history the
+// API could not show.
+//
+// Keyset over `(captured_at DESC, id DESC)`. `id` is a uuidv7 and breaks the tie
+// deterministically, which matters here more than most places: two captures of
+// two different rule texts can share a `captured_at` when one fire recovers both.
+//
+// NOTE (planner): the predicate is a prefix of rule_snapshots_key_idx
+// (org_id, source_id, rule_name, rule_group, rule_file, captured_at DESC), so
+// the rows are reached by an index range. `id` is NOT in that index, so the
+// `(captured_at, id)` ordering costs a sort on top of the range — over the
+// distinct texts of ONE rule key, which is a handful, not over the table. That
+// is a deliberate trade: dropping `id` would make the order non-total and the
+// cursor unsound the moment two captures shared a timestamp.
+func (r *SnapshotRepository) ListPage(
+	ctx context.Context, s db.TenantScope, key domain.Key, p db.Keyset,
+) ([]domain.Snapshot, db.Cursor, error) {
+	limit := p.Limit
+	switch {
+	case limit <= 0:
+		limit = 50
+	case limit > 200:
+		limit = 200
+	}
+
+	args := []any{s.OrgID()}
+	pred, err := keyPredicate(key, &args)
+	if err != nil {
+		return nil, db.Cursor{}, err
+	}
+
+	if !p.Cursor.IsZero() {
+		args = append(args, p.Cursor.SortKey.UTC(), p.Cursor.ID)
+		pred += fmt.Sprintf(" AND (captured_at, id) < ($%d, $%d)", len(args)-1, len(args))
+	}
+	args = append(args, limit+1)
+
+	sql := `SELECT ` + snapshotColumns + ` FROM rule_snapshots WHERE org_id = $1` + pred +
+		fmt.Sprintf(` ORDER BY captured_at DESC, id DESC LIMIT $%d`, len(args))
+
+	rows, err := r.db(ctx).Query(ctx, sql, args...)
+	if err != nil {
+		return nil, db.Cursor{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+			"could not read the rule history")
+	}
+	defer rows.Close()
+
+	out := make([]domain.Snapshot, 0, limit+1)
+	ids := make([]uuid.UUID, 0, limit+1)
+	for rows.Next() {
+		row, scanErr := scanSnapshot(rows)
+		if scanErr != nil {
+			return nil, db.Cursor{}, errs.Wrap(scanErr, errs.KindInternal, CodeQueryFailed,
+				"could not read the rule history")
+		}
+		snap, convErr := row.toDomain()
+		if convErr != nil {
+			return nil, db.Cursor{}, convErr
+		}
+		out = append(out, snap)
+		ids = append(ids, row.id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, db.Cursor{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+			"could not read the rule history")
+	}
+
+	hasMore := len(out) > limit
+	if hasMore {
+		out, ids = out[:limit], ids[:limit]
+	}
+	if len(out) == 0 {
+		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
+	}
+	last := out[len(out)-1]
+	cursor := db.Cursor{Hash: p.Cursor.Hash}
+	if hasMore {
+		cursor = db.Cursor{
+			SortKey: last.CapturedAt.UTC(),
+			ID:      ids[len(ids)-1],
+			Hash:    p.Cursor.Hash,
+			HasMore: true,
+		}
+	}
+	return out, cursor, nil
+}
+
 // Latest returns the newest capture for one rule key.
 func (r *SnapshotRepository) Latest(ctx context.Context, s db.TenantScope, key domain.Key) (domain.Snapshot, bool, error) {
 	args := []any{s.OrgID()}

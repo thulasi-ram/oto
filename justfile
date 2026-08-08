@@ -63,10 +63,11 @@ logs service="":
 
 # ------------------------------------------------------------------- database
 
-# Apply every pending migration.
+# Apply every pending migration: goose schema, then River's own tables.
+# Running goose alone leaves River's tables absent and the worker dies at boot.
 [group('db')]
 migrate:
-    {{goose}} "{{db_url}}" up
+    go run ./cmd/oto migrate
 
 # Roll back exactly one migration.
 [group('db')]

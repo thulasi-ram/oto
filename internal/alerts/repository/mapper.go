@@ -146,6 +146,18 @@ func decodeStringMap(raw []byte) (map[string]string, error) {
 	return out, nil
 }
 
+// decodeIntMap reads a `jsonb_object_agg(text, bigint)` aggregate.
+func decodeIntMap(raw []byte) (map[string]int, error) {
+	if len(raw) == 0 {
+		return map[string]int{}, nil
+	}
+	out := map[string]int{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, errs.Internal("jsonb_decode_failed", err)
+	}
+	return out, nil
+}
+
 // decodeAnyMap reads a jsonb object of arbitrary values back into Go.
 func decodeAnyMap(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {

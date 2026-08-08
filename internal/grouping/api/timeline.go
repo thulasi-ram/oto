@@ -35,11 +35,10 @@ func parseTimeline(r *http.Request) (timelineRequest, error) {
 	}
 
 	q := TimelineQuery{
-		Type:     p.CSV("type"),
-		Order:    p.Enum("order", "asc", "asc", "desc"),
-		Limit:    p.Limit(),
-		Cursor:   p.Cursor(),
-		SinceSeq: int64(p.Int("since_seq", 0)),
+		Type:   p.CSV("type"),
+		Order:  p.Enum("order", "asc", "asc", "desc"),
+		Limit:  p.Limit(),
+		Cursor: p.Cursor(),
 	}
 	if p.Has("since") {
 		v := p.Time("since")

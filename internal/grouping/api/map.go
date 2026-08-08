@@ -12,11 +12,6 @@ import (
 // The domain → DTO mappers. Every field is copied by hand, so that renaming a
 // domain accessor can never silently rename a JSON field.
 
-// clusterLabel is the group label carrying the failure domain. A generation is
-// keyed by `cluster_id`; its human-readable key travels on the group labels,
-// which is where Alertmanager put it.
-const clusterLabel = "cluster"
-
 func groupDTO(g domain.Group) GroupDTO {
 	labels := g.GroupLabels()
 	if labels == nil {
@@ -25,11 +20,15 @@ func groupDTO(g domain.Group) GroupDTO {
 	c := g.Counts()
 
 	dto := GroupDTO{
-		ID:              g.ID(),
-		GroupKey:        g.Key().String(),
-		Generation:      int32(g.Generation()),
-		SourceID:        g.SourceID(),
-		ClusterKey:      labels[clusterLabel],
+		ID:         g.ID(),
+		GroupKey:   g.Key().String(),
+		Generation: int32(g.Generation()),
+		SourceID:   g.SourceID(),
+		// ⛔ NOT group_labels["cluster"]. The cluster key is now first-class on
+		// the domain entity, resolved from `cluster_id` through `clusters`.
+		// Reading it out of the group labels made it vanish the moment an
+		// operator changed Alertmanager's `group_by`.
+		ClusterKey:      g.ClusterKey(),
 		SourceGroupKey:  strPtr(g.SourceGroupKey()),
 		Receiver:        g.Receiver(),
 		GroupLabels:     labels,

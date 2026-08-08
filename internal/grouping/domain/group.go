@@ -130,6 +130,13 @@ type Group struct {
 	sourceID  uuid.UUID
 	clusterID uuid.UUID
 
+	// clusterKey is the human-readable identity of the failure domain, resolved
+	// from clusterID. It is FIRST-CLASS rather than read out of groupLabels:
+	// `group_labels["cluster"]` is whatever Alertmanager happened to group by
+	// and is absent the moment an operator edits `group_by`, whereas cluster
+	// participates in alert identity (§C.2) and is never absent.
+	clusterKey string
+
 	key            GroupKey
 	generation     int
 	sourceGroupKey string
@@ -159,6 +166,10 @@ type GroupParams struct {
 	OrgID     uuid.UUID
 	SourceID  uuid.UUID
 	ClusterID uuid.UUID
+	// ClusterKey is the cluster's stable machine name, joined from `clusters`.
+	// It may be empty only for a Group built in-flight before the join has run;
+	// every Group a repository returns carries it.
+	ClusterKey string
 
 	Key        GroupKey
 	Generation int
@@ -255,6 +266,7 @@ func NewGroup(p GroupParams) (Group, error) {
 		orgID:                  p.OrgID,
 		sourceID:               p.SourceID,
 		clusterID:              p.ClusterID,
+		clusterKey:             p.ClusterKey,
 		key:                    p.Key,
 		generation:             p.Generation,
 		sourceGroupKey:         p.SourceGroupKey,
@@ -285,6 +297,15 @@ func (g Group) SourceID() uuid.UUID { return g.sourceID }
 
 // ClusterID is the Cluster the group's members belong to.
 func (g Group) ClusterID() uuid.UUID { return g.clusterID }
+
+// ClusterKey is that Cluster's stable machine name — the value the contract
+// calls `cluster_key` and the one that participates in alert identity (§C.2).
+//
+// ⛔ It is NOT `group_labels["cluster"]`. That entry exists only while
+// Alertmanager happens to group by `cluster`, so reading it there makes the
+// field vanish on the day someone edits a route — and a group whose cluster is
+// silently unknown is a group nobody can trust during a multi-cluster incident.
+func (g Group) ClusterKey() string { return g.clusterKey }
 
 // Key is the durable §C.4 group identity, stable across route edits.
 func (g Group) Key() GroupKey { return g.key }
@@ -472,6 +493,56 @@ func without(xs []string, drop string) []string {
 		}
 	}
 	return out
+}
+
+// The two sort keys `GET /api/v1/alert-groups` accepts, and nothing else.
+//
+// Sorting is restricted for the same reason it is on the alert list: a keyset
+// cursor is only sound over a total ordering, and an unrecognised value is
+// rejected rather than silently defaulted. A list that quietly ignores `sort` is
+// a list that lies about its order.
+const (
+	// SortLastActivityDesc is the default: the busiest conversation first.
+	SortLastActivityDesc = "-last_activity_at"
+	// SortFirstSeenDesc orders by when the generation opened.
+	SortFirstSeenDesc = "-first_seen_at"
+)
+
+// GroupFilter is the compiled, validated form of the `listAlertGroups` query.
+//
+// ⭐ EVERY DIMENSION HERE IS PUSHED DOWN TO SQL. It exists because the handler
+// used to post-filter an already-fetched keyset page in memory, which is not a
+// filter but a truncation: the page came back holding 50 groups, the filter
+// removed 43, and the caller was handed 7 rows plus a `has_more` cursor that had
+// already skipped past everything it never got to see. A filter that runs after
+// pagination is silently wrong on every page but the last.
+//
+// A nil or empty value means "no constraint on this dimension".
+type GroupFilter struct {
+	// States filters over open|closed. Empty means both — a closed generation is
+	// the record of a conversation that happened, and hiding it would make the
+	// group list disagree with the chat channel it mirrors.
+	States []string
+	// Severities matches the group's MAXIMUM member severity, RAW as upstream
+	// wrote it (§L.4.2).
+	Severities []string
+	// ClusterKeys matches the joined `clusters.cluster_key`, not a group label.
+	ClusterKeys []string
+	SourceID    *uuid.UUID
+	Receiver    string
+	// Storm restricts to generations collapsed into storm mode, or excludes
+	// them. Storm collapse is a VISIBLE state, which is why it is filterable at
+	// all (§B.6).
+	Storm *bool
+	// FullyAcked is true for "every member has a receipt", false for "at least
+	// one does not". Orthogonal to state: an acked group is still firing (§B.1).
+	FullyAcked *bool
+	// Since is a lower bound on `last_activity_at`.
+	Since *time.Time
+	// Query is free text over the title and the group labels.
+	Query string
+	// FilterHash must equal Cursor.Hash or the cursor is rejected (§E.1).
+	FilterHash string
 }
 
 // GenerationLabel renders "gk_… #3" for logs and debugging.

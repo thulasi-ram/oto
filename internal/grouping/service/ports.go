@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	alerts "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
 	"github.com/thulasiram/oto/internal/grouping/repository"
@@ -32,7 +33,9 @@ type GroupRepository interface {
 	Touch(ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time) error
 	SetNotificationReason(ctx context.Context, s db.TenantScope, groupID uuid.UUID, reason string) error
 	StateVersion(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (int, error)
-	List(ctx context.Context, s db.TenantScope, states []string, p db.Keyset) ([]domain.Group, db.Cursor, error)
+	// List takes the WHOLE filter and the sort key, because a filter applied
+	// after pagination is not a filter (see domain.GroupFilter).
+	List(ctx context.Context, s db.TenantScope, f domain.GroupFilter, sort string, p db.Keyset) ([]domain.Group, db.Cursor, error)
 	CloseCandidates(ctx context.Context, s db.TenantScope, idleBefore time.Time, limit int) ([]domain.Group, error)
 }
 
@@ -42,6 +45,9 @@ type MemberRepository interface {
 	Join(ctx context.Context, s db.TenantScope, groupID, occurrenceID, alertID uuid.UUID, at time.Time) (bool, error)
 	Leave(ctx context.Context, s db.TenantScope, groupID, occurrenceID uuid.UUID, at time.Time) (bool, error)
 	CurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]domain.Member, error)
+	// ListCurrentMembers is CurrentMembers, keyset-paginated, for the one caller
+	// that renders a page rather than a rollup.
+	ListCurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset) ([]domain.Member, db.Cursor, error)
 	AllMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]domain.Member, error)
 	GroupsForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Member, error)
 	DistinctJoinsSince(ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time) (int, time.Time, error)
@@ -78,7 +84,11 @@ type TimelineReader interface {
 // (§E.1.1).
 type MemberActions interface {
 	AcknowledgeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, note string) error
-	CommentAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, body string) error
+	// CommentAs returns the APPENDED EVENT, not just an error. The group comment
+	// endpoint answers `201` with the event it wrote, and reading it back off the
+	// timeline afterwards — which is what the handler used to do — is a second
+	// query that can return a different row than the one just appended.
+	CommentAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, body string) (kernel.Event, error)
 	SnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string) error
 	UnsnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel string) error
 }

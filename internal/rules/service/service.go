@@ -349,6 +349,30 @@ func (s *Service) History(ctx context.Context, scope db.TenantScope, key domain.
 	return domain.NewHistory(key, snaps), nil
 }
 
+// SnapshotPage is one keyset page of a rule's capture history.
+type SnapshotPage struct {
+	Snapshots []domain.Snapshot
+	Cursor    db.Cursor
+}
+
+// ListSnapshots serves `GET /api/v1/rule-snapshots` — the version history for
+// one RuleKey, newest first, KEYSET PAGINATED.
+//
+// ⭐ It is not History(). History rebuilds the NUMBERED edit history, which only
+// exists relative to the whole set — version 1 is the oldest capture — and is
+// therefore capped at DefaultHistoryLimit and returned whole. Serving the list
+// endpoint from it meant `next_cursor` was structurally always null and a rule
+// captured more than two hundred times had history the API could not reach.
+func (s *Service) ListSnapshots(
+	ctx context.Context, scope db.TenantScope, key domain.Key, p db.Keyset,
+) (SnapshotPage, error) {
+	snaps, cur, err := s.repo.ListPage(ctx, scope, key, p)
+	if err != nil {
+		return SnapshotPage{}, err
+	}
+	return SnapshotPage{Snapshots: snaps, Cursor: cur}, nil
+}
+
 // DiffVersions compares two numbered versions of one rule.
 //
 // This is the product's headline read: "the rule as it was when this fired, and

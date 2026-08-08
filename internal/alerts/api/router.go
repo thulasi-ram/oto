@@ -25,6 +25,7 @@ import (
 // and what stops a handler quietly acquiring a new capability.
 type AlertService interface {
 	List(ctx context.Context, s db.TenantScope, q service.ListQuery) (service.ListResult, error)
+	Rollups(ctx context.Context, s db.TenantScope, q service.RollupQuery) (service.RollupResult, error)
 	Get(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (service.AlertDetail, error)
 	GetByKey(ctx context.Context, s db.TenantScope, alertKey string) (service.AlertDetail, error)
 	Occurrences(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) (service.OccurrenceResult, error)
@@ -33,11 +34,19 @@ type AlertService interface {
 	OccurrenceTimeline(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
 	Enrichments(ctx context.Context, s db.TenantScope, alertID uuid.UUID) ([]service.EnrichmentSummary, error)
 	Notifications(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) (service.NotificationResult, error)
-	LabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]string, error)
-	LabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]string, error)
+	LabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]domain.LabelCount, error)
+	LabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]domain.LabelCount, error)
 	Acknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Occurrence, error)
 	Unacknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor) (domain.Occurrence, error)
 	Comment(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, body string) (domain.Event, error)
+
+	// ⛔ THE THIRD HUMAN VERB (§E.1.1, §B.8). Snooze writes NOTIFICATION state,
+	// never signal state: the alert stays firing, stays whatever severity it was,
+	// and every surface keeps rendering it that way. There is still no Resolve,
+	// no Close and no Dismiss on this interface, and there never will be.
+	Snooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, until time.Time, note string) (domain.Snooze, error)
+	Unsnooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor) (domain.Snooze, error)
+	SnoozeHistory(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Snooze, error)
 }
 
 // Compile-time proof that the service satisfies the port this layer declares.
@@ -62,15 +71,22 @@ func NewRouter(svc AlertService, clk clock.Clock) *Router {
 func (rt *Router) Register(r chi.Router) {
 	r.Route("/alerts", func(r chi.Router) {
 		r.Get("/", rt.listAlerts)
+		// Registered before /{id} so the static segment wins the chi trie. A
+		// roll-up is a VIEW over this list and is deliberately a sibling of it
+		// rather than a mode of it: the bucket shape is not the alert shape.
+		r.Get("/rollups", rt.listAlertRollups)
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/", rt.getAlert)
 			r.Get("/occurrences", rt.listAlertOccurrences)
 			r.Get("/events", rt.listAlertEvents)
 			r.Get("/enrichments", rt.listAlertEnrichments)
 			r.Get("/notifications", rt.listAlertNotifications)
+			r.Get("/snoozes", rt.listAlertSnoozes)
 			r.Post("/ack", rt.ackAlert)
 			r.Post("/unack", rt.unackAlert)
 			r.Post("/comments", rt.commentOnAlert)
+			r.Post("/snooze", rt.snoozeAlert)
+			r.Post("/unsnooze", rt.unsnoozeAlert)
 		})
 	})
 

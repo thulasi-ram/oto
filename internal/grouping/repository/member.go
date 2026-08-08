@@ -285,6 +285,64 @@ func (r *MemberRepository) Rollup(
 	}, strOrEmpty(severity), nil
 }
 
+// listCurrentMembersSQL is the keyset page of a generation's current members.
+//
+// ⭐ It orders NEWEST JOIN FIRST and pages by `(joined_at, occurrence_id)`,
+// which is a total order because `(group_id, occurrence_id)` is the table's
+// primary key. The handler used to read EVERY member through `Get()` and slice
+// the result in Go: correct for a group of forty, a full membership fetch for a
+// storm of five thousand, and a page whose `has_more` was computed from a list
+// the caller had already paid to materialise.
+var listCurrentMembersSQL = `
+SELECT ` + memberColumns + `
+  FROM alert_group_members
+ WHERE org_id = $1 AND group_id = $2 AND left_at IS NULL
+   AND ($3::timestamptz IS NULL OR (joined_at, occurrence_id) < ($3, $4))
+ ORDER BY joined_at DESC, occurrence_id DESC
+ LIMIT $5`
+
+// ListCurrentMembers returns one keyset page of a generation's current members.
+//
+// NOTE (planner): the driving path is the `(group_id, occurrence_id)` primary
+// key with `left_at IS NULL` and the keyset applied as a filter. A generation
+// holds at most a few thousand members, so this is a bounded index range and not
+// the org-wide scan the alert list is careful about.
+func (r *MemberRepository) ListCurrentMembers(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset,
+) ([]domain.Member, db.Cursor, error) {
+	if err := requireScope(s); err != nil {
+		return nil, db.Cursor{}, err
+	}
+	limit := clampLimit(p.Limit)
+
+	var (
+		afterAt *time.Time
+		afterID uuid.UUID
+	)
+	if !p.Cursor.IsZero() {
+		afterAt = nilTime(p.Cursor.SortKey)
+		afterID = p.Cursor.ID
+	}
+
+	rows, err := r.db(ctx).Query(ctx, listCurrentMembersSQL,
+		s.OrgID(), groupID, afterAt, afterID, limit+1)
+	if err != nil {
+		return nil, db.Cursor{}, mapErr(err, "list group members")
+	}
+	defer rows.Close()
+
+	collected, err := collectMembers(rows)
+	if err != nil {
+		return nil, db.Cursor{}, err
+	}
+	page, hasMore := pageOf(collected, limit)
+	if len(page) == 0 {
+		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
+	}
+	last := page[len(page)-1]
+	return page, nextCursor(last.JoinedAt(), last.OccurrenceID(), p.Cursor.Hash, hasMore), nil
+}
+
 const memberAlertsSQL = `
 SELECT m.alert_id, m.occurrence_id
   FROM alert_group_members m

@@ -131,6 +131,23 @@ type CommentRequest struct {
 	Body string `json:"body" validate:"required,notblank,min=1,max=10000"`
 }
 
+// SnoozeRequest is the body of `POST /alert-groups/{id}/snooze` (§B.8.3).
+//
+// ⛔ It is the SAME request shape as the per-alert snooze, because the group
+// verb is a fan-out of the same primitive and not a new one. Exactly one of
+// `until` and `duration_seconds`; bounds 5 minutes to 30 days; no indefinite
+// snooze, ever.
+type SnoozeRequest struct {
+	Until           *time.Time `json:"until"`
+	DurationSeconds *int64     `json:"duration_seconds" validate:"omitempty,min=300,max=2592000"`
+	Note            string     `json:"note" validate:"omitempty,max=2000"`
+}
+
+// UnsnoozeRequest is the body of `POST /alert-groups/{id}/unsnooze`.
+type UnsnoozeRequest struct {
+	Note string `json:"note" validate:"omitempty,max=2000"`
+}
+
 // ------------------------------------------------------------- query objects
 
 // ListGroupsQuery is the validated form of the `listAlertGroups` query string.
@@ -147,16 +164,14 @@ type ListGroupsQuery struct {
 	Sort     string     `json:"sort"     validate:"omitempty,oneof=-last_activity_at -first_seen_at"`
 	Limit    int        `json:"limit"    validate:"min=1,max=200"`
 	Cursor   string     `json:"cursor"   validate:"omitempty,cursor"`
-	SinceSeq int64      `json:"since_seq" validate:"min=0"`
 }
 
 // TimelineQuery is the validated form of the `getAlertGroupTimeline` query.
 type TimelineQuery struct {
-	Type     []string   `json:"type"      validate:"omitempty,max=34,unique"`
-	Since    *time.Time `json:"since"`
-	Until    *time.Time `json:"until"`
-	Order    string     `json:"order"     validate:"omitempty,oneof=asc desc"`
-	Limit    int        `json:"limit"     validate:"min=1,max=200"`
-	Cursor   string     `json:"cursor"    validate:"omitempty,cursor"`
-	SinceSeq int64      `json:"since_seq" validate:"min=0"`
+	Type   []string   `json:"type"      validate:"omitempty,max=34,unique"`
+	Since  *time.Time `json:"since"`
+	Until  *time.Time `json:"until"`
+	Order  string     `json:"order"     validate:"omitempty,oneof=asc desc"`
+	Limit  int        `json:"limit"     validate:"min=1,max=200"`
+	Cursor string     `json:"cursor"    validate:"omitempty,cursor"`
 }

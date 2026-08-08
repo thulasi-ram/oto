@@ -212,16 +212,20 @@ func (s *Service) UnsnoozeAs(
 
 // CommentAs is Comment with the actor described in primitives, for
 // `POST /api/v1/alert-groups/{id}/comments`.
+//
+// It returns the APPENDED EVENT rather than swallowing it. The group endpoint
+// answers `201` with the event it wrote, and the only place that fact is known
+// for certain is here, at the write: re-reading the timeline afterwards is a
+// second query that can return a different row.
 func (s *Service) CommentAs(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
 	actorKind, actorID, actorLabel, body string,
-) error {
+) (domain.Event, error) {
 	actor, err := humanActor(actorKind, actorID, actorLabel)
 	if err != nil {
-		return err
+		return domain.Event{}, err
 	}
-	_, err = s.Comment(ctx, scope, alertID, actor, body)
-	return err
+	return s.Comment(ctx, scope, alertID, actor, body)
 }
 
 func humanActor(kindName, actorID, label string) (domain.Actor, error) {

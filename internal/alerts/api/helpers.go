@@ -18,7 +18,14 @@ import (
 const maxLabelNameBytes = 1024
 
 // simplePageParams is the allow-list of every plainly-paginated list endpoint.
-var simplePageParams = []string{"limit", "cursor", "since_seq"}
+//
+// ⛔ `since_seq` is NOT here. SPEC §E.4 offers it as an SSE polling fallback, but
+// no service port ever carried it: it was accepted, validated and then dropped
+// on the floor, so a client polling with it received the unfiltered list and had
+// no way to know. A parameter that is documented and ignored is worse than one
+// that does not exist, and it is removed from the contract with it. Reinstating
+// it needs a real predicate — see the note in the report.
+var simplePageParams = []string{"limit", "cursor"}
 
 // simplePage compiles a list query that has no filters of its own.
 //

@@ -12,15 +12,21 @@ import (
 //
 //	LabelsAll  → labels @> {…}                   (every entry must hold)
 //	LabelsAny  → labels @> {k:v1} OR {k:v2}      (one entry per key must hold)
-//	LabelsNone → NOT (labels @> {…})             (no entry may hold)
+//	LabelsNone → NOT (labels @> {k:v1}) AND …    (no entry may hold)
 //
 // Nothing else exists, and that is the whole point of ADR 0017: the set of
 // predicates that survive translation is a short, explicit list rather than an
 // emergent property of a query planner.
+//
+// Measured on 60 000 alerts (Postgres 17, `alerts_labels_gin`, jsonb_path_ops):
+// LabelsAll is a Bitmap Index Scan; LabelsAny is a BitmapOr over one Bitmap
+// Index Scan per value; LabelsNone is a Filter applied on top of whichever of
+// those drives the plan. A negation alone drives nothing — see the note on
+// compileLabel.
 type Compiled struct {
 	LabelsAll  map[string]string
 	LabelsAny  map[string][]string
-	LabelsNone map[string]string
+	LabelsNone map[string][]string
 }
 
 // IsZero reports whether nothing was compiled.
@@ -37,8 +43,15 @@ func (c Compiled) IsZero() bool {
 //
 // A regular-expression matcher survives ONLY when it is a pure alternation of
 // literals (`critical|warning`), which is exactly an IN list and therefore
-// index-backed. Any other regex — a character class, a quantifier, an anchor — is
-// refused, because answering it means reading every row.
+// index-backed. Any other regex — a character class, a quantifier, a
+// wildcard — is refused, because answering it means reading every row. The two
+// plans, measured:
+//
+//	severity=~"critical|warning"  BitmapOr → 2 × Bitmap Index Scan, 3 758 buffers
+//	severity=~"crit.*"            Seq Scan, 60 000 rows examined, 48 000 discarded
+//
+// The second is what "silently degraded to a scan" looks like, and it is why the
+// answer is a 422 naming the matcher instead.
 func Compile(field string, n Node) (Compiled, error) {
 	out := Compiled{}
 	if n == nil {
@@ -91,22 +104,22 @@ func compileLabel(field string, m Matcher, out *Compiled, negated bool) error {
 
 	negative := negated != m.Op.IsNegative()
 	if negative {
-		if len(values) != 1 {
-			// `NOT (a OR b)` over a GIN containment is `NOT a AND NOT b`, which
-			// is representable — but only one negative entry per key exists in
-			// LabelsNone, so a multi-valued negation would silently lose a term.
-			// Refuse rather than under-filter.
-			return unsupported(field,
-				"a negated matcher must name exactly one value; split it into separate matchers")
-		}
+		// `NOT (a OR b)` over a GIN containment is `NOT a AND NOT b`, and both
+		// halves are representable, so a multi-valued negation is admitted whole
+		// rather than refused. Two negated matchers on the same label simply
+		// accumulate — they conjoin, which is what an operator means by writing
+		// both.
+		//
+		// ⚠️ A negation is a FILTER and never a DRIVER. `NOT (labels @> …)` has
+		// no index (measured: Parallel Seq Scan over all 60 000 rows), so it is
+		// applied on top of whichever positive predicate drives the plan. It is
+		// admitted regardless because `label[!tier]=canary` is a documented
+		// filter of this API and always has been; what ADR 0017 forbids is a
+		// predicate whose SUPPORTED SPELLING implies an index it does not have.
 		if out.LabelsNone == nil {
-			out.LabelsNone = map[string]string{}
+			out.LabelsNone = map[string][]string{}
 		}
-		if prior, dup := out.LabelsNone[m.Name]; dup && prior != values[0] {
-			return unsupported(field,
-				"two negated matchers on the same label are not supported; use one")
-		}
-		out.LabelsNone[m.Name] = values[0]
+		out.LabelsNone[m.Name] = dedupe(append(out.LabelsNone[m.Name], values...))
 		return nil
 	}
 
@@ -171,6 +184,26 @@ func addAny(out *Compiled, name string, values []string) {
 	out.LabelsAny[name] = dedupe(append(out.LabelsAny[name], values...))
 }
 
+// regexMetacharacters is every character whose presence in an alternation branch
+// means the branch is not a literal. It is listed exhaustively rather than
+// probed with regexp, because "does this regex happen to match only literals" is
+// undecidable in the direction that matters and a wrong answer here is a scan.
+const regexMetacharacters = `.*+?()[]{}\^$|`
+
+// unsupportedRegex is the message a refused regex matcher gets.
+//
+// ⭐ ADR 0017 binds the MANNER of the refusal, not only the fact of it: a
+// predicate that cannot use an index is rejected at parse time "with a precise
+// message". Precise means the caller learns exactly which spellings work without
+// having to guess, so the message enumerates both halves of the boundary.
+const unsupportedRegex = `a regular-expression matcher is supported only when it is an ` +
+	`alternation of literal values, because that is exactly an IN list over the label ` +
+	`index — for example severity=~"critical|warning" or tier!~"canary|staging", with ` +
+	`optional ^ and $ anchors. Metacharacters (. * + ? ( ) [ ] { } \) are refused rather ` +
+	`than answered by reading every alert: a filter that works in staging and times out ` +
+	`during an incident is worse than one that says no. Use = or != for a single value, ` +
+	`comma-separated values for a set, or the q= parameter for free-text search.`
+
 // literalValues turns a matcher into the literal values an index can test.
 //
 // An equality matcher is one value. A regex matcher is expanded ONLY when it is a
@@ -183,15 +216,13 @@ func literalValues(field string, m Matcher) ([]string, error) {
 
 	body := strings.TrimSuffix(strings.TrimPrefix(m.Value, "^"), "$")
 	if body == "" {
-		return nil, unsupported(field, "an empty regular expression cannot be answered from an index")
+		return nil, unsupported(field, unsupportedRegex)
 	}
 	parts := strings.Split(body, "|")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if p == "" || strings.ContainsAny(p, `.*+?()[]{}\^$|`) {
-			return nil, unsupported(field,
-				"only a regular expression that is an alternation of literal values "+
-					`(for example severity=~"critical|warning") can be answered from an index`)
+		if p == "" || strings.ContainsAny(p, regexMetacharacters) {
+			return nil, unsupported(field, unsupportedRegex)
 		}
 		out = append(out, p)
 	}

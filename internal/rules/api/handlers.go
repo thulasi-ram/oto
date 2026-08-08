@@ -37,23 +37,22 @@ func (rt *Router) listRuleSnapshots(w http.ResponseWriter, r *http.Request) {
 		Group:    q.RuleGroup,
 		Name:     q.RuleName,
 	}
-	history, err := rt.svc.History(r.Context(), scope, key)
+
+	// ⭐ A REAL KEYSET PAGE, not the head of a capped in-memory history. This
+	// endpoint used to be served from `History()`: the first `limit` of at most
+	// 200 versions, `has_more` set, and `next_cursor` structurally always null —
+	// a list whose second page could not be asked for.
+	res, err := rt.svc.ListSnapshots(r.Context(), scope, key, q.Page)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	versions := newestFirst(history)
-	out := make([]RuleSnapshotDTO, 0, q.Limit)
-	page := httpx.Page{Limit: q.Limit}
-	for _, v := range versions {
-		if len(out) == q.Limit {
-			page.HasMore = true
-			break
-		}
+	out := make([]RuleSnapshotDTO, 0, len(res.Snapshots))
+	for _, v := range res.Snapshots {
 		out = append(out, snapshotDTO(v))
 	}
-	httpx.List(w, r, out, page, started)
+	httpx.List(w, r, out, httpx.PageOf(res.Cursor, q.Limit), started)
 }
 
 // getRuleSnapshot is `GET /api/v1/rule-snapshots/{id}`.

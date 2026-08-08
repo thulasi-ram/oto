@@ -23,7 +23,10 @@ import (
 // *service.Service.
 type RuleService interface {
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Snapshot, error)
+	// History is the NUMBERED edit history, used to compute a diff. ListSnapshots
+	// is the paginated list. They are different questions — see ListSnapshots.
 	History(ctx context.Context, s db.TenantScope, key domain.Key) (domain.History, error)
+	ListSnapshots(ctx context.Context, s db.TenantScope, key domain.Key, p db.Keyset) (service.SnapshotPage, error)
 	DiffSince(ctx context.Context, s db.TenantScope, key domain.Key, boundFingerprint string) (domain.Diff, bool, error)
 }
 
@@ -89,10 +92,19 @@ func scopeOf(r *http.Request) (db.TenantScope, error) {
 
 var listSnapshotParams = []string{"source_id", "rule_name", "rule_group", "rule_file", "limit", "cursor"}
 
-func parseListSnapshots(r *http.Request) (ListSnapshotsQuery, error) {
+// snapshotsRequest is one parsed, validated `listRuleSnapshots` call.
+type snapshotsRequest struct {
+	ListSnapshotsQuery
+	// Page is the decoded keyset position, bound to the RuleKey it was minted
+	// under: a cursor from one rule replayed against another describes a
+	// position in a list that does not exist.
+	Page db.Keyset
+}
+
+func parseListSnapshots(r *http.Request) (snapshotsRequest, error) {
 	p := httpx.NewParams(r, listSnapshotParams...)
 	if err := p.Err(); err != nil {
-		return ListSnapshotsQuery{}, err
+		return snapshotsRequest{}, err
 	}
 	q := ListSnapshotsQuery{
 		SourceID:  p.String("source_id", ""),
@@ -103,9 +115,23 @@ func parseListSnapshots(r *http.Request) (ListSnapshotsQuery, error) {
 		Cursor:    p.Cursor(),
 	}
 	if err := p.Err(); err != nil {
-		return ListSnapshotsQuery{}, err
+		return snapshotsRequest{}, err
 	}
-	return httpx.BindEmpty(q)
+	if _, err := httpx.BindEmpty(q); err != nil {
+		return snapshotsRequest{}, err
+	}
+
+	hash := httpx.FilterHash(
+		"source_id="+q.SourceID,
+		"rule_name="+q.RuleName,
+		"rule_group="+q.RuleGroup,
+		"rule_file="+q.RuleFile,
+	)
+	cursor, err := httpx.DecodeCursor(q.Cursor, hash)
+	if err != nil {
+		return snapshotsRequest{}, err
+	}
+	return snapshotsRequest{ListSnapshotsQuery: q, Page: httpx.Keyset(q.Limit, cursor)}, nil
 }
 
 // notFound is the one shape a missing rule read takes. A `404` on the occurrence

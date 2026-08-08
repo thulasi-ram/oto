@@ -6,9 +6,9 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	alerts "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
-	"github.com/thulasiram/oto/internal/grouping/repository"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
@@ -22,21 +22,44 @@ type ListResult struct {
 	Cursor db.Cursor
 }
 
-// List serves `GET /api/v1/alert-groups` — the default UI landing view, keyset
-// paginated by (last_activity_at DESC, id DESC).
+// ListQuery is the compiled form of `GET /api/v1/alert-groups`.
+type ListQuery struct {
+	Filter domain.GroupFilter
+	// Sort is "" (meaning SortLastActivityDesc), SortLastActivityDesc or
+	// SortFirstSeenDesc. An unrecognised value is REJECTED, never defaulted.
+	Sort string
+	Page db.Keyset
+}
+
+// List serves `GET /api/v1/alert-groups` — the default UI landing view.
 //
-// `states` is a filter over open|closed; empty means both. A closed generation is
-// still listed: it is the record of a conversation that happened, and hiding it
-// would make the group list disagree with the Slack channel it mirrors.
-func (s *Service) List(
-	ctx context.Context, scope db.TenantScope, states []string, p db.Keyset,
-) (ListResult, error) {
-	for _, st := range states {
+// ⭐ EVERY FILTER AND THE SORT GO DOWN TO SQL. They used to stop here: this
+// method accepted `states` alone, so the handler fetched a page and then removed
+// rows from it in memory, and accepted a `sort` it never applied. Both are the
+// same failure — a list that answers a question other than the one it was asked
+// while looking exactly as if it had not.
+//
+// A closed generation is still listed when `state` is unset: it is the record of
+// a conversation that happened, and hiding it would make the group list disagree
+// with the chat channel it mirrors.
+func (s *Service) List(ctx context.Context, scope db.TenantScope, q ListQuery) (ListResult, error) {
+	for _, st := range q.Filter.States {
 		if _, err := domain.NewState(st); err != nil {
 			return ListResult{}, err
 		}
 	}
-	groups, cur, err := s.groups.List(ctx, scope, states, p)
+	switch q.Sort {
+	case "", domain.SortLastActivityDesc, domain.SortFirstSeenDesc:
+	default:
+		return ListResult{}, errs.Validation("sort_invalid",
+			"sort must be one of: -last_activity_at, -first_seen_at")
+	}
+	if !q.Page.Cursor.IsZero() && q.Page.Cursor.Hash != q.Filter.FilterHash {
+		return ListResult{}, errs.Malformed("cursor_filter_mismatch",
+			"this cursor was minted against a different set of filters")
+	}
+
+	groups, cur, err := s.groups.List(ctx, scope, q.Filter, q.Sort, q.Page)
 	if err != nil {
 		return ListResult{}, err
 	}
@@ -68,12 +91,29 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, groupID uuid.UU
 	return Detail{Group: g, Members: members, StormActive: g.StormMode()}, nil
 }
 
+// MemberResult is one keyset page of a generation's current members.
+type MemberResult struct {
+	Members []domain.Member
+	Cursor  db.Cursor
+}
+
 // Members serves `GET /api/v1/alert-groups/{id}/alerts` — the member alerts of a
-// generation, in join order.
+// generation, newest join first, keyset-paginated.
+//
+// ⭐ IT RETURNS A DOMAIN TYPE AND A PAGE. It used to return
+// `[]repository.MemberAlert`, a name `grouping/api` cannot even write down —
+// depguard forbids `api` importing `repository` (CONTEXT.md §5.1) — so the
+// handler could not call it at all and reached for `Get().Members` instead,
+// materialising the whole membership and slicing it in Go. A service method the
+// only caller that needs it is forbidden to name is not a service method.
 func (s *Service) Members(
-	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
-) ([]repository.MemberAlert, error) {
-	return s.members.CurrentMemberAlerts(ctx, scope, groupID)
+	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, p db.Keyset,
+) (MemberResult, error) {
+	members, cur, err := s.members.ListCurrentMembers(ctx, scope, groupID, p)
+	if err != nil {
+		return MemberResult{}, err
+	}
+	return MemberResult{Members: members, Cursor: cur}, nil
 }
 
 // History returns every membership a generation has ever had, so the group card
@@ -176,15 +216,51 @@ func (s *Service) Acknowledge(
 	})
 }
 
+// CommentResult is what one group comment wrote.
+type CommentResult struct {
+	FanOut FanOutResult
+	// Event is the FIRST appended entry, which is the one the `201` body
+	// carries. Members are fanned out in join order, so it is deterministic.
+	Event kernel.Event
+}
+
 // Comment serves `POST /api/v1/alert-groups/{id}/comments`: one annotation on
 // each member's timeline.
+//
+// ⭐ IT RETURNS THE APPENDED EVENT. The contract answers `201` with the event
+// that was written, and the handler used to obtain it by re-reading the group
+// timeline and picking the newest `comment.added` — a second query that can
+// legitimately return somebody else's comment, appended a millisecond later, and
+// hand it back as the caller's own. The write already knows what it wrote.
+//
+// A group with no currently-joined member is a `412`: there is no signal to
+// annotate, and the timeline is a record of facts about signals.
 func (s *Service) Comment(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
 	actorKind, actorID, actorLabel, body string,
-) (FanOutResult, error) {
-	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
-		return s.actions.CommentAs(ctx, scope, alertID, actorKind, actorID, actorLabel, body)
+) (CommentResult, error) {
+	var (
+		first kernel.Event
+		got   bool
+	)
+	res, err := s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
+		ev, err := s.actions.CommentAs(ctx, scope, alertID, actorKind, actorID, actorLabel, body)
+		if err != nil {
+			return err
+		}
+		if !got {
+			first, got = ev, true
+		}
+		return nil
 	})
+	if err != nil {
+		return CommentResult{}, err
+	}
+	if !got {
+		return CommentResult{}, errs.Precondition("no_group_members",
+			"this group has no member alert to annotate")
+	}
+	return CommentResult{FanOut: res, Event: first}, nil
 }
 
 // Snooze serves `POST /api/v1/alert-groups/{id}/snooze` (§B.8.3).

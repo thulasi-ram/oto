@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/alerts/domain"
+	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 )
 
@@ -44,6 +46,56 @@ func (rt *Router) listAlerts(w http.ResponseWriter, r *http.Request) {
 		out = append(out, dto)
 	}
 	httpx.List(w, r, out, pageOf(res.Cursor, req.Query.Limit), started)
+}
+
+// listAlertRollups is `GET /api/v1/alerts/rollups` — server-side grouping.
+//
+// ⭐ WHY IT IS A SEPARATE OPERATION and not a `group_by` mode of `listAlerts`.
+// Three reasons, all of them about honesty rather than taste:
+//
+//  1. The response shape is different in kind. A bucket is not an alert, so one
+//     operation would have to return `oneOf` two schemas and every generated
+//     client would have to narrow it at runtime.
+//  2. The keyset is over a different total order — the bucket key, a string —
+//     while `sort` on the list is over `last_seen_at`. One operation would carry
+//     a `sort` enum half of whose values are invalid half of the time.
+//  3. `include=` embeds sub-resources of an alert. A bucket has none.
+//
+// ⛔ And it is NOT `/alert-groups`. That endpoint is one generation of one
+// ALERTMANAGER NOTIFICATION GROUP — it has a row, a generation and a chat
+// thread. This is a view over the alert list (§A.1). Conflating them is the
+// ambiguity the ubiquitous language bans by name.
+func (rt *Router) listAlertRollups(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, err := scopeOf(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	req, err := parseListRollups(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	res, err := rt.svc.Rollups(r.Context(), scope, req.Service)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	by := req.Service.By.String()
+	out := make([]AlertRollupDTO, 0, len(res.Rollups))
+	for _, b := range res.Rollups {
+		out = append(out, rollupDTO(b, by))
+	}
+
+	page := httpx.Page{Limit: req.Query.Limit, HasMore: res.HasMore}
+	if res.HasMore && len(res.Rollups) > 0 {
+		page.NextCursor = encodeKeyCursor(res.Rollups[len(res.Rollups)-1].Key, req.Hash)
+	}
+	httpx.List(w, r, out, page, started)
 }
 
 // embed batch-loads the `include=` sub-resources.
@@ -396,6 +448,169 @@ func (rt *Router) commentOnAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Data(w, r, http.StatusCreated, eventDTO(ev), started)
+}
+
+// ------------------------------------------------------------------- snooze
+
+// snoozeAlert is `POST /api/v1/alerts/{id}/snooze` (§B.8).
+//
+// ⛔ IT CHANGES NOTHING ABOUT THE SIGNAL. Snooze suppresses OTO'S OWN
+// notifications for one alert_key until a fixed time; it writes nothing into
+// Alertmanager, moves no state, and touches no severity. The alert stays firing
+// and every surface MUST keep rendering it that way — colouring a snoozed
+// critical calm would be the exact lie §E.1.1 exists to prevent.
+//
+// It is auto-expiring by construction: 5 minutes to 30 days, never indefinite.
+// An unexpiring snooze is a mute, and mutes are how channels die.
+//
+// The response is the alert detail, so the caller sees the snooze in force
+// alongside the state it did not change.
+func (rt *Router) snoozeAlert(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, actor, id, err := rt.action(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	body, err := httpx.Bind[SnoozeRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	until, err := rt.snoozeUntil(body)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	if _, err := rt.svc.Snooze(r.Context(), scope, id, actor, until, body.Note); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	rt.writeAlertDetail(w, r, scope, id, started)
+}
+
+// unsnoozeAlert is `POST /api/v1/alerts/{id}/unsnooze` — end an active snooze
+// early. An alert that is not snoozed is a `412`: the request is well-formed,
+// the entity is simply in the wrong state.
+func (rt *Router) unsnoozeAlert(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, actor, id, err := rt.action(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if _, err := optionalBody[UnsnoozeRequest](w, r); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	if _, err := rt.svc.Unsnooze(r.Context(), scope, id, actor); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	rt.writeAlertDetail(w, r, scope, id, started)
+}
+
+// listAlertSnoozes is `GET /api/v1/alerts/{id}/snoozes` — the §B.8.6 history.
+//
+// ⭐ Membership of a snooze is HISTORY, not a boolean. This is what makes the
+// feature safe to ship: every quiet period is attributable, bounded and visible
+// after the fact, so a snooze can be reviewed rather than merely forgotten.
+func (rt *Router) listAlertSnoozes(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, err := scopeOf(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	id, err := httpx.PathUUID(r, "id")
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	p := httpx.NewParams(r, "limit")
+	if err := p.Err(); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	limit := p.Limit()
+	if err := p.Err(); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	rows, err := rt.svc.SnoozeHistory(r.Context(), scope, id, limit)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	out := make([]SnoozeHistoryDTO, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, snoozeHistoryDTO(s))
+	}
+	httpx.Data(w, r, http.StatusOK, out, started)
+}
+
+// snoozeUntil resolves the two spellings of "how long".
+//
+// ⛔ EXACTLY ONE of them, never both and never neither. `duration_seconds` is
+// resolved against OTO'S clock rather than the caller's, so a client with a
+// skewed clock cannot talk its way past the §B.8.3 bounds; the domain factory
+// re-proves them either way, because a bound that lives in one place lives
+// nowhere.
+func (rt *Router) snoozeUntil(body SnoozeRequest) (time.Time, error) {
+	switch {
+	case body.Until != nil && body.DurationSeconds != nil:
+		return time.Time{}, errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{Field: "until", Code: "excluded_with",
+				Message: "give either until or duration_seconds, never both"})
+	case body.Until != nil:
+		return body.Until.UTC(), nil
+	case body.DurationSeconds != nil:
+		return rt.now().Add(time.Duration(*body.DurationSeconds) * time.Second), nil
+	default:
+		return time.Time{}, errs.Validation("validation_failed", "1 field failed validation.",
+			errs.Violation{Field: "until", Code: "required_without",
+				Message: "a snooze must end: give until or duration_seconds. " +
+					"There is no indefinite snooze"})
+	}
+}
+
+// writeAlertDetail re-reads and renders the alert after a snooze verb, so the
+// response describes the row as it now stands rather than as the request hoped.
+func (rt *Router) writeAlertDetail(
+	w http.ResponseWriter, r *http.Request, scope db.TenantScope, id uuid.UUID, started time.Time,
+) {
+	detail, err := rt.svc.Get(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	dto := AlertDetailDTO{AlertDTO: alertDTO(detail.Alert)}
+	occ := detail.CurrentOccurrence
+	if occ == nil {
+		occ = detail.LatestOccurrence
+	}
+	if occ != nil {
+		o := occurrenceDTO(*occ, started)
+		dto.CurrentOccurrence = &o
+	}
+	if detail.Snooze != nil {
+		s := snoozeDTO(*detail.Snooze)
+		dto.Snooze = &s
+	}
+	dto.EnrichmentSummary = []EnrichmentSummaryDTO{}
+	if rows, err := rt.svc.Enrichments(r.Context(), scope, detail.Alert.ID()); err == nil {
+		for _, e := range rows {
+			dto.EnrichmentSummary = append(dto.EnrichmentSummary, enrichmentSummaryDTO(e))
+		}
+	}
+	httpx.Data(w, r, http.StatusOK, dto, started)
 }
 
 // listLabelNames is `GET /api/v1/labels` — the filter bar's typeahead.

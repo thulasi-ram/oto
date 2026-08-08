@@ -151,13 +151,21 @@ func enrichmentSummaryDTO(e service.EnrichmentSummary) EnrichmentSummaryDTO {
 // generations only, which is why `subject_id` is the group id.
 func notificationDTO(n service.NotificationSummary) NotificationDTO {
 	summary := DeliverySummaryDTO{
-		Total:  int32(n.DeliveriesTotal),
-		Sent:   int32(n.DeliveriesSent),
-		Failed: int32(n.DeliveriesFailed),
-		Dead:   int32(n.DeliveriesDead),
+		Total:   int32(n.DeliveriesTotal),
+		Sent:    int32(n.DeliveriesSent),
+		Failed:  int32(n.DeliveriesFailed),
+		Dead:    int32(n.DeliveriesDead),
+		Skipped: int32(n.DeliveriesSkipped),
+		Pending: int32(n.DeliveriesPending),
 	}
-	if pending := n.DeliveriesTotal - n.DeliveriesSent - n.DeliveriesFailed - n.DeliveriesDead; pending > 0 {
-		summary.Pending = int32(pending)
+	// `pending` is DERIVED only when the producer supplies none, and the
+	// derivation is exact rather than a guess: sent, failed, dead and pending
+	// exhaust the delivery states, so whatever `total` has left over is queued or
+	// in flight. It is documented as such in the contract.
+	if n.DeliveriesPending == 0 {
+		if pending := n.DeliveriesTotal - n.DeliveriesSent - n.DeliveriesFailed - n.DeliveriesDead; pending > 0 {
+			summary.Pending = int32(pending)
+		}
 	}
 
 	dto := NotificationDTO{
@@ -167,15 +175,17 @@ func notificationDTO(n service.NotificationSummary) NotificationDTO {
 		GroupID:         n.GroupID,
 		AlertID:         n.AlertID,
 		OccurrenceID:    n.OccurrenceID,
+		PolicyID:        n.PolicyID,
 		Reason:          n.Reason,
 		StateVersion:    int32(n.StateVersion),
 		Status:          n.Status,
 		DeliverySummary: &summary,
 		CreatedAt:       utc(n.CreatedAt),
-		// The read model carries no updated_at; the contract requires the field.
-		// Reporting the creation instant is honest — it is the last instant this
-		// projection can actually vouch for — where a zero time would not be.
-		UpdatedAt: utc(n.CreatedAt),
+		// ⛔ NEVER CreatedAt. A projection that has no updated_at says so, with
+		// null. Substituting the creation instant made "never changed" and
+		// "changed a minute ago" indistinguishable, which is exactly the kind of
+		// quiet lie a system of record cannot afford.
+		UpdatedAt: timePtr(n.UpdatedAt),
 	}
 	if n.SuppressedReason != "" {
 		dto.SuppressedReason = strPtr(n.SuppressedReason)
@@ -194,6 +204,53 @@ func snoozeDTO(s domain.Snooze) SnoozeDTO {
 	}
 }
 
+// snoozeHistoryDTO renders one row of the §B.8.6 history.
+//
+// `ended_reason` is copied and never derived: `expired`, `manual` and
+// `superseded` are three different stories about the same ending, and a
+// history that could not tell them apart would not be worth keeping.
+func snoozeHistoryDTO(s domain.Snooze) SnoozeHistoryDTO {
+	out := SnoozeHistoryDTO{
+		SnoozeDTO: snoozeDTO(s),
+		Active:    s.EndedAt().IsZero(),
+	}
+	if r := s.EndedReason(); !r.IsZero() {
+		out.EndedReason = strPtr(r.String())
+	}
+	out.EndedByLabel = strPtr(s.EndedByLabel())
+	return out
+}
+
+// rollupDTO renders one §E.3a bucket.
+//
+// `state` is the domain's roll-up: a bucket is as alive as its liveliest member,
+// and `resolved` and `expired` are never merged, because "the upstream said it
+// ended" and "we stopped hearing about it" are different facts and the second is
+// the more interesting one.
+func rollupDTO(r domain.AlertRollup, by string) AlertRollupDTO {
+	sev := make(map[string]int32, len(r.SeverityCounts))
+	for k, v := range r.SeverityCounts {
+		sev[k] = int32(v)
+	}
+	return AlertRollupDTO{
+		Key:             r.Key,
+		GroupBy:         by,
+		State:           r.RollupState().String(),
+		TotalCount:      int32(r.Total),
+		FiringCount:     int32(r.Firing),
+		SuppressedCount: int32(r.Suppressed),
+		ResolvedCount:   int32(r.Resolved),
+		ExpiredCount:    int32(r.Expired),
+		AckedCount:      int32(r.Acked),
+		UnackedCount:    int32(r.Unacked()),
+		FlappingCount:   int32(r.Flapping),
+		SnoozedCount:    int32(r.Snoozed),
+		SeverityCounts:  sev,
+		FirstSeenAt:     utc(r.FirstSeenAt),
+		LastSeenAt:      utc(r.LastSeenAt),
+	}
+}
+
 // promotedLabels are the individually indexed columns. Filtering on one is
 // markedly cheaper than filtering on an arbitrary label, and the filter bar says
 // so rather than letting the operator find out during an incident.
@@ -201,11 +258,17 @@ var promotedLabels = map[string]bool{
 	"alertname": true, "severity": true, "namespace": true, "service": true, "cluster": true,
 }
 
-func labelNameDTO(name string) LabelNameDTO {
-	return LabelNameDTO{Name: name, Promoted: promotedLabels[name]}
+func labelNameDTO(l domain.LabelCount) LabelNameDTO {
+	return LabelNameDTO{
+		Name:       l.Value,
+		AlertCount: int32(l.Count),
+		Promoted:   promotedLabels[l.Value],
+	}
 }
 
-func labelValueDTO(v string) LabelValueDTO { return LabelValueDTO{Value: v} }
+func labelValueDTO(l domain.LabelCount) LabelValueDTO {
+	return LabelValueDTO{Value: l.Value, AlertCount: int32(l.Count)}
+}
 
 // ------------------------------------------------------------------ helpers
 

@@ -38,8 +38,18 @@ type SnapshotRepository interface {
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Snapshot, error)
 
 	// ListByKey returns every distinct capture for one rule key, oldest first
-	// and bounded by limit. This is the edit history.
+	// and bounded by limit. This is the edit history, and it is what the
+	// version-numbered diff is computed over.
 	ListByKey(ctx context.Context, s db.TenantScope, key domain.Key, limit int) ([]domain.Snapshot, error)
+
+	// ListPage is ListByKey's paginated sibling: one KEYSET page, newest first.
+	//
+	// The two exist side by side because they answer different questions.
+	// ListByKey rebuilds the NUMBERED history — version 1 is the oldest capture
+	// and the numbering only exists relative to the whole set, so a diff cannot
+	// be computed from a page. ListPage renders a list, where the whole set may
+	// be larger than anything worth materialising.
+	ListPage(ctx context.Context, s db.TenantScope, key domain.Key, p db.Keyset) ([]domain.Snapshot, db.Cursor, error)
 
 	// Latest returns the newest capture for one rule key. The bool is false
 	// when the rule has never been captured, which is a state and not an error.

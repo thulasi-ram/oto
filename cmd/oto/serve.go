@@ -1,69 +1,32 @@
 package main
 
 import (
-	"net/http"
-	"time"
-
-	"github.com/go-chi/chi/v5"
+	"context"
+	"log/slog"
 
 	"github.com/thulasiram/oto/internal/app"
 	"github.com/thulasiram/oto/internal/platform/httpx"
-	mw "github.com/thulasiram/oto/internal/platform/httpx/middleware"
 )
 
-// newRouter assembles the whole HTTP surface: the ops endpoints, which this
-// package owns, and the versioned API, which internal/app.Register owns.
-func newRouter(c *app.Container) http.Handler {
-	r := chi.NewRouter()
+// serve runs the HTTP surface until ctx ends, then drains in-flight requests.
+//
+// The route table, the middleware order and every security grouping belong to
+// `internal/app` — the composition root is the one place allowed to know which
+// routes must sit outside the timeout, outside the authenticator and outside
+// anything that touches the request body. This function is deliberately four
+// lines long: a router assembled here would be a second place those rules could
+// be written differently.
+func serve(ctx context.Context, c *app.Container) error {
+	cfg := c.Config.HTTP
+	srv := httpx.NewServer(cfg, c.Router())
 
-	r.Use(mw.RequestID)
-	r.Use(mw.Logger(c.Logger))
-	r.Use(mw.Recover)
-	r.Use(mw.CORS(c.Config.HTTP))
-	r.Use(mw.MaxBody(c.Config.HTTP.MaxBodyBytes))
+	c.Logger.Info("listening",
+		slog.String("addr", cfg.Addr),
+		slog.Bool("metrics", c.Config.Telemetry.MetricsEnabled),
+		slog.Bool("db", c.Pools != nil),
+		slog.Bool("workers", c.WorkersEnabled))
 
-	// --- ops surface (unauthenticated, outside /api/v1) ---
-
-	// Liveness. Deliberately does NOT touch the database: a Postgres outage must
-	// not make Kubernetes restart every oto pod.
-	r.Get("/healthz", func(w http.ResponseWriter, req *http.Request) {
-		httpx.JSON(w, req, http.StatusOK, map[string]any{
-			"status":  "ok",
-			"service": c.Config.Service,
-			"version": c.Config.Version,
-		})
-	})
-
-	// Readiness. Reports the truth about dependencies; a failure here removes the
-	// pod from the load balancer without killing it.
-	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
-		body := map[string]any{"status": "ok"}
-		status := http.StatusOK
-
-		if c.Pools == nil {
-			status = http.StatusServiceUnavailable
-			body["status"] = "unavailable"
-			body["db"] = "not initialised"
-		} else if err := c.Pools.Ping(req.Context(), 2*time.Second); err != nil {
-			status = http.StatusServiceUnavailable
-			body["status"] = "unavailable"
-			body["db"] = err.Error()
-		} else {
-			body["db"] = "ok"
-			body["pools"] = c.Pools.Stats()
-		}
-		httpx.JSON(w, req, status, body)
-	})
-
-	if c.Config.Telemetry.MetricsEnabled {
-		r.Method(http.MethodGet, c.Config.Telemetry.MetricsPath, c.Telemetry.MetricsHandler())
-	}
-
-	// --- public API ---
-	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(mw.Timeout(c.Config.HTTP.RequestTimeout))
-		app.Register(r)
-	})
-
-	return r
+	// Serve returns only after the server has stopped accepting and drained; the
+	// worker pool is drained afterwards, by the container's own Close.
+	return httpx.Serve(ctx, srv, cfg)
 }

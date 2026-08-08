@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -17,10 +18,11 @@ import (
 // groupRow is the row model of `alert_groups`. Unexported, per the three-model
 // rule: no DTO and no domain type may embed it.
 type groupRow struct {
-	id        uuid.UUID
-	orgID     uuid.UUID
-	sourceID  uuid.UUID
-	clusterID uuid.UUID
+	id         uuid.UUID
+	orgID      uuid.UUID
+	sourceID   uuid.UUID
+	clusterID  uuid.UUID
+	clusterKey string
 
 	groupKey       string
 	generation     int32
@@ -59,13 +61,34 @@ var groupColumnList = []string{
 
 var groupColumns = strings.Join(groupColumnList, ", ")
 
+// groupColumnsQualified is groupColumns aliased to `g`, for the queries that
+// join `clusters`.
+var groupColumnsQualified = "g." + strings.Join(groupColumnList, ", g.")
+
+// clusterJoin resolves `cluster_key` for a generation.
+//
+// ⭐ `alert_groups` stores only `cluster_id`, and the contract requires
+// `cluster_key`. Reading it out of `group_labels['cluster']` — which is what the
+// handler used to do — is wrong twice over: the entry exists only while
+// Alertmanager happens to group by `cluster`, and the value is whatever the
+// upstream labelled with rather than the identity oto keys alerts on (§C.2).
+//
+// NOTE (planner): the join is a primary-key lookup on `clusters.id`, one row per
+// group row. The alternative is a denormalised `alert_groups.cluster_key`
+// column, which is a migration this module does not own.
+const clusterJoin = " JOIN clusters c ON c.id = g.cluster_id AND c.org_id = g.org_id"
+
+// selectGroups is the read projection every group query shares.
+var selectGroups = `SELECT ` + groupColumnsQualified + `, c.cluster_key
+  FROM alert_groups g` + clusterJoin
+
 func (r *groupRow) scanDest() []any {
 	return []any{
 		&r.id, &r.orgID, &r.sourceID, &r.clusterID, &r.groupKey, &r.generation, &r.sourceGroupKey,
 		&r.receiver, &r.groupLabels, &r.title, &r.state, &r.severity, &r.stateVersion,
 		&r.firingCount, &r.suppressedCount, &r.resolvedCount, &r.expiredCount, &r.totalCount,
 		&r.ackedCount, &r.stormMode, &r.stormSince, &r.lastNotificationReason, &r.firstSeenAt,
-		&r.lastActivityAt, &r.closedAt,
+		&r.lastActivityAt, &r.closedAt, &r.clusterKey,
 	}
 }
 
@@ -88,6 +111,7 @@ func (r *groupRow) toDomain() (domain.Group, error) {
 		OrgID:          r.orgID,
 		SourceID:       r.sourceID,
 		ClusterID:      r.clusterID,
+		ClusterKey:     r.clusterKey,
 		Key:            key,
 		Generation:     int(r.generation),
 		SourceGroupKey: strOrEmpty(r.sourceGroupKey),
@@ -143,7 +167,7 @@ func (r *GroupRepository) GetByID(ctx context.Context, s db.TenantScope, id uuid
 	}
 	var row groupRow
 	err := r.db(ctx).QueryRow(ctx,
-		`SELECT `+groupColumns+` FROM alert_groups WHERE org_id = $1 AND id = $2`,
+		selectGroups+` WHERE g.org_id = $1 AND g.id = $2`,
 		s.OrgID(), id).Scan(row.scanDest()...)
 	if err != nil {
 		if isNoRows(err) {
@@ -168,10 +192,9 @@ func (r *GroupRepository) GetOpenByKey(
 	}
 	var row groupRow
 	err := r.db(ctx).QueryRow(ctx,
-		`SELECT `+groupColumns+`
-		   FROM alert_groups
-		  WHERE org_id = $1 AND group_key = $2 AND state = 'open'
-		  ORDER BY generation DESC
+		selectGroups+`
+		  WHERE g.org_id = $1 AND g.group_key = $2 AND g.state = 'open'
+		  ORDER BY g.generation DESC
 		  LIMIT 1`,
 		s.OrgID(), groupKey).Scan(row.scanDest()...)
 	if err != nil {
@@ -187,15 +210,22 @@ func (r *GroupRepository) GetOpenByKey(
 	return g, true, nil
 }
 
+// insertGroupSQL opens the next generation and resolves its cluster_key in the
+// same round trip. RETURNING cannot join, so the INSERT is a CTE and the join
+// happens on its output.
 var insertGroupSQL = `
-INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, generation,
-                          source_group_key, receiver, group_labels, title, state, severity,
-                          state_version, first_seen_at, last_activity_at)
-SELECT $1, $2, $3, $4, $5,
-       COALESCE((SELECT max(g.generation) FROM alert_groups g
-                  WHERE g.org_id = $2 AND g.group_key = $5), 0) + 1,
-       $6, $7, $8, $9, 'open', $10, 1, $11, $11
-RETURNING ` + groupColumns
+WITH g AS (
+  INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, generation,
+                            source_group_key, receiver, group_labels, title, state, severity,
+                            state_version, first_seen_at, last_activity_at)
+  SELECT $1, $2, $3, $4, $5,
+         COALESCE((SELECT max(prev.generation) FROM alert_groups prev
+                    WHERE prev.org_id = $2 AND prev.group_key = $5), 0) + 1,
+         $6, $7, $8, $9, 'open', $10, 1, $11, $11
+  RETURNING ` + groupColumns + `
+)
+SELECT ` + groupColumnsQualified + `, c.cluster_key
+  FROM g` + clusterJoin
 
 // OpenGeneration creates the NEXT generation of a group key.
 //
@@ -410,36 +440,99 @@ func (r *GroupRepository) StateVersion(
 	return int(v), nil
 }
 
-// List is the groups list, keyset-paginated by (last_activity_at DESC, id DESC)
-// — the default UI landing view (grp_list_idx).
+// List is the groups list — the default UI landing view.
+//
+// ⭐ EVERY FILTER IS APPLIED IN SQL, BEFORE THE LIMIT. That is the whole point
+// of the signature: this method used to accept `states` alone, and the handler
+// post-filtered the returned page in memory, which is not filtering but
+// truncation — 50 rows fetched, 43 discarded, 7 returned, and a `has_more`
+// cursor pointing past everything the filter never got to look at. A predicate
+// evaluated after pagination is silently wrong on every page but the last.
+//
+// Keyset: `(last_activity_at DESC, id DESC)` on grp_list_idx, or
+// `(first_seen_at DESC, id DESC)`.
+//
+// NOTE (planner): `-last_activity_at` rides grp_list_idx
+// (org_id, state, last_activity_at DESC, id DESC). `-first_seen_at` has NO
+// covering index and is a filter-then-sort over the org's generations; it is the
+// rarer of the two and `alert_groups` is a small table beside `alerts`. Adding
+// (org_id, first_seen_at DESC, id DESC) is a migration this module does not own.
 func (r *GroupRepository) List(
-	ctx context.Context, s db.TenantScope, states []string, p db.Keyset,
+	ctx context.Context, s db.TenantScope, f domain.GroupFilter, sort string, p db.Keyset,
 ) ([]domain.Group, db.Cursor, error) {
 	if err := requireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
+
+	sortCol := "g.last_activity_at"
+	switch sort {
+	case "", domain.SortLastActivityDesc:
+	case domain.SortFirstSeenDesc:
+		sortCol = "g.first_seen_at"
+	default:
+		return nil, db.Cursor{}, errs.Validation("sort_invalid",
+			"sort must be one of: -last_activity_at, -first_seen_at")
+	}
 	limit := clampLimit(p.Limit)
 
-	sql := `SELECT ` + groupColumns + `
-	          FROM alert_groups
-	         WHERE org_id = $1
-	           AND ($2::text[] IS NULL OR state = ANY($2))
-	           AND ($3::timestamptz IS NULL OR (last_activity_at, id) < ($3, $4))
-	         ORDER BY last_activity_at DESC, id DESC
-	         LIMIT $5`
-
-	var stateArg any
-	if len(states) > 0 {
-		stateArg = states
+	args := []any{s.OrgID()}
+	where := " WHERE g.org_id = $1"
+	add := func(clause string, values ...any) {
+		args = append(args, values...)
+		where += clause
 	}
-	var cursorAt *time.Time
-	var cursorID uuid.UUID
+
+	if len(f.States) > 0 {
+		add(fmt.Sprintf(" AND g.state = ANY($%d)", len(args)+1), f.States)
+	}
+	if len(f.Severities) > 0 {
+		add(fmt.Sprintf(" AND g.severity = ANY($%d)", len(args)+1), f.Severities)
+	}
+	if len(f.ClusterKeys) > 0 {
+		add(fmt.Sprintf(" AND c.cluster_key = ANY($%d)", len(args)+1), f.ClusterKeys)
+	}
+	if f.SourceID != nil {
+		add(fmt.Sprintf(" AND g.source_id = $%d", len(args)+1), *f.SourceID)
+	}
+	if f.Receiver != "" {
+		add(fmt.Sprintf(" AND g.receiver = $%d", len(args)+1), f.Receiver)
+	}
+	if f.Storm != nil {
+		add(fmt.Sprintf(" AND g.storm_mode = $%d", len(args)+1), *f.Storm)
+	}
+	if f.FullyAcked != nil {
+		// "Fully acked" needs a member to be acked ABOUT: a generation with no
+		// members is not acknowledged, it is empty, and reporting it as acked
+		// would be a receipt nobody signed.
+		if *f.FullyAcked {
+			where += " AND g.total_count > 0 AND g.acked_count >= g.total_count"
+		} else {
+			where += " AND (g.total_count = 0 OR g.acked_count < g.total_count)"
+		}
+	}
+	if f.Since != nil {
+		add(fmt.Sprintf(" AND g.last_activity_at >= $%d", len(args)+1), f.Since.UTC())
+	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		// NOTE (planner): no index serves this, and there is deliberately no
+		// pretence that one does. `alert_groups` holds one row per generation
+		// per receiver — thousands, not millions — so a bounded scan of one
+		// org's generations is the honest cost of a free-text box here, unlike
+		// on `alerts` where alerts_text_idx exists precisely because it is not.
+		add(fmt.Sprintf(
+			" AND (g.title ILIKE '%%' || $%d || '%%' OR g.group_labels::text ILIKE '%%' || $%d || '%%')",
+			len(args)+1, len(args)+1), q)
+	}
 	if !p.Cursor.IsZero() {
-		cursorAt = nilTime(p.Cursor.SortKey)
-		cursorID = p.Cursor.ID
+		args = append(args, p.Cursor.SortKey.UTC(), p.Cursor.ID)
+		where += fmt.Sprintf(" AND (%s, g.id) < ($%d, $%d)", sortCol, len(args)-1, len(args))
 	}
+	args = append(args, limit+1)
 
-	rows, err := r.db(ctx).Query(ctx, sql, s.OrgID(), stateArg, cursorAt, cursorID, limit+1)
+	sql := selectGroups + where +
+		fmt.Sprintf(" ORDER BY %s DESC, g.id DESC LIMIT $%d", sortCol, len(args))
+
+	rows, err := r.db(ctx).Query(ctx, sql, args...)
 	if err != nil {
 		return nil, db.Cursor{}, mapErr(err, "list alert groups")
 	}
@@ -454,14 +547,16 @@ func (r *GroupRepository) List(
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.LastActivityAt(), last.ID(), p.Cursor.Hash, hasMore), nil
+	sortKey := last.LastActivityAt()
+	if sortCol == "g.first_seen_at" {
+		sortKey = last.FirstSeenAt()
+	}
+	return page, nextCursor(sortKey, last.ID(), p.Cursor.Hash, hasMore), nil
 }
 
-var closeCandidatesSQL = `
-SELECT ` + groupColumns + `
-  FROM alert_groups
- WHERE org_id = $1 AND state = 'open' AND last_activity_at < $2
- ORDER BY last_activity_at ASC
+var closeCandidatesSQL = selectGroups + `
+ WHERE g.org_id = $1 AND g.state = 'open' AND g.last_activity_at < $2
+ ORDER BY g.last_activity_at ASC
  LIMIT $3`
 
 // CloseCandidates feeds the `group.close` sweep: open generations idle past
