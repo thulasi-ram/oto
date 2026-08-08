@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	alerts "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
 	"github.com/thulasiram/oto/internal/grouping/repository"
@@ -153,10 +154,19 @@ type ResolveRequest struct {
 func (s *Service) Resolve(
 	ctx context.Context, scope db.TenantScope, in ResolveRequest,
 ) (domain.Group, error) {
-	key, err := alerts.GroupKeyFor(scope.OrgID(), in.SourceID, in.Receiver, in.GroupLabels)
+	// The §C.4 identity function lives in the shared domain kernel and is called
+	// directly: depguard RULE K sanctions the import, and re-exporting a pure
+	// identity function through a service would give it a fake dependency on a
+	// database.
+	labels, err := kernel.NewLabels(in.GroupLabels)
 	if err != nil {
 		return domain.Group{}, err
 	}
+	if scope.OrgID() == uuid.Nil || in.SourceID == uuid.Nil {
+		return domain.Group{}, errs.Validation("group_key_inputs_required",
+			"a group key needs both an org and a source")
+	}
+	key := kernel.ComputeGroupKey(scope.OrgID(), in.SourceID, in.Receiver, labels).String()
 	at := in.At
 	if at.IsZero() {
 		at = s.Now()

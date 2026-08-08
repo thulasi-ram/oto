@@ -3,8 +3,34 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="oto — the alert history layer your Prometheus stack does not have."
+    />
     <title>oto</title>
+    <script>
+      // Resolve theme and density before first paint. SPEC §M.3 U3: dark is the
+      // default, prefers-color-scheme is respected on first load. Duplicated in
+      // src/design/theme.ts; both must agree.
+      (function () {
+        try {
+          var pref = localStorage.getItem("oto.theme") || "system";
+          var resolved =
+            pref === "light" || pref === "dark"
+              ? pref
+              : window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          document.documentElement.dataset.theme = resolved;
+          document.documentElement.dataset.density =
+            localStorage.getItem("oto.density") || "comfortable";
+        } catch (e) {
+          document.documentElement.dataset.theme = "dark";
+          document.documentElement.dataset.density = "comfortable";
+        }
+      })();
+    </script>
   </head>
   <body class="h-full">
     <div id="root" class="h-full"></div>

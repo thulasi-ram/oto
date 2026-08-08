@@ -14,42 +14,21 @@ import (
 
 // This file is the seam `internal/grouping` calls across.
 //
-// ⭐ WHY IT EXISTS. `internal/alerts/domain` is the SHARED DOMAIN KERNEL (§C.1):
-// it owns LabelSet, AlertKey, GroupKey and the §C identity functions, and
-// CONTEXT.md §5.2b sanctions other domains importing it. The enforced depguard
-// configuration currently re-allows that import for `ingestion` only, so
-// `grouping` reaches the kernel THROUGH this service instead of around it.
+// ⭐ WHAT IT IS FOR. `alert_events` has exactly ONE writer, and it is in this
+// module: the C.8 idempotency claim and the closed EventType enum both live here,
+// and a second appender would be the duplication §C.9 exists to forbid. `grouping`
+// therefore records its `group.*` facts through this seam.
 //
-// The consequence is the one that matters: there is still exactly ONE
-// implementation of §C.4 and exactly ONE writer of `alert_events`. A second copy
-// of either — a group key computed in `grouping`, or a group event appended by a
-// second module — would be the duplication §C.9 exists to forbid.
+// ⛔ WHAT IT IS NOT FOR. It is not a shim around the shared domain kernel. Value
+// objects and the §C identity functions live in `internal/alerts/domain`, which
+// depguard RULE K sanctions every domain importing directly (SPEC §C.9,
+// CONTEXT.md §5.2b). A `GroupKeyFor` wrapper used to sit here purely because the
+// linter had granted that import to `ingestion` alone; the rule is now uniform and
+// the wrapper is gone. Re-exporting a kernel function through a service is how a
+// pure identity function acquires a fake dependency on a database.
 //
 // Every signature here is deliberately built from primitives, uuid.UUID and
 // db.TenantScope, so the caller needs no type from the alerts kernel.
-
-// GroupKeyFor computes the durable §C.4 AlertGroup identity:
-//
-//	"gk_" || base32hexLower( sha256(
-//	     org_id_bytes(16) || 0x00 || source_id_bytes(16) || 0x00
-//	  || receiver || 0x00 || canon(groupLabels, {}) )[0:16] )
-//
-// ⛔ It is NOT Alertmanager's own `groupKey`. AM's value embeds the route path and
-// changes on every `alertmanager.yml` reload, so a group keyed by it would be
-// reborn — with a new Slack thread — every time an operator edits a route. AM's
-// value is stored verbatim as `source_group_key` for observability and MUST NOT
-// be parsed: it is unescaped and unbounded (C3).
-func GroupKeyFor(orgID, sourceID uuid.UUID, receiver string, groupLabels map[string]string) (string, error) {
-	if orgID == uuid.Nil || sourceID == uuid.Nil {
-		return "", errs.Validation("group_key_inputs_required",
-			"a group key needs both an org and a source")
-	}
-	labels, err := domain.NewLabels(groupLabels)
-	if err != nil {
-		return "", err
-	}
-	return domain.ComputeGroupKey(orgID, sourceID, receiver, labels).String(), nil
-}
 
 // GroupEventRequest is one `group.*` entry for the append-only timeline.
 //

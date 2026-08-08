@@ -1,22 +1,168 @@
 @import "tailwindcss";
+@import "./design/tokens.css";
 
-@theme {
+/* Theme is stamped on <html> as data-theme, so every colour resolves through a
+   token and no component needs a `dark:` variant. The variant below exists only
+   for the rare structural case (e.g. inverting a raster asset). */
+@custom-variant dark ([data-theme="dark"] &);
+
+/* `inline` keeps the utilities pointing at the custom property rather than
+   snapshotting its value, which is what makes a runtime theme swap work with
+   zero reflow and zero flash. */
+@theme inline {
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
-  /* Colour encodes STATE (SPEC §H, C7). The same four states drive the UI and
-     the Slack attachment colour, so they live in one place. */
-  --color-state-firing: oklch(0.63 0.21 25);
-  --color-state-suppressed: oklch(0.65 0.02 260);
-  --color-state-resolved: oklch(0.66 0.16 150);
-  --color-state-expired: oklch(0.68 0.13 75);
+  /* ---- Tier A ------------------------------------------------------- */
+  --color-bg: var(--oto-bg);
+  --color-surface: var(--oto-surface);
+  --color-raised: var(--oto-surface-raised);
+  --color-sunken: var(--oto-surface-sunken);
+  --color-line: var(--oto-border);
+  --color-line-strong: var(--oto-border-strong);
+  --color-ink: var(--oto-text);
+  --color-ink-muted: var(--oto-text-muted);
+  --color-ink-subtle: var(--oto-text-subtle);
+  --color-ink-inverse: var(--oto-text-inverse);
+  --color-accent: var(--oto-accent);
+  --color-accent-hover: var(--oto-accent-hover);
+  --color-accent-fill: var(--oto-accent-fill);
+  --color-accent-border: var(--oto-accent-border);
+  --color-focus: var(--oto-focus);
+
+  /* ---- Tier B: state only (§M.2). Never use for chrome. -------------- */
+  --color-firing-fill: var(--oto-state-firing-fill);
+  --color-firing-border: var(--oto-state-firing-border);
+  --color-firing-text: var(--oto-state-firing-text);
+  --color-firing-solid: var(--oto-state-firing-solid);
+
+  --color-acked-fill: var(--oto-state-acked-fill);
+  --color-acked-border: var(--oto-state-acked-border);
+  --color-acked-text: var(--oto-state-acked-text);
+  --color-acked-solid: var(--oto-state-acked-solid);
+
+  --color-suppressed-fill: var(--oto-state-suppressed-fill);
+  --color-suppressed-border: var(--oto-state-suppressed-border);
+  --color-suppressed-text: var(--oto-state-suppressed-text);
+  --color-suppressed-solid: var(--oto-state-suppressed-solid);
+
+  --color-resolved-fill: var(--oto-state-resolved-fill);
+  --color-resolved-border: var(--oto-state-resolved-border);
+  --color-resolved-text: var(--oto-state-resolved-text);
+  --color-resolved-solid: var(--oto-state-resolved-solid);
+
+  --color-expired-fill: var(--oto-state-expired-fill);
+  --color-expired-border: var(--oto-state-expired-border);
+  --color-expired-text: var(--oto-state-expired-text);
+  --color-expired-solid: var(--oto-state-expired-solid);
+
+  --color-info-fill: var(--oto-state-info-fill);
+  --color-info-border: var(--oto-state-info-border);
+  --color-info-text: var(--oto-state-info-text);
+  --color-info-solid: var(--oto-state-info-solid);
+
+  --color-chart-1: var(--oto-chart-1);
+  --color-chart-2: var(--oto-chart-2);
+  --color-chart-3: var(--oto-chart-3);
+  --color-chart-4: var(--oto-chart-4);
+  --color-chart-5: var(--oto-chart-5);
+  --color-chart-6: var(--oto-chart-6);
+  --color-chart-grid: var(--oto-chart-grid);
 }
 
-:root {
-  color-scheme: light dark;
+@layer base {
+  html {
+    color-scheme: light;
+    /* No smooth-scroll by default: a 3am operator pressing `j` wants the row
+       under the cursor now, not an eased 300 ms later. */
+  }
+  [data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--oto-bg);
+    color: var(--oto-text);
+    -webkit-font-smoothing: antialiased;
+    font-family: var(--font-sans);
+  }
+
+  /* U7: focus is ALWAYS visible, 2 px ring at 2 px offset, never `outline:none`. */
+  :focus-visible {
+    outline: 2px solid var(--oto-focus);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  ::selection {
+    background: var(--oto-accent-fill);
+    color: var(--oto-text);
+  }
+
+  /* Scrollbars follow the chrome, not the state palette. */
+  * {
+    scrollbar-color: var(--oto-border-strong) transparent;
+  }
 }
 
-body {
-  @apply bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+@layer utilities {
+  /* U4: the ONLY urgency motion in the product — a slow 2 s opacity pulse on
+     the unacked-critical dot. No flashing, no blinking, ever, and nothing at
+     all under prefers-reduced-motion. */
+  .oto-pulse {
+    animation: oto-pulse 2s ease-in-out infinite;
+  }
+  @keyframes oto-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+
+  .oto-enter {
+    animation: oto-enter 140ms ease-out;
+  }
+  @keyframes oto-enter {
+    from {
+      opacity: 0;
+      transform: translateY(-2px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .oto-pulse,
+    .oto-enter {
+      animation: none !important;
+    }
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Visually hidden but reachable by assistive tech. Used for live regions and
+     for the table's semantic column headers. */
+  .sr-only-focusable:not(:focus):not(:focus-within) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
 }

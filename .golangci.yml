@@ -6,6 +6,40 @@
 #
 # depguard resolves allow/deny by LONGEST PREFIX MATCH, which is what lets a rule
 # deny a whole domain and then re-allow that domain's service package.
+#
+# ------------------------------------------------------------------ THE RULE SET
+#
+# There are exactly seven layering rules, and they permit exactly what the SPEC
+# sanctions and nothing more:
+#
+#   1. api MUST NOT import repository, and repository MUST NOT import api
+#      (CONTEXT.md §5.1).
+#   2. domain is pure Go: no net/http, database/sql, pgx, slack-go, chi, squirrel,
+#      river, prometheus, otel, platform/db, platform/httpx, platform/jobs,
+#      platform/telemetry (CONTEXT.md §5.2).
+#   3. A domain reaches another domain ONLY through `<other>/service`, behind an
+#      interface the CONSUMER declares (CONTEXT.md §5.4).
+#   4. RULE K, the shared domain kernel: `internal/alerts/domain` is the single
+#      sanctioned cross-domain `domain` import, for every domain, uniformly
+#      (SPEC §C.9, CONTEXT.md §5.2b). It imports no other domain.
+#   5. RULE V, the channel-agnostic view: `internal/notification` may import
+#      `internal/channels/domain`, because §F.2 has notification/service BUILD
+#      `channels/domain.NotificationView`. notification still may not import
+#      channels/repository, channels/registry or a provider.
+#   6. alerts and ingestion NEVER import notification or channels (SPEC §I.1).
+#      RULE K does not weaken this: it grants the kernel to others, not others
+#      to alerts.
+#   7. platform is not a domain and imports none; the Slack SDK lives only in
+#      channels/providers/slack and channels/render/slack.
+#
+# RULES K AND V ARE GRANTED TO EVERY DOMAIN BLOCK BY THE SAME TEXT. They were
+# previously granted ad hoc — ingestion added a one-off allow and grouping routed
+# through alerts/service to avoid asking — which is how one architectural rule
+# became two incompatible workarounds. A rule that must be re-argued per package
+# is a rule that will be re-argued differently per package.
+#
+# `internal/app` and `cmd` are deliberately outside every cross-domain rule: the
+# composition root is the ONE place that is allowed to know every concrete.
 
 version: "2"
 
@@ -211,7 +245,9 @@ linters:
             - "**/internal/silences/domain/**"
             - "**/internal/stats/domain/**"
           allow:
-            - github.com/thulasiram/oto/pkg/alertkey
+            # THE SHARED DOMAIN KERNEL (rule K below). A domain package may name the
+            # kernel's value objects; it may name nothing else outside platform.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/platform/clock
             - github.com/thulasiram/oto/internal/platform/id
             - github.com/thulasiram/oto/internal/platform/errs
@@ -251,6 +287,15 @@ linters:
           files:
             - "**/internal/identity/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
             - github.com/thulasiram/oto/internal/alerts/service
@@ -294,6 +339,15 @@ linters:
           files:
             - "**/internal/sources/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/ingestion/service
             - github.com/thulasiram/oto/internal/alerts/service
@@ -337,10 +391,14 @@ linters:
           files:
             - "**/internal/ingestion/**"
           allow:
-            # SPEC §C.1 / CONTEXT.md §5.2b / SPEC §P-11: internal/alerts/domain is THE
-            # SHARED DOMAIN KERNEL and is the single sanctioned cross-domain `domain`
-            # import. ingestion normalises into its LabelSet/AlertKey/GroupKey types,
-            # so it is re-allowed here — and nothing wider is.
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
             - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
@@ -428,6 +486,15 @@ linters:
           files:
             - "**/internal/grouping/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
@@ -471,6 +538,15 @@ linters:
           files:
             - "**/internal/rules/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
@@ -514,6 +590,15 @@ linters:
           files:
             - "**/internal/enrichment/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
@@ -557,6 +642,20 @@ linters:
           files:
             - "**/internal/notification/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
+            # RULE V -- THE CHANNEL-AGNOSTIC VIEW (SPEC §F.2). notification/service
+            # BUILDS channels/domain.NotificationView and hands it to a Renderer it
+            # never names a concrete of. The view types are pure data with no I/O,
+            # so this is a port import, not a reach into channels' internals.
+            - github.com/thulasiram/oto/internal/channels/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
@@ -600,6 +699,15 @@ linters:
           files:
             - "**/internal/channels/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
@@ -643,6 +751,15 @@ linters:
           files:
             - "**/internal/streaming/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
@@ -686,6 +803,15 @@ linters:
           files:
             - "**/internal/silences/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
@@ -729,6 +855,15 @@ linters:
           files:
             - "**/internal/stats/**"
           allow:
+            # RULE K -- THE SHARED DOMAIN KERNEL (SPEC §C.9, CONTEXT.md §5.2b,
+            # ORCHESTRATION decision 6). `internal/alerts/domain` owns LabelSet,
+            # AlertKey, GroupKey, RuleFingerprint, IdempotencyKey, ClusterKey,
+            # SlackTS, Severity, State and AckState. It is the ONE sanctioned
+            # cross-domain `domain` import, it imports no other domain, and it is
+            # allowed here for EVERY domain rather than case-by-case -- a rule that
+            # is granted per-agent is a rule two agents will route around in two
+            # different ways, which is exactly what happened before this line.
+            - github.com/thulasiram/oto/internal/alerts/domain
             - github.com/thulasiram/oto/internal/identity/service
             - github.com/thulasiram/oto/internal/sources/service
             - github.com/thulasiram/oto/internal/ingestion/service
