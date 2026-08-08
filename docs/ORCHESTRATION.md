@@ -45,7 +45,7 @@ rules proven to fire against planted violations.
   lifecycle state machine T1–T10, pure and clock-injected.
 - 30 tables, 201 named CHECKs, 94 indexes, partitioned event tables, verified
   reversible round trip. 36/36 constraint-rejection tests behaved.
-- `docs/api/openapi.yaml`, 71 operations, lints clean.
+- `api/openapi/openapi.yaml`, 71 operations, lints clean.
 - `docs/design/SCOPE-BOUNDARY.md` — the Flight Recorder Test, answering the
   owner's "don't become an incident management platform" constraint.
 
@@ -64,7 +64,7 @@ Their partial output was recovered, the tree is green and committed at `2063979`
 
 To resume, re-run two agents with the briefs in the orchestrator transcript:
 1. identity + API layer + `internal/app` + `cmd/oto` — wire every operationId in
-   `docs/api/openapi.yaml`, separate ingest/UI connection pools, `/stream`
+   `api/openapi/openapi.yaml`, separate ingest/UI connection pools, `/stream`
    mounted outside timeout middleware.
 2. the SolidJS UI — alert list, grouping, sentry-style timeline with the rule
    drift diff, SSE with `Last-Event-ID` resume, JSON-Schema-driven channel forms.

@@ -191,9 +191,15 @@ generate:
     go generate ./...
     cd {{web_dir}} && npm run generate
 
+# Gate G3 (SPEC §L.8.1): the checked-in TS client must match the contract byte
+# for byte. A Go DTO that drifts from openapi.yaml fails here, not in a browser.
+[group('check')]
+generate-check:
+    cd {{web_dir}} && npm run generate:check
+
 # Everything CI runs.
 [group('check')]
-ci: fmt lint test ui-build
+ci: fmt lint generate-check test ui-build
 
 # Install the toolchain this repo expects.
 [group('check')]
