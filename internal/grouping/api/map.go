@@ -12,7 +12,13 @@ import (
 // The domain → DTO mappers. Every field is copied by hand, so that renaming a
 // domain accessor can never silently rename a JSON field.
 
-func groupDTO(g domain.Group) GroupDTO {
+// groupDTO renders one generation.
+//
+// The snooze roll-up is a SEPARATE ARGUMENT and not a field of domain.Group,
+// because it is not a property of the group row: it is the read-time result of
+// the §B.8.3 fan-out over member alerts, evaluated against the clock. Passing it
+// in is what stops it being mistaken for a stored count that could go stale.
+func groupDTO(g domain.Group, snooze domain.SnoozeRollup) GroupDTO {
 	labels := g.GroupLabels()
 	if labels == nil {
 		labels = map[string]string{}
@@ -42,6 +48,8 @@ func groupDTO(g domain.Group) GroupDTO {
 		ExpiredCount:    int32(c.Expired),
 		TotalCount:      int32(c.Total),
 		AckedCount:      int32(c.Acked),
+		SnoozedCount:    int32(snooze.Count),
+		SnoozedUntil:    timePtr(snooze.Until),
 		StormMode:       g.StormMode(),
 		StormSince:      timePtr(g.StormSince()),
 		FirstSeenAt:     utc(g.FirstSeenAt()),
@@ -52,8 +60,12 @@ func groupDTO(g domain.Group) GroupDTO {
 	return dto
 }
 
-func alertDTO(a alertdomain.Alert) AlertDTO {
-	return AlertDTO{
+// alertDTO renders one member alert.
+//
+// The snooze comes from the same `AlertDetail` the alert itself was read from,
+// so carrying it costs nothing extra: the read had already fetched it.
+func alertDTO(a alertdomain.Alert, snooze *alertdomain.Snooze) AlertDTO {
+	dto := AlertDTO{
 		ID:                a.ID(),
 		AlertKey:          a.Key().String(),
 		SourceFingerprint: a.Fingerprint().String(),
@@ -74,6 +86,17 @@ func alertDTO(a alertdomain.Alert) AlertDTO {
 		FlapScore:         a.FlapScore(),
 		IsFlapping:        a.IsFlapping(),
 	}
+	if snooze != nil {
+		dto.Snooze = &SnoozeDTO{
+			ID:             snooze.ID(),
+			SnoozedAt:      utc(snooze.SnoozedAt()),
+			SnoozedUntil:   utc(snooze.SnoozedUntil()),
+			SnoozedByLabel: snooze.SnoozedByLabel(),
+			Note:           strPtr(snooze.Note()),
+			EndedAt:        timePtr(snooze.EndedAt()),
+		}
+	}
+	return dto
 }
 
 func alertRefDTO(a alertdomain.Alert) AlertRefDTO {

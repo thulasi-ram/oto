@@ -39,6 +39,21 @@ type AlertDTO struct {
 	FlapScore         float32           `json:"flap_score"`
 	IsFlapping        bool              `json:"is_flapping"`
 
+	// Snooze is the §B.8 quiet period in force, or an explicit `null`.
+	//
+	// ⭐ IT IS ON THE LIST ROW AND NOT ONLY ON THE DETAIL VIEW, and it has NO
+	// omitempty. The default list includes snoozed alerts (§B.8.6) — hiding one
+	// is how an incident is lost — so a row that could not say it was snoozed
+	// left the operator with no way to tell a quiet alert from a noisy one
+	// except by opening every one of them. `null` says "awake"; an absent key
+	// would say "unknown", and those are different facts.
+	//
+	// ⛔ It sits BESIDE `state` and `ack_state` and never inside them. The three
+	// are orthogonal axes: a snoozed critical is still critical and still
+	// firing, and the row must keep rendering it that way, with the snooze as a
+	// separate `:zzz:` badge and countdown.
+	Snooze *SnoozeDTO `json:"snooze"`
+
 	// The three `include=` sub-resources. Absent unless the caller asked, which
 	// is what keeps the list one query instead of N+1.
 	CurrentOccurrence *OccurrenceDTO   `json:"current_occurrence,omitempty"`
@@ -53,17 +68,18 @@ type AlertDTO struct {
 // forbids this package from naming another domain's types. They are served whole
 // by `/alerts/{id}/rule` and `/alert-groups/{id}`, and each is an optional
 // property of the schema rather than a required one.
+//
+// `snooze` is NOT redeclared here. It is now a field of AlertDTO — the list row
+// needs it too (§B.8.6) — and the contract carries it in the same place, on the
+// base schema that `AlertDetailDTO` composes with `allOf`. A second declaration
+// at this depth would still marshal correctly, because Go's shallower field
+// wins, but two fields with one JSON name is exactly the drift this file's
+// hand-copied mapping exists to prevent.
 type AlertDetailDTO struct {
 	AlertDTO
 	CurrentOccurrence *OccurrenceDTO         `json:"current_occurrence"`
 	EnrichmentSummary []EnrichmentSummaryDTO `json:"enrichment_summary"`
 	DeliverySummary   *DeliverySummaryDTO    `json:"delivery_summary,omitempty"`
-	// Snooze has NO omitempty: the contract declares it nullable, and an awake
-	// alert must say so with an explicit `null`. An absent key and a null one
-	// are the same thing to a lenient client and different things to a strict
-	// one, and this is the field where the difference reads as "unknown" versus
-	// "not snoozed".
-	Snooze *SnoozeDTO `json:"snooze"`
 }
 
 // RuleSnapshotRef is the pointer this package may carry to a rule snapshot.
@@ -247,6 +263,33 @@ type SnoozeHistoryDTO struct {
 	Active       bool    `json:"active"`
 }
 
+// ActiveSnoozeDTO renders one row of the §B.8.6 ORG-WIDE view: something oto is
+// currently quiet about, and until when.
+//
+// ⭐ WHY THIS IS NOT `GET /alerts?snoozed=true`. That endpoint pages ALERTS. It
+// can say *which* alerts are quiet and it structurally cannot say who asked, why,
+// or until when, because those are facts about an `alert_snoozes` row and one
+// alert has a whole history of them. §B.8.6 requires a persistent banner
+// enumerating every active snooze with its expiry, "so a snooze cannot be
+// forgotten" — that is the counterweight that makes the whole feature safe, and
+// a list of alerts is not it.
+//
+// The Alert is carried as a REFERENCE and never inlined whole: this row is about
+// the snooze, and the alert is how a human recognises which one.
+type ActiveSnoozeDTO struct {
+	SnoozeDTO
+	AlertID  uuid.UUID `json:"alert_id"`
+	AlertKey string    `json:"alert_key"`
+	// Alert is null when the Alert could not be read. The snooze is still
+	// listed: a quiet period whose subject is unreadable is still a quiet period
+	// somebody has to know about, and dropping the row would hide it.
+	Alert *AlertRefDTO `json:"alert"`
+	// RemainingSeconds is the countdown, measured against OTO'S clock rather than
+	// the caller's, so a client with a skewed clock cannot render a badge that
+	// disagrees with the server about what is muted. Never negative.
+	RemainingSeconds float64 `json:"remaining_seconds"`
+}
+
 // LabelNameDTO renders `LabelNameDTO` for the filter bar.
 type LabelNameDTO struct {
 	Name       string `json:"name"`
@@ -344,6 +387,16 @@ type ListAlertsQuery struct {
 	Cluster   []string `json:"cluster"    validate:"omitempty,max=32,unique,dive,clusterkey"`
 	Namespace []string `json:"namespace"  validate:"omitempty,max=64,unique,dive,max=4096"`
 	AlertName []string `json:"alertname"  validate:"omitempty,max=64,unique,dive,max=1024"`
+	// SourceFingerprint is the §C.3 axis, and it exists so a
+	// `group_by=fingerprint` roll-up bucket can be OPENED. The other two axes —
+	// alertname and namespace — have always had their filter; without this one
+	// the fingerprint bucket could be counted and never drilled into, which is
+	// the one thing a roll-up exists to let a user do.
+	// The charset is proven by domain.NewSourceFingerprint rather than by a tag:
+	// `platform/validate` registers no `fingerprint` rule, and the C.3 pattern
+	// already lives in the domain constructor, where re-spelling it as a regex
+	// here would make it live in two places that can disagree.
+	SourceFingerprint []string `json:"source_fingerprint" validate:"omitempty,max=64,unique,dive,len=16"`
 	// Matcher is the ADR 0017 label selector in Alertmanager syntax. It is the
 	// ONLY spelling that can carry `=~` and `!~`; `label[k]=v` structurally
 	// cannot, which is why regex matchers were unreachable before it existed.
@@ -369,26 +422,35 @@ type ListAlertsQuery struct {
 // question. What it does NOT take is `sort` or `include` — buckets have no
 // last_seen_at ordering to choose and no sub-resources to embed.
 type ListRollupsQuery struct {
-	GroupBy   string     `json:"group_by"   validate:"required,oneof=alertname namespace fingerprint"`
-	State     []string   `json:"state"      validate:"omitempty,max=4,unique,dive,oneof=firing suppressed resolved expired"`
-	Severity  []string   `json:"severity"   validate:"omitempty,max=16,unique,dive,max=4096"`
-	Cluster   []string   `json:"cluster"    validate:"omitempty,max=32,unique,dive,clusterkey"`
-	Namespace []string   `json:"namespace"  validate:"omitempty,max=64,unique,dive,max=4096"`
-	AlertName []string   `json:"alertname"  validate:"omitempty,max=64,unique,dive,max=1024"`
-	Matcher   string     `json:"matcher"    validate:"omitempty,max=8192"`
-	Ack       string     `json:"ack"        validate:"omitempty,oneof=unacked acked"`
-	Flapping  *bool      `json:"flapping"`
-	Snoozed   *bool      `json:"snoozed"`
-	Since     *time.Time `json:"since"`
-	Q         string     `json:"q"          validate:"omitempty,max=200"`
-	Limit     int        `json:"limit"      validate:"min=1,max=200"`
-	Cursor    string     `json:"cursor"     validate:"omitempty,cursor"`
+	GroupBy   string   `json:"group_by"   validate:"required,oneof=alertname namespace fingerprint"`
+	State     []string `json:"state"      validate:"omitempty,max=4,unique,dive,oneof=firing suppressed resolved expired"`
+	Severity  []string `json:"severity"   validate:"omitempty,max=16,unique,dive,max=4096"`
+	Cluster   []string `json:"cluster"    validate:"omitempty,max=32,unique,dive,clusterkey"`
+	Namespace []string `json:"namespace"  validate:"omitempty,max=64,unique,dive,max=4096"`
+	AlertName []string `json:"alertname"  validate:"omitempty,max=64,unique,dive,max=1024"`
+	// SourceFingerprint is repeated from ListAlertsQuery for the same reason as
+	// every other filter here: the bucket beside the list must summarise exactly
+	// the list beside it.
+	SourceFingerprint []string   `json:"source_fingerprint" validate:"omitempty,max=64,unique,dive,len=16"`
+	Matcher           string     `json:"matcher"    validate:"omitempty,max=8192"`
+	Ack               string     `json:"ack"        validate:"omitempty,oneof=unacked acked"`
+	Flapping          *bool      `json:"flapping"`
+	Snoozed           *bool      `json:"snoozed"`
+	Since             *time.Time `json:"since"`
+	Q                 string     `json:"q"          validate:"omitempty,max=200"`
+	Limit             int        `json:"limit"      validate:"min=1,max=200"`
+	Cursor            string     `json:"cursor"     validate:"omitempty,cursor"`
 }
 
 // TimelineQuery is the validated form of the event-list query string shared by
 // `listAlertEvents`, `listOccurrenceEvents` and `getAlertGroupTimeline`.
 type TimelineQuery struct {
-	Type   []string   `json:"type"      validate:"omitempty,max=34,unique"`
+	// The bound is the SIZE OF THE CLOSED ENUM (domain.AllEventTypes), so that
+	// "give me everything" is always expressible. It was 34 while
+	// `alert.snoozed` and `alert.unsnoozed` were missing from the contract; the
+	// domain has always emitted 36, and a caller enumerating them all was
+	// refused for asking for two types the server was already writing.
+	Type   []string   `json:"type"      validate:"omitempty,max=36,unique"`
 	Since  *time.Time `json:"since"`
 	Until  *time.Time `json:"until"`
 	Order  string     `json:"order"     validate:"omitempty,oneof=asc desc"`

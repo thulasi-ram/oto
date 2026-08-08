@@ -26,7 +26,8 @@ import (
 // and `label[!tier]` families are admitted without enumerating every label an
 // operator might own.
 var listAlertsParams = []string{
-	"state", "severity", "cluster", "namespace", "alertname", "label[", "matcher",
+	"state", "severity", "cluster", "namespace", "alertname", "source_fingerprint",
+	"label[", "matcher",
 	"ack", "flapping", "snoozed", "since", "q", "sort", "include",
 	"limit", "cursor",
 }
@@ -36,7 +37,8 @@ var listAlertsParams = []string{
 // ordering to choose and no sub-resources to embed — plus the required axis.
 var listRollupsParams = []string{
 	"group_by",
-	"state", "severity", "cluster", "namespace", "alertname", "label[", "matcher",
+	"state", "severity", "cluster", "namespace", "alertname", "source_fingerprint",
+	"label[", "matcher",
 	"ack", "flapping", "snoozed", "since", "q",
 	"limit", "cursor",
 }
@@ -74,20 +76,22 @@ func parseListAlerts(r *http.Request) (alertsListRequest, error) {
 	}
 
 	q := ListAlertsQuery{
-		State:     p.CSV("state"),
-		Severity:  p.CSV("severity"),
-		Cluster:   p.CSV("cluster"),
-		Namespace: p.CSV("namespace"),
-		AlertName: p.CSV("alertname"),
-		Matcher:   p.String("matcher", ""),
-		Ack:       p.String("ack", ""),
-		Flapping:  p.Bool("flapping"),
-		Snoozed:   p.Bool("snoozed"),
-		Q:         p.String("q", ""),
-		Sort:      p.String("sort", service.SortLastSeenDesc),
-		Include:   p.CSV("include"),
-		Limit:     p.Limit(),
-		Cursor:    p.Cursor(),
+		State:             p.CSV("state"),
+		Severity:          p.CSV("severity"),
+		Cluster:           p.CSV("cluster"),
+		Namespace:         p.CSV("namespace"),
+		AlertName:         p.CSV("alertname"),
+		SourceFingerprint: p.CSV("source_fingerprint"),
+
+		Matcher:  p.String("matcher", ""),
+		Ack:      p.String("ack", ""),
+		Flapping: p.Bool("flapping"),
+		Snoozed:  p.Bool("snoozed"),
+		Q:        p.String("q", ""),
+		Sort:     p.String("sort", service.SortLastSeenDesc),
+		Include:  p.CSV("include"),
+		Limit:    p.Limit(),
+		Cursor:   p.Cursor(),
 	}
 	if p.Has("since") {
 		since := p.Time("since")
@@ -109,8 +113,7 @@ func parseListAlerts(r *http.Request) (alertsListRequest, error) {
 		return alertsListRequest{}, err
 	}
 
-	f, err := alertFilter(q.State, q.Severity, q.Namespace, q.Cluster, q.AlertName,
-		q.Ack, q.Flapping, q.Snoozed, q.Since, q.Q, compiled)
+	f, err := alertFilter(q.spec(), compiled)
 	if err != nil {
 		return alertsListRequest{}, err
 	}
@@ -182,41 +185,87 @@ func selectorField(matcher string) string {
 	return "label"
 }
 
+// filterSpec is the §E.3 filter in the one shape BOTH query DTOs reduce to.
+//
+// It is a struct rather than a parameter list because the list and the roll-up
+// must accept exactly the same dimensions — a roll-up that summarised a different
+// set from the list beside it would be two answers to one question — and a
+// positional signature is how one of them quietly acquires a filter the other
+// does not.
+type filterSpec struct {
+	States       []string
+	Severities   []string
+	Namespaces   []string
+	Clusters     []string
+	AlertNames   []string
+	Fingerprints []string
+	Ack          string
+	Flapping     *bool
+	Snoozed      *bool
+	Since        *time.Time
+	Query        string
+}
+
+func (q ListAlertsQuery) spec() filterSpec {
+	return filterSpec{
+		States: q.State, Severities: q.Severity, Namespaces: q.Namespace,
+		Clusters: q.Cluster, AlertNames: q.AlertName, Fingerprints: q.SourceFingerprint,
+		Ack: q.Ack, Flapping: q.Flapping, Snoozed: q.Snoozed, Since: q.Since, Query: q.Q,
+	}
+}
+
+func (q ListRollupsQuery) spec() filterSpec {
+	return filterSpec{
+		States: q.State, Severities: q.Severity, Namespaces: q.Namespace,
+		Clusters: q.Cluster, AlertNames: q.AlertName, Fingerprints: q.SourceFingerprint,
+		Ack: q.Ack, Flapping: q.Flapping, Snoozed: q.Snoozed, Since: q.Since, Query: q.Q,
+	}
+}
+
 // alertFilter assembles the compiled §E.3 filter shared by the list and the
 // roll-up. It exists exactly once so the two can never diverge into two answers
 // to one question.
-func alertFilter(
-	states, severities, namespaces, clusters, names []string,
-	ack string, flapping, snoozed *bool, since *time.Time, query string,
-	compiled filter.Compiled,
-) (domain.AlertFilter, error) {
-	parsed := make([]domain.State, 0, len(states))
-	for _, s := range states {
+func alertFilter(in filterSpec, compiled filter.Compiled) (domain.AlertFilter, error) {
+	parsed := make([]domain.State, 0, len(in.States))
+	for _, s := range in.States {
 		st, err := domain.NewState(s)
 		if err != nil {
 			return domain.AlertFilter{}, err
 		}
 		parsed = append(parsed, st)
 	}
+	// The C.3 charset is proven by the domain constructor, which is where the
+	// pattern lives; the values themselves travel as strings because that is what
+	// the column holds.
+	for _, fp := range in.Fingerprints {
+		if _, err := domain.NewSourceFingerprint(fp); err != nil {
+			return domain.AlertFilter{}, errs.Validation("validation_failed",
+				"1 field failed validation.", errs.Violation{
+					Field: "source_fingerprint", Code: "pattern",
+					Message: "must be 16 lowercase hex characters",
+				})
+		}
+	}
 
 	f := domain.AlertFilter{
-		States:      parsed,
-		Severities:  severities,
-		Namespaces:  namespaces,
-		ClusterKeys: clusters,
-		AlertNames:  names,
-		Flapping:    flapping,
+		States:       parsed,
+		Severities:   in.Severities,
+		Namespaces:   in.Namespaces,
+		ClusterKeys:  in.Clusters,
+		AlertNames:   in.AlertNames,
+		Fingerprints: in.Fingerprints,
+		Flapping:     in.Flapping,
 		// nil means INCLUDE BOTH and nil is the default: the list NEVER hides a
 		// snoozed alert (§B.8.6), because hiding one is how an incident is lost.
-		Snoozed:    snoozed,
+		Snoozed:    in.Snoozed,
 		LabelsAll:  compiled.LabelsAll,
 		LabelsAny:  compiled.LabelsAny,
 		LabelsNone: compiled.LabelsNone,
-		Since:      since,
-		Query:      query,
+		Since:      in.Since,
+		Query:      in.Query,
 	}
-	if ack != "" {
-		a, err := domain.NewAckState(ack)
+	if in.Ack != "" {
+		a, err := domain.NewAckState(in.Ack)
 		if err != nil {
 			return domain.AlertFilter{}, err
 		}
@@ -244,19 +293,20 @@ func parseListRollups(r *http.Request) (rollupsRequest, error) {
 	}
 
 	q := ListRollupsQuery{
-		GroupBy:   p.String("group_by", ""),
-		State:     p.CSV("state"),
-		Severity:  p.CSV("severity"),
-		Cluster:   p.CSV("cluster"),
-		Namespace: p.CSV("namespace"),
-		AlertName: p.CSV("alertname"),
-		Matcher:   p.String("matcher", ""),
-		Ack:       p.String("ack", ""),
-		Flapping:  p.Bool("flapping"),
-		Snoozed:   p.Bool("snoozed"),
-		Q:         p.String("q", ""),
-		Limit:     p.Limit(),
-		Cursor:    p.Cursor(),
+		GroupBy:           p.String("group_by", ""),
+		State:             p.CSV("state"),
+		Severity:          p.CSV("severity"),
+		Cluster:           p.CSV("cluster"),
+		Namespace:         p.CSV("namespace"),
+		AlertName:         p.CSV("alertname"),
+		SourceFingerprint: p.CSV("source_fingerprint"),
+		Matcher:           p.String("matcher", ""),
+		Ack:               p.String("ack", ""),
+		Flapping:          p.Bool("flapping"),
+		Snoozed:           p.Bool("snoozed"),
+		Q:                 p.String("q", ""),
+		Limit:             p.Limit(),
+		Cursor:            p.Cursor(),
 	}
 	if p.Has("since") {
 		since := p.Time("since")
@@ -283,8 +333,7 @@ func parseListRollups(r *http.Request) (rollupsRequest, error) {
 		return rollupsRequest{}, err
 	}
 
-	f, err := alertFilter(q.State, q.Severity, q.Namespace, q.Cluster, q.AlertName,
-		q.Ack, q.Flapping, q.Snoozed, q.Since, q.Q, compiled)
+	f, err := alertFilter(q.spec(), compiled)
 	if err != nil {
 		return rollupsRequest{}, err
 	}
@@ -315,10 +364,7 @@ func parseListRollups(r *http.Request) (rollupsRequest, error) {
 // sorted inside httpx.FilterHash, so a caller reordering its own query string is
 // never told its own cursor is invalid.
 func alertFilterHash(q ListAlertsQuery, sel filter.Selector) string {
-	parts := append(commonFilterParts(q.State, q.Severity, q.Cluster, q.Namespace,
-		q.AlertName, q.Ack, q.Q, sel, q.Flapping, q.Snoozed, q.Since),
-		"sort="+q.Sort)
-	return httpx.FilterHash(parts...)
+	return httpx.FilterHash(append(commonFilterParts(q.spec(), sel), "sort="+q.Sort)...)
 }
 
 // rollupFilterHash binds a roll-up cursor to its filter AND to its axis.
@@ -328,36 +374,36 @@ func alertFilterHash(q ListAlertsQuery, sel filter.Selector) string {
 // once the caller regroups by namespace, and serving a page from it would silently
 // skip every namespace sorting before that string.
 func rollupFilterHash(q ListRollupsQuery, sel filter.Selector) string {
-	parts := append(commonFilterParts(q.State, q.Severity, q.Cluster, q.Namespace,
-		q.AlertName, q.Ack, q.Q, sel, q.Flapping, q.Snoozed, q.Since),
-		"group_by="+q.GroupBy)
-	return httpx.FilterHash(parts...)
+	return httpx.FilterHash(append(commonFilterParts(q.spec(), sel), "group_by="+q.GroupBy)...)
 }
 
 // commonFilterParts is every dimension that changes the RESULT SET. `limit` and
 // `cursor` deliberately do not contribute — paging is not a filter change.
-func commonFilterParts(
-	states, severities, clusters, namespaces, names []string,
-	ack, query string, sel filter.Selector, flapping, snoozed *bool, since *time.Time,
-) []string {
+//
+// ⛔ A dimension missing from here is a cursor that survives a filter change it
+// should not have survived, and a page served from the middle of a list that no
+// longer exists. Taking the whole filterSpec is what makes adding one to the
+// query and forgetting it here impossible.
+func commonFilterParts(in filterSpec, sel filter.Selector) []string {
 	parts := []string{
-		"state=" + joinSorted(states),
-		"severity=" + joinSorted(severities),
-		"cluster=" + joinSorted(clusters),
-		"namespace=" + joinSorted(namespaces),
-		"alertname=" + joinSorted(names),
-		"ack=" + ack,
-		"q=" + query,
+		"state=" + joinSorted(in.States),
+		"severity=" + joinSorted(in.Severities),
+		"cluster=" + joinSorted(in.Clusters),
+		"namespace=" + joinSorted(in.Namespaces),
+		"alertname=" + joinSorted(in.AlertNames),
+		"source_fingerprint=" + joinSorted(in.Fingerprints),
+		"ack=" + in.Ack,
+		"q=" + in.Query,
 		"label=" + sel.Canonical(),
 	}
-	if flapping != nil {
-		parts = append(parts, "flapping="+strconv.FormatBool(*flapping))
+	if in.Flapping != nil {
+		parts = append(parts, "flapping="+strconv.FormatBool(*in.Flapping))
 	}
-	if snoozed != nil {
-		parts = append(parts, "snoozed="+strconv.FormatBool(*snoozed))
+	if in.Snoozed != nil {
+		parts = append(parts, "snoozed="+strconv.FormatBool(*in.Snoozed))
 	}
-	if since != nil {
-		parts = append(parts, "since="+since.UTC().Format(time.RFC3339Nano))
+	if in.Since != nil {
+		parts = append(parts, "since="+in.Since.UTC().Format(time.RFC3339Nano))
 	}
 	return parts
 }

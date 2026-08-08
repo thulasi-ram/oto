@@ -204,6 +204,47 @@ func snoozeDTO(s domain.Snooze) SnoozeDTO {
 	}
 }
 
+// withSnooze attaches the §B.8 quiet period to an alert row.
+//
+// ⭐ IT IS SET FROM THE `alert_snoozes` ROW AND NEVER FROM THE PROJECTION.
+// `alerts.snoozed_until` is a bare timestamp — deliberately, because a person
+// reference on a signal row is the one door §D.4.0 keeps shut — so the row alone
+// could render a countdown and could never say who asked or why. Both are shown
+// wherever a snooze is shown (§B.8.1): a quiet period nobody can be asked about
+// is the silent suppression §B.6 forbids.
+//
+// A snooze whose clock has run out but which `snooze.expire` has not yet swept
+// is deliberately still rendered. It is a fact about the ROW, `ended_at` is
+// still null, and pretending otherwise would make the list and the detail page
+// disagree for up to a minute.
+func withSnooze(dto *AlertDTO, s domain.Snooze, ok bool) {
+	if !ok {
+		return
+	}
+	v := snoozeDTO(s)
+	dto.Snooze = &v
+}
+
+// activeSnoozeDTO renders one row of the §B.8.6 ORG-WIDE view.
+//
+// `remaining_seconds` is measured against `now` — one clock reading shared by
+// every row on the page — rather than against a fresh reading per row, for the
+// same reason `duration_seconds` is: a banner whose rows disagree about what time
+// it is has already stopped being trustworthy.
+func activeSnoozeDTO(s domain.Snooze, alert *domain.Alert, now time.Time) ActiveSnoozeDTO {
+	out := ActiveSnoozeDTO{
+		SnoozeDTO:        snoozeDTO(s),
+		AlertID:          s.AlertID(),
+		AlertKey:         s.AlertKey().String(),
+		RemainingSeconds: s.RemainingAt(now).Seconds(),
+	}
+	if alert != nil {
+		ref := alertRefDTO(*alert)
+		out.Alert = &ref
+	}
+	return out
+}
+
 // snoozeHistoryDTO renders one row of the §B.8.6 history.
 //
 // `ended_reason` is copied and never derived: `expired`, `manual` and

@@ -52,6 +52,11 @@ type MemberRepository interface {
 	GroupsForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Member, error)
 	DistinctJoinsSince(ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time) (int, time.Time, error)
 	Rollup(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (domain.Counts, string, error)
+	// SnoozeRollup is the §B.8.6 result of the group snooze fan-out, for a whole
+	// page of generations at once. It is derived at read time rather than stored,
+	// because whether a snooze is active is a question about the clock and a
+	// stored count would be stale after every expiry.
+	SnoozeRollup(ctx context.Context, s db.TenantScope, groupIDs []uuid.UUID, now time.Time) (map[uuid.UUID]domain.SnoozeRollup, error)
 	CurrentMemberAlerts(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]repository.MemberAlert, error)
 }
 

@@ -20,30 +20,47 @@ import (
 // stable across `alertmanager.yml` route edits so an open thread is never
 // orphaned by a reload.
 type GroupDTO struct {
-	ID                     uuid.UUID         `json:"id"`
-	GroupKey               string            `json:"group_key"`
-	Generation             int32             `json:"generation"`
-	SourceID               uuid.UUID         `json:"source_id"`
-	ClusterKey             string            `json:"cluster_key"`
-	SourceGroupKey         *string           `json:"source_group_key"`
-	Receiver               string            `json:"receiver"`
-	GroupLabels            map[string]string `json:"group_labels"`
-	Title                  string            `json:"title"`
-	State                  string            `json:"state"`
-	Severity               *string           `json:"severity"`
-	StateVersion           int32             `json:"state_version"`
-	FiringCount            int32             `json:"firing_count"`
-	SuppressedCount        int32             `json:"suppressed_count"`
-	ResolvedCount          int32             `json:"resolved_count"`
-	ExpiredCount           int32             `json:"expired_count"`
-	TotalCount             int32             `json:"total_count"`
-	AckedCount             int32             `json:"acked_count"`
-	StormMode              bool              `json:"storm_mode"`
-	StormSince             *time.Time        `json:"storm_since"`
-	LastNotificationReason *string           `json:"last_notification_reason"`
-	FirstSeenAt            time.Time         `json:"first_seen_at"`
-	LastActivityAt         time.Time         `json:"last_activity_at"`
-	ClosedAt               *time.Time        `json:"closed_at"`
+	ID              uuid.UUID         `json:"id"`
+	GroupKey        string            `json:"group_key"`
+	Generation      int32             `json:"generation"`
+	SourceID        uuid.UUID         `json:"source_id"`
+	ClusterKey      string            `json:"cluster_key"`
+	SourceGroupKey  *string           `json:"source_group_key"`
+	Receiver        string            `json:"receiver"`
+	GroupLabels     map[string]string `json:"group_labels"`
+	Title           string            `json:"title"`
+	State           string            `json:"state"`
+	Severity        *string           `json:"severity"`
+	StateVersion    int32             `json:"state_version"`
+	FiringCount     int32             `json:"firing_count"`
+	SuppressedCount int32             `json:"suppressed_count"`
+	ResolvedCount   int32             `json:"resolved_count"`
+	ExpiredCount    int32             `json:"expired_count"`
+	TotalCount      int32             `json:"total_count"`
+	AckedCount      int32             `json:"acked_count"`
+	// SnoozedCount is how many CURRENTLY-JOINED member alerts oto is quiet about
+	// right now, and SnoozedUntil is when the last of them wakes.
+	//
+	// ⛔ THERE IS NO GROUP-LEVEL SNOOZE, and these two are not one. The group
+	// snooze verb is a FAN-OUT of the per-alert primitive (§B.8.3) — one
+	// `alert_snoozes` row per member, nothing on the group — and this is the only
+	// place its result is visible. Without them the group screen could offer the
+	// button and never show that it had worked.
+	//
+	// ⭐ Compare SnoozedCount against TotalCount rather than reading it as a
+	// boolean: "one of forty is muted" and "all forty are" are different facts,
+	// and a group is only wholly quiet when they are equal.
+	//
+	// ⛔ Neither changes how the group renders. Colour and counts follow member
+	// STATE; a snoozed generation is still firing and is still listed.
+	SnoozedCount           int32      `json:"snoozed_count"`
+	SnoozedUntil           *time.Time `json:"snoozed_until"`
+	StormMode              bool       `json:"storm_mode"`
+	StormSince             *time.Time `json:"storm_since"`
+	LastNotificationReason *string    `json:"last_notification_reason"`
+	FirstSeenAt            time.Time  `json:"first_seen_at"`
+	LastActivityAt         time.Time  `json:"last_activity_at"`
+	ClosedAt               *time.Time `json:"closed_at"`
 }
 
 // GroupDetailDTO renders `GroupDetailDTO`.
@@ -91,6 +108,27 @@ type AlertDTO struct {
 	TotalOccurrences  int32             `json:"total_occurrences"`
 	FlapScore         float32           `json:"flap_score"`
 	IsFlapping        bool              `json:"is_flapping"`
+	// Snooze is the §B.8 quiet period in force on this member, or an explicit
+	// `null`. It is the SAME field, with the same contract, as on the alert list:
+	// `AlertDTO` is one schema, and a member row that could not say it was
+	// snoozed would be the one place the group fan-out's own effect is invisible.
+	Snooze *SnoozeDTO `json:"snooze"`
+}
+
+// SnoozeDTO renders `SnoozeDTO` for a member alert row.
+//
+// ⛔ It is DECLARED HERE rather than imported from `alerts/api`. CONTEXT.md §5.5
+// gives each module its own wire types, and §5.1 forbids one `api` package
+// depending on another's; the json tags are byte-identical to the single
+// `SnoozeDTO` schema in openapi.yaml, which is what makes them one type on the
+// wire without making them one type in Go.
+type SnoozeDTO struct {
+	ID             uuid.UUID  `json:"id"`
+	SnoozedAt      time.Time  `json:"snoozed_at"`
+	SnoozedUntil   time.Time  `json:"snoozed_until"`
+	SnoozedByLabel string     `json:"snoozed_by_label"`
+	Note           *string    `json:"note"`
+	EndedAt        *time.Time `json:"ended_at"`
 }
 
 // AlertEventDTO renders `AlertEventDTO` for the merged group timeline.
@@ -168,7 +206,10 @@ type ListGroupsQuery struct {
 
 // TimelineQuery is the validated form of the `getAlertGroupTimeline` query.
 type TimelineQuery struct {
-	Type   []string   `json:"type"      validate:"omitempty,max=34,unique"`
+	// The bound is the size of the closed `AlertEventType` enum — 36, including
+	// `alert.snoozed` and `alert.unsnoozed` — so that a caller can always ask for
+	// every type it is allowed to see.
+	Type   []string   `json:"type"      validate:"omitempty,max=36,unique"`
 	Since  *time.Time `json:"since"`
 	Until  *time.Time `json:"until"`
 	Order  string     `json:"order"     validate:"omitempty,oneof=asc desc"`

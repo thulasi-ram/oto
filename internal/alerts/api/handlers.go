@@ -42,6 +42,13 @@ func (rt *Router) listAlerts(w http.ResponseWriter, r *http.Request) {
 	out := make([]AlertDTO, 0, len(res.Alerts))
 	for _, a := range res.Alerts {
 		dto := alertDTO(a)
+		// ⭐ The snooze comes off the map the service batch-loaded beside the
+		// page — ONE query for the whole list, or none when nothing on it is
+		// snoozed. Asking per row would be the N+1 that kept this field off the
+		// list in the first place, leaving the default view unable to tell a
+		// quiet alert from a noisy one (§B.8.6).
+		s, snoozed := res.Snoozes[a.ID()]
+		withSnooze(&dto, s, snoozed)
 		rt.embed(r, scope, &dto, a, req.Include, started)
 		out = append(out, dto)
 	}
@@ -553,6 +560,54 @@ func (rt *Router) listAlertSnoozes(w http.ResponseWriter, r *http.Request) {
 		out = append(out, snoozeHistoryDTO(s))
 	}
 	httpx.Data(w, r, http.StatusOK, out, started)
+}
+
+// listSnoozes is `GET /api/v1/snoozes` — the §B.8.6 ORG-WIDE view of every quiet
+// period currently in force, soonest wake-up first.
+//
+// ⭐ THIS IS THE COUNTERWEIGHT THAT MAKES SNOOZE SAFE TO SHIP. §B.8.6 requires a
+// persistent banner enumerating every active snooze in the org with its expiry,
+// "so a snooze cannot be forgotten". Without it the feature is a mute switch with
+// no indicator light.
+//
+// ⛔ It is NOT `GET /alerts?snoozed=true`, and that endpoint cannot be made into
+// it. That one pages ALERTS: it answers "which alerts are quiet" and structurally
+// cannot answer "who asked, why, and until when", because those are facts about
+// an `alert_snoozes` row and one alert has a whole history of them. Nor can it
+// order by expiry, which is the one ordering a banner is read in.
+func (rt *Router) listSnoozes(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, err := scopeOf(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	page, limit, err := simplePage(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	res, err := rt.svc.ActiveSnoozes(r.Context(), scope, page)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	out := make([]ActiveSnoozeDTO, 0, len(res.Snoozes))
+	for _, s := range res.Snoozes {
+		// The Alert is looked up in the batch the service already loaded. A
+		// snooze whose alert is missing is still listed, with a null `alert`:
+		// dropping the row would hide a quiet period, which is the exact failure
+		// this endpoint exists to prevent.
+		var alert *domain.Alert
+		if a, ok := res.Alerts[s.AlertKey().String()]; ok {
+			alert = &a
+		}
+		out = append(out, activeSnoozeDTO(s, alert, started))
+	}
+	httpx.List(w, r, out, pageOf(res.Cursor, limit), started)
 }
 
 // snoozeUntil resolves the two spellings of "how long".

@@ -196,6 +196,144 @@ func (r *SnoozeRepository) GetActive(
 	return snz, true, nil
 }
 
+var activeSnoozesByAlertsSQL = `
+SELECT ` + snoozeColumns + `
+  FROM alert_snoozes
+ WHERE org_id = $1 AND alert_id = ANY($2) AND ended_at IS NULL`
+
+// ActiveByAlerts reads the open snooze of many Alerts in ONE round trip.
+//
+// ⭐ IT IS WHAT KEEPS `snooze` ON THE ALERT LIST OFF THE N+1 PATH. A list of two
+// hundred alerts that asked each one whether it was snoozed would be two hundred
+// and one queries, and the honest answer — a countdown badge on the row — would
+// have cost more than everything else the list does put together. The caller
+// passes only the ids whose `alerts.snoozed_until` projection is already
+// non-null, so on a page with nothing snoozed this query is never issued at all.
+//
+// NOTE (planner): the driving index is alert_snoozes_active_idx, the PARTIAL
+// UNIQUE index on (alert_id) WHERE ended_at IS NULL — the same index that
+// enforces "exactly one active snooze per alert". `= ANY($2)` over it is an
+// index scan per id, and the org predicate is a filter on rows the index already
+// narrowed to one per alert.
+func (r *SnoozeRepository) ActiveByAlerts(
+	ctx context.Context, s db.TenantScope, alertIDs []uuid.UUID,
+) (map[uuid.UUID]domain.Snooze, error) {
+	if err := requireScope(s); err != nil {
+		return nil, err
+	}
+	if len(alertIDs) == 0 {
+		return map[uuid.UUID]domain.Snooze{}, nil
+	}
+
+	rows, err := r.db(ctx).Query(ctx, activeSnoozesByAlertsSQL, s.OrgID(), alertIDs)
+	if err != nil {
+		return nil, mapErr(err, "read active snoozes")
+	}
+	defer rows.Close()
+
+	out := make(map[uuid.UUID]domain.Snooze, len(alertIDs))
+	for rows.Next() {
+		var row snoozeRow
+		if err := rows.Scan(row.scanDest()...); err != nil {
+			return nil, mapErr(err, "scan snooze")
+		}
+		snz, err := row.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out[row.alertID] = snz
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "read active snoozes")
+	}
+	return out, nil
+}
+
+var listActiveSnoozesSQL = `
+SELECT ` + snoozeColumns + `
+  FROM alert_snoozes
+ WHERE org_id = $1
+   AND ended_at IS NULL
+   AND snoozed_until > $2
+   AND ($3::timestamptz IS NULL OR (snoozed_until, id) > ($3, $4))
+ ORDER BY snoozed_until ASC, id ASC
+ LIMIT $5`
+
+// ListActive is the ORG-WIDE view of §B.8.6: every quiet period in force right
+// now, soonest wake-up first.
+//
+// ⭐ THIS IS THE COUNTERWEIGHT THAT MAKES SNOOZE SAFE TO SHIP. §B.8.6 requires a
+// persistent banner enumerating every active snooze in the org with its expiry,
+// "so a snooze cannot be forgotten". `GET /alerts?snoozed=true` is not that list:
+// it pages ALERTS, so it can say which alerts are quiet but never who asked, why,
+// or until when — and an unreviewable quiet period is the silent suppression §B.6
+// forbids, arriving by the back door.
+//
+// The ordering is by `snoozed_until` and not by `snoozed_at` on purpose: a banner
+// is read to find out what is about to come back, and what has longest to run.
+//
+// `snoozed_until > $2` is deliberately narrower than `ended_at IS NULL`: a row
+// whose clock has run out but which the 60-second `snooze.expire` job has not yet
+// swept is no longer suppressing anything, and listing it would overstate how
+// quiet oto is.
+//
+// NOTE (planner): alert_snoozes_expiry_idx is (snoozed_until) WHERE ended_at IS
+// NULL, which serves the ordering, the `snoozed_until >` bound and the keyset in
+// one scan — but it does NOT lead with org_id (§D.8b wrote it for the background
+// sweep), so the tenant predicate is applied as a filter over that range. The
+// index that would make this org-local is reported rather than written.
+func (r *SnoozeRepository) ListActive(
+	ctx context.Context, s db.TenantScope, now time.Time, p db.Keyset,
+) ([]domain.Snooze, db.Cursor, error) {
+	if err := requireScope(s); err != nil {
+		return nil, db.Cursor{}, err
+	}
+	if now.IsZero() {
+		now = r.clock.Now()
+	}
+	limit := clampLimit(p.Limit)
+
+	var (
+		afterAt *time.Time
+		afterID uuid.UUID
+	)
+	if !p.Cursor.IsZero() && !p.Cursor.SortKey.IsZero() {
+		at := p.Cursor.SortKey.UTC()
+		afterAt = &at
+		afterID = p.Cursor.ID
+	}
+
+	rows, err := r.db(ctx).Query(ctx, listActiveSnoozesSQL,
+		s.OrgID(), now.UTC(), afterAt, afterID, limit+1)
+	if err != nil {
+		return nil, db.Cursor{}, mapErr(err, "list active snoozes")
+	}
+	defer rows.Close()
+
+	collected := make([]domain.Snooze, 0, limit+1)
+	for rows.Next() {
+		var row snoozeRow
+		if err := rows.Scan(row.scanDest()...); err != nil {
+			return nil, db.Cursor{}, mapErr(err, "scan snooze")
+		}
+		snz, err := row.toDomain()
+		if err != nil {
+			return nil, db.Cursor{}, err
+		}
+		collected = append(collected, snz)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, db.Cursor{}, mapErr(err, "read active snoozes")
+	}
+
+	page, hasMore := pageOf(collected, limit)
+	if len(page) == 0 {
+		return page, db.Cursor{Hash: p.Cursor.Hash}, nil
+	}
+	last := page[len(page)-1]
+	return page, nextCursor(last.SnoozedUntil(), last.ID(), p.Cursor.Hash, hasMore), nil
+}
+
 var endSnoozeSQL = `
 UPDATE alert_snoozes SET
     ended_at       = GREATEST(snoozed_at, $3),

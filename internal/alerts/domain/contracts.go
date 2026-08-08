@@ -208,8 +208,15 @@ type AlertFilter struct {
 	ClusterKeys []string
 	Services    []string
 	AlertNames  []string
-	AckState    *AckState
-	Flapping    *bool
+	// Fingerprints filters on the §C.3 source fingerprint — the axis
+	// `group_by=fingerprint` buckets on. Without it a fingerprint roll-up bucket
+	// is a dead end: the UI can show the count and can never open it, which is
+	// the one thing a roll-up exists to let a user do. `alertname` and
+	// `namespace`, the other two axes, have had their filter since the first
+	// draft; this is the third.
+	Fingerprints []string
+	AckState     *AckState
+	Flapping     *bool
 	// Snoozed is nil for INCLUDE BOTH, and nil is the default. THE DEFAULT LIST
 	// NEVER HIDES SNOOZED ALERTS (§B.8.6) — hiding them is how an incident is
 	// lost. `?snoozed=true|false` is an explicit, visible filter chip.

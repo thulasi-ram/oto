@@ -119,6 +119,40 @@ func (c Counts) Live() int { return c.Firing + c.Suppressed }
 // which in turn decides whether a new Notification can exist (§C.7).
 func (c Counts) Equal(o Counts) bool { return c == o }
 
+// SnoozeRollup is how much of a generation oto is currently quiet about (§B.8.6).
+//
+// ⛔ IT IS NOT A GROUP-LEVEL SNOOZE, AND THERE IS NO SUCH THING. The group snooze
+// verb is a FAN-OUT of the per-alert primitive (§B.8.3): it writes one
+// `alert_snoozes` row per currently-joined member and nothing at all onto the
+// group. This is the observable RESULT of that fan-out, recomputed at read time
+// from the members' own projections — which is why it is not a column on
+// `alert_groups` and must never become one.
+//
+// ⭐ IT IS NOT STORED FOR A CORRECTNESS REASON, not a convenience one. Whether a
+// snooze is active is a question about the CLOCK: snoozes expire on their own,
+// sixty seconds at a time, without anything touching the group. A stored count
+// would be quietly wrong for up to a minute after every expiry, and a group card
+// claiming eight members are muted when three have already woken is exactly the
+// kind of lie about its own dampers that §B.6 forbids.
+//
+// ⛔ It changes NOTHING about how the group renders. Every member stays whatever
+// state and severity it was; this is a badge beside the counts, never a colour.
+type SnoozeRollup struct {
+	// Count is how many CURRENTLY-JOINED member alerts are snoozed right now.
+	// Compare it against Counts.Total to see whether the group is wholly or only
+	// partly quiet — the difference matters, and collapsing it to a boolean is
+	// how "one of forty is muted" becomes indistinguishable from "all forty are".
+	Count int
+	// Until is the LATEST wake-up among those members: the instant after which
+	// no member of this generation is muted any more. Zero when Count is zero.
+	//
+	// It is the latest and not the earliest because the question a group header
+	// answers is "when does this stop being quiet", and the group is not done
+	// being quiet until its last snoozed member wakes. Partial quiet before then
+	// is visible as Count < Total, which is why both are carried.
+	Until time.Time
+}
+
 // Group is one generation of one notification group.
 //
 // Every field is unexported and reachable only through a constructor, so a

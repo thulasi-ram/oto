@@ -536,6 +536,16 @@ func applyAlertFilter(q sq.SelectBuilder, f domain.AlertFilter, now time.Time) (
 	if len(f.AlertNames) > 0 {
 		q = q.Where(sq.Eq{"alertname": f.AlertNames})
 	}
+	// The §C.3 fingerprint, which is what `group_by=fingerprint` buckets on.
+	// alerts_srcfp_idx is (org_id, cluster_key, source_fingerprint), so this
+	// predicate is index-backed as a range only when `cluster=` is also given —
+	// which is the shape the roll-up drill-down actually sends, because a bucket
+	// is already scoped to the cluster whose alerts produced it. On its own it is
+	// an org-scoped filter; the DDL that would make it a range of its own is
+	// reported rather than written, because migrations are not owned here.
+	if len(f.Fingerprints) > 0 {
+		q = q.Where(sq.Eq{"source_fingerprint": f.Fingerprints})
+	}
 	if f.AckState != nil {
 		q = q.Where(sq.Eq{"ack_state": f.AckState.String()})
 	}

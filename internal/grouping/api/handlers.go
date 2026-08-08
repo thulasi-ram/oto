@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	alertdomain "github.com/thulasiram/oto/internal/alerts/domain"
+	alerts "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
 	"github.com/thulasiram/oto/internal/grouping/service"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -42,9 +42,12 @@ func (rt *Router) listAlertGroups(w http.ResponseWriter, r *http.Request) {
 
 	// Straight through. Every filter and the sort were applied in SQL — see the
 	// note at the foot of router.go about why nothing is discarded here.
+	// The snooze roll-up comes off the map the service batch-loaded beside the
+	// page — ONE query for the whole list. Asking per group would be the N+1
+	// that kept the count off the group list in the first place.
 	out := make([]GroupDTO, 0, len(res.Groups))
 	for _, g := range res.Groups {
-		out = append(out, groupDTO(g))
+		out = append(out, groupDTO(g, res.Snoozes[g.ID()]))
 	}
 	httpx.List(w, r, out, httpx.PageOf(res.Cursor, req.Query.Limit), started)
 }
@@ -346,11 +349,11 @@ func (rt *Router) listAlertGroupAlerts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[m.AlertID()] = struct{}{}
-		a, ok := rt.alert(r, scope, m.AlertID())
+		d, ok := rt.alert(r, scope, m.AlertID())
 		if !ok {
 			continue
 		}
-		out = append(out, alertDTO(a))
+		out = append(out, alertDTO(d.Alert, d.Snooze))
 	}
 	httpx.List(w, r, out, httpx.PageOf(res.Cursor, limit), started)
 }
@@ -384,7 +387,7 @@ func (rt *Router) subjectNoParamCheck(r *http.Request) (db.TenantScope, uuid.UUI
 // preview.
 func (rt *Router) detailDTO(r *http.Request, scope db.TenantScope, d service.Detail) GroupDetailDTO {
 	dto := GroupDetailDTO{
-		GroupDTO:       groupDTO(d.Group),
+		GroupDTO:       groupDTO(d.Group, d.Snooze),
 		SeverityCounts: map[string]int32{},
 		TopAlerts:      []AlertRefDTO{},
 	}
@@ -396,8 +399,8 @@ func (rt *Router) detailDTO(r *http.Request, scope db.TenantScope, d service.Det
 		if !ok {
 			continue
 		}
-		dto.TopAlerts = append(dto.TopAlerts, alertRefDTO(a))
-		if sev := a.Severity().String(); sev != "" {
+		dto.TopAlerts = append(dto.TopAlerts, alertRefDTO(a.Alert))
+		if sev := a.Alert.Severity().String(); sev != "" {
 			dto.SeverityCounts[sev]++
 		}
 	}
@@ -407,15 +410,19 @@ func (rt *Router) detailDTO(r *http.Request, scope db.TenantScope, d service.Det
 // alert resolves one member alert through the cross-domain port. A member whose
 // alert cannot be read is skipped rather than failing the page: a group card that
 // refuses to render because one row is missing is worse than one that is short.
-func (rt *Router) alert(r *http.Request, scope db.TenantScope, alertID uuid.UUID) (alertdomain.Alert, bool) {
+//
+// It returns the WHOLE AlertDetail rather than just the Alert, because the read
+// already carries the §B.8 snooze and discarding it here is what left the member
+// rows unable to show the result of the group's own snooze fan-out.
+func (rt *Router) alert(r *http.Request, scope db.TenantScope, alertID uuid.UUID) (alerts.AlertDetail, bool) {
 	if rt.alerts == nil {
-		return alertdomain.Alert{}, false
+		return alerts.AlertDetail{}, false
 	}
 	detail, err := rt.alerts.Get(r.Context(), scope, alertID)
 	if err != nil {
-		return alertdomain.Alert{}, false
+		return alerts.AlertDetail{}, false
 	}
-	return detail.Alert, true
+	return detail, true
 }
 
 // sortedMembers orders membership newest join first, with the occurrence id as a

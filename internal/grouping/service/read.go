@@ -19,7 +19,15 @@ import (
 // ListResult is one page of group generations.
 type ListResult struct {
 	Groups []domain.Group
-	Cursor db.Cursor
+	// Snoozes is the §B.8.6 quiet roll-up of each generation on this page, keyed
+	// by group id. An absent entry means nothing in that generation is muted.
+	//
+	// It rides beside the page rather than on domain.Group because it is NOT a
+	// property of the group row: there is no group-level snooze (§B.8.3), only
+	// the visible result of a fan-out over member alerts, and it is a function of
+	// the clock rather than of the row.
+	Snoozes map[uuid.UUID]domain.SnoozeRollup
+	Cursor  db.Cursor
 }
 
 // ListQuery is the compiled form of `GET /api/v1/alert-groups`.
@@ -63,7 +71,20 @@ func (s *Service) List(ctx context.Context, scope db.TenantScope, q ListQuery) (
 	if err != nil {
 		return ListResult{}, err
 	}
-	return ListResult{Groups: groups, Cursor: cur}, nil
+
+	// ⭐ ONE extra query for the whole page, never one per group. The group
+	// screen can offer the snooze fan-out; without this it could never show the
+	// result, and a button whose effect is invisible is indistinguishable from a
+	// button that does nothing.
+	ids := make([]uuid.UUID, 0, len(groups))
+	for _, g := range groups {
+		ids = append(ids, g.ID())
+	}
+	snoozes, err := s.members.SnoozeRollup(ctx, scope, ids, s.Now())
+	if err != nil {
+		return ListResult{}, err
+	}
+	return ListResult{Groups: groups, Snoozes: snoozes, Cursor: cur}, nil
 }
 
 // Detail is `GET /api/v1/alert-groups/{id}` — the generation and its rollup.
@@ -76,6 +97,11 @@ type Detail struct {
 	// renders it as a badge next to the counts, and a damper the user cannot see
 	// is the silent suppression §B.6 forbids.
 	StormActive bool
+	// Snooze is the §B.8.6 quiet roll-up: how many currently-joined members oto
+	// is holding its tongue about, and when the last of them wakes. Snooze is the
+	// MANUAL sibling of storm collapse and flap damping, and it is subject to the
+	// same rule — a damper the user cannot see is not one oto ships.
+	Snooze domain.SnoozeRollup
 }
 
 // Get serves `GET /api/v1/alert-groups/{id}`.
@@ -88,7 +114,16 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, groupID uuid.UU
 	if err != nil {
 		return Detail{}, err
 	}
-	return Detail{Group: g, Members: members, StormActive: g.StormMode()}, nil
+	snoozes, err := s.members.SnoozeRollup(ctx, scope, []uuid.UUID{groupID}, s.Now())
+	if err != nil {
+		return Detail{}, err
+	}
+	return Detail{
+		Group:       g,
+		Members:     members,
+		StormActive: g.StormMode(),
+		Snooze:      snoozes[groupID],
+	}, nil
 }
 
 // MemberResult is one keyset page of a generation's current members.

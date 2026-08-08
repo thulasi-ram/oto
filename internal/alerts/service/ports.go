@@ -100,6 +100,16 @@ type EventRepository interface {
 type SnoozeRepository interface {
 	Create(ctx context.Context, s db.TenantScope, in domain.SnoozeRequest) (domain.Snooze, error)
 	GetActive(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Snooze, bool, error)
+	// ActiveByAlerts is GetActive for a whole page of alerts in one round trip.
+	// It is what keeps `AlertDTO.snooze` off the N+1 path: the list renders the
+	// countdown badge for two hundred rows in ONE extra query, or in none at all
+	// when the page holds nothing snoozed.
+	ActiveByAlerts(ctx context.Context, s db.TenantScope, alertIDs []uuid.UUID) (map[uuid.UUID]domain.Snooze, error)
+	// ListActive is the ORG-WIDE §B.8.6 view: every quiet period in force,
+	// soonest wake-up first. It is what the persistent banner is built from, and
+	// it is a different question from `GET /alerts?snoozed=true` — that pages
+	// alerts and can never say who asked, why, or until when.
+	ListActive(ctx context.Context, s db.TenantScope, now time.Time, p db.Keyset) ([]domain.Snooze, db.Cursor, error)
 	End(ctx context.Context, s db.TenantScope, in domain.SnoozeEnd) (domain.Snooze, error)
 	// ExpiredCandidates feeds the 60-second `snooze.expire` job (§B.8.3, §G.3).
 	ExpiredCandidates(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]domain.Snooze, error)

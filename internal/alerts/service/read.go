@@ -42,7 +42,17 @@ type ListQuery struct {
 // ListResult is one page of alerts plus the cursor for the next.
 type ListResult struct {
 	Alerts []domain.Alert
-	Cursor db.Cursor
+	// Snoozes is the ACTIVE snooze of each alert on this page that has one,
+	// keyed by alert id. Absent means awake.
+	//
+	// ⭐ It is a MAP AND NOT A FIELD ON THE ALERT because a snooze is a row in
+	// `alert_snoozes` and the Alert only carries the `snoozed_until` projection
+	// (§D.8b) — who asked, why, and since when live on the side table, which is
+	// what keeps the person reference off the signal row (§D.4.0). The list needs
+	// all of it to draw the badge, so it is batch-loaded beside the page rather
+	// than folded into the entity.
+	Snoozes map[uuid.UUID]domain.Snooze
+	Cursor  db.Cursor
 }
 
 // List serves `GET /api/v1/alerts`.
@@ -66,23 +76,115 @@ func (s *Service) List(ctx context.Context, scope db.TenantScope, q ListQuery) (
 			"sort must be one of: -last_seen_at, -first_seen_at")
 	}
 
-	if s.lister != nil {
-		alerts, cur, err := s.lister.ListSorted(ctx, scope, q.Filter, q.Sort, q.Page)
-		if err != nil {
-			return ListResult{}, err
-		}
-		return ListResult{Alerts: alerts, Cursor: cur}, nil
-	}
-
-	if q.Sort == SortFirstSeenDesc {
+	var (
+		alerts []domain.Alert
+		cur    db.Cursor
+		err    error
+	)
+	switch {
+	case s.lister != nil:
+		alerts, cur, err = s.lister.ListSorted(ctx, scope, q.Filter, q.Sort, q.Page)
+	case q.Sort == SortFirstSeenDesc:
 		return ListResult{}, errs.Validation("sort_unsupported",
 			"this deployment cannot sort by -first_seen_at")
+	default:
+		alerts, cur, err = s.alerts.List(ctx, scope, q.Filter, q.Page)
 	}
-	alerts, cur, err := s.alerts.List(ctx, scope, q.Filter, q.Page)
 	if err != nil {
 		return ListResult{}, err
 	}
-	return ListResult{Alerts: alerts, Cursor: cur}, nil
+
+	snoozes, err := s.activeSnoozes(ctx, scope, alerts)
+	if err != nil {
+		return ListResult{}, err
+	}
+	return ListResult{Alerts: alerts, Snoozes: snoozes, Cursor: cur}, nil
+}
+
+// activeSnoozes batch-loads the §B.8 snooze rows behind one page of alerts.
+//
+// ⭐ IT IS ONE QUERY OR NONE, NEVER ONE PER ROW. `alerts.snoozed_until` is the
+// projection of the active snooze, so an alert with no projection provably has no
+// snooze row to read: the id list is narrowed by that before the query is issued,
+// and a page with nothing snoozed — which is the overwhelmingly common case —
+// costs nothing at all.
+//
+// The projection is read as a fact about the ROW rather than about the clock. A
+// projection that is set but has already passed belongs to a snooze the
+// 60-second `snooze.expire` job has not swept yet; it is still fetched, and the
+// mapper decides how to render it, because the alternative is a list that
+// silently disagrees with the detail page for up to a minute.
+func (s *Service) activeSnoozes(
+	ctx context.Context, scope db.TenantScope, alerts []domain.Alert,
+) (map[uuid.UUID]domain.Snooze, error) {
+	ids := make([]uuid.UUID, 0, len(alerts))
+	for _, a := range alerts {
+		if !a.SnoozedUntil().IsZero() {
+			ids = append(ids, a.ID())
+		}
+	}
+	if len(ids) == 0 {
+		return map[uuid.UUID]domain.Snooze{}, nil
+	}
+	return s.snoozes.ActiveByAlerts(ctx, scope, ids)
+}
+
+// ActiveSnoozeResult is one page of the §B.8.6 org-wide view.
+type ActiveSnoozeResult struct {
+	Snoozes []domain.Snooze
+	// Alerts is the Alert each snooze mutes, keyed by `alert_key`. A snooze row
+	// carries the key denormalised precisely so the audit trail survives, which
+	// makes it the join key here and costs one batched read rather than one per
+	// row. An absent entry renders as a snooze without its alert rather than as
+	// a dropped row: a quiet period whose alert cannot be read is still a quiet
+	// period somebody has to know about.
+	Alerts map[string]domain.Alert
+	Cursor db.Cursor
+}
+
+// ActiveSnoozes serves the ORG-WIDE list of §B.8.6: what oto is currently quiet
+// about, and until when.
+//
+// ⭐ IT IS NOT `GET /alerts?snoozed=true`. That pages ALERTS — it answers "which
+// alerts are quiet" and structurally cannot answer "who asked, why, and until
+// when", because those live on `alert_snoozes` and one alert has a whole history
+// of them. §B.8.6 asks for a persistent banner enumerating every active snooze
+// with its expiry "so a snooze cannot be forgotten"; a list of alerts is not that
+// list, and a snooze nobody can enumerate is the silent suppression §B.6 forbids
+// arriving by the back door.
+//
+// "Active" is evaluated against the SERVICE CLOCK, never the caller's: a client
+// whose clock is wrong must not be able to disagree with the server about what is
+// currently muted.
+func (s *Service) ActiveSnoozes(
+	ctx context.Context, scope db.TenantScope, p db.Keyset,
+) (ActiveSnoozeResult, error) {
+	rows, cur, err := s.snoozes.ListActive(ctx, scope, s.Now(), p)
+	if err != nil {
+		return ActiveSnoozeResult{}, err
+	}
+
+	out := ActiveSnoozeResult{Snoozes: rows, Alerts: map[string]domain.Alert{}, Cursor: cur}
+	if len(rows) == 0 || s.alertBatch == nil {
+		return out, nil
+	}
+
+	keys := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		k := r.AlertKey().String()
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+	alerts, err := s.alertBatch.GetByAlertKeys(ctx, scope, keys)
+	if err != nil {
+		return ActiveSnoozeResult{}, err
+	}
+	out.Alerts = alerts
+	return out, nil
 }
 
 // AlertDetail is `GET /api/v1/alerts/{id}`: the identity, the episode currently

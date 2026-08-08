@@ -386,6 +386,83 @@ func (r *MemberRepository) CurrentMemberAlerts(
 	return out, nil
 }
 
+const snoozeRollupSQL = `
+SELECT m.group_id,
+       count(DISTINCT m.alert_id) AS snoozed,
+       max(a.snoozed_until)       AS until
+  FROM alert_group_members m
+  JOIN alerts a ON a.id = m.alert_id AND a.org_id = m.org_id
+ WHERE m.org_id = $1
+   AND m.group_id = ANY($2)
+   AND m.left_at IS NULL
+   AND a.snoozed_until > $3
+ GROUP BY m.group_id`
+
+// SnoozeRollup counts how many CURRENTLY-JOINED member alerts of each generation
+// oto is quiet about, and when the last of them wakes (§B.8.6).
+//
+// ⭐ WHY IT IS COMPUTED AND NOT A COLUMN. Every other count on `alert_groups` is
+// stored, recomputed by Rollup on each membership change. This one cannot be:
+// snoozes expire ON THE CLOCK, sixty seconds at a time, with nothing touching the
+// group. A stored `snoozed_count` would be stale for up to a minute after every
+// expiry and would keep claiming members were muted after they had woken —
+// precisely the "damper the user cannot see" that §B.6 forbids. So it is derived
+// from `alerts.snoozed_until` at read time, against `now`, and it is always right.
+//
+// ⭐ IT IS BATCHED OVER A WHOLE PAGE OF GROUPS. One query per group would be the
+// N+1 that kept the count off the group list entirely, leaving the fan-out button
+// able to act and never able to show its result.
+//
+// It counts DISTINCT alerts: one alert can hold several episodes in one
+// generation, and a snooze is scoped to the ALERT (§B.8.1), so counting
+// memberships would report one muted alert twice.
+//
+// NOTE (layering): this joins `alerts`, which the alerts module owns — the same
+// table READ that `Rollup` above already performs, and for the same reason. It is
+// not a call into another module's repository, which §F.5 rule 4 forbids.
+//
+// NOTE (planner): driven by gm_alert_idx / the (group_id, occurrence_id) primary
+// key on `alert_group_members` for the `group_id = ANY(...)` restriction, with
+// `alerts` reached by primary key per member. `a.snoozed_until > $3` is a filter
+// on those looked-up rows; alerts_snooze_idx is not the driving index here and
+// does not need to be, because the member set is already bounded by the page.
+func (r *MemberRepository) SnoozeRollup(
+	ctx context.Context, s db.TenantScope, groupIDs []uuid.UUID, now time.Time,
+) (map[uuid.UUID]domain.SnoozeRollup, error) {
+	if err := requireScope(s); err != nil {
+		return nil, err
+	}
+	if len(groupIDs) == 0 {
+		return map[uuid.UUID]domain.SnoozeRollup{}, nil
+	}
+	if now.IsZero() {
+		now = r.clock.Now()
+	}
+
+	rows, err := r.db(ctx).Query(ctx, snoozeRollupSQL, s.OrgID(), groupIDs, now.UTC())
+	if err != nil {
+		return nil, mapErr(err, "roll up group snoozes")
+	}
+	defer rows.Close()
+
+	out := make(map[uuid.UUID]domain.SnoozeRollup, len(groupIDs))
+	for rows.Next() {
+		var (
+			id    uuid.UUID
+			n     int64
+			until *time.Time
+		)
+		if err := rows.Scan(&id, &n, &until); err != nil {
+			return nil, mapErr(err, "scan group snooze rollup")
+		}
+		out[id] = domain.SnoozeRollup{Count: int(n), Until: timeOrZero(until)}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "read group snooze rollups")
+	}
+	return out, nil
+}
+
 func collectMembers(rows pgx.Rows) ([]domain.Member, error) {
 	out := make([]domain.Member, 0, 32)
 	for rows.Next() {

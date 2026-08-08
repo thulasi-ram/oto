@@ -47,6 +47,10 @@ type AlertService interface {
 	Snooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, until time.Time, note string) (domain.Snooze, error)
 	Unsnooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor) (domain.Snooze, error)
 	SnoozeHistory(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Snooze, error)
+	// ActiveSnoozes is the ORG-WIDE §B.8.6 view: everything oto is currently
+	// quiet about, soonest wake-up first. It is what the persistent banner is
+	// built from, and it is the reason a snooze cannot be forgotten.
+	ActiveSnoozes(ctx context.Context, s db.TenantScope, p db.Keyset) (service.ActiveSnoozeResult, error)
 }
 
 // Compile-time proof that the service satisfies the port this layer declares.
@@ -89,6 +93,12 @@ func (rt *Router) Register(r chi.Router) {
 			r.Post("/unsnooze", rt.unsnoozeAlert)
 		})
 	})
+
+	// The ORG-WIDE snooze list (§B.8.6). It is a sibling of /alerts and not a
+	// mode of it, for the same reason /alerts/rollups is: the row shape is a
+	// SNOOZE, not an alert, and the keyset is over `snoozed_until` rather than
+	// `last_seen_at`.
+	r.Get("/snoozes", rt.listSnoozes)
 
 	r.Route("/occurrences/{id}", func(r chi.Router) {
 		r.Get("/", rt.getOccurrence)
