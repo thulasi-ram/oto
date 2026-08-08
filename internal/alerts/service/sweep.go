@@ -178,7 +178,11 @@ func (s *Service) expire(
 	}
 
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
-		if err := s.occurrences.Transition(ctx, scope, r.Occurrence.ID(), transitionOf(r)); err != nil {
+		// No witnesses: the reaper has no observation, and an expiry names no
+		// suppressor. transitionOf clears the column, which is what T6 means —
+		// oto stopped hearing about the alert, not "Alertmanager is muting it".
+		trans := transitionOf(r, domain.SuppressedBy{})
+		if err := s.occurrences.Transition(ctx, scope, r.Occurrence.ID(), trans); err != nil {
 			return err
 		}
 		alert, err := s.alerts.GetByID(ctx, scope, r.Occurrence.AlertID())

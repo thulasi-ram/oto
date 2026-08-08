@@ -3,22 +3,64 @@ package app
 import (
 	"context"
 	"log/slog"
+	"time"
+
+	"github.com/riverqueue/river"
 
 	enrichworker "github.com/thulasiram/oto/internal/enrichment/worker"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/jobs"
+	silencesworker "github.com/thulasiram/oto/internal/silences/worker"
+	sourcesworker "github.com/thulasiram/oto/internal/sources/worker"
+	statsworker "github.com/thulasiram/oto/internal/stats/worker"
 )
+
+// reconcileFanOutInterval is how often the fan-out tick looks for sources whose
+// own `reconcile_interval_s` has elapsed. The tick only ENQUEUES; `ListDue`
+// decides which sources are actually due.
+//
+// ⚠️ It matches `SourceReconcileArgs.InsertOpts`'s own 30-second uniqueness
+// window, and it cannot usefully be shorter: River would collapse the extra ticks
+// onto the same unique key. The consequence is worth knowing — a source
+// configured below 30 s (the DDL floor is 10 s) is still reconciled at 30 s. That
+// is a property of the job kind's uniqueness period in `platform/jobs`, not of
+// this schedule, and it is the SPEC's own default interval.
+const reconcileFanOutInterval = 30 * time.Second
+
+// addSourcePeriodic installs the per-source schedule of SPEC §G.3.
+//
+// ⚠️ IT CANNOT LIVE IN `platform/jobs`, and that package says so: the payloads of
+// `source.reconcile` and `silences.sync` name a SOURCE, so the schedule needs the
+// source list, and the source list lives in a tenant-scoped table that only a
+// service can read. So the periodic here carries an EMPTY payload — the fan-out
+// tick — and the handler expands it into one job per due source.
+//
+// `silences.sync` gets no periodic of its own. It is enqueued by the same
+// fan-out, and its args carry a 60-second uniqueness window, so being offered
+// every 10 seconds collapses to one run a minute: the §G.3 schedule, enforced by
+// the queue rather than by a second clock that could drift from it.
+func (c *Container) addSourcePeriodic(registry *jobs.Registry) {
+	if c.Reconciler == nil {
+		return
+	}
+	registry.AddPeriodic(river.NewPeriodicJob(
+		river.PeriodicInterval(reconcileFanOutInterval),
+		func() (river.JobArgs, *river.InsertOpts) { return jobs.SourceReconcileArgs{}, nil },
+		// RunOnStart: a deploy must not cost a reconcile interval of blindness.
+		// The pass is idempotent, so running one extra costs one HTTP call.
+		&river.PeriodicJobOpts{ID: jobs.KindSourceReconcile + ".fanout", RunOnStart: true},
+	))
+}
 
 // handlers fills the SEAM `platform/jobs` publishes: one field per job kind in
 // SPEC §G.3, each nil field registered as a stub that returns "not implemented".
 //
 // The seam is why the queue, the retry policy, the metrics and the schedule were
-// all live and observable before any of this existed — and it is why the two
-// kinds that still have NO implementation anywhere in the tree
-// (`source.reconcile`, `silences.sync`, `stats.rollup`) stay visible as
-// `oto_jobs_failed_total{kind=…}` rather than quietly vanishing. A stub that
-// fails loudly is the honest state; a handler that returns nil would claim the
-// work was done.
+// all live and observable before any of the business logic existed. Every field
+// is now filled: a stub that fails loudly was the honest state while a kind had
+// no implementation, and `source.reconcile` in particular could never be left
+// there — ADR 0006 makes it mandatory, and without it `suppressed` is an
+// unreachable state.
 func (c *Container) handlers() jobs.Handlers {
 	h := jobs.Handlers{
 		// ingest.process_batch — THE ONLY WRITE PATH INTO `alerts` (§G.4).
@@ -40,20 +82,25 @@ func (c *Container) handlers() jobs.Handlers {
 		RetentionPrune:   c.pruneRetention,
 		CacheExpire:      c.expireCache,
 
-		// ⛔ NOT IMPLEMENTED ANYWHERE IN THIS TREE, and deliberately left as the
-		// loud stub rather than faked:
+		// ⭐ source.reconcile (§G.8, ADR 0006) — MANDATORY. Alertmanager's
+		// MuteStage drops suppressed alerts before any webhook fires, so polling
+		// API v2 is the ONLY way oto can learn that an alert was silenced. It is
+		// also the recovery path for a webhook that was never delivered.
 		//
-		//   source.reconcile  (§G.8) — nothing produces Observations from the
-		//                     Alertmanager v2 API. It is the ONLY producer of
-		//                     `suppressed`, so a no-op handler would silently
-		//                     make an entire alert state unreachable.
-		//   silences.sync     — `silences/service` is read-only by ruling (R3)
-		//                     and has no Sync; `silences/worker` is empty.
-		//   stats.rollup      — `stats/service` reads `alert_quality_daily` but
-		//                     nothing writes it; `stats/worker` is empty.
-		SourceReconcile: nil,
-		SilencesSync:    nil,
-		StatsRollup:     nil,
+		// A payload with no source id is the FAN-OUT tick; one with a source id is
+		// a single pass. Both shapes go to the same handler because both are the
+		// same job kind, and the kind is what the queue, the retry policy and the
+		// metrics are keyed on.
+		SourceReconcile: sourcesworker.SourceReconcile(c.Reconciler, c.Sources, c.Logger),
+
+		// silences.sync — the read-only mirror (R3). It carries the comment, the
+		// creator and the expiry that let oto say WHY something is quiet, which is
+		// the half of suppression the reconciler cannot see.
+		SilencesSync: silencesworker.SilencesSync(c.Silences, c.Sources, c.Logger),
+
+		// stats.rollup (ADR 0014) — what keeps the hygiene report off a scan of
+		// the event stream, and therefore what makes Postgres-only viable.
+		StatsRollup: statsworker.StatsRollup(c.Stats, c.orgs, c.Clock, c.Logger),
 	}
 
 	// notification fills its own three fields (notify.evaluate, deliver.dispatch,

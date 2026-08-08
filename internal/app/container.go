@@ -100,9 +100,13 @@ type Container struct {
 
 	// --- services -------------------------------------------------------
 
-	Identity   *identityservice.Service
-	Auth       *authn.Middleware
-	Sources    *sourcesservice.Service
+	Identity *identityservice.Service
+	Auth     *authn.Middleware
+	Sources  *sourcesservice.Service
+	// Reconciler is `source.reconcile` (SPEC §G.8, ADR 0006) — MANDATORY. It is a
+	// separate field from Sources because it is built LATER: it drives the alerts
+	// state machine, and `sources` is constructed before `alerts`.
+	Reconciler *sourcesservice.Reconciler
 	Rules      *rulesservice.Service
 	Alerts     *alertsservice.Service
 	Grouping   *groupingservice.Service
@@ -393,9 +397,16 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	notificationsPort.inner = notificationReader{svc: c.NotifyHistory}
 
 	// ---- silences and stats ---------------------------------------------
+	//
+	// ⛔ `Mirror` IS NOT A WRITE PATH INTO YOUR CLUSTER (R3). It is the write half
+	// of oto's own `silences` table, reachable from the `silences.sync` job and
+	// from no HTTP route. `Sources` is the read port it copies from.
+	silenceRepo := silencesrepo.NewSilenceRepository(general)
 	c.Silences, err = silencesservice.New(silencesservice.Deps{
-		Silences: silencesrepo.NewSilenceRepository(general),
+		Silences: silenceRepo,
 		Alerts:   c.Alerts,
+		Sources:  silenceSource{svc: c.Sources},
+		Mirror:   silenceRepo,
 		Clock:    clk,
 		Logger:   logger,
 	})
@@ -411,14 +422,44 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 
 	// ---- ingestion: THE ONLY MODULE ON THE INGEST POOL -------------------
+	//
+	// The orchestrator is hoisted into a variable because it has TWO producers:
+	// the webhook path below and the reconciler after it. That is the point of
+	// C18 — one write path into `alerts`, two things that feed it.
+	observer := alertObserver{svc: c.Alerts, grouping: c.Grouping, log: logger}
 	c.Ingestion, err = ingestion.New(ingestion.Deps{
 		Pools:    o.Pools,
 		Enqueuer: c.enqueuer,
 		Config:   o.Config.Ingest,
-		Alerts:   alertObserver{svc: c.Alerts, grouping: c.Grouping, log: logger},
+		Alerts:   observer,
 		Clock:    clk,
 		Logger:   logger,
 		Registry: reg,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// ---- the reconciler: MANDATORY (ADR 0006) ----------------------------
+	//
+	// ⭐ It is built HERE and not beside `c.Sources`, because it drives the alerts
+	// state machine and `sources` is constructed before `alerts`. Alertmanager's
+	// MuteStage drops suppressed alerts before any webhook fires, so this is the
+	// ONLY thing in oto that can ever observe `suppressed` — a nil here is not a
+	// missing feature, it is an unreachable alert state.
+	//
+	// It takes the SAME `observer` the webhook path takes, deliberately: a
+	// reconciler-recovered alert joins a group generation and earns a notification
+	// exactly as a pushed one does.
+	c.Reconciler, err = sourcesservice.NewReconciler(sourcesservice.ReconcilerOptions{
+		Sources:  c.Sources,
+		Alerts:   observer,
+		Read:     c.Alerts,
+		Clusters: clusterRepo,
+		Orgs:     c.orgs,
+		Enqueuer: c.enqueuer,
+		Clock:    clk,
+		Logger:   logger,
 	})
 	if err != nil {
 		return nil, err
@@ -552,6 +593,9 @@ func (c *Container) buildJobs(
 	}
 	if c.WorkersEnabled {
 		jobs.AddDefaultPeriodic(registry, clk)
+		// The per-source schedule cannot live in `platform/jobs`: its payload names
+		// a source, so the fan-out needs the source list. See addSourcePeriodic.
+		c.addSourcePeriodic(registry)
 	}
 	c.Registry = registry
 
@@ -597,14 +641,12 @@ func (c *Container) buildRouters(
 			Clusters: clusterRepo,
 			Creds:    credentialRepo,
 			Tokens:   ingestTokenIssuer{tokens: tokenRepo, clk: clk},
-			// ⛔ Reconcile is deliberately NIL. `source.reconcile` (§G.8) has no
-			// implementation in this tree — no package produces Observations from
-			// the Alertmanager v2 API — and `sources/api` already answers 503 for
-			// a missing collaborator. Faking it would mean answering 200 for a
-			// pass that never ran, which is the one thing a reconciler must never
-			// do: its divergence count is the canary for every correctness bug in
-			// the system.
-			Reconcile: nil,
+			// `POST /sources/{id}/reconcile` forces one pass now (§G.8). It answers
+			// 200 with `ok:false` for an upstream that is down, because "the source
+			// is unreachable" is a RESULT the operator asked for — and because the
+			// same pass has already recorded the failure in `source_health`, where
+			// three of them block the reaper (§B.4).
+			Reconcile: c.Reconciler,
 			Clock:     clk,
 			BaseURL:   c.Config.HTTP.BaseURL,
 		}),

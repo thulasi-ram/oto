@@ -414,13 +414,22 @@ func (s *Service) persistTransition(
 	if r.ID == domain.TransitionT2 {
 		return s.occurrences.Observe(ctx, scope, r.Occurrence.ID(), o)
 	}
-	return s.occurrences.Transition(ctx, scope, r.Occurrence.ID(), transitionOf(r))
+	// The observation's witnesses travel with the edge. They are the ONLY place
+	// Alertmanager names which silence, inhibition or mute interval is muting this
+	// alert, and `alert_occurrences.suppressed_by` is the column every read path
+	// answers "what is suppressing this?" from.
+	return s.occurrences.Transition(ctx, scope, r.Occurrence.ID(), transitionOf(r, o.SuppressedBy))
 }
 
 // transitionOf reads the persisted effect straight off the occurrence the domain
 // machine produced. Nothing here re-derives a value — in particular `ended_at`,
 // which §B.3.2 has already clamped.
-func transitionOf(r domain.TransitionResult) domain.Transition {
+//
+// `witnesses` are the ids Alertmanager named on the observation that caused this
+// edge — `silencedBy`, `inhibitedBy` and `mutedBy`, all three, from the same
+// `status` object. A caller with no observation (the reaper) passes the zero
+// value, which is correct: an expiry names no suppressor.
+func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) domain.Transition {
 	o := r.Occurrence
 	t := domain.Transition{
 		Kind:           kindOf(r.ID),
@@ -442,10 +451,38 @@ func transitionOf(r domain.TransitionResult) domain.Transition {
 		v := o.ResolveReason().String()
 		t.ResolveReason = &v
 	}
-	// suppressed_by is written on every edge, not only T3: leaving Alertmanager's
-	// witnesses behind on an unsuppressed occurrence would make oto keep saying
-	// "silenced by @ram" about an alert that is demonstrably firing.
+	// ⭐ suppressed_by is written on EVERY edge, not only T3 — but it is written
+	// with the OBSERVED witnesses when the occurrence lands in `suppressed`, and
+	// cleared on every other edge.
+	//
+	// It used to be hard-coded to the empty struct on all of them. The clearing
+	// half of that was right and is kept: leaving Alertmanager's witnesses behind
+	// on an unsuppressed occurrence would make oto keep saying "silenced by
+	// <id>" about an alert that is demonstrably firing, and T4's whole meaning is
+	// that the suppression is over. The other half silently dropped the ids on
+	// the floor: T3 fired correctly, the real silence ids arrived on the
+	// observation, and `alert_occurrences.suppressed_by` was written `{}` anyway.
+	// They survived only in the `alert.suppressed` event payload, so the column
+	// every API consumer and the UI read to answer "which silence is muting
+	// this?" was permanently empty.
+	//
+	// The gate is the RESULTING STATE and not the edge id, because
+	// occ_suppress_ck ties `suppression_reason` to `state = 'suppressed'` and the
+	// domain re-proves the same invariant: the witnesses are meaningful in
+	// exactly the states the reason is, and in no others.
+	//
+	// ⛔ All THREE witnesses are carried. `silencedBy`, `inhibitedBy` and
+	// `mutedBy` come off the same Alertmanager `status` object, and keeping only
+	// silences would leave an inhibited alert just as unexplained as before.
+	//
+	// ⛔ This is Alertmanager's vocabulary and nothing else. A snooze never
+	// appears here: it is a `notifications.suppressed_reason`, oto's own enum, and
+	// writing it onto the occurrence would claim Alertmanager is suppressing
+	// something it has never heard of (§B.8.2).
 	sb := domain.SuppressedBy{}
+	if o.State() == domain.StateSuppressed {
+		sb = witnesses
+	}
 	t.SuppressedBy = &sb
 	if n := o.ReopenCount(); n > 0 {
 		t.ReopenCount = &n
