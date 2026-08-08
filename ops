@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786210111,"nonce":"Yq2yDsRBSNVpI1ESD+1v5cLktrE=","title":"Any org member can turn off TLS verification for a webhook channel","was":"**What is wrong.** `insecure_skip_verify` is a per-channel boolean inside the"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786210111,"nonce":"CgR/ACplwMg77GpLfDtlsf5DtEs=","added":["medium","security"],"removed":null}]}
