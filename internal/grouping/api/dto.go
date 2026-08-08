@@ -1,0 +1,162 @@
+package api
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// The wire DTOs of the Groups tag.
+//
+// ⛔ THE THREE-MODEL RULE (CONTEXT.md §5.5). Every field is copied across
+// explicitly in map.go: no repository row and no domain entity is ever
+// marshalled. Each json tag is byte-identical to api/openapi/openapi.yaml.
+
+// GroupDTO renders `GroupDTO`: one generation of one Alertmanager notification
+// group.
+//
+// A group is the unit humans actually respond to — forty pods crash-looping is
+// one thing happening, not forty — and its `group_key` is oto's own durable hash,
+// stable across `alertmanager.yml` route edits so an open thread is never
+// orphaned by a reload.
+type GroupDTO struct {
+	ID                     uuid.UUID         `json:"id"`
+	GroupKey               string            `json:"group_key"`
+	Generation             int32             `json:"generation"`
+	SourceID               uuid.UUID         `json:"source_id"`
+	ClusterKey             string            `json:"cluster_key"`
+	SourceGroupKey         *string           `json:"source_group_key"`
+	Receiver               string            `json:"receiver"`
+	GroupLabels            map[string]string `json:"group_labels"`
+	Title                  string            `json:"title"`
+	State                  string            `json:"state"`
+	Severity               *string           `json:"severity"`
+	StateVersion           int32             `json:"state_version"`
+	FiringCount            int32             `json:"firing_count"`
+	SuppressedCount        int32             `json:"suppressed_count"`
+	ResolvedCount          int32             `json:"resolved_count"`
+	ExpiredCount           int32             `json:"expired_count"`
+	TotalCount             int32             `json:"total_count"`
+	AckedCount             int32             `json:"acked_count"`
+	StormMode              bool              `json:"storm_mode"`
+	StormSince             *time.Time        `json:"storm_since"`
+	LastNotificationReason *string           `json:"last_notification_reason"`
+	FirstSeenAt            time.Time         `json:"first_seen_at"`
+	LastActivityAt         time.Time         `json:"last_activity_at"`
+	ClosedAt               *time.Time        `json:"closed_at"`
+}
+
+// GroupDetailDTO renders `GroupDetailDTO`.
+//
+// `source`, `threads` and `delivery_summary` are optional properties of the
+// contract schema and are NOT embedded: they belong to `sources`, `channels` and
+// `notification`, and CONTEXT.md §5.4 forbids this package from naming another
+// domain's types.
+type GroupDetailDTO struct {
+	GroupDTO
+	SeverityCounts map[string]int32 `json:"severity_counts"`
+	TopAlerts      []AlertRefDTO    `json:"top_alerts"`
+}
+
+// AlertRefDTO renders `AlertRefDTO`: a compact Alert reference.
+type AlertRefDTO struct {
+	ID         uuid.UUID `json:"id"`
+	AlertKey   string    `json:"alert_key"`
+	AlertName  string    `json:"alertname"`
+	Severity   *string   `json:"severity"`
+	Namespace  *string   `json:"namespace"`
+	ClusterKey string    `json:"cluster_key"`
+	State      string    `json:"state"`
+	AckState   string    `json:"ack_state"`
+}
+
+// AlertDTO renders `AlertDTO` for `listAlertGroupAlerts`.
+type AlertDTO struct {
+	ID                uuid.UUID         `json:"id"`
+	AlertKey          string            `json:"alert_key"`
+	SourceFingerprint string            `json:"source_fingerprint"`
+	AlertName         string            `json:"alertname"`
+	Severity          *string           `json:"severity"`
+	Namespace         *string           `json:"namespace"`
+	Service           *string           `json:"service"`
+	ClusterKey        string            `json:"cluster_key"`
+	Labels            map[string]string `json:"labels"`
+	Annotations       map[string]string `json:"annotations"`
+	GeneratorURL      *string           `json:"generator_url"`
+	State             string            `json:"state"`
+	AckState          string            `json:"ack_state"`
+	FirstSeenAt       time.Time         `json:"first_seen_at"`
+	LastSeenAt        time.Time         `json:"last_seen_at"`
+	LastStateChangeAt time.Time         `json:"last_state_change_at"`
+	TotalOccurrences  int32             `json:"total_occurrences"`
+	FlapScore         float32           `json:"flap_score"`
+	IsFlapping        bool              `json:"is_flapping"`
+}
+
+// AlertEventDTO renders `AlertEventDTO` for the merged group timeline.
+//
+// `occurred_at` is the upstream claim the UI displays; `recorded_at` is oto's own
+// clock and is what the list is ordered by. The two are never conflated, because
+// upstream clock skew is measured and badged rather than corrected away.
+type AlertEventDTO struct {
+	ID           uuid.UUID      `json:"id"`
+	Seq          *int64         `json:"seq"`
+	AlertID      *uuid.UUID     `json:"alert_id"`
+	OccurrenceID *uuid.UUID     `json:"occurrence_id"`
+	GroupID      *uuid.UUID     `json:"group_id"`
+	Type         string         `json:"type"`
+	OccurredAt   time.Time      `json:"occurred_at"`
+	RecordedAt   time.Time      `json:"recorded_at"`
+	ActorKind    string         `json:"actor_kind"`
+	ActorID      *string        `json:"actor_id"`
+	ActorLabel   *string        `json:"actor_label"`
+	Summary      string         `json:"summary"`
+	Payload      map[string]any `json:"payload,omitempty"`
+}
+
+// ------------------------------------------------------------------ requests
+
+// AckRequest is the body of `POST /alert-groups/{id}/ack`.
+//
+// ⛔ Acking a group is a FAN-OUT of the same receipt over every open member, not
+// a new primitive. There is no group-level ack state: "I acked the group" means
+// "I have seen each of these", never "this group is mine" and never "this group
+// is over".
+type AckRequest struct {
+	Note string `json:"note" validate:"omitempty,max=2000"`
+}
+
+// CommentRequest is the body of `POST /alert-groups/{id}/comments`.
+type CommentRequest struct {
+	Body string `json:"body" validate:"required,notblank,min=1,max=10000"`
+}
+
+// ------------------------------------------------------------- query objects
+
+// ListGroupsQuery is the validated form of the `listAlertGroups` query string.
+type ListGroupsQuery struct {
+	State    []string   `json:"state"    validate:"omitempty,max=2,unique,dive,oneof=open closed"`
+	Severity []string   `json:"severity" validate:"omitempty,max=16,unique,dive,max=4096"`
+	Cluster  []string   `json:"cluster"  validate:"omitempty,max=32,unique,dive,clusterkey"`
+	SourceID string     `json:"source_id" validate:"omitempty,uuid"`
+	Receiver string     `json:"receiver" validate:"omitempty,max=4096"`
+	Storm    *bool      `json:"storm"`
+	Ack      string     `json:"ack"      validate:"omitempty,oneof=unacked acked"`
+	Since    *time.Time `json:"since"`
+	Q        string     `json:"q"        validate:"omitempty,max=200"`
+	Sort     string     `json:"sort"     validate:"omitempty,oneof=-last_activity_at -first_seen_at"`
+	Limit    int        `json:"limit"    validate:"min=1,max=200"`
+	Cursor   string     `json:"cursor"   validate:"omitempty,cursor"`
+	SinceSeq int64      `json:"since_seq" validate:"min=0"`
+}
+
+// TimelineQuery is the validated form of the `getAlertGroupTimeline` query.
+type TimelineQuery struct {
+	Type     []string   `json:"type"      validate:"omitempty,max=34,unique"`
+	Since    *time.Time `json:"since"`
+	Until    *time.Time `json:"until"`
+	Order    string     `json:"order"     validate:"omitempty,oneof=asc desc"`
+	Limit    int        `json:"limit"     validate:"min=1,max=200"`
+	Cursor   string     `json:"cursor"    validate:"omitempty,cursor"`
+	SinceSeq int64      `json:"since_seq" validate:"min=0"`
+}
