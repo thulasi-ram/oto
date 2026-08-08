@@ -20,6 +20,7 @@ import type { DeliverySummary, Notification, NotificationSuppressedReason } from
 import { RelativeTime } from "~/components/Time";
 import { Chip, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
+import { absoluteTime, shortId } from "~/lib/format";
 
 /**
  * Every reason a notification can be suppressed, in plain language.
@@ -36,6 +37,29 @@ const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, strin
   channel_disabled: "every matching channel is disabled",
   duplicate_render: "the message would have been byte-identical to the one already posted",
 };
+
+/**
+ * Forward-compatible suppression reasons.
+ *
+ * §B.8.2 records a snooze as `notifications.suppressed_reason = 'snoozed'`, and
+ * the ordering rule puts it ahead of every automatic damper because it is a
+ * deliberate human act and therefore the most actionable explanation. The
+ * published `NotificationSuppressedReason` enum does not carry the value yet,
+ * so it is recognised here rather than falling through to the raw string.
+ */
+const FORWARD_SUPPRESSED_REASON: Readonly<Record<string, string>> = {
+  snoozed:
+    "a person asked oto to hold its notifications for this alert until a fixed time — the alert itself kept firing",
+  unsnoozed: "the quiet period ended",
+};
+
+function describeSuppression(reason: string): string {
+  return (
+    SUPPRESSED_REASON[reason as NonNullable<NotificationSuppressedReason>] ??
+    FORWARD_SUPPRESSED_REASON[reason] ??
+    reason
+  );
+}
 
 const REASON_LABEL: Record<string, string> = {
   fired: "started firing",
@@ -128,16 +152,48 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
                     {REASON_LABEL[n.reason] ?? n.reason}
                   </span>
                   <Chip title={`Notification status: ${n.status}`}>{n.status}</Chip>
+                  {/* Which policy matched. `null` means the policy has since
+                      been deleted, which is a different fact from "no policy
+                      matched" — that one shows as a suppression reason. */}
+                  <Chip
+                    mono={n.policy_id !== null && n.policy_id !== undefined}
+                    title={
+                      n.policy_id
+                        ? "The notification policy that matched this fact."
+                        : "The policy that matched has since been deleted, so oto can no longer name it."
+                    }
+                  >
+                    policy {n.policy_id ? shortId(n.policy_id) : "deleted"}
+                  </Chip>
                   <span class="ml-auto text-[11px] text-ink-subtle">
                     <RelativeTime value={n.created_at} label="Created" /> ago
                   </span>
                 </div>
 
+                {/* `updated_at` is nullable and no longer echoes `created_at`.
+                    Null means "this read model does not track one" — unknown,
+                    which is not the same as "never changed", so it is rendered
+                    as an em dash rather than silently repeating the creation
+                    time and making the two indistinguishable. */}
+                <p class="mt-0.5 text-[11px] text-ink-subtle">
+                  last moved{" "}
+                  <Show
+                    when={n.updated_at}
+                    fallback={<span title="This read model does not track an update time for notifications. Unknown, not unchanged.">—</span>}
+                  >
+                    {(at) => (
+                      <span title={absoluteTime(at())}>
+                        <RelativeTime value={at()} label="Last moved" /> ago
+                      </span>
+                    )}
+                  </Show>
+                </p>
+
                 <Show when={n.suppressed_reason}>
                   {(reason) => (
                     <p class="mt-0.5 text-[11px] leading-snug text-ink-muted">
-                      Not sent — {SUPPRESSED_REASON[reason()] ?? reason()}. Recorded rather than
-                      dropped, so the audit trail is complete.
+                      Not sent — {describeSuppression(reason())}. Recorded rather than dropped, so
+                      the audit trail is complete.
                     </p>
                   )}
                 </Show>
@@ -146,6 +202,15 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
                   {(s) => (
                     <div class="mt-1 flex flex-wrap items-center gap-1">
                       <Stat label="sent" value={s().sent} small />
+                      <Show when={s().pending > 0}>
+                        <Stat label="pending" value={s().pending} small />
+                      </Show>
+                      {/* A skipped delivery means the destination already shows
+                          exactly this content — a healthy quiet thread, not a
+                          failure — so it is counted plainly and never emphasised. */}
+                      <Show when={s().skipped > 0}>
+                        <Stat label="skipped" value={s().skipped} small />
+                      </Show>
                       <Show when={s().failed > 0}>
                         <Stat label="failed" value={s().failed} emphasis small />
                       </Show>

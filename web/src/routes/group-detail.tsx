@@ -21,12 +21,16 @@ import {
   getAlertGroup,
   getAlertGroupTimeline,
   listAlertGroupAlerts,
+  snoozeAlertGroup,
+  unsnoozeAlertGroup,
 } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { AlertEvent, ChannelThread, TimelineQuery } from "~/api/types";
+import type { AlertEvent, ChannelThread, SnoozeRequest, TimelineQuery } from "~/api/types";
+import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 import { RelativeTime } from "~/components/Time";
 import { AckChip, SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
 import { Button, Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { ApiError } from "~/api/client";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
 import { Timeline } from "~/features/alerts/detail/Timeline";
@@ -89,12 +93,26 @@ export default function GroupDetailRoute() {
    * receipt per currently-joined member. Alerts that join later are not
    * acknowledged, because a receipt is never predictive — and the copy says so.
    */
+  const invalidate = (): void => {
+    void client.invalidateQueries({ queryKey: qk.groups.all() });
+    void client.invalidateQueries({ queryKey: qk.alerts.all() });
+  };
+
   const ack = useMutation(() => ({
     mutationFn: () => ackAlertGroup(params.id, undefined, idempotencyKey()),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: qk.groups.all() });
-      void client.invalidateQueries({ queryKey: qk.alerts.all() });
-    },
+    onSuccess: invalidate,
+  }));
+
+  /**
+   * Snoozing a group is the same fan-out: one quiet period per currently-joined
+   * member. Alerts that join later are not snoozed, because a group-level mute
+   * covering future members would silence alerts nobody has ever seen.
+   */
+  const [snoozeOpen, setSnoozeOpen] = createSignal(false);
+
+  const unsnooze = useMutation(() => ({
+    mutationFn: () => unsnoozeAlertGroup(params.id, undefined, idempotencyKey()),
+    onSuccess: invalidate,
   }));
 
   return (
@@ -132,6 +150,14 @@ export default function GroupDetailRoute() {
                     <span class="tabular-nums">{fmtCount(g().total_count)} members</span>
                     <span>{g().firing_count} firing</span>
                     <span>{g().acked_count} acknowledged</span>
+                    {/* `cluster_key` is a first-class field on the group. It used
+                        to be dug out of `group_labels["cluster"]`, which was only
+                        ever a guess: Alertmanager's group labels are whatever the
+                        route grouped on, and `cluster` need not be among them. */}
+                    <span>
+                      <span class="text-ink-subtle">cluster</span>{" "}
+                      <span class="font-mono">{g().cluster_key}</span>
+                    </span>
                     <Show when={g().receiver !== ""}>
                       <span>
                         <span class="text-ink-subtle">receiver</span>{" "}
@@ -153,7 +179,7 @@ export default function GroupDetailRoute() {
                   </Show>
                 </div>
 
-                <div class="shrink-0">
+                <div class="flex shrink-0 flex-wrap items-center gap-2">
                   <Button
                     variant="primary"
                     size="sm"
@@ -163,12 +189,44 @@ export default function GroupDetailRoute() {
                   >
                     Acknowledge every current member
                   </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => setSnoozeOpen(true)}
+                    title="Holds oto's own notifications for every member that has already joined. They keep firing, keep their severity, and stay in the alert list."
+                  >
+                    Snooze every current member
+                  </Button>
+                  <Button
+                    size="sm"
+                    busy={unsnooze.isPending}
+                    onClick={() => unsnooze.mutate()}
+                    title="Ends the quiet period on every currently-joined member. A member that is already awake is skipped rather than failing the request."
+                  >
+                    Resume notifications
+                  </Button>
                 </div>
               </div>
 
               <Show when={ack.error !== null}>
                 <ErrorBanner error={ack.error} class="mt-2" />
               </Show>
+              <Show when={unsnooze.error !== null}>
+                <ErrorBanner class="mt-2">
+                  {unsnooze.error instanceof ApiError && unsnooze.error.status === 412
+                    ? "Nothing here was snoozed, so there was nothing to resume."
+                    : ((unsnooze.error as Error | null)?.message ?? "")}
+                </ErrorBanner>
+              </Show>
+
+              <SnoozeDialog
+                open={snoozeOpen()}
+                onClose={() => setSnoozeOpen(false)}
+                subject="group"
+                onSubmit={(body: SnoozeRequest, key: string) =>
+                  snoozeAlertGroup(params.id, body, key)
+                }
+                onSuccess={invalidate}
+              />
             </header>
 
             <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-auto p-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] xl:overflow-hidden">

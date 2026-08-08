@@ -1,145 +1,242 @@
 /**
- * The grouped view: collapsible roll-ups with counts and a roll-up state.
+ * The grouped view: **server-side** roll-up buckets.
  *
- * Each group states honestly what it is counting — see `grouping.ts` — because
- * the alternative is a number that looks authoritative and is not.
+ * Every count here is computed over the whole filtered result set by
+ * `GET /api/v1/alerts/rollups`, not over the rows that happened to load. The UI
+ * used to roll up client-side over loaded pages, which under-reported the moment
+ * the result exceeded one page — a number that looks authoritative and is not.
  *
- * `<details>`/`<summary>` does the disclosure. It is keyboard-operable,
- * announced correctly and searchable by the browser without a line of ARIA, and
- * every hand-rolled accordion is worse at all three.
+ * Two properties of the endpoint shape this component:
+ *
+ *   - **Buckets are keyset-ordered by their own key**, so they are rendered in
+ *     the order the server returned them. Re-sorting a page by liveliness would
+ *     put page two's firing bucket below page one's resolved one, which is worse
+ *     than alphabetical.
+ *   - **A bucket has no members attached.** It is a view over one query, not a
+ *     container, so opening one means drilling into the alert list with this
+ *     bucket added to the filter set — every other filter carried through.
  */
 import { For, Show, type Component } from "solid-js";
 
-import type { Alert, State } from "~/api/types";
+import type { AlertRollup, RollupAxis, State } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { SeverityMark, STATE_BAR, STATE_LABEL, StateChip } from "~/components/StateChip";
-import { cx } from "~/components/ui/primitives";
+import {
+  SeverityMark,
+  STATE_BAR,
+  STATE_LABEL,
+  StateChip,
+  normaliseSeverity,
+  type KnownSeverity,
+} from "~/components/StateChip";
+import { Button, cx } from "~/components/ui/primitives";
 import { count as fmtCount } from "~/lib/format";
-import { AlertTable } from "./AlertTable";
-import type { AlertGrouping } from "./grouping";
-import type { GroupBy } from "./filters";
 
-const NOUN: Record<Exclude<GroupBy, "none">, string> = {
+const NOUN: Record<RollupAxis, string> = {
   alertname: "alert name",
   namespace: "namespace",
   fingerprint: "source fingerprint",
 };
 
+const SEVERITY_RANK: Record<KnownSeverity, number> = { critical: 0, warning: 1, info: 2 };
+
+/**
+ * The most urgent severity present in a bucket.
+ *
+ * `severity_counts` is raw and deliberately unranked — operators choose their
+ * own vocabulary (`sev1`, `P1`, `page`) — so precedence is applied here, where
+ * the local convention is known, and an unrecognised value simply does not rank.
+ */
+function topSeverity(bucket: AlertRollup): string | null {
+  let best: { raw: string; rank: number } | null = null;
+  for (const raw of Object.keys(bucket.severity_counts)) {
+    const known = normaliseSeverity(raw);
+    if (known === null) continue;
+    const rank = SEVERITY_RANK[known];
+    if (best === null || rank < best.rank) best = { raw, rank };
+  }
+  return best?.raw ?? null;
+}
+
 export interface GroupedAlertsProps {
-  readonly groups: readonly AlertGrouping[];
-  readonly by: Exclude<GroupBy, "none">;
-  /** How many rows the roll-up was computed over — stated, never implied. */
-  readonly loadedCount: number;
+  readonly buckets: readonly AlertRollup[];
+  readonly by: RollupAxis;
   readonly hasMore: boolean;
-  readonly onFilterLabel: (name: string, value: string) => void;
+  readonly loading: boolean;
+  readonly onLoadMore: () => void;
+  /**
+   * Drill into one bucket. `null` when the axis has no matching list filter, in
+   * which case the bucket is rendered without a link rather than with one that
+   * would silently mean something else.
+   */
+  readonly onDrillDown: ((key: string) => void) | null;
 }
 
 export const GroupedAlerts: Component<GroupedAlertsProps> = (props) => (
   <div class="min-h-0 flex-1 overflow-auto">
-    {/* The honesty line. It is small, permanent and unmissable if you look for
-        it, which is the right weight for "this number has a scope". */}
     <p class="border-b border-line bg-raised px-3 py-1.5 text-[11px] text-ink-muted">
-      {props.groups.length} group{props.groups.length === 1 ? "" : "s"} by {NOUN[props.by]}, rolled
-      up over the {fmtCount(props.loadedCount)} alert
-      {props.loadedCount === 1 ? "" : "s"} loaded so far.
-      {props.hasMore
-        ? " More pages match these filters — load them to complete the counts."
-        : " That is every alert matching these filters."}
+      {fmtCount(props.buckets.length)}
+      {props.hasMore ? "+" : ""} bucket{props.buckets.length === 1 ? "" : "s"} by{" "}
+      {NOUN[props.by]}. Counted server-side over every alert matching these filters, not over the
+      rows on screen. Ordered by bucket key, which is what makes paging over them exact.
     </p>
 
-    <For each={props.groups}>
-      {(group) => <GroupBlock group={group} onFilterLabel={props.onFilterLabel} />}
-    </For>
+    <Show when={props.onDrillDown === null}>
+      <p class="border-b border-line bg-surface px-3 py-1.5 text-[11px] leading-snug text-ink-muted">
+        These buckets cannot be opened: the alert list has no source-fingerprint filter, so oto
+        cannot narrow to one fingerprint without pretending a different filter means the same
+        thing. The counts below are still exact.
+      </p>
+    </Show>
+
+    <ul>
+      <For each={props.buckets}>
+        {(bucket) => (
+          <BucketRow bucket={bucket} by={props.by} onDrillDown={props.onDrillDown} />
+        )}
+      </For>
+    </ul>
+
+    <Show when={props.hasMore}>
+      <div class="border-t border-line px-3 py-2 text-center">
+        <Button size="sm" busy={props.loading} onClick={props.onLoadMore}>
+          Load more buckets
+        </Button>
+      </div>
+    </Show>
   </div>
 );
 
-const GroupBlock: Component<{
-  readonly group: AlertGrouping;
-  readonly onFilterLabel: (name: string, value: string) => void;
-}> = (props) => (
-  <details class="border-b border-line" open={props.group.rollupState === "firing"}>
-    <summary
-      class={cx(
-        "flex cursor-pointer list-none items-center gap-3 px-3 py-2",
-        "hover:bg-raised [&::-webkit-details-marker]:hidden",
-        props.group.rollupState === "firing" ? "bg-firing-fill/30" : "bg-surface",
-      )}
-    >
-      <Chevron />
+const BucketRow: Component<{
+  readonly bucket: AlertRollup;
+  readonly by: RollupAxis;
+  readonly onDrillDown: ((key: string) => void) | null;
+}> = (props) => {
+  const b = (): AlertRollup => props.bucket;
 
-      {/* The roll-up's own status bar, the same 3 px language as a row. */}
+  const label = (): string => {
+    if (b().key !== "") return b().key;
+    return props.by === "namespace" ? "No namespace" : "(empty)";
+  };
+
+  const counts = (): readonly { readonly state: State; readonly n: number }[] =>
+    (["firing", "suppressed", "expired", "resolved"] as readonly State[])
+      .map((state) => ({
+        state,
+        n:
+          state === "firing"
+            ? b().firing_count
+            : state === "suppressed"
+              ? b().suppressed_count
+              : state === "expired"
+                ? b().expired_count
+                : b().resolved_count,
+      }))
+      .filter((c) => c.n > 0);
+
+  // A component rather than a stored element: `<Show>` may swap between the two
+  // branches, and each branch must get its own nodes rather than sharing one set.
+  const Body: Component = () => (
+    <>
+      {/* The roll-up's own status bar, the same 3 px language as a row. A bucket
+          is as alive as its liveliest member, and `expired` outranks `resolved`
+          because "we stopped hearing about this" is the open question. */}
       <span
         aria-hidden="true"
-        class={cx("h-5 w-[3px] shrink-0 rounded-full", STATE_BAR[props.group.rollupState])}
+        class={cx("h-5 w-[3px] shrink-0 rounded-full", STATE_BAR[b().state])}
       />
 
-      <SeverityMark severity={props.group.topSeverity} />
+      <SeverityMark severity={topSeverity(b())} />
 
       <span class="min-w-0 flex-1">
-        <span class="block truncate font-medium text-ink" title={props.group.label}>
-          {props.group.label}
+        <span class="block truncate font-medium text-ink" title={b().key}>
+          {label()}
         </span>
-        <Show when={props.group.sublabel}>
-          <span class="block truncate font-mono text-[11px] text-ink-subtle">
-            {props.group.sublabel}
+        <Show when={b().key === "" && props.by === "namespace"}>
+          <span class="block truncate text-[11px] text-ink-subtle">
+            These alerts carry no promoted namespace label.
           </span>
         </Show>
       </span>
 
-      <StateChip state={props.group.rollupState} size="sm" />
+      <StateChip state={b().state} size="sm" />
+
+      <span class="shrink-0 text-[11px] tabular-nums text-ink-muted">
+        {fmtCount(b().total_count)} total
+      </span>
 
       {/* Per-state counts. `resolved` and `expired` stay separate — they are
           different facts and merging them would lose the interesting one. */}
       <span class="flex shrink-0 items-center gap-1.5 text-[11px] tabular-nums text-ink-muted">
-        <For each={["firing", "suppressed", "expired", "resolved"] as readonly State[]}>
-          {(state) => (
-            <Show when={props.group.counts[state] > 0}>
-              <span
-                class="inline-flex items-center gap-1"
-                title={`${props.group.counts[state]} ${STATE_LABEL[state].toLowerCase()}`}
-              >
-                <span class={cx("size-1.5 rounded-full", STATE_BAR[state])} aria-hidden="true" />
-                {props.group.counts[state]}
-                <span class="sr-only-focusable">{STATE_LABEL[state]}</span>
-              </span>
-            </Show>
+        <For each={counts()}>
+          {(c) => (
+            <span
+              class="inline-flex items-center gap-1"
+              title={`${c.n} ${STATE_LABEL[c.state].toLowerCase()}`}
+            >
+              <span class={cx("size-1.5 rounded-full", STATE_BAR[c.state])} aria-hidden="true" />
+              {c.n}
+              <span class="sr-only-focusable">{STATE_LABEL[c.state]}</span>
+            </span>
           )}
         </For>
       </span>
 
-      <Show when={props.group.unackedCount > 0}>
+      <Show when={b().unacked_count > 0}>
         <span
           class="shrink-0 rounded-[3px] border border-line-strong bg-raised px-1 text-[11px] leading-4 text-ink"
           title="Nobody has recorded seeing these yet."
         >
-          {props.group.unackedCount} unseen
+          {b().unacked_count} unseen
+        </span>
+      </Show>
+
+      <Show when={b().flapping_count > 0}>
+        <span
+          class="shrink-0 rounded-[3px] border border-line bg-surface px-1 text-[11px] leading-4 text-ink-muted"
+          title="Members oto has damped as flapping. A visible state, never a silent drop."
+        >
+          {b().flapping_count} flapping
+        </span>
+      </Show>
+
+      {/* Snoozed members are counted, never dimmed: they are still firing and
+          still whatever severity they were. */}
+      <Show when={b().snoozed_count > 0}>
+        <span
+          class="shrink-0 rounded-[3px] border border-line bg-surface px-1 text-[11px] leading-4 text-ink-muted"
+          title="Members whose notifications oto is holding. They are still firing and still counted as such."
+        >
+          {b().snoozed_count} snoozed
         </span>
       </Show>
 
       <span class="w-14 shrink-0 text-right text-[11px] text-ink-subtle">
-        <RelativeTime value={props.group.lastSeenAt} label="Newest activity" />
+        <RelativeTime value={b().last_seen_at} label="Newest activity" />
       </span>
-    </summary>
+    </>
+  );
 
-    <div class="flex max-h-[70vh] flex-col border-t border-line">
-      <AlertTable alerts={props.group.alerts as readonly Alert[]} onFilterLabel={props.onFilterLabel} />
-    </div>
-  </details>
-);
-
-const Chevron: Component = () => (
-  <svg
-    viewBox="0 0 12 12"
-    class="size-3 shrink-0 text-ink-subtle transition-transform duration-100 [details[open]_&]:rotate-90"
-    aria-hidden="true"
-  >
-    <path
-      d="m4.5 2.5 4 3.5-4 3.5"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-  </svg>
-);
+  return (
+    <li class={cx("border-b border-line", b().state === "firing" ? "bg-firing-fill/30" : "bg-surface")}>
+      <Show
+        when={props.onDrillDown}
+        fallback={
+          <div class="flex items-center gap-3 px-3 py-2">
+            <Body />
+          </div>
+        }
+      >
+        {(drill) => (
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-raised"
+            title={`Open the ${b().total_count} alert${b().total_count === 1 ? "" : "s"} in this bucket, keeping every other filter`}
+            onClick={() => drill()(b().key)}
+          >
+            <Body />
+          </button>
+        )}
+      </Show>
+    </li>
+  );
+};

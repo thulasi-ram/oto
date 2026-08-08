@@ -20,6 +20,7 @@ import type { AlertEventType } from "~/api/types";
 export type EventCategory =
   | "lifecycle"
   | "ack"
+  | "snooze"
   | "comment"
   | "rule"
   | "enrichment"
@@ -258,6 +259,39 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
   },
 };
 
+/**
+ * Snooze events, rendered but **not offered as a `type=` filter value**.
+ *
+ * §B.8.5 adds `alert.snoozed` and `alert.unsnoozed` to the closed event enum,
+ * and the unsnooze operation's own description says it appends
+ * `alert.unsnoozed` — but `AlertEventType` in the published contract does not
+ * yet list either. The server rejects a `type=` value outside its enum, so
+ * sending these as a filter would 422 the whole timeline.
+ *
+ * So they live here instead: recognised on the way *in*, never sent on the way
+ * *out*. Without this they would fall through to `UNKNOWN_KIND` and a snooze
+ * would read as a nameless "Event", which is the opposite of the visibility
+ * that makes a quiet period safe.
+ *
+ * Neither takes a Tier-B hue: a snooze is not a lifecycle state.
+ */
+const FORWARD_KINDS: Readonly<Record<string, EventKind>> = {
+  "alert.snoozed": {
+    label: "Notifications held",
+    category: "snooze",
+    tone: NEUTRAL_STRONG,
+    shape: "square",
+    note: "oto stopped notifying about this alert until a fixed time. The alert itself is unchanged — still firing, still whatever severity it was. The channel was told it is going quiet.",
+  },
+  "alert.unsnoozed": {
+    label: "Notifications resumed",
+    category: "snooze",
+    tone: NEUTRAL,
+    shape: "square",
+    note: "The quiet period ended. The wake-up message reflects the alert's state now rather than replaying what was suppressed.",
+  },
+};
+
 /** A forward-compatible fallback: an unknown type renders its server summary. */
 export const UNKNOWN_KIND: EventKind = {
   label: "Event",
@@ -267,12 +301,13 @@ export const UNKNOWN_KIND: EventKind = {
 };
 
 export function kindOf(type: string): EventKind {
-  return EVENT_KINDS[type as AlertEventType] ?? UNKNOWN_KIND;
+  return EVENT_KINDS[type as AlertEventType] ?? FORWARD_KINDS[type] ?? UNKNOWN_KIND;
 }
 
 export const CATEGORY_LABEL: Record<EventCategory, string> = {
   lifecycle: "Lifecycle",
   ack: "Acknowledgement",
+  snooze: "Quiet periods",
   comment: "Comments",
   rule: "Rule",
   enrichment: "Enrichment",
@@ -281,7 +316,18 @@ export const CATEGORY_LABEL: Record<EventCategory, string> = {
   source: "Source",
 };
 
-export const ALL_CATEGORIES = Object.keys(CATEGORY_LABEL) as readonly EventCategory[];
+/**
+ * The categories offered as filter chips.
+ *
+ * Derived from `EVENT_KINDS` rather than from `CATEGORY_LABEL`, so a category
+ * that has no type in the server's closed enum — `snooze`, today — is never
+ * offered as a filter. Offering it would send `type=` with nothing in it, and
+ * the request would quietly return *everything* while the chip claimed to be
+ * filtering. The events still render; only the chip is withheld.
+ */
+export const ALL_CATEGORIES: readonly EventCategory[] = (
+  Object.keys(CATEGORY_LABEL) as EventCategory[]
+).filter((c) => (Object.keys(EVENT_KINDS) as AlertEventType[]).some((t) => EVENT_KINDS[t].category === c));
 
 /** The event types belonging to a set of categories, for the `type=` filter. */
 export function typesForCategories(

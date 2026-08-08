@@ -192,6 +192,25 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
           </Select>
         </label>
 
+        {/* Snooze is a third orthogonal axis, never a state (§B.8): the default
+            includes both, because hiding snoozed alerts is how an incident is
+            lost. A snoozed alert still reads at its true severity. */}
+        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+          <span>Snoozed</span>
+          <Select
+            value={props.filters.snoozed === null ? "" : String(props.filters.snoozed)}
+            onChange={(e) => {
+              const v = e.currentTarget.value;
+              patch({ snoozed: v === "" ? null : v === "true" });
+            }}
+            title="Whether oto is currently holding its notifications for the alert. It says nothing about the signal — a snoozed alert is still firing and still whatever severity it was."
+          >
+            <option value="">Any (default — includes both)</option>
+            <option value="true">Notifications held</option>
+            <option value="false">Notifications flowing</option>
+          </Select>
+        </label>
+
         <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
           <span>Flapping</span>
           <Select

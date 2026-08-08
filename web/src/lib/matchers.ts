@@ -1,22 +1,28 @@
 /**
  * Alertmanager-style label matchers (ADR 0017).
  *
- * `{namespace="payments", team!="canary"}` is the native idiom of oto's
- * audience and it translates directly to indexed SQL. It is deliberately **not**
- * a general expression language: ADR 0017 rejects CEL precisely because only a
- * subset of it survives translation, and users then discover the boundary at
- * unpredictable places.
+ * `{namespace="payments", severity=~"critical|warning"}` is the native idiom of
+ * oto's audience and it translates directly to indexed SQL. It is deliberately
+ * **not** a general expression language: ADR 0017 rejects CEL precisely because
+ * only a subset of it survives translation, and users then discover the boundary
+ * at unpredictable places.
  *
- * The same ADR binds this parser's most important behaviour:
+ * The whole expression travels to the server verbatim in the `matcher=` query
+ * parameter, which is the only spelling in the contract that can carry a
+ * regular-expression operator. All four operators — `=`, `!=`, `=~`, `!~` — are
+ * sent.
  *
- * > If CEL is ever added, anything untranslatable is rejected at parse time with
- * > a precise message — never silently degraded to a scan.
+ * The one boundary that stays client-side is the one ADR 0017 makes binding:
  *
- * That rule applies here today. `GET /api/v1/alerts` exposes `label[k]=v` for
- * equality and `label[!k]=v` for negation, and **nothing else** (§E.3). So `=~`
- * and `!~` parse cleanly, are recognised as real matcher syntax, and are then
- * refused with an explanation — rather than being quietly dropped, which would
- * return an unfiltered list and start the dashboard lying about what it shows.
+ * > anything untranslatable is rejected at parse time with a precise message —
+ * > never silently degraded to a scan.
+ *
+ * A `=~`/`!~` value that is an **alternation of literals** (`critical|warning`,
+ * optionally anchored) is an `IN` list and is served from the label GIN index.
+ * A value carrying a metacharacter is a sequential scan over every alert in the
+ * org, and the server refuses it at parse time with a `422`. We say so *before*
+ * sending rather than pretending it will work, because a filter that works in
+ * staging and times out during an incident is worse than one that says no.
  */
 
 export type MatcherOperator = "=" | "!=" | "=~" | "!~";
@@ -44,14 +50,64 @@ const LABEL_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 /** Operators, longest first — `!=` must win over `!` and `=~` over `=`. */
 const OPERATORS: readonly MatcherOperator[] = ["=~", "!~", "!=", "="];
 
-/**
- * The operators the alert API can actually serve. Keep this list next to the
- * failure message: when the contract grows regex support, both change together.
- */
-export const SUPPORTED_OPERATORS: readonly MatcherOperator[] = ["=", "!="];
+/** Every operator the contract's `matcher=` parameter accepts. All four are sent. */
+export const SUPPORTED_OPERATORS: readonly MatcherOperator[] = ["=", "!=", "=~", "!~"];
 
-export function isSupported(op: MatcherOperator): boolean {
-  return SUPPORTED_OPERATORS.includes(op);
+export function isRegexOperator(op: MatcherOperator): boolean {
+  return op === "=~" || op === "!~";
+}
+
+/**
+ * The metacharacters that turn a regex matcher into a sequential scan.
+ *
+ * Verbatim from the contract's `matcher` parameter: `.` `*` `+` `?` `(` `)`
+ * `[` `]` `{` `}` `\`. Note what is **absent** — `|` is how an alternation is
+ * spelled and `^`/`$` are the anchors an alternation may carry, so all three
+ * are served.
+ */
+const REGEX_METACHARACTERS = [".", "*", "+", "?", "(", ")", "[", "]", "{", "}", "\\"] as const;
+
+export interface RegexVerdict {
+  /** True when the value is an alternation of literals the index can answer. */
+  readonly servable: boolean;
+  /** The metacharacters that made it unservable, in the order found. */
+  readonly offending: readonly string[];
+}
+
+/**
+ * Decide whether a `=~`/`!~` value is index-backed or a scan.
+ *
+ * Servable: an alternation of literal values with optional `^` and `$` anchors.
+ * That is exactly an `IN` list, and it compiles to one indexed containment
+ * lookup per alternative.
+ */
+export function classifyRegexValue(value: string): RegexVerdict {
+  let body = value;
+  if (body.startsWith("^")) body = body.slice(1);
+  if (body.endsWith("$")) body = body.slice(0, -1);
+
+  const offending: string[] = [];
+  for (const ch of REGEX_METACHARACTERS) {
+    if (body.includes(ch) && !offending.includes(ch)) offending.push(ch);
+  }
+  return { servable: offending.length === 0, offending };
+}
+
+/**
+ * The refusal, said the way the server says it.
+ *
+ * It names the boundary and both spellings that do work, because "invalid
+ * filter" teaches nobody anything at 3am.
+ */
+export function describeRegexRefusal(m: LabelMatcher, verdict: RegexVerdict): string {
+  const chars = verdict.offending.map((c) => `\`${c}\``).join(" ");
+  return (
+    `oto refuses this at parse time. ${chars} cannot use the label index, so this would be a ` +
+    `sequential scan over every alert in the org — a filter that works in staging and times out ` +
+    `during an incident. What is served is an alternation of literal values, optionally anchored: ` +
+    `\`${m.name}${m.op}"critical|warning"\`. For a substring search use the free-text box, which is ` +
+    `backed by a full-text index.`
+  );
 }
 
 /**
@@ -194,59 +250,83 @@ export function formatMatchers(matchers: readonly LabelMatcher[]): string {
 }
 
 export interface CompileResult {
-  /** Ready to hand to the client as its `label` deepObject parameter. */
-  readonly selector: Readonly<Record<string, string>>;
-  /** Matchers the contract cannot express. Non-empty means: do not query. */
+  /**
+   * The `matcher=` value to send, or `null` when there is nothing to filter on.
+   * Canonically re-rendered so the wire form never depends on how it was typed.
+   */
+  readonly matcher: string | null;
+  /** Matchers the server refuses at parse time. Non-empty means: do not query. */
   readonly rejected: readonly { matcher: LabelMatcher; reason: string }[];
 }
 
 /**
- * Compile matchers to the `label[…]` selector §E.3 defines.
+ * Compile matchers into the contract's `matcher=` parameter.
  *
- * Repeated equality matchers on one name OR together, which is exactly the
- * contract's comma semantics: `{team="core", team="platform"}` becomes
- * `label[team]=core,platform`. Distinct names AND together.
- *
- * A regex matcher is **rejected, never approximated**. Returning an unfiltered
- * page because we could not express the filter is the failure mode ADR 0017
- * exists to prevent.
+ * All four operators go over the wire. The only thing that does not is a regex
+ * the server would refuse anyway — and it is stopped here, with the server's own
+ * reasoning, rather than sent to collect a 422. Returning an unfiltered page
+ * because we could not express the filter is the failure mode ADR 0017 exists
+ * to prevent, and so is a request we already know will fail.
  */
 export function compileMatchers(matchers: readonly LabelMatcher[]): CompileResult {
-  const positive = new Map<string, string[]>();
-  const negative = new Map<string, string[]>();
+  const servable: LabelMatcher[] = [];
   const rejected: { matcher: LabelMatcher; reason: string }[] = [];
 
   for (const m of matchers) {
-    if (!isSupported(m.op)) {
-      rejected.push({
-        matcher: m,
-        reason:
-          `\`${m.op}\` is valid matcher syntax, but the alert API filters on equality only. ` +
-          `Rewrite it with \`=\` or \`!=\`, or use the free-text search.`,
-      });
-      continue;
+    if (isRegexOperator(m.op)) {
+      const verdict = classifyRegexValue(m.value);
+      if (!verdict.servable) {
+        rejected.push({ matcher: m, reason: describeRegexRefusal(m, verdict) });
+        continue;
+      }
     }
-    if (m.value.includes(",")) {
-      rejected.push({
-        matcher: m,
-        reason:
-          "a comma inside a value is ambiguous — the API reads commas as OR. " +
-          "Write one matcher per value instead.",
-      });
-      continue;
-    }
-    const bucket = m.op === "=" ? positive : negative;
-    const existing = bucket.get(m.name);
-    if (existing) existing.push(m.value);
-    else bucket.set(m.name, [m.value]);
+    servable.push(m);
   }
 
-  const selector: Record<string, string> = {};
-  for (const [name, values] of positive) selector[name] = values.join(",");
-  for (const [name, values] of negative) selector[`!${name}`] = values.join(",");
-
-  return { selector, rejected };
+  return {
+    matcher: servable.length === 0 ? null : formatMatchers(servable),
+    rejected,
+  };
 }
+
+/**
+ * Worked examples, shown in the input rather than hidden in documentation.
+ *
+ * Every one of these is index-backed. The last entry is deliberately the
+ * refused shape, because the boundary is easier to learn from a counterexample
+ * than from a paragraph.
+ */
+export const MATCHER_EXAMPLES: readonly {
+  readonly text: string;
+  readonly note: string;
+  readonly served: boolean;
+}[] = [
+  {
+    text: '{namespace="payments"}',
+    note: "Exact match on one label. Braces are optional.",
+    served: true,
+  },
+  {
+    text: 'tier!="canary"',
+    note: "Negation. Distinct names AND together; repeated names OR.",
+    served: true,
+  },
+  {
+    text: 'severity=~"critical|warning"',
+    note: "An alternation of literals — one indexed lookup per value.",
+    served: true,
+  },
+  {
+    text: 'tier!~"canary|staging"',
+    note: "Excludes two values at once, still from the index.",
+    served: true,
+  },
+  {
+    text: 'severity=~"crit.*"',
+    note: "Refused: an open-ended pattern is a sequential scan. Use the free-text search instead.",
+    served: false,
+  },
+];
 
 /** Round-trip a selector back into matchers, for hydrating the input from a URL. */
 export function selectorToMatchers(

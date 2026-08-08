@@ -2,16 +2,21 @@
  * The label filter (ADR 0017).
  *
  * Alertmanager matcher syntax, because that is the idiom oto's audience already
- * types every day — not a general expression language. The ADR's binding rule
- * is about what happens at the boundary:
+ * types every day — not a general expression language. The whole expression is
+ * sent verbatim in the contract's `matcher=` parameter, so **all four operators
+ * work**: `=`, `!=`, `=~` and `!~`.
+ *
+ * The ADR's binding rule governs the one boundary that remains:
  *
  * > anything untranslatable is rejected at parse time with a precise message —
  * > never silently degraded to a scan.
  *
- * So `=~` parses (it is real matcher syntax and pretending otherwise would be a
- * lie about the language), is shown as understood, and is then refused with the
- * reason and a suggested rewrite. What it never does is quietly disappear and
- * leave an unfiltered list looking filtered.
+ * A `=~` value that is an alternation of literals (`critical|warning`) is an
+ * `IN` list and is answered from the label index. A value carrying a
+ * metacharacter is a sequential scan over every alert in the org, and the server
+ * refuses it at parse time by design. This input says so *before* sending —
+ * with the reason, not just a rejection — because an operator who understands
+ * the boundary can work around it, and one who is told "invalid" cannot.
  *
  * The input is a plain `<input>` on purpose. A contenteditable token field would
  * look more sophisticated and would break paste, undo, screen readers and the
@@ -23,7 +28,13 @@ import { useQuery } from "@tanstack/solid-query";
 import { listLabelNames } from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import { Input, cx } from "~/components/ui/primitives";
-import { compileMatchers, parseMatchers, type LabelMatcher } from "~/lib/matchers";
+import { count as fmtCount } from "~/lib/format";
+import {
+  MATCHER_EXAMPLES,
+  compileMatchers,
+  parseMatchers,
+  type LabelMatcher,
+} from "~/lib/matchers";
 
 export interface MatcherInputProps {
   readonly value: string;
@@ -57,6 +68,9 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
   const listId = (): string => `${props.id ?? "matchers"}-names`;
   const statusId = (): string => `${props.id ?? "matchers"}-status`;
 
+  /** Show the worked examples while the box is focused and still empty. */
+  const teaching = (): boolean => focused() && text().trim() === "";
+
   const commit = (): void => {
     props.onChange(draft());
     props.onCommit();
@@ -69,11 +83,11 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
         mono
         list={listId()}
         value={text()}
-        placeholder={'{namespace="payments", severity="critical"}'}
+        placeholder={'{namespace="payments", severity=~"critical|warning"}'}
         spellcheck={false}
         autocapitalize="off"
         autocorrect="off"
-        aria-label="Label matchers"
+        aria-label="Label matchers, Alertmanager syntax"
         aria-describedby={statusId()}
         invalid={hasProblem()}
         onFocus={() => {
@@ -99,9 +113,15 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
       />
 
       {/* A native datalist gives name completion with zero ARIA of our own and
-          zero chance of trapping the keyboard. */}
+          zero chance of trapping the keyboard. `alert_count` is what orders the
+          list server-side, so it is shown: a filter bar that offers a label
+          matching nothing spends the one minute of an incident that matters. */}
       <datalist id={listId()}>
-        <For each={names.data ?? []}>{(row) => <option value={`${row.name}="`} />}</For>
+        <For each={names.data ?? []}>
+          {(row) => (
+            <option value={`${row.name}="`} label={`${fmtCount(row.alert_count)} alerts`} />
+          )}
+        </For>
       </datalist>
 
       {/* The parse result, always visible while there is something to say. It is
@@ -124,7 +144,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
         </Show>
 
         <Show when={compiled().rejected.length > 0}>
-          <ul class="mt-1 space-y-0.5">
+          <ul class="mt-1 space-y-1">
             <For each={compiled().rejected}>
               {(r) => (
                 <li class="flex items-start gap-1.5 text-[11px] leading-snug text-ink">
@@ -147,6 +167,26 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
           <p class="mt-1 text-[11px] leading-snug text-ink-subtle">
             {describe(parsed().matchers)} · press Enter to apply
           </p>
+        </Show>
+
+        <Show when={teaching()}>
+          <ul class="mt-1 space-y-0.5">
+            <For each={MATCHER_EXAMPLES}>
+              {(ex) => (
+                <li class="flex flex-wrap items-baseline gap-x-2 text-[11px] leading-snug">
+                  <code
+                    class={cx(
+                      "font-mono",
+                      ex.served ? "text-ink" : "text-ink-subtle line-through decoration-ink-subtle/60",
+                    )}
+                  >
+                    {ex.text}
+                  </code>
+                  <span class="text-ink-subtle">{ex.note}</span>
+                </li>
+              )}
+            </For>
+          </ul>
         </Show>
       </div>
     </div>

@@ -21,6 +21,7 @@ import {
   listAlertEvents,
   listAlertNotifications,
   listAlertOccurrences,
+  listAlertSnoozes,
 } from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import type { AlertEvent, TimelineQuery } from "~/api/types";
@@ -33,6 +34,7 @@ import {
   StateChip,
   normaliseSeverity,
 } from "~/components/StateChip";
+import { SnoozeChip } from "~/components/SnoozeChip";
 import { Elapsed, RelativeTime } from "~/components/Time";
 import { Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
 import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
@@ -42,6 +44,7 @@ import { DeliveryPanel } from "~/features/alerts/detail/DeliveryPanel";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
 import { OccurrencePanel } from "~/features/alerts/detail/OccurrencePanel";
 import { RulePanel } from "~/features/alerts/detail/RuleDrift";
+import { SnoozePanel } from "~/features/alerts/detail/SnoozePanel";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
 
@@ -127,6 +130,11 @@ export default function AlertDetailRoute() {
       listAlertOccurrences(params.id, { limit: 50 }, { signal }),
   }));
 
+  const snoozes = useQuery(() => ({
+    queryKey: qk.alerts.snoozes(params.id),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listAlertSnoozes(params.id, {}, { signal }),
+  }));
+
   return (
     <Switch>
       <Match when={alert.isPending}>
@@ -170,10 +178,19 @@ export default function AlertDetailRoute() {
                     <Show when={data().is_flapping}>
                       <FlappingChip />
                     </Show>
+                    {/* Beside the state chip, never instead of it (§B.8.6): the
+                        three axes are orthogonal, and a snoozed critical alert
+                        still reads critical and still reads firing. */}
+                    <SnoozeChip snooze={data().snooze ?? null} />
                   </div>
 
                   <p class="mt-0.5 text-[12px] text-ink-muted">
                     {STATE_MEANING[data().state]}
+                    <Show when={data().snooze}>
+                      {" "}
+                      oto is holding its own notifications about it — that is a fact about oto, not
+                      about the signal.
+                    </Show>
                   </p>
 
                   <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-ink-muted">
@@ -331,6 +348,12 @@ export default function AlertDetailRoute() {
                   enrichments={enrichments.data?.data ?? []}
                   loading={enrichments.isPending}
                   error={enrichments.error}
+                />
+
+                <SnoozePanel
+                  history={snoozes.data ?? []}
+                  loading={snoozes.isPending}
+                  error={snoozes.error}
                 />
 
                 <DeliveryPanel

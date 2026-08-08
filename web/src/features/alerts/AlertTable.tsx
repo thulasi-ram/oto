@@ -28,12 +28,22 @@ import {
   StateChip,
   normaliseSeverity,
 } from "~/components/StateChip";
+import { SnoozeChipUnknownUntil } from "~/components/SnoozeChip";
 import { Chip, cx } from "~/components/ui/primitives";
 import { count as fmtCount, truncate } from "~/lib/format";
 import { createVirtualiser, readRowHeight } from "~/lib/virtual";
 
 export interface AlertTableProps {
   readonly alerts: readonly Alert[];
+  /**
+   * The `?snoozed=` filter the rows were fetched under, when there was one.
+   *
+   * `AlertDTO` carries no `snooze` field, so a row's snooze state is only
+   * knowable when the query pinned it. `true` means every row here is certainly
+   * snoozed; `null` means unknown, and an unknown is left unsaid rather than
+   * guessed at.
+   */
+  readonly snoozedKnown?: boolean | null;
   /** Clicking a label chip filters by it — the fastest drill-down there is. */
   readonly onFilterLabel: (name: string, value: string) => void;
   /** Rendered after the last row: the "load more" affordance or a total. */
@@ -151,6 +161,7 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
                 alert={alert}
                 index={win().start + i()}
                 focused={win().start + i() === focusIndex()}
+                snoozed={props.snoozedKnown === true}
                 onFocus={() => setFocusIndex(win().start + i())}
                 onFilterLabel={props.onFilterLabel}
               />
@@ -178,6 +189,8 @@ interface AlertRowProps {
   readonly alert: Alert;
   readonly index: number;
   readonly focused: boolean;
+  /** Certainly snoozed, because the query pinned `?snoozed=true`. */
+  readonly snoozed: boolean;
   readonly onFocus: () => void;
   readonly onFilterLabel: (name: string, value: string) => void;
 }
@@ -279,6 +292,12 @@ const AlertRow: Component<AlertRowProps> = (props) => {
           <AckChip ackState={props.alert.ack_state} />
           <Show when={props.alert.is_flapping}>
             <FlappingChip />
+          </Show>
+          {/* Tier A, and beside the state chip rather than instead of it: the
+              row keeps its firing tint and its true severity. Snoozing holds
+              oto's notifications, it does not make the alert less serious. */}
+          <Show when={props.snoozed}>
+            <SnoozeChipUnknownUntil />
           </Show>
         </div>
       </td>

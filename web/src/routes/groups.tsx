@@ -7,9 +7,12 @@
  * exactly one chat thread, which is why a new generation is what produces a new
  * root message rather than a reply.
  *
- * This is deliberately *not* "the alert list, grouped" — that is the client-side
- * roll-up on `/alerts`. Conflating the two would suggest oto invents groupings,
- * and it does not: grouping is Alertmanager's decision, mirrored.
+ * This is deliberately *not* "the alert list, grouped" — that is
+ * `GET /api/v1/alerts/rollups`, behind the grouping control on `/alerts`. The
+ * two are separate endpoints because they are separate concepts: a roll-up
+ * bucket is a view computed for one query, with no row, no generation and no
+ * thread. Conflating them would suggest oto invents groupings, and it does not:
+ * grouping is Alertmanager's decision, mirrored.
  */
 import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
@@ -250,6 +253,9 @@ const GroupRow = (props: { readonly group: Group }) => {
             <Show when={unacked() > 0}>
               <span title="Members nobody has recorded seeing yet.">{unacked()} unseen</span>
             </Show>
+            {/* `cluster_key` is a first-class field on the group, never read
+                out of `group_labels` — the route need not have grouped on it. */}
+            <span class="font-mono">cluster {g().cluster_key}</span>
             <Show when={g().receiver !== ""}>
               <span class="font-mono">receiver {g().receiver}</span>
             </Show>

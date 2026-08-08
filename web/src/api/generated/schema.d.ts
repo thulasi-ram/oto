@@ -100,8 +100,64 @@ export interface paths {
          *
          *     **`include` avoids the N+1.** Without it the response is one row per alert; with it, the named
          *     sub-resources are batch-loaded and embedded.
+         *
+         *     **Snoozed alerts are in this list by default and that is deliberate.** A snooze suppresses oto's
+         *     own *notifications*; it says nothing about the signal. A snoozed alert is still firing, still
+         *     whatever severity it was, and hiding it from the default list is how an incident is lost. Use
+         *     `snoozed=true|false` to filter explicitly.
+         *
+         *     **To group these results, use `GET /api/v1/alerts/rollups`**, which applies every filter below
+         *     and aggregates server-side. Do not roll up a page client-side: the counts are then computed over
+         *     whatever happened to load and are silently wrong the moment the result exceeds one page.
          */
         get: operations["listAlerts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/rollups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Aggregate the alert list into buckets, server-side
+         * @description **Group alerts by name, namespace or source fingerprint — over the whole filtered result set,
+         *     not over one page.**
+         *
+         *     Every filter `listAlerts` accepts is accepted here and applied identically, so the buckets always
+         *     summarise exactly the list beside them. Each bucket carries counts by state, by acknowledgement,
+         *     by damping facet and by raw severity, plus a roll-up `state`: **a bucket is as alive as its
+         *     liveliest member**, and `resolved` and `expired` are never merged, because "the upstream said it
+         *     ended" and "we stopped hearing about it" are different facts and the second is the more
+         *     interesting one.
+         *
+         *     ### Why this is a separate endpoint and not a `group_by` mode of `listAlerts`
+         *
+         *     A bucket is not an alert. One operation would have to return `oneOf` two schemas; its `sort`
+         *     enum (`-last_seen_at`, `-first_seen_at`) does not apply to buckets, which are keyset-ordered by
+         *     their own key; and `include=` embeds sub-resources of an alert, of which a bucket has none.
+         *
+         *     ### ⛔ This is not `/alert-groups`, and the two must not be confused
+         *
+         *     An **AlertGroup** is one generation of one *Alertmanager notification group*, derived from
+         *     `(source, receiver, groupLabels)`. It has a row, a generation and it owns exactly one chat
+         *     thread. A **roll-up** is a view over the alert list: it has no row, no generation, no thread,
+         *     and it exists for the duration of one query.
+         *
+         *     ### Cost
+         *
+         *     `alertname` is a streaming aggregate over the `(org_id, alertname, …)` index. `namespace` and
+         *     `fingerprint` are index-only scans plus a sort. None of the three is a sequential scan; an axis
+         *     that would be is not in the enum.
+         */
+        get: operations["listAlertRollups"];
         put?: never;
         post?: never;
         delete?: never;
@@ -320,6 +376,117 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alerts/{id}/snooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suppress oto's own notifications for this alert until T
+         * @description **oto's quiet button.** Snooze suppresses *oto's own notifications* for one alert until a fixed
+         *     time. It writes nothing into Alertmanager, creates no silence, and changes nothing about the
+         *     signal.
+         *
+         *     > ### ⛔ A snoozed alert is still firing, and every surface must still render it that way
+         *     >
+         *     > Snooze is not a state. It is a third orthogonal axis alongside `state` and `ack_state`. A
+         *     > snoozed critical alert is **still critical and still firing**; colouring it calm would be
+         *     > exactly the lie that "no human writes a signal's state" exists to prevent. It is also **not**
+         *     > hidden from the default alert list — `snoozed` is an explicit filter and its default includes
+         *     > both.
+         *
+         *     ### It always ends, and it is always attributed
+         *
+         *     `until` must fall between **5 minutes** and **30 days** from now. **There is no indefinite
+         *     snooze**: an unexpiring snooze is a mute, and mutes are how channels go quiet forever. Presets
+         *     are 30 m · 1 h · 4 h · 24 h · 7 d. Every snooze records who asked for it and why, is visible in
+         *     the UI and in the chat card while it holds, and appears in the history at
+         *     `GET /api/v1/alerts/{id}/snoozes` afterwards.
+         *
+         *     ### It announces itself
+         *
+         *     Starting and ending a snooze each enqueue a notification, so the channel is *told* it is going
+         *     quiet and told again when it wakes. Those two are the only notification reasons a snooze does
+         *     not itself suppress — a damper that cannot announce itself is the silent suppression oto refuses
+         *     to ship. While a snooze holds it suppresses **every** other reason for that alert, including
+         *     rule-change notices: a partial mute is a confusing mute.
+         *
+         *     ### Interaction with an Alertmanager silence
+         *
+         *     They are different facts about different systems and **neither overrides the other**. A silence
+         *     means *Alertmanager is not delivering this*; a snooze means *oto is not notifying about this*. An
+         *     alert that is both silenced and snoozed shows **both**. `snoozed` is never a `suppression_reason`
+         *     and `state` never takes the value `snoozed`.
+         *
+         *     Snoozing an alert that is already snoozed is not an error: the incumbent is closed as
+         *     `superseded` and the new one starts, so the history records both.
+         */
+        post: operations["snoozeAlert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/{id}/unsnooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End an active snooze early
+         * @description Wake the alert now: the `alert_snoozes` row is closed with `ended_reason: manual`, the projection
+         *     is cleared, an `alert.unsnoozed` event is appended, and the channel is told notifications have
+         *     resumed.
+         *
+         *     An alert that is not currently snoozed is a `412`, not a `409`: the request is valid, the entity
+         *     is simply in the wrong state.
+         *
+         *     Because deliveries are rendered at claim time, the wake-up card reflects the alert's state
+         *     **now** rather than replaying what was suppressed — an alert that fired and resolved entirely
+         *     inside the window produces no stale message.
+         */
+        post: operations["unsnoozeAlert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/{id}/snoozes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every snooze this alert has ever had
+         * @description **Membership of a snooze is history, not a boolean.** An ended snooze keeps its row — who asked
+         *     for it, until when, and how it finished — and `ended_reason` distinguishes the three endings that
+         *     look identical from outside: `manual` (a human woke it), `expired` (the clock ran out) and
+         *     `superseded` (a new snooze replaced it).
+         *
+         *     This is the counterweight that makes the feature safe to ship. A quiet period that cannot be
+         *     reviewed afterwards is a quiet period nobody is accountable for.
+         */
+        get: operations["listAlertSnoozes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/occurrences/{id}": {
         parameters: {
             query?: never;
@@ -404,6 +571,15 @@ export interface paths {
          *     Because a group's identity is oto's own durable hash rather than Alertmanager's route-derived
          *     `groupKey`, editing `alertmanager.yml` — adding a route, changing `group_by` — does not orphan an
          *     open thread. The group keeps its key and the same conversation continues.
+         *
+         *     **Every filter below is applied by the database before the page limit, and `sort` is applied to
+         *     the query.** That is worth saying out loud because it has not always been true: a filter
+         *     evaluated after pagination is not a filter but a truncation, and it returns a short page plus a
+         *     cursor that has already stepped past rows it never examined.
+         *
+         *     **This is not "the alert list, grouped."** A group here is one generation of one *Alertmanager
+         *     notification group* and it owns a chat thread. For an aggregate view over the alert list, use
+         *     `GET /api/v1/alerts/rollups`.
          */
         get: operations["listAlertGroups"];
         put?: never;
@@ -519,9 +695,71 @@ export interface paths {
         /**
          * Add a human note to a group's timeline
          * @description Append an immutable `comment.added` event to the group timeline and mirror it into the group's
-         *     chat thread.
+         *     chat thread. The comment fans out onto every currently-joined member's timeline; the `201` body
+         *     is the event that was written, returned by the write itself rather than read back afterwards.
+         *
+         *     A group with no currently-joined member is a `412`: there is no signal to annotate, and the
+         *     timeline records facts about signals.
          */
         post: operations["commentOnAlertGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alert-groups/{id}/snooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snooze every currently-joined member alert
+         * @description **A fan-out of the per-alert snooze, not a new primitive.** One `alert_snoozes` row is created
+         *     per **currently-joined** member alert, with the same window, the same attribution and the same
+         *     bounds.
+         *
+         *     > ### ⛔ A snooze is never predictive
+         *     >
+         *     > Alerts that join this group **after** the request are **not** snoozed. A group-level mute that
+         *     > covered future members would silence alerts nobody has ever seen, which is the difference
+         *     > between a quiet button and a blindfold.
+         *
+         *     Every member stays firing, stays whatever severity it was, and stays in the default alert list.
+         *     The group card shows the snooze as a separate field; its colour and status still follow the
+         *     members' actual state.
+         *
+         *     A group with no currently-joined member is a `412`. A member that cannot be snoozed is skipped
+         *     rather than failing the request, for the same reason the group ack skips ended occurrences.
+         */
+        post: operations["snoozeAlertGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alert-groups/{id}/unsnooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End the snooze on every currently-joined member alert
+         * @description Wake the group: each currently-joined member's active snooze is closed with
+         *     `ended_reason: manual`. A member that is not snoozed is skipped rather than failing the request —
+         *     refusing the other thirty-nine because one had already woken would make the button unusable in
+         *     exactly the situation it exists for.
+         */
+        post: operations["unsnoozeAlertGroup"];
         delete?: never;
         options?: never;
         head?: never;
@@ -541,6 +779,14 @@ export interface paths {
          *     `(source_id, rule_file, rule_group, rule_name)`; `source_id` and `rule_name` are required
          *     because a bare alert name is not an identity — two files can define the same one, which is
          *     exactly the ambiguity `match_confidence` exists to report.
+         *
+         *     **Keyset-paginated over `(captured_at, id)`, for real:** `next_cursor` is issued whenever more
+         *     versions exist, and following it reaches every capture. It used to be served from a
+         *     200-version in-memory history, which meant `next_cursor` was always `null` and a heavily edited
+         *     rule had history this endpoint could not show.
+         *
+         *     Versions are the **distinct texts** the rule has had, not the fires: a rule that fired ten
+         *     thousand times unchanged has exactly one.
          */
         get: operations["listRuleSnapshots"];
         put?: never;
@@ -2013,9 +2259,9 @@ export interface components {
         };
         /**
          * @description One Alert expanded with its current occurrence, its enrichment summary, the rule as it was at
-         *     fire time, and a delivery roll-up. The delivery roll-up is not decoration: **oto's silence must
-         *     never be indistinguishable from "no alert"**, so every alert can show whether its notifications
-         *     actually landed.
+         *     fire time, a delivery roll-up, and the snooze in force if any. The delivery roll-up is not
+         *     decoration: **oto's silence must never be indistinguishable from "no alert"**, so every alert
+         *     can show whether its notifications actually landed.
          */
         AlertDetailDTO: components["schemas"]["AlertDTO"] & {
             /** @description The open occurrence, or the most recent one if none is open. */
@@ -2028,6 +2274,15 @@ export interface components {
             /** @description The group generation the current occurrence belongs to. */
             group?: components["schemas"]["GroupRefDTO"] | null;
             delivery_summary?: components["schemas"]["DeliverySummaryDTO"];
+            /**
+             * @description The snooze currently in force, or `null` when the alert is awake.
+             *
+             *     It sits **beside** `state` and `ack_state` and never inside them: the three are
+             *     orthogonal axes. A non-null `snooze` on a `firing` alert means *oto is holding its
+             *     tongue about something that is still happening* — render the alert as firing and the
+             *     snooze as a separate badge with its countdown.
+             */
+            snooze?: components["schemas"]["SnoozeDTO"] | null;
         };
         /**
          * @description One **contiguous firing episode** of an Alert. This is what you acknowledge and what you time
@@ -2233,21 +2488,192 @@ export interface components {
             computed_at: components["schemas"]["Timestamp"];
         };
         /**
+         * @description A snooze: **oto is not notifying about this alert until `snoozed_until`.**
+         *
+         *     It is not a silence, not an inhibition and not a mute time interval — nothing here exists in
+         *     Alertmanager, and oto wrote nothing into your cluster. It is not a `state` and not a
+         *     `suppression_reason`: it is a third orthogonal axis, and a snoozed alert is still firing.
+         */
+        SnoozeDTO: {
+            id: components["schemas"]["Uuid"];
+            snoozed_at: components["schemas"]["Timestamp"];
+            /**
+             * @description When oto starts notifying again. **Never null.** A snooze without an end is a mute, and
+             *     oto does not ship one; the window is always between 5 minutes and 30 days.
+             */
+            snoozed_until: components["schemas"]["Timestamp"];
+            /**
+             * @description Who asked for the quiet. A snooze is always attributed, because an unattributable quiet
+             *     period is one nobody can be asked about.
+             * @example priya@example.com
+             */
+            snoozed_by_label: string;
+            /**
+             * @description Why. Shown wherever the snooze is shown.
+             * @example deploy window, expected until 17:00
+             */
+            note?: string | null;
+            /** @description Null while the snooze holds. */
+            ended_at?: components["schemas"]["Timestamp"] | null;
+        };
+        /**
+         * @description How a snooze finished. Three endings that look identical from outside and are not:
+         *
+         *     - `manual` — a human woke it early.
+         *     - `expired` — the clock ran out, which is the ending every snooze has unless something
+         *       intervenes.
+         *     - `superseded` — a new snooze on the same alert replaced it.
+         * @enum {string}
+         */
+        SnoozeEndReason: "manual" | "expired" | "superseded";
+        /**
+         * @description One row of an alert's snooze history. **Membership of a snooze is history, not a boolean:** the
+         *     row survives its ending so a quiet period can be reviewed afterwards.
+         */
+        SnoozeHistoryDTO: components["schemas"]["SnoozeDTO"] & {
+            /** @description Null exactly while the snooze is still active. */
+            ended_reason?: components["schemas"]["SnoozeEndReason"] | null;
+            /** @description Who ended it. Null for `expired` — that ending has no human behind it. */
+            ended_by_label?: string | null;
+            /** @description Whether this is the snooze currently in force. */
+            active: boolean;
+        };
+        /**
+         * @description **Give exactly one of `until` and `duration_seconds`.** Both is a `422` and neither is a `422`:
+         *     there is no indefinite snooze and therefore no default window. The bounds — minimum 5 minutes,
+         *     maximum 30 days — are identical in this document, in the domain constructor and in the database
+         *     CHECK constraint.
+         */
+        SnoozeRequest: {
+            /** @description The absolute instant the snooze ends. Must be between 5 minutes and 30 days from now. */
+            until?: components["schemas"]["Timestamp"] | null;
+            /**
+             * Format: int64
+             * @description The relative form the presets use — 1800, 3600, 14400, 86400, 604800 — resolved against
+             *     **oto's** clock rather than the caller's, so a client with a skewed clock cannot talk its
+             *     way outside the window.
+             * @example 14400
+             */
+            duration_seconds?: number | null;
+            /**
+             * @description Why the alert is being snoozed. Shown wherever the snooze is shown.
+             * @example deploy window, expected until 17:00
+             */
+            note?: string | null;
+        };
+        /** @description The body of an unsnooze. Empty is valid; the whole body may be omitted. */
+        UnsnoozeRequest: {
+            /** @description Optional note recorded with the wake-up. */
+            note?: string | null;
+        };
+        /**
+         * @description One bucket of a server-side alert roll-up, counted over the **whole filtered result set**.
+         *
+         *     > ### ⛔ A roll-up bucket is not an AlertGroup
+         *     >
+         *     > An `AlertGroup` is one generation of one Alertmanager notification group; it has a row, a
+         *     > generation, and it owns a chat thread. This has none of those — it is a *view*, computed for
+         *     > one query and gone. They are separate endpoints because they are separate concepts.
+         */
+        AlertRollupDTO: {
+            /**
+             * @description The bucket value: the alert name, the namespace, or the source fingerprint. Alerts carrying
+             *     no `namespace` bucket under the empty string rather than being dropped.
+             * @example KubePodCrashLooping
+             */
+            key: string;
+            /**
+             * @description The axis this bucket was computed on, echoed so a response is self-describing.
+             * @enum {string}
+             */
+            group_by: "alertname" | "namespace" | "fingerprint";
+            /**
+             * @description The bucket's roll-up state: **a bucket is as alive as its liveliest member**, in the order
+             *     `firing` → `suppressed` → `expired` → `resolved`.
+             *
+             *     `expired` outranks `resolved` deliberately. "We stopped hearing about this" is an open
+             *     question and "the upstream said it ended" is a closed one, and collapsing them would hide
+             *     the more interesting of the two.
+             */
+            state: components["schemas"]["State"];
+            /**
+             * Format: int32
+             * @example 47
+             */
+            total_count: number;
+            /** Format: int32 */
+            firing_count: number;
+            /** Format: int32 */
+            suppressed_count: number;
+            /** Format: int32 */
+            resolved_count: number;
+            /** Format: int32 */
+            expired_count: number;
+            /**
+             * Format: int32
+             * @description Members carrying a human receipt. Orthogonal to `state` — an acked alert is still firing.
+             */
+            acked_count: number;
+            /** Format: int32 */
+            unacked_count: number;
+            /**
+             * Format: int32
+             * @description Members oto has damped as flapping. A visible state, never a silent drop.
+             */
+            flapping_count: number;
+            /**
+             * Format: int32
+             * @description Members whose notifications are currently snoozed. They are still counted as firing.
+             */
+            snoozed_count: number;
+            /**
+             * @description Raw severity label to member count. **Raw, and deliberately unranked:** operators choose
+             *     their own vocabulary (`sev1`, `P1`, `page`), so oto reports what the label says and leaves
+             *     precedence to the client that knows the local convention.
+             * @example {
+             *       "critical": 31,
+             *       "warning": 16
+             *     }
+             */
+            severity_counts: {
+                [key: string]: number;
+            };
+            /** @description The earliest `first_seen_at` in the bucket. */
+            first_seen_at: components["schemas"]["Timestamp"];
+            /** @description The most recent `last_seen_at` in the bucket. */
+            last_seen_at: components["schemas"]["Timestamp"];
+        };
+        /**
          * @description Delivery roll-up for one subject, so the UI can show **per alert** whether anyone was actually
          *     told. A non-zero `dead` count is a product signal, not a footnote.
          */
         DeliverySummaryDTO: {
             /** Format: int32 */
             total: number;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Delivered. A `skipped` delivery is counted here too when the read model does not separate
+             *     them: it means the destination already shows exactly this content, which is a healthy quiet
+             *     thread and not a failure.
+             */
             sent: number;
             /** Format: int32 */
             failed: number;
             /** Format: int32 */
             dead: number;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Coalesced no-op updates, counted separately **where the read model records them
+             *     separately**. `0` means "none recorded under that heading", never "none happened" — see
+             *     `sent`.
+             */
             skipped: number;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Queued plus in flight. Where the producing read model does not report it directly it is
+             *     derived as `total - sent - failed - dead`, which is exact rather than approximate: those
+             *     four and pending exhaust the delivery states.
+             */
             pending: number;
             last_error_class?: components["schemas"]["DeliveryErrorClass"];
             last_sent_at?: components["schemas"]["Timestamp"] | null;
@@ -2965,7 +3391,16 @@ export interface components {
             suppressed_reason?: components["schemas"]["NotificationSuppressedReason"];
             delivery_summary?: components["schemas"]["DeliverySummaryDTO"];
             created_at: components["schemas"]["Timestamp"];
-            updated_at: components["schemas"]["Timestamp"];
+            /**
+             * @description When the intent or its delivery roll-up last moved, or **`null` when the read model serving
+             *     this response does not track one**.
+             *
+             *     It is nullable rather than defaulted for a reason. It previously echoed `created_at` on the
+             *     per-alert notification list, which made "this intent has never changed" and "this intent
+             *     changed a minute ago" indistinguishable on the wire — a substitution the caller had no way
+             *     to detect. Null says "unknown"; a timestamp means it.
+             */
+            updated_at?: components["schemas"]["Timestamp"] | null;
         };
         /** @description One intent with every materialisation of it. */
         NotificationDetailDTO: components["schemas"]["NotificationDTO"] & {
@@ -3130,10 +3565,16 @@ export interface components {
             name: components["schemas"]["LabelName"];
             /**
              * Format: int32
-             * @description How many alerts currently carry this label. Approximate; intended for ranking, not accounting.
+             * @description How many alerts in your org currently carry this label. Always served; results are ordered
+             *     by it, most-used first, with the name as a tiebreak.
+             *
+             *     It is a live `count(*)` over the alerts scanned to produce the list, so it is exact for the
+             *     instant it was read — but it is intended for **ranking a typeahead**, not for accounting. A
+             *     filter bar that offers a label matching nothing spends the one minute of an incident that
+             *     matters most.
              * @example 1420
              */
-            alert_count?: number;
+            alert_count: number;
             /**
              * @description Whether this label is one of the promoted, individually indexed columns (`alertname`,
              *     `severity`, `namespace`, `service`, `cluster`). Filtering on a promoted label is markedly
@@ -3145,8 +3586,12 @@ export interface components {
         LabelValueDTO: {
             /** @example payments */
             value: string;
-            /** Format: int32 */
-            alert_count?: number;
+            /**
+             * Format: int32
+             * @description How many alerts currently carry this label with this value. Always served; results are
+             *     ordered by it, most-used first.
+             */
+            alert_count: number;
         };
         /** @description A registered enricher with its phase, version and observed health. */
         EnricherDTO: {
@@ -3304,9 +3749,24 @@ export interface components {
             expired?: number;
             /** Format: int64 */
             total_firing_seconds?: number;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Lifecycle transitions recorded across the window. This is the stored quantity; `flap_score`
+             *     below is derived from it.
+             */
             flap_transitions?: number;
-            /** Format: float */
+            /**
+             * Format: float
+             * @description **`flap_transitions / occurrences`, and `0` when `occurrences` is `0`.** Transitions per
+             *     episode — how much state-churn one firing of this rule costs on average.
+             *
+             *     The derivation is stated here because the daily rollup stores no `flap_score` column, and an
+             *     undocumented ratio is a number a reader will assume means something else. In particular it
+             *     is **not** the same quantity as `AlertDTO.flap_score`, which is a live per-alert EWMA of
+             *     transitions per hour against the org's flapping threshold. Same name, different scale,
+             *     different subject: this one is per alertname per cluster over the reporting window and is
+             *     never compared against that threshold.
+             */
             flap_score?: number;
         };
         /** @description The tenant boundary. Every resource in this API belongs to exactly one org. */
@@ -3985,6 +4445,15 @@ export interface components {
             data: components["schemas"]["AlertDetailDTO"];
             meta: components["schemas"]["Meta"];
         };
+        AlertRollupListResponse: {
+            data: components["schemas"]["AlertRollupDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        SnoozeHistoryResponse: {
+            data: components["schemas"]["SnoozeHistoryDTO"][];
+            meta: components["schemas"]["Meta"];
+        };
         OccurrenceListResponse: {
             data: components["schemas"]["OccurrenceDTO"][];
             page: components["schemas"]["PageInfo"];
@@ -4360,9 +4829,53 @@ export interface components {
         /**
          * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
          *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-         *     same list endpoint instead. Accepted by every stream-fed list endpoint.
+         *     same list endpoint instead.
+         *
+         *     > **Not accepted on the Alerts, Occurrences, Groups or Rules lists.** It was published there,
+         *     > validated there, and then never applied: the alerts read model has no `ui_events` predicate,
+         *     > so a client polling with it received the unfiltered list and had no way to tell. A parameter
+         *     > that is documented and ignored is worse than one that does not exist, so it is gone from
+         *     > those operations until the predicate is real. Where it still appears it is served.
          */
         SinceSeqParam: number;
+        /**
+         * @description The label selector in **Alertmanager matcher syntax** (ADR 0017) — the native idiom of this
+         *     audience, and the only spelling that can carry a regular-expression operator:
+         *
+         *     ```
+         *     {namespace="payments", severity=~"critical|warning", tier!="canary"}
+         *     ```
+         *
+         *     The surrounding braces are optional. Values may be quoted or bare; a bare value may not contain
+         *     a comma, a brace or whitespace. All four Alertmanager operators are accepted — `=`, `!=`, `=~`,
+         *     `!~` — subject to the rule below. This parameter and `label[…]` may be used together and are
+         *     AND-ed, so filter chips and a hand-typed selector compose rather than conflict.
+         *
+         *     ### Which regular expressions are served, and why the rest are refused
+         *
+         *     A `=~` or `!~` matcher is served **when its value is an alternation of literal values**, with
+         *     optional `^` and `$` anchors: `severity=~"critical|warning"`, `tier!~"canary|staging"`. That is
+         *     exactly an `IN` list, and it compiles to one indexed containment lookup per value — measured on
+         *     60 000 alerts, a `BitmapOr` over two `Bitmap Index Scan`s of the label GIN index.
+         *
+         *     **Anything else is rejected at parse time with a `422` naming the matcher.** A value containing
+         *     a metacharacter — `.` `*` `+` `?` `(` `)` `[` `]` `{` `}` `\` — cannot use an index, and the
+         *     same measurement gives it a `Seq Scan` over every alert in the org. Per ADR 0017 that is refused
+         *     rather than served: a filter that works in staging and times out during an incident is worse
+         *     than one that says no, and the error message states exactly which spellings do work.
+         *
+         *     For a substring search use `q=`, which is backed by a full-text index.
+         */
+        MatcherParam: string;
+        /**
+         * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
+         *
+         *     **Omitting it includes both, and that is the default on purpose.** A snooze is a fact about
+         *     oto's notification behaviour, never about the signal: a snoozed alert is still firing, still
+         *     whatever severity it was, and every surface must keep rendering it that way. Hiding snoozed
+         *     alerts from the default list is how an incident is lost.
+         */
+        SnoozedParam: boolean;
         /**
          * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
          *     body within the retention window returns the original result rather than acting twice; replaying
@@ -4510,12 +5023,50 @@ export interface operations {
                     [key: string]: string;
                 };
                 /**
+                 * @description The label selector in **Alertmanager matcher syntax** (ADR 0017) — the native idiom of this
+                 *     audience, and the only spelling that can carry a regular-expression operator:
+                 *
+                 *     ```
+                 *     {namespace="payments", severity=~"critical|warning", tier!="canary"}
+                 *     ```
+                 *
+                 *     The surrounding braces are optional. Values may be quoted or bare; a bare value may not contain
+                 *     a comma, a brace or whitespace. All four Alertmanager operators are accepted — `=`, `!=`, `=~`,
+                 *     `!~` — subject to the rule below. This parameter and `label[…]` may be used together and are
+                 *     AND-ed, so filter chips and a hand-typed selector compose rather than conflict.
+                 *
+                 *     ### Which regular expressions are served, and why the rest are refused
+                 *
+                 *     A `=~` or `!~` matcher is served **when its value is an alternation of literal values**, with
+                 *     optional `^` and `$` anchors: `severity=~"critical|warning"`, `tier!~"canary|staging"`. That is
+                 *     exactly an `IN` list, and it compiles to one indexed containment lookup per value — measured on
+                 *     60 000 alerts, a `BitmapOr` over two `Bitmap Index Scan`s of the label GIN index.
+                 *
+                 *     **Anything else is rejected at parse time with a `422` naming the matcher.** A value containing
+                 *     a metacharacter — `.` `*` `+` `?` `(` `)` `[` `]` `{` `}` `\` — cannot use an index, and the
+                 *     same measurement gives it a `Seq Scan` over every alert in the org. Per ADR 0017 that is refused
+                 *     rather than served: a filter that works in staging and times out during an incident is worse
+                 *     than one that says no, and the error message states exactly which spellings do work.
+                 *
+                 *     For a substring search use `q=`, which is backed by a full-text index.
+                 */
+                matcher?: components["parameters"]["MatcherParam"];
+                /**
                  * @description Acknowledgement filter. Orthogonal to `state` — `ack=acked` still returns firing alerts,
                  *     because acknowledging one does not end it.
                  */
                 ack?: components["schemas"]["AckState"];
                 /** @description Restrict to alerts oto has damped as flapping, or exclude them. */
                 flapping?: boolean;
+                /**
+                 * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
+                 *
+                 *     **Omitting it includes both, and that is the default on purpose.** A snooze is a fact about
+                 *     oto's notification behaviour, never about the signal: a snoozed alert is still firing, still
+                 *     whatever severity it was, and every surface must keep rendering it that way. Hiding snoozed
+                 *     alerts from the default list is how an incident is lost.
+                 */
+                snoozed?: components["parameters"]["SnoozedParam"];
                 /**
                  * @description Lower bound on `last_seen_at`. Combined with `sort`, this is the time-range control: page
                  *     backwards through the sorted list to reach an upper bound.
@@ -4545,12 +5096,6 @@ export interface operations {
                  *     pagination when the user changes a filter.
                  */
                 cursor?: components["parameters"]["CursorParam"];
-                /**
-                 * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
-                 *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
-                 */
-                since_seq?: components["parameters"]["SinceSeqParam"];
             };
             header?: never;
             path?: never;
@@ -4565,6 +5110,114 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listAlertRollups: {
+        parameters: {
+            query: {
+                /**
+                 * @description The axis to bucket on. Closed set: each member is answerable from an index, and an axis that
+                 *     would require a sequential scan is not offered rather than offered and slow.
+                 *
+                 *     - `alertname` — one bucket per alerting rule. "This rule fired 47 times this month."
+                 *     - `namespace` — one bucket per promoted `namespace` label; alerts carrying none bucket under
+                 *       the empty string.
+                 *     - `fingerprint` — one bucket per upstream `source_fingerprint`. This is the grouping that
+                 *       answers *"is this the same thing coming back?"*.
+                 */
+                group_by: "alertname" | "namespace" | "fingerprint";
+                /** @description Comma-separated lifecycle states, applied before aggregation. */
+                state?: components["schemas"]["State"][];
+                /** @description Comma-separated severity values, applied before aggregation. */
+                severity?: string[];
+                /** @description Comma-separated cluster keys. */
+                cluster?: components["schemas"]["ClusterKey"][];
+                /** @description Comma-separated namespaces. */
+                namespace?: string[];
+                /** @description Comma-separated alert names. */
+                alertname?: string[];
+                /** @description Arbitrary label selector, identical in every respect to the one on `listAlerts`. */
+                label?: {
+                    [key: string]: string;
+                };
+                /**
+                 * @description The label selector in **Alertmanager matcher syntax** (ADR 0017) — the native idiom of this
+                 *     audience, and the only spelling that can carry a regular-expression operator:
+                 *
+                 *     ```
+                 *     {namespace="payments", severity=~"critical|warning", tier!="canary"}
+                 *     ```
+                 *
+                 *     The surrounding braces are optional. Values may be quoted or bare; a bare value may not contain
+                 *     a comma, a brace or whitespace. All four Alertmanager operators are accepted — `=`, `!=`, `=~`,
+                 *     `!~` — subject to the rule below. This parameter and `label[…]` may be used together and are
+                 *     AND-ed, so filter chips and a hand-typed selector compose rather than conflict.
+                 *
+                 *     ### Which regular expressions are served, and why the rest are refused
+                 *
+                 *     A `=~` or `!~` matcher is served **when its value is an alternation of literal values**, with
+                 *     optional `^` and `$` anchors: `severity=~"critical|warning"`, `tier!~"canary|staging"`. That is
+                 *     exactly an `IN` list, and it compiles to one indexed containment lookup per value — measured on
+                 *     60 000 alerts, a `BitmapOr` over two `Bitmap Index Scan`s of the label GIN index.
+                 *
+                 *     **Anything else is rejected at parse time with a `422` naming the matcher.** A value containing
+                 *     a metacharacter — `.` `*` `+` `?` `(` `)` `[` `]` `{` `}` `\` — cannot use an index, and the
+                 *     same measurement gives it a `Seq Scan` over every alert in the org. Per ADR 0017 that is refused
+                 *     rather than served: a filter that works in staging and times out during an incident is worse
+                 *     than one that says no, and the error message states exactly which spellings do work.
+                 *
+                 *     For a substring search use `q=`, which is backed by a full-text index.
+                 */
+                matcher?: components["parameters"]["MatcherParam"];
+                /** @description Acknowledgement filter, applied before aggregation. */
+                ack?: components["schemas"]["AckState"];
+                /** @description Restrict to alerts oto has damped as flapping, or exclude them. */
+                flapping?: boolean;
+                /**
+                 * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
+                 *
+                 *     **Omitting it includes both, and that is the default on purpose.** A snooze is a fact about
+                 *     oto's notification behaviour, never about the signal: a snoozed alert is still firing, still
+                 *     whatever severity it was, and every surface must keep rendering it that way. Hiding snoozed
+                 *     alerts from the default list is how an incident is lost.
+                 */
+                snoozed?: components["parameters"]["SnoozedParam"];
+                /** @description Lower bound on `last_seen_at`. */
+                since?: components["schemas"]["Timestamp"];
+                /** @description Free-text search, identical to the one on `listAlerts`. */
+                q?: string;
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Keyset position, opaque. Here the position is the **bucket key** rather than a timestamp:
+                 *     a bucket key appears exactly once per result set, so ordering by it is total and paging over
+                 *     it can neither skip nor repeat a bucket. The cursor is bound to both the filter set **and**
+                 *     `group_by` — regrouping invalidates it, because the keys themselves change.
+                 */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of roll-up buckets, ordered by bucket key. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRollupListResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -4616,12 +5269,6 @@ export interface operations {
                  *     pagination when the user changes a filter.
                  */
                 cursor?: components["parameters"]["CursorParam"];
-                /**
-                 * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
-                 *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
-                 */
-                since_seq?: components["parameters"]["SinceSeqParam"];
             };
             header?: never;
             path: {
@@ -4669,12 +5316,6 @@ export interface operations {
                  *     pagination when the user changes a filter.
                  */
                 cursor?: components["parameters"]["CursorParam"];
-                /**
-                 * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
-                 *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
-                 */
-                since_seq?: components["parameters"]["SinceSeqParam"];
             };
             header?: never;
             path: {
@@ -4940,6 +5581,141 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    snoozeAlert: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnoozeRequest"];
+            };
+        };
+        responses: {
+            /** @description The alert, with the snooze now in force alongside the state the snooze did not change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            415: components["responses"]["UnsupportedMediaType"];
+            /**
+             * @description The snooze window is outside 5 minutes … 30 days, or neither/both of `until` and
+             *     `duration_seconds` were given. There is no indefinite snooze, so an absent window is a
+             *     validation failure and not a default.
+             */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    unsnoozeAlert: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UnsnoozeRequest"];
+            };
+        };
+        responses: {
+            /** @description The alert, awake. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listAlertSnoozes: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+            };
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The snooze history, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnoozeHistoryResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     getOccurrence: {
         parameters: {
             query?: never;
@@ -4987,12 +5763,6 @@ export interface operations {
                  *     pagination when the user changes a filter.
                  */
                 cursor?: components["parameters"]["CursorParam"];
-                /**
-                 * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
-                 *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
-                 */
-                since_seq?: components["parameters"]["SinceSeqParam"];
             };
             header?: never;
             path: {
@@ -5082,12 +5852,6 @@ export interface operations {
                  *     pagination when the user changes a filter.
                  */
                 cursor?: components["parameters"]["CursorParam"];
-                /**
-                 * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
-                 *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
-                 */
-                since_seq?: components["parameters"]["SinceSeqParam"];
             };
             header?: never;
             path?: never;
@@ -5153,12 +5917,6 @@ export interface operations {
                  *     pagination when the user changes a filter.
                  */
                 cursor?: components["parameters"]["CursorParam"];
-                /**
-                 * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
-                 *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
-                 */
-                since_seq?: components["parameters"]["SinceSeqParam"];
             };
             header?: never;
             path: {
@@ -5205,12 +5963,6 @@ export interface operations {
                  *     pagination when the user changes a filter.
                  */
                 cursor?: components["parameters"]["CursorParam"];
-                /**
-                 * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
-                 *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
-                 */
-                since_seq?: components["parameters"]["SinceSeqParam"];
             };
             header?: never;
             path: {
@@ -5322,7 +6074,97 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    snoozeAlertGroup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnoozeRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated group. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupDetailResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    unsnoozeAlertGroup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UnsnoozeRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated group. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupDetailResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
@@ -5417,7 +6259,13 @@ export interface operations {
                 /**
                  * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
                  *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
+                 *     same list endpoint instead.
+                 *
+                 *     > **Not accepted on the Alerts, Occurrences, Groups or Rules lists.** It was published there,
+                 *     > validated there, and then never applied: the alerts read model has no `ui_events` predicate,
+                 *     > so a client polling with it received the unfiltered list and had no way to tell. A parameter
+                 *     > that is documented and ignored is worse than one that does not exist, so it is gone from
+                 *     > those operations until the predicate is real. Where it still appears it is served.
                  */
                 since_seq?: components["parameters"]["SinceSeqParam"];
             };
@@ -6392,7 +7240,13 @@ export interface operations {
                 /**
                  * @description Polling fallback for environments where a proxy kills SSE. Returns only rows whose owning
                  *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
-                 *     same list endpoint instead. Accepted by every stream-fed list endpoint.
+                 *     same list endpoint instead.
+                 *
+                 *     > **Not accepted on the Alerts, Occurrences, Groups or Rules lists.** It was published there,
+                 *     > validated there, and then never applied: the alerts read model has no `ui_events` predicate,
+                 *     > so a client polling with it received the unfiltered list and had no way to tell. A parameter
+                 *     > that is documented and ignored is worse than one that does not exist, so it is gone from
+                 *     > those operations until the predicate is real. Where it still appears it is served.
                  */
                 since_seq?: components["parameters"]["SinceSeqParam"];
             };

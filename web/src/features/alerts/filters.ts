@@ -13,11 +13,11 @@
  *     `400 cursor_filter_mismatch` (§E.3). A shareable link to "page 4" would
  *     therefore be a link to an error most of the time. Page position is
  *     session state; the filters are the address.
- *   - **`label` is not folded into the query object.** It is `style: deepObject`
- *     and carries a `!` negation marker OpenAPI cannot express, so the client
- *     takes it as a separate argument and it is kept separate here too.
+ *   - **The matcher expression is stored as typed.** It round-trips through the
+ *     URL verbatim so a shared link reproduces the exact text, and is only
+ *     canonicalised on its way to the `matcher=` parameter.
  */
-import type { AlertListQuery, State } from "~/api/types";
+import type { AlertListQuery, AlertRollupQuery, RollupAxis, State } from "~/api/types";
 import type { LabelSelector } from "~/api/client";
 import {
   compileMatchers,
@@ -31,8 +31,11 @@ import {
 /* The shape                                                                  */
 /* -------------------------------------------------------------------------- */
 
-/** The three groupings the UI offers. `none` is the flat table. */
-export type GroupBy = "none" | "alertname" | "namespace" | "fingerprint";
+/**
+ * The groupings the UI offers. `none` is the flat table; the other three are
+ * exactly the axes `GET /api/v1/alerts/rollups` aggregates on server-side.
+ */
+export type GroupBy = "none" | RollupAxis;
 
 export const GROUP_BY_VALUES: readonly GroupBy[] = [
   "none",
@@ -53,6 +56,12 @@ export interface AlertFilters {
   readonly alertname: readonly string[];
   readonly ack: "acked" | "unacked" | null;
   readonly flapping: boolean | null;
+  /**
+   * `null` includes both, and that is the default **on purpose**. A snooze is a
+   * fact about oto's notification behaviour, never about the signal: hiding
+   * snoozed alerts from the default list is how an incident is lost.
+   */
+  readonly snoozed: boolean | null;
   readonly since: string | null;
   readonly q: string;
   readonly sort: SortKey;
@@ -69,6 +78,7 @@ export const DEFAULT_FILTERS: AlertFilters = {
   alertname: [],
   ack: null,
   flapping: null,
+  snoozed: null,
   since: null,
   q: "",
   sort: "-last_seen_at",
@@ -86,6 +96,7 @@ export function isUnfiltered(f: AlertFilters): boolean {
     f.alertname.length === 0 &&
     f.ack === null &&
     f.flapping === null &&
+    f.snoozed === null &&
     f.since === null &&
     f.q.trim() === "" &&
     f.matcherText.trim() === ""
@@ -102,6 +113,7 @@ export function activeFilterCount(f: AlertFilters): number {
   if (f.alertname.length > 0) n += 1;
   if (f.ack !== null) n += 1;
   if (f.flapping !== null) n += 1;
+  if (f.snoozed !== null) n += 1;
   if (f.since !== null) n += 1;
   if (f.q.trim() !== "") n += 1;
   if (f.matcherText.trim() !== "") n += 1;
@@ -151,6 +163,9 @@ export function filtersFromSearch(search: string): AlertFilters {
   const flapRaw = p.get("flapping");
   const flapping = flapRaw === "true" ? true : flapRaw === "false" ? false : null;
 
+  const snoozeRaw = p.get("snoozed");
+  const snoozed = snoozeRaw === "true" ? true : snoozeRaw === "false" ? false : null;
+
   return {
     state: csv(p.get("state")).filter(isState),
     severity: csv(p.get("severity")),
@@ -159,6 +174,7 @@ export function filtersFromSearch(search: string): AlertFilters {
     alertname: csv(p.get("alertname")),
     ack,
     flapping,
+    snoozed,
     since: p.get("since"),
     q: p.get("q") ?? "",
     sort,
@@ -182,6 +198,7 @@ export function searchFromFilters(f: AlertFilters): string {
   if (f.alertname.length > 0) p.set("alertname", f.alertname.join(","));
   if (f.ack !== null) p.set("ack", f.ack);
   if (f.flapping !== null) p.set("flapping", String(f.flapping));
+  if (f.snoozed !== null) p.set("snoozed", String(f.snoozed));
   if (f.since !== null && f.since !== "") p.set("since", f.since);
   if (f.q.trim() !== "") p.set("q", f.q.trim());
   if (f.sort !== "-last_seen_at") p.set("sort", f.sort);
@@ -195,36 +212,39 @@ export function searchFromFilters(f: AlertFilters): string {
 /* Filters -> the wire                                                        */
 /* -------------------------------------------------------------------------- */
 
-export interface CompiledQuery {
-  readonly query: AlertListQuery;
-  readonly label: LabelSelector;
+interface CompiledBase {
   /** Parse failures in the matcher text. Non-empty means: do not send. */
   readonly matcherErrors: readonly { readonly at: number; readonly message: string }[];
-  /** Matchers that parsed but the contract cannot express. Also blocking. */
+  /** Matchers the server refuses at parse time. Also blocking. */
   readonly rejected: readonly { readonly matcher: LabelMatcher; readonly reason: string }[];
   /** True when the request is safe to send. */
   readonly ok: boolean;
 }
 
+export interface CompiledQuery extends CompiledBase {
+  readonly query: AlertListQuery;
+}
+
+export interface CompiledRollupQuery extends CompiledBase {
+  readonly query: AlertRollupQuery;
+}
+
 /**
- * Turn filters into the exact arguments `listAlerts` takes.
+ * The filters every read shares, as a plain bag.
  *
- * The important behaviour is what happens when the matcher text cannot be
- * served: **nothing is sent**. Silently dropping an unexpressible matcher would
- * return a page that looks filtered and is not, which is precisely the failure
- * ADR 0017 exists to prevent. The caller renders the reason instead.
+ * `listAlerts` and `listAlertRollups` accept an identical filter set by design —
+ * that identity is what lets the buckets promise they summarise exactly the list
+ * beside them — so it is built once and both callers narrow it.
  */
-export function compileFilters(f: AlertFilters, limit: number, cursor: string | null): CompiledQuery {
+function sharedFilters(f: AlertFilters): {
+  readonly query: Record<string, unknown>;
+  readonly compiled: ReturnType<typeof compileMatchers>;
+  readonly parsed: ReturnType<typeof parseMatchers>;
+} {
   const parsed = parseMatchers(f.matcherText);
   const compiled = compileMatchers(parsed.matchers);
 
-  const query: Record<string, unknown> = {
-    limit,
-    sort: f.sort,
-    // `current_occurrence` is what makes the row show ack state, firing
-    // duration and the suppression reason without an N+1.
-    include: ["current_occurrence"],
-  };
+  const query: Record<string, unknown> = {};
   if (f.state.length > 0) query["state"] = [...f.state];
   if (f.severity.length > 0) query["severity"] = [...f.severity];
   if (f.cluster.length > 0) query["cluster"] = [...f.cluster];
@@ -232,17 +252,90 @@ export function compileFilters(f: AlertFilters, limit: number, cursor: string | 
   if (f.alertname.length > 0) query["alertname"] = [...f.alertname];
   if (f.ack !== null) query["ack"] = f.ack;
   if (f.flapping !== null) query["flapping"] = f.flapping;
+  if (f.snoozed !== null) query["snoozed"] = f.snoozed;
   if (f.since !== null && f.since !== "") query["since"] = f.since;
   if (f.q.trim() !== "") query["q"] = f.q.trim();
+  // The whole label selector, in Alertmanager syntax, exactly as the contract's
+  // `matcher=` parameter takes it. All four operators travel; only a regex the
+  // server would refuse at parse time is held back (see `compileMatchers`).
+  if (compiled.matcher !== null) query["matcher"] = compiled.matcher;
+
+  return { query, compiled, parsed };
+}
+
+/**
+ * Turn filters into the exact arguments `listAlerts` takes.
+ *
+ * The important behaviour is what happens when a matcher cannot be served:
+ * **nothing is sent**. Silently dropping it would return a page that looks
+ * filtered and is not, which is precisely the failure ADR 0017 exists to
+ * prevent. The caller renders the reason instead.
+ */
+export function compileFilters(f: AlertFilters, limit: number, cursor: string | null): CompiledQuery {
+  const { query, compiled, parsed } = sharedFilters(f);
+  query["limit"] = limit;
+  query["sort"] = f.sort;
+  // `current_occurrence` is what makes the row show ack state, firing
+  // duration and the suppression reason without an N+1.
+  query["include"] = ["current_occurrence"];
   if (cursor !== null) query["cursor"] = cursor;
 
   return {
     query: query as AlertListQuery,
-    label: compiled.selector,
     matcherErrors: parsed.errors,
     rejected: compiled.rejected,
     ok: parsed.errors.length === 0 && compiled.rejected.length === 0,
   };
+}
+
+/**
+ * The same filters, aimed at the server-side roll-up.
+ *
+ * `sort` and `include` are deliberately absent: buckets are keyset-ordered by
+ * their own key, and a bucket has no sub-resources to embed.
+ */
+export function compileRollupFilters(
+  f: AlertFilters,
+  by: RollupAxis,
+  limit: number,
+  cursor: string | null,
+): CompiledRollupQuery {
+  const { query, compiled, parsed } = sharedFilters(f);
+  query["group_by"] = by;
+  query["limit"] = limit;
+  if (cursor !== null) query["cursor"] = cursor;
+
+  return {
+    query: query as AlertRollupQuery,
+    matcherErrors: parsed.errors,
+    rejected: compiled.rejected,
+    ok: parsed.errors.length === 0 && compiled.rejected.length === 0,
+  };
+}
+
+/**
+ * Narrow the filter set to one roll-up bucket, for drilling from a bucket into
+ * its alerts with **every other filter still applied**.
+ *
+ * `fingerprint` returns `null`: the alert list has no `source_fingerprint`
+ * parameter, so that drill-down is not expressible against this contract and
+ * the UI says so rather than dropping to a filter that means something else.
+ */
+export function withRollupBucket(
+  f: AlertFilters,
+  by: RollupAxis,
+  key: string,
+): AlertFilters | null {
+  switch (by) {
+    case "alertname":
+      return { ...f, alertname: [key], groupBy: "none" };
+    case "namespace":
+      return { ...f, namespace: [key], groupBy: "none" };
+    case "fingerprint":
+      return null;
+    default:
+      return null;
+  }
 }
 
 /* -------------------------------------------------------------------------- */

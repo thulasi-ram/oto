@@ -23,6 +23,8 @@ import type {
   AlertDetail,
   AlertEvent,
   AlertListQuery,
+  AlertRollup,
+  AlertRollupQuery,
   Channel,
   ChannelTest,
   ChannelTypeDescriptor,
@@ -47,7 +49,11 @@ import type {
   PolicyPreview,
   PolicyPreviewRequest,
   RuleHistory,
+  RuleSnapshot,
+  RuleSnapshotQuery,
   Silence,
+  SnoozeHistoryEntry,
+  SnoozeRequest,
   Source,
   SourceHealth,
   SourceTest,
@@ -78,19 +84,47 @@ function ctx(c: Ctx): RequestOptions {
 /**
  * The workhorse (§E.3).
  *
- * `label` is passed separately because it is `style: deepObject` and carries a
- * `!` negation marker OpenAPI cannot express — the generated type sees only
- * `Record<string, string>`.
+ * The UI's label selector travels in `matcher=` (Alertmanager syntax, ADR 0017)
+ * because that is the only spelling that can carry `=~`/`!~`. `label[…]` is
+ * still a contract parameter and is still passed separately when a caller needs
+ * it — it is `style: deepObject` and carries a `!` negation marker OpenAPI
+ * cannot express, so the generated type sees only `Record<string, string>`.
+ * The two are AND-ed server-side.
  */
 export function listAlerts(
   query: AlertListQuery,
-  label: LabelSelector,
+  label: LabelSelector = {},
   c: Ctx = {},
 ): Promise<ListEnvelope<Alert>> {
   return getList<Alert>(`${V1}/alerts`, {
     ...ctx(c),
     query: query as QueryParams,
     label,
+  });
+}
+
+/**
+ * Server-side roll-up of the alert list (§E.3 `listAlertRollups`).
+ *
+ * This exists so the UI never counts over "whatever happened to load". Every
+ * filter `listAlerts` takes is applied here identically and *before* the
+ * aggregate, so the buckets always summarise exactly the list beside them.
+ *
+ * A bucket is **not** an AlertGroup: it has no row, no generation and no chat
+ * thread, and it lives for the duration of one query.
+ */
+export function listAlertRollups(
+  query: AlertRollupQuery,
+  label: LabelSelector = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<AlertRollup>> {
+  // `label` is `style: deepObject` and cannot travel in the flat query bag, so
+  // it is lifted out of the generated shape and rendered as `label[k]=v`.
+  const { label: embedded, ...flat } = query;
+  return getList<AlertRollup>(`${V1}/alerts/rollups`, {
+    ...ctx(c),
+    query: flat as QueryParams,
+    label: { ...embedded, ...label },
   });
 }
 
@@ -137,6 +171,23 @@ export function getAlertRuleHistory(
   });
 }
 
+/**
+ * Every captured version of one rule, keyset-paginated over `(captured_at, id)`.
+ *
+ * `getAlertRuleHistory` embeds at most 200 versions with no cursor, so this is
+ * the only way to reach the rest of a heavily edited rule's history. The cursor
+ * here is real: following it reaches every capture.
+ */
+export function listRuleSnapshots(
+  query: RuleSnapshotQuery,
+  c: Ctx = {},
+): Promise<ListEnvelope<RuleSnapshot>> {
+  return getList<RuleSnapshot>(`${V1}/rule-snapshots`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
 export function listAlertNotifications(
   id: Uuid,
   query: { limit?: number; cursor?: string } = {},
@@ -172,6 +223,49 @@ export function unackAlert(id: Uuid, note: string | undefined, key: string): Pro
 /** Append an immutable `comment.added` event to the timeline. */
 export function commentOnAlert(id: Uuid, body: string, key: string): Promise<AlertEvent> {
   return postItem<AlertEvent>(`${V1}/alerts/${id}/comments`, { body }, { idempotencyKey: key });
+}
+
+/**
+ * oto's quiet button (§B.8).
+ *
+ * Snooze suppresses **oto's own notifications** for this alert until a fixed
+ * time. It writes nothing into Alertmanager, creates no silence, and changes
+ * nothing about the signal: the response still carries the state the snooze did
+ * not change, and every surface must keep rendering it that way.
+ *
+ * The body must carry exactly one of `until` and `duration_seconds`. Neither is
+ * a 422, because there is no indefinite snooze and therefore no default window.
+ */
+export function snoozeAlert(id: Uuid, body: SnoozeRequest, key: string): Promise<AlertDetail> {
+  return postItem<AlertDetail>(`${V1}/alerts/${id}/snooze`, body, { idempotencyKey: key });
+}
+
+/** End an active snooze early. A not-snoozed alert is a `412`, never a `409`. */
+export function unsnoozeAlert(
+  id: Uuid,
+  note: string | undefined,
+  key: string,
+): Promise<AlertDetail> {
+  const body = note !== undefined && note !== "" ? { note } : {};
+  return postItem<AlertDetail>(`${V1}/alerts/${id}/unsnooze`, body, { idempotencyKey: key });
+}
+
+/**
+ * Every snooze this alert has ever had, newest first.
+ *
+ * Membership of a snooze is **history, not a boolean**: an ended row survives
+ * with who asked, until when, and how it finished. A quiet period nobody can
+ * review afterwards is a quiet period nobody is accountable for.
+ */
+export function listAlertSnoozes(
+  id: Uuid,
+  query: { limit?: number } = {},
+  c: Ctx = {},
+): Promise<readonly SnoozeHistoryEntry[]> {
+  return getUnpagedList<SnoozeHistoryEntry>(`${V1}/alerts/${id}/snoozes`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -222,6 +316,33 @@ export function commentOnAlertGroup(id: Uuid, body: string, key: string): Promis
     { body },
     { idempotencyKey: key },
   );
+}
+
+/**
+ * Snooze every **currently-joined** member. A fan-out of the per-alert
+ * primitive, not a new one.
+ *
+ * Alerts that join after the request are not snoozed: a group-level mute that
+ * covered future members would silence alerts nobody has ever seen.
+ */
+export function snoozeAlertGroup(
+  id: Uuid,
+  body: SnoozeRequest,
+  key: string,
+): Promise<GroupDetail> {
+  return postItem<GroupDetail>(`${V1}/alert-groups/${id}/snooze`, body, { idempotencyKey: key });
+}
+
+/** Wake every currently-joined member. Members already awake are skipped, not refused. */
+export function unsnoozeAlertGroup(
+  id: Uuid,
+  note: string | undefined,
+  key: string,
+): Promise<GroupDetail> {
+  const body = note !== undefined && note !== "" ? { note } : {};
+  return postItem<GroupDetail>(`${V1}/alert-groups/${id}/unsnooze`, body, {
+    idempotencyKey: key,
+  });
 }
 
 /* -------------------------------------------------------------------------- */

@@ -16,13 +16,23 @@
  * `was` / `now` words. Spending red here would devalue the red that means
  * "firing", and would also mislead — a rule change is not a failure.
  */
-import { For, Show, createMemo, type Component } from "solid-js";
+import { For, Show, createMemo, createSignal, type Component } from "solid-js";
+import { useQuery } from "@tanstack/solid-query";
 
-import type { RuleChange, RuleHistory, RuleSnapshot } from "~/api/types";
+import { listRuleSnapshots } from "~/api/endpoints";
+import { qk } from "~/api/keys";
+import type { RuleChange, RuleHistory, RuleSnapshot, RuleSnapshotQuery } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { Button, Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
 import { EmptyState } from "~/components/ui/states";
 import { absoluteTime, duration } from "~/lib/format";
+
+/**
+ * The cap on `RuleHistoryDTO.versions`. Reaching it does not mean the history
+ * ends there — `GET /api/v1/rule-snapshots` pages past it with a real keyset
+ * cursor, so the panel offers to keep reading rather than stopping silently.
+ */
+const EMBEDDED_VERSION_CAP = 200;
 
 /* -------------------------------------------------------------------------- */
 /* Payload sniffing, for the timeline                                         */
@@ -316,6 +326,7 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
               <VersionHistory
                 versions={props.history.versions}
                 currentId={rule().id}
+                ruleKey={props.history.rule_key}
               />
             </Show>
           </div>
@@ -330,17 +341,77 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
  *
  * It answers "has anyone been changing this?" at a glance, which is a question
  * with no other honest answer once the file has been edited.
+ *
+ * The embedded array stops at 200. That used to be the end of the road — the
+ * history was served from a 200-version in-memory window, so a heavily edited
+ * rule simply had history nothing could show. `GET /api/v1/rule-snapshots` is
+ * now keyset-paginated over `(captured_at, id)` for real, so on hitting the cap
+ * this keeps reading rather than presenting a truncated list as if it were
+ * complete.
  */
 const VersionHistory: Component<{
   readonly versions: readonly RuleSnapshot[];
   readonly currentId: string;
-}> = (props) => (
-  <details class="rounded-[4px] border border-line">
-    <summary class="cursor-pointer list-none px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted hover:bg-raised">
-      Version history ({props.versions.length})
-    </summary>
-    <ol class="border-t border-line">
-      <For each={props.versions}>
+  readonly ruleKey: RuleHistory["rule_key"];
+}> = (props) => {
+  const [cursor, setCursor] = createSignal<string | null>(null);
+  const [started, setStarted] = createSignal(false);
+  const [older, setOlder] = createSignal<readonly RuleSnapshot[]>([]);
+
+  const atCap = (): boolean => props.versions.length >= EMBEDDED_VERSION_CAP;
+
+  const query = createMemo<RuleSnapshotQuery>(() => {
+    const q: Record<string, unknown> = {
+      source_id: props.ruleKey.source_id,
+      rule_name: props.ruleKey.rule_name,
+      limit: EMBEDDED_VERSION_CAP,
+    };
+    // Both narrow an otherwise ambiguous match, and both are optional on the
+    // RuleKey, so neither is sent unless it is actually there.
+    if (props.ruleKey.rule_group) q["rule_group"] = props.ruleKey.rule_group;
+    if (props.ruleKey.rule_file) q["rule_file"] = props.ruleKey.rule_file;
+    if (cursor() !== null) q["cursor"] = cursor();
+    return q as RuleSnapshotQuery;
+  });
+
+  const page = useQuery(() => ({
+    queryKey: qk.rules.snapshots(query()),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listRuleSnapshots(query(), { signal }),
+    enabled: atCap() && started(),
+  }));
+
+  const all = createMemo<readonly RuleSnapshot[]>(() => {
+    const fetched = page.data?.data ?? [];
+    const seen = new Set(props.versions.map((v) => v.id));
+    const extra = [...older(), ...fetched].filter((v) => !seen.has(v.id));
+    const deduped = new Map(extra.map((v) => [v.id, v]));
+    return [...props.versions, ...deduped.values()];
+  });
+
+  const hasMore = (): boolean =>
+    started() ? (page.data?.page.has_more ?? false) : atCap();
+
+  const loadOlder = (): void => {
+    if (!started()) {
+      // The embedded array carries no cursor of its own, so the first press
+      // starts the endpoint's own keyset from the top. The overlap with what is
+      // already on screen is deduplicated by id rather than shown twice.
+      setStarted(true);
+      return;
+    }
+    setOlder(all().slice(props.versions.length));
+    const next = page.data?.page.next_cursor;
+    if (typeof next === "string" && next !== "") setCursor(next);
+  };
+
+  return (
+    <details class="rounded-[4px] border border-line">
+      <summary class="cursor-pointer list-none px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted hover:bg-raised">
+        Version history ({all().length}
+        {hasMore() ? "+" : ""})
+      </summary>
+      <ol class="border-t border-line">
+        <For each={all()}>
         {(v) => (
           <li
             class={cx(
@@ -367,7 +438,20 @@ const VersionHistory: Component<{
             </code>
           </li>
         )}
-      </For>
-    </ol>
-  </details>
-);
+        </For>
+      </ol>
+
+      <Show when={hasMore()}>
+        <div class="border-t border-line px-2 py-1.5 text-center">
+          <Button size="sm" busy={page.isFetching} onClick={loadOlder}>
+            Load older versions
+          </Button>
+          <p class="mt-1 text-[10px] leading-snug text-ink-subtle">
+            The alert's own response embeds at most {EMBEDDED_VERSION_CAP} captures. There are more,
+            and they are reachable — this pages the full history with a keyset cursor.
+          </p>
+        </div>
+      </Show>
+    </details>
+  );
+};

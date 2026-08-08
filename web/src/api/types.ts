@@ -66,6 +66,11 @@ export type MatcherOp = S["MatcherOp"];
 export type Alert = S["AlertDTO"];
 export type AlertDetail = S["AlertDetailDTO"];
 export type AlertRef = S["AlertRefDTO"];
+/** One server-side roll-up bucket. **Not** an AlertGroup — it has no row and no thread. */
+export type AlertRollup = S["AlertRollupDTO"];
+export type Snooze = S["SnoozeDTO"];
+export type SnoozeHistoryEntry = S["SnoozeHistoryDTO"];
+export type SnoozeEndReason = S["SnoozeEndReason"];
 export type Occurrence = S["OccurrenceDTO"];
 export type OccurrenceDetail = S["OccurrenceDetailDTO"];
 export type AlertEvent = S["AlertEventDTO"];
@@ -117,6 +122,9 @@ export type VersionInfo = S["VersionDTO"];
 export type AckRequest = S["AckRequest"];
 export type UnackRequest = S["UnackRequest"];
 export type CommentRequest = S["CommentRequest"];
+/** Exactly one of `until` and `duration_seconds`. Both, or neither, is a 422. */
+export type SnoozeRequest = S["SnoozeRequest"];
+export type UnsnoozeRequest = S["UnsnoozeRequest"];
 export type CreateClusterRequest = S["CreateClusterRequest"];
 export type UpdateClusterRequest = S["UpdateClusterRequest"];
 export type CreateSourceRequest = S["CreateSourceRequest"];
@@ -143,6 +151,12 @@ export type ResyncData = S["ResyncData"];
 /* ---- query shapes taken straight off the operations --------------------- */
 
 export type AlertListQuery = NonNullable<operations["listAlerts"]["parameters"]["query"]>;
+/** Every filter `listAlerts` takes, plus the required `group_by` axis. */
+export type AlertRollupQuery = NonNullable<operations["listAlertRollups"]["parameters"]["query"]>;
+export type RollupAxis = AlertRollupQuery["group_by"];
+export type RuleSnapshotQuery = NonNullable<
+  operations["listRuleSnapshots"]["parameters"]["query"]
+>;
 export type GroupListQuery = NonNullable<operations["listAlertGroups"]["parameters"]["query"]>;
 export type TimelineQuery = NonNullable<operations["listAlertEvents"]["parameters"]["query"]>;
 export type NotificationListQuery = NonNullable<

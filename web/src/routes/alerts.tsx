@@ -11,6 +11,12 @@
  * invalidates the whole `["alerts"]` prefix. That is the correct behaviour for
  * page one and the wrong behaviour for a stack of eight, so the stack resets
  * deliberately and visibly instead of silently re-fetching everything.
+ *
+ * **Grouping is server-side.** With a `group_by` axis selected this screen reads
+ * `GET /api/v1/alerts/rollups`, which applies the identical filter set and
+ * aggregates over the whole result. Rolling up the loaded pages client-side —
+ * which this screen used to do — under-reported every count the moment the
+ * result exceeded one page.
  */
 import {
   For,
@@ -26,27 +32,29 @@ import {
 import { useNavigate, useSearchParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listAlerts } from "~/api/endpoints";
+import { listAlertRollups, listAlerts } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { Alert, ListEnvelope } from "~/api/types";
+import type { Alert, AlertRollup, ListEnvelope, RollupAxis } from "~/api/types";
 import { Button } from "~/components/ui/primitives";
 import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
 import { count as fmtCount } from "~/lib/format";
 import { AlertTable } from "~/features/alerts/AlertTable";
 import { FilterBar } from "~/features/alerts/FilterBar";
 import { GroupedAlerts } from "~/features/alerts/GroupedAlerts";
-import { groupAlerts } from "~/features/alerts/grouping";
 import {
   DEFAULT_FILTERS,
   compileFilters,
+  compileRollupFilters,
   filtersFromSearch,
   isUnfiltered,
   searchFromFilters,
   withMatcher,
+  withRollupBucket,
   type AlertFilters,
 } from "~/features/alerts/filters";
 
 const PAGE_SIZE = 100;
+const BUCKET_PAGE_SIZE = 100;
 
 export default function AlertsRoute() {
   const navigate = useNavigate();
@@ -67,6 +75,11 @@ export default function AlertsRoute() {
     navigate(`/alerts${searchFromFilters(next)}`, { replace: false, scroll: false });
   };
 
+  const axis = (): RollupAxis | null => {
+    const by = filters().groupBy;
+    return by === "none" ? null : by;
+  };
+
   /* ---- keyset pagination ------------------------------------------------- */
 
   const [cursor, setCursor] = createSignal<string | null>(null);
@@ -74,9 +87,14 @@ export default function AlertsRoute() {
   const [kept, setKept] = createSignal<readonly Alert[]>([]);
   const [pageCount, setPageCount] = createSignal(1);
 
+  /** The bucket stream is a separate keyset: its cursor is a bucket key. */
+  const [bucketCursor, setBucketCursor] = createSignal<string | null>(null);
+  const [keptBuckets, setKeptBuckets] = createSignal<readonly AlertRollup[]>([]);
+
   // Any filter change invalidates every cursor minted under the old filters
   // (§E.3 answers a stale one with `400 cursor_filter_mismatch`), so the stack
-  // resets. Serialising the filters is the cheapest correct change detector.
+  // resets. The roll-up cursor is bound to the filters **and** to `group_by`,
+  // because regrouping changes the keys themselves — so it carries the axis.
   const filterFingerprint = createMemo(() => searchFromFilters({ ...filters(), groupBy: "none" }));
   createEffect((previous: string | undefined) => {
     const current = filterFingerprint();
@@ -84,6 +102,17 @@ export default function AlertsRoute() {
       setCursor(null);
       setKept([]);
       setPageCount(1);
+      setBucketCursor(null);
+      setKeptBuckets([]);
+    }
+    return current;
+  });
+
+  createEffect((previous: RollupAxis | null | undefined) => {
+    const current = axis();
+    if (previous !== undefined && previous !== current) {
+      setBucketCursor(null);
+      setKeptBuckets([]);
     }
     return current;
   });
@@ -91,15 +120,28 @@ export default function AlertsRoute() {
   const compiled = createMemo(() => compileFilters(filters(), PAGE_SIZE, cursor()));
 
   const query = useQuery(() => ({
-    queryKey: qk.alerts.list(compiled().query, compiled().label),
+    queryKey: qk.alerts.list(compiled().query),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      listAlerts(compiled().query, compiled().label, { signal }),
-    // A matcher the contract cannot express must never be sent — a request with
-    // the filter quietly dropped returns an unfiltered page that looks filtered.
-    enabled: compiled().ok,
+      listAlerts(compiled().query, {}, { signal }),
+    // A matcher the server refuses at parse time must never be sent — a request
+    // with the filter quietly dropped returns an unfiltered page that looks
+    // filtered. The flat list is also not fetched while a roll-up is on screen.
+    enabled: compiled().ok && axis() === null,
     // Keep the previous page on screen while the next one is in flight, so a
     // filter change never blanks the table out from under a cursor.
     placeholderData: (prev: ListEnvelope<Alert> | undefined) => prev,
+  }));
+
+  const rollupCompiled = createMemo(() =>
+    compileRollupFilters(filters(), axis() ?? "alertname", BUCKET_PAGE_SIZE, bucketCursor()),
+  );
+
+  const rollups = useQuery(() => ({
+    queryKey: qk.alerts.rollups(rollupCompiled().query),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      listAlertRollups(rollupCompiled().query, {}, { signal }),
+    enabled: rollupCompiled().ok && axis() !== null,
+    placeholderData: (prev: ListEnvelope<AlertRollup> | undefined) => prev,
   }));
 
   /**
@@ -114,7 +156,22 @@ export default function AlertsRoute() {
     return [...kept(), ...page.filter((a) => !seen.has(a.id))];
   });
 
-  const hasMore = (): boolean => query.data?.page.has_more ?? false;
+  /** The same fold for buckets, deduplicated by bucket key. */
+  const buckets = createMemo<readonly AlertRollup[]>(() => {
+    const page = rollups.data?.data ?? [];
+    if (bucketCursor() === null) return page;
+    const seen = new Set(keptBuckets().map((b) => b.key));
+    return [...keptBuckets(), ...page.filter((b) => !seen.has(b.key))];
+  });
+
+  const hasMore = (): boolean =>
+    (axis() === null ? query.data?.page.has_more : rollups.data?.page.has_more) ?? false;
+
+  const failed = (): boolean => (axis() === null ? query.isError : rollups.isError);
+  const failure = (): unknown => (axis() === null ? query.error : rollups.error);
+  const retry = (): void => {
+    void (axis() === null ? query.refetch() : rollups.refetch());
+  };
 
   const loadMore = (): void => {
     const next = query.data?.page.next_cursor;
@@ -126,9 +183,31 @@ export default function AlertsRoute() {
     setCursor(next);
   };
 
+  const loadMoreBuckets = (): void => {
+    const next = rollups.data?.page.next_cursor;
+    if (typeof next !== "string" || next === "") return;
+    setKeptBuckets(buckets());
+    setBucketCursor(next);
+  };
+
   const onFilterLabel = (name: string, value: string): void => {
     setFilters(withMatcher(filters(), name, value));
   };
+
+  /**
+   * Drilling from a bucket keeps the whole filter set and adds the bucket's own
+   * key. `null` when the axis has no matching list filter — see
+   * `withRollupBucket`, which refuses rather than substituting.
+   */
+  const drillDown = createMemo<((key: string) => void) | null>(() => {
+    const by = axis();
+    if (by === null) return null;
+    if (withRollupBucket(filters(), by, "") === null) return null;
+    return (key: string) => {
+      const next = withRollupBucket(filters(), by, key);
+      if (next !== null) setFilters(next);
+    };
+  });
 
   /* ---- keyboard ---------------------------------------------------------- */
 
@@ -157,12 +236,19 @@ export default function AlertsRoute() {
 
   /* ---- render ------------------------------------------------------------ */
 
-  const grouped = createMemo(() => {
-    const by = filters().groupBy;
-    return by === "none" ? null : groupAlerts(alerts(), by);
-  });
+  const blocked = (): boolean => (axis() === null ? !compiled().ok : !rollupCompiled().ok);
+  const rejected = () => (axis() === null ? compiled().rejected : rollupCompiled().rejected);
 
   const status = (): string => {
+    // A disabled query reports `isPending`, which is not the same as "loading".
+    // Saying "Loading…" over a request that was deliberately never sent would be
+    // the small lie this whole screen is built to avoid.
+    if (blocked()) return "Nothing requested";
+    if (axis() !== null) {
+      const n = buckets().length;
+      if (rollups.isPending && n === 0) return "Loading…";
+      return `${fmtCount(n)}${hasMore() ? "+" : ""} bucket${n === 1 ? "" : "s"}`;
+    }
     const n = alerts().length;
     if (query.isPending && n === 0) return "Loading…";
     return `${fmtCount(n)}${hasMore() ? "+" : ""} alert${n === 1 ? "" : "s"}`;
@@ -184,15 +270,46 @@ export default function AlertsRoute() {
       <Switch>
         {/* A blocked query is not an error and not an empty list — it is a
             filter oto refuses to approximate. It gets its own state. */}
-        <Match when={!compiled().ok}>
+        <Match when={blocked()}>
           <EmptyState
             title="This filter cannot be served exactly, so nothing was requested."
-            body="oto refuses to run a filter it can only approximate. Fix the matcher above and the list will return — see the reasons under the input."
+            body="oto refuses to run a filter that would fall back to a sequential scan. Fix the matcher above and the list will return — see the reasons under the input."
           />
         </Match>
 
-        <Match when={query.isError}>
-          <ErrorState error={query.error} onRetry={() => void query.refetch()} />
+        <Match when={failed()}>
+          <ErrorState error={failure()} onRetry={retry} />
+        </Match>
+
+        <Match when={axis() !== null}>
+          <Switch>
+            <Match when={rollups.isPending && buckets().length === 0}>
+              <div class="flex-1 overflow-hidden">
+                <TableSkeleton rows={10} cols={5} />
+              </div>
+            </Match>
+            <Match when={buckets().length === 0}>
+              <EmptyState
+                title="No alerts match these filters, so there is nothing to group."
+                body="The buckets are computed from the same filtered set as the list. An empty roll-up means an empty list, not a grouping problem."
+                action={
+                  <Button size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
+                    Clear filters
+                  </Button>
+                }
+              />
+            </Match>
+            <Match when={true}>
+              <GroupedAlerts
+                buckets={buckets()}
+                by={axis() as RollupAxis}
+                hasMore={hasMore()}
+                loading={rollups.isFetching}
+                onLoadMore={loadMoreBuckets}
+                onDrillDown={drillDown()}
+              />
+            </Match>
+          </Switch>
         </Match>
 
         <Match when={query.isPending && alerts().length === 0}>
@@ -223,21 +340,10 @@ export default function AlertsRoute() {
           </Show>
         </Match>
 
-        <Match when={grouped()}>
-          {(groups) => (
-            <GroupedAlerts
-              groups={groups()}
-              by={filters().groupBy as "alertname" | "namespace" | "fingerprint"}
-              loadedCount={alerts().length}
-              hasMore={hasMore()}
-              onFilterLabel={onFilterLabel}
-            />
-          )}
-        </Match>
-
         <Match when={true}>
           <AlertTable
             alerts={alerts()}
+            snoozedKnown={filters().snoozed}
             onFilterLabel={onFilterLabel}
             footer={
               <Footer
@@ -252,22 +358,11 @@ export default function AlertsRoute() {
         </Match>
       </Switch>
 
-      {/* The grouped view scrolls its own container, so its footer lives here. */}
-      <Show when={grouped() !== null && hasMore()}>
-        <Footer
-          hasMore={hasMore()}
-          loading={query.isFetching}
-          loaded={alerts().length}
-          pageCount={pageCount()}
-          onLoadMore={loadMore}
-        />
-      </Show>
-
       {/* Rejected matchers are explained at the bottom too, where the empty
           state points, so the reason is never off-screen from its effect. */}
-      <Show when={compiled().rejected.length > 0}>
+      <Show when={rejected().length > 0}>
         <ul class="border-t border-line bg-raised px-3 py-2 text-[11px] leading-snug text-ink">
-          <For each={compiled().rejected}>
+          <For each={rejected()}>
             {(r) => (
               <li>
                 <code class="font-mono">

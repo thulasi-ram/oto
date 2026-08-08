@@ -9,6 +9,9 @@
  *   - There is no on-call, no incident, no escalation-as-a-human-process.
  *   - What other tools call MTTR is "firing duration"; oto times the signal and
  *     not anybody's response.
+ *   - Snoozing holds **oto's own notifications** and says nothing about the
+ *     signal, so the button next to it never reads "mute", "silence" or
+ *     "resolve", and the alert beside it keeps its state and its severity.
  *
  * Validation is local **and** server-side, and the two are not redundant: the
  * local pass (valibot, mirroring the contract's bounds) stops an obviously bad
@@ -20,13 +23,14 @@ import { useMutation, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
 import { ApiError, violationsByField, orphanViolations } from "~/api/client";
-import { ackAlert, commentOnAlert, unackAlert } from "~/api/endpoints";
+import { ackAlert, commentOnAlert, snoozeAlert, unackAlert, unsnoozeAlert } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { AlertDetail, Occurrence } from "~/api/types";
+import type { AlertDetail, Occurrence, SnoozeRequest } from "~/api/types";
 import { Dialog, DialogBody } from "~/components/ui/Dialog";
-import { Button, Field, Input, Textarea, cx } from "~/components/ui/primitives";
+import { Button, Field, Textarea } from "~/components/ui/primitives";
 import { ErrorBanner } from "~/components/ui/states";
 import { idempotencyKey } from "~/lib/format";
+import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 
 /* -------------------------------------------------------------------------- */
 /* Local schemas, mirroring the contract's bounds                             */
@@ -58,11 +62,24 @@ export interface AlertActionsProps {
 }
 
 export const AlertActions: Component<AlertActionsProps> = (props) => {
+  const client = useQueryClient();
   const [ackOpen, setAckOpen] = createSignal(false);
   const [commentOpen, setCommentOpen] = createSignal(false);
   const [snoozeOpen, setSnoozeOpen] = createSignal(false);
 
   const acked = (): boolean => props.alert.ack_state === "acked";
+
+  /** Snooze is a third orthogonal axis, so this is read beside state, not from it. */
+  const snoozed = (): boolean => (props.alert.snooze ?? null) !== null;
+
+  const invalidate = (): void => {
+    void client.invalidateQueries({ queryKey: qk.alerts.all() });
+  };
+
+  const unsnooze = useMutation(() => ({
+    mutationFn: () => unsnoozeAlert(props.alert.id, undefined, idempotencyKey()),
+    onSuccess: invalidate,
+  }));
 
   /**
    * Acking an occurrence that has already ended is a `412` by contract — the
@@ -108,13 +125,37 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         Comment
       </Button>
 
-      <Button
-        size="sm"
-        onClick={() => setSnoozeOpen(true)}
-        title="Stop oto's own notifications for this alert until a fixed time. It keeps firing and stays visible."
+      {/* Buttons are never no-ops (§B.8.6): while a snooze holds, the control
+          is the one that ends it. */}
+      <Show
+        when={snoozed()}
+        fallback={
+          <Button
+            size="sm"
+            onClick={() => setSnoozeOpen(true)}
+            title="Stop oto's own notifications for this alert until a fixed time. It keeps firing, keeps its severity, and stays visible."
+          >
+            Snooze
+          </Button>
+        }
       >
-        Snooze
-      </Button>
+        <Button
+          size="sm"
+          busy={unsnooze.isPending}
+          onClick={() => unsnooze.mutate()}
+          title="Resume oto's notifications now. The wake-up card reflects the alert's state now, not a replay of what was suppressed."
+        >
+          Resume notifications
+        </Button>
+      </Show>
+
+      <Show when={unsnooze.error !== null}>
+        <span class="text-[11px] leading-snug text-ink">
+          {unsnooze.error instanceof ApiError && unsnooze.error.status === 412
+            ? "This alert is not snoozed — it woke before the request landed."
+            : (unsnooze.error as Error | null)?.message}
+        </span>
+      </Show>
 
       <AckDialog
         alert={props.alert}
@@ -123,7 +164,13 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         withdrawing={acked()}
       />
       <CommentDialog alert={props.alert} open={commentOpen()} onClose={() => setCommentOpen(false)} />
-      <SnoozeDialog alert={props.alert} open={snoozeOpen()} onClose={() => setSnoozeOpen(false)} />
+      <SnoozeDialog
+        open={snoozeOpen()}
+        onClose={() => setSnoozeOpen(false)}
+        subject="alert"
+        onSubmit={(body: SnoozeRequest, key: string) => snoozeAlert(props.alert.id, body, key)}
+        onSuccess={invalidate}
+      />
     </div>
   );
 };
@@ -317,176 +364,6 @@ const CommentDialog: Component<{
             />
           )}
         </Field>
-      </DialogBody>
-    </Dialog>
-  );
-};
-
-/* -------------------------------------------------------------------------- */
-/* Snooze                                                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * §B.8's bounds, mirrored exactly. Minimum 5 minutes, maximum 30 days, and
- * **there is no indefinite snooze** — an unexpiring snooze is a mute, and mutes
- * are how channels die.
- */
-const SNOOZE_MIN_SECONDS = 5 * 60;
-const SNOOZE_MAX_SECONDS = 30 * 24 * 3600;
-
-const SNOOZE_PRESETS: readonly { readonly label: string; readonly seconds: number }[] = [
-  { label: "30 minutes", seconds: 30 * 60 },
-  { label: "1 hour", seconds: 3600 },
-  { label: "2 hours", seconds: 2 * 3600 },
-  { label: "4 hours", seconds: 4 * 3600 },
-  { label: "8 hours", seconds: 8 * 3600 },
-  { label: "24 hours", seconds: 24 * 3600 },
-  { label: "3 days", seconds: 3 * 24 * 3600 },
-  { label: "7 days", seconds: 7 * 24 * 3600 },
-];
-
-/**
- * ⚠️ **Contract gap.** `api/openapi/openapi.yaml` publishes no snooze endpoint —
- * the string "snooze" does not appear in it anywhere. SPEC §B.8 specifies the
- * feature and §P-13…P-16 list it as *pending* code amendments, so the API is
- * simply not there yet.
- *
- * The rule is "never invent an endpoint", so this form does not call one. It is
- * built to §B.8's bounds and preset durations and is refused at the submit
- * boundary with the reason stated plainly, rather than being omitted — an
- * operator who is told *why* the quiet button is unavailable is better served
- * than one who is left wondering whether they missed it. When
- * `POST /api/v1/alerts/{id}/snooze` lands, this dialog needs a mutation and
- * nothing else.
- */
-const SNOOZE_AVAILABLE = false;
-
-const SnoozeDialog: Component<{
-  readonly alert: AlertDetail;
-  readonly open: boolean;
-  readonly onClose: () => void;
-}> = (props) => {
-  const [seconds, setSeconds] = createSignal(3600);
-  const [note, setNote] = createSignal("");
-
-  const until = (): Date => new Date(Date.now() + seconds() * 1000);
-
-  const outOfBounds = (): string | undefined => {
-    if (seconds() < SNOOZE_MIN_SECONDS) return "The shortest snooze is 5 minutes.";
-    if (seconds() > SNOOZE_MAX_SECONDS) {
-      return "The longest snooze is 30 days. There is no indefinite snooze — that would be a mute, and mutes are how channels go quiet forever.";
-    }
-    return undefined;
-  };
-
-  return (
-    <Dialog
-      open={props.open}
-      onClose={props.onClose}
-      title="Snooze notifications"
-      description="Stops oto's own notifications for this alert until a fixed time. It is not a silence: nothing changes in your cluster, the alert keeps firing, and it stays visible here in full colour."
-      footer={
-        <>
-          <Button size="sm" onClick={props.onClose}>
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            variant="primary"
-            disabled={!SNOOZE_AVAILABLE || outOfBounds() !== undefined}
-            title={
-              SNOOZE_AVAILABLE
-                ? undefined
-                : "The API this needs has not shipped yet — see the note below."
-            }
-          >
-            Snooze until {until().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
-          </Button>
-        </>
-      }
-    >
-      <DialogBody>
-        <Show when={!SNOOZE_AVAILABLE}>
-          <ErrorBanner>
-            <p class="font-medium">oto's API does not serve snooze yet.</p>
-            <p class="mt-1 text-ink-muted">
-              SPEC §B.8 specifies it and the UI is built to those bounds, but no snooze operation is
-              published in the OpenAPI contract, and this UI never calls an endpoint that is not in
-              the contract. The controls below are shown so the shape of the feature is honest, and
-              they will work unchanged once the endpoint lands.
-            </p>
-          </ErrorBanner>
-        </Show>
-
-        <fieldset class="min-w-0">
-          <legend class="mb-1.5 text-[12px] font-medium text-ink-muted">For how long</legend>
-          <div class="flex flex-wrap gap-1">
-            <For each={SNOOZE_PRESETS}>
-              {(preset) => (
-                <label
-                  class={cx(
-                    "inline-flex cursor-pointer items-center rounded-[4px] border px-2 py-1 text-[12px]",
-                    seconds() === preset.seconds
-                      ? "border-accent-border bg-accent-fill font-medium text-ink"
-                      : "border-line bg-surface text-ink-muted hover:bg-raised",
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="snooze-duration"
-                    class="sr-only-focusable"
-                    checked={seconds() === preset.seconds}
-                    onChange={() => setSeconds(preset.seconds)}
-                  />
-                  {preset.label}
-                </label>
-              )}
-            </For>
-          </div>
-        </fieldset>
-
-        <Field
-          id="snooze-custom"
-          label="Or a custom number of minutes"
-          hint="Between 5 minutes and 30 days."
-          error={outOfBounds()}
-        >
-          {(a) => (
-            <Input
-              {...a}
-              type="number"
-              min={5}
-              max={30 * 24 * 60}
-              value={Math.round(seconds() / 60)}
-              onInput={(e) => {
-                const mins = Number.parseInt(e.currentTarget.value, 10);
-                if (Number.isFinite(mins)) setSeconds(mins * 60);
-              }}
-            />
-          )}
-        </Field>
-
-        <Field
-          id="snooze-note"
-          label="Note (optional)"
-          hint="Why this is going quiet, for whoever sees the banner."
-        >
-          {(a) => (
-            <Input
-              {...a}
-              value={note()}
-              maxLength={2000}
-              placeholder="Deploy window, expected until 17:00"
-              onInput={(e) => setNote(e.currentTarget.value)}
-            />
-          )}
-        </Field>
-
-        <p class="text-[11px] leading-snug text-ink-subtle">
-          A snoozed alert is still firing and is still rendered as firing. Snoozing suppresses every
-          notification reason for it — including a rule change — except the messages announcing the
-          snooze starting and ending, so it can never go quiet silently.
-        </p>
       </DialogBody>
     </Dialog>
   );
