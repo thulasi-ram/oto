@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -271,6 +272,38 @@ func TestNewAppendChecksSizeBeforeShape(t *testing.T) {
 	requireValidationCode(t, err, "ui_event_payload_too_large")
 }
 
+// TestNewAppendReportsMalformedJSONAsShapeRegardlessOfSize is the ONE documented
+// exception to size-before-shape, and it is forced by compaction rather than
+// chosen.
+//
+// The cap is measured on the COMPACTED payload, and compaction is the parse. Bytes
+// that do not scan as one complete JSON value therefore have no compacted length
+// to report — there is no size answer to give, at any size. They are reported as
+// not-an-object, which is both true and the only actionable thing to say.
+//
+// Note the contrast with the test above: a huge but VALID payload still compacts,
+// and is still reported as too large. Size-before-shape holds for everything that
+// has a size.
+func TestNewAppendReportsMalformedJSONAsShapeRegardlessOfSize(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   string
+	}{
+		{name: "tiny truncated object", in: `{"a":`},
+		{name: "huge truncated object", in: `{"a":"` + strings.Repeat("x", 64*1024)},
+		{name: "huge trailing garbage", in: `{}` + strings.Repeat("!", 64*1024)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := domain.NewAppend(domain.KindAlertUpserted, resourceID, json.RawMessage(tc.in))
+			requireValidationCode(t, err, "ui_event_payload_not_object")
+		})
+	}
+}
+
 // ------------------------------------------------------------------ ScopeOf
 
 func TestScopeOf(t *testing.T) {
@@ -477,38 +510,141 @@ func TestNewEventCannotCarryASeq(t *testing.T) {
 	}, ev)
 }
 
-// ---------------------------------------------------------------- known bug
+// ------------------------------------------------- one measure, honestly taken
 
-// TestBUG_PayloadCapMeasuresRawBytesNotColumnSize
+// TestPayloadCapMeasuresCompactedBytes is the regression for the two-rulers bug.
 //
-// MaxPayloadBytes is documented as "the hard cap on a frame payload, MATCHING
-// ui_events_payload_ck (pg_column_size(payload) <= 4096)", and isJSONObject's
-// comment states the purpose of checking here is that "a 23514 ... on the ingest
-// path ... would be a 500". CONTEXT.md §5b requires a bound to be identical in
-// all three places it lives.
+// MaxPayloadBytes used to bound `len(payload)` — the RAW JSON TEXT — while
+// `ui_events_payload_ck` bounded `pg_column_size(payload)`, the STORED jsonb.
+// Those are not the same quantity and they diverged in BOTH directions:
 //
-// The check is `len(payload) > MaxPayloadBytes` on the RAW JSON TEXT. That is
-// not pg_column_size of the stored jsonb, and the two diverge in both directions:
+//   - TOO STRICT: jsonb discards insignificant whitespace, so a semantically tiny
+//     object padded with 4 096 spaces was refused for a size it would never have
+//     occupied. That half is asserted here — it is pure and deterministic.
+//   - TOO LAX, and the harmful one: jsonb adds a varlena header, a container
+//     header and a 4-byte JEntry per key AND per value, so an object accepted at
+//     4 096 raw bytes stores far LARGER and tripped the CHECK — the 23514 → 500
+//     that this check exists to prevent. That half cannot be proved in a pure
+//     package, because only Postgres knows pg_column_size; it is proved against a
+//     real database by TestUIEventPayloadAtTheGoCapStores in test/integration.
 //
-//   - too strict: jsonb discards insignificant whitespace, so a semantically
-//     tiny object padded with 4 090 spaces is refused here and would have stored
-//     in a couple of dozen bytes. (Asserted below — this half is deterministic.)
-//   - too lax, and this is the harmful one: jsonb adds a varlena header, a
-//     container header and a 4-byte JEntry per key and per value, so an object
-//     accepted at exactly 4 096 raw bytes stores LARGER than 4 096 and trips
-//     ui_events_payload_ck — the 23514 → 500 this code exists to prevent.
-func TestBUG_PayloadCapMeasuresRawBytesNotColumnSize(t *testing.T) {
-	t.Skip(`BUG: streaming/domain/event.go:139 bounds len(rawJSON) but its doc comment (event.go:59-65) claims to match ui_events_payload_ck, which bounds pg_column_size(jsonb). The two are not the same measure, so a 4096-byte compact payload passes NewAppend and can still violate the CHECK — the 23514/500 that event.go:157-159 says this check exists to prevent.`)
+// The fix has two halves: NewAppend compacts before measuring AND STORES THE
+// COMPACTED FORM (so what was weighed is what is written), and 00031 raised the
+// DDL bound to 16384 so Go is reliably the stricter of the two.
+func TestPayloadCapMeasuresCompactedBytes(t *testing.T) {
+	t.Parallel()
 
-	// Too strict: whitespace is counted here but discarded by jsonb.
+	// DIRECTION 1 — too strict, now fixed. Over the cap as text, trivial as jsonb.
 	padded := json.RawMessage(`{"a":1` + strings.Repeat(" ", domain.MaxPayloadBytes) + `}`)
-	_, err := domain.NewAppend(domain.KindAlertUpserted, resourceID, padded)
-	requireValidationCode(t, err, "ui_event_payload_too_large")
+	require.Greater(t, len(padded), domain.MaxPayloadBytes,
+		"the fixture must be over the cap as raw text, or it proves nothing")
 
-	var compact any
-	require.NoError(t, json.Unmarshal(padded, &compact))
-	reencoded, err := json.Marshal(compact)
+	ev, err := domain.NewAppend(domain.KindAlertUpserted, resourceID, padded)
+	require.NoError(t, err,
+		"whitespace is insignificant to JSON and free in jsonb; refusing it was a rejection with no cause")
+
+	// And it must be COMPACTED, not merely tolerated. Measuring the compact form
+	// and then storing the padded bytes would be measuring one thing and writing
+	// another — the same class of mistake, one layer down.
+	assert.Equal(t, `{"a":1}`, string(ev.Payload),
+		"the stored payload is the form that was measured")
+	assert.LessOrEqual(t, len(ev.Payload), domain.MaxPayloadBytes)
+}
+
+// TestNewAppendStoresTheCompactedPayload — compaction is not only for oversized
+// input. Every payload is stored compact, so the bytes Postgres receives are
+// always the bytes NewAppend weighed.
+func TestNewAppendStoresTheCompactedPayload(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "already compact is unchanged", in: `{"a":1}`, want: `{"a":1}`},
+		{name: "indented", in: "{\n  \"a\": 1,\n  \"b\": [1, 2]\n}", want: `{"a":1,"b":[1,2]}`},
+		{name: "leading and trailing space", in: "  \t{\"a\":1}\n", want: `{"a":1}`},
+		{name: "empty object with space", in: `{ }`, want: `{}`},
+		{
+			// Compaction is whitespace removal and nothing else: it must not
+			// renormalise numbers, reorder keys or unescape strings, all of which
+			// would change what the client is told changed.
+			name: "values are byte-preserved",
+			in:   `{ "b" : 1.0 , "a" : "é<&>" }`,
+			want: `{"b":1.0,"a":"é<&>"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ev, err := domain.NewAppend(domain.KindAlertUpserted, resourceID, json.RawMessage(tc.in))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(ev.Payload))
+		})
+	}
+}
+
+// TestNewAppendDoesNotAliasTheCallerPayload — the stored payload must be a fresh
+// buffer. A producer that reuses one scratch buffer per event would otherwise be
+// able to rewrite an envelope it has already handed over, and the row Postgres
+// gets would not be the row that was validated.
+func TestNewAppendDoesNotAliasTheCallerPayload(t *testing.T) {
+	t.Parallel()
+
+	buf := []byte(`{"state":"firing"}`)
+	ev, err := domain.NewAppend(domain.KindAlertUpserted, resourceID, buf)
 	require.NoError(t, err)
-	assert.Less(t, len(reencoded), 32,
-		"the payload postgres would actually store is tiny, yet the domain refused it")
+
+	copy(buf, `{"state":"XXXXXXX"}`)
+	assert.Equal(t, `{"state":"firing"}`, string(ev.Payload))
+}
+
+// TestPayloadCapsAreStricterInGoThanInTheDDL pins the RELATIONSHIP between the two
+// bounds, which is the invariant — not their equality, which is what broke.
+//
+// They measure different quantities in different units (compact JSON text vs.
+// stored jsonb), so they cannot be equal and must not be "synchronised". What must
+// hold is the ordering: Go is the rule, the CHECK is the backstop, and no payload
+// Go accepts can reach the CHECK. The worst-case arithmetic behind the specific
+// numbers is on domain.MaxStoredPayloadBytes and is verified against a real
+// Postgres by TestWorstCaseJSONBOverheadStoresUnderTheDDLCap.
+func TestPayloadCapsAreStricterInGoThanInTheDDL(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, 4096, domain.MaxPayloadBytes, "compact JSON text bytes")
+	assert.Equal(t, 16384, domain.MaxStoredPayloadBytes,
+		"stored jsonb bytes — ui_events_payload_ck as of 00031_ui_events_payload_ck.sql")
+
+	// 2.61 is the measured worst-case stored/compact ratio (10680 / 4093).
+	assert.Greater(t, float64(domain.MaxStoredPayloadBytes), 2.61*float64(domain.MaxPayloadBytes),
+		"the DDL bound must exceed the WORST-CASE stored size of anything Go accepts, not just the Go bound")
+}
+
+// TestManySmallFieldsAtTheCapAreAccepted is the domain half of the "too lax"
+// direction: the payload shape that used to pass Go and then be refused by the
+// CHECK is still accepted here, unchanged. It is the DDL that moved.
+//
+// The storage half — that this object now actually survives an INSERT — is
+// TestUIEventPayloadAtTheGoCapStores, which needs a real Postgres.
+func TestManySmallFieldsAtTheCapAreAccepted(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteByte('{')
+	for i := 0; b.Len() < domain.MaxPayloadBytes-16; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `"k%03d":%d`, i, i%10)
+	}
+	// Pad the final value out so the object lands on EXACTLY the cap.
+	b.WriteString(`,"z":` + strings.Repeat("9", domain.MaxPayloadBytes-b.Len()-6) + `}`)
+
+	payload := json.RawMessage(b.String())
+	require.Len(t, payload, domain.MaxPayloadBytes, "the fixture must sit exactly on the cap")
+
+	ev, err := domain.NewAppend(domain.KindAlertUpserted, resourceID, payload)
+	require.NoError(t, err)
+	assert.Len(t, ev.Payload, domain.MaxPayloadBytes, "already compact: nothing to strip")
 }
