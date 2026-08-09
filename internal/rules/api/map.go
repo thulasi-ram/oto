@@ -54,6 +54,7 @@ func changeDTO(d domain.Diff) RuleChangeDTO {
 	if d.ExprChanged {
 		out.PreviousExpr = strPtr(d.From.Expr)
 		out.NewExpr = strPtr(d.To.Expr)
+		out.ExprDiff = exprDiffDTO(d)
 	}
 	if d.ForChanged {
 		from, to := d.From.ForSeconds, d.To.ForSeconds
@@ -67,6 +68,42 @@ func changeDTO(d domain.Diff) RuleChangeDTO {
 		out.AnnotationDiff = mapChanges(d.Annotations)
 	}
 	return out
+}
+
+// exprDiffDTO renders the expression verdict, and is the server half of the
+// contract's "no threshold claim without a verdict that vouches for one".
+//
+// The branch is on `ExprStructural`, which is the domain's own answer to "is a
+// numeric narrative on offer at all?" — it is true for BOTH no-claim verdicts.
+// Branching on it rather than on `ExprVerdict != ExprNumbersMoved` means a
+// fourth verdict added to the domain tomorrow arrives here as "no numbers"
+// rather than as a silently empty `numbers_moved`. `ExprVerdict` then says which
+// no-claim verdict it was, because "the shape moved" and "oto will not say what
+// moved" are different facts and the UI renders them differently.
+//
+// A nil return means the expression did not change: `ExprNotCompared` has no
+// wire spelling, by design.
+func exprDiffDTO(d domain.Diff) *RuleExprDiffDTO {
+	if d.ExprVerdict == domain.ExprNotCompared {
+		return nil
+	}
+	if d.ExprStructural {
+		return &RuleExprDiffDTO{Verdict: string(d.ExprVerdict)}
+	}
+
+	// No numbers under `numbers_moved` is not a missing answer: it is the
+	// contract's "the two expressions are the same expression with the same
+	// numbers in it", i.e. a reformat. The verdict already carries that; the
+	// empty list is what it looks like.
+	var numbers []RuleExprNumberChangeDTO
+	for _, n := range d.ExprNumbers {
+		numbers = append(numbers, RuleExprNumberChangeDTO{
+			Index:         int32(n.Index),
+			PreviousValue: n.Old,
+			NewValue:      n.New,
+		})
+	}
+	return &RuleExprDiffDTO{Verdict: string(d.ExprVerdict), Numbers: numbers}
 }
 
 func mapChanges(cs []domain.MapChange) map[string][2]string {

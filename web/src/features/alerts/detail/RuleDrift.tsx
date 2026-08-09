@@ -11,17 +11,40 @@
  * that a `rule.definition_changed` is delivered regardless of channel verbosity
  * because it is never noise.
  *
+ * An expression change also carries oto's **verdict** on itself. oto does not
+ * parse PromQL, so it says one of three things — the numbers moved and here they
+ * are, the shape moved and no number claim applies, or it changed somewhere oto
+ * will not interpret — and this panel renders all three, including the refusal.
+ * "5 → 10" for an edit that was really `[5m]` → `[10m]` would tell an operator
+ * the opposite of the truth, so the refusal is a feature and is shown as one.
+ *
  * Colour discipline (§M.2): a diff is not an alert state, so it gets **no Tier B
- * hue**. It signals with a strong left rule, weight, monospace and explicit
+ * hue** — and neither does the verdict, which must not read as a severity
+ * ranking. It signals with a strong left rule, weight, monospace and explicit
  * `was` / `now` words. Spending red here would devalue the red that means
  * "firing", and would also mislead — a rule change is not a failure.
  */
-import { For, Show, createMemo, createSignal, type Component } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createMemo,
+  createSignal,
+  type Component,
+  type ParentComponent,
+} from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
 import { listRuleSnapshots } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { RuleChange, RuleHistory, RuleSnapshot, RuleSnapshotQuery } from "~/api/types";
+import type {
+  RuleChange,
+  RuleExprNumberChange,
+  RuleHistory,
+  RuleSnapshot,
+  RuleSnapshotQuery,
+} from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Button, Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
 import { EmptyState } from "~/components/ui/states";
@@ -108,12 +131,15 @@ export const RuleDiff: Component<{
         </Show>
 
         <Show when={props.change.expr_changed}>
-          <DiffBlock
-            term="Expression"
-            was={props.change.previous_expr ?? ""}
-            now={props.change.new_expr ?? ""}
-            mono
-          />
+          <div>
+            <DiffBlock
+              term="Expression"
+              was={props.change.previous_expr ?? ""}
+              now={props.change.new_expr ?? ""}
+              mono
+            />
+            <ExprVerdict drift={exprDrift(props.change)} />
+          </div>
         </Show>
 
         <Show when={props.change.for_changed}>
@@ -155,6 +181,170 @@ function fmtFor(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined) return "";
   return duration(seconds);
 }
+
+/* -------------------------------------------------------------------------- */
+/* What changed INSIDE the expression                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The rendering cases for `RuleChangeDTO.expr_diff`.
+ *
+ * There are more of them than there are verdicts, because `numbers_moved` with
+ * an empty list is a different thing to say than `numbers_moved` with entries:
+ * the contract calls it a reformat, and "the threshold moved" with nothing after
+ * the colon would read as a bug.
+ */
+export type ExprDrift =
+  | { readonly kind: "unchanged" }
+  | { readonly kind: "uncompared" }
+  | { readonly kind: "numbers"; readonly numbers: readonly RuleExprNumberChange[] }
+  | { readonly kind: "reformat" }
+  | { readonly kind: "structural" }
+  | { readonly kind: "uncharacterised" };
+
+/**
+ * Turn one `RuleChange` into the single thing this panel is allowed to say
+ * about its expression.
+ *
+ * Pure, and separate from the markup, because the honesty rule lives here: a
+ * numeric narrative is reachable through `verdict === "numbers_moved"` and
+ * through nothing else. The generated union makes `numbers` invisible on the
+ * other two variants, so this function cannot accidentally read one; the switch
+ * is what makes the *absence* of a claim explicit rather than a fall-through.
+ *
+ * `uncompared` is not a fourth verdict. It is what a payload looks like when it
+ * carries no `expr_diff` at all — a `rule.definition_changed` timeline payload,
+ * or a server older than this field. Rendering the two expressions with no
+ * commentary is the only honest response to it.
+ */
+export function exprDrift(change: RuleChange): ExprDrift {
+  if (!change.expr_changed) return { kind: "unchanged" };
+
+  const diff = change.expr_diff;
+  if (diff === null || diff === undefined) return { kind: "uncompared" };
+
+  switch (diff.verdict) {
+    case "numbers_moved": {
+      const numbers = diff.numbers ?? [];
+      return numbers.length === 0 ? { kind: "reformat" } : { kind: "numbers", numbers };
+    }
+    case "structural":
+      return { kind: "structural" };
+    case "uncharacterised":
+      return { kind: "uncharacterised" };
+    default:
+      // A verdict this build has never heard of. Newer server, older UI — and
+      // an unknown verdict is precisely a verdict that did not vouch for a
+      // number, so it degrades to "no claim" rather than to a guess.
+      return { kind: "uncompared" };
+  }
+}
+
+/**
+ * Render a numeric literal exactly as it arrived.
+ *
+ * Not `toLocaleString`: thresholds are routinely fractions like `0.05`, and a
+ * locale formatter rounds `0.0001` to `0`. A threshold shown as a different
+ * number than the rule holds is the one failure mode this whole panel exists to
+ * avoid.
+ */
+function fmtLiteral(n: number): string {
+  return String(n);
+}
+
+/**
+ * oto's verdict on the expression edit, in words.
+ *
+ * Colour discipline (§M.2): every branch here is Tier-A chrome — hairlines,
+ * muted ink, monospace. None of the three verdicts is an alert state, so none of
+ * them may borrow a state hue, and "structural" must not read as more alarming
+ * than "numbers moved" just because it is less specific. The channels doing the
+ * work are a text label and a sentence, never colour alone (§M.3 U1).
+ */
+const ExprVerdict: Component<{ readonly drift: ExprDrift }> = (props) => {
+  // The one place a number may be read. Anything but `numbers` yields an empty
+  // list, so there is no rendering path from another verdict to a value.
+  const numbers = (): readonly RuleExprNumberChange[] =>
+    props.drift.kind === "numbers" ? props.drift.numbers : [];
+
+  return (
+    <Switch>
+      <Match when={props.drift.kind === "numbers"}>
+        <VerdictNote
+          label="numbers moved"
+          note="Both versions are the same expression with different numbers in it, so oto can name the values that moved."
+        >
+          <ul class="mt-1 space-y-0.5">
+            <For each={numbers()}>
+              {(n) => (
+                <li class="flex items-baseline gap-2">
+                  <span class="w-10 shrink-0 text-right font-mono text-[10px] text-ink-subtle">
+                    #{n.index + 1}
+                  </span>
+                  <span class="font-mono text-[11px] text-ink-muted line-through decoration-ink-subtle/60">
+                    {fmtLiteral(n.previous_value)}
+                  </span>
+                  <span class="text-[11px] text-ink-subtle" aria-hidden="true">
+                    →
+                  </span>
+                  <span class="font-mono text-[11px] font-semibold text-ink">
+                    {fmtLiteral(n.new_value)}
+                  </span>
+                </li>
+              )}
+            </For>
+          </ul>
+          <p class="mt-1 text-[11px] leading-snug text-ink-subtle">
+            Numbered by position among the literals oto vouched for — durations, subquery steps and{" "}
+            <code class="font-mono">offset</code> operands are not counted, and are never reported as
+            thresholds.
+          </p>
+        </VerdictNote>
+      </Match>
+
+      <Match when={props.drift.kind === "reformat"}>
+        <VerdictNote
+          label="formatting only"
+          note="The expression was rewritten but not changed: same shape, same numbers, different whitespace. Nothing about when this rule fires has moved."
+        />
+      </Match>
+
+      <Match when={props.drift.kind === "structural"}>
+        <VerdictNote
+          label="shape changed"
+          note="The expression changed shape — a different metric, aggregation, label matcher, or a term added or removed. Its numbers no longer line up with the old ones, so oto reports no threshold move. Compare the two versions above."
+        />
+      </Match>
+
+      <Match when={props.drift.kind === "uncharacterised"}>
+        <VerdictNote
+          label="not characterised"
+          note="oto is not saying what changed here. The edit touches something it will not read as a threshold — a range window, a subquery step, an offset — and calling that a threshold move could be exactly backwards. Both versions are above; the comparison is yours to make."
+        />
+      </Match>
+    </Switch>
+  );
+};
+
+/**
+ * One verdict, as a label plus a plain sentence.
+ *
+ * The label is a Chip and not a coloured badge on purpose: it names the verdict,
+ * it does not rank it. There is no "good" verdict here — `numbers moved` is more
+ * specific than `not characterised`, not more urgent.
+ */
+const VerdictNote: ParentComponent<{
+  readonly label: string;
+  readonly note: string;
+}> = (props) => (
+  <div class="mt-1.5 border-l border-line pl-2">
+    <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <Chip>oto: {props.label}</Chip>
+      <p class="min-w-0 flex-1 text-[11px] leading-snug text-ink-subtle">{props.note}</p>
+    </div>
+    {props.children}
+  </div>
+);
 
 /**
  * One changed field, as two labelled lines.

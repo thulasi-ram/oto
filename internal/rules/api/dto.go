@@ -49,11 +49,46 @@ type RuleChangeDTO struct {
 	ExprChanged         bool                 `json:"expr_changed"`
 	PreviousExpr        *string              `json:"previous_expr"`
 	NewExpr             *string              `json:"new_expr"`
+	ExprDiff            *RuleExprDiffDTO     `json:"expr_diff"`
 	ForChanged          bool                 `json:"for_changed"`
 	PreviousForSeconds  *float64             `json:"previous_for_seconds"`
 	NewForSeconds       *float64             `json:"new_for_seconds"`
 	LabelDiff           map[string][2]string `json:"label_diff,omitempty"`
 	AnnotationDiff      map[string][2]string `json:"annotation_diff,omitempty"`
+}
+
+// RuleExprDiffDTO renders `RuleExprDiffDTO`: what oto established about HOW the
+// expression changed.
+//
+// On the wire this is a closed union of three variants discriminated by
+// `verdict`, and `numbers` exists on the `numbers_moved` variant alone. One Go
+// struct produces all three because a Go struct can only ever emit the shape
+// changeDTO builds — `Numbers` is `omitempty` and is populated under exactly one
+// branch, so no marshalled payload carries a threshold claim oto did not vouch
+// for. The contract is what enforces that on the client; this file is what
+// enforces it on the server.
+//
+// A `numbers_moved` verdict with no `numbers` therefore travels as `{"verdict":
+// "numbers_moved"}`, and that is the contract's reformat case: same expression,
+// same numbers, different whitespace.
+//
+// `nil` for the whole DTO means the expression did not change. That is a
+// statement, not an absence, which is why it is not an empty verdict string.
+type RuleExprDiffDTO struct {
+	Verdict string                    `json:"verdict"`
+	Numbers []RuleExprNumberChangeDTO `json:"numbers,omitempty"`
+}
+
+// RuleExprNumberChangeDTO renders `RuleExprNumberChangeDTO`: one numeric
+// literal that moved.
+//
+// `Index` is the literal's ordinal among the literals oto vouched for, and it is
+// meaningful on both sides at once precisely because `numbers_moved` means the
+// two expressions are congruent.
+type RuleExprNumberChangeDTO struct {
+	Index         int32   `json:"index"`
+	PreviousValue float64 `json:"previous_value"`
+	NewValue      float64 `json:"new_value"`
 }
 
 // RuleKeyDTO renders the identity across which drift is detected.

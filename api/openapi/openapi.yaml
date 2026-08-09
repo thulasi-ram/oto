@@ -6566,6 +6566,15 @@ components:
         new_expr:
           type: ['string', 'null']
           maxLength: 65536
+        expr_diff:
+          oneOf:
+            - $ref: '#/components/schemas/RuleExprDiffDTO'
+            - type: 'null'
+          description: |
+            What oto was able to establish about **how** the expression changed — `null` exactly when
+            `expr_changed` is `false`, which is a positive statement that no comparison was performed
+            rather than an empty result. `previous_expr` and `new_expr` say *that* the expression moved;
+            this says whether oto is willing to name the numbers that moved with it.
         for_changed:
           type: boolean
         previous_for_seconds:
@@ -6605,6 +6614,119 @@ components:
         previous occurrence of the same RuleKey. Emitted as a `rule.definition_changed` timeline event
         and always delivered to chat, regardless of channel verbosity — a threshold changing under you
         is never noise.
+
+    RuleExprDiffDTO:
+      oneOf:
+        - $ref: '#/components/schemas/RuleExprNumbersMovedDTO'
+        - $ref: '#/components/schemas/RuleExprStructuralDTO'
+        - $ref: '#/components/schemas/RuleExprUncharacterisedDTO'
+      discriminator:
+        propertyName: verdict
+        mapping:
+          numbers_moved: '#/components/schemas/RuleExprNumbersMovedDTO'
+          structural: '#/components/schemas/RuleExprStructuralDTO'
+          uncharacterised: '#/components/schemas/RuleExprUncharacterisedDTO'
+      description: |
+        oto's characterisation of an expression change, as a **closed union of three verdicts**
+        discriminated by `verdict`.
+
+        It is a union rather than a verdict field beside an optional array because the third verdict is
+        the point of the type. oto does not parse PromQL; it compares the two expressions lexically, and
+        it will say **"changed, and I will not tell you how"** rather than emit a threshold claim it
+        cannot stand behind. Widening `[5m]` to `[10m]` is not a threshold getting less sensitive, and a
+        client that rendered `5 → 10` for it would tell an operator the opposite of the truth.
+
+        The union is what makes that safety structural instead of documentary: `numbers` exists **only**
+        on the `numbers_moved` variant, so there is no payload from which a client can render a
+        threshold narrative that oto did not vouch for. Narrow on `verdict` first; there is no other
+        door.
+      examples:
+        - verdict: numbers_moved
+          numbers:
+            - index: 0
+              previous_value: 0.05
+              new_value: 0.1
+
+    RuleExprNumbersMovedDTO:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [numbers_moved]
+        numbers:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/RuleExprNumberChangeDTO'
+          description: |
+            The literals that moved, in source order. **Absent or empty is meaningful and is not an
+            error**: the two expressions are the same expression with the same numbers in it, so what
+            changed was whitespace — a reformat, not an edit anyone need act on. Say that, rather than
+            rendering an empty threshold list.
+      description: |
+        The two expressions are the same expression with different numbers in it. Every difference
+        between them is a numeric operand oto identified with confidence, so — and *only* here — a
+        "the threshold moved from X to Y" narrative is warranted.
+
+    RuleExprStructuralDTO:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [structural]
+      description: |
+        The expressions differ in **shape**: a different metric, a different aggregation, a new label
+        matcher, a term added or removed. Their numbers have no positional correspondence, so no numeric
+        claim is offered and none can be reconstructed from this payload. Show `previous_expr` and
+        `new_expr`; say nothing about thresholds.
+
+    RuleExprUncharacterisedDTO:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [uncharacterised]
+      description: |
+        The expressions differ somewhere oto **refuses to guess**. The shape lines up, but the edit
+        lands on a token oto cannot interpret with confidence — a range window, a subquery step, an
+        `offset`, an `@` timestamp — either alone or mixed in with a genuine threshold edit. The claim
+        is all-or-nothing, because reporting only the half that was understood is a partial truth that
+        reads as the whole one.
+
+        This is not a degraded `structural`, and copy must not present it as one: `structural` means
+        *oto knows the shape moved*, this means *oto declines to say what moved*. Show both expressions
+        and say so.
+
+    RuleExprNumberChangeDTO:
+      type: object
+      required: [index, previous_value, new_value]
+      properties:
+        index:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            0-based ordinal of the literal **among the literals oto vouched for**, in source order. It
+            is not a character offset, and durations, subquery steps, `offset` operands and digits
+            inside identifiers are not in this space at all. Under `numbers_moved` the two expressions
+            are congruent, so the same index denotes the same literal on both sides — which is the only
+            reason old and new may be compared at all.
+          examples: [0]
+        previous_value:
+          type: number
+          format: double
+          description: The literal's value in the previous snapshot.
+          examples: [0.05]
+        new_value:
+          type: number
+          format: double
+          description: The literal's value in the current snapshot.
+          examples: [0.1]
+      description: |
+        One numeric literal whose value moved. Only ever reached through `numbers_moved`.
 
     RuleHistoryDTO:
       type: object

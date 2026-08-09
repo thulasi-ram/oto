@@ -86,6 +86,15 @@ export type GroupDetail = S["GroupDetailDTO"];
 export type GroupRef = S["GroupRefDTO"];
 export type RuleSnapshot = S["RuleSnapshotDTO"];
 export type RuleChange = S["RuleChangeDTO"];
+/**
+ * What oto established about **how** an expression changed — a closed union
+ * discriminated on `verdict`, so `numbers` is only reachable after narrowing to
+ * `numbers_moved`. That is deliberate: `structural` and `uncharacterised` carry
+ * no numeric claim and there must be no way to render one from them.
+ */
+export type RuleExprDiff = S["RuleExprDiffDTO"];
+/** One numeric literal that moved. Only ever reached through `numbers_moved`. */
+export type RuleExprNumberChange = S["RuleExprNumberChangeDTO"];
 export type RuleHistory = S["RuleHistoryDTO"];
 export type Cluster = S["ClusterDTO"];
 export type Source = S["SourceDTO"];
