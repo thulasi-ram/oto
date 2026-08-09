@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786281576,"nonce":"huKk4SwXgEZ2hz8/8gozOlnPooE=","title":"Sixteen tables keep a DEFAULT now() that migrations 00032 and 00033 argued against","was":"**What is wrong.** Roughly sixteen tables still declare `DEFAULT now()` on"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786281577,"nonce":"ymB75NTMPX+d218zjEtbTwe4YCE=","added":["low"],"removed":null}]}
