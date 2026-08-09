@@ -48,7 +48,7 @@ func TestEvaluateTwiceAllocatesOneSequence(t *testing.T) {
 	fx := newFixture(t, domain.CapThreading|domain.CapAmend)
 	ctx := t.Context()
 
-	channels := repository.NewChannelRepository(testPool)
+	channels := repository.NewChannelRepository(fx.pool)
 	policies, err := service.NewPolicyService(policyStore{policy: domain.Policy{
 		ID: fx.policyID, OrgID: fx.orgID, Name: "all", Priority: 1, Enabled: true,
 		Reasons:    []domain.Reason{domain.ReasonFired},
@@ -57,18 +57,18 @@ func TestEvaluateTwiceAllocatesOneSequence(t *testing.T) {
 	require.NoError(t, err)
 
 	jobs := &enqueuer{}
-	deliveries := repository.NewDeliveryRepository(testPool)
-	threads := repository.NewThreadRepository(testPool)
+	deliveries := repository.NewDeliveryRepository(fx.pool)
+	threads := repository.NewThreadRepository(fx.pool)
 	clk := clock.New()
 
 	notifier, err := service.NewNotificationService(service.NotificationConfig{
-		Tx:            txRunner{pool: testPool},
+		Tx:            txRunner{pool: fx.pool},
 		Policies:      policies,
-		Notifications: repository.NewNotificationRepository(testPool),
+		Notifications: repository.NewNotificationRepository(fx.pool),
 		Deliveries:    deliveries,
 		Threads:       threads,
 		Snapshots:     snapshots{fx: fx},
-		Events:        repository.NewEventRepository(testPool, clk),
+		Events:        repository.NewEventRepository(fx.pool, clk),
 		Enqueuer:      jobs,
 		Channels:      channels,
 		Clock:         clk,
@@ -97,7 +97,7 @@ func TestEvaluateTwiceAllocatesOneSequence(t *testing.T) {
 		domain.SubjectAlertGroup, fx.groupID, clk.Now().UTC())
 	require.NoError(t, err)
 
-	next, lastSent := nextSeqOf(t, th.ID)
+	next, lastSent := nextSeqOf(t, fx.pool, th.ID)
 	require.Equal(t, 2, next,
 		"next_seq must have advanced exactly once: one delivery, one sequence")
 	require.Zero(t, lastSent)
@@ -108,7 +108,7 @@ func TestEvaluateTwiceAllocatesOneSequence(t *testing.T) {
 		rows int
 		seq  int
 	)
-	require.NoError(t, testPool.QueryRow(ctx,
+	require.NoError(t, fx.pool.QueryRow(ctx,
 		`SELECT count(*), coalesce(min(thread_seq), 0)
 		   FROM notification_deliveries WHERE org_id = $1 AND thread_id = $2`,
 		fx.orgID, th.ID).Scan(&rows, &seq))

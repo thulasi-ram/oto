@@ -9,22 +9,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivermigrate"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/thulasiram/oto/internal/app"
 	"github.com/thulasiram/oto/internal/platform/config"
 	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/migrate"
+	"github.com/thulasiram/oto/test/harness"
 )
 
 // ⭐ THIS FILE IS THE PROOF THAT A FRESH INSTALL WORKS.
@@ -324,9 +318,14 @@ type env struct {
 	cfg       config.Config
 }
 
-// newEnv brings up a real Postgres, migrates it, and wires the real container
-// and the real route table over it. Nothing here writes SQL of its own — that is
-// the point.
+// newEnv takes the harness's real Postgres and wires the real container and the
+// real route table over it. Nothing here writes SQL of its own — that is the
+// point.
+//
+// The container, the goose migrations, River's own migrations and the
+// between-tests reset all belong to `test/harness` now (ADR 0021 §1). This file
+// used to start a Postgres of its own, once per test function, which cost this
+// package fourteen containers per run.
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
 
 // newEnvWith is newEnv with a hook that adjusts the Config before the container
@@ -334,37 +333,11 @@ func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
 // configuration and therefore cannot take the default one.
 func newEnvWith(t *testing.T, tweak func(*config.Config)) *env {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("integration test needs Docker")
-	}
 
-	ctx := context.Background()
-	pg, err := tcpostgres.Run(ctx, "postgres:17-alpine",
-		tcpostgres.WithDatabase("oto"),
-		tcpostgres.WithUsername("oto"),
-		tcpostgres.WithPassword("oto"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(2*time.Minute)),
-	)
-	if err != nil {
-		t.Skipf("could not start Postgres (is Docker running?): %v", err)
-	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(pg) })
-
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("dsn: %v", err)
-	}
-	if err := migrate.Up(ctx, dsn); err != nil {
-		t.Fatalf("goose: %v", err)
-	}
-	if err := riverMigrate(ctx, dsn); err != nil {
-		t.Fatalf("river: %v", err)
-	}
+	h := harness.New(t)
 
 	cfg := config.Default()
-	cfg.DB.URL = dsn
+	cfg.DB.URL = h.DSN
 	cfg.HTTP.BaseURL = "http://oto.test"
 	cfg.Telemetry.MetricsEnabled = false
 	// Jobs are ENQUEUED but not worked: the ingest path must enqueue to answer
@@ -375,12 +348,12 @@ func newEnvWith(t *testing.T, tweak func(*config.Config)) *env {
 		tweak(&cfg)
 	}
 
-	pools, err := db.Open(ctx, cfg.DB)
+	pools, err := db.Open(h.Ctx, cfg.DB)
 	if err != nil {
 		t.Fatalf("pools: %v", err)
 	}
 
-	c, err := app.New(ctx, app.Options{
+	c, err := app.New(h.Ctx, app.Options{
 		Config: cfg,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Pools:  pools,
@@ -388,18 +361,14 @@ func newEnvWith(t *testing.T, tweak func(*config.Config)) *env {
 	if err != nil {
 		t.Fatalf("container: %v", err)
 	}
+	// Registered AFTER the harness's reset, so it runs BEFORE it: the TRUNCATE
+	// must not race a pool that is still holding connections.
 	t.Cleanup(func() { _ = c.Close(context.Background()) })
 
 	srv := httptest.NewServer(c.Router())
 	t.Cleanup(srv.Close)
 
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	return &env{ctx: ctx, pool: pool, server: srv, container: c, cfg: cfg}
+	return &env{ctx: h.Ctx, pool: h.Pool, server: srv, container: c, cfg: cfg}
 }
 
 // do performs one request and asserts the status, decoding into out when given.
@@ -506,21 +475,4 @@ func alertmanagerWebhook(alertname string) map[string]any {
 	}
 }
 
-func riverMigrate(ctx context.Context, dsn string) error {
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-
-	m, err := rivermigrate.New(riverpgxv5.New(pool), nil)
-	if err != nil {
-		return err
-	}
-	_, err = m.Migrate(ctx, rivermigrate.DirectionUp, nil)
-	return err
-}
-
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
-}
+func TestMain(m *testing.M) { harness.Main(m) }

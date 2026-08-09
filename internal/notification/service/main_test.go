@@ -3,64 +3,38 @@ package service_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/migrate"
+	"github.com/thulasiram/oto/internal/platform/id"
+	"github.com/thulasiram/oto/test/harness"
 )
 
 // These tests run against a REAL Postgres. Every defect they cover is a defect in
 // the interaction between two SQL statements — an allocation in front of an
 // `ON CONFLICT DO NOTHING`, a claim that must survive a COMMIT boundary — and a
 // fake store cannot have it.
+//
+// The container, the migrations and the between-tests reset live in
+// `test/harness` (ADR 0021 §1).
 
-var testPool *pgxpool.Pool
-
-func TestMain(m *testing.M) {
-	ctx := context.Background()
-
-	container, err := tcpostgres.Run(ctx, "postgres:17-alpine",
-		tcpostgres.WithDatabase("oto"),
-		tcpostgres.WithUsername("oto"),
-		tcpostgres.WithPassword("oto"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "postgres container: %v\n", err)
-		os.Exit(1)
-	}
-	defer func() { _ = testcontainers.TerminateContainer(container) }()
-
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connection string: %v\n", err)
-		os.Exit(1)
-	}
-	if err := migrate.Up(ctx, dsn); err != nil {
-		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
-		os.Exit(1)
-	}
-	if testPool, err = pgxpool.New(ctx, dsn); err != nil {
-		fmt.Fprintf(os.Stderr, "pool: %v\n", err)
-		os.Exit(1)
-	}
-	defer testPool.Close()
-
-	os.Exit(m.Run())
-}
+func TestMain(m *testing.M) { harness.Main(m) }
 
 // fixture is one tenant with everything the FK graph insists on.
+//
+// ⚠️ The pool is PER FIXTURE, not a package global. These tests run with
+// t.Parallel and the harness gives each one its own database, so a shared
+// `testPool` would have every parallel test but the last one writing into
+// somebody else's tenant — which showed up as `notifications_org_id_fkey:
+// references a row that is gone`.
 type fixture struct {
+	pool     *pgxpool.Pool
 	scope    db.TenantScope
 	orgID    uuid.UUID
 	groupID  uuid.UUID
@@ -70,56 +44,49 @@ type fixture struct {
 
 func newFixture(t *testing.T, caps domain.Capability) fixture {
 	t.Helper()
-	ctx := t.Context()
+
+	h := harness.New(t)
+	org := h.Org()
+	cluster := h.Cluster(org)
+	source := h.Source(org, cluster)
+	group := h.Group(org, source, cluster)
 
 	var (
-		orgID     = uuid.New()
-		clusterID = uuid.New()
-		sourceID  = uuid.New()
-		groupID   = uuid.New()
-		channelID = uuid.New()
-		policyID  = uuid.New()
-		suffix    = orgID.String()[:8]
-		now       = time.Now().UTC()
+		channelID = id.New()
+		policyID  = id.New()
+		suffix    = org.ID.String()[:8]
 	)
 
-	exec := func(sql string, args ...any) {
-		t.Helper()
-		_, err := testPool.Exec(ctx, sql, args...)
-		require.NoError(t, err)
-	}
-
-	exec(`INSERT INTO orgs (id, slug, name) VALUES ($1,$2,$3)`,
-		orgID, "org-"+suffix, "Org "+suffix)
-	exec(`INSERT INTO clusters (id, org_id, cluster_key, display_name) VALUES ($1,$2,$3,$4)`,
-		clusterID, orgID, "cl-"+suffix, "Cluster")
-	exec(`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url)
-	      VALUES ($1,$2,$3,$4,'alertmanager','http://am.example.com')`,
-		sourceID, orgID, clusterID, "src-"+suffix)
-	exec(`INSERT INTO alert_groups
-	        (id, org_id, source_id, cluster_id, group_key, title, state, group_labels,
-	         first_seen_at, last_activity_at)
-	      VALUES ($1,$2,$3,$4,$5,'A group','open','{"severity":"critical"}'::jsonb,$6,$6)`,
-		groupID, orgID, sourceID, clusterID, groupKey(suffix), now)
-	exec(`INSERT INTO channels
-	        (id, org_id, type, name, config, capabilities, renderer, thread_updates)
-	      VALUES ($1,$2,'webhook',$3,'{}'::jsonb,$4,'webhook.json',true)`,
-		channelID, orgID, "chan-"+suffix, int64(caps))
-	exec(`INSERT INTO notification_policies (id, org_id, name, priority, reasons, channel_ids)
-	      VALUES ($1,$2,$3,1,ARRAY['fired','new_alerts'],ARRAY[$4::uuid])`,
-		policyID, orgID, "pol-"+suffix, channelID)
-
-	scope, err := db.NewTenantScope(orgID)
-	require.NoError(t, err)
+	// ⚠️ created_at IS BACKDATED ON PURPOSE, and it is covering for a real
+	// two-clock hazard rather than for a test bug.
+	//
+	// `channels.created_at` defaults to the DATABASE's now(), while
+	// ChannelRepository.SetHealth writes `updated_at` from the GO PROCESS's
+	// clock. `channels_time_ck` requires updated_at >= created_at, so any
+	// deployment whose app server lags its database by a few milliseconds turns
+	// the first delivery's health write into a 23514 — a 500. On a Colima VM the
+	// two clocks differ by exactly that much, and this fixture failed roughly one
+	// run in two before the interval was added. Backdating removes the flake from
+	// the fixture; the hazard in SetHealth is production's to fix.
+	h.Exec(`INSERT INTO channels
+	          (id, org_id, type, name, config, capabilities, renderer, thread_updates,
+	           created_at, updated_at)
+	        VALUES ($1,$2,'webhook',$3,'{}'::jsonb,$4,'webhook.json',true,
+	                now() - interval '1 hour', now() - interval '1 hour')`,
+		channelID, org.ID, "chan-"+suffix, int64(caps))
+	h.Exec(`INSERT INTO notification_policies (id, org_id, name, priority, reasons, channel_ids)
+	        VALUES ($1,$2,$3,1,ARRAY['fired','new_alerts'],ARRAY[$4::uuid])`,
+		policyID, org.ID, "pol-"+suffix, channelID)
 
 	return fixture{
-		scope:    scope,
-		orgID:    orgID,
-		groupID:  groupID,
+		pool:     h.Pool,
+		scope:    org.Scope,
+		orgID:    org.ID,
+		groupID:  group.ID,
 		policyID: policyID,
 		channel: domain.Channel{
 			ID:             channelID,
-			OrgID:          orgID,
+			OrgID:          org.ID,
 			Type:           domain.ChannelTypeWebhook,
 			Name:           "chan-" + suffix,
 			Config:         json.RawMessage(`{}`),
@@ -132,16 +99,6 @@ func newFixture(t *testing.T, caps domain.Capability) fixture {
 			HealthStatus:   domain.HealthUnknown,
 		},
 	}
-}
-
-// groupKey satisfies groups_key_ck: `gk_` plus 26 Crockford-ish characters.
-func groupKey(suffix string) string {
-	const alphabet = "0123456789abcdefghijklmnopqrstuv"
-	out := make([]byte, 26)
-	for i := range out {
-		out[i] = alphabet[int(suffix[i%len(suffix)])%len(alphabet)]
-	}
-	return "gk_" + string(out)
 }
 
 // txRunner is the real unit of work, so the advisory lock and the claim behave
@@ -196,9 +153,9 @@ func (s snapshots) Snapshot(
 	}, nil
 }
 
-func nextSeqOf(t *testing.T, threadID uuid.UUID) (next, lastSent int) {
+func nextSeqOf(t *testing.T, pool *pgxpool.Pool, threadID uuid.UUID) (next, lastSent int) {
 	t.Helper()
-	err := testPool.QueryRow(t.Context(),
+	err := pool.QueryRow(t.Context(),
 		`SELECT next_seq, last_sent_seq FROM channel_threads WHERE id = $1`, threadID).
 		Scan(&next, &lastSent)
 	require.NoError(t, err)

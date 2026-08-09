@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"testing"
@@ -10,16 +9,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/alerts/repository"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/id"
-	"github.com/thulasiram/oto/internal/platform/migrate"
+	"github.com/thulasiram/oto/test/harness"
 )
 
 // These are the concurrency regression tests for §B.3 — the read-decide-write
@@ -29,60 +24,11 @@ import (
 // A fake would agree with whatever the code does, which is precisely the failure
 // mode being tested.
 //
-// One container is started for the whole package and each test seeds its own org,
-// so nothing is shared but the schema.
+// The container, the migrations, the partition bootstrap and the between-tests
+// reset all live in `test/harness` (ADR 0021 §1): one container for the whole
+// binary, one truncated database per test.
 
-var testPool *pgxpool.Pool
-
-func TestMain(m *testing.M) {
-	ctx := context.Background()
-
-	container, err := tcpostgres.Run(ctx, "postgres:17-alpine",
-		tcpostgres.WithDatabase("oto"),
-		tcpostgres.WithUsername("oto"),
-		tcpostgres.WithPassword("oto"),
-		testcontainers.WithWaitStrategy(
-			wait.ForListeningPort("5432/tcp").WithStartupTimeout(2*time.Minute)),
-	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "postgres container: %v\n", err)
-		os.Exit(1)
-	}
-	code := run(ctx, container, m)
-	if err := testcontainers.TerminateContainer(container); err != nil {
-		fmt.Fprintf(os.Stderr, "terminate container: %v\n", err)
-	}
-	os.Exit(code)
-}
-
-func run(ctx context.Context, container *tcpostgres.PostgresContainer, m *testing.M) int {
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connection string: %v\n", err)
-		return 1
-	}
-	if err := migrate.Up(ctx, dsn); err != nil {
-		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
-		return 1
-	}
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pool: %v\n", err)
-		return 1
-	}
-	defer pool.Close()
-
-	// alert_events is monthly-partitioned; without partitions every timeline
-	// append fails and every one of these tests would fail for the wrong reason.
-	if _, err := pool.Exec(ctx, `SELECT oto_partitions_manage()`); err != nil {
-		fmt.Fprintf(os.Stderr, "partitions: %v\n", err)
-		return 1
-	}
-
-	testPool = pool
-	return m.Run()
-}
+func TestMain(m *testing.M) { harness.Main(m) }
 
 // ------------------------------------------------------------------- fixtures
 
@@ -109,49 +55,23 @@ type fixture struct {
 // compare-and-set under test is SQL.
 func newFixture(t *testing.T, now time.Time) *fixture {
 	t.Helper()
-	ctx := t.Context()
 
-	orgID, clusterID := id.New(), id.New()
-	slug := fmt.Sprintf("t%s", uuid.NewString()[:8])
-	if _, err := testPool.Exec(ctx,
-		`INSERT INTO orgs (id, slug, name) VALUES ($1, $2, $3)`,
-		orgID, slug, "test org"); err != nil {
-		t.Fatalf("seed org: %v", err)
-	}
-	if _, err := testPool.Exec(ctx,
-		`INSERT INTO clusters (id, org_id, cluster_key, display_name) VALUES ($1, $2, $3, $4)`,
-		clusterID, orgID, "prod", "prod"); err != nil {
-		t.Fatalf("seed cluster: %v", err)
-	}
-
-	scope, err := db.NewTenantScope(orgID)
-	if err != nil {
-		t.Fatalf("scope: %v", err)
-	}
-	clusterKey, err := domain.NewClusterKey("prod")
-	if err != nil {
-		t.Fatalf("cluster key: %v", err)
-	}
-	labels, err := domain.NewLabelSet(map[string]string{
-		"alertname": "HighErrorRate",
-		"severity":  "critical",
-		"service":   "checkout",
-	})
-	if err != nil {
-		t.Fatalf("labels: %v", err)
-	}
+	h := harness.New(t)
+	org := h.Org()
+	cluster := h.Cluster(org)
+	labels := harness.Labels(t, harness.DefaultLabels())
 
 	clk := clock.NewFake(now)
 	f := &fixture{
 		t:           t,
-		pool:        testPool,
-		scope:       scope,
+		pool:        h.Pool,
+		scope:       org.Scope,
 		clk:         clk,
-		occurrences: repository.NewOccurrenceRepository(testPool),
-		orgID:       orgID,
-		clusterID:   clusterID,
-		clusterKey:  clusterKey,
-		alertKey:    domain.ComputeAlertKey(orgID, clusterKey, labels, nil),
+		occurrences: repository.NewOccurrenceRepository(h.Pool),
+		orgID:       org.ID,
+		clusterID:   cluster.ID,
+		clusterKey:  cluster.Key,
+		alertKey:    harness.AlertKey(org.ID, cluster.Key, labels),
 		labels:      labels,
 	}
 	f.svc = f.newService(clk)

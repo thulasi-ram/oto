@@ -23,7 +23,7 @@ func TestReRootedCardSaysItIsContinued(t *testing.T) {
 	t.Parallel()
 
 	tgt := &target{caps: chdomain.Capability(domain.CapThreading | domain.CapAmend)}
-	h := newHarness(t, tgt)
+	h := newDispatchRig(t, tgt)
 	ctx := t.Context()
 
 	// The first root lands normally, and is NOT continued: it opens the thread.
@@ -96,15 +96,15 @@ func TestMarkSentReportsALostClaim(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 
-	deliveries := repository.NewDeliveryRepository(testPool)
-	threads := repository.NewThreadRepository(testPool)
+	deliveries := repository.NewDeliveryRepository(fx.pool)
+	threads := repository.NewThreadRepository(fx.pool)
 
 	th, err := threads.Ensure(ctx, fx.scope, fx.channel.ID,
 		domain.SubjectAlertGroup, fx.groupID, now)
 	require.NoError(t, err)
 
 	notificationID := uuid.New()
-	_, err = testPool.Exec(ctx, `
+	_, err = fx.pool.Exec(ctx, `
 		INSERT INTO notifications
 		  (id, org_id, subject_kind, subject_id, group_id, reason, policy_id,
 		   state_version, idempotency_key, status)

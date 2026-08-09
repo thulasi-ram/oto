@@ -124,8 +124,8 @@ func (g registry) Open(
 	return g.target, nil
 }
 
-// harness is one wired notification + dispatch pair over the real database.
-type harness struct {
+// dispatchRig is one wired notification + dispatch pair over the real database.
+type dispatchRig struct {
 	fx         fixture
 	notifier   *service.NotificationService
 	dispatcher *service.DispatchService
@@ -136,17 +136,17 @@ type harness struct {
 	jobs       *enqueuer
 }
 
-func newHarness(t *testing.T, tgt *target) harness {
+func newDispatchRig(t *testing.T, tgt *target) dispatchRig {
 	t.Helper()
 
 	fx := newFixture(t, domain.CapThreading|domain.CapAmend)
 	clk := clock.New()
 	rend := newRenderer()
 
-	channels := repository.NewChannelRepository(testPool)
-	deliveries := repository.NewDeliveryRepository(testPool)
-	threads := repository.NewThreadRepository(testPool)
-	events := repository.NewEventRepository(testPool, clk)
+	channels := repository.NewChannelRepository(fx.pool)
+	deliveries := repository.NewDeliveryRepository(fx.pool)
+	threads := repository.NewThreadRepository(fx.pool)
+	events := repository.NewEventRepository(fx.pool, clk)
 	jobs := &enqueuer{}
 
 	policies, err := service.NewPolicyService(policyStore{policy: domain.Policy{
@@ -157,9 +157,9 @@ func newHarness(t *testing.T, tgt *target) harness {
 	require.NoError(t, err)
 
 	notifier, err := service.NewNotificationService(service.NotificationConfig{
-		Tx:            txRunner{pool: testPool},
+		Tx:            txRunner{pool: fx.pool},
 		Policies:      policies,
-		Notifications: repository.NewNotificationRepository(testPool),
+		Notifications: repository.NewNotificationRepository(fx.pool),
 		Deliveries:    deliveries,
 		Threads:       threads,
 		Snapshots:     snapshots{fx: fx},
@@ -176,8 +176,8 @@ func newHarness(t *testing.T, tgt *target) harness {
 	require.NoError(t, err)
 
 	dispatcher, err := service.NewDispatchService(service.DispatchConfig{
-		Tx:            txRunner{pool: testPool},
-		Notifications: repository.NewNotificationRepository(testPool),
+		Tx:            txRunner{pool: fx.pool},
+		Notifications: repository.NewNotificationRepository(fx.pool),
 		Deliveries:    deliveries,
 		Threads:       threads,
 		Channels:      channels,
@@ -185,7 +185,7 @@ func newHarness(t *testing.T, tgt *target) harness {
 		Views:         views,
 		Registry:      registry{renderer: rend, target: tgt},
 		Gates: repository.NewOrderingGates(repository.GatesConfig{
-			Pool: testPool, Clock: clk,
+			Pool: fx.pool, Clock: clk,
 		}),
 		Enqueuer: jobs,
 		BaseURL:  "https://oto.example.com",
@@ -193,7 +193,7 @@ func newHarness(t *testing.T, tgt *target) harness {
 	})
 	require.NoError(t, err)
 
-	return harness{
+	return dispatchRig{
 		fx: fx, notifier: notifier, dispatcher: dispatcher,
 		deliveries: deliveries, threads: threads,
 		renderer: rend, target: tgt, jobs: jobs,
@@ -201,9 +201,9 @@ func newHarness(t *testing.T, tgt *target) harness {
 }
 
 // rowsFor lists this notification's delivery rows in thread order.
-func (h harness) rowsFor(t *testing.T, notificationID uuid.UUID) []domain.Delivery {
+func (h dispatchRig) rowsFor(t *testing.T, notificationID uuid.UUID) []domain.Delivery {
 	t.Helper()
-	rows, err := testPool.Query(t.Context(),
+	rows, err := h.fx.pool.Query(t.Context(),
 		`SELECT id FROM notification_deliveries
 		  WHERE org_id = $1 AND notification_id = $2
 		  ORDER BY thread_seq NULLS FIRST`, h.fx.orgID, notificationID)
@@ -227,7 +227,7 @@ func (h harness) rowsFor(t *testing.T, notificationID uuid.UUID) []domain.Delive
 	return out
 }
 
-func (h harness) evaluate(t *testing.T, reason domain.Reason, version int) uuid.UUID {
+func (h dispatchRig) evaluate(t *testing.T, reason domain.Reason, version int) uuid.UUID {
 	t.Helper()
 	res, err := h.notifier.Evaluate(t.Context(), h.fx.scope, service.Intent{
 		GroupID: h.fx.groupID, Reason: reason, StateVersion: version,
@@ -254,7 +254,7 @@ func (h harness) evaluate(t *testing.T, reason domain.Reason, version int) uuid.
 func TestRootAmendIsItsOwnDeliveryRow(t *testing.T) {
 	t.Parallel()
 
-	h := newHarness(t, &target{caps: chdomain.Capability(domain.CapThreading | domain.CapAmend)})
+	h := newDispatchRig(t, &target{caps: chdomain.Capability(domain.CapThreading | domain.CapAmend)})
 	ctx := t.Context()
 
 	// 1. The first fact posts the root.
@@ -333,7 +333,7 @@ func TestRootAmendFailureIsRetryable(t *testing.T) {
 			Class: chdomain.ClassRetryable, Provider: "webhook", Code: "service_unavailable",
 		},
 	}
-	h := newHarness(t, tgt)
+	h := newDispatchRig(t, tgt)
 	ctx := t.Context()
 
 	firstID := h.evaluate(t, domain.ReasonFired, 1)
@@ -358,7 +358,7 @@ func TestRootAmendFailureIsRetryable(t *testing.T) {
 
 	// The fact reached the timeline, which is what the UI reads.
 	var failures int
-	require.NoError(t, testPool.QueryRow(ctx,
+	require.NoError(t, h.fx.pool.QueryRow(ctx,
 		`SELECT count(*) FROM alert_events
 		  WHERE org_id = $1 AND type = 'delivery.failed'
 		    AND payload->>'delivery_id' = $2`,
