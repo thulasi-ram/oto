@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786281576,"nonce":"2NLRljCigLusgcqNh+0PqlSNGu4=","title":"SPEC C.6 and C.7 each have two implementations, and the kernel's is the dead one","was":"**What is wrong.** SPEC §C.6 and §C.7 each have **two independent implementations** in"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786281576,"nonce":"moUO0VD+V5PDvI9bBWh+utX00Y0=","added":["medium"],"removed":null}]}
