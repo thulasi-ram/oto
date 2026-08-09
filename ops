@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786281576,"nonce":"7KL7es1P7MRo0P4nvftO+Dai+2c=","title":"Six tables can 500 when the updating pod's clock lags the creating pod's","was":"**What is wrong.** Six tables stamp `created_at` and `updated_at` from the Go clock on"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786281576,"nonce":"gve0km90tMPXpa8QbBKdSQJzIIs=","added":["high","notification"],"removed":null}]}
