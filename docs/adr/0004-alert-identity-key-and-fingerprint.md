@@ -18,8 +18,12 @@ Two keys, both stored, both indexed, with different jobs.
 
 **`alert_key`** is the product identity and the dedup key:
 ```
-"ak_" || base32hexLower(sha256(org_id || 0x00 || cluster_key || 0x00 || canon(labels, ignore))[0:16])
+"ak_" || base32hexLower(sha256(field(org_id) || field(cluster_key) || canon(labels, ignore))[0:16])
 ```
+where `field(x) := uint32be(len(x)) || x`. The `0x00` separators this ADR originally
+specified were replaced pre-release by [0022](0022-length-prefixed-identity-preimages.md):
+NUL termination is injective only if no field can contain a NUL, and `receiver`, `expr`
+and Alertmanager's `groupKey` all can.
 128 bits, scoped by `(org, cluster_key)`, with a per-source `ignore_labels` deny-list applied
 before hashing. `UNIQUE (org_id, alert_key)` — dedup is enforced by the constraint, never by a
 read-then-write check, which races under concurrency.

@@ -421,23 +421,65 @@ present-tense column on a signal row (§D.4.0). Passes **H-1** (no obligation on
 
 All hashing helpers are pure functions with no I/O.
 
+### C.0 `field()` — how every identity pre-image is framed
+
+Every pre-image in §C is a sequence of **length-prefixed** fields:
+
+```
+field(x) := uint32be(len(x)) || x        -- len() counts BYTES, not runes
+```
+
+Four bytes, big-endian, fixed width. Nothing is escaped and **no byte is reserved.**
+
+> **⛔ THIS REPLACED NUL TERMINATION, AND IT MUST NOT BE "SIMPLIFIED" BACK.**
+>
+> Every §C key used to separate its fields with `0x00`. That is injective **only if no
+> field can contain a `0x00`** — and three of them can. `receiver` comes from the
+> operator's `alertmanager.yml`, `expr` is arbitrary PromQL, and Alertmanager's own
+> `groupKey` is documented in §C.4 as unescaped and unbounded. A field carrying the
+> separator forged the framing, so **two different field splits produced one digest**:
+> two unrelated alerts became one Alert with one timeline and one Slack thread, and in
+> §C.5 a genuine notification was suppressed as a replay.
+>
+> Length prefixing is injective because the encoding is **uniquely decodable** — read
+> four bytes as `n`, take exactly `n` bytes, repeat — which gives it an explicit left
+> inverse. Escaping the separators would work too, and was rejected: escaping means oto
+> **editing an operator's bytes** in order to store them, and oto is a flight recorder.
+>
+> The cost is 8 bytes per label instead of 2, at most 384 bytes against the 16 KiB cap.
+
+**The tail rule.** Each key writes N framed fields and then **one final field raw**,
+because it is the remainder and needs no prefix to be found. Decoding is still total:
+take the N prefixed fields, and everything left is the tail. Where the tail is itself a
+§C.1 serialisation it is self-delimiting in turn, so the two layers never interact.
+**Do not "fix" this asymmetry** — making the tail prefixed re-keys everything for nothing.
+
+A canonical blob that is *not* last must be framed like any other field. §C.6 is the one
+place that happens.
+
 ### C.1 Canonical label serialisation
 
 ```
 canon(labels, ignore) :=
     for each (name, value) in labels, where name NOT IN ignore, sorted by name ASC (byte order):
-        write(name); write(0x01); write(value); write(0x02)
+        write(field(name)); write(field(value))
 ```
 
 Label names and values are used verbatim (UTF-8, no case folding). `ignore` is `alert_sources.ignore_labels` (default `["prometheus_replica","__replica__","monitor","replica","pod_template_hash"]`).
+
+A label **value** may not contain `0x00`. That is a storability bound, not sanitisation:
+Postgres `text` cannot hold U+0000 at all, so such a value fails at INSERT however it is
+serialised. It is rejected at the boundary with `invalid_label_value`. A `0x00` in a
+label *name* is already impossible under the name charset. Nothing else is stripped,
+replaced or normalised.
 
 ### C.2 `alert_key` — the identity of an Alert (PRIMARY dedup key)
 
 ```
 alert_key := "ak_" || base32hexLower( sha256(
-      org_id_bytes(16) || 0x00
-   || cluster_key      || 0x00
-   || canon(labels, source.ignore_labels)
+      field(org_id_bytes(16))
+   || field(cluster_key)
+   || canon(labels, source.ignore_labels)     -- tail, raw
 )[0:16] )
 ```
 
@@ -464,10 +506,10 @@ func ComputeSourceFingerprint(ls LabelSet) SourceFingerprint
 
 ```
 group_key := "gk_" || base32hexLower( sha256(
-      org_id_bytes(16) || 0x00
-   || source_id_bytes(16) || 0x00
-   || receiver          || 0x00
-   || canon(groupLabels, {})
+      field(org_id_bytes(16))
+   || field(source_id_bytes(16))
+   || field(receiver)
+   || canon(groupLabels, {})                  -- tail, raw
 )[0:16] )
 ```
 
@@ -479,40 +521,58 @@ group_key := "gk_" || base32hexLower( sha256(
 
 ```
 batch_dedup_key := hex( sha256(
-      source_id_bytes(16) || 0x00
-   || groupKey            || 0x00
-   || receiver            || 0x00
-   || notification_reason || 0x00
-   || join(sorted("<fingerprint>:<status>" for each alert), 0x1F)
+      field(source_id_bytes(16))
+   || field(groupKey)
+   || field(receiver)
+   || field(notification_reason)
+   || join(sorted("<fingerprint>:<status>" for each alert), 0x1F)   -- tail, raw
 ) )
 ```
 
 - Inserted into the unpartitioned `ingest_dedup` table with `UNIQUE (source_id, dedup_key)`. On conflict, the handler returns **202 with the original `batch_id`** and does nothing else.
 - Rows are pruned after **10 minutes** (≥ `n_peers × cluster.peer-timeout`; 45s for a 3-node cluster, with generous margin for retries within the ~5m budget).
 - Rationale: Alertmanager HA is at-least-once by design; a partition guarantees duplicates.
+- **`groupKey` is why §C.0 exists.** §C.4 says AM's own key is unescaped and unbounded, so it is
+  the least constrained input oto takes — and here a collision is not a merged alert but a **LOST
+  BATCH**: a genuine notification suppressed as a replay. Framing is load-bearing on this key.
 
 ### C.6 `rule_fingerprint` — content address of a rule definition
 
 ```
 rule_fingerprint := hex( sha256(
-      expr || 0x00 || for_seconds || 0x00 || keep_firing_for_seconds || 0x00
-   || canon(rule_labels, {}) || 0x00 || canon(rule_annotations, {})
+      field(expr) || field(for_seconds) || field(keep_firing_for_seconds)
+   || field(canon(rule_labels, {}))           -- FRAMED: it is not last
+   || canon(rule_annotations, {})             -- tail, raw
 ) )
 ```
 
 `rule_key := (source_id, rule_file, rule_group, rule_name)`. Drift is *"the newest snapshot for this `rule_key` has a different `rule_fingerprint` than the one bound to the previous occurrence."*
 
+> **⛔ THIS CLAUSE HAS TWO IMPLEMENTATIONS AND THEY MUST AGREE BYTE FOR BYTE.**
+> `internal/alerts/domain` (over a `LabelSet`) and `internal/rules/domain.Fingerprint`
+> (over a raw map, because a recovered rule's labels never passed `NewLabels` and may
+> not satisfy the label-name charset). They agreed only by luck until
+> `TestFingerprintAgreesWithTheKernel` was written; it cross-checks them over 400 input
+> tuples. Edit one and you must edit the other.
+
 ### C.7 `notification.idempotency_key`
 
 ```
 idempotency_key := hex( sha256(
-      org_id_bytes(16) || 0x00
-   || subject_kind || 0x00 || subject_id_bytes(16) || 0x00
-   || reason       || 0x00 || itoa(state_version)
+      field(org_id_bytes(16))
+   || field(subject_kind) || field(subject_id_bytes(16))
+   || field(reason)
+   || itoa(state_version)                     -- tail, raw
 ) )
 ```
 
 `UNIQUE (org_id, idempotency_key)`. `alert_groups.state_version` increments on every material group change. "all_resolved at state_version 7" can therefore exist exactly once.
+
+> **⛔ THIS CLAUSE ALSO HAS TWO IMPLEMENTATIONS**, and the live one is **NOT** the
+> kernel's. `internal/notification/domain.IdempotencyKey` is what `notify.go` calls;
+> `internal/alerts/domain.ComputeIdempotencyKey` has no production caller at all. They
+> are cross-checked by `TestIdempotencyKeyAgreesWithTheKernel`. Collapsing the pair is
+> tracked separately — until then, edit one and you must edit the other.
 
 ### C.8 `alert_events` idempotency
 
