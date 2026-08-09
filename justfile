@@ -188,8 +188,23 @@ lint:
     "$bin" run ./...
 
 # Go tests. Integration tests need Docker.
+#
+# Under colima, testcontainers cannot find the daemon unless it is told where
+# the socket is. Without that the container never starts and the failure
+# surfaces deep in the suite, reading like broken code rather than a missing
+# environment variable — which is how a contributor concludes the tests are
+# flaky and starts skipping them (git-bug 7c47185). Detected rather than
+# hard-coded, so Docker Desktop and a pre-set DOCKER_HOST are both left alone,
+# and announced so nobody debugs a variable they cannot see.
 [group('check')]
 test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "${DOCKER_HOST:-}" ] && [ -S "$HOME/.colima/default/docker.sock" ]; then
+      export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+      export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+      echo "→ colima detected — DOCKER_HOST=$DOCKER_HOST"
+    fi
     go test -race -count=1 ./...
 
 # Build the oto binary into ./bin.
