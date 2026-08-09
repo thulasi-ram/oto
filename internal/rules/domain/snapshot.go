@@ -239,25 +239,39 @@ func NewSnapshot(orgID string, key Key, r Recovery, capturedAt time.Time) Snapsh
 // Fingerprint is `rule_fingerprint` (SPEC §C.6): the content address of a rule
 // definition.
 //
-//	sha256( expr 0x00 for_seconds 0x00 keep_firing_for_seconds 0x00
-//	        canon(rule_labels) 0x00 canon(rule_annotations) )
+//	sha256( field(expr) || field(for_seconds) || field(keep_firing_for_seconds)
+//	        || field(canon(rule_labels)) || canon(rule_annotations) )
+//
+// where field(x) := uint32be(len(x)) || x — the same length-prefix framing Canon
+// uses inside a label set, applied one layer up to the FIELDS of the pre-image.
+//
+// The fields are length-prefixed and not NUL-separated because `expr` is
+// free-form PromQL: a NUL terminator is injective only if no field can contain a
+// NUL, and nothing constrains what Prometheus puts in an expression. A prefix
+// makes the pre-image decodable — 4 bytes as a count, then exactly that many bytes
+// as the field — so two different rule definitions can never share one content
+// address. The full argument is on alerts/domain writeField, which this MUST agree
+// with byte for byte.
+//
+// canon(rule_annotations) is the last field and is written raw: it is the
+// remainder, and it is self-delimiting in its own right.
 //
 // Durations are rendered with strconv.FormatFloat(f, 'f', -1, 64), the shortest
 // representation that round-trips, so 600 and 600.0 are the same rule.
 func Fingerprint(expr string, forSeconds, keepFiringForSeconds float64, labels, annotations map[string]string) string {
 	h := sha256.New()
-	write := func(s string) { _, _ = h.Write([]byte(s)) }
-	sep := func() { _, _ = h.Write([]byte{0x00}) }
+	field := func(s string) {
+		var n [canonLenBytes]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+		_, _ = h.Write(n[:])
+		_, _ = h.Write([]byte(s))
+	}
 
-	write(expr)
-	sep()
-	write(strconv.FormatFloat(forSeconds, 'f', -1, 64))
-	sep()
-	write(strconv.FormatFloat(keepFiringForSeconds, 'f', -1, 64))
-	sep()
-	write(Canon(labels))
-	sep()
-	write(Canon(annotations))
+	field(expr)
+	field(strconv.FormatFloat(forSeconds, 'f', -1, 64))
+	field(strconv.FormatFloat(keepFiringForSeconds, 'f', -1, 64))
+	field(Canon(labels))
+	_, _ = h.Write([]byte(Canon(annotations)))
 
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -288,7 +302,7 @@ func Canon(m map[string]string) string {
 
 	var b strings.Builder
 	field := func(s string) {
-		var n [4]byte
+		var n [canonLenBytes]byte
 		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
 		b.Write(n[:])
 		b.WriteString(s)
@@ -299,6 +313,11 @@ func Canon(m map[string]string) string {
 	}
 	return b.String()
 }
+
+// canonLenBytes is the width of the length prefix §C.1 writes before every field.
+// Four bytes, big-endian, counting BYTES. It is part of every rule content
+// address: changing it re-fingerprints every rule snapshot.
+const canonLenBytes = 4
 
 // FingerprintPattern is the shape rule_snapshots_fp_ck enforces: 64 lowercase
 // hex characters.

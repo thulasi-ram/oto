@@ -2,6 +2,7 @@ package domain
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"hash/fnv"
 	"slices"
@@ -21,11 +22,13 @@ type AlertIdentity struct {
 // ComputeBatchDedupKey derives `batch_dedup_key` (SPEC §C.5):
 //
 //	hex( sha256(
-//	     source_id_bytes(16) || 0x00
-//	  || groupKey            || 0x00
-//	  || receiver            || 0x00
-//	  || notification_reason || 0x00
+//	     field(source_id_bytes(16))
+//	  || field(groupKey)
+//	  || field(receiver)
+//	  || field(notification_reason)
 //	  || join(sorted("<fingerprint>:<status>" for each alert), 0x1F) ) )
+//
+// where field(x) := uint32be(len(x)) || x — see writeField.
 //
 // This is the identity of a batch's MEANING, which is what makes it the right
 // replay-suppression key: two HA Alertmanagers notifying about the same group at
@@ -104,10 +107,24 @@ const fingerprintSep = 0xFF
 // fingerprintHexLen is the width of Alertmanager's "%016x" fingerprint.
 const fingerprintHexLen = 16
 
-// writeField writes one NUL-terminated field of a digest pre-image. Every §C key
-// separates its fields with 0x00 so that two different field splits can never
-// produce the same byte string.
+// writeField writes one length-prefixed field of a digest pre-image: a 4-byte
+// big-endian byte count, then the bytes verbatim. Nothing is escaped and no byte
+// is reserved, because the framing is carried by the prefix and not by the
+// content.
+//
+// It is the framing every §C key uses, and it is here rather than a 0x00
+// terminator for the reason set out in full on alerts/domain writeField: NUL
+// termination is injective only while no field can CONTAIN a NUL, and this key's
+// fields are the least constrained of any. `groupKey` is Alertmanager's own group
+// key, which §C.4 says explicitly is unescaped and unbounded; `receiver` is
+// free-form text out of alertmanager.yml. A collision here is not a duplicate
+// alert but a LOST batch: a genuine notification suppressed as a replay.
+//
+// The trailing joined fingerprint list is written raw and needs no prefix: it is
+// the remainder.
 func writeField(h interface{ Write([]byte) (int, error) }, b []byte) {
+	var n [4]byte
+	binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+	_, _ = h.Write(n[:])
 	_, _ = h.Write(b)
-	_, _ = h.Write([]byte{0x00})
 }

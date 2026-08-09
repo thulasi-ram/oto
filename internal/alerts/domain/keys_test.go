@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -205,13 +207,261 @@ func TestComputeGroupKey(t *testing.T) {
 	assert.True(t, GroupKey{}.IsZero())
 }
 
+// forgedReceiver and forgedLabels are an EXACT collision under the framing §C used
+// before length prefixes: `field || 0x00` per field, with the canonical
+// groupLabels written raw as the tail.
+//
+//	("a", {b: ""})  ->  61 | 00 | 00 00 00 01 62 00 00 00 00
+//	(forged,  {} )  ->  61 00 00 00 00 01 62 00 00 00 | 00 |
+//
+// Both are the same eleven bytes. The forgery works because canon({b: ""}) ENDS in
+// a zero length prefix, which absorbs the terminator the receiver would have
+// contributed — so the "no field contains a NUL" assumption is not even needed to
+// break it once the receiver is free-form, which it is: it comes verbatim from the
+// operator's alertmanager.yml.
+const (
+	forgedReceiver = "a\x00\x00\x00\x00\x01b\x00\x00\x00"
+	honestReceiver = "a"
+)
+
+// oldPreimage reproduces the pre-image the retired framing built, written from the
+// FORMAT and not from any surviving code, so that the test can demonstrate the
+// collision it protects against rather than assert its absence and hope.
+func oldPreimage(orgID, sourceID uuid.UUID, receiver string, groupLabels Labels) []byte {
+	var b []byte
+	b = append(append(b, orgID[:]...), 0x00)
+	b = append(append(b, sourceID[:]...), 0x00)
+	b = append(append(b, receiver...), 0x00)
+	return append(b, groupLabels.Canonical(nil)...)
+}
+
+// TestGroupKey_ReceiverAndLabelsAreSeparateFields proves the field boundary
+// between `receiver` and the canonical groupLabels is real.
+//
+// It is a proof and not a coincidence because it first establishes that the
+// witness IS a collision under the old framing — the two pre-images are asserted
+// byte-equal — and only then asserts that the two GroupKeys are different today.
+// A test that merely asserted the second half would have passed under the old
+// framing too, for any witness that happened to be off by a byte.
 func TestGroupKey_ReceiverAndLabelsAreSeparateFields(t *testing.T) {
-	// The 0x00 field terminator must stop a receiver from impersonating the
-	// leading bytes of the canonical groupLabels. The forged tail is the exact
-	// canonical serialisation of {b: "1"}: a 4-byte length before each field.
-	a := ComputeGroupKey(orgA, sourceA, "a", mustLabels(t, map[string]string{"b": "1"}))
-	b := ComputeGroupKey(orgA, sourceA, "a\x00\x00\x00\x00\x01b\x00\x00\x00\x011", Labels{})
-	assert.NotEqual(t, a, b)
+	honestLabels := mustLabels(t, map[string]string{"b": ""})
+
+	// 1. The witness is a genuine collision under the framing this replaced.
+	require.Equal(t,
+		oldPreimage(orgA, sourceA, honestReceiver, honestLabels),
+		oldPreimage(orgA, sourceA, forgedReceiver, Labels{}),
+		"the witness must actually collide under `field || 0x00`, or this test proves nothing")
+
+	// 2. And the two are different AlertGroups under the framing in force.
+	honest := ComputeGroupKey(orgA, sourceA, honestReceiver, honestLabels)
+	forged := ComputeGroupKey(orgA, sourceA, forgedReceiver, Labels{})
+	assert.NotEqual(t, honest, forged,
+		"a receiver may not forge the leading bytes of the group labels")
+
+	// The near-miss the earlier version of this test used: it also has to be
+	// distinct, but it was distinct under the old framing as well.
+	assert.NotEqual(t,
+		ComputeGroupKey(orgA, sourceA, "a", mustLabels(t, map[string]string{"b": "1"})),
+		ComputeGroupKey(orgA, sourceA, "a\x00\x00\x00\x00\x01b\x00\x00\x00\x011", Labels{}))
+}
+
+// TestGroupKey_PreImageIsLengthPrefixed pins the framing itself rather than a
+// digest, so an edit to the pre-image cannot be mistaken for an unrelated change.
+func TestGroupKey_PreImageIsLengthPrefixed(t *testing.T) {
+	gl := mustLabels(t, map[string]string{"b": "1"})
+
+	var want []byte
+	want = append(want, 0x00, 0x00, 0x00, 0x10) // len(org_id_bytes) == 16
+	want = append(want, orgA[:]...)
+	want = append(want, 0x00, 0x00, 0x00, 0x10) // len(source_id_bytes) == 16
+	want = append(want, sourceA[:]...)
+	want = append(want, 0x00, 0x00, 0x00, 0x03) // len("rcv")
+	want = append(want, "rcv"...)
+	want = append(want, gl.Canonical(nil)...) // the tail is raw: it is the remainder
+	sum := sha256.Sum256(want)
+
+	assert.Equal(t,
+		GroupKeyPrefix+encodeIdentity(sum[:]),
+		ComputeGroupKey(orgA, sourceA, "rcv", gl).String(),
+		"the §C.4 pre-image is uint32be(len(x))||x per field, with canon(groupLabels) raw")
+}
+
+// adversarialFields is the corpus for the free-form fields of a §C key —
+// `receiver` and `expr`, which are operator- and Prometheus-authored text with no
+// charset at all.
+//
+// Unlike adversarialValues in labels_test.go, this corpus DOES contain NUL: the
+// point of the change is that a NUL in a free-form field is no longer structural.
+// The rest attack the new framing rather than the old one: four-byte runs that
+// could be read as a length prefix, decimal digits (had the prefix been text),
+// empty, and multi-byte UTF-8 whose BYTE length differs from its rune count.
+var adversarialFields = []string{
+	"",
+	"\x00",
+	"\x00\x00\x00\x00",
+	"\x00\x00\x00\x01",
+	"a",
+	"a\x00",
+	"\x00a",
+	"a\x00b",
+	forgedReceiver,
+	"a\x00\x00\x00\x00\x01b\x00\x00\x00\x011",
+	"\x00\x00\x00\x01b\x00\x00\x00\x011",
+	"4",
+	"0004",
+	"\xff",
+	"日本語", // 3 runes, 9 bytes
+	"☃",   // 1 rune, 3 bytes
+	strings.Repeat("x", 300),
+}
+
+// adversarialLabelSets are the label sets the free-form fields are paired against.
+// Their VALUES may not carry a NUL — NewLabels refuses it as a STORABILITY bound,
+// not as sanitisation — so they attack the nesting instead: an empty value makes
+// canon() end in a zero length prefix, which is exactly what absorbed the old
+// terminator and made forgedReceiver work.
+func adversarialLabelSets(t *testing.T) []map[string]string {
+	t.Helper()
+	return []map[string]string{
+		nil,
+		{"b": ""},
+		{"b": "1"},
+		{"b": "\x01\x02"},
+		{"b": "\x01\x01\x01\x01"},
+		{"b": "", "c": ""},
+		{"bc": ""},
+	}
+}
+
+// fieldsID renders a tuple of raw fields unambiguously, as the ground truth the
+// injectivity properties compare against. strconv.Quote is unambiguous, and
+// quoting EVERY component means no boundary between them can be smeared — which
+// is the property under test, so it must not be derived from the framing itself.
+func fieldsID(parts ...string) string {
+	quoted := make([]string, 0, len(parts))
+	for _, p := range parts {
+		quoted = append(quoted, strconv.Quote(p))
+	}
+	return strings.Join(quoted, "|")
+}
+
+func labelsID(t *testing.T, in map[string]string) string {
+	t.Helper()
+	names := make([]string, 0, len(in))
+	for n := range in {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		parts = append(parts, strconv.Quote(n)+"="+strconv.Quote(in[n]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// TestGroupKey_IsInjectiveOverAdversarialReceivers is for §C.4 what
+// TestCanonical_IsInjectiveOverAdversarialValues is for §C.1: no two DISTINCT
+// (receiver, groupLabels) pairs may share a GroupKey.
+//
+// A collision is not a hash collision — SHA-256 is not being doubted — it is two
+// unrelated Alertmanager notification groups becoming one AlertGroup, with one
+// Slack thread and one generation counter between them.
+func TestGroupKey_IsInjectiveOverAdversarialReceivers(t *testing.T) {
+	sets := adversarialLabelSets(t)
+
+	seen := map[string]string{}
+	ids := map[string]struct{}{}
+
+	for _, receiver := range adversarialFields {
+		for _, in := range sets {
+			gl := mustLabels(t, in)
+			id := fieldsID(receiver) + " " + labelsID(t, in)
+			ids[id] = struct{}{}
+
+			key := ComputeGroupKey(orgA, sourceA, receiver, gl).String()
+			if prev, dup := seen[key]; dup && prev != id {
+				t.Fatalf("GroupKey collision:\n  %s\n  %s\nboth key to %s", prev, id, key)
+			}
+			seen[key] = id
+		}
+	}
+
+	assert.Equal(t, len(ids), len(seen), "one GroupKey per distinct (receiver, groupLabels)")
+	assert.Equal(t, len(adversarialFields)*len(sets), len(ids), "the corpus must have no duplicates")
+}
+
+// TestRuleFingerprint_IsInjectiveOverAdversarialExprs is the same property for
+// §C.6. `expr` is free-form PromQL and annotation names and values are
+// deliberately unconstrained (NewAnnotations bounds only count and length), so all
+// three are attacked at once.
+//
+// A collision here is a rule edit that oto reports as no edit — the drift
+// detection that is the headline differentiator, silently answering "no".
+func TestRuleFingerprint_IsInjectiveOverAdversarialExprs(t *testing.T) {
+	sets := adversarialLabelSets(t)
+	annSets := []map[string]string{
+		nil,
+		{"summary": ""},
+		{"summary": "\x00"},
+		{"summary": "\x00\x00\x00\x01"},
+		{"a\x00b": ""},
+	}
+	durations := []time.Duration{0, time.Second, 10 * time.Minute}
+
+	seen := map[string]string{}
+	ids := map[string]struct{}{}
+
+	for _, expr := range adversarialFields {
+		for _, in := range sets {
+			for _, an := range annSets {
+				for _, d := range durations {
+					labels := mustLabels(t, in)
+					annotations, err := NewAnnotations(an)
+					require.NoError(t, err)
+
+					id := fieldsID(expr, d.String()) + " " + labelsID(t, in) + " " + labelsID(t, an)
+					ids[id] = struct{}{}
+
+					fp := ComputeRuleFingerprint(expr, d, 0, labels, annotations).String()
+					if prev, dup := seen[fp]; dup && prev != id {
+						t.Fatalf("RuleFingerprint collision:\n  %s\n  %s\nboth address %s", prev, id, fp)
+					}
+					seen[fp] = id
+				}
+			}
+		}
+	}
+
+	assert.Equal(t, len(ids), len(seen), "one rule_fingerprint per distinct rule definition")
+	assert.Equal(t, len(adversarialFields)*len(sets)*len(annSets)*len(durations), len(ids))
+}
+
+// TestAlertKey_IsInjectiveOverClusterKeys covers the remaining §C.2 field.
+// `cluster_key`'s charset already excludes NUL, so it was never forgeable — the
+// property is asserted anyway, because "safe because of a charset elsewhere" is
+// exactly the reasoning that made the old framing look sound.
+func TestAlertKey_IsInjectiveOverClusterKeys(t *testing.T) {
+	clusterKeys := []string{"a", "b", "ab", "a-b", "a.b", "a_b", "prod-eu", "prod-eu-1"}
+	labelSets := []map[string]string{
+		{"alertname": "X"},
+		{"alertname": "X", "b": ""},
+		{"alertname": "X", "b": "1"},
+		{"alertname": "Xb"},
+		{"alertname": "X", "b": "\x01\x02"},
+	}
+
+	seen := map[string]string{}
+	for _, ck := range clusterKeys {
+		for _, in := range labelSets {
+			id := strconv.Quote(ck) + " " + labelsID(t, in)
+			key := ComputeAlertKey(orgA, mustClusterKey(t, ck), mustLabelSet(t, in), nil).String()
+			if prev, dup := seen[key]; dup && prev != id {
+				t.Fatalf("AlertKey collision:\n  %s\n  %s\nboth key to %s", prev, id, key)
+			}
+			seen[key] = id
+		}
+	}
+	assert.Len(t, seen, len(clusterKeys)*len(labelSets))
 }
 
 func TestNewGroupKey_Rejects(t *testing.T) {

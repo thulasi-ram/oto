@@ -2,6 +2,7 @@ package domain
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"strconv"
 
@@ -29,10 +30,12 @@ func (k SubjectKind) String() string { return string(k) }
 // IdempotencyKey is SPEC §C.7, literally:
 //
 //	idempotency_key := hex( sha256(
-//	      org_id_bytes(16) || 0x00
-//	   || subject_kind || 0x00 || subject_id_bytes(16) || 0x00
-//	   || reason       || 0x00 || itoa(state_version)
+//	      field(org_id_bytes(16))
+//	   || field(subject_kind) || field(subject_id_bytes(16))
+//	   || field(reason)       || itoa(state_version)
 //	) )
+//
+// where field(x) := uint32be(len(x)) || x.
 //
 // It is what makes "all_resolved at state_version 7" exist EXACTLY ONCE, under
 // `notifications_idem_uniq UNIQUE (org_id, idempotency_key)`. A 23505 on that
@@ -45,8 +48,16 @@ func (k SubjectKind) String() string { return string(k) }
 //     change in how oto formats a UUID cannot silently re-key every notification;
 //   - state_version is `strconv.Itoa`, matching the spec's `itoa`, so 7 hashes as
 //     "7" and never as "07" or "7.0";
-//   - every field is 0x00-separated, so no pair of adjacent fields can be
-//     concatenated into a different pair with the same bytes.
+//   - every field but the last carries a 4-byte big-endian BYTE COUNT, so the
+//     pre-image decodes to exactly one field tuple and no pair of adjacent fields
+//     can be re-split into a different pair with the same bytes. The predecessor
+//     framing separated fields with 0x00, which is injective only while no field
+//     can CONTAIN a NUL — true of these five, but not of `receiver` and `expr` in
+//     the neighbouring §C keys, and one key framed differently from its
+//     neighbours is a trap. The argument in full is on alerts/domain writeField,
+//     which this MUST agree with byte for byte.
+//
+// The trailing itoa(state_version) needs no prefix: it is the remainder.
 func IdempotencyKey(
 	orgID uuid.UUID,
 	kind SubjectKind,
@@ -55,19 +66,20 @@ func IdempotencyKey(
 	stateVersion int,
 ) string {
 	h := sha256.New()
-	sep := []byte{0x00}
+	field := func(b []byte) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+		_, _ = h.Write(n[:])
+		_, _ = h.Write(b)
+	}
 
 	org := orgID
 	subj := subjectID
 
-	_, _ = h.Write(org[:])
-	_, _ = h.Write(sep)
-	_, _ = h.Write([]byte(kind))
-	_, _ = h.Write(sep)
-	_, _ = h.Write(subj[:])
-	_, _ = h.Write(sep)
-	_, _ = h.Write([]byte(reason))
-	_, _ = h.Write(sep)
+	field(org[:])
+	field([]byte(kind))
+	field(subj[:])
+	field([]byte(reason))
 	_, _ = h.Write([]byte(strconv.Itoa(stateVersion)))
 
 	return hex.EncodeToString(h.Sum(nil))

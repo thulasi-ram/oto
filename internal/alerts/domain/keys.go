@@ -3,6 +3,7 @@ package domain
 import (
 	"crypto/sha256"
 	"encoding/base32"
+	"encoding/binary"
 	"encoding/hex"
 	"strconv"
 	"strings"
@@ -81,8 +82,11 @@ func NewAlertKey(s string) (AlertKey, error) {
 // ComputeAlertKey derives the identity of an Alert (SPEC §C.2):
 //
 //	"ak_" || base32hexLower( sha256(
-//	     org_id_bytes(16) || 0x00 || cluster_key || 0x00
+//	     field(org_id_bytes(16)) || field(cluster_key)
 //	  || canon(labels, ignore) )[0:16] )
+//
+// where field(x) := uint32be(len(x)) || x, the framing writeField documents. The
+// trailing canon() is written raw and needs no prefix: it is the remainder.
 //
 // Ignored labels are still stored on the Alert; they are merely not hashed.
 // Changing a source's ignore_labels does NOT re-key existing Alerts — new
@@ -149,8 +153,15 @@ func NewGroupKey(s string) (GroupKey, error) {
 // ComputeGroupKey derives the durable group identity (SPEC §C.4):
 //
 //	"gk_" || base32hexLower( sha256(
-//	     org_id_bytes(16) || 0x00 || source_id_bytes(16) || 0x00
-//	  || receiver || 0x00 || canon(groupLabels, {}) )[0:16] )
+//	     field(org_id_bytes(16)) || field(source_id_bytes(16))
+//	  || field(receiver) || canon(groupLabels, {}) )[0:16] )
+//
+// where field(x) := uint32be(len(x)) || x, the framing writeField documents.
+//
+// `receiver` is free-form text out of the operator's alertmanager.yml and is the
+// reason this key is length-prefixed rather than NUL-separated: under the old
+// framing a receiver carrying a NUL could forge the leading bytes of the group
+// labels and merge two unrelated notification groups into one.
 //
 // For a reconciler-sourced observation with no groupLabels, receiver is "" and
 // groupLabels is the Alertmanager alert group's own labels.
@@ -186,11 +197,18 @@ func NewRuleFingerprint(s string) (RuleFingerprint, error) {
 
 // ComputeRuleFingerprint content-addresses a rule definition (SPEC §C.6):
 //
-//	hex( sha256( expr || 0x00 || for_seconds || 0x00 || keep_firing_for_seconds
-//	   || 0x00 || canon(rule_labels, {}) || 0x00 || canon(rule_annotations, {}) ) )
+//	hex( sha256( field(expr) || field(for_seconds) || field(keep_firing_for_seconds)
+//	   || field(canon(rule_labels, {})) || canon(rule_annotations, {}) ) )
+//
+// where field(x) := uint32be(len(x)) || x, the framing writeField documents.
+// `expr` is free-form PromQL out of Prometheus and may carry any byte, which is
+// why the fields are length-prefixed and not NUL-separated.
 //
 // Durations are rendered as whole seconds in base 10, matching Prometheus's own
 // wire form, where `for: 10m` is the number 600.
+//
+// This MUST agree byte for byte with rules/domain.Fingerprint, which computes the
+// same §C.6 address from a raw map that has never been through NewLabels.
 func ComputeRuleFingerprint(expr string, forDur, keepFiringFor time.Duration, labels Labels, annotations Annotations) RuleFingerprint {
 	h := sha256.New()
 	writeField(h, []byte(expr))
@@ -225,8 +243,16 @@ func NewIdempotencyKey(s string) (IdempotencyKey, error) {
 
 // ComputeIdempotencyKey derives a Notification's idempotency key (SPEC §C.7):
 //
-//	hex( sha256( org_id_bytes(16) || 0x00 || subject_kind || 0x00
-//	   || subject_id_bytes(16) || 0x00 || reason || 0x00 || itoa(state_version) ) )
+//	hex( sha256( field(org_id_bytes(16)) || field(subject_kind)
+//	   || field(subject_id_bytes(16)) || field(reason) || itoa(state_version) ) )
+//
+// where field(x) := uint32be(len(x)) || x, the framing writeField documents.
+// `subject_kind` and `reason` are closed internal enums, so this key was never
+// forgeable through a field's content; it is framed this way because one §C key
+// with a different framing from its neighbours is a trap, not a saving.
+//
+// This MUST agree byte for byte with notification/domain.IdempotencyKey, which is
+// the implementation the notify path actually calls.
 func ComputeIdempotencyKey(orgID uuid.UUID, subjectKind string, subjectID uuid.UUID, reason string, stateVersion int) IdempotencyKey {
 	h := sha256.New()
 	writeField(h, orgID[:])
@@ -264,10 +290,48 @@ func (t SlackTS) String() string { return t.s }
 // IsZero reports whether the timestamp is unset.
 func (t SlackTS) IsZero() bool { return t.s == "" }
 
-// writeField writes one NUL-terminated field of a digest pre-image. Every §C key
-// separates its fields with 0x00 so that two different field splits can never
-// produce the same byte string.
+// writeField writes one length-prefixed field of a digest pre-image: a 4-byte
+// big-endian byte count, then the bytes verbatim. Nothing is escaped and no byte
+// is reserved, because the framing is carried by the prefix and not by the
+// content. It is appendCanonField's framing (SPEC §C.1) applied one layer up, to
+// the FIELDS of a §C key rather than to the names and values inside a label set.
+//
+// # WHY LENGTH PREFIXES AND NOT A NUL TERMINATOR
+//
+// A §C pre-image must be INJECTIVE for the same reason canon(labels) must be: the
+// digest IS an identity. Two pre-images that collide are one AlertGroup, one rule
+// content address, or one notification that a second real event can never be
+// minted for.
+//
+// The framing this replaced was `field 0x00`, and NUL termination is injective
+// only under an assumption no call site could enforce: that no field CONTAINS a
+// NUL. That held for the fixed-width UUIDs, for cluster_key (whose charset
+// excludes 0x00) and for the closed internal enums `subject_kind` and `reason`.
+// It did NOT hold for `receiver`, which is free-form text out of the operator's
+// alertmanager.yml, nor for `expr`, which is free-form PromQL out of Prometheus.
+// Receiver "a" with groupLabels {b:"1"} and receiver "a\x00\x00\x00\x00\x01b…"
+// with no groupLabels were one pre-image and one GroupKey.
+//
+// A length prefix removes the assumption instead of relying on it. Injectivity
+// holds by decodability: a reader takes 4 bytes as a count n, then exactly n bytes
+// as the field, and repeats — so a pre-image decodes to exactly one field tuple,
+// whatever bytes the fields carry.
+//
+// # THE TRAILING FIELD
+//
+// Every §C key writes its LAST field raw, with no prefix — canon(labels) for C.2
+// and C.4, canon(annotations) for C.6, itoa(state_version) for C.7. That is still
+// unambiguous: it is by definition whatever remains once the prefixed fields have
+// been read, so the decode above stays total. Where the tail is itself a canonical
+// serialisation it is self-delimiting in turn, so the nesting introduces no second
+// ambiguity: canon's own length prefixes decide where each name and value ends.
+//
+// The uint32 conversion is safe by construction. Every field is a 16-byte UUID, a
+// bounded value object, a rendered integer, or a canonical serialisation capped by
+// B6 at MaxLabelSetBytes — all far below 2^32.
 func writeField(h interface{ Write([]byte) (int, error) }, b []byte) {
+	var n [canonLenBytes]byte
+	binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+	_, _ = h.Write(n[:])
 	_, _ = h.Write(b)
-	_, _ = h.Write([]byte{0x00})
 }

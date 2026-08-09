@@ -1,9 +1,13 @@
 package domain_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	alerts "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/rules/domain"
 )
@@ -247,18 +252,171 @@ var hex64Re = regexp.MustCompile(domain.FingerprintPattern)
 // TestFingerprintGolden pins the §C.6 wire format. A fingerprint is a content
 // address that has to be recomputable anywhere and comparable byte for byte, so
 // the digest itself is the contract, not an implementation detail.
+//
+// These values MOVED once, before oto's first release, when the pre-image's own
+// fields went from 0x00-separated to length-prefixed — the same change that made
+// canon() injective, applied one layer up so that a free-form `expr` cannot forge
+// a field boundary. That re-fingerprinted every rule snapshot, deliberately and
+// exactly once. They are frozen now.
 func TestFingerprintGolden(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t,
-		"a8b0a1c8eadc161f27ed657a58a4c37f5f99681106101449a1f621ba64845acb",
+		"72f5f903e1ad514dd2449d62db96197f5a5f92c58ef86f0b264ad0e65e388fbf",
 		domain.Fingerprint("", 0, 0, nil, nil))
 
 	assert.Equal(t,
-		"1e2257b4575d236732ea15000ccb4ab81541b0e50deb5dc29ead4e5a74031f6e",
+		"cbfac73aefd7e4c9c0a43ed2d87b290abfffcaf1554d265ca81169af46e7af5a",
 		domain.Fingerprint("up == 0", 300, 0,
 			map[string]string{"severity": "critical", "team": "sre"},
 			map[string]string{"summary": "target down"}))
+}
+
+// TestFingerprintPreImageIsLengthPrefixed pins the framing itself, not just the
+// digest, so a future edit that changes the pre-image cannot be mistaken for an
+// unrelated hash difference.
+//
+// The pre-image of Fingerprint("", 0, 0, nil, nil) is five EMPTY fields: four
+// length prefixes of zero and an empty remainder. Under the old 0x00 framing it
+// was four NUL bytes.
+func TestFingerprintPreImageIsLengthPrefixed(t *testing.T) {
+	t.Parallel()
+
+	sum := sha256.Sum256([]byte(
+		"\x00\x00\x00\x00" + // len("")
+			"\x00\x00\x00\x01" + "0" + // len("0") || "0"    (for_seconds)
+			"\x00\x00\x00\x01" + "0" + // len("0") || "0"    (keep_firing_for)
+			"\x00\x00\x00\x00", // len(canon(nil)) — canon(nil) is empty
+	)) // canon(nil) annotations is the empty remainder
+	assert.Equal(t, hex.EncodeToString(sum[:]), domain.Fingerprint("", 0, 0, nil, nil),
+		"the §C.6 pre-image is uint32be(len(x))||x per field, with the annotations tail raw")
+}
+
+// TestFingerprintIsInjectiveOverAdversarialExprs is the property the framing
+// exists to have, in the spirit of alerts/domain's canonical-serialisation
+// injectivity test: no two DISTINCT rule definitions may share a content address.
+//
+// `expr` is free-form PromQL — nothing constrains its bytes — so the corpus is
+// built from values chosen to attack the framing: NUL (which the old 0x00
+// terminator reserved), four-byte runs that could be mistaken for a length
+// prefix, decimal digits, empty, and multi-byte UTF-8 whose BYTE length differs
+// from its rune count. A collision here would be two different rules reported as
+// one, which is exactly the drift detection oto sells failing silently.
+func TestFingerprintIsInjectiveOverAdversarialExprs(t *testing.T) {
+	t.Parallel()
+
+	adversarial := []string{
+		"",
+		"\x00",
+		"\x00\x00\x00\x01",
+		"up == 0",
+		"up == 0\x00",
+		"\x00up == 0",
+		"a\x00\x00\x00\x00\x01b",
+		"0",
+		"00",
+		"300",
+		"\x00\x00\x00\x07up == 0",
+		"日本語",
+		"☃",
+		strings.Repeat("x", 300),
+	}
+	labelSets := []map[string]string{
+		nil,
+		{"severity": "critical"},
+		{"severity": "critical\x00team\x00sre"},
+		{"severity": "", "team": ""},
+	}
+	annSets := []map[string]string{
+		nil,
+		{"summary": ""},
+		{"summary": "\x00\x00\x00\x01"},
+	}
+	durations := []float64{0, 1, 300}
+
+	seen := map[string]string{}
+	for _, expr := range adversarial {
+		for _, ls := range labelSets {
+			for _, an := range annSets {
+				for _, d := range durations {
+					id := fmt.Sprintf("%q|%v|%q|%q", expr, d, canonID(ls), canonID(an))
+					fp := domain.Fingerprint(expr, d, 0, ls, an)
+					if prev, dup := seen[fp]; dup && prev != id {
+						t.Fatalf("rule_fingerprint collision:\n  %s\n  %s\nboth address %s", prev, id, fp)
+					}
+					seen[fp] = id
+				}
+			}
+		}
+	}
+	assert.Len(t, seen,
+		len(adversarial)*len(labelSets)*len(annSets)*len(durations),
+		"one content address per distinct rule definition")
+}
+
+// TestFingerprintAgreesWithTheKernel is the reason two implementations of §C.6
+// may exist at all: it is ONE content address with two spellings — this one over a
+// raw map that has never been through NewLabels, and alerts/domain's over
+// constructed value objects — and the day they disagree, rule drift is reported
+// for every rule that happens to be computed by the other path.
+//
+// The corpus is restricted to inputs BOTH can express: whole seconds, and label
+// values without a NUL (NewLabels refuses those as a storability bound).
+func TestFingerprintAgreesWithTheKernel(t *testing.T) {
+	t.Parallel()
+
+	exprs := []string{"", "up == 0", "up{a=\"\x01\"} == 0", "日本語", strings.Repeat("x", 300)}
+	labelSets := []map[string]string{
+		nil,
+		{"severity": "critical"},
+		{"severity": "critical", "team": "sre"},
+		{"severity": ""},
+		{"severity": "\x01\x02"},
+	}
+	annSets := []map[string]string{
+		nil,
+		{"summary": "target down"},
+		{"summary": ""},
+		{"a\x00b": "\x00"},
+	}
+
+	for _, expr := range exprs {
+		for _, ls := range labelSets {
+			for _, an := range annSets {
+				for _, secs := range []int{0, 1, 300, 600} {
+					labels, err := alerts.NewLabels(ls)
+					require.NoError(t, err)
+					annotations, err := alerts.NewAnnotations(an)
+					require.NoError(t, err)
+
+					want := alerts.ComputeRuleFingerprint(expr,
+						time.Duration(secs)*time.Second, 0, labels, annotations).String()
+					got := domain.Fingerprint(expr, float64(secs), 0, ls, an)
+					require.Equal(t, want, got,
+						"§C.6 must have one value: expr=%q for=%ds labels=%v ann=%v", expr, secs, ls, an)
+				}
+			}
+		}
+	}
+}
+
+// canonID renders a map unambiguously for use as a test identity. strconv.Quote
+// on BOTH halves of every pair means no name/value boundary can be smeared, which
+// is the property under test — so it must not be derived from domain.Canon.
+func canonID(m map[string]string) string {
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, n := range names {
+		b.WriteString(strconv.Quote(n))
+		b.WriteString("=")
+		b.WriteString(strconv.Quote(m[n]))
+		b.WriteString(";")
+	}
+	return b.String()
 }
 
 func TestFingerprintShape(t *testing.T) {
@@ -617,7 +775,7 @@ func TestSnapshotValidate(t *testing.T) {
 		mutate func(s *domain.Snapshot)
 		code   string
 	}{
-		{name: "the happy path", mutate: func(s *domain.Snapshot) {}},
+		{name: "the happy path", mutate: func(_ *domain.Snapshot) {}},
 		{
 			name:   "no org",
 			mutate: func(s *domain.Snapshot) { s.OrgID = "" },
