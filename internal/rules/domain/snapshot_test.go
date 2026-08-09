@@ -190,21 +190,37 @@ func TestCanon(t *testing.T) {
 	}{
 		{name: "nil"},
 		{name: "empty", in: map[string]string{}},
-		{name: "one entry", in: map[string]string{"a": "1"}, want: "a\x011\x02"},
+		{
+			// SPEC §C.1: a 4-byte big-endian BYTE length before the name and
+			// another before the value. No separators, so no value can forge
+			// the framing of entries that are not there.
+			name: "one entry",
+			in:   map[string]string{"a": "1"},
+			want: "\x00\x00\x00\x01a\x00\x00\x00\x011",
+		},
 		{
 			name: "names ascend by byte order, not insertion order",
 			in:   map[string]string{"zeta": "3", "alpha": "1", "Beta": "2"},
-			want: "Beta\x012\x02alpha\x011\x02zeta\x013\x02",
+			want: "\x00\x00\x00\x04Beta\x00\x00\x00\x012" +
+				"\x00\x00\x00\x05alpha\x00\x00\x00\x011" +
+				"\x00\x00\x00\x04zeta\x00\x00\x00\x013",
 		},
 		{
-			name: "an empty value still contributes its separators",
+			name: "an empty value still contributes its length prefix",
 			in:   map[string]string{"a": "", "b": "1"},
-			want: "a\x01\x02b\x011\x02",
+			want: "\x00\x00\x00\x01a\x00\x00\x00\x00" +
+				"\x00\x00\x00\x01b\x00\x00\x00\x011",
 		},
 		{
 			name: "values are verbatim UTF-8 with no case folding",
 			in:   map[string]string{"Severity": "Critical", "team": "SRE"},
-			want: "Severity\x01Critical\x02team\x01SRE\x02",
+			want: "\x00\x00\x00\x08Severity\x00\x00\x00\x08Critical" +
+				"\x00\x00\x00\x04team\x00\x00\x00\x03SRE",
+		},
+		{
+			name: "the old separators are ordinary content now",
+			in:   map[string]string{"a": "1\x02c\x012"},
+			want: "\x00\x00\x00\x01a\x00\x00\x00\x051\x02c\x012",
 		},
 	}
 
@@ -239,7 +255,7 @@ func TestFingerprintGolden(t *testing.T) {
 		domain.Fingerprint("", 0, 0, nil, nil))
 
 	assert.Equal(t,
-		"93b33c83fe9c1835cd1de1e07d36c0dbe6d99481934524b0e61f7c84760d03ea",
+		"1e2257b4575d236732ea15000ccb4ab81541b0e50deb5dc29ead4e5a74031f6e",
 		domain.Fingerprint("up == 0", 300, 0,
 			map[string]string{"severity": "critical", "team": "sre"},
 			map[string]string{"summary": "target down"}))

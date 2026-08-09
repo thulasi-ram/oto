@@ -207,9 +207,10 @@ func TestComputeGroupKey(t *testing.T) {
 
 func TestGroupKey_ReceiverAndLabelsAreSeparateFields(t *testing.T) {
 	// The 0x00 field terminator must stop a receiver from impersonating the
-	// leading bytes of the canonical groupLabels.
+	// leading bytes of the canonical groupLabels. The forged tail is the exact
+	// canonical serialisation of {b: "1"}: a 4-byte length before each field.
 	a := ComputeGroupKey(orgA, sourceA, "a", mustLabels(t, map[string]string{"b": "1"}))
-	b := ComputeGroupKey(orgA, sourceA, "a\x00b\x011\x02", Labels{})
+	b := ComputeGroupKey(orgA, sourceA, "a\x00\x00\x00\x00\x01b\x00\x00\x00\x011", Labels{})
 	assert.NotEqual(t, a, b)
 }
 

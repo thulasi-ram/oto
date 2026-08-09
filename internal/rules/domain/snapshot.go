@@ -2,6 +2,7 @@ package domain
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"sort"
 	"strconv"
@@ -262,11 +263,19 @@ func Fingerprint(expr string, forSeconds, keepFiringForSeconds float64, labels, 
 }
 
 // Canon is the canonical label serialisation of SPEC §C.1, with no ignore set:
-// names sorted ascending by byte order, `name 0x01 value 0x02` per entry.
+// names sorted ascending by byte order, and per entry a 4-byte big-endian BYTE
+// length before the name and another before the value.
 //
-// Names and values are used verbatim (UTF-8, no case folding). This function is
-// pure and does no I/O, which is what lets a fingerprint be recomputed anywhere
-// and compared byte for byte.
+// Names and values are used verbatim (UTF-8, no case folding, no escaping). The
+// length prefixes are what make the serialisation injective — a separator-framed
+// encoding lets a value that contains the separators forge entries that are not
+// there, which turns two different rule definitions into one fingerprint. The
+// argument in full is on alerts/domain.Labels.Canonical, which this MUST agree
+// with byte for byte: they are one format with two implementations, because a
+// rule's labels arrive as a raw map that has never been through NewLabels.
+//
+// This function is pure and does no I/O, which is what lets a fingerprint be
+// recomputed anywhere and compared byte for byte.
 func Canon(m map[string]string) string {
 	if len(m) == 0 {
 		return ""
@@ -278,11 +287,15 @@ func Canon(m map[string]string) string {
 	sort.Strings(names)
 
 	var b strings.Builder
+	field := func(s string) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+		b.Write(n[:])
+		b.WriteString(s)
+	}
 	for _, n := range names {
-		b.WriteString(n)
-		b.WriteByte(0x01)
-		b.WriteString(m[n])
-		b.WriteByte(0x02)
+		field(n)
+		field(m[n])
 	}
 	return b.String()
 }

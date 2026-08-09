@@ -2,6 +2,7 @@ package domain
 
 import (
 	"cmp"
+	"encoding/binary"
 	"hash/fnv"
 	"maps"
 	"slices"
@@ -47,12 +48,28 @@ const (
 	LabelService = "service"
 )
 
-// Canonical serialisation separators (SPEC §C.1). They are part of every identity
-// key oto computes and must never change: changing one re-keys every Alert.
-const (
-	canonNameSep  = 0x01
-	canonLabelSep = 0x02
-)
+// canonLenBytes is the width of the length prefix the canonical serialisation
+// writes before every name and every value (SPEC §C.1). Four bytes, big-endian,
+// counting BYTES — not runes, not characters.
+//
+// It is part of every identity key oto computes: changing it re-keys every Alert.
+const canonLenBytes = 4
+
+// canonOverheadPerLabel is what one label costs on top of its own bytes: one
+// length prefix for the name and one for the value. B6 counts this, and so does
+// SerialisedSize, because B6 caps exactly the quantity Canonical produces.
+const canonOverheadPerLabel = 2 * canonLenBytes
+
+// appendCanonField writes one length-prefixed field: a 4-byte big-endian byte
+// count, then the bytes verbatim. Nothing is escaped and no byte is reserved,
+// because the framing is carried by the prefix and not by the content.
+//
+// The conversion is safe by construction: every name and value that reaches here
+// came through NewLabels or NewAnnotations, which cap them far below 2^32.
+func appendCanonField(buf []byte, s string) []byte {
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(s)))
+	return append(buf, s...)
+}
 
 // Label is one name/value pair of a label set. It is an output projection: a
 // Label can only be observed by way of a Labels or LabelSet, both of which have
@@ -75,7 +92,18 @@ type Labels struct{ m map[string]string }
 //
 // Invariants: at most MaxLabels entries; every name matches the Prometheus label
 // name charset; every name at most MaxLabelNameBytes and every value at most
-// MaxLabelValueBytes; canonical serialisation at most MaxLabelSetBytes.
+// MaxLabelValueBytes; no NUL byte anywhere; canonical serialisation at most
+// MaxLabelSetBytes.
+//
+// The NUL bound is a STORABILITY bound, not sanitisation. Postgres `text` cannot
+// hold U+0000 at all, so a value carrying one fails on INSERT whatever oto does
+// with it; refusing it here turns a 500 from layer 6 into a recorded rejection at
+// layer 2. It is the only byte oto refuses, and oto still never edits a value —
+// what upstream said is stored verbatim or not at all.
+//
+// A NUL in a NAME is already refused by the label-name charset, which admits only
+// [a-zA-Z_][a-zA-Z0-9_]*; that rejection carries `invalid_label_name`, and adding
+// a second check for the same byte would be a branch no input can reach.
 //
 // The error codes are the same strings the ingest path records in
 // `ingest_rejections.reason` (§L.3.2), so layer 2 can persist a rejection without
@@ -101,7 +129,11 @@ func NewLabels(in map[string]string) (Labels, error) {
 			return Labels{}, errs.Newf(errs.KindValidation, "label_value_too_large",
 				"label %q value exceeds %d bytes", name, MaxLabelValueBytes)
 		}
-		size += len(name) + len(value) + 2 // the two canonical separators
+		if strings.IndexByte(value, 0x00) >= 0 {
+			return Labels{}, errs.Newf(errs.KindValidation, "invalid_label_value",
+				"label %q value contains a NUL byte, which Postgres text cannot store", name)
+		}
+		size += len(name) + len(value) + canonOverheadPerLabel
 		m[name] = value
 	}
 	if size > MaxLabelSetBytes {
@@ -168,10 +200,38 @@ func (l Labels) Without(names []string) Labels {
 // Canonical renders the canonical serialisation of SPEC §C.1:
 //
 //	for each (name, value) sorted by name ASC in byte order, name NOT in ignore:
-//	    write(name); write(0x01); write(value); write(0x02)
+//	    write(uint32be(len(name)));  write(name)
+//	    write(uint32be(len(value))); write(value)
 //
-// Names and values are used verbatim: UTF-8, no case folding. This byte string is
-// hashed by alert_key, group_key and rule_fingerprint, so it is frozen.
+// Lengths are BYTE counts. Names and values are used verbatim: UTF-8, no case
+// folding, no escaping, and no byte reserved for structure. This byte string is
+// hashed by alert_key, group_key and rule_fingerprint.
+//
+// # WHY LENGTH PREFIXES AND NOT SEPARATORS
+//
+// The serialisation must be INJECTIVE — two different label sets must never
+// produce one byte string — because it IS alert identity. Two Alerts that
+// collide here are one row, one timeline and one Slack thread.
+//
+// The framing this replaced was `name 0x01 value 0x02`, with values written
+// verbatim and their charset unconstrained. That is not injective: a value may
+// contain 0x01 and 0x02 and so forge the framing of labels that are not there.
+// `{alertname:X, b:1, c:2}` and `{alertname:X, b:"1\x02c\x012"}` serialised
+// identically and hashed to one alert_key.
+//
+// A length prefix is unambiguous with no escaping and no reserved byte. It is
+// injective by decodability: a reader takes 4 bytes as a count n, then exactly n
+// bytes as the field, and repeats — so decode(canon(x)) = x for every label set
+// x, and a function with a left inverse is injective. Escaping would have been
+// the alternative and is strictly worse here: it has to edit the operator's bytes
+// to store them, and oto records what upstream said.
+//
+// Values carry no NUL (NewLabels), so a value cannot even spell a length prefix
+// for any field shorter than 16 MiB. That is a consequence, not the mechanism:
+// injectivity holds without it.
+//
+// This format is NOT frozen retroactively — it was changed, deliberately, before
+// oto's first release, and doing so re-keyed every Alert. It is frozen now.
 func (l Labels) Canonical(ignore []string) []byte {
 	return l.Without(ignore).canonical()
 }
@@ -180,14 +240,12 @@ func (l Labels) canonical() []byte {
 	sorted := l.Sorted()
 	size := 0
 	for _, lb := range sorted {
-		size += len(lb.Name) + len(lb.Value) + 2
+		size += len(lb.Name) + len(lb.Value) + canonOverheadPerLabel
 	}
 	buf := make([]byte, 0, size)
 	for _, lb := range sorted {
-		buf = append(buf, lb.Name...)
-		buf = append(buf, canonNameSep)
-		buf = append(buf, lb.Value...)
-		buf = append(buf, canonLabelSep)
+		buf = appendCanonField(buf, lb.Name)
+		buf = appendCanonField(buf, lb.Value)
 	}
 	return buf
 }
@@ -197,7 +255,7 @@ func (l Labels) canonical() []byte {
 func (l Labels) SerialisedSize() int {
 	size := 0
 	for name, value := range l.m {
-		size += len(name) + len(value) + 2
+		size += len(name) + len(value) + canonOverheadPerLabel
 	}
 	return size
 }
@@ -387,10 +445,8 @@ func (a Annotations) Canonical() []byte {
 	sorted := a.Sorted()
 	buf := make([]byte, 0, 64)
 	for _, an := range sorted {
-		buf = append(buf, an.Name...)
-		buf = append(buf, canonNameSep)
-		buf = append(buf, an.Value...)
-		buf = append(buf, canonLabelSep)
+		buf = appendCanonField(buf, an.Name)
+		buf = appendCanonField(buf, an.Value)
 	}
 	return buf
 }

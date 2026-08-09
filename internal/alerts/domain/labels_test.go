@@ -1,7 +1,11 @@
 package domain
 
 import (
+	"encoding/binary"
+	"fmt"
 	"math/rand"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,7 +38,7 @@ func TestNewLabels_Bounds(t *testing.T) {
 		tooMany["l"+strings.Repeat("x", i)] = "v"
 	}
 
-	// Five values of 4000 bytes each serialise to 5*(1+4000+2) = 20015 > B6.
+	// Five values of 4000 bytes each serialise to 5*(1+4000+8) = 20045 > B6.
 	tooBig := map[string]string{}
 	for i, name := range []string{"a", "b", "c", "d", "e"} {
 		_ = i
@@ -52,6 +56,10 @@ func TestNewLabels_Bounds(t *testing.T) {
 		{name: "empty value is legal", in: map[string]string{"a": ""}},
 		{name: "leading underscore name is legal", in: map[string]string{"_a0": "v"}},
 		{name: "unicode value is legal", in: map[string]string{"a": "日本語 ☃ – ok"}},
+		{
+			name: "the canonical framing bytes are legal in a value, and no longer collide",
+			in:   map[string]string{"a": "\x01\x02", "b": "x\x01y\x02z"},
+		},
 
 		{name: "too many labels", in: tooMany, wantCode: "too_many_labels"},
 		{
@@ -85,6 +93,23 @@ func TestNewLabels_Bounds(t *testing.T) {
 			wantCode: "label_value_too_large",
 		},
 		{name: "serialised set too large", in: tooBig, wantCode: "labelset_too_large"},
+		{
+			name:     "NUL in a value",
+			in:       map[string]string{"a": "x\x00y"},
+			wantCode: "invalid_label_value",
+		},
+		{
+			name:     "NUL alone in a value",
+			in:       map[string]string{"a": "\x00"},
+			wantCode: "invalid_label_value",
+		},
+		{
+			// A NUL in a NAME is refused by the charset, not by a second check:
+			// `^[a-zA-Z_][a-zA-Z0-9_]*$` does not admit 0x00 anywhere.
+			name:     "NUL in a name",
+			in:       map[string]string{"a\x00b": "v"},
+			wantCode: "invalid_label_name",
+		},
 	}
 
 	for _, tc := range tests {
@@ -168,12 +193,28 @@ func TestCanonical_IsStableAcrossInsertionOrder(t *testing.T) {
 }
 
 func TestCanonical_ExactBytes(t *testing.T) {
-	// SPEC §C.1: name || 0x01 || value || 0x02, sorted by name ASC in byte order.
+	// SPEC §C.1: uint32be(len(name)) || name || uint32be(len(value)) || value,
+	// sorted by name ASC in byte order. Lengths are BYTE counts.
 	// This is frozen: changing it re-keys every Alert in every installation.
 	ls := mustLabelSet(t, map[string]string{"alertname": "X", "b": "1", "c": "2"})
 	assert.Equal(t,
-		"alertname\x01X\x02b\x011\x02c\x012\x02",
+		"\x00\x00\x00\x09alertname\x00\x00\x00\x01X"+
+			"\x00\x00\x00\x01b\x00\x00\x00\x011"+
+			"\x00\x00\x00\x01c\x00\x00\x00\x012",
 		string(ls.Canonical(nil)))
+}
+
+// TestCanonical_LengthPrefixIsFourBytesBigEndian pins the prefix width and byte
+// order on a name and a value long enough that a narrower prefix, or the other
+// byte order, would produce different bytes.
+func TestCanonical_LengthPrefixIsFourBytesBigEndian(t *testing.T) {
+	name := strings.Repeat("n", 300)   // 0x0000012c
+	value := strings.Repeat("v", 4096) // 0x00001000, the B5 bound exactly
+	l := mustLabels(t, map[string]string{name: value})
+
+	got := string(l.canonical())
+	assert.Equal(t, "\x00\x00\x01\x2c"+name+"\x00\x00\x10\x00"+value, got)
+	assert.Len(t, got, 4+300+4+4096)
 }
 
 func TestCanonical_SortIsByteOrderNotLocale(t *testing.T) {
@@ -181,7 +222,11 @@ func TestCanonical_SortIsByteOrderNotLocale(t *testing.T) {
 	// would interleave them.
 	l := mustLabels(t, map[string]string{"Z": "1", "a": "2", "A": "3"})
 	assert.Equal(t, []string{"A", "Z", "a"}, l.Names())
-	assert.Equal(t, "A\x013\x02Z\x011\x02a\x012\x02", string(l.canonical()))
+	assert.Equal(t,
+		"\x00\x00\x00\x01A\x00\x00\x00\x013"+
+			"\x00\x00\x00\x01Z\x00\x00\x00\x011"+
+			"\x00\x00\x00\x01a\x00\x00\x00\x012",
+		string(l.canonical()))
 }
 
 func TestCanonical_EmptyValueIsNotTheSameAsAbsentLabel(t *testing.T) {
@@ -205,32 +250,31 @@ func TestCanonical_UnicodeIsVerbatimNoCaseFolding(t *testing.T) {
 	assert.NotEqual(t, string(upper.Canonical(nil)), string(lower.Canonical(nil)),
 		"the doc comment says: used verbatim, UTF-8, no case folding")
 
-	// The bytes are the UTF-8 bytes, untouched.
+	// The bytes are the UTF-8 bytes, untouched, and the prefix counts BYTES:
+	// "日本語 ☃" is 7 runes and 13 bytes.
 	ls := mustLabelSet(t, map[string]string{"alertname": "日本語 ☃"})
-	assert.Equal(t, "alertname\x01日本語 ☃\x02", string(ls.Canonical(nil)))
+	assert.Equal(t, "\x00\x00\x00\x09alertname\x00\x00\x00\x0d日本語 ☃",
+		string(ls.Canonical(nil)))
 }
 
-// ⛔ BUG. The canonical serialisation is NOT injective: label VALUES are written
-// verbatim and the two structural separators (0x01, 0x02) are neither escaped nor
-// forbidden in a value. NewLabels constrains label NAMES to
-// `^[a-zA-Z_][a-zA-Z0-9_]*$` but places no charset constraint on values at all,
-// so a value carrying the separators reproduces the framing of two labels.
+// TestCanonical_SeparatorInValueMustNotCollide is the regression for the identity
+// collision the old framing allowed.
 //
-// Two DIFFERENT label sets therefore serialise to the SAME byte string and get
-// the SAME AlertKey — i.e. they become the same Alert, share one row, one
-// timeline and one Slack thread. That contradicts:
+// Under `name 0x01 value 0x02`, values were written verbatim and their charset was
+// unconstrained, so a value carrying the separators reproduced the framing of
+// labels that were not there. `{alertname:X, b:1, c:2}` and
+// `{alertname:X, b:"1\x02c\x012"}` serialised to the SAME bytes and hashed to the
+// SAME AlertKey — one row, one timeline, one Slack thread for two unrelated
+// alerts. That contradicted:
 //   - AlertKey's doc comment ("the identity of an Alert: the PRIMARY dedup key"),
 //   - writeField's stated design intent ("so that two different field splits can
 //     never produce the same byte string"),
 //   - CONTEXT.md §3 ("Alert | The identity of a label set").
 //
 // Prometheus label values are arbitrary UTF-8 and may contain control bytes
-// (`label_replace` over log- or exporter-derived text is the realistic route in).
-// The same defect applies to GroupKey (groupLabels) and RuleFingerprint (rule
-// labels and annotations), which hash the same serialisation.
-func TestCanonical_SeparatorInValueMustNotCollide_BUG(t *testing.T) {
-	t.Skip("BUG: canonical serialisation does not escape 0x01/0x02 in label values, so two distinct label sets collide onto one AlertKey (labels.go:175-193, NewLabels does not constrain the value charset)")
-
+// (`label_replace` over log- or exporter-derived text is the realistic route in),
+// so those bytes are still ACCEPTED — they are simply no longer structural.
+func TestCanonical_SeparatorInValueMustNotCollide(t *testing.T) {
 	twoLabels := mustLabelSet(t, map[string]string{
 		"alertname": "X",
 		"b":         "1",
@@ -258,6 +302,192 @@ func TestCanonical_SeparatorInValueMustNotCollide_BUG(t *testing.T) {
 		"distinct label sets must be distinct Alerts")
 }
 
+// adversarialValues is the corpus the injectivity properties below run over.
+//
+// Every entry is chosen to attack the framing: the old separators, the bytes a
+// length prefix is made of that a value is still allowed to carry, decimal digits
+// (which a text-encoded length would be made of), the Alertmanager fingerprint
+// separator, whitespace, empty, and multi-byte UTF-8 whose BYTE length differs
+// from its rune count.
+//
+// NUL is deliberately absent: NewLabels refuses it, and TestNewLabels_Bounds
+// covers that. Everything here is a value oto must accept AND keep distinct.
+var adversarialValues = []string{
+	"",
+	"1",
+	"2",
+	"\x01",                   // the old name separator
+	"\x02",                   // the old label separator
+	"\x01\x02",               //
+	"1\x02c\x012",            // the exact forgery the old framing allowed
+	"\x01\x01\x01\x01",       // four bytes where a length prefix would sit
+	"b\x01\x01\x01\x011",     // ditto, with a name and a value glued on
+	"\x02\x01\x01\x01b",      // near-miss framing
+	"4",                      // a decimal length, had the prefix been text
+	"0004",                   //
+	"\xff",                   // model.SeparatorByte, which Fingerprint uses
+	" ",                      //
+	"日本語",                    // 3 runes, 9 bytes
+	"☃",                      // 1 rune, 3 bytes
+	strings.Repeat("v", 300), // past what a one-byte length could hold
+	strings.Repeat("v", 301), // and its neighbour
+}
+
+// setIdentity is the ground truth the injectivity properties compare against: an
+// encoding of a label set that is independent of Canonical. strconv.Quote is
+// unambiguous, and quoting BOTH halves of every pair means no name/value boundary
+// can be smeared, which is exactly the property under test.
+func setIdentity(in map[string]string) string {
+	names := make([]string, 0, len(in))
+	for n := range in {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, n := range names {
+		b.WriteString(strconv.Quote(n))
+		b.WriteString("=")
+		b.WriteString(strconv.Quote(in[n]))
+		b.WriteString(";")
+	}
+	return b.String()
+}
+
+// adversarialCorpus enumerates distinct label sets over adversarialValues:
+// `alertname` always present, and `b` and `c` each either ABSENT (index -1) or
+// carrying one of the corpus values. That is 18 × 19 × 19 = 6498 label sets, and
+// every one of them had a neighbour the old separator framing could collide it
+// with.
+func adversarialCorpus() []map[string]string {
+	n := len(adversarialValues)
+	out := make([]map[string]string, 0, n*(n+1)*(n+1))
+	for _, an := range adversarialValues {
+		for b := -1; b < n; b++ {
+			for c := -1; c < n; c++ {
+				in := map[string]string{"alertname": "X" + an}
+				if b >= 0 {
+					in["b"] = adversarialValues[b]
+				}
+				if c >= 0 {
+					in["c"] = adversarialValues[c]
+				}
+				out = append(out, in)
+			}
+		}
+	}
+	return out
+}
+
+// TestCanonical_IsInjectiveOverAdversarialValues is the property the whole
+// serialisation exists to have: no two DISTINCT label sets may share a canonical
+// serialisation, and therefore none may share an AlertKey.
+//
+// It is the general form of TestCanonical_SeparatorInValueMustNotCollide, which
+// pins one witness. A collision here is not a hash collision — SHA-256 is not
+// being doubted — it is two different alerts becoming one Alert.
+func TestCanonical_IsInjectiveOverAdversarialValues(t *testing.T) {
+	org := uuid.MustParse("018f3a4b-0000-7000-8000-000000000009")
+	ck, err := NewClusterKey("prod-eu")
+	require.NoError(t, err)
+
+	byCanon := map[string]string{}
+	byKey := map[string]string{}
+	ids := map[string]struct{}{}
+
+	for _, in := range adversarialCorpus() {
+		ls, err := NewLabelSet(in)
+		require.NoError(t, err, "every corpus member must be constructible: %q", in)
+
+		id := setIdentity(in)
+		ids[id] = struct{}{}
+
+		canon := string(ls.Canonical(nil))
+		if prev, seen := byCanon[canon]; seen && prev != id {
+			t.Fatalf("canonical collision: %s and %s both serialise to %q", prev, id, canon)
+		}
+		byCanon[canon] = id
+
+		key := ComputeAlertKey(org, ck, ls, nil).String()
+		if prev, seen := byKey[key]; seen && prev != id {
+			t.Fatalf("AlertKey collision: %s and %s both key to %s", prev, id, key)
+		}
+		byKey[key] = id
+	}
+
+	assert.Equal(t, len(ids), len(byCanon), "one canonical serialisation per distinct label set")
+	assert.Equal(t, len(ids), len(byKey), "one AlertKey per distinct label set")
+	assert.Greater(t, len(ids), 6000, "the corpus must actually be large")
+}
+
+// TestCanonical_RoundTripsThroughAnIndependentDecoder is the direct proof of
+// injectivity, rather than a search for a counter-example.
+//
+// A function with a left inverse is injective. decodeCanonical is that inverse,
+// written here from the FORMAT and not from the encoder, so `decode(canon(x)) = x`
+// for every x in the corpus establishes that no two x can share a serialisation.
+// No separator framing could pass this test: the decoder would recover four
+// labels from a set that has two.
+func TestCanonical_RoundTripsThroughAnIndependentDecoder(t *testing.T) {
+	for _, in := range adversarialCorpus() {
+		ls, err := NewLabelSet(in)
+		require.NoError(t, err)
+
+		got, err := decodeCanonical(ls.Canonical(nil))
+		require.NoError(t, err, "the canonical serialisation must be decodable: %q", in)
+		assert.Equal(t, in, got, "decode(canonical(x)) must be x")
+	}
+
+	// Annotations share the framing, and their NAMES are deliberately
+	// unconstrained — so a name may itself carry the old separators.
+	ann, err := NewAnnotations(map[string]string{
+		"summary":       "s\x01\x02",
+		"a\x01b\x02":    "1",
+		"grafana.com/x": "",
+	})
+	require.NoError(t, err)
+	got, err := decodeCanonical(ann.Canonical())
+	require.NoError(t, err)
+	assert.Equal(t, ann.Map(), got)
+}
+
+// decodeCanonical parses SPEC §C.1 back into a map, reading only the format:
+//
+//	uint32be(len(name)) || name || uint32be(len(value)) || value, repeated.
+//
+// It uses encoding/binary rather than the package's own helper on purpose — a
+// decoder that shares the encoder's code proves nothing.
+func decodeCanonical(b []byte) (map[string]string, error) {
+	out := map[string]string{}
+	field := func() (string, error) {
+		if len(b) < 4 {
+			return "", fmt.Errorf("truncated length prefix: %d bytes left", len(b))
+		}
+		n := int(binary.BigEndian.Uint32(b[:4]))
+		b = b[4:]
+		if len(b) < n {
+			return "", fmt.Errorf("truncated field: want %d bytes, have %d", n, len(b))
+		}
+		s := string(b[:n])
+		b = b[n:]
+		return s, nil
+	}
+	for len(b) > 0 {
+		name, err := field()
+		if err != nil {
+			return nil, err
+		}
+		value, err := field()
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("duplicate name %q", name)
+		}
+		out[name] = value
+	}
+	return out, nil
+}
+
 func TestLabels_Without(t *testing.T) {
 	l := mustLabels(t, map[string]string{"a": "1", "b": "2", "c": "3"})
 
@@ -278,19 +508,23 @@ func TestLabelSet_WithoutNeverDropsAlertname(t *testing.T) {
 	assert.Equal(t, 1, stripped.Len())
 
 	// Canonical honours the same rule.
-	assert.Equal(t, "alertname\x01X\x02", string(ls.Canonical([]string{"alertname", "pod"})))
+	assert.Equal(t, "\x00\x00\x00\x09alertname\x00\x00\x00\x01X",
+		string(ls.Canonical([]string{"alertname", "pod"})))
 }
 
 func TestLabelSet_CanonicalIgnore(t *testing.T) {
 	ls := mustLabelSet(t, map[string]string{"alertname": "X", "pod": "p1", "replica": "r2"})
 
-	assert.Equal(t, "alertname\x01X\x02pod\x01p1\x02replica\x01r2\x02",
-		string(ls.Canonical(nil)))
-	assert.Equal(t, "alertname\x01X\x02replica\x01r2\x02",
-		string(ls.Canonical([]string{"pod"})))
-	assert.Equal(t, "alertname\x01X\x02",
-		string(ls.Canonical([]string{"pod", "replica"})))
-	assert.Equal(t, "alertname\x01X\x02pod\x01p1\x02replica\x01r2\x02",
+	const (
+		alertname = "\x00\x00\x00\x09alertname\x00\x00\x00\x01X"
+		pod       = "\x00\x00\x00\x03pod\x00\x00\x00\x02p1"
+		replica   = "\x00\x00\x00\x07replica\x00\x00\x00\x02r2"
+	)
+
+	assert.Equal(t, alertname+pod+replica, string(ls.Canonical(nil)))
+	assert.Equal(t, alertname+replica, string(ls.Canonical([]string{"pod"})))
+	assert.Equal(t, alertname, string(ls.Canonical([]string{"pod", "replica"})))
+	assert.Equal(t, alertname+pod+replica,
 		string(ls.Canonical([]string{"absent"})),
 		"ignoring a label the set does not carry changes nothing")
 }
@@ -481,7 +715,10 @@ func TestAnnotations_EqualAndCanonical(t *testing.T) {
 	assert.False(t, a.Equal(empty))
 	assert.True(t, empty.Equal(Annotations{}))
 
-	assert.Equal(t, "description\x01d\x02summary\x01s\x02", string(a.Canonical()))
+	assert.Equal(t,
+		"\x00\x00\x00\x0bdescription\x00\x00\x00\x01d"+
+			"\x00\x00\x00\x07summary\x00\x00\x00\x01s",
+		string(a.Canonical()))
 	assert.Equal(t, string(a.Canonical()), string(same.Canonical()),
 		"annotation order must not move rule_fingerprint (§C.6)")
 	assert.Empty(t, empty.Canonical())
