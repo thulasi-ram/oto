@@ -207,6 +207,10 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 // ⭐ 00030 is a DROP, so its Down is a CREATE, and that is the direction most
 // likely to be written carelessly and never run. Rolling it back here is what
 // proves an operator can undeploy the migration that removed a table.
+//
+// 00032 is asserted on for the same reason at the other end of the stack: it
+// takes a DEFAULT away, so its Down puts one back, and a restored default is
+// what keeps a rolled-back release able to write the table at all.
 func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 	env := newEnv(t)
 	dsn := env.cfg.DB.URL
@@ -215,9 +219,60 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 30 {
-		t.Fatalf("latest migration is %d, want 30 — this test pins the number so that a "+
+	if latest != 32 {
+		t.Fatalf("latest migration is %d, want 32 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here", latest)
+	}
+
+	// 00032's Up took the DATABASE's clock away from a table whose `updated_at`
+	// has always come from the application. Its Down puts the defaults back, and
+	// that is the direction an operator runs at 02:00 — a DROP DEFAULT whose
+	// reverse was never executed is exactly the one-line migration everybody
+	// assumes works. Both states are asserted: here at the top of the stack, and
+	// again below once the rollback loop has passed it.
+	channelsDefaults := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM information_schema.columns
+			  WHERE table_name = 'channels' AND column_name IN ('created_at','updated_at')
+			    AND column_default IS NOT NULL`).Scan(&n); err != nil {
+			t.Fatalf("introspect channels defaults: %v", err)
+		}
+		return n
+	}
+	if channelsDefaults() != 0 {
+		t.Fatal("channels.created_at or channels.updated_at still has a DEFAULT at migration 32; " +
+			"00032 exists to take the database's clock off this table")
+	}
+
+	// Migrations land concurrently, so everything ABOVE the trio this test is
+	// about is rolled back one at a time and only 00032 is asserted on: what the
+	// rest of this test proves is that 00030, 00029 and 00028 can be undone, not
+	// who else has landed since.
+	appliedTop := func() int64 {
+		t.Helper()
+		st, err := migrate.Statuses(env.ctx, dsn)
+		if err != nil {
+			t.Fatalf("statuses: %v", err)
+		}
+		var top int64
+		for _, s := range st {
+			if s.Applied && s.Version > top {
+				top = s.Version
+			}
+		}
+		return top
+	}
+	for appliedTop() > 30 {
+		if err := migrate.Down(env.ctx, dsn); err != nil {
+			t.Fatalf("goose down %s: %v", migrate.FormatVersion(appliedTop()), err)
+		}
+	}
+	if channelsDefaults() != 2 {
+		t.Fatal("channels lost its DEFAULT now() permanently: 00032's Down did not restore it, " +
+			"so an operator rolling the release back would meet a not-null violation on the " +
+			"first channel a release-N pod creates")
 	}
 
 	// The table 00030 dropped is gone at the top of the stack.

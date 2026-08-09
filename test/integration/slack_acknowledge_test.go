@@ -623,12 +623,16 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 		// satisfies the real constraint rather than relaxing it.
 		exec(`INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version)
 		      VALUES ($1,$2,'slack_bot_token', decode(repeat('00', 32), 'hex'), 1)`, credID, orgID)
-		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id)
-		      VALUES ($1,$2,'slack',$3,$4::jsonb,$5)`,
+		// `created_at` and `updated_at` are NAMED: 00032 removed the database
+		// default so that no row on this table can take the database's clock while
+		// its `updated_at` writers take the application's.
+		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id,
+		         created_at, updated_at)
+		      VALUES ($1,$2,'slack',$3,$4::jsonb,$5,$6,$6)`,
 			id.New(), orgID, slug+"-alerts",
 			fmt.Sprintf(`{"team_id":%q,"conversation_id":%q,"conversation_name":"%s-alerts"}`,
 				slackTeam, conversation, slug),
-			credID)
+			credID, now)
 
 		return groupID, alertID, occID
 	}

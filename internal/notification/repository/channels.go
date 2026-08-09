@@ -152,12 +152,23 @@ func (r *ChannelRepository) Get(
 	return row.toDomain(), nil
 }
 
+// `health_checked_at` takes the caller's instant verbatim; `updated_at` is
+// MONOTONIC.
+//
+// ⭐ THE GREATEST IS THE FIX FOR `internal_error/channels_time_ck`. Every
+// timestamp on `channels` comes from the application (00032 removed the DB
+// default that used to stamp `created_at`), but "the application" is N pods and N
+// clocks, and this is the first write a brand-new channel receives: a dispatcher
+// a few milliseconds behind the pod that created the destination would write an
+// `updated_at` below `created_at` and fail channels_time_ck with a 23514 — a 500
+// on the first delivery, with nothing actually wrong. Same idiom, same reason, as
+// OrderingStore.Advance in threads.go.
 const setChannelHealthSQL = `
 UPDATE channels
    SET health_status = $3,
        health_error  = $4,
        health_checked_at = $5,
-       updated_at    = $5
+       updated_at    = GREATEST(updated_at, $5)
  WHERE org_id = $1 AND id = $2
    AND (health_status IS DISTINCT FROM $3 OR health_error IS DISTINCT FROM $4)`
 

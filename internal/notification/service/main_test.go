@@ -57,23 +57,23 @@ func newFixture(t *testing.T, caps domain.Capability) fixture {
 		suffix    = org.ID.String()[:8]
 	)
 
-	// ⚠️ created_at IS BACKDATED ON PURPOSE, and it is covering for a real
-	// two-clock hazard rather than for a test bug.
+	// The timestamps come from the HARNESS CLOCK, like every other builder here,
+	// and the columns are named because 00032 took the database's `DEFAULT now()`
+	// away: `channels` has no clock of its own.
 	//
-	// `channels.created_at` defaults to the DATABASE's now(), while
-	// ChannelRepository.SetHealth writes `updated_at` from the GO PROCESS's
-	// clock. `channels_time_ck` requires updated_at >= created_at, so any
-	// deployment whose app server lags its database by a few milliseconds turns
-	// the first delivery's health write into a 23514 — a 500. On a Colima VM the
-	// two clocks differ by exactly that much, and this fixture failed roughly one
-	// run in two before the interval was added. Backdating removes the flake from
-	// the fixture; the hazard in SetHealth is production's to fix.
+	// This used to read `now() - interval '1 hour'`, and the backdating was
+	// covering for a real defect rather than a test bug — `created_at` took the
+	// DATABASE's clock while `SetHealth` wrote `updated_at` from the GO process's,
+	// so an app server milliseconds behind its database failed the first delivery's
+	// health write on `channels_time_ck` with a 500. On a Colima VM the two clocks
+	// differ by exactly that much and this fixture failed roughly one run in two.
+	// 00032 plus the monotonic `updated_at` writers fixed it where it lived, so the
+	// fudge is gone: seed the honest instant and let the constraint mean something.
 	h.Exec(`INSERT INTO channels
 	          (id, org_id, type, name, config, capabilities, renderer, thread_updates,
 	           created_at, updated_at)
-	        VALUES ($1,$2,'webhook',$3,'{}'::jsonb,$4,'webhook.json',true,
-	                now() - interval '1 hour', now() - interval '1 hour')`,
-		channelID, org.ID, "chan-"+suffix, int64(caps))
+	        VALUES ($1,$2,'webhook',$3,'{}'::jsonb,$4,'webhook.json',true,$5,$5)`,
+		channelID, org.ID, "chan-"+suffix, int64(caps), h.Now())
 	h.Exec(`INSERT INTO notification_policies (id, org_id, name, priority, reasons, channel_ids)
 	        VALUES ($1,$2,$3,1,ARRAY['fired','new_alerts'],ARRAY[$4::uuid])`,
 		policyID, org.ID, "pol-"+suffix, channelID)

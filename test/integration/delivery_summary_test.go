@@ -314,9 +314,12 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 		// Named by index, not by a uuid prefix: ids here are UUIDv7 and their
 		// leading bytes are a millisecond timestamp, so five rows minted in one
 		// loop share a prefix and collide on `channels_name_uniq`.
-		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id)
-		      VALUES ($1,$2,'slack',$3,'{"channel":"#sre"}'::jsonb,$4)`,
-			channelID, orgID, "sre-"+d.status, credentialID)
+		// `created_at`/`updated_at` are named because 00032 removed the database
+		// default: `channels` timestamps come from the application, never from now().
+		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id,
+		         created_at, updated_at)
+		      VALUES ($1,$2,'slack',$3,'{"channel":"#sre"}'::jsonb,$4,$5,$5)`,
+			channelID, orgID, "sre-"+d.status, credentialID, now)
 
 		var (
 			providerMessageID *string
@@ -362,9 +365,10 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 		decoyNotification, orgID, decoyGroup, now)
 	for i := range 2 {
 		channelID := id.New()
-		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id)
-		      VALUES ($1,$2,'slack',$3,'{"channel":"#other"}'::jsonb,$4)`,
-			channelID, orgID, "other-"+string(rune('a'+i)), credentialID)
+		exec(`INSERT INTO channels (id, org_id, type, name, config, credential_id,
+		         created_at, updated_at)
+		      VALUES ($1,$2,'slack',$3,'{"channel":"#other"}'::jsonb,$4,$5,$5)`,
+			channelID, orgID, "other-"+string(rune('a'+i)), credentialID, now)
 		exec(`INSERT INTO notification_deliveries (id, org_id, notification_id, channel_id, mode,
 		         status, attempts, provider_message_id, sent_at, created_at, updated_at)
 		      VALUES ($1,$2,$3,$4,'post_root','sent',1,'1712345678.000900',$5,$5,$5)`,

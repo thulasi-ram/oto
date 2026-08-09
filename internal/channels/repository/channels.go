@@ -233,6 +233,16 @@ func (r *ChannelRepository) List(
 
 // ------------------------------------------------------------------ writes
 
+// ⭐ `created_at` AND `updated_at` ARE BOTH PASSED, from the same read of the
+// injected clock ($13 twice). Neither is left to the column default, and 00032
+// removed that default so this cannot regress quietly.
+//
+// The application owns time here (`platform/clock`), and the reason is
+// `channels_time_ck`: `updated_at >= created_at`. If `created_at` came from
+// `DEFAULT now()` — the DATABASE's clock — while every `updated_at` writer below
+// stamps the GO process's, then an app server a few milliseconds behind its
+// database would fail the FIRST health write on a new channel with a 23514: a
+// 500 on the first delivery, with nothing actually wrong.
 const insertChannelSQL = `
 INSERT INTO channels (id, org_id, type, name, config, credential_id, capabilities,
                       renderer, verbosity, thread_updates, show_field_emoji, enabled,
@@ -290,6 +300,14 @@ func (r *ChannelRepository) Create(
 // every combination of supplied fields. `updated_at` moves unconditionally,
 // because channels_time_ck requires it to be >= created_at and the settings
 // screen orders on it.
+//
+// ⭐ GREATEST KEEPS `updated_at` MONOTONIC, and that is a correctness guard, not
+// a nicety. Every timestamp on this row comes from the application (00032), but
+// "the application" is N pods and N clocks: a pod a few milliseconds behind the
+// one that created the channel would otherwise write an `updated_at` BELOW
+// `created_at` and fail channels_time_ck with a 23514 — a 500 on an ordinary
+// settings PATCH. GREATEST makes the check unfalsifiable while leaving the value
+// app-owned; it is the same idiom, for the same reason, as OrderingStore.Advance.
 const updateChannelSQL = `
 UPDATE channels SET
     name             = COALESCE($3, name),
@@ -301,7 +319,7 @@ UPDATE channels SET
     thread_updates   = COALESCE($10, thread_updates),
     show_field_emoji = COALESCE($11, show_field_emoji),
     enabled          = COALESCE($12, enabled),
-    updated_at       = $13
+    updated_at       = GREATEST(updated_at, $13)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
@@ -363,8 +381,10 @@ func (r *ChannelRepository) Update(
 	return r.Get(ctx, s, stored)
 }
 
+// `deleted_at` records the caller's instant exactly; `updated_at` is monotonic
+// for the reason given on updateChannelSQL.
 const softDeleteChannelSQL = `
-UPDATE channels SET deleted_at = $3, enabled = false, updated_at = $3
+UPDATE channels SET deleted_at = $3, enabled = false, updated_at = GREATEST(updated_at, $3)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`
 
 // SoftDelete stops future deliveries and leaves history intact.
@@ -426,9 +446,16 @@ func (r *ChannelRepository) ReferencingPolicies(
 	return out, nil
 }
 
+// `health_checked_at` is the probe's OWN instant and is written verbatim — it
+// answers "when was this last checked" and a monotonic version of it would lie.
+// `updated_at` is the row's version and is monotonic (see updateChannelSQL):
+// this is the write that produced `internal_error/channels_time_ck` in
+// production, because it is the FIRST write after an INSERT and therefore the one
+// with the least clock distance to absorb.
 const setChannelHealthSQL = `
 UPDATE channels
-   SET health_status = $3, health_error = $4, health_checked_at = $5, updated_at = $5
+   SET health_status = $3, health_error = $4, health_checked_at = $5,
+       updated_at = GREATEST(updated_at, $5)
  WHERE org_id = $1 AND id = $2
    AND (health_status IS DISTINCT FROM $3 OR health_error IS DISTINCT FROM $4)`
 
