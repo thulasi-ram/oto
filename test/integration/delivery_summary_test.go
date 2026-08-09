@@ -268,9 +268,11 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	// blob has a 29-byte floor — a 12-byte nonce, a 16-byte tag and at least one
 	// byte of plaintext. The seed satisfies the real constraint rather than
 	// relaxing it; nothing ever decrypts this row.
-	exec(`INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version)
-	      VALUES ($1,$2,'slack_bot_token', decode(repeat('00', 32), 'hex'), 1)`,
-		credentialID, orgID)
+	// `created_at` is NAMED: 00033 removed the database default, so this table's
+	// timestamps come from the application like `channels`' do.
+	exec(`INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version, created_at)
+	      VALUES ($1,$2,'slack_bot_token', decode(repeat('00', 32), 'hex'), 1, $3)`,
+		credentialID, orgID, now)
 
 	// ⛔ The intent is GROUP-scoped, with alert_id NULL — which is what a `fired`
 	// notification actually looks like. An alert roll-up that only counted

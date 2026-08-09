@@ -84,7 +84,7 @@ func TestNewMemberAcceptances(t *testing.T) {
 	}{
 		{
 			name:   "still a member — no left_at",
-			mutate: func(p *domain.MemberParams) {},
+			mutate: func(_ *domain.MemberParams) {},
 		},
 		{
 			name:   "left_at equal to joined_at is the boundary",

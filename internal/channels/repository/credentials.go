@@ -102,6 +102,16 @@ func NewCredentialRepository(q db.Querier, seal Sealer, open Unsealer, clk clock
 
 func (r *CredentialRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
+// ⭐ `created_at` IS PASSED, never left to a column default, and 00033 removed
+// that default so this cannot regress quietly.
+//
+// The application owns time here (`platform/clock`), and the reason is
+// `channel_credentials_rot_ck`: `rotated_at IS NULL OR rotated_at >= created_at`.
+// If `created_at` came from `DEFAULT now()` — the DATABASE's clock — while
+// Rotate below stamps the GO process's, an app server a few milliseconds behind
+// its database would fail the first rotation of a fresh credential with a 23514.
+// It is the same defect 00032 fixed on `channels`; only production's Create
+// already naming the column kept it off the live paths.
 const insertCredentialSQL = `
 INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version, created_at)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -142,9 +152,25 @@ func (r *CredentialRepository) Create(
 	return out, nil
 }
 
+// ⭐ `rotated_at` IS ADVANCED MONOTONICALLY, and on this table it is the ordering
+// column as well as the observation: `channel_credentials_rot_ck` is what makes
+// it one. Every timestamp here comes from the application (00033), but "the
+// application" is N pods with N clocks, and the pod rotating a secret is rarely
+// the pod that sealed it. A pod a few milliseconds behind the creator would
+// otherwise write a `rotated_at` below `created_at` and fail the CHECK with a
+// 23514 — a 500 on an ordinary credential rotation.
+//
+// GREATEST is given THREE arguments, not two, because two invariants have to
+// hold and each covers a different one. `created_at` is the floor the CHECK
+// names, which the FIRST rotation can fall below; `rotated_at` is the floor a
+// LATER rotation from a lagging pod can fall below, which would report the
+// secret as older than it is. GREATEST ignores NULLs, so a never-rotated row —
+// where `rotated_at` is NULL — takes the max of the other two, exactly as it
+// should.
 const rotateCredentialSQL = `
 UPDATE channel_credentials
-   SET kind = $3, sealed = $4, key_version = $5, rotated_at = $6
+   SET kind = $3, sealed = $4, key_version = $5,
+       rotated_at = GREATEST(created_at, rotated_at, $6)
  WHERE org_id = $1 AND id = $2
 RETURNING id, kind, created_at, rotated_at`
 

@@ -313,11 +313,9 @@ func TestInterestCanOnlyNarrow(t *testing.T) {
 		domain.ResourceAlert, domain.ResourceOccurrence, domain.ResourceGroup,
 		domain.ResourceAlertEvent, domain.ResourceDelivery, domain.ResourceSource,
 	} {
-		for _, ev := range []domain.Event{
+		events = append(events, []domain.Event{
 			event(res, nil, nil), event(res, &a, nil), event(res, nil, &g), event(res, &a, &g),
-		} {
-			events = append(events, ev)
-		}
+		}...)
 	}
 
 	var unfiltered domain.Interest

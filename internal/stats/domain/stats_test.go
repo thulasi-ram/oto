@@ -278,6 +278,7 @@ func TestDeliveryCounts_DeadIsAFirstClassField(t *testing.T) {
 	}
 
 	d := DeliveryCounts{Sent: 3, Dead: 1}
+	assert.Equal(t, 3, d.Sent, "Sent is carried alongside Dead, never instead of it")
 	assert.NotZero(t, d.Dead, "a non-zero Dead is a product signal, not a footnote")
 }
 

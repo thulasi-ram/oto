@@ -173,7 +173,19 @@ lint:
     if [ -n "$unformatted" ]; then echo "gofmt: $unformatted"; exit 1; fi
     go build ./...
     go vet ./...
-    golangci-lint run ./...
+    # golangci-lint is invoked by ABSOLUTE PATH and its absence is fatal.
+    # Calling it by name goes through whatever wrapper is on PATH; the one on
+    # this project's machines mis-parses `run` as a path, prints "No issues
+    # found" and exits 0 EVEN WHEN THE BINARY IS NOT INSTALLED. That is a green
+    # that means nothing, for the single gate that mechanically enforces the
+    # CONTEXT.md §5 layering rules — so a missing linter must fail the build
+    # rather than pass it silently.
+    bin="$(go env GOPATH)/bin/golangci-lint"
+    if [ ! -x "$bin" ]; then
+      echo "golangci-lint is not installed at $bin — run: just setup" >&2
+      exit 1
+    fi
+    "$bin" run ./...
 
 # Go tests. Integration tests need Docker.
 [group('check')]
@@ -241,5 +253,8 @@ ci: lint lint-vocabulary lint-reachability generate-check test ui-build ui-test
 setup:
     go mod download
     cd {{web_dir}} && npm install
-    @command -v golangci-lint >/dev/null || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+    # Tested by absolute path, not `command -v`: a wrapper on PATH answers for a
+    # binary that is not there, which is how the tree ran without a layering
+    # gate at all. See the note in `just lint`.
+    @test -x "$(go env GOPATH)/bin/golangci-lint" || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
     @echo "✓ ready — now run: just up"

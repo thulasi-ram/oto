@@ -304,7 +304,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	tokenRepo := identityrepo.NewAPITokenRepository(general)
 	c.Identity = identityservice.New(identityservice.Deps{
-		Orgs:        identityrepo.NewOrgRepository(general),
+		Orgs:        identityrepo.NewOrgRepository(general, clk),
 		Users:       identityrepo.NewUserRepository(general),
 		Tokens:      tokenRepo,
 		Sessions:    identityrepo.NewSessionRepository(general),

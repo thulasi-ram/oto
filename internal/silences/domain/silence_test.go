@@ -476,6 +476,11 @@ func TestFilter_IsPlainCompiledQueryData(t *testing.T) {
 	}
 	assert.Equal(t, []string{"active", "pending"}, f.States)
 	assert.Equal(t, sourceID, f.SourceID)
+	// Every field round-trips as it was set: a Filter is compiled query data and
+	// nothing normalises, trims or hashes it on the way in.
+	assert.Equal(t, "ram@example.com", f.CreatedBy)
+	assert.Equal(t, "deploy", f.Query)
+	assert.Equal(t, "abc", f.FilterHash)
 
 	// The zero filter constrains nothing.
 	var zero Filter

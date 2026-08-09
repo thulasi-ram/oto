@@ -578,7 +578,11 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 	// it is the first-org command, not a factory — and a second tenant is exactly
 	// what makes the cross-tenant case reachable, so it is inserted as a row.
 	w.betaOrg = id.New()
-	exec(`INSERT INTO orgs (id, slug, name) VALUES ($1,'beta','Beta')`, w.betaOrg)
+	// `created_at`/`updated_at` are NAMED: 00033 removed the database default so
+	// that no `orgs` row can take the database's clock while `UpdateSettings`
+	// takes the application's.
+	exec(`INSERT INTO orgs (id, slug, name, created_at, updated_at)
+	      VALUES ($1,'beta','Beta',$2,$2)`, w.betaOrg, now)
 
 	// The LINK. `ram` in the Slack workspace is `ram@alpha.example` in oto —
 	// but only inside org alpha.
@@ -621,8 +625,11 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 		// The Slack destination. `channels_cred_ck` requires a credential on a
 		// slack channel, and the sealed blob has a 29-byte floor; the seed
 		// satisfies the real constraint rather than relaxing it.
-		exec(`INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version)
-		      VALUES ($1,$2,'slack_bot_token', decode(repeat('00', 32), 'hex'), 1)`, credID, orgID)
+		// `created_at` is NAMED for the reason 00033 gives: this table's clock is
+		// the application's, and `rotated_at` is compared against this value.
+		exec(`INSERT INTO channel_credentials (id, org_id, kind, sealed, key_version, created_at)
+		      VALUES ($1,$2,'slack_bot_token', decode(repeat('00', 32), 'hex'), 1, $3)`,
+			credID, orgID, now)
 		// `created_at` and `updated_at` are NAMED: 00032 removed the database
 		// default so that no row on this table can take the database's clock while
 		// its `updated_at` writers take the application's.

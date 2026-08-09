@@ -44,7 +44,13 @@ func (h *H) Org() Org { return h.OrgNamed(uniqueSlug("org")) }
 func (h *H) OrgNamed(slug string) Org {
 	h.T.Helper()
 	org := Org{ID: id.New(), Slug: slug, Name: "Org " + slug}
-	h.Exec(`INSERT INTO orgs (id, slug, name) VALUES ($1, $2, $3)`, org.ID, org.Slug, org.Name)
+	// `created_at`/`updated_at` are NAMED and take the harness clock, like every
+	// other timestamp a builder writes. 00033 removed the database default from
+	// this table for the same reason 00032 removed it from `channels`: `orgs`
+	// timestamps come from the application, so a seed that let `now()` fill them
+	// would be seeding a row the product itself cannot write.
+	h.Exec(`INSERT INTO orgs (id, slug, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $4)`,
+		org.ID, org.Slug, org.Name, h.Now())
 	org.Scope = Scope(h.T, org.ID)
 	return org
 }

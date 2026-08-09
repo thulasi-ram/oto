@@ -37,9 +37,11 @@ func seedSource(t *testing.T, e *env) (db.TenantScope, *repository.SourceReposit
 	t.Helper()
 
 	orgID, clusterID, sourceID := id.New(), id.New(), id.New()
+	// `created_at`/`updated_at` are NAMED: 00033 removed this table's DEFAULT
+	// now(), because `orgs` timestamps come from the application's clock.
 	if _, err := e.pool.Exec(e.ctx,
-		`INSERT INTO orgs (id, slug, name) VALUES ($1, $2, $3)`,
-		orgID, "t"+orgID.String()[:8], "timings org"); err != nil {
+		`INSERT INTO orgs (id, slug, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $4)`,
+		orgID, "t"+orgID.String()[:8], "timings org", time.Now().UTC()); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
 	if _, err := e.pool.Exec(e.ctx,
@@ -208,9 +210,9 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 // likely to be written carelessly and never run. Rolling it back here is what
 // proves an operator can undeploy the migration that removed a table.
 //
-// 00032 is asserted on for the same reason at the other end of the stack: it
-// takes a DEFAULT away, so its Down puts one back, and a restored default is
-// what keeps a rolled-back release able to write the table at all.
+// 00032 and 00033 are asserted on for the same reason at the other end of the
+// stack: they take DEFAULTs away, so their Downs put them back, and a restored
+// default is what keeps a rolled-back release able to write those tables at all.
 func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 	env := newEnv(t)
 	dsn := env.cfg.DB.URL
@@ -219,37 +221,56 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 32 {
-		t.Fatalf("latest migration is %d, want 32 — this test pins the number so that a "+
+	if latest != 33 {
+		t.Fatalf("latest migration is %d, want 33 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here", latest)
 	}
 
-	// 00032's Up took the DATABASE's clock away from a table whose `updated_at`
-	// has always come from the application. Its Down puts the defaults back, and
-	// that is the direction an operator runs at 02:00 — a DROP DEFAULT whose
-	// reverse was never executed is exactly the one-line migration everybody
-	// assumes works. Both states are asserted: here at the top of the stack, and
-	// again below once the rollback loop has passed it.
-	channelsDefaults := func() int {
+	// 00032 and 00033 took the DATABASE's clock away from three tables whose
+	// other timestamps have always come from the application. Their Downs put the
+	// defaults back, and that is the direction an operator runs at 02:00 — a DROP
+	// DEFAULT whose reverse was never executed is exactly the one-line migration
+	// everybody assumes works. Both states are asserted: here at the top of the
+	// stack, and again below once the rollback loop has passed them.
+	//
+	// The two are counted separately because they roll back separately, and a
+	// combined count would pass while one of the two Downs did nothing.
+	clockDefaults := func(table string, columns ...string) int {
 		t.Helper()
 		var n int
 		if err := env.pool.QueryRow(env.ctx,
+			// The identifier columns are `information_schema.sql_identifier`, a
+			// domain over `name`, so both sides are cast to text: a bare parameter
+			// would leave Postgres resolving `name = text[]` and erroring.
 			`SELECT count(*) FROM information_schema.columns
-			  WHERE table_name = 'channels' AND column_name IN ('created_at','updated_at')
-			    AND column_default IS NOT NULL`).Scan(&n); err != nil {
-			t.Fatalf("introspect channels defaults: %v", err)
+			  WHERE table_name::text = $1 AND column_name::text = ANY($2::text[])
+			    AND column_default IS NOT NULL`, table, columns).Scan(&n); err != nil {
+			t.Fatalf("introspect %s defaults: %v", table, err)
 		}
 		return n
 	}
+	channelsDefaults := func() int {
+		t.Helper()
+		return clockDefaults("channels", "created_at", "updated_at")
+	}
+	appClockDefaults := func() int {
+		t.Helper()
+		return clockDefaults("orgs", "created_at", "updated_at") +
+			clockDefaults("channel_credentials", "created_at")
+	}
 	if channelsDefaults() != 0 {
-		t.Fatal("channels.created_at or channels.updated_at still has a DEFAULT at migration 32; " +
+		t.Fatal("channels.created_at or channels.updated_at still has a DEFAULT at migration 33; " +
 			"00032 exists to take the database's clock off this table")
+	}
+	if appClockDefaults() != 0 {
+		t.Fatal("orgs or channel_credentials still has a DEFAULT now() on a column the " +
+			"application stamps; 00033 exists to take the database's clock off both tables")
 	}
 
 	// Migrations land concurrently, so everything ABOVE the trio this test is
-	// about is rolled back one at a time and only 00032 is asserted on: what the
-	// rest of this test proves is that 00030, 00029 and 00028 can be undone, not
-	// who else has landed since.
+	// about is rolled back one at a time and only 00032 and 00033 are asserted
+	// on: what the rest of this test proves is that 00030, 00029 and 00028 can be
+	// undone, not who else has landed since.
 	appliedTop := func() int64 {
 		t.Helper()
 		st, err := migrate.Statuses(env.ctx, dsn)
@@ -273,6 +294,11 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 		t.Fatal("channels lost its DEFAULT now() permanently: 00032's Down did not restore it, " +
 			"so an operator rolling the release back would meet a not-null violation on the " +
 			"first channel a release-N pod creates")
+	}
+	if appClockDefaults() != 3 {
+		t.Fatal("orgs or channel_credentials lost its DEFAULT now() permanently: 00033's Down " +
+			"did not restore it, so an operator rolling the release back would meet a not-null " +
+			"violation on the first tenant or credential a release-N pod writes")
 	}
 
 	// The table 00030 dropped is gone at the top of the stack.

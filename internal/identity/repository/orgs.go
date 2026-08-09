@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/identity/domain"
+	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 )
 
@@ -151,12 +152,25 @@ func (r orgRow) toDomain() (domain.Org, error) {
 
 // OrgRepository reads the tenant root.
 type OrgRepository struct {
-	q db.Querier
+	q     db.Querier
+	clock clock.Clock
 }
 
 // NewOrgRepository builds the repository over a fallback querier. A transaction
 // travelling in the context wins over it (CONTEXT.md §5.9).
-func NewOrgRepository(q db.Querier) *OrgRepository { return &OrgRepository{q: q} }
+//
+// ⭐ THE CLOCK IS A CONSTRUCTOR ARGUMENT BECAUSE THIS TABLE'S TIME IS THE
+// APPLICATION'S. `orgs_time_ck` is `updated_at >= created_at`, and the row is
+// CREATED by `internal/app.Bootstrap` from the Go clock. If the only other
+// writer — UpdateSettings — stamped `now()`, the two columns would come from two
+// different machines, and a Go clock running AHEAD of Postgres would turn the
+// first settings change after a fresh install into a 23514 (00033).
+func NewOrgRepository(q db.Querier, clk clock.Clock) *OrgRepository {
+	if clk == nil {
+		clk = clock.New()
+	}
+	return &OrgRepository{q: q, clock: clk}
+}
 
 func (r *OrgRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
@@ -190,10 +204,27 @@ func (r *OrgRepository) Get(ctx context.Context, s db.TenantScope) (domain.Org, 
 // `updated_at` moves on every write. It is what tells a second pod's next read
 // that its numbers are stale, and it is why no cache is needed to make a change
 // take effect.
+//
+// ⭐ `updated_at` IS THE INJECTED GO CLOCK, AND IT USED TO BE `now()`. That was
+// the MIRROR of the defect 00032 fixed on `channels`, and it was live: the org
+// row is written by `internal/app.Bootstrap` with `created_at` from the GO
+// clock, while this statement took the DATABASE's. `orgs_time_ck` is
+// `updated_at >= created_at`, so an app server whose clock ran AHEAD of Postgres
+// failed the first settings write after a fresh install with a 23514 —
+// `internal_error/orgs_time_ck`, a 500 on the very first thing a new operator
+// does. One clock now stamps both columns (00033).
+//
+// ⭐ GREATEST KEEPS IT MONOTONIC, for the half the clock alone does not fix.
+// "The application owns time" is not "one clock": oto runs N pods with N clocks,
+// and the pod serving a settings PATCH is rarely the pod that bootstrapped the
+// deployment. A few milliseconds of lag between them writes an `updated_at`
+// BELOW `created_at` and reproduces the identical 23514. GREATEST makes the
+// check unfalsifiable while leaving the value app-owned; it is the same idiom,
+// for the same reason, as `channels` and as OrderingStore.Advance.
 const updateSettingsSQL = `
 UPDATE orgs
    SET settings   = $2,
-       updated_at = now()
+       updated_at = GREATEST(updated_at, $3)
  WHERE id = $1
    AND deleted_at IS NULL
 RETURNING id, slug, name, settings, created_at, updated_at, deleted_at`
@@ -213,7 +244,7 @@ func (r *OrgRepository) UpdateSettings(
 	}
 
 	var row orgRow
-	err = r.db(ctx).QueryRow(ctx, updateSettingsSQL, s.OrgID(), blob).
+	err = r.db(ctx).QueryRow(ctx, updateSettingsSQL, s.OrgID(), blob, r.clock.Now().UTC()).
 		Scan(&row.id, &row.slug, &row.name, &row.settings, &row.createdAt, &row.updatedAt, &row.deletedAt)
 	if err != nil {
 		return domain.Org{}, mapErr(err, "org_not_found", "org")
