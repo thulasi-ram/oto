@@ -17,8 +17,8 @@ Prerequisites: Go 1.26, Node 24, Docker.
 
 ```bash
 cp .env.example .env      # defaults already match docker-compose.yml
-make db-up                # postgres:17 + alertmanager, waits for health
-make migrate-up           # apply migrations
+just infra                # postgres:17 + alertmanager, waits for health
+just migrate              # apply migrations
 
 # The first org, the first user and the first token. v1 has no signup route and
 # no org-creation API on purpose, so a freshly migrated database has no
@@ -27,8 +27,7 @@ make migrate-up           # apply migrations
 OTO_BOOTSTRAP_PASSWORD='a long passphrase' \
   go run ./cmd/oto bootstrap --org-slug acme --email you@example.com
 
-make dev                  # API on :8080
-make ui-dev               # UI on :5173, proxying /api and /healthz to :8080
+just up                   # API on :8080 and UI on :5173, together
 ```
 
 `bootstrap` prints a personal access token **once**; only its sha256 is stored. Then open
@@ -42,22 +41,23 @@ back end are talking.
 | UI | <http://localhost:5173> |
 | Alertmanager | <http://localhost:9093> — routes every alert to oto on the host |
 
-`make help` lists every target. The ones you will use most:
+`just` on its own lists every recipe. The ones you will use most:
 
 ```
-make build            build ./bin/oto
-make test             go test -race ./...   (integration tests need Docker)
-make lint             golangci-lint, including the depguard layering rules
-make lint-vocabulary  SCOPE-BOUNDARY AC-49: the banned on-call vocabulary
-make generate-check   gate G3: the checked-in TS client matches openapi.yaml
-make ci               everything the GitHub workflow runs, in the same order
-make migrate-status   which migrations have been applied
-make db-reset         destroy the dev volume and start clean
+just build            build ./bin/oto
+just test             go test -race ./...   (integration tests need Docker)
+just lint             golangci-lint, including the layering rules
+just lint-vocabulary  SCOPE-BOUNDARY AC-49: the banned on-call vocabulary
+just generate-check   gate G3: the checked-in TS client matches openapi.yaml
+just ci               everything the GitHub workflow runs, in the same order
+just status           which migrations have been applied
+just reset            destroy the dev volume and start clean
 ```
 
-`make ci`, `just ci` and `.github/workflows/ci.yml` run the same list. They diverged once — `make
-ci` was green on a tree the GitHub `ui` job rejected — and keeping them identical is the only
-reason a contributor's green means anything.
+`just` is the only task runner (ADR 0021). There was a Makefile alongside it and the two diverged —
+`make ci` was green on a tree the GitHub `ui` job rejected. `just ci` and
+`.github/workflows/ci.yml` run the same list, and keeping them identical is the only reason a
+contributor's green means anything.
 
 ## Layout
 

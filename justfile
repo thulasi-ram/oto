@@ -1,7 +1,7 @@
-# oto — task runner.  `just` with no arguments lists everything.
+# oto — the task runner.  `just` with no arguments lists everything.
 #
-# The Makefile remains the CI entrypoint; this file is for humans bringing the
-# stack up and poking at it.
+# This is the only task runner. ADR 0021: a second one is a second answer to
+# "what does green mean", and the two drifted. `just ci` is what CI runs.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set dotenv-load := true
@@ -179,6 +179,17 @@ lint:
 [group('check')]
 test:
     go test -race -count=1 ./...
+
+# Build the oto binary into ./bin.
+[group('check')]
+build:
+    go build -o bin/oto ./cmd/oto
+
+# Remove build artefacts.
+[group('check')]
+clean:
+    rm -rf bin
+    cd {{web_dir}} && rm -rf dist
 
 # Typecheck and build the UI.
 [group('check')]
