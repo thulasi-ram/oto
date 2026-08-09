@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":2,"timestamp":1786281576,"nonce":"IoYcr5fSykK5Ro10oZrXj8yMgew=","title":"A label value Postgres cannot store is rejected as 'undecodable', sending operators the wrong way","was":"**What is wrong.** `b268f52` added a bound rejecting a NUL byte in a label value, with"}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786281576,"nonce":"iShxs17gQhHzbo7/sG2Ziay6j0A=","added":["medium","ingest"],"removed":null}]}
