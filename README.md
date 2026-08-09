@@ -66,7 +66,11 @@ cmd/oto/          the binary: server, worker, operational subcommands
 internal/app/     explicit constructor wiring; the dependency graph is readable
 internal/platform config, log, telemetry, db (two pools + tx), httpx, jobs, errs, id, clock
 internal/<domain> api / service / repository / domain — see CONTEXT.md §5
-pkg/alertkey/     canonical label serialisation and the identity keys
+pkg/alertkey/     ⚠️ EMPTY — a doc.go and nothing else. The canonical label
+                  serialisation and the identity keys it describes actually live
+                  in `internal/alerts/domain`, the shared kernel, and CONTEXT.md
+                  §5.2b says this package does not exist. Delete it or amend
+                  CONTEXT.md; both cannot be true.
 db/migrations/    goose SQL, expand/contract only
 web/              Vite 6 + SolidJS + TypeScript strict + Tailwind v4
 deploy/           compose, alertmanager config, and `slack/manifest.yaml` — the
@@ -76,11 +80,15 @@ deploy/           compose, alertmanager config, and `slack/manifest.yaml` — th
                   SPEC acceptance criterion 31 (`helm install oto` as the entire
                   install) is not built yet, and neither is the sample
                   prometheus.yml. Deploy with the binary and compose for now.
-test/             ⚠️ fixtures only. `test/{contract,integration,load,harness}/`
-                  each hold a single `doc.go` and no test; the first tests in
-                  this repo live next to the code they cover
-                  (`internal/**/*_test.go`, `web/src/**/*.test.ts`). Treat the
-                  four empty directories as a plan, not as coverage.
+test/harness/     real Postgres via testcontainers (one container, a migrated
+                  template, a fresh database per test), fakes for the four true
+                  externals — Alertmanager, Prometheus, Slack, outbound webhooks
+                  — and object builders. Every DB test goes through this.
+test/integration/ cross-module tests over the harness.
+test/{contract,load}/  ⚠️ still a `doc.go` and no test. `test/load/` in
+                  particular claims the 5 000-alert storm batch that CONTEXT.md
+                  §6 says to write BEFORE the feature handling it. Treat these
+                  two as a plan, not as coverage.
 ```
 
 ## What is actually enforced
@@ -93,7 +101,7 @@ not have. What CI runs today, and therefore what will stop a bad change:
 | Layering (`depguard`) | `.golangci.yml`, `go-lint` job | **enforced** |
 | gofmt / `go mod tidy` clean | `go-lint` job | **enforced** |
 | `go build` + `go vet` | `go-build` job | **enforced** |
-| `go test -race ./...` | `go-test` job | **enforced**, but the suite is young — a green here means little yet |
+| `go test -race ./...` | `go-test` job | **enforced.** Every domain now has tests; the service and repository tiers largely do not. A green means the domain logic holds, not that a feature works end to end — that gap is what [ADR 0021](docs/adr/0021-correctness-and-testing-strategy.md) §3–§4 exist to close |
 | G3: openapi.yaml → TS client is not stale | `ui` job, `npm run generate:check` | **enforced** |
 | AC-49 vocabulary + forbidden columns | `vocabulary` job, `go run ./tools/lintvocab` | **enforced**, with known debt listed in `tools/lintvocab/baseline.txt` |
 | `TestValidatorMatchesDDL` (§L.8) | `internal/platform/validate/ddl_test.go` | **enforced** — every canonical regex is compared byte-for-byte with its DDL `CHECK` |
@@ -103,7 +111,7 @@ not have. What CI runs today, and therefore what will stop a bad change:
 
 The layering rules are mechanically enforced by `depguard` in `.golangci.yml`: `api` cannot import
 `repository`, `repository` cannot import `api`, `domain` packages import no I/O at all, and no
-domain can reach into another domain's internals. If `make lint` rejects an import, the import is
+domain can reach into another domain's internals. If `just lint` rejects an import, the import is
 wrong — not the rule.
 
 ## Where to read next
