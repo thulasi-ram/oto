@@ -1,11 +1,6 @@
 package domain
 
-import (
-	"regexp"
-	"sort"
-	"strconv"
-	"strings"
-)
+import "sort"
 
 // ChangeKind says what happened to one map entry between two snapshots.
 type ChangeKind string
@@ -37,8 +32,13 @@ type MapChange struct {
 // confident wrong answers — so numbers are extracted positionally: the nth
 // numeric literal in the old expression is compared with the nth in the new
 // one, and the comparison is reported ONLY when the two expressions are
-// otherwise textually identical. That condition is what makes the claim safe:
-// if only digits moved, the nth number really is the same number.
+// otherwise identical and every literal in them clearly stands alone. Those
+// conditions are what make the claim safe: if only bare numbers moved, the nth
+// number really is the same number.
+//
+// The Index space contains ONLY literals the comparer vouched for. Durations,
+// subquery steps, `offset` operands and digits inside identifiers are not in it
+// at all — see ExprComparer, which is the contract that decides.
 type NumberChange struct {
 	// Index is the ordinal of the literal within the expression, 0-based.
 	Index int
@@ -66,13 +66,18 @@ type Diff struct {
 	Changed bool
 
 	ExprChanged bool
+	// ExprVerdict is what the ExprComparer could establish about the expression
+	// change, and it is the field to branch on. It is ExprNotCompared when the
+	// expression did not change.
+	ExprVerdict ExprVerdict
 	// ExprNumbers are the numeric literals that moved when the expression is
-	// otherwise unchanged. Empty when the expression changed structurally.
+	// otherwise unchanged. Nil under any verdict but ExprNumbersMoved, and that
+	// nil means "no claim", never "nothing changed".
 	ExprNumbers []NumberChange
-	// ExprStructural reports that the expression changed by more than its
-	// numbers — a different metric, a different aggregation, a new label
-	// matcher. The threshold-drift narrative does not apply and must not be
-	// shown as if it did.
+	// ExprStructural reports that the threshold-drift narrative does not apply
+	// and must not be shown as if it did — either because the expression changed
+	// in shape or because oto refused to characterise the change. It does NOT
+	// distinguish those two; ExprVerdict does.
 	ExprStructural bool
 
 	ForChanged           bool
@@ -99,7 +104,18 @@ func (d Diff) Empty() bool { return !d.Changed }
 // assumptions beyond the caller's. Passing them in the wrong order produces a
 // correctly-signed diff of the opposite sense, which is why the service always
 // orders by captured_at before calling.
+//
+// Expressions are compared with the ExprComparer oto ships. Swapping in a
+// parser-backed one is CompareWith and nothing else.
 func Compare(from, to Snapshot) Diff {
+	return CompareWith(from, to, LexicalExprComparer{})
+}
+
+// CompareWith is Compare with the expression comparer chosen by the caller.
+//
+// This is the seam. A parser-backed ExprComparer is substituted here, and no
+// other line of this package changes when one arrives.
+func CompareWith(from, to Snapshot, exprs ExprComparer) Diff {
 	d := Diff{
 		From:     from,
 		To:       to,
@@ -118,8 +134,12 @@ func Compare(from, to Snapshot) Diff {
 	}
 
 	if d.ExprChanged {
-		nums, structural := compareNumbers(from.Expr, to.Expr)
-		d.ExprNumbers, d.ExprStructural = nums, structural
+		e := exprs.CompareExpr(from.Expr, to.Expr)
+		d.ExprVerdict = e.Verdict
+		d.ExprNumbers = e.Numbers
+		// Anything but a vouched-for numeric drift means no number claim is on
+		// offer, whether because the shape moved or because oto would not guess.
+		d.ExprStructural = e.Verdict != ExprNumbersMoved
 	}
 	return d
 }
@@ -158,49 +178,4 @@ func diffMaps(from, to map[string]string) []MapChange {
 		}
 	}
 	return out
-}
-
-// numberLiteral matches a PromQL numeric literal, including the scientific and
-// decimal forms Prometheus accepts. It deliberately does not match durations
-// (`5m`), which are not thresholds.
-var numberLiteral = regexp.MustCompile(`-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?`)
-
-// compareNumbers extracts the numeric literals of two expressions and reports
-// which of them moved, but ONLY when the expressions are identical once their
-// numbers are blanked out. If the skeletons differ the change is structural and
-// no positional claim about "the threshold" is made at all.
-func compareNumbers(oldExpr, newExpr string) ([]NumberChange, bool) {
-	oldSkel, oldNums := skeleton(oldExpr)
-	newSkel, newNums := skeleton(newExpr)
-
-	if oldSkel != newSkel || len(oldNums) != len(newNums) {
-		return nil, true
-	}
-
-	var out []NumberChange
-	for i := range oldNums {
-		if oldNums[i] != newNums[i] {
-			out = append(out, NumberChange{Index: i, Old: oldNums[i], New: newNums[i]})
-		}
-	}
-	return out, false
-}
-
-// skeleton replaces every numeric literal with a placeholder and returns the
-// literals in order. Whitespace is collapsed first so that a reformatted rule
-// does not read as an edit.
-func skeleton(expr string) (string, []float64) {
-	normalised := strings.Join(strings.Fields(expr), " ")
-
-	var nums []float64
-	skel := numberLiteral.ReplaceAllStringFunc(normalised, func(m string) string {
-		f, err := strconv.ParseFloat(m, 64)
-		if err != nil {
-			// Unparseable: leave it in the skeleton so it counts as structure.
-			return m
-		}
-		nums = append(nums, f)
-		return "\x00N\x00"
-	})
-	return skel, nums
 }
