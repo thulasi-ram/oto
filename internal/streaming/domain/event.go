@@ -184,7 +184,17 @@ type scopeProbe struct {
 func ScopeOf(kind Kind, resourceID uuid.UUID, payload json.RawMessage) (alertID, groupID *uuid.UUID) {
 	var p scopeProbe
 	if len(payload) > 0 {
-		_ = json.Unmarshal(payload, &p) // a malformed payload simply narrows nothing
+		// A malformed payload narrows nothing — but the zeroing is load-bearing,
+		// not defensive. encoding/json ALLOCATES a *uuid.UUID before calling
+		// UnmarshalText on it, so a payload carrying `"alert_id":"not-a-uuid"`
+		// leaves p.AlertID non-nil and pointing at uuid.Nil. Discarding the error
+		// without discarding p would then skip the resource-id fallback below
+		// (guarded on `alertID == nil`) and scope the frame to uuid.Nil, which no
+		// subscriber matches — a silently undelivered frame, which is the one
+		// outcome durable resume exists to rule out (ADR 0010).
+		if err := json.Unmarshal(payload, &p); err != nil {
+			p = scopeProbe{}
+		}
 	}
 	alertID, groupID = p.AlertID, p.GroupID
 

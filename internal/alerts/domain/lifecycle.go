@@ -442,10 +442,17 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 
 	case TransitionT7:
 		// The terminal occurrence is untouched. The caller opens a new episode.
+		//
+		// DetectedBy is set here even though T7's only permitted actor is ingest:
+		// the early return skips the common construction below, and a caller that
+		// trusts the field's "set on every edge" contract would otherwise read an
+		// empty string and mis-attribute the new episode the moment a second actor
+		// becomes permitted on this edge.
 		return TransitionResult{
 			ID: rule.id, From: from, To: rule.to,
 			Occurrence:         o,
 			Before:             o,
+			DetectedBy:         detectedBy(cmd.Actor.Kind()),
 			OpensNewOccurrence: true,
 		}, nil
 

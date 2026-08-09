@@ -10,6 +10,7 @@ package domain
 // carry what the sync job read from upstream.
 
 import (
+	"maps"
 	"strings"
 	"time"
 
@@ -215,7 +216,9 @@ func New(p Params) (Silence, error) {
 		return Silence{}, errs.New(errs.KindValidation, "required", "mirrored_at is required")
 	}
 
-	annotations := p.Annotations
+	// Cloned on ingress as well as egress: storing the caller's map by reference
+	// leaves the constructed Silence aliased to something the caller still holds.
+	annotations := maps.Clone(p.Annotations)
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
@@ -268,7 +271,12 @@ func (s Silence) CreatedBy() string { return s.createdBy }
 func (s Silence) Comment() string { return s.comment }
 
 // Annotations are the Alertmanager >= 0.32.0 silence annotations.
-func (s Silence) Annotations() map[string]string { return s.annotations }
+//
+// The clone is what makes "reachable only through the constructor" true: handing
+// back the internal map let a caller edit a mirrored silence in place, and a
+// mirror that can be edited locally is no longer a mirror. Matchers() clones on
+// both sides for the same reason.
+func (s Silence) Annotations() map[string]string { return maps.Clone(s.annotations) }
 
 // State is the mirrored lifecycle state.
 func (s Silence) State() State { return s.state }

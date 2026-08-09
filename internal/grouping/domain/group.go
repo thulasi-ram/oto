@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -556,11 +557,26 @@ func fallbackTitle(fallback string) string {
 	return fallback
 }
 
+// truncateTitle cuts to a title NewGroup will actually accept.
+//
+// ⛔ THE ELLIPSIS COSTS THREE BYTES, NOT ONE. `…` is U+2026; cutting at
+// MaxTitleBytes-1 and appending it produced 502 bytes, and NewGroup rejects
+// anything over MaxTitleBytes — so every truncated title was rejected, and since
+// grouping/service feeds Title() straight into the row, a group whose rendered
+// title exceeded the cap could not be opened AT ALL.
+//
+// The cut also has to land on a rune boundary: a title sliced mid-rune is
+// invalid UTF-8, which Postgres `text` refuses outright.
 func truncateTitle(s string) string {
 	if len(s) <= MaxTitleBytes {
 		return s
 	}
-	return s[:MaxTitleBytes-1] + "…"
+	const ellipsis = "…"
+	cut := MaxTitleBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
 }
 
 // The two sort keys `GET /api/v1/alert-groups` accepts, and nothing else.
