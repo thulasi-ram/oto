@@ -239,12 +239,42 @@ async function decode(res: Response, path: string): Promise<unknown> {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* The session died                                                           */
+/* -------------------------------------------------------------------------- */
+
+const unauthenticatedListeners = new Set<() => void>();
+
+/**
+ * Subscribe to "the server says nobody is signed in". Returns an unsubscribe.
+ *
+ * ⛔ THIS PUBLISHES, IT DOES NOT NAVIGATE. A redirect fired from inside a fetch
+ * handler is a second place that decides where the app goes, and the two
+ * disagree the first time a 401 lands during a navigation. `session.tsx` owns
+ * that decision; this only reports the fact.
+ *
+ * `login` itself is exempt: a wrong password is a 401 that the form must render
+ * as "check your details", not a signal that the session ended. Signing the
+ * whole app out because someone mistyped would be absurd.
+ */
+export function onUnauthenticated(fn: () => void): () => void {
+  unauthenticatedListeners.add(fn);
+  return () => unauthenticatedListeners.delete(fn);
+}
+
+function isLoginAttempt(path: string): boolean {
+  return path.endsWith("/auth/login");
+}
+
 /** Perform a request and return the decoded body, or throw an `ApiError`. */
 async function request(path: string, opts: RequestOptions = {}): Promise<unknown> {
   const res = await rawRequest(path, opts);
   const body = await decode(res, path);
 
   if (!res.ok) {
+    if (res.status === 401 && !isLoginAttempt(path)) {
+      for (const fn of unauthenticatedListeners) fn();
+    }
     const problem = asProblem(body);
     throw new ApiError(res.status, problem, `${res.status} ${res.statusText}`);
   }
@@ -328,6 +358,17 @@ export function patchItem<T>(path: string, body: unknown, opts: RequestOptions =
 /** A mutation with no response body worth reading (204, or an ignored envelope). */
 export async function del(path: string, opts: RequestOptions = {}): Promise<void> {
   await request(path, { ...opts, method: "DELETE" });
+}
+
+/**
+ * A POST whose success is a `204` and whose body there is nothing to read.
+ *
+ * `del` cannot serve this: it pins the method to `DELETE`, and a caller that
+ * spread `method: "POST"` over it would silently be sending a `DELETE`. `logout`
+ * is the case that needs it.
+ */
+export async function postVoid(path: string, opts: RequestOptions = {}): Promise<void> {
+  await request(path, { ...opts, method: "POST" });
 }
 
 /** An empty page, for optimistic and placeholder rendering. */

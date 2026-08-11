@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { lazy, onMount, type Component, type JSX } from "solid-js";
 
 import { LiveProvider } from "~/api/live";
+import { RequireSession, SessionProvider } from "~/api/session";
 import { AppShell } from "~/components/AppShell";
 import { installThemeEffect } from "~/design/theme";
 
@@ -35,26 +36,55 @@ const AlertDetailRoute = lazy(() => import("~/routes/alert-detail"));
 const GroupsRoute = lazy(() => import("~/routes/groups"));
 const GroupDetailRoute = lazy(() => import("~/routes/group-detail"));
 const SettingsRoute = lazy(() => import("~/routes/settings"));
+const LoginRoute = lazy(() => import("~/routes/login"));
 
-/** Mounts the `<html data-theme>` effect once, inside the reactive root. */
+/**
+ * Mounts the `<html data-theme>` effect once, inside the reactive root.
+ *
+ * ⛔ THE SESSION PROVIDER IS OUTSIDE `LiveProvider`, and the order is binding.
+ * The live stream is an authenticated SSE connection: opening it before the boot
+ * probe has answered means an unauthenticated visitor's first act is a 401 on a
+ * stream that then retries, which is half of the "Stale, retry in 2s" badge the
+ * login gap used to leave on screen.
+ */
 const Root: Component<{ readonly children?: JSX.Element }> = (props) => {
   onMount(() => installThemeEffect());
-  return (
+  return <SessionProvider>{props.children}</SessionProvider>;
+};
+
+/**
+ * Everything behind the door: the shell, the live stream and the screens.
+ *
+ * `RequireSession` renders none of it until `/me` has answered, so no screen can
+ * fire the request that would 401 and paint a skeleton forever.
+ */
+const Authenticated: Component<{ readonly children?: JSX.Element }> = (props) => (
+  <RequireSession>
     <LiveProvider>
       <AppShell>{props.children}</AppShell>
     </LiveProvider>
-  );
-};
+  </RequireSession>
+);
 
 const App: Component = () => (
   <QueryClientProvider client={queryClient}>
     <Router root={Root}>
+      <Route path="/login" component={LoginRoute} />
       <Route path="/" component={() => <Navigate href="/alerts" />} />
-      <Route path="/alerts" component={AlertsRoute} />
-      <Route path="/alerts/:id" component={AlertDetailRoute} />
-      <Route path="/groups" component={GroupsRoute} />
-      <Route path="/groups/:id" component={GroupDetailRoute} />
-      <Route path="/settings/:section" component={SettingsRoute} />
+      <Route path="/alerts" component={() => <Authenticated>{<AlertsRoute />}</Authenticated>} />
+      <Route
+        path="/alerts/:id"
+        component={() => <Authenticated>{<AlertDetailRoute />}</Authenticated>}
+      />
+      <Route path="/groups" component={() => <Authenticated>{<GroupsRoute />}</Authenticated>} />
+      <Route
+        path="/groups/:id"
+        component={() => <Authenticated>{<GroupDetailRoute />}</Authenticated>}
+      />
+      <Route
+        path="/settings/:section"
+        component={() => <Authenticated>{<SettingsRoute />}</Authenticated>}
+      />
       <Route
         path="*"
         component={() => (

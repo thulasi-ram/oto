@@ -10,10 +10,18 @@
  * prevent, so this never says "live" unless frames are arriving, and it says
  * what is wrong and what happens next when they are not.
  */
-import { A, useLocation } from "@solidjs/router";
-import { Show, createMemo, type JSX, type ParentComponent } from "solid-js";
+import { A, useLocation, useNavigate } from "@solidjs/router";
+import {
+  Show,
+  createMemo,
+  createSignal,
+  type Component,
+  type JSX,
+  type ParentComponent,
+} from "solid-js";
 
 import { describeConnection, useLive } from "~/api/live";
+import { useSession } from "~/api/session";
 import { Countdown } from "~/components/Time";
 import { Button, cx } from "~/components/ui/primitives";
 import {
@@ -215,6 +223,41 @@ const Nav = (): JSX.Element => {
 /* The shell                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Sign out, labelled with who is signed in.
+ *
+ * The principal is already in hand — `/me` answered before this shell mounted —
+ * so naming it costs nothing and answers "which account am I in?" without a
+ * settings trip. The button does not confirm: a sign-out is one click to undo.
+ */
+const SignOut: Component = () => {
+  const session = useSession();
+  const navigate = useNavigate();
+  const [busy, setBusy] = createSignal(false);
+
+  const go = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      await session.signOut();
+      navigate("/login", { replace: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void go()}
+      disabled={busy()}
+      title={session.me()?.user?.email ?? undefined}
+      class="rounded-[4px] px-1.5 py-1 text-[11px] font-medium text-ink-muted transition-colors duration-100 hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
+    >
+      Sign out
+    </button>
+  );
+};
+
 export const AppShell: ParentComponent = (props) => {
   // Read once per render pass so the header does not thrash on every frame.
   const year = createMemo(() => new Date().getFullYear());
@@ -247,6 +290,7 @@ export const AppShell: ParentComponent = (props) => {
           <div class="h-4 w-px bg-line" aria-hidden="true" />
           <DensityToggle />
           <ThemeToggle />
+          <SignOut />
         </div>
         <ResyncBanner />
       </header>

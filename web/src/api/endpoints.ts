@@ -14,6 +14,7 @@ import {
   getUnpagedList,
   patchItem,
   postItem,
+  postVoid,
   type LabelSelector,
   type QueryParams,
   type RequestOptions,
@@ -42,6 +43,7 @@ import type {
   GroupListQuery,
   LabelNameRow,
   LabelValueRow,
+  LoginRequest,
   ListEnvelope,
   Me,
   Notification,
@@ -595,6 +597,28 @@ export function getStatsOverview(
 
 export function getCurrentPrincipal(c: Ctx = {}): Promise<Me> {
   return getItem<Me>(`${V1}/me`, ctx(c));
+}
+
+/**
+ * Exchange a password for the `oto_session` cookie.
+ *
+ * ⛔ THE RESPONSE IS NOT THE CREDENTIAL. The cookie is, it is `HttpOnly`, and no
+ * script in this app can read it or set it — which is the whole point, and also
+ * why there is no "am I signed in?" the UI can answer locally. The body is the
+ * same `MeResponse` `getCurrentPrincipal` returns, so a successful login seeds
+ * the session with no second round trip.
+ *
+ * No idempotency key: the contract accepts one, but a retried login is not a
+ * duplicated side effect the way a retried acknowledgement is, and minting a key
+ * per keystroke-driven submit would key the rate limiter's own evidence.
+ */
+export function login(body: LoginRequest, c: Ctx = {}): Promise<Me> {
+  return postItem<Me>(`${V1}/auth/login`, body, ctx(c));
+}
+
+/** Revoke the session SERVER-SIDE. 204, and the cookie is gone. */
+export function logout(c: Ctx = {}): Promise<void> {
+  return postVoid(`${V1}/auth/logout`, ctx(c));
 }
 
 /**
