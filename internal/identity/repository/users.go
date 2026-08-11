@@ -121,14 +121,37 @@ func (r *UserRepository) GetByEmail(ctx context.Context, s db.TenantScope, email
 //
 // Disabled users are excluded in SQL as well as in the domain: a predicate a
 // caller can forget is a predicate that will be forgotten.
+//
+// ⛔ THE `orgs` JOIN IS INNER AND ITS PREDICATE IS PART OF THE CREDENTIAL CHECK,
+// exactly as in resolveSessionSQL and resolveByPrefixSQL. A soft-deleted tenant
+// is not a tenant any more, and the login path must ask that question in the
+// same breath as the other two resolvers — the three of them are the whole set
+// of ways a request acquires an org, so a predicate present in two of them and
+// missing from the third is not a smaller version of the same rule, it is a hole
+// in it. Without the join, two things went wrong at once:
+//
+//  1. a dead tenant's member still passed password verification, and
+//     `service.Login` went on to INSERT a session row for an org that no longer
+//     exists — nothing could authenticate with it, because `resolveSessionSQL`
+//     DOES ask, but every attempt left an orphan row behind for the sweep;
+//  2. worse, the dead row still counted towards the `LIMIT 2` below, so a LIVE
+//     user in a DIFFERENT org who happened to share the address became
+//     "ambiguous" and was locked out by a tenant that had been deleted.
+//
+// ⚠️ IT IS ALSO WHY `LIMIT 2` CAN STILL BE TRUSTED. The ambiguity this query
+// refuses is "this address could log into more than one LIVE org"; counting dead
+// orgs towards that ceiling turns a deletion into somebody else's lockout.
 const resolveByEmailSQL = `
 SELECT ` + userColumns + `
   FROM users u
+  JOIN orgs o ON o.id = u.org_id AND o.deleted_at IS NULL
  WHERE u.email = $1 AND u.disabled_at IS NULL
  ORDER BY u.id
  LIMIT 2`
 
-// ResolveByEmail finds the single live user with this address, across all orgs.
+// ResolveByEmail finds the single live user with this address, across all LIVE
+// orgs. A soft-deleted tenant's member is not found here at all, so no session
+// is ever minted for one.
 //
 // ⚠️ ONE OF THE FOUR UNSCOPED QUERIES IN THIS MODULE. It takes no TenantScope
 // because it is what a TenantScope is derived FROM. Everything downstream of it

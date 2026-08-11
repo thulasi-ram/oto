@@ -118,26 +118,30 @@ func TestResolveByEmailIsOrgBlindAndRefusesAnAmbiguousAddress(t *testing.T) {
 	require.ErrorIs(t, err, errs.ErrNotFound, "a disabled user must not be able to log in")
 }
 
-// ⚠️⚠️ TestResolveByEmailDoesNotExcludeASoftDeletedOrg PINS A DEFECT. It asserts
-// what the code does today, not what it should do.
+// ⛔ TestResolveByEmailExcludesASoftDeletedOrg. All three unscoped resolvers ask
+// the same question of `orgs`, and this is the one that used not to.
 //
 // `resolveSessionSQL` and `resolveByPrefixSQL` both INNER JOIN `orgs ... AND
 // o.deleted_at IS NULL`, so a soft-deleted tenant's session and token stop
-// working immediately. `resolveByEmailSQL` has no `orgs` join at all, so the
-// LOGIN path does not ask. Two consequences, both real:
+// working the instant the tenant does. `resolveByEmailSQL` now carries the same
+// join. The three of them are the whole set of ways a request acquires an org, so
+// the predicate holding in two of them was not a weaker version of the rule — it
+// was a hole in it, and it had two consequences.
 //
-//  1. A member of a soft-deleted org still passes password verification.
-//     `service.Login` goes on to INSERT a session row for a dead tenant; the
-//     handler's `Me` call then refuses with 401 and no cookie is set, so nothing
-//     is authenticated — but every such attempt leaves an orphan `sessions` row
-//     that only the expiry sweep will ever remove.
-//  2. Worse operationally: a deleted org's user still counts towards `LIMIT 2`.
-//     A live user in another org WHO SHARES THE ADDRESS is locked out by a tenant
-//     that no longer exists, and the 401 they receive says nothing about why.
+// This test covers the FIRST: a member of a soft-deleted org must not get past
+// the lookup at all. Because the resolver reports not-found, `service.Login`
+// takes its `err != nil` branch — DummyVerify, then the same unspecific 401 — and
+// never reaches `issueSession`, so NO SESSION ROW IS WRITTEN FOR A DEAD TENANT.
+// That the not-found branch of Login writes nothing is asserted from the other
+// side, over the session store, in `identity/service/login_test.go`
+// (TestEveryFailurePathSpendsTheSameArgon2idWork, "unknown address"). Before the
+// join, that path did reach the INSERT: nothing could authenticate with the row —
+// `resolveSessionSQL` DID ask — but every attempt left an orphan `sessions` row
+// behind for the expiry sweep.
 //
-// Fixing it is one join in one query. This test is written so that the fix breaks
-// it loudly, with this comment attached.
-func TestResolveByEmailDoesNotExcludeASoftDeletedOrg(t *testing.T) {
+// The second consequence, the live user shadowed by a dead tenant, has its own
+// test below.
+func TestResolveByEmailExcludesASoftDeletedOrg(t *testing.T) {
 	t.Parallel()
 
 	h := harness.New(t)
@@ -149,22 +153,77 @@ func TestResolveByEmailDoesNotExcludeASoftDeletedOrg(t *testing.T) {
 
 	dead := h.Org()
 	deadUser := seedUser(h, dead, address, nil)
-	h.Exec(`UPDATE orgs SET deleted_at = $1 WHERE id = $2`, h.Now(), dead.ID)
 
+	// While the tenant is alive the address resolves; deleting the tenant is the
+	// only thing that changes between the two halves of this test.
 	got, err := repo.ResolveByEmail(h.Ctx, email)
-	require.NoError(t, err,
-		"PINNED DEFECT: the login resolver returns a user whose tenant is soft-deleted; "+
-			"the session and token resolvers both exclude one")
+	require.NoError(t, err)
 	require.Equal(t, deadUser, got.ID)
 
-	// And the second consequence: the dead tenant shadows a live one.
-	live := h.Org()
-	liveUser := seedUser(h, live, address, nil)
+	h.Exec(`UPDATE orgs SET deleted_at = $1 WHERE id = $2`, h.Now(), dead.ID)
 
 	_, err = repo.ResolveByEmail(h.Ctx, email)
 	require.ErrorIs(t, err, errs.ErrNotFound,
-		"PINNED DEFECT: a soft-deleted org's row makes a LIVE user's address ambiguous, "+
-			"so %s cannot log in at all", liveUser)
+		"a soft-deleted tenant's member must not get past the login lookup; "+
+			"the session and token resolvers both exclude one, and a row that got past here "+
+			"would be verified and then handed a session for an org that no longer exists")
+}
+
+// ⭐ TestASoftDeletedOrgDoesNotShadowALiveUserSharingTheAddress is the
+// USER-VISIBLE half of the same defect, and the reason it was worth a ticket.
+//
+// `LIMIT 2` refuses an address that could log into more than one org, because
+// there is no honest way to pick between them. Counting a DEAD org towards that
+// ceiling turns one tenant's deletion into a different tenant's lockout: the live
+// user is refused with the same unspecific 401 as a wrong password, there is
+// nothing in it that says why, and nothing they can do about it — the row that
+// shadows them belongs to a tenant they have never heard of.
+//
+// The ambiguity that must still be refused is "more than one LIVE org", which the
+// last leg re-asserts so the join cannot be mistaken for a licence to relax
+// LIMIT 2.
+func TestASoftDeletedOrgDoesNotShadowALiveUserSharingTheAddress(t *testing.T) {
+	t.Parallel()
+
+	h := harness.New(t)
+	repo := repository.NewUserRepository(h.Pool)
+
+	const address = "priya@example.test"
+	email, err := domain.NewEmail(address)
+	require.NoError(t, err)
+
+	dead := h.Org()
+	seedUser(h, dead, address, nil)
+	h.Exec(`UPDATE orgs SET deleted_at = $1 WHERE id = $2`, h.Now(), dead.ID)
+
+	live := h.Org()
+	liveUser := seedUser(h, live, address, nil)
+
+	got, err := repo.ResolveByEmail(h.Ctx, email)
+	require.NoError(t, err,
+		"a deleted tenant's row made a live user's address ambiguous and locked them out")
+	require.Equal(t, liveUser, got.ID)
+	require.Equal(t, live.ID, got.OrgID, "the LIVE tenant is the one the login must land in")
+	require.False(t, got.PasswordHash.IsZero(), "the login path needs the hash this query returns")
+
+	// A second dead tenant changes nothing: they are not candidates, so they
+	// cannot combine into an ambiguity either.
+	alsoDead := h.Org()
+	seedUser(h, alsoDead, address, nil)
+	h.Exec(`UPDATE orgs SET deleted_at = $1 WHERE id = $2`, h.Now(), alsoDead.ID)
+
+	got, err = repo.ResolveByEmail(h.Ctx, email)
+	require.NoError(t, err, "two dead tenants are still nought candidates, not two")
+	require.Equal(t, liveUser, got.ID)
+
+	// ⚠️ And the guard is intact: a SECOND LIVE org sharing the address is still
+	// ambiguous, and still refused.
+	secondLive := h.Org()
+	seedUser(h, secondLive, address, nil)
+
+	_, err = repo.ResolveByEmail(h.Ctx, email)
+	require.ErrorIs(t, err, errs.ErrNotFound,
+		"excluding dead tenants must not have relaxed LIMIT 2 for live ones")
 }
 
 // TestResolveByEmailIsCaseInsensitive — `users.email` is CITEXT and the domain
