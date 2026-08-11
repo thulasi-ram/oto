@@ -40,9 +40,26 @@ func (r *TokenRepository) db(ctx context.Context) db.Querier { return db.FromCon
 //
 // `kind = 'ingest'` is equally load-bearing. A personal access token must never
 // be usable here, and an ingest token must never be usable anywhere else.
+//
+// ⛔ THE `orgs` JOIN IS PART OF THE CREDENTIAL CHECK, not a tidiness. This is one
+// of the handful of statements that MINT a tenant scope from something a stranger
+// presents — `api.Authenticator.Authenticate` hands the `org_id` below straight to
+// `db.NewTenantScope`, and a scope cannot re-check what produced it. Without the
+// join a soft-deleted tenant went on ingesting: alerts stored, grouped, enriched
+// and notified for an org that no longer exists.
+//
+// It is the worst of that family to get wrong, because it is the one credential
+// oto cannot ask anybody to stop using. The token lives in an `alertmanager.yml`
+// on every cluster the customer runs, so nothing on their side stops sending it
+// when the tenant is deleted — the only place that can refuse is this predicate.
+//
+// The roll-call of every unscoped org-producing statement is in
+// `identity/repository/users.go`, and `identity/repository/tenancy_guard_test.go`
+// fails if a new one appears without a join.
 const lookupTokenSQL = `
 SELECT t.id, t.org_id, t.source_id
   FROM api_tokens t
+  JOIN orgs o ON o.id = t.org_id AND o.deleted_at IS NULL
  WHERE t.token_hash = $1
    AND t.kind       = 'ingest'
    AND t.revoked_at IS NULL

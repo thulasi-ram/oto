@@ -15,13 +15,23 @@ import (
 	"github.com/thulasiram/oto/test/harness"
 )
 
-// The three UNSCOPED resolvers, against a real database.
+// The FOUR UNSCOPED resolvers in this module, against a real database.
 //
 // These are the queries that PRODUCE a tenancy rather than consume one — the
-// login lookup, the cookie lookup and the bearer lookup — which makes them the
-// only place in the module where a predicate is the difference between "this
-// request is org A" and "this request is org B". `identity/service`'s tests pin
-// what the service does with what comes back; this file pins what comes back.
+// login lookup, the cookie lookup, the bearer lookup and the Slack member lookup
+// — which makes them the only place in the module where a predicate is the
+// difference between "this request is org A" and "this request is org B".
+// `identity/service`'s tests pin what the service does with what comes back; this
+// file pins what comes back.
+//
+// ⛔ FOUR, NOT THREE. This file used to say three, and it agreed with the comment
+// in `users.go` that said the same — which is precisely why neither noticed that
+// `resolveSlackIdentitySQL` was missing the `orgs` join, or that a fifth resolver
+// (`channels/repository.resolveSlackConversationSQL`) existed at all and was
+// missing it too, in the path a human presses. A suite that only tests the
+// resolvers its author already believed in cannot contradict a belief. The
+// enumeration is now mechanical: see `tenancy_guard_test.go`, which reflects over
+// every SQL constant in `internal/` and makes an unaccounted-for one fail.
 //
 // ⚠️ EVERY EXPIRY ASSERTION USES AN INJECTED `now`, never Postgres's. Both
 // resolvers take the time as a parameter for exactly this reason, so a test
@@ -118,15 +128,15 @@ func TestResolveByEmailIsOrgBlindAndRefusesAnAmbiguousAddress(t *testing.T) {
 	require.ErrorIs(t, err, errs.ErrNotFound, "a disabled user must not be able to log in")
 }
 
-// ⛔ TestResolveByEmailExcludesASoftDeletedOrg. All three unscoped resolvers ask
-// the same question of `orgs`, and this is the one that used not to.
+// ⛔ TestResolveByEmailExcludesASoftDeletedOrg. Every unscoped resolver asks the
+// same question of `orgs`, and this is the one that used not to.
 //
 // `resolveSessionSQL` and `resolveByPrefixSQL` both INNER JOIN `orgs ... AND
 // o.deleted_at IS NULL`, so a soft-deleted tenant's session and token stop
 // working the instant the tenant does. `resolveByEmailSQL` now carries the same
-// join. The three of them are the whole set of ways a request acquires an org, so
-// the predicate holding in two of them was not a weaker version of the rule — it
-// was a hole in it, and it had two consequences.
+// join, and so — since the review that found this — do the two Slack resolvers,
+// which did not. The predicate holding in some of them was not a weaker version
+// of the rule; it was a hole in it, and it had two consequences.
 //
 // This test covers the FIRST: a member of a soft-deleted org must not get past
 // the lookup at all. Because the resolver reports not-found, `service.Login`
@@ -588,6 +598,172 @@ func TestATokenRowCannotClaimAnotherOrg(t *testing.T) {
 	var n int
 	require.NoError(t, h.Pool.QueryRow(h.Ctx, `SELECT count(*) FROM api_tokens`).Scan(&n))
 	require.Zero(t, n, "a refused insert left a row behind")
+}
+
+// ---------------------------------------------------- the Slack resolver
+
+// seedSlackIdentity writes an UNLINKED sighting of a Slack member, through the
+// real writer.
+//
+// Unlinked is the normal state and a success in its own right: an ack from
+// somebody who has never opened oto's settings still records, with the Slack
+// handle as the actor label. `slack_identities_link_ck` makes (user_id,
+// linked_at) all-or-nothing, which is why the builder cannot half-set it.
+func seedSlackIdentity(t *testing.T, h *harness.H, org harness.Org, team, member, handle string) uuid.UUID {
+	t.Helper()
+
+	teamID, err := domain.NewSlackTeamID(team)
+	require.NoError(t, err)
+	memberID, err := domain.NewSlackUserID(member)
+	require.NoError(t, err)
+
+	si, err := domain.NewSlackIdentity(id.New(), org.ID, teamID, memberID, handle)
+	require.NoError(t, err)
+
+	stored, err := repository.NewSlackIdentityRepository(h.Pool).Upsert(h.Ctx, org.Scope, si, h.Now())
+	require.NoError(t, err)
+	return stored.ID
+}
+
+func slackIDs(t *testing.T, team, member string) (domain.SlackTeamID, domain.SlackUserID) {
+	t.Helper()
+	teamID, err := domain.NewSlackTeamID(team)
+	require.NoError(t, err)
+	memberID, err := domain.NewSlackUserID(member)
+	require.NoError(t, err)
+	return teamID, memberID
+}
+
+// ⭐ TestResolveBySlackUserIsOrgBlindAndRefusesAnAmbiguousMember.
+//
+// `slack_identities_uniq` is (org_id, team_id, slack_user_id): a workspace member
+// is unique WITHIN an org and not across the deployment, because one Slack
+// workspace connected to two oto tenants is representable. The interaction
+// payload names a workspace and a member and never an org, so this query is what
+// produces one — and `LIMIT 2` is what stops the planner's physical ordering from
+// deciding which tenant a press is attributed to.
+func TestResolveBySlackUserIsOrgBlindAndRefusesAnAmbiguousMember(t *testing.T) {
+	t.Parallel()
+
+	h := harness.New(t)
+	repo := repository.NewSlackIdentityRepository(h.Pool)
+
+	const team, member = "T9TK3CUKW", "U0BF2XQLM"
+	teamID, memberID := slackIDs(t, team, member)
+
+	orgA := h.Org()
+	identityA := seedSlackIdentity(t, h, orgA, team, member, "priya")
+
+	got, err := repo.ResolveBySlackUser(h.Ctx, teamID, memberID)
+	require.NoError(t, err, "a single live row must resolve")
+	require.Equal(t, identityA, got.ID)
+	require.Equal(t, orgA.ID, got.OrgID, "the resolved row is what supplies the tenancy")
+	require.False(t, got.Linked(), "an unlinked sighting is a success, not a failure")
+
+	// The same workspace member in a second org. There is no honest way to pick.
+	orgB := h.Org()
+	seedSlackIdentity(t, h, orgB, team, member, "priya")
+
+	_, err = repo.ResolveBySlackUser(h.Ctx, teamID, memberID)
+	require.ErrorIs(t, err, errs.ErrNotFound,
+		"a member sighted in two orgs must not be attributed to either of them")
+
+	// A different member in the same workspace is unaffected: the pair is the key.
+	otherTeamID, otherMemberID := slackIDs(t, team, "U0BF2XQLZ")
+	seedSlackIdentity(t, h, orgA, team, "U0BF2XQLZ", "sam")
+	got, err = repo.ResolveBySlackUser(h.Ctx, otherTeamID, otherMemberID)
+	require.NoError(t, err)
+	require.Equal(t, orgA.ID, got.OrgID)
+}
+
+// ⛔ TestResolveBySlackUserExcludesASoftDeletedOrg.
+//
+// This resolver had the SAME hole `resolveByEmailSQL` had, for the same reason
+// and with the same two consequences, and it survived 7f8e710 because that
+// commit's comment asserted there were three unscoped resolvers when there are
+// five. It is LATENT rather than live — `Service.ResolveSlackActor` has no
+// production caller today, and `app/adapters.go` deliberately wires the
+// ORG-SCOPED `RecordSlackIdentity` instead — but "latent" is a fact about the
+// wiring, not about the query, and it is one wiring change from being the path a
+// Slack ack takes.
+//
+// Soft-deleting an org does not touch `slack_identities`: the FK is `ON DELETE
+// CASCADE`, which fires for a hard DELETE and never for `deleted_at = now()`.
+func TestResolveBySlackUserExcludesASoftDeletedOrg(t *testing.T) {
+	t.Parallel()
+
+	h := harness.New(t)
+	repo := repository.NewSlackIdentityRepository(h.Pool)
+
+	const team, member = "T9TK3CUKW", "U0BF2XQLM"
+	teamID, memberID := slackIDs(t, team, member)
+
+	dead := h.Org()
+	deadIdentity := seedSlackIdentity(t, h, dead, team, member, "priya")
+
+	got, err := repo.ResolveBySlackUser(h.Ctx, teamID, memberID)
+	require.NoError(t, err)
+	require.Equal(t, deadIdentity, got.ID)
+
+	h.Exec(`UPDATE orgs SET deleted_at = $1 WHERE id = $2`, h.Now(), dead.ID)
+
+	var survived bool
+	require.NoError(t, h.Pool.QueryRow(h.Ctx,
+		`SELECT count(*) = 1 FROM slack_identities WHERE org_id = $1`, dead.ID).Scan(&survived))
+	require.True(t, survived, "soft-deleting an org must NOT have cascaded to slack_identities; "+
+		"the join in the resolver is the only thing that asks the question")
+
+	_, err = repo.ResolveBySlackUser(h.Ctx, teamID, memberID)
+	require.ErrorIs(t, err, errs.ErrNotFound,
+		"a soft-deleted tenant's Slack identity must not resolve; what comes back is an org id "+
+			"that a caller turns into a db.TenantScope")
+}
+
+// ⭐ TestASoftDeletedOrgDoesNotShadowALiveSlackIdentity is the user-visible half,
+// and it is the same lockout as the email one: a dead row counted towards
+// `LIMIT 2` refuses a LIVE tenant's member.
+//
+// The last leg re-asserts that two LIVE tenants sharing a workspace member are
+// still ambiguous, so the join cannot be mistaken for relaxing `LIMIT 2`.
+func TestASoftDeletedOrgDoesNotShadowALiveSlackIdentity(t *testing.T) {
+	t.Parallel()
+
+	h := harness.New(t)
+	repo := repository.NewSlackIdentityRepository(h.Pool)
+
+	const team, member = "T9TK3CUKW", "U0BF2XQLM"
+	teamID, memberID := slackIDs(t, team, member)
+
+	dead := h.Org()
+	seedSlackIdentity(t, h, dead, team, member, "priya")
+	h.Exec(`UPDATE orgs SET deleted_at = $1 WHERE id = $2`, h.Now(), dead.ID)
+
+	live := h.Org()
+	liveIdentity := seedSlackIdentity(t, h, live, team, member, "priya")
+
+	got, err := repo.ResolveBySlackUser(h.Ctx, teamID, memberID)
+	require.NoError(t, err,
+		"a deleted tenant's row made a live tenant's member ambiguous and unattributable")
+	require.Equal(t, liveIdentity, got.ID)
+	require.Equal(t, live.ID, got.OrgID, "the LIVE tenant is the one the press must land in")
+
+	// A second dead tenant changes nothing: they are not candidates, so they
+	// cannot combine into an ambiguity either.
+	alsoDead := h.Org()
+	seedSlackIdentity(t, h, alsoDead, team, member, "priya")
+	h.Exec(`UPDATE orgs SET deleted_at = $1 WHERE id = $2`, h.Now(), alsoDead.ID)
+
+	got, err = repo.ResolveBySlackUser(h.Ctx, teamID, memberID)
+	require.NoError(t, err, "two dead tenants are still nought candidates, not two")
+	require.Equal(t, liveIdentity, got.ID)
+
+	// ⚠️ And the guard is intact.
+	secondLive := h.Org()
+	seedSlackIdentity(t, h, secondLive, team, member, "priya")
+
+	_, err = repo.ResolveBySlackUser(h.Ctx, teamID, memberID)
+	require.ErrorIs(t, err, errs.ErrNotFound,
+		"excluding dead tenants must not have relaxed LIMIT 2 for live ones")
 }
 
 // TestASessionRowCannotClaimAnotherOrg is the same guard on `sessions`.

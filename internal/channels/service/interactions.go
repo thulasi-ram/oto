@@ -312,6 +312,20 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 		slog.String("slack_channel_id", args.ChannelID))
 
 	// ---- 1. THE TENANT -------------------------------------------------
+	//
+	// ⛔ THIS LINE IS WHERE THE TENANCY COMES FROM, and it is the last moment
+	// anything can question it. `db.NewTenantScope` below turns the org id into
+	// PROOF OF AUTHENTICATION — a TenantScope's field is unexported and every
+	// repository method downstream takes one on trust — so a scope cannot
+	// re-check what produced it, and nothing after this point asks whether the
+	// org is still alive. `resolveSlackConversationSQL` therefore asks, in SQL,
+	// with an INNER `orgs … deleted_at IS NULL` join, exactly as the four
+	// resolvers in `identity/repository` do; the roll-call of all five and the
+	// test that keeps it complete are documented on `resolveByEmailSQL`.
+	//
+	// The tests for this half are necessarily in `channels/repository`: the fake
+	// below cannot have an opinion about a soft-deleted org, because the question
+	// is a predicate and not a branch.
 	dest, err := s.conversations.ResolveSlackConversation(ctx, args.TeamID, args.ChannelID)
 	if err != nil {
 		if errs.IsKind(err, errs.KindNotFound) {

@@ -125,10 +125,9 @@ func (r *UserRepository) GetByEmail(ctx context.Context, s db.TenantScope, email
 // ⛔ THE `orgs` JOIN IS INNER AND ITS PREDICATE IS PART OF THE CREDENTIAL CHECK,
 // exactly as in resolveSessionSQL and resolveByPrefixSQL. A soft-deleted tenant
 // is not a tenant any more, and the login path must ask that question in the
-// same breath as the other two resolvers — the three of them are the whole set
-// of ways a request acquires an org, so a predicate present in two of them and
-// missing from the third is not a smaller version of the same rule, it is a hole
-// in it. Without the join, two things went wrong at once:
+// same breath as every other resolver that produces a tenancy — a predicate
+// present in some of them and missing from one is not a smaller version of the
+// same rule, it is a hole in it. Without the join, two things went wrong at once:
 //
 //  1. a dead tenant's member still passed password verification, and
 //     `service.Login` went on to INSERT a session row for an org that no longer
@@ -141,6 +140,38 @@ func (r *UserRepository) GetByEmail(ctx context.Context, s db.TenantScope, email
 // ⚠️ IT IS ALSO WHY `LIMIT 2` CAN STILL BE TRUSTED. The ambiguity this query
 // refuses is "this address could log into more than one LIVE org"; counting dead
 // orgs towards that ceiling turns a deletion into somebody else's lockout.
+//
+// ⛔⛔ THE ROLL-CALL, AND WHY THIS PARAGRAPH IS NOT THE ENFORCEMENT.
+//
+// An earlier version of this comment said the login, cookie and bearer resolvers
+// "are the whole set of ways a request acquires an org". IT WAS WRONG, AND BEING
+// WRONG CONFIDENTLY IS WHAT MADE IT EXPENSIVE: a reader who trusts a sentence
+// like that stops looking, and the two resolvers it did not know about carried
+// the identical defect — including the lockout half — for as long as it stood.
+// One of them was live. The set is FIVE, and they are, at the time of writing:
+//
+//  1. resolveByEmailSQL — this one. Login: an address and a password, no org.
+//  2. resolveSessionSQL (sessions.go) — a cookie names no org.
+//  3. resolveByPrefixSQL (tokens.go) — a bearer PAT names no org.
+//  4. resolveSlackIdentitySQL (slack_identities.go) — a Slack payload names a
+//     workspace and a member. LATENT: no production caller today.
+//  5. channels/repository.resolveSlackConversationSQL — a Slack payload names a
+//     workspace and a conversation. LIVE, and the one a human presses: it is
+//     step 1 of every `InteractionService.Apply`, and the Acknowledge button
+//     drives it.
+//
+// All five now carry `JOIN orgs o ON … AND o.deleted_at IS NULL`. A sixth is
+// `ingestion/repository.lookupTokenSQL`, the Alertmanager ingest credential; it
+// is live, it does NOT carry the join, and it is recorded as an open defect in
+// the guard named below rather than left to a reader's memory.
+//
+// ⭐ DO NOT MAINTAIN THIS LIST BY HAND ALONE — it is a summary of something
+// checkable, and the checkable thing is the authority.
+// `tenancy_guard_test.go` reflects over EVERY SQL constant in `internal/`,
+// selects the ones that yield an org id without taking one, and requires each to
+// either carry the join or be named, with a reason, as not-a-resolver or as a
+// known gap. A sixth resolver written tomorrow fails that test on the day it is
+// written. If this list and that test ever disagree, the test is right.
 const resolveByEmailSQL = `
 SELECT ` + userColumns + `
   FROM users u
