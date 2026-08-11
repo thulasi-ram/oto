@@ -294,6 +294,18 @@ func (rt *Router) updateSource(w http.ResponseWriter, r *http.Request) {
 // It stops ingestion and reconciliation and REVOKES the ingest token, so a source
 // that has been deleted cannot still be pushed to. ALERT HISTORY IS RETAINED:
 // deleting a source must never erase the record of what it once reported.
+//
+// ⭐ THE DELETION AND THE REVOCATION COMMIT TOGETHER OR NOT AT ALL, for the same
+// reason `createSource` does: they were two independent commits, and a failure in
+// the second left a source that the settings screen shows as gone while its
+// ingest token stayed live and usable — a soft delete in name only, and a
+// credential nobody can see in order to revoke it.
+//
+// THE ORDER IS DELIBERATE. The soft delete goes first because it is the call that
+// decides the response: it answers not-found for an id that does not exist or is
+// already deleted, and running it first keeps that 404 free of any write against
+// another source's tokens. It also takes `alert_sources` before `api_tokens`,
+// which is the lock order the create path already uses.
 func (rt *Router) deleteSource(w http.ResponseWriter, r *http.Request) {
 	scope, id, err := rt.subject(r)
 	if err != nil {
@@ -306,15 +318,18 @@ func (rt *Router) deleteSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := rt.registry.SoftDelete(r.Context(), scope, id); err != nil {
+	err = rt.inTx(r.Context(), func(ctx context.Context) error {
+		if derr := rt.registry.SoftDelete(ctx, scope, id); derr != nil {
+			return derr
+		}
+		if rt.tokens == nil {
+			return nil
+		}
+		return rt.tokens.RevokeIngestTokens(ctx, scope, id)
+	})
+	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
-	}
-	if rt.tokens != nil {
-		if err := rt.tokens.RevokeIngestTokens(r.Context(), scope, id); err != nil {
-			httpx.WriteProblem(w, r, err)
-			return
-		}
 	}
 	httpx.JSON(w, r, http.StatusNoContent, nil)
 }

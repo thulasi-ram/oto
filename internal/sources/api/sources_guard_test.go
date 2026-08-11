@@ -328,13 +328,35 @@ func serve(rt *Router, req *http.Request) *httptest.ResponseRecorder {
 
 // fakeTx records whether the unit of work committed or rolled back, which is the
 // only thing the atomicity tests need to observe.
+//
+// It also MARKS THE CONTEXT it hands down, mirroring the production runner: a real
+// transaction travels in the context (`platform/db.FromContext`), so a repository
+// call that received an unmarked context is a call that ran on the pool and
+// committed on its own. `committed` alone cannot see that — it stays true when one
+// of two writes is moved back outside the closure — so the fakes below record
+// whether they joined.
 type fakeTx struct {
 	committed  bool
 	rolledBack bool
 }
 
+type fakeTxKey struct{}
+
+// joinedUnitOfWork reports whether ctx is the one fakeTx handed to its closure.
+func joinedUnitOfWork(ctx context.Context) bool {
+	return ctx.Value(fakeTxKey{}) != nil
+}
+
 func (f *fakeTx) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	if err := fn(ctx); err != nil {
+	// Mirror `db.TxOptions`, which returns `fn(ctx)` unchanged when the context is
+	// already in a transaction (`platform/db/tx.go`). Without this, a nested
+	// `inTx` would set `committed` from the INNER call while production issued a
+	// single BEGIN, and an assertion on `committed` would pass for the wrong
+	// reason.
+	if joinedUnitOfWork(ctx) {
+		return fn(ctx)
+	}
+	if err := fn(context.WithValue(ctx, fakeTxKey{}, struct{}{})); err != nil {
 		f.rolledBack = true
 		return err
 	}
@@ -370,6 +392,10 @@ type fakeTokens struct {
 	issued  int
 	revoked int
 	err     error
+	// revokeErr fails the revocation, which is the second half of a delete.
+	revokeErr error
+	// revokedInTx records whether the revocation joined the caller's unit of work.
+	revokedInTx bool
 }
 
 func (f *fakeTokens) IssueIngestToken(context.Context, db.TenantScope, uuid.UUID) (string, string, error) {
@@ -381,7 +407,11 @@ func (f *fakeTokens) IssueIngestToken(context.Context, db.TenantScope, uuid.UUID
 	return secret, secret[:15], nil
 }
 
-func (f *fakeTokens) RevokeIngestTokens(context.Context, db.TenantScope, uuid.UUID) error {
+func (f *fakeTokens) RevokeIngestTokens(ctx context.Context, _ db.TenantScope, _ uuid.UUID) error {
+	f.revokedInTx = joinedUnitOfWork(ctx)
+	if f.revokeErr != nil {
+		return f.revokeErr
+	}
 	f.revoked++
 	return nil
 }

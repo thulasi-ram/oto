@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -234,6 +235,8 @@ type contractRegistry struct {
 	created int
 	updated int
 	deleted int
+	// deletedInTx records whether the soft delete joined the caller's unit of work.
+	deletedInTx bool
 }
 
 func (f *contractRegistry) Create(
@@ -271,10 +274,11 @@ func (f *contractRegistry) Update(
 	return out, nil
 }
 
-func (f *contractRegistry) SoftDelete(_ context.Context, _ db.TenantScope, id uuid.UUID) error {
+func (f *contractRegistry) SoftDelete(ctx context.Context, _ db.TenantScope, id uuid.UUID) error {
 	if id != f.src.ID {
 		return notMine()
 	}
+	f.deletedInTx = joinedUnitOfWork(ctx)
 	f.deleted++
 	return nil
 }
@@ -550,6 +554,40 @@ func TestDeleteSourceAnswersNoBodyAtAll(t *testing.T) {
 	if s.registry.deleted != 1 || s.tokens.revoked != 1 {
 		t.Fatalf("delete = %d rows, %d revocations; a soft delete that leaves a live "+
 			"ingest token is a soft delete in name only", s.registry.deleted, s.tokens.revoked)
+	}
+
+	// ⭐ AND IT REVOKES IN THE SAME BREATH. Both writes must have run on the
+	// transaction the unit of work handed down; two commits mean a failure in the
+	// second leaves a deleted source whose ingest token still authenticates.
+	if !s.tx.committed {
+		t.Fatal("the delete did not run inside a unit of work")
+	}
+	if !s.registry.deletedInTx || !s.tokens.revokedInTx {
+		t.Fatalf("joined the unit of work: soft delete = %t, revocation = %t; both writes "+
+			"must commit together or the deleted source keeps a live credential",
+			s.registry.deletedInTx, s.tokens.revokedInTx)
+	}
+}
+
+// ⭐ TestDeleteSourceRollsBackWhenRevocationFails is the negative half.
+//
+// A revocation that fails must take the soft delete down with it. The alternative
+// is the state this endpoint exists to prevent: `alert_sources.deleted_at` set,
+// the row gone from every screen, and a live `api_tokens` row still answering for
+// a source no operator can find in order to revoke it.
+func TestDeleteSourceRollsBackWhenRevocationFails(t *testing.T) {
+	t.Parallel()
+
+	s := newContractStack()
+	s.tokens.revokeErr = errors.New("the identity store is having a bad day")
+
+	resp := s.client().DELETE(sourcePath(contractSourceID, ""))
+	if resp.Code() < 400 {
+		t.Fatalf("status = %d, want a failure", resp.Code())
+	}
+	if !s.tx.rolledBack || s.tx.committed {
+		t.Fatalf("rolled back = %t, committed = %t; a failed revocation must undo the "+
+			"soft delete", s.tx.rolledBack, s.tx.committed)
 	}
 }
 
