@@ -209,7 +209,7 @@ internal/<domain>/
 | # | Layer | Library | Failure |
 |---|---|---|---|
 | 1 | API DTOs | `go-playground/validator/v10` via `httpx.Bind[T]` **only** | 422 + `violations[]` |
-| 2 | Untrusted inbound (webhook, reconciler) | hand-written bounds B1–B17 | `ingest_rejections` row, **still 202** |
+| 2 | Untrusted inbound (webhook, reconciler) | hand-written bounds B1–B19 | `ingest_rejections` row, **still 202** |
 | 3 | Domain invariants | value objects + `New…() (T, error)` | typed error; a bug |
 | 4 | Provider config | `santhosh-tekuri/jsonschema/v6` | 422 mapped from schema errors |
 | 5 | Outbound render | 18 Block Kit checks (V1–V18) | `dead` delivery, payload persisted |
@@ -316,7 +316,11 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 - Ack identity IS stored (operationally necessary). **No per-person response-time metrics,
   leaderboards or aggregates.** A feature you do not build cannot be misused.
 - Label redaction runs **before** the raw payload is persisted. Never log full payloads at info
-  level. Retention: raw 14 days, events 13 months, configurable.
+  level. Retention: raw 30 days, events 13 months, configurable — and it deletes the
+  **narrative**, never the **record** (ADR 0024). `alerts`, `alert_occurrences`,
+  `rule_snapshots`, `notifications`, `notification_deliveries` and `channel_threads`
+  have no reaper. What dies at 13 months is the timeline, including human comments,
+  which live nowhere else.
 - Surface alert hygiene. **The best alert is the one that no longer exists.**
 
 ---
@@ -330,7 +334,7 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 | `alerts` | SPEC §A, §B, §C.2–C.3, §C.8, §D.4; ADRs 0003, 0004 |
 | `grouping` | SPEC §C.4, §B.6, §D.5; ADR 0005 |
 | `rules` | SPEC §C.6, §D.6, §F.4; ADR 0009 |
-| `notification` + `channels` | SPEC §F.1–F.2, §G.5–G.7, §H in full; ADR 0008 |
+| `notification` + `channels` | SPEC §F.1–F.2, §G.5–G.7, §H in full; ADRs 0008, 0023 |
 | `streaming` | SPEC §E.4, §D.10; ADR 0010 |
 | HTTP API | SPEC §E in full, §L.1–L.2, §L.9, §J |
 | The SolidJS UI | SPEC §E, §L.8, **§M in full**; ADR 0012 |

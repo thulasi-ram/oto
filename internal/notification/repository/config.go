@@ -219,6 +219,15 @@ func (r *ConfigRepository) CreatePolicy(
 	return r.GetPolicy(ctx, s, stored)
 }
 
+// ⭐ GREATEST KEEPS `updated_at` MONOTONIC, and that is a correctness guard, not
+// a nicety. Both timestamps come from the application — CreatePolicy above names
+// them from the injected clock — but "the application" is N pods with N clocks,
+// and the pod serving a policy PATCH is rarely the pod that created the policy.
+// A few milliseconds of lag between them would otherwise write an `updated_at`
+// BELOW `created_at` and fail `policies_time_ck` with a 23514 — a 500 on an
+// ordinary routing edit, with nothing wrong. GREATEST makes the check
+// unfalsifiable while leaving the value app-owned; it is the same idiom, for the
+// same reason, as `channels`, `orgs` and OrderingStore.Advance.
 const updatePolicySQL = `
 UPDATE notification_policies SET
     name        = COALESCE($3, name),
@@ -229,7 +238,7 @@ UPDATE notification_policies SET
     channel_ids = COALESCE($8, channel_ids),
     throttle    = CASE WHEN $9  THEN $10 ELSE throttle END,
     unacked_reminder_after_s = CASE WHEN $11 THEN $12 ELSE unacked_reminder_after_s END,
-    updated_at  = $13
+    updated_at  = GREATEST(updated_at, $13)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
@@ -296,8 +305,11 @@ func (r *ConfigRepository) UpdatePolicy(
 	return r.GetPolicy(ctx, s, stored)
 }
 
+// `deleted_at` records the caller's instant exactly; `updated_at` is monotonic
+// for the reason given on updatePolicySQL.
 const softDeletePolicySQL = `
-UPDATE notification_policies SET deleted_at = $3, enabled = false, updated_at = $3
+UPDATE notification_policies
+   SET deleted_at = $3, enabled = false, updated_at = GREATEST(updated_at, $3)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`
 
 // SoftDeletePolicy stops future matching.
@@ -571,9 +583,16 @@ func (r *ConfigRepository) ChannelContextFor(
 	return out, nil
 }
 
+// `next_attempt_at` is the SCHEDULE and takes the caller's instant verbatim — a
+// monotonic version of it would refuse to bring an attempt forward, which is the
+// whole point of a manual re-queue. `updated_at` is the row's version and is
+// monotonic: `deliveries_time_ck` is `updated_at >= created_at`, and the operator
+// pressing "retry" is served by whichever pod the load balancer chose, not by the
+// one that fanned the delivery out.
 const requeueDeliverySQL = `
 UPDATE notification_deliveries
-   SET status = 'pending', next_attempt_at = $3, error = NULL, error_class = NULL, updated_at = $3
+   SET status = 'pending', next_attempt_at = $3, error = NULL, error_class = NULL,
+       updated_at = GREATEST(updated_at, $3)
  WHERE org_id = $1 AND id = $2 AND status = 'dead'
 RETURNING` + deliveryColumns
 

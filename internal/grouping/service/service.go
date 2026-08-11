@@ -136,6 +136,14 @@ type ResolveRequest struct {
 	// delivery, feeding the §H.6 decision table.
 	NotificationReason string
 	At                 time.Time
+	// Synthetic marks a generation opened by a DELIVERY DRILL. It is carried from
+	// the observations that triggered the resolve — which carry it from
+	// `ingest_batches.mode` — and it is written to `alert_groups.synthetic` so
+	// the dashboard counts can exclude drills.
+	//
+	// ⛔ It changes NOTHING about how the group behaves. A drill that took a
+	// different code path anywhere below this line would stop being evidence.
+	Synthetic bool
 }
 
 // Resolve returns the OPEN generation for a group key, opening one if none is
@@ -200,6 +208,7 @@ func (s *Service) Resolve(
 			GroupLabels:    in.GroupLabels,
 			Title:          domain.Title(in.GroupLabels, in.Receiver),
 			At:             at,
+			Synthetic:      in.Synthetic,
 		})
 		if err != nil {
 			// Two ingest workers can race the same first observation. The unique
@@ -242,46 +251,100 @@ func (s *Service) Resolve(
 
 // -------------------------------------------------------------- membership
 
-// JoinResult is what one Join did.
-type JoinResult struct {
-	Group domain.Group
-	// Joined is false when the occurrence was already a member, which is a
-	// redelivered batch working as designed rather than an error.
-	Joined bool
-	// StormStarted and StormEnded report a damping transition, which is a VISIBLE
-	// state change and is recorded on the timeline (§B.6).
-	StormStarted bool
-	StormEnded   bool
+// ⛔ THERE IS NO SINGLE-MEMBER `Join`. JoinMany is the only shape.
+//
+// One existed as a `JoinMany` of one, kept so a caller holding a single
+// occurrence would not have to build a slice. It had no production caller —
+// `alertObserver.joinMembers` batches — so its only consumer was its own test,
+// which is the exact trap `tools/lintreach` exists to find and which SPEC §C.6/§C.7
+// had already sprung once: a function that compiles, lints, is exported and is
+// wired to nothing reads as canonical to the next person who edits it.
+//
+// If a single-member caller ever appears, it can write `JoinMany(..., []JoinMember{m}, ...)`
+// at the call site. That is one line, and it does not create a second answer to
+// "what does joining do".
+
+// JoinMember names one occurrence to add to a generation.
+//
+// It is a service-layer type on purpose: the composition root hands these in, and
+// a composition root that had to build a `grouping/domain` value would be reaching
+// into another module's domain (CONTEXT.md §5.4).
+type JoinMember struct {
+	AlertID      uuid.UUID
+	OccurrenceID uuid.UUID
 }
 
-// Join adds an occurrence to a generation and re-derives everything that follows
-// from membership: the rollup, the group state, the severity, the storm decision
-// and — when any of it was material — the `state_version` a Notification is
-// minted against (§C.7).
-func (s *Service) Join(
-	ctx context.Context, scope db.TenantScope, groupID, alertID, occurrenceID uuid.UUID, at time.Time,
-) (JoinResult, error) {
+// JoinManyResult is what ONE JoinMany did to ONE generation.
+type JoinManyResult struct {
+	Group domain.Group
+	// Joined is how many of the requested members were NEWLY joined. The rest were
+	// already members, which is a redelivered batch working as designed rather than
+	// an error.
+	Joined int
+
+	// ⛔ THERE ARE NO StormStarted/StormEnded FIELDS. A damping transition is a
+	// VISIBLE state change, and `evaluateStorm` already does everything it implies
+	// inside the transaction: it flips the mode, appends `group.storm_started` /
+	// `group.storm_ended` to the timeline (§B.6) and enqueues the one
+	// `notify.evaluate` that the §H.6 latch on `channels.storm_notice_at` needs.
+	// Reporting it again to a caller that must not act on it a second time is how a
+	// storm gets announced twice. Group.StormMode() is the state; the timeline is
+	// the record.
+}
+
+// JoinMany adds EVERY member of one batch to one generation and then re-derives
+// the generation ONCE.
+//
+// ⭐ THE ROLLUP IS RECOMPUTED ONCE PER GROUP PER BATCH, NOT ONCE PER MEMBER. A
+// rollup is a PURE PROJECTION of the current members (see `recompute`), so joining
+// 500 occurrences and rolling up 500 times produces 499 results nobody reads —
+// each one a full aggregate over the group plus a compare-and-set write to the
+// same `alert_groups` row, which the CAS then serialises. That is O(n) contention
+// on one row, arriving exactly when a 500-alert Alertmanager batch is landing and
+// Alertmanager's ~5-minute retry budget (ADR 0007, `ingestion/api/shed.go`) is the
+// only thing between a slow ingest and an alert that is lost silently. Joining
+// first and projecting once makes the same batch O(1) in rollups.
+//
+// ⭐ The storm evaluation moves with it, and MUST. It counts DISTINCT JOINS INSIDE
+// A WINDOW by querying `alert_group_members` (§B.6) — it has never counted its own
+// invocations — so one evaluation over the settled membership sees every member
+// this batch added and reaches the same verdict the last of 500 per-member
+// evaluations would have reached. What it does NOT do is announce that verdict
+// once per member: one transition, one `group.storm_started`, one `notify.evaluate`
+// job, and therefore still exactly one storm notice per channel behind the
+// `channels.storm_notice_at` latch.
+//
+// Members are joined in the order given, so the `group.member_joined` events land
+// on the timeline in batch order.
+func (s *Service) JoinMany(
+	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, members []JoinMember, at time.Time,
+) (JoinManyResult, error) {
 	if at.IsZero() {
 		at = s.Now()
 	}
+	// One policy read for the batch: the tuning cannot change inside it, and
+	// re-reading `orgs.settings` per member was the same 500× waste in miniature.
 	policy := s.policy(ctx, scope)
 
-	var out JoinResult
+	var out JoinManyResult
 	err := s.tx.InTx(ctx, func(ctx context.Context) error {
-		joined, err := s.members.Join(ctx, scope, groupID, occurrenceID, alertID, at)
-		if err != nil {
-			return err
-		}
-		out.Joined = joined
-
-		if joined {
+		out = JoinManyResult{}
+		for _, m := range members {
+			joined, err := s.members.Join(ctx, scope, groupID, m.OccurrenceID, m.AlertID, at)
+			if err != nil {
+				return err
+			}
+			if !joined {
+				continue
+			}
+			out.Joined++
 			if err := s.appendGroupEvent(ctx, scope, alerts.GroupEventRequest{
 				Type:         alerts.GroupEventMemberJoined,
 				GroupID:      groupID,
-				AlertID:      alertID,
-				OccurrenceID: occurrenceID,
+				AlertID:      m.AlertID,
+				OccurrenceID: m.OccurrenceID,
 				Summary:      "Alert joined the group",
-				DedupeKey:    "group:" + groupID.String() + ":joined:" + occurrenceID.String(),
+				DedupeKey:    "group:" + groupID.String() + ":joined:" + m.OccurrenceID.String(),
 				OccurredAt:   at,
 			}); err != nil {
 				return err
@@ -299,8 +362,6 @@ func (s *Service) Join(
 			return err
 		}
 		out.Group = stormed.group
-		out.StormStarted = stormed.started
-		out.StormEnded = stormed.ended
 
 		if material || stormed.started || stormed.ended {
 			if err := s.publish(ctx, scope, out.Group); err != nil {
@@ -310,7 +371,7 @@ func (s *Service) Join(
 		return nil
 	})
 	if err != nil {
-		return JoinResult{}, err
+		return JoinManyResult{}, err
 	}
 	return out, nil
 }

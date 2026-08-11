@@ -55,6 +55,7 @@ func policyDTO(p domain.Policy) PolicyDTO {
 
 // notificationDTO maps one intent onto the wire.
 func notificationDTO(n domain.Notification, summary *DeliverySummaryDTO) NotificationDTO {
+	updated := n.UpdatedAt.UTC()
 	out := NotificationDTO{
 		ID:              n.ID,
 		SubjectKind:     string(n.SubjectKind),
@@ -68,7 +69,10 @@ func notificationDTO(n domain.Notification, summary *DeliverySummaryDTO) Notific
 		Status:          string(n.Status),
 		DeliverySummary: summary,
 		CreatedAt:       n.CreatedAt.UTC(),
-		UpdatedAt:       n.UpdatedAt.UTC(),
+		// `notifications.updated_at` is NOT NULL, so this producer always has one
+		// and the pointer is never nil here. It is a pointer because the schema is
+		// nullable for the OTHER producer — see NotificationDTO.UpdatedAt.
+		UpdatedAt: &updated,
 	}
 	if n.SuppressedReason != "" {
 		v := string(n.SuppressedReason)
@@ -83,14 +87,15 @@ func notificationDTO(n domain.Notification, summary *DeliverySummaryDTO) Notific
 // exactly this content — a coalesced no-op update — and reporting it as a failure
 // would make a healthy, quiet thread look broken.
 //
-// ⛔ AN EMPTY FAN-OUT RETURNS AN ALL-ZERO SUMMARY AND NEVER nil. It used to
+// ⛔ AN EMPTY FAN-OUT RETURNS AN ALL-ZERO SUMMARY AND NEVER nil, which is why
+// it returns a VALUE and not a pointer: there is no nil to forget. It used to
 // return nil, which — with `omitempty` on the field — silently dropped
 // `delivery_summary` from the response for exactly the intents where it matters
 // most: a SUPPRESSED notification has no deliveries at all, and "oto formed this
 // intent and told nobody" is precisely the fact an operator is on this page to
 // learn. An omitted field made that indistinguishable from a server that never
 // computed one.
-func summarise(ds []domain.Delivery) *DeliverySummaryDTO {
+func summarise(ds []domain.Delivery) DeliverySummaryDTO {
 	out := DeliverySummaryDTO{Total: int32(len(ds))} //nolint:gosec // bounded by the fan-out
 	var lastErrorAt time.Time
 	for _, d := range ds {
@@ -124,7 +129,7 @@ func summarise(ds []domain.Delivery) *DeliverySummaryDTO {
 			lastErrorAt = d.UpdatedAt
 		}
 	}
-	return &out
+	return out
 }
 
 // deliveryDTO maps one materialisation onto the wire.

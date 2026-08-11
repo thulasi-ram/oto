@@ -110,6 +110,21 @@ func (rt *Router) listAlertRollups(w http.ResponseWriter, r *http.Request) {
 // ⛔ `include=rule` carries the snapshot ID and nothing more. The full
 // `RuleSnapshotDTO` is owned by `rules/api` — CONTEXT.md §5.4 forbids this
 // package from naming `rules/domain` — and `/alerts/{id}/rule` serves it whole.
+//
+// ⭐ THIS IS NOT A REASON THE LIST CANNOT SHOW THE RULE, and if you came here to
+// widen the ref into an embedded DTO, read **ADR 0025 first — the question is
+// settled.** The id is half of a two-call join: the list returns one snapshot id
+// per row, and `GET /api/v1/rule-snapshots/batch?id=…` returns the snapshots for
+// the whole page in ONE further call. Two requests, never one per alert. Because
+// snapshots are content-addressed, a page of fifty alerts under an unchanged rule
+// asks about one snapshot, not fifty.
+//
+// The alternative — copying `RuleSnapshotDTO` into this package behind a
+// consumer-declared port — was rejected on two counts and neither has expired: it
+// puts a second, hand-maintained copy of a `rules`-owned schema under `alerts`'
+// ownership, and it puts `expr` (up to 64 KiB) plus two label maps into every row
+// of a two-hundred-row page, which is the payload explosion `include=` exists to
+// keep opt-in.
 func (rt *Router) embed(
 	r *http.Request, scope db.TenantScope, dto *AlertDTO, a domain.Alert, inc includeSet, now time.Time,
 ) {

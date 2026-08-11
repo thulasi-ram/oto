@@ -103,7 +103,15 @@ func (s *Service) Accept(ctx context.Context, scope db.TenantScope, cmd AcceptCo
 			"the request body is not an Alertmanager webhook payload")
 	}
 
-	if !src.AcceptsPush() {
+	// ⭐ A DELIVERY DRILL IS NOT A PUSH. `push_enabled` gates the webhook
+	// endpoint — a credential living in every cluster's `alertmanager.yml` — and
+	// a drill arrives from an authenticated operator through the API instead. An
+	// operator who has not yet pointed Alertmanager at oto is precisely the
+	// operator who most needs to know whether a card would reach their channel,
+	// so the flag they have not set yet must not be what stops them finding out.
+	// A DELETED source still refuses, and that check lives in the drill service,
+	// which can answer 404 without an Alertmanager retry budget to protect.
+	if !cmd.Mode.IsSynthetic() && !src.AcceptsPush() {
 		// Recorded, not refused. An operator who disabled pushes, or a source that
 		// was soft deleted while its token was still live, must not silently vanish
 		// alerts — and a 4xx here would delete them at the upstream too.

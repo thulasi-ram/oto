@@ -768,6 +768,8 @@ func buildUpserts(obs []domain.Observation) ([]domain.AlertUpsert, error) {
 			GeneratorURL: strPtr(o.GeneratorURL),
 			State:        state,
 			SeenAt:       seenAt,
+			// Carried from the batch's mode, never read out of the labels.
+			Synthetic: o.Synthetic,
 		})
 	}
 	return out, nil

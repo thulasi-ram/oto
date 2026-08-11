@@ -277,7 +277,12 @@ export function compileFilters(f: AlertFilters, limit: number, cursor: string | 
   query["sort"] = f.sort;
   // `current_occurrence` is what makes the row show ack state, firing
   // duration and the suppression reason without an N+1.
-  query["include"] = ["current_occurrence"];
+  //
+  // `rule` costs NOTHING on top of it — the server resolves both from the same
+  // occurrence read — and it is what carries the snapshot id the row needs to
+  // show what the rule said. The id alone is not the rule text; the list resolves
+  // a page of them in one further call via `batchGetRuleSnapshots` (ADR 0025).
+  query["include"] = ["current_occurrence", "rule"];
   if (cursor !== null) query["cursor"] = cursor;
 
   return {

@@ -32,7 +32,14 @@ const (
 	DefaultStormCooldown = 10 * time.Minute
 	// DefaultGroupCloseDelay is how long a generation with no live member stays
 	// open before it closes and freezes its thread.
-	DefaultGroupCloseDelay = 5 * time.Minute
+	//
+	// ⚠️ It MIRRORS `identity/domain.DefaultGroupCloseDelay`, which is pinned EQUAL
+	// to `refire_grace`: closing this generation is what makes the next fire post a
+	// brand-new Slack root, so a close delay shorter than the re-fire grace hands a
+	// re-fire that oto classified as "the same problem coming back" a new card
+	// anyway. It was 5m against a 10m grace, and the mismatch defeated the grace.
+	// See ADR 0026.
+	DefaultGroupCloseDelay = 20 * time.Minute
 )
 
 // StormPolicy is the tuning of storm collapse for one org.

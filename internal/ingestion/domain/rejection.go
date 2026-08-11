@@ -33,10 +33,35 @@ const (
 	ReasonTooManyAnnotations Reason = "too_many_annotations"
 	// ReasonAnnotationTooLarge is B8. The alert is KEPT; the value is truncated.
 	ReasonAnnotationTooLarge Reason = "annotation_too_large"
+	// ReasonAnnotationUnstorable is B19: an annotation name or value carrying
+	// U+0000 or invalid UTF-8, which Postgres cannot hold in `jsonb`.
+	//
+	// The alert is KEPT and so is the annotation: the unstorable code points of a
+	// VALUE are replaced with U+FFFD. An annotation whose NAME is unstorable is
+	// dropped, because a name is a key and rewriting it would silently merge two
+	// annotations into one. Annotations are prose, never identity (§C.9.3), so
+	// mutating one is honest where mutating a label value would not be — see
+	// ReasonInvalidLabelValue for the other half of the same rule.
+	ReasonAnnotationUnstorable Reason = "annotation_unstorable"
 	// ReasonMissingAlertname is B10.
 	ReasonMissingAlertname Reason = "missing_alertname"
 	// ReasonInvalidLabelName is B9.
 	ReasonInvalidLabelName Reason = "invalid_label_name"
+	// ReasonInvalidLabelValue is B18: a label value Postgres cannot store — a
+	// U+0000, which `text` cannot hold at all, or a byte sequence that is not valid
+	// UTF-8. THAT ALERT is rejected.
+	//
+	// It exists because the alternative was a lie. The bound is real — such a value
+	// fails at layer 6, the INSERT, whatever oto does with it — but with no member
+	// of this enum to carry it, ReasonFromError fell through to `undecodable`, and
+	// an operator reading the rejection feed went looking for malformed JSON that
+	// was never there. The payload decoded perfectly; one label value was
+	// unwritable, and oto knows which one.
+	//
+	// It REJECTS rather than sanitises because a label value is part of alert
+	// IDENTITY: replacing a byte would change which Alert this is and file the
+	// observation under a key the upstream never sent.
+	ReasonInvalidLabelValue Reason = "invalid_label_value"
 	// ReasonTimestampOutOfWindow is B12 and B13. B12 drops the alert; B13 clamps
 	// and keeps it. Both record this reason, because both are the same fact about
 	// the upstream: its clock disagrees with ours by more than we will model.
@@ -67,8 +92,10 @@ var reasonSet = map[Reason]struct{}{
 	ReasonLabelSetTooLarge:     {},
 	ReasonTooManyAnnotations:   {},
 	ReasonAnnotationTooLarge:   {},
+	ReasonAnnotationUnstorable: {},
 	ReasonMissingAlertname:     {},
 	ReasonInvalidLabelName:     {},
+	ReasonInvalidLabelValue:    {},
 	ReasonTimestampOutOfWindow: {},
 	ReasonTooManyAlerts:        {},
 	ReasonBodyTooLarge:         {},
@@ -89,6 +116,16 @@ func (r Reason) Valid() bool {
 // layer 2 can persist a rejection without re-deriving why the constructor said
 // no. An unrecognised code falls back to ReasonUndecodable, which is the honest
 // answer: we could not turn these bytes into an alert and we do not know why.
+//
+// ⛔ THAT FALLBACK IS A TRAP AND IT HAS SPRUNG ONCE. `undecodable` means "these
+// bytes are not a webhook payload", and it sends an operator hunting for
+// malformed JSON. When the kernel grew `invalid_label_value` without a member
+// here, a perfectly well-formed payload carrying one unwritable label value was
+// filed as undecodable — true about the outcome, false about the cause, and
+// `ingest_rejections` is the ONLY place a rejected alert survives (§C.9.1).
+// Minting a validation code in `alerts/domain` without adding the matching member
+// AND its migration is therefore a bug: the fallback is for codes nobody has
+// thought about, never for a bound oto deliberately added.
 func ReasonFromError(err error) Reason {
 	if r := Reason(errs.CodeOf(err)); r.Valid() {
 		return r

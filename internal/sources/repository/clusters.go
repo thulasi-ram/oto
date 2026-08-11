@@ -184,8 +184,17 @@ func (r *ClusterRepository) Create(
 	return r.Get(ctx, s, stored)
 }
 
+// ⭐ GREATEST KEEPS `updated_at` MONOTONIC, and that is a correctness guard, not
+// a nicety. Both of this row's timestamps come from the application — Create
+// above names them from the injected clock — but "the application" is N pods
+// with N clocks, and the pod serving a rename is rarely the pod that registered
+// the cluster. A few milliseconds of lag between them would otherwise write an
+// `updated_at` BELOW `created_at` and fail `clusters_time_ck` with a 23514 — a
+// 500 on an ordinary rename, with nothing wrong. GREATEST makes the check
+// unfalsifiable while leaving the value app-owned; it is the same idiom, for the
+// same reason, as `channels`, `orgs` and OrderingStore.Advance.
 const updateClusterSQL = `
-UPDATE clusters SET display_name = $3, updated_at = $4
+UPDATE clusters SET display_name = $3, updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 

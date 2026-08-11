@@ -69,11 +69,20 @@ var threadPointerLost = map[string]bool{
 // the renderer. They are not `conversationDead` either — the conversation is
 // alive and a different mode may well succeed in it, so killing the thread and
 // degrading the Channel would overstate what Slack said.
+//
+// `cant_broadcast_message` ("Unable to broadcast this message") joins them for
+// the same reason and with the same reservation Slack's own table invites: the
+// message says nothing about WHY, so the honest read is "the destination refused
+// this shape". It is permanent — a refusal does not become an acceptance on
+// attempt twelve — and it is deliberately not `conversationDead`, because the
+// conversation is fine and the ordinary non-broadcasting reply that ADR 0020's
+// `CapBroadcast` degradation falls back to may well succeed in it.
 var channelPolicyBlocked = map[string]bool{
 	"restricted_action_non_threadable_channel": true,
 	"restricted_action_thread_only_channel":    true,
 	"restricted_action_read_only_channel":      true,
 	"restricted_action":                        true,
+	"cant_broadcast_message":                   true,
 }
 
 // authFailed means the credential is dead. It NEVER retries, because "your token
@@ -103,17 +112,69 @@ var authFailed = map[string]bool{
 // chat.postMessage, but it is kept here because retiring a code oto may still be
 // told by an older workspace would silently downgrade a permanent render bug into
 // a retry loop. BOTH are handled; neither is guessed at.
+//
+// ⚠️ FIVE MORE CODES WERE ADDED AFTER A LINE-BY-LINE PASS OVER SLACK'S TWO ERROR
+// TABLES, AND EVERY ONE OF THEM WAS RETRYING TWELVE TIMES. They share a shape
+// with the two the comment above already complains about: a request oto built
+// wrongly is built exactly as wrongly on attempt twelve as on attempt one, so a
+// missing entry here is not a missed label — it is twelve guaranteed failures,
+// twelve slots of a per-channel posting budget, and a delivery that dies late
+// instead of loudly.
+//
+//	attachment_payload_limit_exceeded  "Attachment payload size is too long."
+//	invalid_metadata_format            metadata is not a valid object
+//	invalid_metadata_schema            metadata does not match the declared schema
+//	invalid_attachments                "Attachments were invalid" (chat.update)
+//	no_dual_broadcast_content_update   "Can't broadcast an old reply and update
+//	                                    the content at the same time."
+//
+// The last one is not hypothetical. ADR 0020 names "post quietly, broadcast on a
+// later evaluation with chat.update" as the SANCTIONED mechanism for a
+// transition whose importance is not knowable at post time, and it is exactly
+// the call that earns this error if the content moves in the same request. The
+// path is not built yet; the classification is here before it is, because the
+// alternative is discovering it as a retry storm.
 var renderInvalid = map[string]bool{
-	"invalid_blocks":         true,
-	"invalid_blocks_format":  true,
-	"block_mismatch":         true,
-	"msg_blocks_too_long":    true,
-	"msg_too_long":           true,
-	"too_many_attachments":   true,
-	"metadata_too_large":     true,
-	"no_text":                true,
-	"markdown_text_conflict": true,
-	"invalid_arguments":      true,
+	"invalid_blocks":                    true,
+	"invalid_blocks_format":             true,
+	"block_mismatch":                    true,
+	"msg_blocks_too_long":               true,
+	"msg_too_long":                      true,
+	"too_many_attachments":              true,
+	"invalid_attachments":               true,
+	"attachment_payload_limit_exceeded": true,
+	"metadata_too_large":                true,
+	"invalid_metadata_format":           true,
+	"invalid_metadata_schema":           true,
+	"no_dual_broadcast_content_update":  true,
+	"no_text":                           true,
+	"markdown_text_conflict":            true,
+	"invalid_arguments":                 true,
+
+	// ⛔⛔ THE HIGHEST-RISK UNVERIFIED CODE IN THIS FILE, AND IT IS HERE PRECISELY
+	// BECAUSE NOBODY KNOWS.
+	//
+	// Slack lists `metadata_must_be_sent_from_app` on chat.postMessage AND
+	// chat.update with the text "Message metadata can only be posted or updated
+	// using an app-level token." oto attaches `metadata` to EVERY card
+	// (`rootMetadata`, one group id, one generation, one reason) and sends it under
+	// a bot `xoxb-` token, which is not an app-level token by Slack's own naming.
+	//
+	// If Slack means that literally, this code is returned for every message oto
+	// has ever tried to send and NOT ONE CARD HAS EVER BEEN DELIVERED. If it means
+	// "not a user token" — which is how message metadata is described everywhere
+	// else, as a bot-token feature — it never fires at all. There is no third
+	// reading and the documentation does not choose between them.
+	//
+	// Nothing offline can settle it: it is a property of Slack's authorisation
+	// check, and neither a fake nor a validator can observe one. What CAN be
+	// decided offline is what happens when it arrives, and the answer must not be
+	// "retry twelve times". Classified config_invalid so it is terminal, is
+	// counted by oto_render_invalid_total, degrades the Channel and appears in the
+	// UI with the code verbatim — a loud, once, legible failure that names itself.
+	// docs/setup/slack.md's live checklist makes it the FIRST thing a person with
+	// a workspace checks, because it is the one that invalidates everything else.
+	"metadata_must_be_sent_from_app": true,
 }
 
 // IsConversationDead reports whether code means the destination no longer exists.

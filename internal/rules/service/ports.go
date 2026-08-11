@@ -37,6 +37,15 @@ type SnapshotRepository interface {
 	// Get returns one snapshot by id, or an errs.KindNotFound.
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Snapshot, error)
 
+	// GetMany returns the snapshots among ids that exist in the caller's org,
+	// in one round trip and in `(captured_at DESC, id DESC)` order.
+	//
+	// A missing id is ABSENT from the result rather than an error: the table is
+	// append-only, so a miss means "not yours" or "invented", and failing the
+	// batch for one of those would take down the whole page that asked (ADR
+	// 0023).
+	GetMany(ctx context.Context, s db.TenantScope, ids []uuid.UUID) ([]domain.Snapshot, error)
+
 	// ListByKey returns every distinct capture for one rule key, oldest first
 	// and bounded by limit. This is the edit history, and it is what the
 	// version-numbered diff is computed over.

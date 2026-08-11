@@ -103,12 +103,28 @@ export type SourceCreated = S["SourceCreatedDTO"];
 export type SourceHealth = S["SourceHealthDTO"];
 /**
  * What governs one Alertmanager's batching, and **how oto knows** — the three
- * top-level route timings, each with its provenance. Read from the source's
- * published configuration; never typed in.
+ * timings in force, each with its provenance, plus the whole resolved route tree
+ * they came out of. Read from the source's published configuration; never typed
+ * in.
  */
 export type RouteTimings = S["RouteTimingsDTO"];
 /** One route timing plus where its number came from. */
 export type RouteTiming = S["RouteTimingDTO"];
+/**
+ * One route that DELIVERS to a receiver, resolved: its inherited receiver, its
+ * inherited timings, its matcher path, and whether it reaches oto.
+ */
+export type ReceiverRoute = S["ReceiverRouteDTO"];
+/** One route on the path from the top-level route down to a delivering one. */
+export type RouteStep = S["RouteStepDTO"];
+/** One per-route timing, with the depth on the path that stated it. */
+export type InheritedTiming = S["InheritedTimingDTO"];
+/**
+ * How oto decided which receiver is its own. It is an INFERENCE, never a
+ * reading: Alertmanager redacts `webhook_config.url` as `<secret>`, so the URL
+ * that carries oto's own source id never reaches oto.
+ */
+export type ReceiverBasis = S["ReceiverBasis"];
 /**
  * `observed` (the source's config states it), `default_applies` (the config is
  * silent, so Alertmanager's documented default governs) or `unknown` (oto could
@@ -117,6 +133,17 @@ export type RouteTiming = S["RouteTimingDTO"];
  */
 export type TimingProvenance = S["TimingProvenance"];
 export type SourceTest = S["SourceTestDTO"];
+/**
+ * One delivery drill: a synthetic alert oto pushed through the REAL pipeline,
+ * with a per-stage verdict. `failed_stage` is the field the screen exists for —
+ * not "it did not work" but "the policy matched nothing".
+ */
+export type DeliveryDrill = S["DeliveryDrillDTO"];
+export type DrillStage = S["DrillStageDTO"];
+export type DrillStageName = S["DrillStageName"];
+export type DrillStageStatus = S["DrillStageStatus"];
+export type DrillStatus = S["DrillStatus"];
+export type DrillDestination = S["DrillDestinationDTO"];
 export type ReconcileResult = S["ReconcileResultDTO"];
 export type ChannelTypeDescriptor = S["ChannelTypeDTO"];
 export type Channel = S["ChannelDTO"];

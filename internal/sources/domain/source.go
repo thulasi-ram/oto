@@ -97,8 +97,20 @@ type Source struct {
 	RedactLabels      []string
 	RedactAnnotations []string
 
-	PushEnabled       bool
-	ReconcileEnabled  bool
+	PushEnabled bool
+	// ReconcileInterval is HOW OFTEN `source.reconcile` polls this upstream, and it
+	// is the whole of the reconciliation tuning surface.
+	//
+	// ⛔ THERE IS NO COMPANION BOOLEAN, AND ONE MUST NOT BE ADDED BACK. There was
+	// one — `alert_sources.reconcile_enabled`, dropped in 00038 — and it made the
+	// component ADR 0006 calls mandatory switchable off with one PATCH. The
+	// reconciler is the only producer of `suppressed` AND the only thing that keeps
+	// `source_health` fresh, so a source with it off kept a frozen `healthy`
+	// verdict that the reaper went on trusting: silenced alerts stopped arriving by
+	// webhook, `resolve_grace` elapsed, and oto recorded an ending that never
+	// happened. A deployment that needs to poll gently raises this number, up to an
+	// hour; a deployment oto cannot reach at all is `unreachable`, which blocks the
+	// reaper, which is the honest answer rather than a silent one.
 	ReconcileInterval time.Duration
 
 	CreatedAt time.Time
@@ -116,10 +128,9 @@ func (s Source) Deleted() bool { return s.DeletedAt != nil }
 
 // SourceFilter selects sources for a list query.
 type SourceFilter struct {
-	ClusterID        *uuid.UUID
-	Kind             Kind
-	ReconcileEnabled *bool
-	IncludeDeleted   bool
+	ClusterID      *uuid.UUID
+	Kind           Kind
+	IncludeDeleted bool
 }
 
 // HealthStatus mirrors source_health.status.
@@ -158,17 +169,15 @@ const (
 	// MaxTolerableSkew. Skew is measured and surfaced, never used to reject an
 	// event (C12).
 	WarnClockSkew = "clock_skew"
-	// WarnReconcileDisabled means `reconcile_enabled` is false for this source.
+	// ⛔ THERE IS NO `reconcile_disabled` WARNING, BECAUSE THERE IS NOTHING TO WARN
+	// ABOUT. It existed while `alert_sources.reconcile_enabled` did, as the thing
+	// that was supposed to make the switch non-silent — and it never reached a
+	// human: it was raised only by `GET /sources/{id}/health`, the sources list
+	// never carried it, and the settings screen renders no warnings at all. A
+	// degradation nobody is shown is a degradation nobody consented to, which is
+	// why 00038 removed the switch instead of the warning (ADR 0006, second
+	// amendment).
 	//
-	// ⭐ ADR 0006 CALLS THE RECONCILER MANDATORY. The flag survives because oto
-	// cannot always reach an Alertmanager's API — the ADR's own consequences
-	// section names outbound reachability as a requirement, and a source behind a
-	// one-way network path is a real deployment, not a misconfiguration. What the
-	// flag must never be is SILENT: with it off, Alertmanager's MuteStage drops
-	// silenced and inhibited alerts before any webhook fires, so oto can never
-	// observe suppression for this source and will render an upstream-muted alert
-	// as firing indefinitely. This warning is that fact, standing, on the source.
-	WarnReconcileDisabled = "reconcile_disabled"
 	// WarnPrometheusUnconfigured means no prometheus_url, so RuleSnapshots can
 	// only ever carry the expression decoded from generatorURL.
 	WarnPrometheusUnconfigured = "prometheus_not_configured"
@@ -229,6 +238,17 @@ type SourceHealth struct {
 	// repeat_interval, observed from its running configuration rather than typed
 	// in by a human. nil in any field means UNKNOWN and must stay unknown.
 	RouteTimings RouteTimings
+	// Routes is the source's whole route tree, resolved: every delivering route
+	// with its receiver, its INHERITED timings and its matcher path, plus which
+	// receiver oto believes is its own and on what basis (routes.go).
+	//
+	// ⭐ IT IS WHY RouteTimings ABOVE IS A FALLBACK. The three timings are
+	// per-route and inherited, so the numbers governing the alerts oto is
+	// actually sent are the ones on the route(s) reaching oto's receiver — which
+	// is usually not the top-level route on any Alertmanager that overrides
+	// anything. It is read on the same probe, under the same
+	// `RouteTimingsAt` timestamp.
+	Routes RouteResolution
 	// RouteTimingsAt is when the three were last read off the source, on oto's
 	// clock. It is nil until the first successful parse.
 	//

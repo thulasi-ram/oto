@@ -34,6 +34,8 @@
  * ladder; oto measures a signal's **firing duration**, never anyone's response.
  */
 import type {
+  ReceiverBasis,
+  ReceiverRoute,
   ReminderMention,
   ReminderMentionSeverity,
   TimingProvenance,
@@ -72,10 +74,12 @@ export interface AmTiming {
  * three off `config.original` on the status call it already makes, and serves
  * them on `SourceHealthDTO.route_timings`.
  *
- * ⚠️ ONLY THE TOP-LEVEL ROUTE IS EVALUATED. All three settings are per-route and
- * inherited, so the values governing a particular alert are the ones on the route
- * that MATCHED it. `childRoutesWithTimings` is that limitation made countable and
- * is stated wherever these numbers are shown.
+ * ⚠️ THE THREE ARE PER-ROUTE AND INHERITED, so the numbers governing the alerts
+ * OTO is sent are the ones on the route delivering to oto's own receiver — not
+ * the top-level route, on any Alertmanager that overrides anything. `route` says
+ * which of the two these three are, `routes` is the whole resolved tree, and
+ * `routesAgree` is false when several routes reach oto and disagree, in which
+ * case there IS no single answer and this screen must not pretend otherwise.
  */
 export interface AmRef {
   readonly sourceId: string;
@@ -83,9 +87,26 @@ export interface AmRef {
   readonly groupWait: AmTiming;
   readonly groupInterval: AmTiming;
   readonly repeatInterval: AmTiming;
+  /**
+   * Which route the three above describe: `oto_receiver` (the route oto's own
+   * receiver hangs off) or `top_level` (the fallback — what governs every alert
+   * matching nothing more specific).
+   */
+  readonly route: RouteBasis;
   /** How many descendant routes exist, and how many state a timing of their own. */
   readonly childRoutes: number;
   readonly childRoutesWithTimings: number;
+  /** The receiver oto believes is its own, and how it decided. */
+  readonly receiver: string | null;
+  readonly receiverBasis: ReceiverBasis;
+  /** Every receiver in the config with a webhook integration — the candidates. */
+  readonly webhookReceivers: readonly string[];
+  /** Every delivering route in the tree, in the order Alertmanager evaluates them. */
+  readonly routes: readonly ReceiverRoute[];
+  /** False only when several routes reach oto's receiver and state different timings. */
+  readonly routesAgree: boolean;
+  /** How many routes the parser's cap discarded; non-zero means `routes` is partial. */
+  readonly routesDropped: number;
   /** When the configuration was last read off the source. Null if never. */
   readonly observedAt: string | null;
   /** The Alertmanager version any defaulted field is attributed to. */
@@ -94,17 +115,80 @@ export interface AmRef {
   readonly defaultsVerified: boolean;
 }
 
+/** Which route an `AmRef`'s three headline numbers came from. */
+export type RouteBasis = "top_level" | "oto_receiver";
+
+/**
+ * How the identification of oto's own receiver was decided.
+ *
+ * ⛔ IT IS AN INFERENCE AND MUST NEVER BE RENDERED AS A READING. oto's ingest
+ * path is `/api/v1/ingest/alertmanager/{source_id}`, so an operator's webhook URL
+ * contains the id of the source oto is probing and would identify oto's receiver
+ * exactly — but Alertmanager marshals `webhook_config.url` as `<secret>`, so that
+ * URL never reaches oto. One webhook receiver means that one is oto's; several
+ * means the screen shows every candidate and claims none.
+ */
+export const RECEIVER_BASIS_COPY: Record<ReceiverBasis, { label: string; detail: string }> = {
+  sole_webhook: {
+    label: "one webhook receiver",
+    detail:
+      "This configuration has exactly one receiver with a webhook integration, so that is oto's. Alertmanager redacts the webhook URL itself (it comes back as <secret>), so this is an inference from the shape of the config rather than a reading of oto's own address — but with a single candidate there is nothing to confuse it with.",
+  },
+  ambiguous: {
+    label: "several webhook receivers",
+    detail:
+      "More than one receiver has a webhook integration and Alertmanager redacts the URL that would tell them apart, so oto cannot say which is its own. Every route in the tree is listed below and none is claimed: picking one would be a coin toss shown as a reading.",
+  },
+  no_webhook: {
+    label: "no webhook receiver",
+    detail:
+      "No receiver in this configuration has a webhook integration, so nothing here can push alerts to oto. If this source is meant to feed oto, the receiver block is missing.",
+  },
+  unknown: {
+    label: "configuration not read",
+    detail:
+      "oto has not managed to read this source's configuration, so there is not even a receiver list to reason about. Every verdict that depends on these numbers is withheld.",
+  },
+};
+
 /**
  * The rules' `for:`, as a STATED ASSUMPTION rather than an input.
  *
  * ⛔ oto does not read your rule files, and this screen no longer pretends it can
  * be told. A per-browser number for this was the same unshared, unvalidated
  * localStorage value as the other three, and it fed the flap guidance — so two
- * operators could be given contradictory verdicts about the same rule. Five
- * minutes is the commonest `for:` in the wild and is what the flap arithmetic
- * assumes; every verdict that depends on it says so in the same sentence.
+ * operators could be given contradictory verdicts about the same rule. Every
+ * verdict that depends on this number says so in the same sentence.
+ *
+ * ⭐ IT IS 15 MINUTES, AND THAT IS MEASURED RATHER THAN ASSERTED. It used to say
+ * "five minutes is the commonest `for:` in the wild", which is false: across the
+ * 155 alerting rules kube-prometheus-stack 88.2.0 ships — kubernetes-mixin, the
+ * node-exporter mixin and the Prometheus/Alertmanager/etcd/KSM mixins — `15m` is
+ * both the MODE (69 rules, 44.5%) and the MEDIAN, while `5m` is 12.9%. oto's own
+ * rule pack (`deploy/prometheus/oto-rules.yaml`) agrees: `15m` is the mode of its
+ * non-instantaneous rules. See ADR 0026 and docs/setup/tuning.md.
  */
-export const ASSUMED_RULE_FOR_S = 300;
+export const ASSUMED_RULE_FOR_S = 900;
+
+/**
+ * How long one fire → resolve → fire cycle takes to be OBSERVED, in seconds.
+ *
+ * ⛔ THE `Math.max` IS THE WHOLE POINT AND IT USED TO BE MISSING. A cycle has two
+ * independent floors and pays the larger: the RULE floor (the condition must hold
+ * for `for:` all over again) and the TRANSPORT floor (Alertmanager will not send
+ * two notifications for one group closer together than `group_interval`, and a
+ * cycle needs two — one resolved, one firing). The old arithmetic was
+ * `for + group_interval`, which claims an alert with no `for:` can cycle in one
+ * `group_interval`. It cannot: it needs two flushes. That missing term is why the
+ * shipped 5-in-30m flap default was unreachable even for the rule shape it was
+ * supposedly written for.
+ *
+ * One cycle yields exactly TWO counted transitions, which is where the `2 ×` in
+ * every ceiling below comes from.
+ */
+export function observableCycleS(groupIntervalS: number, forS: number): number {
+  return groupIntervalS + Math.max(groupIntervalS, forS);
+}
 
 /** The three fields, with why each one governs what it governs. */
 export interface AmFieldCopy {
@@ -273,27 +357,42 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       },
     ],
     amRule:
-      "Start from group_interval and give it real headroom: 2 x group_interval is the hard floor, 3 x is a reasonable default. Below one group_interval the knob does nothing at all. Then check the top end against how long your incidents actually last — if a typical one is genuinely gone in ten minutes, a ten-minute window will merge distinct incidents.",
+      "Two floors, and the RULE floor is usually the binding one. The grace clock starts at the occurrence's ended_at, which oto takes from the upstream EndsAt — when Prometheus stopped considering the rule firing, not when oto heard about it. So the alert must hold its condition for the rule's whole for: all over again, and Alertmanager then batches the notification: the earliest re-fire oto can observe lands at for + up to one group_interval. The transport floor is 2 x group_interval. Set the grace above whichever is larger, then check the top end against how long your incidents actually last.",
+    // ⛔ THE `for:` TERM IS THE ONE THAT MATTERS AND IT USED TO BE ABSENT. This
+    // verdict compared the value only against `group_interval`, which is the
+    // smaller floor for every rule whose `for:` exceeds it — i.e. for 82% of the
+    // rules a real cluster runs. It reported the old 600s default as comfortably
+    // fine while the modal `for: 15m` rule could never reach it.
     guide: (v, am) => {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
       const named = amPhrase("group_interval", am.groupInterval);
+      const basis = `an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}`;
+      const ruleFloor = ASSUMED_RULE_FOR_S + gi;
+      const want = Math.max(ruleFloor, gi * 2);
       if (v < gi) {
         return {
           level: "inert",
-          text: `Unreachable. Shorter than ${named}, so the window has always expired before oto can hear about a re-fire. Every re-fire will open a new Slack thread.`,
-          suggest: gi * 3,
+          text: `Unreachable. Shorter than ${named}, so the window has always expired before oto can hear about a re-fire at all. Every re-fire will open a new Slack thread.`,
+          suggest: want,
         };
       }
-      if (v < gi * 2) {
+      if (v < ASSUMED_RULE_FOR_S) {
+        return {
+          level: "inert",
+          text: `Unreachable for an ordinary rule. With ${basis}, a re-fire cannot be detected by Prometheus until ${duration(ASSUMED_RULE_FOR_S)} after the resolve, and oto hears about it up to one ${named} later still. Every re-fire will open a new Slack thread.`,
+          suggest: want,
+        };
+      }
+      if (v < want) {
         return {
           level: "tight",
-          text: `Below the 2 x group_interval floor (${duration(gi * 2)}), measured against ${named}. Reachable only by a re-fire that lands in the very first batch after the resolve.`,
-          suggest: gi * 3,
+          text: `Reachable only by a re-fire that lands in the very first batch after the resolve. With ${basis} and ${named}, the typical re-fire is observed ${duration(ruleFloor)} after the resolve.`,
+          suggest: want,
         };
       }
       return ok(
-        `${(v / gi).toFixed(1)} x group_interval — above the 2 x floor, against ${named}. The doc's suggested default is 3 x (${duration(gi * 3)}).`,
+        `Above both floors: the transport floor of 2 x group_interval (${duration(gi * 2)}) and the rule floor of for + group_interval (${duration(ruleFloor)}), with ${basis}.`,
       );
     },
   },
@@ -314,7 +413,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       },
     ],
     amRule:
-      "Keep it at or above group_interval, and consider aligning it with the re-fire grace. If it is much shorter than the re-fire grace, a re-fire inside the grace window still finds a closed group — and gets a new root message anyway.",
+      "Keep it at or above group_interval, and at or above the re-fire grace — the second one is not a suggestion. A close delay shorter than the grace gives you a re-fire that oto correctly classified as the same problem coming back, and then posts a brand-new root card for it anyway, which is the entire thing the grace exists to prevent. oto shipped 5m against a 10m grace and defeated half its own grace that way; the two defaults are now equal. Equal is safe rather than racy: this clock starts at the group's last activity, which is the resolve as oto observed it, while the grace clock starts at the upstream ended_at, which is the same instant or earlier.",
     guide: (v, am, num) => {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
@@ -386,13 +485,13 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       },
     ],
     amRule:
-      "The for: trap. Every resolved-to-firing edge needs the rule condition to hold for its whole for: duration first, and oto only sees a change when Alertmanager sends one. The observable ceiling in a window W is about 2 x W / (for + group_interval); set the threshold at roughly half of it. For long-for: rules do not lower the threshold to 2 — two transitions is a normal deploy. Widen the window instead.",
+      "The for: trap. One observable fire-resolve-fire cycle pays the larger of two floors — the rule's for: dwell, and one group_interval per notification, of which a cycle needs two — so a cycle costs group_interval + max(group_interval, for) and yields two counted transitions. The ceiling in a window W is about 2 x floor(W / cycle); set the threshold at roughly half of it. For long-for: rules do not lower the threshold to 2 — two transitions is a normal deploy. Widen the window instead.",
     guide: (v, am, num) => {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
       const w = num("flap_window_s");
-      const cadence = ASSUMED_RULE_FOR_S + gi;
-      const ceiling = Math.floor((2 * w) / cadence);
+      const cadence = observableCycleS(gi, ASSUMED_RULE_FOR_S);
+      const ceiling = 2 * Math.floor(w / cadence);
       // oto does not read rule files, so the `for:` half of this arithmetic is an
       // assumption and every verdict below says so in the same breath.
       const basis = `an assumed for: of ${duration(ASSUMED_RULE_FOR_S)} and ${amPhrase("group_interval", am.groupInterval)}`;
@@ -431,20 +530,24 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       },
     ],
     amRule:
-      "For a rule with a long for:, widen this rather than lowering the threshold: flap_window is about flap_threshold x (for + group_interval) x 2. With for: 10m and group_interval 5m, a 3h window makes a threshold of 5 describe something genuinely pathological instead of something impossible.",
+      "For a rule with a long for:, widen this rather than lowering the threshold: flap_window is about flap_threshold x the observable cycle, and the cycle is group_interval + max(group_interval, for). With for: 15m and group_interval 5m the cycle is 20m, so a threshold of 5 needs about 100 minutes — which is where the shipped 2h comes from, and why the old 30m window made the threshold unreachable for every rule shape.",
     guide: (v, am, num) => {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
       const named = amPhrase("group_interval", am.groupInterval);
-      if (v < gi) {
+      const cycle = observableCycleS(gi, ASSUMED_RULE_FOR_S);
+      if (v < cycle) {
         return {
           level: "inert",
-          text: `Shorter than ${named}. The window cannot contain two transitions oto is able to observe, so no threshold is reachable.`,
-          suggest: gi * 2,
+          text: `Shorter than one observable cycle (${duration(cycle)}, from ${named} and an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}). The window cannot contain a single fire-resolve-fire cycle, so no threshold is reachable.`,
+          suggest: cycle * 3,
         };
       }
       const t = num("flap_threshold");
-      const need = Math.round(t * (ASSUMED_RULE_FOR_S + gi) * 2);
+      // `threshold ~ floor(W / cycle)` is the "half the ceiling" rule solved for W.
+      // It used to carry an extra `x 2`, which demanded a quarter of the ceiling and
+      // disagreed with the threshold knob's own verdict on the same two numbers.
+      const need = Math.round(t * cycle);
       if (Number.isFinite(t) && v < need) {
         return {
           level: "tight",
@@ -736,38 +839,38 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "raw_retention_days",
     kind: "days",
     label: "Raw payload retention",
-    what: "How long raw ingested webhook payloads are kept. They age out by dropping whole partitions, never by deleting rows.",
+    what: "How long the raw webhook bodies Alertmanager sent are kept. Past this age the whole day is dropped and the bytes are gone — there is no undo and no copy. Nothing an alert page shows comes from here: this is the debugging record, not the alert record.",
     risks: [
       {
         label: "Too short",
-        text: "A webhook you want to inspect has already had its partition dropped, and an ingestion bug reported on Friday cannot be reproduced on Monday.",
+        text: "You lose the ability to reproduce an ingestion bug from the payload that caused it, and to replay a stored batch after a parser fix. An ingestion defect reported three weeks late can no longer be shown the bytes that caused it. The alerts themselves, their episodes, acks and timelines are untouched.",
       },
       {
         label: "Too long",
-        text: "Raw payloads are the largest thing oto stores. A year of them buys storage nobody will read.",
+        text: "Past thirty days a stored batch can no longer be replayed safely anyway — oto's event-dedupe keys have aged out, so re-processing it would append the timeline a second time. Beyond that horizon you are paying disk for bytes nothing can act on.",
       },
     ],
     amRule:
-      "Nothing in alertmanager.yml bears on this. It is storage, not behaviour — no alert changes shape because of it. Raise it if you debug ingestion often.",
+      "Nothing in alertmanager.yml bears on this. The shipped thirty days is derived, not chosen: it is oto's event-idempotency horizon, the longest window in which replaying a stored batch still converges.",
   },
 
   event_retention_months: {
     key: "event_retention_months",
     kind: "months",
     label: "Event timeline retention",
-    what: "How long the event timeline is kept — the record of what fired, what oto did about it and what a human annotated.",
+    what: "How long the instant-by-instant timeline is kept. Past this age the whole month is dropped, permanently — this is the only setting on this screen that destroys something oto cannot rebuild. What it does NOT touch, at any value: the alert itself and its full label set, every firing episode with its start, end, outcome and who acknowledged it, what the rule said at the moment it fired, who was told on which channel in which thread and whether it landed, and the daily hygiene rollups. None of those are ever reaped.",
     risks: [
       {
         label: "Too short",
-        text: "The timeline ends before the question you are asking. Twelve months cannot answer whether this is worse than the same week last year, which is why the shipped default is thirteen.",
+        text: "The timeline for the months you dropped is gone: every human comment and unack note — which live nowhere else and cannot be recovered — the ordered narrative of transitions, and who or what caused each one. A question asked after the boundary gets the episodes and the outcomes, but not the story between them.",
       },
       {
         label: "Too long",
-        text: "The event table grows without bound at the far end, and nobody has read the far end.",
+        text: "oto stores everything in one Postgres and nothing else. Past roughly thirteen months at high alert volume a single org crosses the row count where that stops being comfortable, and the fix is a bigger conversation than this box.",
       },
     ],
     amRule:
-      "Nothing in alertmanager.yml bears on this. Thirteen months is the default so that year-on-year comparisons have a full extra month to land in.",
+      "Nothing in alertmanager.yml bears on this. Thirteen months is the longest default that keeps one org inside oto's single-Postgres design; year-on-year comparisons are served by the daily rollups, which are never deleted. There is no cold-storage export yet, so a month that ages out is not archived anywhere.",
   },
 };
 
@@ -810,7 +913,8 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
   {
     id: "retention",
     title: "Retention",
-    blurb: "Storage, not behaviour. Nothing here changes what oto says or when.",
+    blurb:
+      "The only settings here that delete something. Neither changes what oto says or when — they decide how far back you can still look, and lowering either one drops whole partitions permanently. There is no export and no undo. Read what each one destroys before you lower it.",
     keys: ["raw_retention_days", "event_retention_months"],
   },
 ];

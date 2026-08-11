@@ -210,6 +210,64 @@ func (r *SnapshotRepository) Get(ctx context.Context, s db.TenantScope, snapshot
 	return row.toDomain()
 }
 
+const getSnapshotsByIDsSQL = `
+SELECT ` + snapshotColumns + `
+  FROM rule_snapshots
+ WHERE org_id = $1 AND id = ANY($2)
+ ORDER BY captured_at DESC, id DESC`
+
+// GetMany reads many snapshots by id in ONE round trip.
+//
+// ⭐ IT IS WHAT LETS THE ALERT LIST SHOW WHAT THE RULE SAID. `include=rule` on
+// `GET /alerts` carries the snapshot id and nothing more, so rendering `expr` on
+// fifty rows used to mean fifty calls to `/alerts/{id}/rule`. Content addressing
+// makes the batch cheaper than it looks: a page where every alert fired under
+// the same unchanged rule collapses to ONE id, because the rows ARE the same row
+// (ADR 0025).
+//
+// ⛔ An id with no row is ABSENT FROM THE RESULT, never an error. The table is
+// append-only, so the only way to miss is an id from another org or one a caller
+// invented — and failing the whole batch for one of those would blank an entire
+// page's rule column. The caller joins by id and renders the misses as unknown.
+//
+// NOTE (planner): the predicate is the primary key with the org filter on top,
+// so this is an index scan per id and never a table scan. The ordering is the
+// same `(captured_at DESC, id DESC)` every other snapshot read uses, so a client
+// that renders the batch as a list gets the order it already expects.
+func (r *SnapshotRepository) GetMany(
+	ctx context.Context, s db.TenantScope, ids []uuid.UUID,
+) ([]domain.Snapshot, error) {
+	if len(ids) == 0 {
+		return []domain.Snapshot{}, nil
+	}
+
+	rows, err := r.db(ctx).Query(ctx, getSnapshotsByIDsSQL, s.OrgID(), ids)
+	if err != nil {
+		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+			"could not read the rule snapshots")
+	}
+	defer rows.Close()
+
+	out := make([]domain.Snapshot, 0, len(ids))
+	for rows.Next() {
+		row, scanErr := scanSnapshot(rows)
+		if scanErr != nil {
+			return nil, errs.Wrap(scanErr, errs.KindInternal, CodeQueryFailed,
+				"could not read the rule snapshots")
+		}
+		snap, convErr := row.toDomain()
+		if convErr != nil {
+			return nil, convErr
+		}
+		out = append(out, snap)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+			"could not read the rule snapshots")
+	}
+	return out, nil
+}
+
 // keyPredicate builds the rule-key filter.
 //
 // rule_file and rule_group are matched ONLY when the caller supplied them. That

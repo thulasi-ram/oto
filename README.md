@@ -17,7 +17,7 @@ Prerequisites: Go 1.26, Node 24, Docker.
 
 ```bash
 cp .env.example .env      # defaults already match docker-compose.yml
-just infra                # postgres:17 + alertmanager, waits for health
+just infra                # postgres:17 + alertmanager + prometheus, waits for health
 just migrate              # apply migrations
 
 # The first org, the first user and the first token. v1 has no signup route and
@@ -40,6 +40,25 @@ back end are talking.
 | API | <http://localhost:8080> — `/healthz`, `/readyz`, `/metrics`, `/api/v1/…` |
 | UI | <http://localhost:5173> |
 | Alertmanager | <http://localhost:9093> — routes every alert to oto on the host |
+| Prometheus | <http://localhost:9090> — scrapes oto's own `/metrics` and evaluates `deploy/prometheus/oto-rules.yaml` |
+
+### Seeing an alert arrive
+
+`just infra` also brings up a Prometheus configured by
+[`deploy/prometheus/prometheus.yml`](deploy/prometheus/prometheus.yml). Its first rule,
+`OtoStackSmokeTest`, is deliberately always true with a 15 s `for:`, so within a minute
+<http://localhost:9093> shows a card without you having to break anything. That proves
+Prometheus → Alertmanager.
+
+The last hop, Alertmanager → oto, needs two values that cannot exist before you do: the ingest route
+is per source (`/api/v1/ingest/alertmanager/{source_id}`) and authenticates with that source's own
+token. Create a source, then paste its `webhook_url` and `ingest_token` — returned exactly once —
+into `deploy/alertmanager/alertmanager.yml` and `docker compose restart alertmanager`. The file's
+header comment has the exact call. Until then the receiver points at an all-zero uuid that 404s on
+purpose, rather than at a URL that looks plausible and silently is not.
+
+That same Prometheus is a legitimate `prometheus_url` for the source, which is what lets oto show
+what a rule said at the moment it fired (ADR 0009).
 
 `just` on its own lists every recipe. The ones you will use most:
 
@@ -73,13 +92,26 @@ pkg/alertkey/     ⚠️ EMPTY — a doc.go and nothing else. The canonical labe
                   CONTEXT.md; both cannot be true.
 db/migrations/    goose SQL, expand/contract only
 web/              Vite 6 + SolidJS + TypeScript strict + Tailwind v4
-deploy/           compose, alertmanager config, and `slack/manifest.yaml` — the
-                  Slack app manifest a customer pastes into Slack, with every
-                  requested scope justified and sourced. ⚠️ `deploy/helm/` and
-                  `deploy/prometheus/` are EMPTY DIRECTORIES: the Helm chart of
-                  SPEC acceptance criterion 31 (`helm install oto` as the entire
-                  install) is not built yet, and neither is the sample
-                  prometheus.yml. Deploy with the binary and compose for now.
+deploy/           alertmanager config; `prometheus/` with the sample
+                  `prometheus.yml` and the alert rules the compose stack
+                  evaluates; and `slack/manifest.yaml` — the Slack app manifest a
+                  customer pastes into Slack, with every requested scope
+                  justified and sourced.
+deploy/helm/oto/  the Helm chart of SPEC acceptance criterion 31. API and worker
+                  Deployments, `oto migrate` as a pre-install/pre-upgrade hook
+                  (it runs the SUBCOMMAND, not `goose up`, because goose alone
+                  leaves River's tables absent and the worker dies at boot),
+                  optional Ingress, `existingSecret` support, and a `values.yaml`
+                  in which every key maps onto an environment variable
+                  `internal/platform/config` actually reads. Postgres is EXTERNAL
+                  and there is no subchart — ADR 0014, SPEC R7.
+                  ⚠️ NO IMAGE IS PUBLISHED. There is a `Dockerfile` at the
+                  repository root and no release workflow, so `image.repository`
+                  points at a registry you build and push to yourself.
+docs/runbooks/    one page per `oto_*` metric the binary registers: what it
+                  counts, what a sustained value means, what to check and what to
+                  do. The `runbook_url` on every rule in
+                  `deploy/prometheus/oto-rules.yaml` points here.
 test/harness/     real Postgres via testcontainers (one container, a migrated
                   template, a fresh database per test), fakes for the four true
                   externals — Alertmanager, Prometheus, Slack, outbound webhooks
@@ -102,12 +134,17 @@ not have. What CI runs today, and therefore what will stop a bad change:
 | gofmt / `go mod tidy` clean | `go-lint` job | **enforced** |
 | `go build` + `go vet` | `go-build` job | **enforced** |
 | `go test -race ./...` | `go-test` job | **enforced.** Every domain now has tests; the service and repository tiers largely do not. A green means the domain logic holds, not that a feature works end to end — that gap is what [ADR 0021](docs/adr/0021-correctness-and-testing-strategy.md) §3–§4 exist to close |
-| G3: openapi.yaml → TS client is not stale | `ui` job, `npm run generate:check` | **enforced** |
+| G1: Go DTO → OpenAPI | `contract-dto` job, `go test ./test/contract/` (`just dto-check`) | **enforced** — reflects every `*DTO`/`*Request`/`*Query` struct and diffs json tags, required/optional, types, enums, nullability and `validate` bounds against the contract. Known debt is enumerated in the test and can only shrink |
+| G2: running server → OpenAPI | `contract-server` job, `go test ./test/contract/server/` (`just server-check`) | **enforced** — the real container over a real Postgres, every declared operation called over HTTP, every response's status, Content-Type and BYTES validated against the contract. ⚠️ Go-native, not `schemathesis`; the argument is in `test/contract/server/doc.go` |
+| G3: openapi.yaml → TS client is not stale | `ui` job, `npm run generate:check` (`just generate-check`) | **enforced** |
+| G4: OpenAPI → generated valibot validators | `ui` job, `npm run gen:validators:check` (`just validators-check`) | **enforced** — `web/src/api/generated/validators.ts` is generated and checked in. The three remaining hand-written valibot schemas are FORM schemas, and each `v.pipe`s into the generated `*RequestSchema` as its final gate, which is what §L.8.1 asks for |
 | AC-49 vocabulary + forbidden columns | `vocabulary` job, `go run ./tools/lintvocab` | **enforced**, with known debt listed in `tools/lintvocab/baseline.txt` |
 | `TestValidatorMatchesDDL` (§L.8) | `internal/platform/validate/ddl_test.go` | **enforced** — every canonical regex is compared byte-for-byte with its DDL `CHECK` |
-| G1: Go DTO → OpenAPI | — | **not built** |
-| G2: running server → OpenAPI (schemathesis) | — | **not built** |
-| G4: OpenAPI → generated valibot validators | — | **not built**; the valibot schemas in `web/src` are hand-written, which §L.8.1 forbids |
+
+Each of the four drift gates has been demonstrated to FAIL against a deliberately planted drift —
+a Go DTO field absent from the contract for G1, a handler returning the wrong shape for G2, a
+hand-edited generated file for G3 and G4 — before being called done. A gate that has never failed
+is a gate nobody knows works.
 
 The layering rules are mechanically enforced by `depguard` in `.golangci.yml`: `api` cannot import
 `repository`, `repository` cannot import `api`, `domain` packages import no I/O at all, and no
@@ -125,6 +162,10 @@ wrong — not the rule.
   "Create an app from manifest" flow rather than ticking scopes by hand.
 - `docs/setup/tuning.md` — `refire_grace`, the flap and storm thresholds, and how the right value
   for each is derived from your own `alertmanager.yml` and your rules' `for:` durations.
+- `docs/runbooks/` — one page per `oto_*` metric: what it counts, what a sustained value means,
+  what to check and what to do. [The index](docs/runbooks/README.md) says which metrics are worth
+  paging on and which are purely informational, and lists the metrics the SPEC names that no
+  collector builds yet. `just metrics` dumps the live values.
 
 ## Licence
 

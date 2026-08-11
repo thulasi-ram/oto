@@ -270,10 +270,16 @@ type Settings struct {
 // DefaultSettings are the §D.1 defaults, used when no SettingsReader is wired.
 func DefaultSettings() Settings {
 	return Settings{
-		RefireGrace:   domain.DefaultRefireGrace,
-		ResolveGrace:  domain.DefaultResolveGrace,
+		RefireGrace:  domain.DefaultRefireGrace,
+		ResolveGrace: domain.DefaultResolveGrace,
+		// ⚠️ MIRRORS `identity/domain.DefaultFlapThreshold` / `DefaultFlapWindow`.
+		// The window is 2h, not 30m: one observable fire→resolve→fire cycle costs
+		// `group_interval + max(group_interval, for)`, so at the 5m group_interval
+		// the ecosystem actually runs, a 30-minute window could hold at most 6
+		// transitions — and only 2 for the modal `for: 15m` rule — which made a
+		// threshold of 5 unreachable. See ADR 0026.
 		FlapThreshold: 5,
-		FlapWindow:    30 * time.Minute,
+		FlapWindow:    2 * time.Hour,
 	}
 }
 

@@ -218,11 +218,11 @@ var insertGroupSQL = `
 WITH g AS (
   INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, generation,
                             source_group_key, receiver, group_labels, title, state, severity,
-                            state_version, first_seen_at, last_activity_at)
+                            state_version, first_seen_at, last_activity_at, synthetic)
   SELECT $1, $2, $3, $4, $5,
          COALESCE((SELECT max(prev.generation) FROM alert_groups prev
                     WHERE prev.org_id = $2 AND prev.group_key = $5), 0) + 1,
-         $6, $7, $8, $9, 'open', $10, 1, $11, $11
+         $6, $7, $8, $9, 'open', $10, 1, $11, $11, $12
   RETURNING ` + groupColumns + `
 )
 SELECT ` + groupColumnsQualified + `, c.cluster_key
@@ -270,6 +270,7 @@ func (r *GroupRepository) OpenGeneration(
 	err = r.db(ctx).QueryRow(ctx, insertGroupSQL,
 		in.ID, s.OrgID(), in.SourceID, in.ClusterID, in.GroupKey,
 		strPtr(in.SourceGroupKey), in.Receiver, labels, in.Title, strPtr(in.Severity), at.UTC(),
+		in.Synthetic,
 	).Scan(row.scanDest()...)
 	if err != nil {
 		return domain.Group{}, mapErr(err, "open alert group generation")
@@ -291,6 +292,17 @@ type NewGeneration struct {
 	Title          string
 	Severity       string
 	At             time.Time
+	// Synthetic marks a generation opened by a DELIVERY DRILL, so the dashboard
+	// group counts can exclude it with an indexed predicate rather than reaching
+	// `alerts` through `alert_group_members` for every group in the window.
+	//
+	// ⛔ IT IS WRITE-ONLY HERE AND IS DELIBERATELY NOT IN `groupColumnList`. It is
+	// a REPORTING fact about how a generation came to exist, not an invariant of
+	// a Group, and putting it on the entity would invite code to branch on it —
+	// which is exactly what must not happen: a drill's card is rendered, threaded
+	// and delivered by the identical code path a real alert takes, or the drill
+	// proves nothing.
+	Synthetic bool
 }
 
 // ⭐ `state_version = $12` is the OPTIMISTIC LOCK, and $12 is the version the

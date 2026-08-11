@@ -151,9 +151,25 @@ func (r *ThreadRepository) Get(
 	return t, nil
 }
 
+// ⭐ EVERY WRITE IN THIS FILE ADVANCES `updated_at` MONOTONICALLY —
+// GREATEST(updated_at, $n) — and that is a correctness guard, not a nicety.
+//
+// Both timestamps on this row come from the application: Ensure above names
+// `created_at` from the caller's clock. But "the application" is N pods with N
+// clocks, and a thread is CREATED by whichever pod evaluated the policy and then
+// written by whichever pod the dispatcher happened to run on. A few milliseconds
+// of lag between them writes an `updated_at` BELOW `created_at` and fails
+// `threads_time_ck` with a 23514 — and the first write after Ensure is the one
+// with the least clock distance to absorb.
+//
+// On THIS table a constraint failure is not merely a 500: these statements are
+// what record where a message landed. Losing one leaves oto's memory of the
+// destination behind the destination itself, which is the state §H the whole
+// module is written to avoid. OrderingStore.Advance below has always done this;
+// it is the same idiom, for the same reason, as `channels` and `orgs`.
 const allocateSeqSQL = `
 UPDATE channel_threads
-   SET next_seq = next_seq + 1, updated_at = $3
+   SET next_seq = next_seq + 1, updated_at = GREATEST(updated_at, $3)
  WHERE org_id = $1 AND id = $2
 RETURNING next_seq - 1`
 
@@ -194,7 +210,7 @@ UPDATE channel_threads
        state                    = 'open',
        dead_reason              = NULL,
        last_sent_seq            = GREATEST(last_sent_seq, $6),
-       updated_at               = $7
+       updated_at               = GREATEST(updated_at, $7)
  WHERE org_id = $1 AND id = $2`
 
 // RecordRoot stores the durable handle the provider just returned.
@@ -225,7 +241,7 @@ const recordReplySQL = `
 UPDATE channel_threads
    SET reply_count   = reply_count + 1,
        last_sent_seq = GREATEST(last_sent_seq, $3),
-       updated_at    = $4
+       updated_at    = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2`
 
 // RecordReply advances the thread past a reply that landed.
@@ -238,11 +254,13 @@ func (r *ThreadRepository) RecordReply(
 
 const advanceSeqSQL = `
 UPDATE channel_threads
-   SET last_sent_seq = GREATEST(last_sent_seq, $3), updated_at = $4
+   SET last_sent_seq = GREATEST(last_sent_seq, $3), updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2 AND $3 < next_seq`
 
 // AdvanceSent moves the ordering head. GREATEST makes it convergent, so a
-// redelivered worker cannot walk the head backwards.
+// redelivered worker cannot walk the head backwards — and it guards `updated_at`
+// for the same reason on the other axis, so a redelivered worker on a lagging
+// pod cannot walk the row's version backwards either.
 func (r *ThreadRepository) AdvanceSent(
 	ctx context.Context, s db.TenantScope, threadID uuid.UUID, seq int, now time.Time,
 ) error {
@@ -252,7 +270,7 @@ func (r *ThreadRepository) AdvanceSent(
 
 const markThreadDeadSQL = `
 UPDATE channel_threads
-   SET state = 'dead', dead_reason = $3, updated_at = $4
+   SET state = 'dead', dead_reason = $3, updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2 AND state <> 'dead'`
 
 // MarkDead records that a terminal provider error killed this thread.
@@ -276,7 +294,7 @@ UPDATE channel_threads
        reply_count        = 0,
        state              = 'opening',
        dead_reason        = NULL,
-       updated_at         = $3
+       updated_at         = GREATEST(updated_at, $3)
  WHERE org_id = $1 AND id = $2`
 
 // ClearPointer degrades a thread whose ROOT MESSAGE is gone but whose
@@ -297,7 +315,7 @@ func (r *ThreadRepository) ClearPointer(
 
 const freezeThreadSQL = `
 UPDATE channel_threads
-   SET state = 'frozen', updated_at = $3
+   SET state = 'frozen', updated_at = GREATEST(updated_at, $3)
  WHERE org_id = $1 AND id = $2 AND state IN ('opening','open')`
 
 // Freeze closes a thread because its group generation closed. Anything still

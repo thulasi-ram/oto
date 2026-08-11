@@ -176,6 +176,24 @@ func (r *StatsRepository) AlertQuality(
 //
 // `resolved` and `expired` are counted into separate columns and are never
 // summed, because conflating them is precisely the lie oto exists to prevent.
+//
+// ⛔⛔ THE FIRST THREE CTEs EXCLUDE DELIVERY DRILLS, and each one had to be
+// changed separately because each counts a different table:
+//
+//   - `a` reads `alerts.synthetic` directly.
+//   - `g` reads `alert_groups.synthetic`, which is denormalised at
+//     generation-open time for exactly this predicate.
+//   - `d` has no column of its own, so it walks the two FKs it already has —
+//     delivery -> notification -> group — and reads the group's flag. Both hops
+//     are primary-key lookups on a set already bounded by the time window, which
+//     is a far better bargain than a fourth denormalised boolean that a future
+//     writer could forget to set.
+//
+// A drill that showed up here would tell an operator their estate had one more
+// firing alert, one more open group and one more sent delivery than it does, on
+// the dashboard they check first. The other two CTEs need no predicate:
+// `source_health` and `channels` count configuration, and a drill creates
+// neither.
 const overviewSQL = `
 WITH a AS (
   SELECT
@@ -188,6 +206,7 @@ WITH a AS (
     COUNT(*) FILTER (WHERE is_flapping)            AS flapping
   FROM alerts
  WHERE org_id = $1
+   AND NOT synthetic
    AND ($2::text[] IS NULL OR cluster_key = ANY($2))
    AND last_seen_at >= $3 AND last_seen_at <= $4
 ), g AS (
@@ -196,17 +215,21 @@ WITH a AS (
     COUNT(*) FILTER (WHERE state = 'closed') AS closed,
     COUNT(*) FILTER (WHERE storm_mode)       AS storm
   FROM alert_groups
- WHERE org_id = $1 AND last_activity_at >= $3 AND last_activity_at <= $4
+ WHERE org_id = $1 AND NOT synthetic
+   AND last_activity_at >= $3 AND last_activity_at <= $4
 ), d AS (
   SELECT
-    COUNT(*) FILTER (WHERE status = 'sent')    AS sent,
-    COUNT(*) FILTER (WHERE status = 'failed')  AS failed,
-    COUNT(*) FILTER (WHERE status = 'dead')    AS dead,
-    COUNT(*) FILTER (WHERE status = 'skipped') AS skipped,
-    COUNT(*) FILTER (WHERE status IN ('pending','sending')) AS pending,
-    COUNT(*) FILTER (WHERE ambiguous)          AS ambiguous
-  FROM notification_deliveries
- WHERE org_id = $1 AND created_at >= $3 AND created_at <= $4
+    COUNT(*) FILTER (WHERE dv.status = 'sent')    AS sent,
+    COUNT(*) FILTER (WHERE dv.status = 'failed')  AS failed,
+    COUNT(*) FILTER (WHERE dv.status = 'dead')    AS dead,
+    COUNT(*) FILTER (WHERE dv.status = 'skipped') AS skipped,
+    COUNT(*) FILTER (WHERE dv.status IN ('pending','sending')) AS pending,
+    COUNT(*) FILTER (WHERE dv.ambiguous)          AS ambiguous
+  FROM notification_deliveries dv
+  JOIN notifications n ON n.id = dv.notification_id AND n.org_id = dv.org_id
+  JOIN alert_groups ag ON ag.id = n.group_id        AND ag.org_id = n.org_id
+ WHERE dv.org_id = $1 AND NOT ag.synthetic
+   AND dv.created_at >= $3 AND dv.created_at <= $4
 ), s AS (
   SELECT
     COUNT(*) FILTER (WHERE status = 'healthy')     AS healthy,

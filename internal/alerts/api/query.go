@@ -28,7 +28,7 @@ import (
 var listAlertsParams = []string{
 	"state", "severity", "cluster", "namespace", "alertname", "source_fingerprint",
 	"label[", "matcher",
-	"ack", "flapping", "snoozed", "since", "q", "sort", "include",
+	"ack", "flapping", "snoozed", "synthetic", "since", "q", "sort", "include",
 	"limit", "cursor",
 }
 
@@ -39,7 +39,7 @@ var listRollupsParams = []string{
 	"group_by",
 	"state", "severity", "cluster", "namespace", "alertname", "source_fingerprint",
 	"label[", "matcher",
-	"ack", "flapping", "snoozed", "since", "q",
+	"ack", "flapping", "snoozed", "synthetic", "since", "q",
 	"limit", "cursor",
 }
 
@@ -83,15 +83,16 @@ func parseListAlerts(r *http.Request) (alertsListRequest, error) {
 		AlertName:         p.CSV("alertname"),
 		SourceFingerprint: p.CSV("source_fingerprint"),
 
-		Matcher:  p.String("matcher", ""),
-		Ack:      p.String("ack", ""),
-		Flapping: p.Bool("flapping"),
-		Snoozed:  p.Bool("snoozed"),
-		Q:        p.String("q", ""),
-		Sort:     p.String("sort", service.SortLastSeenDesc),
-		Include:  p.CSV("include"),
-		Limit:    p.Limit(),
-		Cursor:   p.Cursor(),
+		Matcher:   p.String("matcher", ""),
+		Ack:       p.String("ack", ""),
+		Flapping:  p.Bool("flapping"),
+		Snoozed:   p.Bool("snoozed"),
+		Synthetic: p.Bool("synthetic"),
+		Q:         p.String("q", ""),
+		Sort:      p.String("sort", service.SortLastSeenDesc),
+		Include:   p.CSV("include"),
+		Limit:     p.Limit(),
+		Cursor:    p.Cursor(),
 	}
 	if p.Has("since") {
 		since := p.Time("since")
@@ -202,6 +203,7 @@ type filterSpec struct {
 	Ack          string
 	Flapping     *bool
 	Snoozed      *bool
+	Synthetic    *bool
 	Since        *time.Time
 	Query        string
 }
@@ -210,7 +212,8 @@ func (q ListAlertsQuery) spec() filterSpec {
 	return filterSpec{
 		States: q.State, Severities: q.Severity, Namespaces: q.Namespace,
 		Clusters: q.Cluster, AlertNames: q.AlertName, Fingerprints: q.SourceFingerprint,
-		Ack: q.Ack, Flapping: q.Flapping, Snoozed: q.Snoozed, Since: q.Since, Query: q.Q,
+		Ack: q.Ack, Flapping: q.Flapping, Snoozed: q.Snoozed, Synthetic: q.Synthetic,
+		Since: q.Since, Query: q.Q,
 	}
 }
 
@@ -218,7 +221,8 @@ func (q ListRollupsQuery) spec() filterSpec {
 	return filterSpec{
 		States: q.State, Severities: q.Severity, Namespaces: q.Namespace,
 		Clusters: q.Cluster, AlertNames: q.AlertName, Fingerprints: q.SourceFingerprint,
-		Ack: q.Ack, Flapping: q.Flapping, Snoozed: q.Snoozed, Since: q.Since, Query: q.Q,
+		Ack: q.Ack, Flapping: q.Flapping, Snoozed: q.Snoozed, Synthetic: q.Synthetic,
+		Since: q.Since, Query: q.Q,
 	}
 }
 
@@ -257,7 +261,11 @@ func alertFilter(in filterSpec, compiled filter.Compiled) (domain.AlertFilter, e
 		Flapping:     in.Flapping,
 		// nil means INCLUDE BOTH and nil is the default: the list NEVER hides a
 		// snoozed alert (§B.8.6), because hiding one is how an incident is lost.
-		Snoozed:    in.Snoozed,
+		Snoozed: in.Snoozed,
+		// nil means EXCLUDE, and nil is the default — the OPPOSITE of Snoozed one
+		// line up. A drill's alert is not history; letting one into the default
+		// list would put oto's own plumbing into the customer's estate.
+		Synthetic:  in.Synthetic,
 		LabelsAll:  compiled.LabelsAll,
 		LabelsAny:  compiled.LabelsAny,
 		LabelsNone: compiled.LabelsNone,
@@ -304,6 +312,7 @@ func parseListRollups(r *http.Request) (rollupsRequest, error) {
 		Ack:               p.String("ack", ""),
 		Flapping:          p.Bool("flapping"),
 		Snoozed:           p.Bool("snoozed"),
+		Synthetic:         p.Bool("synthetic"),
 		Q:                 p.String("q", ""),
 		Limit:             p.Limit(),
 		Cursor:            p.Cursor(),
@@ -401,6 +410,9 @@ func commonFilterParts(in filterSpec, sel filter.Selector) []string {
 	}
 	if in.Snoozed != nil {
 		parts = append(parts, "snoozed="+strconv.FormatBool(*in.Snoozed))
+	}
+	if in.Synthetic != nil {
+		parts = append(parts, "synthetic="+strconv.FormatBool(*in.Synthetic))
 	}
 	if in.Since != nil {
 		parts = append(parts, "since="+in.Since.UTC().Format(time.RFC3339Nano))

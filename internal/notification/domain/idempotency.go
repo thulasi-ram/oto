@@ -1,12 +1,9 @@
 package domain
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
-	"strconv"
-
 	"github.com/google/uuid"
+
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 )
 
 // SubjectKind is what a Notification is about — the closed set of
@@ -42,7 +39,7 @@ func (k SubjectKind) String() string { return string(k) }
 // index is the mechanism WORKING and must be handled as success, never surfaced
 // as an error (§L.9).
 //
-// Three details are load-bearing:
+// Three details are load-bearing, and all three are now the KERNEL's to keep:
 //
 //   - the UUIDs are hashed as their 16 RAW BYTES, not their textual form, so a
 //     change in how oto formats a UUID cannot silently re-key every notification;
@@ -54,10 +51,23 @@ func (k SubjectKind) String() string { return string(k) }
 //     framing separated fields with 0x00, which is injective only while no field
 //     can CONTAIN a NUL — true of these five, but not of `receiver` and `expr` in
 //     the neighbouring §C keys, and one key framed differently from its
-//     neighbours is a trap. The argument in full is on alerts/domain writeField,
-//     which this MUST agree with byte for byte.
+//     neighbours is a trap. The argument in full is on alerts/domain writeField.
 //
 // The trailing itoa(state_version) needs no prefix: it is the remainder.
+//
+// # THIS IS AN ADAPTER, NOT AN IMPLEMENTATION
+//
+// It used to be the second of two spellings of §C.7, and the live one: the
+// kernel's ComputeIdempotencyKey had no production caller, so the copy a reader
+// would assume canonical was the dead one and only a cross-check test kept the
+// pair honest. What this function contributes is the part the kernel cannot have:
+// SubjectKind and Reason are this module's closed enums, and alerts/domain may
+// import no other domain package. So the types stop here and the bytes are the
+// kernel's.
+//
+// The signature is unchanged, so notify.go's call site is unchanged, and the
+// digest is unchanged for every input — the two implementations were already
+// byte-identical, which is why this could collapse without re-keying anything.
 func IdempotencyKey(
 	orgID uuid.UUID,
 	kind SubjectKind,
@@ -65,24 +75,9 @@ func IdempotencyKey(
 	reason Reason,
 	stateVersion int,
 ) string {
-	h := sha256.New()
-	field := func(b []byte) {
-		var n [4]byte
-		binary.BigEndian.PutUint32(n[:], uint32(len(b)))
-		_, _ = h.Write(n[:])
-		_, _ = h.Write(b)
-	}
-
-	org := orgID
-	subj := subjectID
-
-	field(org[:])
-	field([]byte(kind))
-	field(subj[:])
-	field([]byte(reason))
-	_, _ = h.Write([]byte(strconv.Itoa(stateVersion)))
-
-	return hex.EncodeToString(h.Sum(nil))
+	return kernel.ComputeIdempotencyKey(
+		orgID, string(kind), subjectID, string(reason), stateVersion,
+	).String()
 }
 
 // idempotencyKeyLength is the hex width notifications_idem_ck enforces.

@@ -99,7 +99,10 @@ export interface paths {
          *     indexed, total ordering.
          *
          *     **`include` avoids the N+1.** Without it the response is one row per alert; with it, the named
-         *     sub-resources are batch-loaded and embedded.
+         *     sub-resources are batch-loaded and embedded. `rule` is the one that embeds a **reference**
+         *     rather than the object — see `RuleSnapshotRefDTO` — and
+         *     `GET /api/v1/rule-snapshots/batch` resolves a whole page of those refs in one further call, so
+         *     showing `expr` on the list costs two requests rather than one per row (ADR 0025).
          *
          *     **Snoozed alerts are in this list by default and that is deliberate.** A snooze suppresses oto's
          *     own *notifications*; it says nothing about the signal. A snoozed alert is still firing, still
@@ -847,6 +850,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/rule-snapshots/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve many snapshot ids at once, for the alert list
+         * @description **The second half of `include=rule`, and what lets the alert list show what the rule said.**
+         *
+         *     `GET /api/v1/alerts?include=rule` gives each row a `RuleSnapshotRefDTO` — an id, and nothing
+         *     more. This turns a page of those ids into the snapshots themselves in **one** call. Two
+         *     requests render a list of fifty alerts with their expressions; one request per row would be
+         *     fifty-one, which is why the list never showed the rule at all.
+         *
+         *     ### Why the join is client-side and not an embedded object
+         *
+         *     `alerts/api` may not name the rules module's types (CONTEXT.md §5, layering rule 4/5), and a
+         *     hand-copied `RuleSnapshotDTO` living under `alerts` would be the second copy that drifts —
+         *     two answers to "what did the rule say", diverging quietly. On top of that, `expr` runs to
+         *     64 KiB and every snapshot carries two label maps: embedding all of it in each of two hundred
+         *     rows is the payload explosion `include=` exists to keep opt-in. The full reasoning, and the
+         *     options weighed against it, are in **ADR 0025**.
+         *
+         *     ### Content addressing makes this cheap
+         *
+         *     A snapshot is deduplicated by content, so a rule that has not been edited is **one row**
+         *     however many alerts fired under it. A page of fifty alerts under three distinct rules asks
+         *     about three snapshots, not fifty — pass the ids as they come off the rows and let the server
+         *     collapse them.
+         *
+         *     ### ⛔ An id with no snapshot is absent from the result, never a 404
+         *
+         *     `rule_snapshots` is append-only and nothing deletes from it, so the only ways to miss are an
+         *     id belonging to another org or one a caller invented. Failing the whole request for either
+         *     would blank the rule column of a page that is otherwise entirely answerable. Join by `id` and
+         *     render a miss as *unknown* — which is a different fact from a snapshot whose `origin` is
+         *     `unavailable`, and the two must stay distinguishable.
+         *
+         *     ### ⛔ This is not a page
+         *
+         *     There is no `page` object and no cursor: the caller enumerated the set itself, so there is
+         *     nothing to page through and no `next_cursor` that could ever exist.
+         */
+        get: operations["batchGetRuleSnapshots"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rule-snapshots/{id}": {
         parameters: {
             query?: never;
@@ -1172,6 +1229,14 @@ export interface paths {
          *     If the rendered payload fails outbound validation it is **never sent**: the attempt is reported
          *     as failed with `config_invalid` and the offending payload is retained for inspection. oto does
          *     not silently truncate a message to make it fit.
+         *
+         *     **This is the cheap check, and it is deliberately not the whole answer.** It is scoped to one
+         *     destination and costs one API call: *is this token still good, does this conversation exist,
+         *     does my payload validate*. It does not touch ingestion, alert identity, grouping, the
+         *     notification policy match, threading, the ordering gate or the delivery record — so it cannot
+         *     say whether an alert would ever be routed here. For that, run a delivery drill
+         *     (`POST /api/v1/drills`), which pushes one synthetic alert through all of it and names the
+         *     stage that fails. The two are complementary and both are kept.
          */
         post: operations["testChannel"];
         delete?: never;
@@ -1457,6 +1522,85 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/drills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recent delivery drills for one source
+         * @description The last few drills run against one source, newest first. Deliberately uncursored: a drill is
+         *     one operator pressing one button, and a source with more than a handful is already a story.
+         */
+        get: operations["listDeliveryDrills"];
+        put?: never;
+        /**
+         * Push one synthetic alert through the real pipeline
+         * @description Manufacture one alert and accept it **through the same ingest endpoint an Alertmanager posts
+         *     to**, then report, stage by stage, what the real pipeline did with it.
+         *
+         *     This is deliberately not `POST /channels/{id}/test`, which renders a card and hands it to the
+         *     provider. That answers "does my token work". This answers the question an operator actually
+         *     has on day one — *will an alert reach my channel, in a thread, with the right card, and be
+         *     recorded?* — because it runs the stages the channel test skips, and every failure mode oto has
+         *     lives in one of them.
+         *
+         *     **The alert is synthetic and disposable.** It is marked from the provenance of the batch that
+         *     carried it, never from a label — a label is forgeable by any upstream and participates in
+         *     `alert_key`, so marking one would change the alert's identity. Every aggregate excludes it:
+         *     the daily hygiene rollup, the dashboard overview, the alert list and roll-up defaults, and the
+         *     label typeaheads. Its signal rows are deleted a day after the drill settles; the drill's own
+         *     receipt, with the frozen staged result, is kept.
+         *
+         *     Answers `202`: the pipeline is asynchronous by contract, so the honest answer now is "it
+         *     started". Poll `GET /api/v1/drills/{id}`. At most one drill per source may be in flight.
+         */
+        post: operations["startDeliveryDrill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/drills/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The staged result of one delivery drill
+         * @description Poll this while `status` is `running`. Every stage is recomputed from the **live rows the real
+         *     pipeline wrote** — nothing in the pipeline reports itself, so a stage that stops writing its
+         *     row is a stage the drill notices.
+         *
+         *     Once the drill settles the result is frozen and this returns those bytes verbatim, which is
+         *     what lets the synthetic rows be deleted while the answer survives.
+         */
+        get: operations["getDeliveryDrill"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a drill's synthetic alert now
+         * @description Delete the synthetic Alert, occurrence, group, notification, delivery and thread rows this
+         *     drill created, without waiting for the automatic sweep.
+         *
+         *     **The receipt survives.** This answers `200` with the drill and its frozen result rather than
+         *     `204`: "deleted" here means the fake alert is gone, and the record that a drill ran — and what
+         *     it found — is not something an operator can erase, by the same rule the timeline lives by.
+         *
+         *     Refuses a drill that has not settled: deleting the rows a running drill is still being judged
+         *     from would make it report failures that never happened.
+         */
+        delete: operations["disposeDeliveryDrill"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2477,12 +2621,28 @@ export interface components {
              */
             flap_score: number;
             /**
-             * @description True once `flap_score` crosses the org's threshold (default 5 transitions in 30 minutes).
+             * @description True once `flap_score` crosses the org's threshold (default 5 transitions in 2 hours).
              *     Flapping is a **visible** state that switches notification to update-only with a periodic
              *     digest — never a silent drop.
              * @example false
              */
             is_flapping: boolean;
+            /**
+             * @description True for an alert oto manufactured for a **delivery drill** — a rehearsal of the
+             *     notification path that an operator started by pressing a button. Nothing fired in any
+             *     cluster.
+             *
+             *     It is carried from the provenance of the ingest batch, never from a label: a label is
+             *     forgeable by any upstream, and it participates in `alert_key`, so marking an alert with
+             *     one would change its identity.
+             *
+             *     **Every default read excludes these**, including this list, the roll-ups, the label
+             *     typeaheads, the dashboard overview and the daily hygiene rollup — so an ordinary caller
+             *     will only ever see `false`. Pass `?synthetic=true` to look at one, which is what a drill's
+             *     result screen links to. The rows are deleted automatically a day after the drill settles.
+             * @example false
+             */
+            synthetic: boolean;
             /**
              * @description The snooze currently in force, or `null` when the alert is awake. **Always present**,
              *     including on list rows — `null` means *awake*, an absent key would mean *unknown*, and
@@ -2505,7 +2665,9 @@ export interface components {
             enrichments?: components["schemas"]["EnrichmentDTO"][] | null;
             /**
              * @description Present only when the request asked for `include=rule`, and a REFERENCE — see
-             *     `RuleSnapshotRefDTO`. `GET /api/v1/alerts/{id}/rule` serves the snapshot whole.
+             *     `RuleSnapshotRefDTO`. It is a **join key**, not a dead end: pass the page's ids to
+             *     `GET /api/v1/rule-snapshots/batch` and the whole list can render `expr` and `for` in one
+             *     further call. `GET /api/v1/alerts/{id}/rule` serves one snapshot whole, with its history.
              */
             rule?: components["schemas"]["RuleSnapshotRefDTO"] | null;
         };
@@ -2519,9 +2681,14 @@ export interface components {
             /** @description The open occurrence, or the most recent one if none is open. */
             current_occurrence?: components["schemas"]["OccurrenceDTO"] | null;
             /** @description One row per enricher that has run against the current occurrence. */
-            enrichment_summary?: components["schemas"]["EnrichmentSummaryDTO"][];
-            /** @description The rule snapshot bound to the current occurrence, as captured at fire time. */
-            rule?: components["schemas"]["RuleSnapshotDTO"] | null;
+            enrichment_summary: components["schemas"]["EnrichmentSummaryDTO"][];
+            /**
+             * @description A REFERENCE to the rule snapshot bound to the current occurrence, exactly as on
+             *     `AlertDTO` — ADR 0025 makes it a join key, not a dead end. `GET
+             *     /api/v1/alerts/{id}/rule` serves the snapshot whole, with its history, and
+             *     `GET /api/v1/rule-snapshots/batch` resolves a page of ids in one call.
+             */
+            rule?: components["schemas"]["RuleSnapshotRefDTO"] | null;
             source?: components["schemas"]["SourceRefDTO"] | null;
             /** @description The group generation the current occurrence belongs to. */
             group?: components["schemas"]["GroupRefDTO"] | null;
@@ -2583,7 +2750,7 @@ export interface components {
             /**
              * Format: int32
              * @description How many times this same episode was reopened by a re-fire inside `refire_grace`
-             *     (default 10 minutes). A re-fire *after* the grace period opens a new occurrence instead.
+             *     (default 20 minutes). A re-fire *after* the grace period opens a new occurrence instead.
              * @example 1
              */
             reopen_count: number;
@@ -2604,14 +2771,14 @@ export interface components {
              *     display upstream's.
              * @example 412
              */
-            observed_skew_ms?: number;
+            observed_skew_ms: number;
         };
         /** @description One episode expanded with its alert, group, rule snapshot and enrichment results. */
         OccurrenceDetailDTO: components["schemas"]["OccurrenceDTO"] & {
             alert?: components["schemas"]["AlertRefDTO"];
             group?: components["schemas"]["GroupRefDTO"] | null;
             rule?: components["schemas"]["RuleSnapshotDTO"] | null;
-            enrichments?: components["schemas"]["EnrichmentDTO"][];
+            enrichments: components["schemas"]["EnrichmentDTO"][];
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
         /** @description A compact Alert reference, embedded where a full `AlertDTO` would be wasteful. */
@@ -2703,7 +2870,7 @@ export interface components {
              * Format: int32
              * @example 143
              */
-            duration_ms?: number;
+            duration_ms: number;
             /** @example false */
             from_cache: boolean;
             computed_at: components["schemas"]["Timestamp"];
@@ -3092,11 +3259,11 @@ export interface components {
              *       "warning": 2
              *     }
              */
-            severity_counts?: {
+            severity_counts: {
                 [key: string]: number;
             };
             /** @description A bounded preview of member alerts. Use `/alert-groups/{id}/alerts` for the full list. */
-            top_alerts?: components["schemas"]["AlertRefDTO"][];
+            top_alerts: components["schemas"]["AlertRefDTO"][];
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
         /** @description A compact group reference. */
@@ -3120,8 +3287,13 @@ export interface components {
          *     hand-copied fifteen-field duplicate of `RuleSnapshotDTO` living in `alerts/api` would be the
          *     second copy that drifts.
          *
-         *     `GET /api/v1/alerts/{id}/rule` serves the snapshot whole — with its **history**, which is the
-         *     richer answer this API is actually for.
+         *     **This is a join key and the list is not stuck with it.** `GET /api/v1/rule-snapshots/batch`
+         *     takes a page's worth of these ids and returns the snapshots in **one** call, which is how the
+         *     alert list renders `expr` and `for` without a request per row. ADR 0025 records the choice and
+         *     the option rejected against it.
+         *
+         *     `GET /api/v1/alerts/{id}/rule` serves one snapshot whole — with its **history**, which is the
+         *     richer answer that endpoint is for.
          */
         RuleSnapshotRefDTO: {
             id: components["schemas"]["Uuid"];
@@ -3359,7 +3531,7 @@ export interface components {
             /** @example Production EU */
             display_name: string;
             /** Format: int32 */
-            source_count?: number;
+            source_count: number;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -3424,24 +3596,17 @@ export interface components {
              */
             push_enabled: boolean;
             /**
-             * @description Whether the API v2 reconciler runs (ADR 0006, amended). Defaults to `true` and should
-             *     stay on.
-             *
-             *     Turning it off is a DOCUMENTED, PERMANENT DEGRADATION of this source: Alertmanager's
-             *     mute stage drops silenced and inhibited alerts before any webhook fires, so
-             *     reconciliation is the only way oto can ever observe suppression. With it off, oto will
-             *     show an alert that is silenced upstream as `firing`, indefinitely, with no way to learn
-             *     otherwise; divergence accounting and `send_resolved` discovery stop as well. The source
-             *     then carries a standing `reconcile_disabled` warning on its health.
-             *
-             *     The switch exists because oto cannot always reach an Alertmanager's API - the reverse
-             *     direction is not implied by the webhook working - and a source that fails every
-             *     reconcile would be marked `unreachable`, which blocks expiry for its alerts forever.
-             * @default true
-             */
-            reconcile_enabled: boolean;
-            /**
              * Format: int32
+             * @description How often the API v2 reconciler polls this source, in seconds.
+             *
+             *     There is no companion `reconcile_enabled`: the reconciler runs for every source (ADR
+             *     0006 and its second amendment; migration 00038 dropped the column). It is the only
+             *     producer of `suppressed` AND the only thing that keeps `source_health` fresh, so a
+             *     source with it switched off kept a frozen `healthy` verdict that the reaper went on
+             *     trusting - and ended episodes, as `expired` / `resolve_reason=timeout`, for alerts that
+             *     were merely silenced upstream. Poll a slow or distant Alertmanager gently by raising
+             *     this number, up to an hour; a source oto genuinely cannot reach becomes `unreachable`,
+             *     which blocks expiry for its alerts and is the honest answer.
              * @default 30
              */
             reconcile_interval_seconds: number;
@@ -3540,6 +3705,12 @@ export interface components {
                 /** @example send_resolved_false */
                 code: string;
                 message: string;
+                /**
+                 * @description What the warning is about — a receiver name, a channel, a route — when the warning
+                 *     is about one thing rather than the source as a whole.
+                 * @example oto-webhook
+                 */
+                subject?: string;
                 since?: components["schemas"]["Timestamp"];
             } & {
                 [key: string]: unknown;
@@ -3593,23 +3764,36 @@ export interface components {
          *     by hand produced an answer that was unshared, unvalidated, and silently wrong the moment somebody
          *     edited `alertmanager.yml`.
          *
-         *     ⚠️ **Per-route limitation.** oto reports the **top-level route** — what governs every alert
-         *     matching no more specific route, and exactly what `docs/setup/tuning.md` tells an operator to read.
-         *     Resolving the value for a *particular* alert would mean re-implementing Alertmanager's matcher
-         *     tree, including `continue: true` and regex matchers, and being wrong in a way nobody could see.
-         *     `child_routes_with_timings` is how that limitation is made countable rather than buried.
+         *     ⚠️ **These settings are per-route and inherited**, so the numbers governing the alerts *oto* is sent
+         *     are the ones on the route delivering to oto's own receiver — usually not the top-level route on any
+         *     Alertmanager that overrides anything. oto walks the whole tree (`routes`) with Alertmanager's own
+         *     semantics: inheritance from the nearest ancestor that states a value, `dispatch.Route.Match`'s rule
+         *     that a route delivers only when no child matched, evaluation order with `continue: true`, and the
+         *     shadowing a matcher-less sibling causes. The three durations above are that route's whenever
+         *     `route` is `oto_receiver`.
+         *
+         *     ⛔ **Nothing here evaluates a matcher against a label set, and nothing may.** Deciding which route a
+         *     *particular* alert takes needs that alert's labels and would be a second, invisible implementation
+         *     of somebody else's routing engine. Everything reported is **structural** — true for every alert.
+         *     Where structure cannot decide, the answer stays a set and is shown as one.
          */
         RouteTimingsDTO: {
             group_wait: components["schemas"]["RouteTimingDTO"];
             group_interval: components["schemas"]["RouteTimingDTO"];
             repeat_interval: components["schemas"]["RouteTimingDTO"];
             /**
-             * @description Which route the three durations above describe. `top_level` is the only value in v1; the field
-             *     exists so that a client rendering it need not change if a later version resolves per-route
-             *     values.
+             * @description Which route the three durations above describe.
+             *
+             *     - `oto_receiver` — oto identified its own receiver **and** every route delivering to it agrees
+             *       on all three, so these are the numbers actually in force for the alerts oto is sent. This is
+             *       the answer its tuning arithmetic should use.
+             *     - `top_level` — the **fallback**. What governs every alert matching nothing more specific,
+             *       reported when oto could not name its own receiver (`receiver_basis` says why) or when the
+             *       routes reaching it disagree (`routes_agree` is false). ⛔ It is a real answer about a real
+             *       route and it is frequently *not* oto's, so a client must not render it as though it were.
              * @enum {string}
              */
-            route: "top_level";
+            route: "top_level" | "oto_receiver";
             /**
              * Format: int32
              * @description How many descendant routes sit below the top-level one, at any depth.
@@ -3618,12 +3802,47 @@ export interface components {
             /**
              * Format: int32
              * @description How many of those descendants state a `group_wait`, `group_interval` or `repeat_interval` of
-             *     their own. **A non-zero value here means the three durations above do not govern every alert**:
+             *     their own. **A non-zero value here means the top-level route does not govern every alert**:
              *     these settings are per-route and inherited, so the values that actually apply depend on which
-             *     route matched. Show this caveat wherever the numbers are shown, and say plainly that only the
-             *     top-level route is evaluated in v1.
+             *     route matched. `routes` below is that shape in full — this pair is the one-line summary of it.
              */
             child_routes_with_timings: number;
+            /**
+             * @description The receiver oto believes is **its own**, or null when it could not tell. `receiver_basis` says
+             *     how it was decided.
+             * @example oto
+             */
+            receiver: string | null;
+            receiver_basis: components["schemas"]["ReceiverBasis"];
+            /**
+             * @description Every receiver in the configuration with a `webhook_configs` integration, in declaration order.
+             *     With `receiver_basis: ambiguous` this is the **candidate list**, and it is what makes the
+             *     ambiguity actionable instead of a shrug.
+             */
+            webhook_receivers: string[];
+            /**
+             * @description **Every delivering route in the tree**, in the order Alertmanager evaluates them, each with its
+             *     inherited receiver, its inherited timings, its matcher path and whether it reaches oto.
+             *
+             *     ⭐ **It is a list because the answer is a set.** `continue: true` lets several routes deliver to
+             *     one receiver under different matchers with different timings, so there may be no single triple.
+             *     A client must be able to say *"these two routes reach oto and disagree"* rather than silently
+             *     picking one — see `routes_agree`.
+             */
+            routes: components["schemas"]["ReceiverRouteDTO"][];
+            /**
+             * @description Whether every route reaching oto's receiver resolves to the same three durations. True when
+             *     there is nothing to disagree — no identified receiver, or exactly one reaching route — so it is
+             *     only ever false when there is a real conflict to show. **When it is false the three durations
+             *     above are the top-level route's and describe none of the reaching routes.**
+             */
+            routes_agree: boolean;
+            /**
+             * Format: int32
+             * @description How many delivering routes the parser's cap (64 routes, 16 levels deep) discarded. Non-zero
+             *     means `routes` is incomplete and must be rendered as such rather than as the whole picture.
+             */
+            routes_dropped: number;
             /**
              * @description The Alertmanager version any `default_applies` field is attributed to — the version the source
              *     itself reported where oto has one. Null when no field defaulted.
@@ -3644,6 +3863,124 @@ export interface components {
              *     rendering that beside a stale reading would claim it is fresh.
              */
             observed_at: components["schemas"]["Timestamp"] | null;
+        };
+        /**
+         * @description **How oto decided which receiver is its own** — an inference, and labelled as one.
+         *
+         *     ⛔ **The obvious method is closed, and it is worth knowing why.** oto's ingest path is
+         *     `/api/v1/ingest/alertmanager/{source_id}`, so the webhook URL in an operator's config literally
+         *     contains the id of the source oto is probing; it would identify oto's receiver exactly. It is
+         *     unavailable: `webhook_config.url` is a `SecretURL` and `config.original` is the *marshalled* config,
+         *     so every secret arrives as the literal string `<secret>`. This is verified rather than assumed — the
+         *     checked-in `internal/sources/client/alertmanager/testdata/compose_v0.28.1.yaml` is a real capture of
+         *     oto's own compose Alertmanager and reads `url: <secret>`.
+         *
+         *     - `sole_webhook` — exactly one receiver in the whole configuration has a webhook integration, so
+         *       that receiver is oto's. This is the shape the setup guide produces (the receiver block is the
+         *       entire Alertmanager change oto requires), so the common install is answered exactly.
+         *     - `ambiguous` — several receivers have webhook integrations and the URLs that would tell them apart
+         *       are redacted. oto reports **every** route and names the candidates in `webhook_receivers` rather
+         *       than picking one; picking would be a coin toss presented as a reading.
+         *     - `no_webhook` — no receiver has a webhook integration at all, so nothing in this configuration can
+         *       push to oto. That is a real finding about a source, not a parser shortfall.
+         *     - `unknown` — the configuration has never been read, so there is not even a receiver list to reason
+         *       about. This is the same condition that makes `observed_at` null.
+         * @example sole_webhook
+         * @enum {string}
+         */
+        ReceiverBasis: "sole_webhook" | "ambiguous" | "no_webhook" | "unknown";
+        /** @description One route on the path from the top-level route, as an operator would recognise it. */
+        RouteStepDTO: {
+            /**
+             * @description This route's **own** matchers, normalised into Alertmanager's current `matchers` spelling and
+             *     sorted, so they can be pasted into `amtool`. **Empty means the route states none**, and
+             *     therefore takes everything its parent gives it — which is the one structural fact that decides
+             *     reachability.
+             * @example [
+             *       "severity=\"critical\""
+             *     ]
+             */
+            matchers: string[];
+            /**
+             * @description Whether the route spelled its matchers with the deprecated `match` / `match_re`. Both still
+             *     route production traffic, so oto reads them; it renders the current spelling and says where it
+             *     came from rather than quietly rewriting the operator's file in the display.
+             */
+            deprecated: boolean;
+            /**
+             * @description This route's `continue`. **It is the reason several routes can reach one receiver**: evaluation
+             *     does not stop at a match that sets it, so later siblings are still considered.
+             */
+            continue: boolean;
+        };
+        /**
+         * @description One route timing with its provenance **and** the route on the path that stated it. `provenance` is
+         *     never `unknown` here: a route appears in the list only because oto read the configuration that
+         *     declares it, so "we could not look" cannot arise.
+         */
+        InheritedTimingDTO: {
+            provenance: components["schemas"]["TimingProvenance"];
+            /**
+             * Format: int64
+             * @description The duration in force for this route, in milliseconds.
+             * @example 300000
+             */
+            value_ms: number | null;
+            /**
+             * Format: int32
+             * @description The index into this route's `path` of the route that **stated** the value, or null when no
+             *     route on the path states it (`provenance` is then `default_applies`).
+             *
+             *     ⭐ **Not decoration.** `group_interval: 5m` inherited from the top-level route and
+             *     `group_interval: 5m` stated on this route send an operator to two different lines of their own
+             *     file, and only the second survives them editing the child. `from_depth == len(path) - 1` means
+             *     "this route states it itself".
+             * @example 0
+             */
+            from_depth: number | null;
+        };
+        /**
+         * @description One route that **delivers** to a receiver, fully resolved.
+         *
+         *     "Delivers" is Alertmanager's own rule from `dispatch.Route.Match`: a route is the answer only when
+         *     **no child of it matched**, so a route with a matcher-less child never delivers anything itself.
+         *     Nothing here evaluates a matcher against a label set — every field is structural and therefore true
+         *     for every alert.
+         */
+        ReceiverRouteDTO: {
+            /**
+             * @description The receiver this route delivers to, after inheritance.
+             * @example oto
+             */
+            receiver: string;
+            /**
+             * @description The route chain from the top-level route (index 0) down to this one. Never empty — the top-level
+             *     route is itself a path of length one.
+             */
+            path: components["schemas"]["RouteStepDTO"][];
+            group_wait: components["schemas"]["InheritedTimingDTO"];
+            group_interval: components["schemas"]["InheritedTimingDTO"];
+            repeat_interval: components["schemas"]["InheritedTimingDTO"];
+            /** @description The effective grouping labels for this route, inherited. */
+            group_by: string[];
+            /**
+             * @description The `group_by: ['...']` form. Worth surfacing beside the numbers because **no number captures
+             *     it**: grouping by every label means no group ever accumulates a second member, so storm collapse
+             *     is unreachable at any threshold.
+             */
+            group_by_all: boolean;
+            /**
+             * @description Whether this route delivers to the receiver oto believes is its own. **False for every route
+             *     when oto could not identify one** — which is exactly when a client should show the whole list
+             *     and say why.
+             */
+            reaches_oto: boolean;
+            /**
+             * @description Whether an earlier matcher-less sibling without `continue` consumes everything before this route
+             *     is evaluated, so it can never fire. It is the only unreachability provable without labels, and
+             *     it is a real misconfiguration rather than a display detail.
+             */
+            unreachable: boolean;
         };
         /** @description The result of probing a source's status endpoint. A read-only probe; it changes nothing upstream. */
         SourceTestDTO: {
@@ -3697,20 +4034,20 @@ export interface components {
              *     all — the webhook path can never produce it.
              * @example 12
              */
-            suppressed_observed?: number;
+            suppressed_observed: number;
             /**
              * Format: int32
              * @description Present upstream but missing in oto, so a webhook was missed and has now been repaired.
              * @example 0
              */
-            recovered?: number;
+            recovered: number;
             /**
              * Format: int32
              * @description Open in oto but absent upstream. These are **candidates** for expiry only; the reaper still
              *     applies the grace period, and only if the source is healthy.
              * @example 3
              */
-            missing_upstream?: number;
+            missing_upstream: number;
             /** Format: int32 */
             divergence_count: number;
             error?: string | null;
@@ -3729,6 +4066,11 @@ export interface components {
              *     These are the same bytes the server validates against on every create and update, and the
              *     same bytes the settings form renders and pre-validates itself from. There is no second copy
              *     of these rules anywhere — which is why adding a provider needs no UI code at all.
+             *
+             *     A schema may OMIT a control the deployment will not honour, so read it fresh rather than
+             *     caching it across installs. The webhook provider drops `insecure_skip_verify` unless the
+             *     operator set `security.allow_insecure_tls`: a form must never offer a control the server
+             *     is going to refuse with a 422.
              */
             config_schema: {
                 [key: string]: unknown;
@@ -4094,9 +4436,9 @@ export interface components {
         /** @description One mirrored silence and the alerts it covers. */
         SilenceDetailDTO: components["schemas"]["SilenceDTO"] & {
             /** @description Alerts oto currently believes this silence matches. */
-            matched_alerts?: components["schemas"]["AlertRefDTO"][];
+            matched_alerts: components["schemas"]["AlertRefDTO"][];
             /** Format: int32 */
-            matched_count?: number;
+            matched_count: number;
             source?: components["schemas"]["SourceRefDTO"] | null;
         };
         /** @description A distinct label name, for the filter bar. */
@@ -4119,7 +4461,7 @@ export interface components {
              *     `severity`, `namespace`, `service`, `cluster`). Filtering on a promoted label is markedly
              *     cheaper than filtering on an arbitrary one.
              */
-            promoted?: boolean;
+            promoted: boolean;
         };
         /** @description A distinct value for one label name, for typeahead. */
         LabelValueDTO: {
@@ -4226,17 +4568,17 @@ export interface components {
             };
             channels?: {
                 /** Format: int32 */
-                healthy?: number;
+                healthy: number;
                 /** Format: int32 */
-                degraded?: number;
+                degraded: number;
                 /** Format: int32 */
-                auth_failed?: number;
+                auth_failed: number;
                 /** Format: int32 */
-                config_invalid?: number;
+                config_invalid: number;
             };
             window?: {
-                since?: components["schemas"]["Timestamp"];
-                until?: components["schemas"]["Timestamp"];
+                since: components["schemas"]["Timestamp"];
+                until: components["schemas"]["Timestamp"];
             };
             generated_at: components["schemas"]["Timestamp"];
         };
@@ -4281,20 +4623,20 @@ export interface components {
              * Format: int32
              * @description Episodes that ended with an explicit upstream resolution.
              */
-            auto_resolved?: number;
+            auto_resolved: number;
             /**
              * Format: int32
              * @description Episodes oto stopped hearing about. Counted apart from `auto_resolved`, always.
              */
-            expired?: number;
+            expired: number;
             /** Format: int64 */
-            total_firing_seconds?: number;
+            total_firing_seconds: number;
             /**
              * Format: int32
              * @description Lifecycle transitions recorded across the window. This is the stored quantity; `flap_score`
              *     below is derived from it.
              */
-            flap_transitions?: number;
+            flap_transitions: number;
             /**
              * Format: float
              * @description **`flap_transitions / occurrences`, and `0` when `occurrences` is `0`.** Transitions per
@@ -4307,7 +4649,7 @@ export interface components {
              *     different subject: this one is per alertname per cluster over the reporting window and is
              *     never compared against that threshold.
              */
-            flap_score?: number;
+            flap_score: number;
         };
         /** @description The tenant boundary. Every resource in this API belongs to exactly one org. */
         OrgDTO: {
@@ -4336,6 +4678,19 @@ export interface components {
              * Format: int32
              * @description A re-fire inside this window reopens the existing occurrence instead of opening a new one.
              *
+             *     **The default is 1200 and it is derived from real rules (ADR 0026): `for` + `group_interval`
+             *     for the modal rule in the wild.** The clock starts at the occurrence's `ended_at`, which is
+             *     taken from the UPSTREAM `EndsAt` — when Prometheus stopped considering the rule firing, not
+             *     when oto heard about it — so the same alert must hold its condition for the rule's whole
+             *     `for:` all over again before it can fire, and Alertmanager then batches the notification.
+             *     `for: 15m` is the mode and median of the 155 rules kube-prometheus-stack ships, and
+             *     `group_interval: 5m` is the one Alertmanager number the ecosystem does not override, so the
+             *     earliest re-fire oto can observe lands 15–20 minutes after `ended_at`. The previous default
+             *     of 600 was unreachable for 76% of those rules.
+             *
+             *     **Keep `group_close_delay_s` at or above this value.** A closed generation freezes its Slack
+             *     thread, so a shorter close delay reopens the occurrence and posts a new root card anyway.
+             *
              *     **The floor is 600, and it is derived rather than chosen: it is twice oto's ingest replay
              *     window.** A replayed webhook batch — an HA Alertmanager sibling, a retry after a 5xx — is
              *     suppressed for 5 minutes by its content-addressed dedup key. A re-fire whose alert set is
@@ -4345,7 +4700,7 @@ export interface components {
              *     Slack root message — the wall of near-identical messages oto exists to prevent, produced by
              *     a setting that looks like it should have prevented it. Zero would be a Slack thread per
              *     transition.
-             * @default 600
+             * @default 1200
              */
             refire_grace_s: number;
             /**
@@ -4358,8 +4713,12 @@ export interface components {
             resolve_grace_s: number;
             /**
              * Format: int32
-             * @description Keep at or above `group_interval`, or a generation closes between two batches of one incident.
-             * @default 300
+             * @description Keep at or above `group_interval`, or a generation closes between two batches of one
+             *     incident — and at or above `refire_grace_s`, or a re-fire oto classified as the same
+             *     problem coming back finds a closed generation and gets a brand-new Slack root message
+             *     anyway, which is the whole thing the grace exists to prevent. The default equals
+             *     `refire_grace_s` for that reason (ADR 0026).
+             * @default 1200
              */
             group_close_delay_s: number;
             /**
@@ -4372,8 +4731,14 @@ export interface components {
             flap_threshold: number;
             /**
              * Format: int32
-             * @description A window shorter than one `group_interval` cannot contain two transitions oto is able to observe.
-             * @default 1800
+             * @description A window shorter than one `group_interval` cannot contain two transitions oto is able to
+             *     observe. Whether it is long ENOUGH is arithmetic this bound cannot do: one observable
+             *     fire → resolve → fire cycle costs `group_interval + max(group_interval, for)` and yields two
+             *     counted transitions, so a window holds about `2 × floor(W / cycle)` of them. The default of
+             *     7200 is `flap_threshold × cycle` for the modal real rule (5 × 20m, rounded up); the previous
+             *     1800 held at most 6 transitions for ANY rule shape at `group_interval: 5m`, which made a
+             *     threshold of 5 unreachable and the damper dead code. See ADR 0026.
+             * @default 7200
              */
             flap_window_s: number;
             /**
@@ -4404,12 +4769,34 @@ export interface components {
             storm_cooldown_s: number;
             /**
              * Format: int32
-             * @description Raw ingested payloads age out by dropping whole partitions, never by deleting rows.
-             * @default 14
+             * @description How long raw webhook bodies and rejection records are kept. They age out by dropping whole
+             *     daily partitions, never by deleting rows, and a dropped partition is unrecoverable.
+             *
+             *     **The default 30 is derived, not chosen:** it is the `alert_event_keys` idempotency
+             *     horizon. Past it, replaying a stored batch after a parser fix would append the timeline a
+             *     second time, so a payload kept longer cannot be used for the one thing it is kept for.
+             *
+             *     Nothing an alert page shows is served from here — no operation in this contract reads
+             *     `ingest_batches` or `ingest_rejections`. Lowering it costs reproducibility of an ingestion
+             *     bug, not history. See ADR 0024.
+             * @default 30
              */
             raw_retention_days: number;
             /**
              * Format: int32
+             * @description How long `alert_events` are kept. Monthly partitions are dropped whole and permanently.
+             *
+             *     **This is the only setting here that destroys something oto cannot rebuild.** Past the
+             *     boundary `GET /alerts/{id}/events`, `GET /occurrences/{id}/events` and the group timeline
+             *     return nothing — including every human comment and unack note, which live nowhere else.
+             *
+             *     What survives at any value: the alert and its labels, every occurrence with its ack and
+             *     outcome, the rule snapshot bound at fire time, the notification and delivery record, and
+             *     the daily rollups. None of those are ever reaped.
+             *
+             *     13 is the longest default that keeps one org inside ADR 0014's scale envelope. Raise it to
+             *     120 (10 years) if an audit requires it, and expect ADR 0014's revisit triggers at volume.
+             *     There is no cold-storage export: an aged-out month is not archived anywhere. See ADR 0024.
              * @default 13
              */
             event_retention_months: number;
@@ -4427,7 +4814,7 @@ export interface components {
              * @default 0
              */
             unacked_reminder_after_s: number;
-            default_verbosity?: components["schemas"]["Verbosity"];
+            default_verbosity: components["schemas"]["Verbosity"];
             /**
              * @description Whether `all_resolved` is **broadcast** into the channel rather than posted quietly in the
              *     thread (ADR 0020). Default **off**.
@@ -4449,7 +4836,7 @@ export interface components {
              * @default false
              */
             broadcast_on_resolved: boolean;
-            unacked_reminder_mention?: components["schemas"]["ReminderMention"];
+            unacked_reminder_mention: components["schemas"]["ReminderMention"];
             /**
              * @description The explicit audience for `unacked_reminder_mention: list` — Slack users and usergroups, in
              *     Slack's own wire form. `@here` and `@channel` are **modes**, not members: a list that could
@@ -4458,8 +4845,8 @@ export interface components {
              *     ⛔ **This is not a rota** (ADR 0013). A fixed audience chosen once, in configuration. It must
              *     never become time-aware and there is never a second stage.
              */
-            unacked_reminder_mention_list?: string[];
-            unacked_reminder_mention_min_severity?: components["schemas"]["ReminderMentionSeverity"];
+            unacked_reminder_mention_list: string[];
+            unacked_reminder_mention_min_severity: components["schemas"]["ReminderMentionSeverity"];
         };
         /** @description A human principal. Password hashes and token material never appear in any response. */
         UserDTO: {
@@ -4649,13 +5036,13 @@ export interface components {
              * Format: int32
              * @description How many alerts were dropped by oto's own 10 000 cap.
              */
-            truncated_alerts?: number;
+            truncated_alerts: number;
             /**
              * Format: int32
              * @description How many individual alerts failed a bound check and were recorded as rejections. The rest of
              *     the batch was still processed, and the response is still a 202.
              */
-            rejected_alerts?: number;
+            rejected_alerts: number;
         };
         /**
          * @description The closed set of stream frame types. `heartbeat` is not listed here because it is not a frame:
@@ -4688,7 +5075,7 @@ export interface components {
             resource?: components["schemas"]["UiEventResource"] | null;
             /** @description The resource this frame is about. Absent for `resync`. */
             id?: components["schemas"]["Uuid"] | null;
-            org_id?: components["schemas"]["Uuid"];
+            org_id: components["schemas"]["Uuid"];
             at: components["schemas"]["Timestamp"];
             /**
              * @description Discriminated by `kind`. The payload is deliberately **small** — a change notice, not a
@@ -4811,6 +5198,134 @@ export interface components {
             schema_version: string;
         };
         /**
+         * @description `timed_out` is a **different verdict from `failed`** on purpose. "Slack rejected the card" and
+         *     "nothing has picked the job up in ninety seconds" send an operator to completely different
+         *     places — the second usually means no worker is running, which no per-stage error could say.
+         * @enum {string}
+         */
+        DrillStatus: "running" | "passed" | "failed" | "timed_out";
+        /**
+         * @description One link in the chain a real alert travels, in causal order. Each one is a row some part of
+         *     oto writes, and a drill reports its status by **looking at that row** rather than by being
+         *     told — so a stage that stops writing its row is a stage the drill notices.
+         * @enum {string}
+         */
+        DrillStageName: "accept" | "process" | "identity" | "occurrence" | "group" | "rule_snapshot" | "policy" | "thread" | "ordering" | "delivery";
+        /**
+         * @description `skipped` is not a failure and never sets `failed_stage`. Only `rule_snapshot` uses it: a
+         *     drill's alert matches no Prometheus rule, because oto did not write one in anybody's cluster,
+         *     so there is nothing to capture and saying so is more honest than a green tick.
+         * @enum {string}
+         */
+        DrillStageStatus: "pending" | "passed" | "failed" | "skipped";
+        /** @description One reported link of the pipeline chain. */
+        DrillStageDTO: {
+            name: components["schemas"]["DrillStageName"];
+            status: components["schemas"]["DrillStageStatus"];
+            /**
+             * @description One sentence an operator can act on. It names the provider's own error code where there is
+             *     one (`slack: not_in_channel`) and never the underlying error string, which can carry a
+             *     request URL and therefore a token.
+             * @example no notification policy matched this group's labels, so nothing was sent.
+             */
+            detail: string;
+            /**
+             * @description Small pieces of evidence shown beside the stage — an `alert_key`, a group `generation`, a
+             *     Slack `thread_ts`, a `policy` name. Keys are stable and snake_case. A display surface, not
+             *     a second API: do not parse behaviour out of it.
+             */
+            facts?: {
+                [key: string]: string;
+            };
+        };
+        /** @description One channel the drill's card reached, and what happened there. */
+        DrillDestinationDTO: {
+            channel_id: components["schemas"]["Uuid"];
+            /** @example #sre-alerts */
+            channel_name: string;
+            status: components["schemas"]["DeliveryStatus"];
+            mode: components["schemas"]["DeliveryMode"];
+            /** @description The Slack thread root `ts`. A string, never a float. */
+            thread_id?: string | null;
+            provider_message_id?: string | null;
+            /**
+             * @description Whether this delivery went out as a channel-visible broadcast reply rather than a thread
+             *     reply. On a drill it is expected to be `false` — a first notification posts a root — and it
+             *     is reported anyway so an operator can see the decision was taken rather than skipped.
+             */
+            broadcast: boolean;
+            error?: string | null;
+            error_class?: components["schemas"]["DeliveryErrorClass"];
+        };
+        /**
+         * @description One end-to-end rehearsal of the notification path, driven by a synthetic Alert oto
+         *     manufactured and pushed through the **real** ingest endpoint.
+         */
+        DeliveryDrillDTO: {
+            id: components["schemas"]["Uuid"];
+            source_id: components["schemas"]["Uuid"];
+            /**
+             * @description The raw severity label the synthetic alert fired at.
+             * @example warning
+             */
+            severity: string;
+            status: components["schemas"]["DrillStatus"];
+            /**
+             * @description The **first** stage that failed, or `null`. This single field is the operator-facing point
+             *     of the whole feature: not "it did not work" but "the policy matched nothing". Later stages
+             *     are left `pending` rather than reported as cascading failures.
+             */
+            failed_stage?: components["schemas"]["DrillStageName"] | null;
+            /**
+             * @description **Always every stage**, including the ones that never started. How far it got is half of
+             *     what the screen is read for.
+             */
+            stages: components["schemas"]["DrillStageDTO"][];
+            destinations: components["schemas"]["DrillDestinationDTO"][];
+            /** @description The synthetic Alert, once identity resolved. Fetch it with `?synthetic=true`. */
+            alert_id?: components["schemas"]["Uuid"] | null;
+            occurrence_id?: components["schemas"]["Uuid"] | null;
+            group_id?: components["schemas"]["Uuid"] | null;
+            notification_id?: components["schemas"]["Uuid"] | null;
+            batch_id?: components["schemas"]["Uuid"] | null;
+            /**
+             * @description Who ran it, frozen at write time so the receipt stays readable after the user is gone.
+             *     Past-tense attribution in the `acked_by` mould — **actor, never subject**. No per-person
+             *     metric is derived from it.
+             * @example Ada Lovelace
+             */
+            started_by_label: string;
+            started_at: components["schemas"]["Timestamp"];
+            deadline_at: components["schemas"]["Timestamp"];
+            /** @description When the verdict was frozen. Non-null means `status` will never change again. */
+            finished_at?: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description When the synthetic signal rows were deleted. A non-null value alongside a non-null
+             *     `finished_at` is the normal, healthy end state of a drill: the receipt survives, the fake
+             *     alert does not.
+             */
+            disposed_at?: components["schemas"]["Timestamp"] | null;
+        };
+        /**
+         * @description Start one delivery drill against one AlertSource. The payload is accepted **as if** it had
+         *     arrived on that source's webhook, so it picks up the source's cluster identity, its
+         *     `inject_labels`, its `ignore_labels` and its redaction — which is most of what makes the
+         *     answer mean anything.
+         */
+        StartDrillRequest: {
+            source_id: components["schemas"]["Uuid"];
+            /**
+             * @description The raw severity label the synthetic alert fires at. Defaults to `warning`.
+             *
+             *     It is the **one** knob, because severity is what a notification policy most often matches
+             *     on: an operator whose only policy routes `severity=critical` would otherwise get
+             *     `no_policy` from every drill and conclude oto was broken when it is working exactly as
+             *     configured. Every further knob is a way for the drill to stop resembling a real alert.
+             * @example critical
+             */
+            severity?: string;
+        };
+        /**
          * @description Acknowledge the current occurrence. **An acked alert is still firing** — acknowledgement is
          *     orthogonal to state, and it says "a human has seen this", not "this is over".
          */
@@ -4885,15 +5400,10 @@ export interface components {
             /** @default true */
             push_enabled: boolean;
             /**
-             * @description Leave this on. Turning it off means oto can never observe a silenced or inhibited alert
-             *     for this source and will show upstream-muted alerts as firing indefinitely (ADR 0006,
-             *     amended). The source carries a standing `reconcile_disabled` health warning while it is
-             *     off.
-             * @default true
-             */
-            reconcile_enabled: boolean;
-            /**
              * Format: int32
+             * @description How often the API v2 reconciler polls this source, in seconds. There is no
+             *     `reconcile_enabled` to accompany it - the reconciler runs for every source (ADR 0006).
+             *     `additionalProperties: false`, so sending one is refused by name rather than ignored.
              * @default 30
              */
             reconcile_interval_seconds: number;
@@ -4921,13 +5431,16 @@ export interface components {
             redact_annotations?: string[];
             push_enabled?: boolean;
             /**
-             * @description Setting this to `false` is a permanent, documented degradation: oto can never observe a
-             *     silenced or inhibited alert for this source afterwards and will show upstream-muted
-             *     alerts as firing indefinitely (ADR 0006, amended). The source carries a standing
-             *     `reconcile_disabled` health warning while it is off.
+             * Format: int32
+             * @description How often the API v2 reconciler polls this source, in seconds.
+             *
+             *     ⛔ `reconcile_enabled` IS GONE AND CANNOT BE SENT. `PATCH {"reconcile_enabled": false}`
+             *     used to return 200 and persist, switching off the component ADR 0006 calls mandatory
+             *     for that source forever, with nothing on any screen to say so. Because this body is
+             *     `additionalProperties: false`, sending it now fails validation naming the field rather
+             *     than being ignored - a client that still has it in a runbook finds out. How often oto
+             *     polls is tunable here; whether it polls is not.
              */
-            reconcile_enabled?: boolean;
-            /** Format: int32 */
             reconcile_interval_seconds?: number;
             credential?: components["schemas"]["CredentialInput"];
         };
@@ -5067,6 +5580,14 @@ export interface components {
             /** @description Optional expiry, which must be in the future. Omit for a token that never expires. */
             expires_at?: components["schemas"]["Timestamp"];
         };
+        DeliveryDrillResponse: {
+            data: components["schemas"]["DeliveryDrillDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        DeliveryDrillListResponse: {
+            data: components["schemas"]["DeliveryDrillDTO"][];
+            meta: components["schemas"]["Meta"];
+        };
         AlertListResponse: {
             data: components["schemas"]["AlertDTO"][];
             page: components["schemas"]["PageInfo"];
@@ -5122,6 +5643,19 @@ export interface components {
         };
         RuleSnapshotResponse: {
             data: components["schemas"]["RuleSnapshotDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        /**
+         * @description A bag of snapshots, not a page. There is deliberately no `page` object: the caller
+         *     enumerated the set, so there is nothing to page through.
+         */
+        RuleSnapshotBatchResponse: {
+            /**
+             * @description The snapshots that exist among the ids asked for. **Shorter than the request whenever an
+             *     id resolved to nothing** — and shorter again whenever two rows shared a snapshot, which
+             *     content addressing makes the common case. Join by `id`; do not join by position.
+             */
+            data: components["schemas"]["RuleSnapshotDTO"][];
             meta: components["schemas"]["Meta"];
         };
         RuleSnapshotListResponse: {
@@ -5710,6 +6244,18 @@ export interface components {
          */
         SnoozedParam: boolean;
         /**
+         * @description Restrict to alerts oto manufactured for a **delivery drill**, or exclude them.
+         *
+         *     **Omitting it EXCLUDES them, which is the opposite default from `snoozed` and is deliberate.**
+         *     A snoozed alert is a real thing happening in a real cluster, so hiding it by default is how an
+         *     incident is lost. A synthetic alert is a rehearsal: nothing fired anywhere, and letting one
+         *     into a default list would put oto's own plumbing into the customer's history and into every
+         *     number derived from it.
+         *
+         *     `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
+         */
+        SyntheticParam: boolean;
+        /**
          * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
          *     body within the retention window returns the original result rather than acting twice; replaying
          *     it with a *different* body is a `409`.
@@ -5920,6 +6466,18 @@ export interface operations {
                  */
                 snoozed?: components["parameters"]["SnoozedParam"];
                 /**
+                 * @description Restrict to alerts oto manufactured for a **delivery drill**, or exclude them.
+                 *
+                 *     **Omitting it EXCLUDES them, which is the opposite default from `snoozed` and is deliberate.**
+                 *     A snoozed alert is a real thing happening in a real cluster, so hiding it by default is how an
+                 *     incident is lost. A synthetic alert is a rehearsal: nothing fired anywhere, and letting one
+                 *     into a default list would put oto's own plumbing into the customer's history and into every
+                 *     number derived from it.
+                 *
+                 *     `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
+                 */
+                synthetic?: components["parameters"]["SyntheticParam"];
+                /**
                  * @description Lower bound on `last_seen_at`. Combined with `sort`, this is the time-range control: page
                  *     backwards through the sorted list to reach an upper bound.
                  */
@@ -6062,6 +6620,18 @@ export interface operations {
                  *     alerts from the default list is how an incident is lost.
                  */
                 snoozed?: components["parameters"]["SnoozedParam"];
+                /**
+                 * @description Restrict to alerts oto manufactured for a **delivery drill**, or exclude them.
+                 *
+                 *     **Omitting it EXCLUDES them, which is the opposite default from `snoozed` and is deliberate.**
+                 *     A snoozed alert is a real thing happening in a real cluster, so hiding it by default is how an
+                 *     incident is lost. A synthetic alert is a rehearsal: nothing fired anywhere, and letting one
+                 *     into a default list would put oto's own plumbing into the customer's history and into every
+                 *     number derived from it.
+                 *
+                 *     `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
+                 */
+                synthetic?: components["parameters"]["SyntheticParam"];
                 /** @description Lower bound on `last_seen_at`. */
                 since?: components["schemas"]["Timestamp"];
                 /** @description Free-text search, identical to the one on `listAlerts`. */
@@ -7112,6 +7682,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RuleSnapshotListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    batchGetRuleSnapshots: {
+        parameters: {
+            query: {
+                /**
+                 * @description The snapshot ids to resolve, comma-separated (repeating the parameter is equivalent).
+                 *
+                 *     **Duplicates are accepted and are the normal case** — they are what a page of alert rows
+                 *     looks like when nothing has changed upstream — and are collapsed server-side. The cap is
+                 *     100 rather than the usual 200 because 200 UUIDs is a 7.4 KB request line, which survives
+                 *     a default proxy header buffer only until a session cookie joins it; 100 is exactly one
+                 *     page of the UI's alert list, and a caller paging at the contract's 200 ceiling makes two
+                 *     calls, which is still constant in the size of the page.
+                 */
+                id: components["schemas"]["Uuid"][];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description The snapshots among the requested ids that exist in this org, newest capture first.
+             *     Ids with no snapshot are **absent**; the array may be shorter than the request.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleSnapshotBatchResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -8406,6 +9018,126 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listDeliveryDrills: {
+        parameters: {
+            query: {
+                /** @description The AlertSource whose drills to list. */
+                source_id: components["schemas"]["Uuid"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The source's recent drills. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryDrillListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    startDeliveryDrill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartDrillRequest"];
+            };
+        };
+        responses: {
+            /** @description The drill was started. Every stage is reported, most of them still `pending`. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryDrillResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getDeliveryDrill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The drill and its staged result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryDrillResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    disposeDeliveryDrill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The drill, with `disposed_at` set. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryDrillResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            412: components["responses"]["PreconditionFailed"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

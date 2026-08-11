@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Mode distinguishes the two producers of a batch (ingest_batches_mode_ck).
+// Mode distinguishes the producers of a batch (ingest_batches_mode_ck).
 type Mode string
 
 const (
@@ -19,13 +19,31 @@ const (
 	// path (C18) — it produces Observations for the same state machine — but its
 	// raw response is recorded here so the two are equally auditable.
 	ModeReconcile Mode = "reconcile"
+	// ModeSynthetic is a DELIVERY DRILL: a payload oto manufactured for itself
+	// and pushed through this very path, so an operator can prove the
+	// notification chain works without waiting for a real outage.
+	//
+	// ⭐⭐ THIS CONSTANT IS THE PROVENANCE MARK, AND IT IS WHY THE MARK IS NOT A
+	// LABEL. A mode is set by the CODE PATH that accepted the batch; it appears
+	// nowhere in any body, so no Alertmanager on earth can cause one. A reserved
+	// label would be forgeable by every upstream — and worse, a label
+	// participates in `alert_key` (§C.2), so marking an alert with one would
+	// change its identity. `alerts.synthetic` is carried down from here, and
+	// every aggregate in oto excludes it.
+	ModeSynthetic Mode = "synthetic"
 )
 
 // String renders the mode.
 func (m Mode) String() string { return string(m) }
 
 // Valid reports membership of ingest_batches_mode_ck.
-func (m Mode) Valid() bool { return m == ModePush || m == ModeReconcile }
+func (m Mode) Valid() bool {
+	return m == ModePush || m == ModeReconcile || m == ModeSynthetic
+}
+
+// IsSynthetic reports whether this batch was manufactured by oto for a delivery
+// drill and must therefore never reach an aggregate.
+func (m Mode) IsSynthetic() bool { return m == ModeSynthetic }
 
 // Status is the lifecycle of one batch (ingest_batches_state_ck).
 type Status string

@@ -148,6 +148,17 @@ type AlertDTO struct {
 	TotalOccurrences  int32             `json:"total_occurrences"`
 	FlapScore         float32           `json:"flap_score"`
 	IsFlapping        bool              `json:"is_flapping"`
+	// Synthetic marks an Alert oto manufactured for a DELIVERY DRILL. It is the
+	// SAME field, with the same contract, as on the alerts list — `AlertDTO` is
+	// one schema, and it lists `synthetic` among its required members.
+	//
+	// ⭐ A drill's alert reaches a group like any other, and the group screen is
+	// one of the places a synthetic alert is legitimately visible; a member row
+	// that could not say it was manufactured would put oto's own plumbing into
+	// the customer's estate with nothing to mark it. It is carried from the mode
+	// of the batch that first observed the identity, never from a label — a label
+	// is forgeable and participates in `alert_key` (§C.2).
+	Synthetic bool `json:"synthetic"`
 	// Snooze is the §B.8 quiet period in force on this member, or an explicit
 	// `null`. It is the SAME field, with the same contract, as on the alert list:
 	// `AlertDTO` is one schema, and a member row that could not say it was

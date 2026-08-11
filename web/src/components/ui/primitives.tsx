@@ -301,7 +301,11 @@ export function ToggleGroup<T extends string>(props: ToggleGroupProps<T>): JSX.E
       >
         {props.legend}
       </legend>
-      <div class="flex flex-wrap items-center gap-1" role="group" aria-label={props.legend}>
+      {/* No `role="group"` here: `<fieldset>` already is one, named by its
+          `<legend>`. Nesting a second identically-named group made assistive
+          technology announce the same label twice — and made "the group called
+          Severity" an ambiguous thing to ask for. */}
+      <div class="flex flex-wrap items-center gap-1">
         {props.options.map((opt) => {
           const active = (): boolean => props.selected.includes(opt.value);
           return (

@@ -172,6 +172,10 @@ candidates AS (
     FROM alert_occurrences o
     JOIN alerts a ON a.id = o.alert_id AND a.org_id = o.org_id
    WHERE o.org_id = $1
+     -- A DELIVERY DRILL is never "what else was firing". Nothing fired: oto
+     -- manufactured it to prove the notification path works, and offering it as
+     -- context during a real incident would be actively misleading.
+     AND NOT a.synthetic
      AND o.alert_id <> $3
      AND o.started_at >= $4
      AND o.started_at <  $7

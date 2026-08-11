@@ -16,6 +16,7 @@ import (
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
 	channelsservice "github.com/thulasiram/oto/internal/channels/service"
+	drillservice "github.com/thulasiram/oto/internal/drill/service"
 	enrichdomain "github.com/thulasiram/oto/internal/enrichment/domain"
 	enrichrepo "github.com/thulasiram/oto/internal/enrichment/repository"
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
@@ -25,6 +26,8 @@ import (
 	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
+	ingestiondomain "github.com/thulasiram/oto/internal/ingestion/domain"
+	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifdomain "github.com/thulasiram/oto/internal/notification/domain"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -991,6 +994,10 @@ func (o alertObserver) resolveGroup(
 		SourceGroupKey:     sample.SourceGroupKey,
 		NotificationReason: sample.NotificationReason,
 		At:                 sample.ObservedAt,
+		// Carried from `ingest_batches.mode` via the Observation. A drill's group
+		// is marked so the dashboard counts can exclude it; nothing else about the
+		// generation differs, which is the whole point of a drill.
+		Synthetic: sample.Synthetic,
 	})
 	if err != nil {
 		if errs.IsKind(err, errs.KindValidation) {
@@ -1016,6 +1023,13 @@ func (o alertObserver) resolveGroup(
 // A batch that changed states without opening anything still re-derives the
 // rollup once, because a resolve moves a member out of `firing` and the group's
 // own state is a projection of exactly that.
+//
+// ⭐ IT JOINS THE WHOLE PARTITION IN ONE CALL. `partitionByGroup` has already
+// established that every outcome here belongs to ONE generation, so handing them
+// over one at a time would ask `grouping` to re-derive the same rollup once per
+// occurrence — 500 full aggregates and 500 compare-and-set writes to one
+// `alert_groups` row for one 500-alert Alertmanager batch, all but the last of
+// them discarded. `JoinMany` joins them all and projects once.
 func (o alertObserver) joinMembers(
 	ctx context.Context, s db.TenantScope, groupID *uuid.UUID,
 	sample alertsdomain.Observation, outcomes []alertsservice.ObserveOutcome,
@@ -1025,18 +1039,19 @@ func (o alertObserver) joinMembers(
 	}
 	at := sample.ObservedAt
 
-	joined := 0
+	members := make([]groupingservice.JoinMember, 0, len(outcomes))
 	for _, out := range outcomes {
 		if !out.OccurrenceOpened || out.OccurrenceID == uuid.Nil {
 			continue
 		}
-		if _, err := o.grouping.Join(ctx, s, *groupID, out.AlertID, out.OccurrenceID, at); err != nil {
-			return err
-		}
-		joined++
+		members = append(members, groupingservice.JoinMember{
+			AlertID:      out.AlertID,
+			OccurrenceID: out.OccurrenceID,
+		})
 	}
-	if joined > 0 {
-		return nil
+	if len(members) > 0 {
+		_, err := o.grouping.JoinMany(ctx, s, *groupID, members, at)
+		return err
 	}
 	for _, out := range outcomes {
 		if out.OccurrenceID != uuid.Nil && out.Transition != "" {
@@ -1235,4 +1250,79 @@ func (g slackGroupActions) AcknowledgeGroup(
 		Applied:      res.Applied,
 		SkippedCodes: res.SkippedCodes,
 	}, nil
+}
+
+// -------------------------------------------------------------------- drills
+
+// drillIngest is `drill/service.IngestAcceptor`.
+//
+// ⭐⭐ IT IS THE SAME `ingestion/service.Service` THE WEBHOOK HANDLER CALLS, and
+// that identity is the entire argument for the feature. If this adapter ever
+// pointed somewhere else — a helper, a "fast path", a direct ObserveBatch — a
+// passing drill would stop proving that the accept transaction, the outbox
+// enqueue, the decoder, the bounds, the redactor and the worker all work, which
+// is most of what an operator is asking about.
+//
+// The only thing it adds is `Mode: synthetic`, which is THE PROVENANCE MARK. It
+// is set here, in the composition root, on the object that accepted the batch —
+// never anywhere a payload could reach.
+type drillIngest struct{ svc *ingestionservice.Service }
+
+func (d drillIngest) Accept(
+	ctx context.Context, s db.TenantScope, cmd drillservice.AcceptCommand,
+) (drillservice.AcceptResult, error) {
+	if d.svc == nil {
+		return drillservice.AcceptResult{}, errs.Unavailable("ingestion_unavailable",
+			"the ingestion service is not wired in this deployment", 0)
+	}
+	res, err := d.svc.Accept(ctx, s, ingestionservice.AcceptCommand{
+		SourceID: cmd.SourceID,
+		Body:     cmd.Body,
+		Mode:     ingestiondomain.ModeSynthetic,
+	})
+	if err != nil {
+		return drillservice.AcceptResult{}, err
+	}
+	return drillservice.AcceptResult{BatchID: res.BatchID, Duplicate: res.Duplicate}, nil
+}
+
+// drillSources is `drill/service.SourceReader`.
+//
+// It exists because a consumer-declared port may not name another domain's types
+// (RULE K grants only `alerts/domain`), so the translation from
+// `sources/domain.Source` into the three facts a drill needs happens here, in the
+// one layer allowed to know both.
+type drillSources struct {
+	sources  *sourcesservice.Service
+	clusters *sourcesrepo.ClusterRepository
+}
+
+func (d drillSources) DrillTarget(
+	ctx context.Context, s db.TenantScope, id uuid.UUID,
+) (drillservice.SourceTarget, error) {
+	if d.sources == nil {
+		return drillservice.SourceTarget{}, errs.Unavailable("sources_unavailable",
+			"the sources service is not wired in this deployment", 0)
+	}
+	src, err := d.sources.Get(ctx, s, id)
+	if err != nil {
+		return drillservice.SourceTarget{}, err
+	}
+	out := drillservice.SourceTarget{
+		HasPrometheus: src.HasPrometheus(),
+		Deleted:       src.DeletedAt != nil,
+	}
+	if d.clusters != nil {
+		// ⭐ THE CLUSTER KEY, NOT A GUESS AT ONE. It participates in Alert identity
+		// (§C.2), so a drill whose payload carried the wrong `cluster` label would
+		// land in a different identity space from the source's real alerts — and
+		// would then be routed by policies that a real alert from here would never
+		// meet. A failure to resolve it is fatal to the drill for the same reason.
+		cluster, cerr := d.clusters.Get(ctx, s, src.ClusterID)
+		if cerr != nil {
+			return drillservice.SourceTarget{}, cerr
+		}
+		out.ClusterKey = cluster.Key
+	}
+	return out, nil
 }

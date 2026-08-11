@@ -158,7 +158,10 @@ linters:
             - "**/internal/streaming/api/**"
             - "**/internal/silences/api/**"
             - "**/internal/stats/api/**"
+            - "**/internal/drill/api/**"
           deny:
+            - pkg: github.com/thulasiram/oto/internal/drill/repository
+              desc: "api MUST NOT import repository (drill); call the service"
             - pkg: github.com/thulasiram/oto/internal/identity/repository
               desc: "api MUST NOT import repository (identity); call the service"
             - pkg: github.com/thulasiram/oto/internal/sources/repository
@@ -201,7 +204,10 @@ linters:
             - "**/internal/streaming/repository/**"
             - "**/internal/silences/repository/**"
             - "**/internal/stats/repository/**"
+            - "**/internal/drill/repository/**"
           deny:
+            - pkg: github.com/thulasiram/oto/internal/drill/api
+              desc: "repository MUST NOT import api (drill)"
             - pkg: github.com/thulasiram/oto/internal/identity/api
               desc: "repository MUST NOT import api (identity)"
             - pkg: github.com/thulasiram/oto/internal/sources/api
@@ -244,6 +250,7 @@ linters:
             - "**/internal/streaming/domain/**"
             - "**/internal/silences/domain/**"
             - "**/internal/stats/domain/**"
+            - "**/internal/drill/domain/**"
           allow:
             # THE SHARED DOMAIN KERNEL (rule K below). A domain package may name the
             # kernel's value objects; it may name nothing else outside platform.

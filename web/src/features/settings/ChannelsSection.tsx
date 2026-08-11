@@ -258,7 +258,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
             )}
           >
             {result().ok
-              ? "Sent. The card went through the same renderer and the same outbound validator a real notification uses, so this passing means the real path works."
+              ? "Sent. The card went through the same renderer and the same outbound validator a real notification uses, so the destination and the payload are both good. It does not prove an alert would ever be routed here — for that, run a delivery drill from the source on the Sources panel."
               : `Failed: ${result().error ?? "no detail given"}${result().error_class ? ` (${result().error_class})` : ""}`}
           </p>
         )}

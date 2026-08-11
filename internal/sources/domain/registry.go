@@ -84,8 +84,10 @@ type SourceDraft struct {
 	RedactLabels      []string
 	RedactAnnotations []string
 
-	PushEnabled       bool
-	ReconcileEnabled  bool
+	PushEnabled bool
+	// ReconcileInterval is the only reconciliation setting a create carries: the
+	// reconciler runs for every source (ADR 0006), and there is no field here that
+	// could ask for it not to.
 	ReconcileInterval time.Duration
 }
 
@@ -116,8 +118,8 @@ type SourcePatch struct {
 	RedactLabels      *[]string
 	RedactAnnotations *[]string
 
-	PushEnabled       *bool
-	ReconcileEnabled  *bool
+	PushEnabled *bool
+	// ReconcileInterval is tunable; whether the reconciler runs at all is not.
 	ReconcileInterval *time.Duration
 }
 
@@ -126,7 +128,7 @@ func (p SourcePatch) IsEmpty() bool {
 	return p.ClusterID == nil && p.Name == nil && p.BaseURL == nil &&
 		p.PrometheusURL == nil && p.AuthCredentialID == nil && p.TLSSkipVerify == nil &&
 		p.InjectLabels == nil && p.IgnoreLabels == nil && p.RedactLabels == nil &&
-		p.RedactAnnotations == nil && p.PushEnabled == nil && p.ReconcileEnabled == nil &&
+		p.RedactAnnotations == nil && p.PushEnabled == nil &&
 		p.ReconcileInterval == nil
 }
 

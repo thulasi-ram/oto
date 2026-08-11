@@ -25,6 +25,7 @@ import { useMutation } from "@tanstack/solid-query";
 import * as v from "valibot";
 
 import { ApiError, orphanViolations, violationsByField } from "~/api/client";
+import { SnoozeRequestSchema } from "~/api/generated/validators";
 import type { SnoozeRequest } from "~/api/types";
 import { Dialog, DialogBody } from "~/components/ui/Dialog";
 import { Button, Field, Input, Textarea, cx } from "~/components/ui/primitives";
@@ -51,8 +52,16 @@ export const SNOOZE_PRESETS: readonly { readonly label: string; readonly seconds
 ];
 
 /* -------------------------------------------------------------------------- */
-/* Local schemas, mirroring the contract's bounds                             */
+/* Form schemas, gated by the generated request schema                        */
 /* -------------------------------------------------------------------------- */
+
+/*
+ * SPEC §L.8.1: the form schema stays hand-written, because the sentences below
+ * are the whole point of it — but it `v.pipe`s into the **generated**
+ * `SnoozeRequestSchema` as its final gate, so this form cannot construct a body
+ * the API would reject. The generated schema comes from
+ * `api/openapi/openapi.yaml` via gate G4 (`npm run gen:validators`).
+ */
 
 const NoteSchema = v.pipe(v.string(), v.maxLength(2000, "A note is at most 2000 characters."));
 
@@ -82,6 +91,53 @@ const UntilSchema = v.pipe(
 function firstIssue(result: v.SafeParseResult<v.GenericSchema>): string | undefined {
   return result.success ? undefined : result.issues[0]?.message;
 }
+
+/** The whole dialog, as one value, so the final gate sees the real request. */
+export interface SnoozeForm {
+  readonly mode: "duration" | "until";
+  readonly seconds: number;
+  readonly until: string;
+  readonly note: string;
+}
+
+/**
+ * Exactly one of `until` and `duration_seconds` — both is a 422 and neither is
+ * a 422, because there is no indefinite snooze and therefore no default window.
+ * The mode toggle is what makes that structural rather than a rule someone has
+ * to remember.
+ *
+ * An unreadable `datetime-local` value becomes `""` rather than throwing, so the
+ * generated schema's `isoTimestamp` is what reports it.
+ */
+function toSnoozeRequest(form: SnoozeForm): v.InferInput<typeof SnoozeRequestSchema> {
+  const at = new Date(form.until);
+  const body: v.InferInput<typeof SnoozeRequestSchema> =
+    form.mode === "duration"
+      ? { duration_seconds: form.seconds }
+      : { until: Number.isNaN(at.getTime()) ? "" : at.toISOString() };
+  const text = form.note.trim();
+  return text === "" ? body : { ...body, note: text };
+}
+
+const SnoozeFormSchema = v.pipe(
+  v.strictObject({
+    mode: v.picklist(["duration", "until"]),
+    seconds: v.number("Give a number of minutes."),
+    until: v.string(),
+    note: NoteSchema,
+  }),
+  // Only the branch actually being sent is checked, which is why neither field
+  // carries its bounds above. `duration_seconds` needs nothing here: the
+  // generated schema already holds it to the contract's 300…2592000. The
+  // absolute form does, because the 5-minute/30-day window on `until` is prose
+  // in the contract and prose does not generate.
+  v.check(
+    (form) => form.mode !== "until" || v.safeParse(UntilSchema, form.until).success,
+    "Pick a time between 5 minutes and 30 days from now.",
+  ),
+  v.transform(toSnoozeRequest),
+  SnoozeRequestSchema, // the generated schema is the final gate
+);
 
 /** `2026-08-07T17:00` — what `<input type="datetime-local">` wants. */
 function toLocalInputValue(at: Date): string {
@@ -132,27 +188,21 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
     touched() ? firstIssue(v.safeParse(NoteSchema, note())) : undefined,
   );
 
-  const valid = (): boolean => {
-    if (!v.safeParse(NoteSchema, note()).success) return false;
-    return mode() === "duration"
-      ? v.safeParse(DurationSchema, seconds()).success
-      : v.safeParse(UntilSchema, until()).success;
-  };
+  const form = (): SnoozeForm => ({
+    mode: mode(),
+    seconds: seconds(),
+    until: until(),
+    note: note(),
+  });
 
   /**
-   * Exactly one of `until` and `duration_seconds` — both is a 422 and neither
-   * is a 422, because there is no indefinite snooze and therefore no default
-   * window. The mode toggle is what makes that structural rather than a rule
-   * someone has to remember.
+   * One parse, through the generated request schema. The per-field schemas
+   * above only decide which sentence a control shows; this decides whether the
+   * request may leave the browser at all.
    */
-  const buildBody = (): SnoozeRequest => {
-    const body: SnoozeRequest =
-      mode() === "duration"
-        ? { duration_seconds: seconds() }
-        : { until: new Date(until()).toISOString() };
-    const text = note().trim();
-    return text === "" ? body : { ...body, note: text };
-  };
+  const gated = createMemo(() => v.safeParse(SnoozeFormSchema, form()));
+
+  const valid = (): boolean => gated().success;
 
   const mutation = useMutation(() => ({
     mutationFn: (body: SnoozeRequest) => props.onSubmit(body, idempotencyKey()),
@@ -198,8 +248,9 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
             disabled={touched() && !valid()}
             onClick={() => {
               setTouched(true);
-              if (!valid()) return;
-              mutation.mutate(buildBody());
+              const parsed = gated();
+              if (!parsed.success) return;
+              mutation.mutate(parsed.output);
             }}
           >
             Hold notifications until {endsLabel()}

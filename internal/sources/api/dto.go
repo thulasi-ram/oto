@@ -48,8 +48,14 @@ type SourceDTO struct {
 	RedactLabels      []string          `json:"redact_labels"`
 	RedactAnnotations []string          `json:"redact_annotations"`
 
-	PushEnabled              bool  `json:"push_enabled"`
-	ReconcileEnabled         bool  `json:"reconcile_enabled"`
+	PushEnabled bool `json:"push_enabled"`
+	// ReconcileIntervalSeconds is HOW OFTEN the API v2 reconciler polls this
+	// source. There is deliberately no `reconcile_enabled` beside it: the
+	// reconciler is the only producer of `suppressed` and the only thing that
+	// refreshes `source_health`, so a source with it switched off kept a frozen
+	// `healthy` verdict that the reaper went on trusting — and ended episodes for
+	// alerts that were merely silenced upstream. ADR 0006's second amendment and
+	// migration 00038 removed the switch; the interval is the whole knob.
 	ReconcileIntervalSeconds int32 `json:"reconcile_interval_seconds"`
 
 	// IngestPath is the exact path to configure in this source's Alertmanager
@@ -159,19 +165,61 @@ type RouteTimingDTO struct {
 // Reporting that as `unknown` — which oto used to do — made the common case, a
 // stock install, useless, while claiming to be the careful answer.
 type RouteTimingsDTO struct {
-	// GroupWait, GroupInterval and RepeatInterval are the TOP-LEVEL route's.
+	// GroupWait, GroupInterval and RepeatInterval are the three durations IN
+	// FORCE for the alerts oto is sent. `Route` says which route they came from.
 	GroupWait      RouteTimingDTO `json:"group_wait"`
 	GroupInterval  RouteTimingDTO `json:"group_interval"`
 	RepeatInterval RouteTimingDTO `json:"repeat_interval"`
-	// Route names which route the three above describe. It is `top_level` and
-	// nothing else in v1 — the field exists so that a client rendering it never
-	// has to be changed if a later version resolves per-route values.
+	// Route names which route the three above describe: `oto_receiver` when oto
+	// identified its own receiver and every route reaching it agrees on all
+	// three, `top_level` otherwise.
+	//
+	// ⛔ `top_level` IS THE FALLBACK AND MUST BE RENDERED AS ONE. It is what
+	// governs alerts matching nothing more specific, which is a real answer and
+	// is frequently not oto's: the three settings are per-route and inherited.
+	// When it is `top_level` because `Routes` disagree, `RoutesAgree` is false
+	// and a client MUST show the set rather than asserting these three.
 	Route string `json:"route"`
-	// ChildRoutes and ChildRoutesWithTimings are the caveat, made countable: a
-	// non-zero ChildRoutesWithTimings means some alerts are batched by a more
-	// specific route and the numbers above do not govern them.
+	// ChildRoutes and ChildRoutesWithTimings describe the TREE, not the route
+	// above: how many descendant routes exist at any depth, and how many state a
+	// timing of their own. They are the shape of the config in two numbers, and
+	// they are what `Routes` below expands into detail.
 	ChildRoutes            int32 `json:"child_routes"`
 	ChildRoutesWithTimings int32 `json:"child_routes_with_timings"`
+	// Receiver is the receiver oto believes is ITS OWN, and is null whenever
+	// ReceiverBasis is not `sole_webhook`.
+	Receiver *string `json:"receiver"`
+	// ReceiverBasis is HOW that was decided — `sole_webhook`, `ambiguous`,
+	// `no_webhook` or `unknown`.
+	//
+	// ⛔ IT IS AN INFERENCE AND MUST NEVER RENDER AS A READING. oto's ingest path
+	// is `/api/v1/ingest/alertmanager/{source_id}`, so the webhook URL in an
+	// operator's config contains the id of the source oto is probing and would
+	// identify oto's receiver exactly — but `webhook_config.url` is a `SecretURL`
+	// and `config.original` is the marshalled config, so it arrives as the
+	// literal string `<secret>`.
+	ReceiverBasis string `json:"receiver_basis"`
+	// WebhookReceivers is every receiver in the configuration with a webhook
+	// integration. With `ambiguous` it is the candidate list, and it is what
+	// makes the ambiguity actionable rather than a shrug.
+	WebhookReceivers []string `json:"webhook_receivers"`
+	// Routes is EVERY delivering route in the tree, in the order Alertmanager
+	// evaluates them, each with its receiver, its inherited timings, its matcher
+	// path and whether it reaches oto.
+	//
+	// ⭐ IT IS A LIST BECAUSE THE ANSWER IS A SET. `continue: true` lets several
+	// routes deliver to one receiver under different matchers with different
+	// timings; there may be no single triple, and a client must say "these two
+	// routes reach oto and disagree" rather than picking one.
+	Routes []ReceiverRouteDTO `json:"routes"`
+	// RoutesAgree reports whether every route reaching oto's receiver resolves to
+	// the same three durations. It is true when there is nothing to disagree —
+	// no identified receiver, or exactly one reaching route — so it is only ever
+	// false when there is a real conflict to show.
+	RoutesAgree bool `json:"routes_agree"`
+	// RoutesDropped is how many delivering routes the parser's cap discarded.
+	// Non-zero means `Routes` is incomplete and must be rendered as such.
+	RoutesDropped int32 `json:"routes_dropped"`
 	// DefaultsFromVersion is the Alertmanager version any `default_applies` field
 	// is attributed to, and is null when no field defaulted. It is the source's
 	// own reported version where oto has one.
@@ -187,8 +235,91 @@ type RouteTimingsDTO struct {
 	ObservedAt *time.Time `json:"observed_at"`
 }
 
-// RouteTopLevel is the only value RouteTimingsDTO.Route takes in v1.
-const RouteTopLevel = "top_level"
+// The values RouteTimingsDTO.Route takes.
+const (
+	// RouteTopLevel means the three durations are the top-level route's. It is
+	// the FALLBACK: what governs every alert matching nothing more specific, and
+	// what oto reports when it cannot name its own receiver or when the routes
+	// that reach it disagree.
+	RouteTopLevel = "top_level"
+	// RouteOtoReceiver means the three durations are those of the route(s)
+	// delivering to oto's own receiver — the numbers actually in force for the
+	// alerts oto is sent, and the only ones its tuning arithmetic should use.
+	RouteOtoReceiver = "oto_receiver"
+)
+
+// InheritedTimingDTO is one route timing with its provenance AND the route on
+// the path that stated it.
+//
+// ⭐ FromDepth IS NOT DECORATION. `group_interval: 5m` inherited from the
+// top-level route and `group_interval: 5m` stated on this route send an operator
+// to two different lines of their own file, and only the second survives them
+// editing the child. It indexes ReceiverRouteDTO.Path, so `from_depth` equal to
+// `len(path) - 1` means "this route states it itself".
+type InheritedTimingDTO struct {
+	// Provenance is `observed` when some route on the path stated this value and
+	// `default_applies` when none did. It is never `unknown` here: a route only
+	// exists in this list because oto read the configuration it came from.
+	Provenance string `json:"provenance"`
+	// ValueMS is the duration in force for this route, in milliseconds.
+	ValueMS *int64 `json:"value_ms"`
+	// FromDepth is the index into Path of the route that stated the value, and is
+	// null when no route on the path stated it.
+	FromDepth *int32 `json:"from_depth"`
+}
+
+// RouteStepDTO is one route on the path from the top-level route, as an operator
+// would recognise it in their own file.
+type RouteStepDTO struct {
+	// Matchers are this route's OWN matchers, normalised into Alertmanager's
+	// current `matchers` spelling and sorted, so they can be pasted into
+	// `amtool`. Empty means the route states none and therefore takes everything
+	// its parent gives it.
+	Matchers []string `json:"matchers"`
+	// Deprecated reports that the route spelled them with `match` or `match_re`.
+	// Both still route production traffic; oto renders the current spelling and
+	// says where it came from rather than quietly rewriting the operator's file.
+	Deprecated bool `json:"deprecated"`
+	// Continue is this route's `continue`. It is the reason several routes can
+	// reach one receiver: evaluation does not stop at a match that sets it.
+	Continue bool `json:"continue"`
+}
+
+// ReceiverRouteDTO is ONE route that delivers to a receiver, fully resolved.
+//
+// "Delivers" is Alertmanager's own rule from `dispatch.Route.Match`: a route is
+// the answer only when NO child of it matched, so a route with a matcher-less
+// child never delivers itself. Nothing here evaluates a matcher against a label
+// set — every field is structural and therefore true for every alert.
+type ReceiverRouteDTO struct {
+	// Receiver is the receiver this route delivers to, after inheritance.
+	Receiver string `json:"receiver"`
+	// Path is the route chain from the top-level route (index 0) to this one, and
+	// is never empty.
+	Path []RouteStepDTO `json:"path"`
+
+	GroupWait      InheritedTimingDTO `json:"group_wait"`
+	GroupInterval  InheritedTimingDTO `json:"group_interval"`
+	RepeatInterval InheritedTimingDTO `json:"repeat_interval"`
+
+	// GroupBy is the effective grouping labels, inherited. GroupByAll is the
+	// `group_by: ['...']` form, which is worth surfacing beside the numbers
+	// because no number captures it: grouping by every label means no group ever
+	// accumulates a second member, so storm collapse is unreachable at any
+	// threshold.
+	GroupBy    []string `json:"group_by"`
+	GroupByAll bool     `json:"group_by_all"`
+
+	// ReachesOto reports that this route delivers to the receiver oto believes is
+	// its own. It is false for every route when oto could not identify one, which
+	// is exactly when a client should show the whole list and say why.
+	ReachesOto bool `json:"reaches_oto"`
+	// Unreachable reports that an earlier matcher-less sibling without `continue`
+	// consumes everything before this route is evaluated, so it can never fire.
+	// It is the only unreachability provable without labels, and it is a real
+	// misconfiguration rather than a display detail.
+	Unreachable bool `json:"unreachable"`
+}
 
 // SourceTestDTO is the result of probing a source's status endpoint.
 //
@@ -284,8 +415,12 @@ type CreateSourceRequest struct {
 	RedactLabels      []string          `json:"redact_labels,omitempty"      validate:"omitempty,max=64,dive,max=256"`
 	RedactAnnotations []string          `json:"redact_annotations,omitempty" validate:"omitempty,max=64,dive,max=256"`
 
-	PushEnabled              *bool  `json:"push_enabled,omitempty"`
-	ReconcileEnabled         *bool  `json:"reconcile_enabled,omitempty"`
+	PushEnabled *bool `json:"push_enabled,omitempty"`
+	// ⛔ NO `reconcile_enabled`. The body decodes with DisallowUnknownFields, so a
+	// client that sends one is REFUSED by name rather than quietly ignored — which
+	// is the point: the field used to exist, tooling and runbooks may still carry
+	// it, and a silent drop would let somebody believe they had turned
+	// reconciliation off while oto carried on. See ADR 0006's second amendment.
 	ReconcileIntervalSeconds *int32 `json:"reconcile_interval_seconds,omitempty" validate:"omitempty,min=10,max=3600"`
 
 	Credential *CredentialInputDTO `json:"credential,omitempty" validate:"omitempty"`
@@ -316,8 +451,13 @@ type UpdateSourceRequest struct {
 	RedactLabels      *[]string          `json:"redact_labels,omitempty"      validate:"omitempty,max=64,dive,max=256"`
 	RedactAnnotations *[]string          `json:"redact_annotations,omitempty" validate:"omitempty,max=64,dive,max=256"`
 
-	PushEnabled              *bool  `json:"push_enabled,omitempty"`
-	ReconcileEnabled         *bool  `json:"reconcile_enabled,omitempty"`
+	PushEnabled *bool `json:"push_enabled,omitempty"`
+	// ⛔ NO `reconcile_enabled`, AND ITS ABSENCE IS THE POINT OF THIS STRUCT.
+	// `PATCH {"reconcile_enabled": false}` used to return 200 and persist, which
+	// turned off the component ADR 0006 calls mandatory for one source, forever,
+	// with nothing on any screen to say so. It now fails validation naming the
+	// field. `reconcile_interval_seconds` remains: how often oto polls is a
+	// legitimate operational choice, whether it polls is not.
 	ReconcileIntervalSeconds *int32 `json:"reconcile_interval_seconds,omitempty" validate:"omitempty,min=10,max=3600"`
 
 	Credential *CredentialInputDTO `json:"credential,omitempty" validate:"omitempty"`
@@ -330,7 +470,7 @@ func (r UpdateSourceRequest) IsEmpty() bool {
 	return r.Name == nil && r.ClusterID == nil && r.BaseURL == nil && !r.PrometheusURL.Set &&
 		r.TLSSkipVerify == nil && r.InjectLabels == nil && r.IgnoreLabels == nil &&
 		r.RedactLabels == nil && r.RedactAnnotations == nil && r.PushEnabled == nil &&
-		r.ReconcileEnabled == nil && r.ReconcileIntervalSeconds == nil && r.Credential == nil
+		r.ReconcileIntervalSeconds == nil && r.Credential == nil
 }
 
 // NullableString is a contract field typed `["string","null"]`, where an explicit

@@ -24,6 +24,11 @@ import * as v from "valibot";
 
 import { ApiError, violationsByField, orphanViolations } from "~/api/client";
 import { ackAlert, commentOnAlert, snoozeAlert, unackAlert, unsnoozeAlert } from "~/api/endpoints";
+import {
+  AckRequestSchema,
+  CommentRequestSchema,
+  UnackRequestSchema,
+} from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import type { AlertDetail, Occurrence, SnoozeRequest } from "~/api/types";
 import { Dialog, DialogBody } from "~/components/ui/Dialog";
@@ -33,10 +38,19 @@ import { idempotencyKey } from "~/lib/format";
 import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 
 /* -------------------------------------------------------------------------- */
-/* Local schemas, mirroring the contract's bounds                             */
+/* Form schemas, gated by the generated request schemas                       */
 /* -------------------------------------------------------------------------- */
 
-/** `AckRequest.note` — optional, and bounded the same way the server bounds it. */
+/*
+ * SPEC §L.8.1: form schemas stay hand-written — they carry the sentences a
+ * person should read — but each one must `v.pipe` into the **generated**
+ * request schema, so a form can never accept something the API would reject.
+ * The generated schemas come from `api/openapi/openapi.yaml` via gate G4
+ * (`npm run gen:validators`), which is why the bounds below are not the last
+ * word on anything.
+ */
+
+/** The per-field rule, so a control can show one sentence about itself. */
 const NoteSchema = v.pipe(
   v.string(),
   v.maxLength(2000, "A note is at most 2000 characters."),
@@ -47,6 +61,40 @@ const CommentSchema = v.pipe(
   v.trim(),
   v.minLength(1, "A comment needs some text — the timeline is the record."),
   v.maxLength(10_000, "A comment is at most 10 000 characters."),
+);
+
+/**
+ * The body an ack or an unack takes. Both endpoints take the same one, and both
+ * generated schemas are consulted separately anyway — they are two endpoints and
+ * they are free to diverge.
+ */
+type NoteBody = v.InferInput<typeof AckRequestSchema>;
+
+/**
+ * An empty note is *absent*, not `""`. The contract has no "cleared" note, and
+ * sending a blank one would put an empty line on the timeline forever.
+ */
+function toNoteBody(form: { readonly note: string }): NoteBody {
+  const note = form.note.trim();
+  return note === "" ? {} : { note };
+}
+
+const AckFormSchema = v.pipe(
+  v.strictObject({ note: NoteSchema }),
+  v.transform(toNoteBody),
+  AckRequestSchema, // the generated schema is the final gate
+);
+
+const UnackFormSchema = v.pipe(
+  v.strictObject({ note: NoteSchema }),
+  v.transform(toNoteBody),
+  UnackRequestSchema, // the generated schema is the final gate
+);
+
+const CommentFormSchema = v.pipe(
+  v.strictObject({ body: CommentSchema }),
+  v.transform((form): v.InferInput<typeof CommentRequestSchema> => ({ body: form.body })),
+  CommentRequestSchema, // the generated schema is the final gate
 );
 
 function firstIssue(result: v.SafeParseResult<v.GenericSchema>): string | undefined {
@@ -193,8 +241,12 @@ const AckDialog: Component<{
     touched() ? firstIssue(v.safeParse(NoteSchema, note())) : undefined,
   );
 
+  /** Ack and unack are two endpoints and therefore two generated gates. */
+  const formSchema = (): typeof AckFormSchema | typeof UnackFormSchema =>
+    props.withdrawing ? UnackFormSchema : AckFormSchema;
+
   const mutation = useMutation(() => ({
-    mutationFn: (body: { note: string }): Promise<Occurrence> => {
+    mutationFn: (body: NoteBody): Promise<Occurrence> => {
       // One key per gesture. The server's idempotency promise only holds if the
       // client stops re-minting the key on every retry.
       const key = idempotencyKey();
@@ -236,8 +288,9 @@ const AckDialog: Component<{
             disabled={localError() !== undefined}
             onClick={() => {
               setTouched(true);
-              if (!v.safeParse(NoteSchema, note()).success) return;
-              mutation.mutate({ note: note() });
+              const parsed = v.safeParse(formSchema(), { note: note() });
+              if (!parsed.success) return;
+              mutation.mutate(parsed.output);
             }}
           >
             {props.withdrawing ? "Withdraw" : "Acknowledge"}
@@ -327,12 +380,12 @@ const CommentDialog: Component<{
             size="sm"
             variant="primary"
             busy={mutation.isPending}
-            disabled={v.safeParse(CommentSchema, body()).success === false}
+            disabled={v.safeParse(CommentFormSchema, { body: body() }).success === false}
             onClick={() => {
               setTouched(true);
-              const parsed = v.safeParse(CommentSchema, body());
+              const parsed = v.safeParse(CommentFormSchema, { body: body() });
               if (!parsed.success) return;
-              mutation.mutate(parsed.output);
+              mutation.mutate(parsed.output.body);
             }}
           >
             Add comment

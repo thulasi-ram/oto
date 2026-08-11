@@ -52,6 +52,12 @@ type ProbeResult struct {
 	// config would not parse, and it is what stops a failed probe from erasing
 	// the last numbers oto did manage to observe.
 	RouteTimingsObserved bool
+	// Routes is the resolved route tree: every delivering route, its receiver,
+	// its inherited timings and its matcher path, plus oto's identification of
+	// its own receiver and the basis for it (domain.RouteResolution). It is
+	// carried under the same RouteTimingsObserved gate as the three above — the
+	// two are one reading of one config.
+	Routes domain.RouteResolution
 	// ClockSkew is oto's clock minus the upstream's Date header.
 	ClockSkew time.Duration
 
@@ -183,6 +189,7 @@ func (s *Service) probeSource(ctx context.Context, scope db.TenantScope, src dom
 		// and it is the observation that tells an operator their Alertmanager is
 		// running on built-in defaults oto cannot see.
 		res.RouteTimings = st.AM.RouteTimings
+		res.Routes = st.AM.Routes
 		res.RouteTimingsObserved = true
 	}
 
@@ -303,6 +310,10 @@ func ApplyProbe(h domain.SourceHealth, src domain.Source, res ProbeResult) domai
 	// become unknown again, not linger as the last value oto happened to see.
 	if res.RouteTimingsObserved {
 		h.RouteTimings = res.RouteTimings
+		// The resolved tree moves with the three: they are one reading of one
+		// config, and letting them drift apart would let the screen argue from a
+		// route that no longer exists using timings that do.
+		h.Routes = res.Routes
 		at := res.CheckedAt.UTC()
 		h.RouteTimingsAt = &at
 	}

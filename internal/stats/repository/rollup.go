@@ -44,6 +44,18 @@ import (
 //
 // `resolved` and `expired` are counted into SEPARATE columns and are never
 // summed. Conflating them is precisely the lie oto exists to prevent.
+//
+// ⛔⛔ ALL THREE CTEs EXCLUDE `a.synthetic`, AND ALL THREE MUST. A synthetic
+// Alert is one oto manufactured for a DELIVERY DRILL — an operator pressing a
+// button to prove the notification path works. Nothing fired in any cluster.
+// Counting one here would inflate an org's occurrence count, its notification
+// count and its flap count with oto's own plumbing, in the exact table the
+// hygiene report is sold from, permanently — this is an upsert of a day, so the
+// wrong number would survive every recompute. Every CTE already joins `alerts`,
+// so the predicate costs one boolean test per row and there is no excuse.
+//
+// A fourth CTE added later joins `alerts` and excludes them too, or the report
+// is wrong in a way nobody will notice until a customer disputes an invoice.
 const rollupDaySQL = `
 WITH bounds AS (
   SELECT $2::date                                             AS day,
@@ -64,6 +76,7 @@ WITH bounds AS (
     JOIN alerts a  ON a.id = o.alert_id AND a.org_id = o.org_id
    CROSS JOIN bounds b
    WHERE o.org_id = $1
+     AND NOT a.synthetic
      AND o.started_at >= b.day_start
      AND o.started_at <  b.day_end
    GROUP BY a.cluster_key, a.alertname
@@ -79,6 +92,7 @@ WITH bounds AS (
     LEFT JOIN notification_deliveries d
                                ON d.notification_id = n.id AND d.org_id = n.org_id
    WHERE n.org_id = $1
+     AND NOT a.synthetic
      AND n.created_at >= b.day_start
      AND n.created_at <  b.day_end
    GROUP BY a.cluster_key, a.alertname
@@ -90,6 +104,7 @@ WITH bounds AS (
    CROSS JOIN bounds b
     JOIN alerts a ON a.id = e.alert_id AND a.org_id = e.org_id
    WHERE e.org_id = $1
+     AND NOT a.synthetic
      AND e.recorded_at >= b.day_start
      AND e.recorded_at <  b.day_end
      AND e.type IN ('occurrence.opened','occurrence.reopened','occurrence.suppressed',

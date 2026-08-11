@@ -15,10 +15,19 @@
  *   - Keyboard first: `j`/`k` or arrows move, `Enter` opens, and the focused
  *     row is scrolled into view rather than left behind.
  */
-import { For, Show, createMemo, createSignal, type Component, type JSX } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createMemo,
+  createSignal,
+  type Component,
+  type JSX,
+} from "solid-js";
 import { A } from "@solidjs/router";
 
-import type { Alert } from "~/api/types";
+import type { Alert, RuleSnapshot } from "~/api/types";
 import { RelativeTime, Elapsed } from "~/components/Time";
 import {
   AckChip,
@@ -30,7 +39,7 @@ import {
 } from "~/components/StateChip";
 import { SnoozeChipUnknownUntil } from "~/components/SnoozeChip";
 import { Chip, cx } from "~/components/ui/primitives";
-import { count as fmtCount, truncate } from "~/lib/format";
+import { count as fmtCount, duration as fmtDuration, truncate } from "~/lib/format";
 import { createVirtualiser, readRowHeight } from "~/lib/virtual";
 
 export interface AlertTableProps {
@@ -44,6 +53,18 @@ export interface AlertTableProps {
    * guessed at.
    */
   readonly snoozedKnown?: boolean | null;
+  /**
+   * **What the rule said**, keyed by snapshot id (ADR 0025).
+   *
+   * The row itself carries only `rule.id` — `alerts/api` may not name the rules
+   * module's types — so the screen resolves a whole page of those ids in ONE
+   * call and hands the result down here. An id that is not in the map yet is
+   * *loading*; an id that will never be in it is *unreadable*, and the cell says
+   * which rather than showing an empty space for both.
+   */
+  readonly rules?: ReadonlyMap<string, RuleSnapshot>;
+  /** True while the batch above is in flight, so a blank cell can say why. */
+  readonly rulesPending?: boolean;
   /** Clicking a label chip filters by it — the fastest drill-down there is. */
   readonly onFilterLabel: (name: string, value: string) => void;
   /** Rendered after the last row: the "load more" affordance or a total. */
@@ -54,6 +75,9 @@ export interface AlertTableProps {
 const COLUMNS = [
   { key: "severity", label: "Severity", class: "w-[7.5rem]" },
   { key: "alert", label: "Alert", class: "" },
+  // The differentiator, on the screen it is for. It sits beside the alert name
+  // because "what fired" and "what the rule said when it fired" are one thought.
+  { key: "rule", label: "Rule", class: "w-[15rem]" },
   { key: "state", label: "State", class: "w-[11rem]" },
   { key: "cluster", label: "Cluster", class: "w-[9rem]" },
   { key: "firing", label: "Firing for", class: "w-[6rem] text-right" },
@@ -61,7 +85,23 @@ const COLUMNS = [
   { key: "seen", label: "Last seen", class: "w-[6rem] text-right" },
 ] as const;
 
+/** The empty lookup, so a table rendered without rules is not a special case. */
+const NO_RULES: ReadonlyMap<string, RuleSnapshot> = new Map();
+
 export const AlertTable: Component<AlertTableProps> = (props) => {
+  /**
+   * ⛔ The Rule column exists only when the caller can fill it.
+   *
+   * A caller that did not ask for `include=rule` has no snapshot ids, and a
+   * column of dashes would read as "oto captured no rule" when the truth is
+   * "nobody asked". That is the same class of lie as a silently dropped filter,
+   * so the column is absent rather than empty.
+   */
+  const showRule = (): boolean => props.rules !== undefined;
+  const columns = createMemo(() =>
+    showRule() ? COLUMNS : COLUMNS.filter((c) => c.key !== "rule"),
+  );
+
   const [focusIndex, setFocusIndex] = createSignal(-1);
   const [rowHeight, setRowHeight] = createSignal(readRowHeight());
 
@@ -131,7 +171,7 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
             {/* The status-bar gutter has no header text; it repeats the state
                 column, which does. */}
             <th class="w-[3px] p-0" aria-hidden="true" />
-            <For each={COLUMNS}>
+            <For each={columns()}>
               {(col) => (
                 <th
                   scope="col"
@@ -151,7 +191,7 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
         <tbody>
           <Show when={win().padTop > 0}>
             <tr aria-hidden="true" style={{ height: `${win().padTop}px` }}>
-              <td colSpan={COLUMNS.length + 1} class="p-0" />
+              <td colSpan={columns().length + 1} class="p-0" />
             </tr>
           </Show>
 
@@ -162,6 +202,9 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
                 index={win().start + i()}
                 focused={win().start + i() === focusIndex()}
                 snoozed={props.snoozedKnown === true}
+                showRule={showRule()}
+                rules={props.rules ?? NO_RULES}
+                rulesPending={props.rulesPending === true}
                 onFocus={() => setFocusIndex(win().start + i())}
                 onFilterLabel={props.onFilterLabel}
               />
@@ -170,7 +213,7 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
 
           <Show when={win().padBottom > 0}>
             <tr aria-hidden="true" style={{ height: `${win().padBottom}px` }}>
-              <td colSpan={COLUMNS.length + 1} class="p-0" />
+              <td colSpan={columns().length + 1} class="p-0" />
             </tr>
           </Show>
         </tbody>
@@ -191,6 +234,10 @@ interface AlertRowProps {
   readonly focused: boolean;
   /** Certainly snoozed, because the query pinned `?snoozed=true`. */
   readonly snoozed: boolean;
+  /** False when the caller cannot fill the column, so it is not drawn at all. */
+  readonly showRule: boolean;
+  readonly rules: ReadonlyMap<string, RuleSnapshot>;
+  readonly rulesPending: boolean;
   readonly onFocus: () => void;
   readonly onFilterLabel: (name: string, value: string) => void;
 }
@@ -286,6 +333,18 @@ const AlertRow: Component<AlertRowProps> = (props) => {
         </div>
       </td>
 
+      {/* **What the rule said at that moment** — the first promise in the
+          README, on the screen it was missing from. */}
+      <Show when={props.showRule}>
+        <td class="min-w-0 px-2 align-middle">
+          <RuleCell
+            snapshotId={props.alert.rule?.id ?? null}
+            snapshot={props.alert.rule ? (props.rules.get(props.alert.rule.id) ?? null) : null}
+            pending={props.rulesPending}
+          />
+        </td>
+      </Show>
+
       <td class="px-2 align-middle">
         <div class="flex items-center gap-1">
           <StateChip state={props.alert.state} size="sm" urgent={urgent()} />
@@ -326,5 +385,97 @@ const AlertRow: Component<AlertRowProps> = (props) => {
         <RelativeTime value={props.alert.last_seen_at} label="Last seen" />
       </td>
     </tr>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+/* The rule cell                                                              */
+/* -------------------------------------------------------------------------- */
+
+interface RuleCellProps {
+  /** The snapshot bound to this alert's current episode, or null if none was. */
+  readonly snapshotId: string | null;
+  /** The resolved snapshot, or null while it is unresolved. */
+  readonly snapshot: RuleSnapshot | null;
+  /** True while the page's batch is in flight. */
+  readonly pending: boolean;
+}
+
+/**
+ * `expr` on the row — Tier A chrome throughout (§M): mono, muted, no state hue.
+ *
+ * The point of this cell is that **four different silences look different**, and
+ * that is the whole design:
+ *
+ *   - *no snapshot id*        — nothing was ever captured for this episode;
+ *   - *not resolved yet*      — the batch is in flight, so the cell says so;
+ *   - *resolved to nothing*   — we hold an id whose snapshot we could not read;
+ *   - *captured as empty*     — a snapshot exists and honestly records that the
+ *     definition could not be recovered (`origin: unavailable`, ADR 0009).
+ *
+ * Rendering all four as an empty cell would be the "oto's silence is
+ * indistinguishable from no alert" failure, in miniature. The expression itself
+ * is never reformatted, wrapped or prettified: it is the text that fired, and it
+ * is copyable in full from the tooltip.
+ */
+const RuleCell: Component<RuleCellProps> = (props) => {
+  const tooltip = (s: RuleSnapshot): string => {
+    const parts = [s.expr === "" ? "(no expression captured)" : s.expr];
+    if (s.for_seconds > 0) parts.push(`for: ${fmtDuration(s.for_seconds)}`);
+    if (s.match_confidence === "ambiguous") {
+      // ADR 0009: an ambiguous match is surfaced, never silently resolved.
+      parts.push("match: ambiguous — more than one rule fits this alert");
+    }
+    return parts.join("\n");
+  };
+
+  return (
+    <Switch>
+      <Match when={props.snapshotId === null}>
+        <span
+          class="text-ink-subtle"
+          title="No rule definition was captured for this episode."
+        >
+          —
+        </span>
+      </Match>
+
+      <Match when={props.snapshot === null && props.pending}>
+        <span class="text-ink-subtle" aria-label="Loading the rule">
+          ·&#8202;·&#8202;·
+        </span>
+      </Match>
+
+      <Match when={props.snapshot === null}>
+        <span
+          class="text-ink-subtle"
+          title="oto holds a snapshot id for this episode but could not read the definition back."
+        >
+          unreadable
+        </span>
+      </Match>
+
+      <Match when={props.snapshot !== null && props.snapshot.expr === ""}>
+        {/* A snapshot that honestly records "we could not see the rule" is a
+            different fact from having no snapshot at all, and it says so. */}
+        <span
+          class="text-ink-subtle italic"
+          title="The capture is recorded as unavailable. oto never fabricates a rule it could not read."
+        >
+          unavailable
+        </span>
+      </Match>
+
+      <Match when={props.snapshot}>
+        {(snapshot) => (
+          <code
+            class="block truncate font-mono text-[11px] leading-4 text-ink-muted"
+            title={tooltip(snapshot())}
+          >
+            {truncate(snapshot().expr, 64)}
+          </code>
+        )}
+      </Match>
+    </Switch>
   );
 };

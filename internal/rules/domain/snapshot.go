@@ -1,13 +1,10 @@
 package domain
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 )
 
 // Origin says how a rule definition was obtained. It mirrors
@@ -242,82 +239,45 @@ func NewSnapshot(orgID string, key Key, r Recovery, capturedAt time.Time) Snapsh
 //	sha256( field(expr) || field(for_seconds) || field(keep_firing_for_seconds)
 //	        || field(canon(rule_labels)) || canon(rule_annotations) )
 //
-// where field(x) := uint32be(len(x)) || x — the same length-prefix framing Canon
-// uses inside a label set, applied one layer up to the FIELDS of the pre-image.
+// # THIS IS AN ADAPTER, NOT AN IMPLEMENTATION
 //
-// The fields are length-prefixed and not NUL-separated because `expr` is
-// free-form PromQL: a NUL terminator is injective only if no field can contain a
-// NUL, and nothing constrains what Prometheus puts in an expression. A prefix
-// makes the pre-image decodable — 4 bytes as a count, then exactly that many bytes
-// as the field — so two different rule definitions can never share one content
-// address. The full argument is on alerts/domain writeField, which this MUST agree
-// with byte for byte.
+// It used to be a second implementation of §C.6, in this package because a
+// recovered rule's labels are a raw map that has never been through NewLabels and
+// could not be handed to a function taking a constructed Labels. That constraint
+// is real and has not gone away — it is now addressed where it belongs, by
+// alerts/domain.CanonMap, so the kernel can take the lenient input directly and
+// this package no longer has to restate the format to reach it.
 //
-// canon(rule_annotations) is the last field and is written raw: it is the
-// remainder, and it is self-delimiting in its own right.
+// The framing argument in full is on alerts/domain writeField and CanonMap. The
+// short version: the fields are length-prefixed and not NUL-separated because
+// `expr` is free-form PromQL, and a NUL terminator is injective only if no field
+// can contain a NUL. What this function must still guarantee is that the value
+// does not move: the returned digest is byte for byte what this package computed
+// before it delegated, for every input.
 //
-// Durations are rendered with strconv.FormatFloat(f, 'f', -1, 64), the shortest
-// representation that round-trips, so 600 and 600.0 are the same rule.
+// Durations are seconds, rendered by the kernel with
+// strconv.FormatFloat(f, 'f', -1, 64) — the shortest representation that
+// round-trips — so 600 and 600.0 are the same rule.
+//
+// The string return (rather than alerts/domain.RuleFingerprint) is what
+// `rule_snapshots.rule_fingerprint` stores and what Snapshot.Validate re-checks;
+// re-typing the column is a separate change.
 func Fingerprint(expr string, forSeconds, keepFiringForSeconds float64, labels, annotations map[string]string) string {
-	h := sha256.New()
-	field := func(s string) {
-		var n [canonLenBytes]byte
-		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
-		_, _ = h.Write(n[:])
-		_, _ = h.Write([]byte(s))
-	}
-
-	field(expr)
-	field(strconv.FormatFloat(forSeconds, 'f', -1, 64))
-	field(strconv.FormatFloat(keepFiringForSeconds, 'f', -1, 64))
-	field(Canon(labels))
-	_, _ = h.Write([]byte(Canon(annotations)))
-
-	return hex.EncodeToString(h.Sum(nil))
+	return kernel.ComputeRuleFingerprint(expr, forSeconds, keepFiringForSeconds, labels, annotations).String()
 }
 
-// Canon is the canonical label serialisation of SPEC §C.1, with no ignore set:
-// names sorted ascending by byte order, and per entry a 4-byte big-endian BYTE
-// length before the name and another before the value.
+// Canon is the canonical label serialisation of SPEC §C.1 over a raw map, with no
+// ignore set: names sorted ascending by byte order, and per entry a 4-byte
+// big-endian BYTE length before the name and another before the value.
 //
-// Names and values are used verbatim (UTF-8, no case folding, no escaping). The
-// length prefixes are what make the serialisation injective — a separator-framed
-// encoding lets a value that contains the separators forge entries that are not
-// there, which turns two different rule definitions into one fingerprint. The
-// argument in full is on alerts/domain.Labels.Canonical, which this MUST agree
-// with byte for byte: they are one format with two implementations, because a
-// rule's labels arrive as a raw map that has never been through NewLabels.
+// It is alerts/domain.CanonMap, which is alerts/domain.Labels.Canonical reached
+// without the constructor. It stays here as a name because §C.1 is what this
+// package's own tests pin, not because there is a second format: there is one,
+// and it lives in the kernel.
 //
 // This function is pure and does no I/O, which is what lets a fingerprint be
 // recomputed anywhere and compared byte for byte.
-func Canon(m map[string]string) string {
-	if len(m) == 0 {
-		return ""
-	}
-	names := make([]string, 0, len(m))
-	for k := range m {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-
-	var b strings.Builder
-	field := func(s string) {
-		var n [canonLenBytes]byte
-		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
-		b.Write(n[:])
-		b.WriteString(s)
-	}
-	for _, n := range names {
-		field(n)
-		field(m[n])
-	}
-	return b.String()
-}
-
-// canonLenBytes is the width of the length prefix §C.1 writes before every field.
-// Four bytes, big-endian, counting BYTES. It is part of every rule content
-// address: changing it re-fingerprints every rule snapshot.
-const canonLenBytes = 4
+func Canon(m map[string]string) string { return string(kernel.CanonMap(m)) }
 
 // FingerprintPattern is the shape rule_snapshots_fp_ck enforces: 64 lowercase
 // hex characters.

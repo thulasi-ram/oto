@@ -148,8 +148,12 @@ type InteractionOptions struct {
 	Groups        AlertGroups
 	Enqueuer      db.Enqueuer
 	Notice        SlackNotice
-	Clock         clock.Clock
-	Logger        *slog.Logger
+	// Metrics is optional. A nil one costs the `oto_slack_unknown_action_total`
+	// series and nothing else, which is the right trade for a test that does not
+	// want a registry.
+	Metrics *InteractionMetrics
+	Clock   clock.Clock
+	Logger  *slog.Logger
 }
 
 // InteractionService consumes verified Slack block actions.
@@ -166,6 +170,7 @@ type InteractionService struct {
 	groups        AlertGroups
 	enqueuer      db.Enqueuer
 	notice        SlackNotice
+	metrics       *InteractionMetrics
 	clk           clock.Clock
 	log           *slog.Logger
 }
@@ -190,6 +195,7 @@ func NewInteractionService(o InteractionOptions) (*InteractionService, error) {
 		groups:        o.Groups,
 		enqueuer:      o.Enqueuer,
 		notice:        o.Notice,
+		metrics:       o.Metrics,
 		clk:           clk,
 		log:           logger,
 	}, nil
@@ -259,6 +265,16 @@ func (s *InteractionService) Handle(ctx context.Context, payload json.RawMessage
 			// acknowledge and there is nothing else to do; the explicit namespace
 			// is what makes that a decision rather than an oversight (S9).
 		default:
+			// ⛔ THE OUTCOME IS RECORDED, NOT MERELY LOGGED (§H.8). The response is
+			// already a 200 and has to be — Slack disables an app's event
+			// subscriptions when more than 95 % of deliveries fail in a 60-minute
+			// window — so a counter is the only thing that turns "a human pressed a
+			// button oto could not route" into something an operator can see
+			// without grepping logs. There is no rejection table this belongs in:
+			// `ingest_rejections` is the ingest path's, keyed by a NOT NULL
+			// `source_id` under a closed reason enum bound to the §C.9.1 bounds
+			// checks, and a Slack press has no source.
+			s.metrics.unknownAction()
 			logger.Warn("channels: a Slack interaction named an unknown action",
 				slog.String("action_id", id))
 		}
@@ -318,6 +334,12 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 	case ActionUnacknowledge:
 		return s.applyUnacknowledge(ctx, args)
 	default:
+		// Reachable only across a deploy: `Handle` enqueues nothing it cannot
+		// route, so a job carrying an unserved action is one an OLDER binary
+		// enqueued and a newer one drained. It counts on the same series as the
+		// transport's own unknown branch, because from an operator's chair it is
+		// the same fact — a press oto could not act on.
+		s.metrics.unknownAction()
 		logger.Warn("channels: the interaction worker met an action it does not serve")
 		return nil
 	}

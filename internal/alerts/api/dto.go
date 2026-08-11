@@ -38,6 +38,16 @@ type AlertDTO struct {
 	TotalOccurrences  int32             `json:"total_occurrences"`
 	FlapScore         float32           `json:"flap_score"`
 	IsFlapping        bool              `json:"is_flapping"`
+	// Synthetic marks an Alert oto manufactured for a DELIVERY DRILL. It is
+	// carried from the mode of the batch that first observed this identity, never
+	// from a label — a label is forgeable by any upstream and participates in
+	// `alert_key` (§C.2), so marking one would change its identity.
+	//
+	// ⭐ It is on the row so that the one screen that shows a synthetic alert —
+	// a drill's result — can say plainly that it is not a real one. Every default
+	// list, roll-up, typeahead and aggregate excludes these entirely, so an
+	// ordinary caller will only ever see `false` here.
+	Synthetic bool `json:"synthetic"`
 
 	// Snooze is the §B.8 quiet period in force, or an explicit `null`.
 	//
@@ -91,6 +101,11 @@ type AlertDetailDTO struct {
 // The full `RuleSnapshotDTO` is owned by `rules/api`, which is the only package
 // permitted to name `rules/domain`. Carrying the id here lets the alert list
 // satisfy `include=rule` without inverting the dependency direction.
+//
+// ⭐ It is a JOIN KEY, not a consolation prize (ADR 0025). `GET
+// /api/v1/rule-snapshots/batch?id=…` turns a page of these into the snapshots
+// themselves in one call, which is how the list renders `expr` without a request
+// per alert.
 type RuleSnapshotRef struct {
 	ID uuid.UUID `json:"id"`
 }
@@ -417,13 +432,19 @@ type ListAlertsQuery struct {
 	// Snoozed is an EXPLICIT filter and its absence means INCLUDE BOTH (§B.8.6).
 	// The default list never hides a snoozed alert — hiding one is how an
 	// incident is lost.
-	Snoozed *bool      `json:"snoozed"`
-	Since   *time.Time `json:"since"`
-	Q       string     `json:"q"          validate:"omitempty,max=200"`
-	Sort    string     `json:"sort"       validate:"omitempty,oneof=-last_seen_at -first_seen_at"`
-	Include []string   `json:"include"    validate:"omitempty,max=3,unique,dive,oneof=current_occurrence enrichments rule"`
-	Limit   int        `json:"limit"      validate:"min=1,max=200"`
-	Cursor  string     `json:"cursor"     validate:"omitempty,cursor"`
+	Snoozed *bool `json:"snoozed"`
+	// Synthetic is the OPPOSITE default from Snoozed: its absence means EXCLUDE.
+	// A synthetic Alert is one oto manufactured for a delivery drill; nothing
+	// fired in any cluster, so counting it as history would make every list and
+	// every aggregate lie about the customer's estate. `?synthetic=true` is how
+	// a drill's own result screen links to the row it made.
+	Synthetic *bool      `json:"synthetic"`
+	Since     *time.Time `json:"since"`
+	Q         string     `json:"q"          validate:"omitempty,max=200"`
+	Sort      string     `json:"sort"       validate:"omitempty,oneof=-last_seen_at -first_seen_at"`
+	Include   []string   `json:"include"    validate:"omitempty,max=3,unique,dive,oneof=current_occurrence enrichments rule"`
+	Limit     int        `json:"limit"      validate:"min=1,max=200"`
+	Cursor    string     `json:"cursor"     validate:"omitempty,cursor"`
 }
 
 // ListRollupsQuery is the validated form of the `listAlertRollups` query string.
@@ -447,6 +468,7 @@ type ListRollupsQuery struct {
 	Ack               string     `json:"ack"        validate:"omitempty,oneof=unacked acked"`
 	Flapping          *bool      `json:"flapping"`
 	Snoozed           *bool      `json:"snoozed"`
+	Synthetic         *bool      `json:"synthetic"`
 	Since             *time.Time `json:"since"`
 	Q                 string     `json:"q"          validate:"omitempty,max=200"`
 	Limit             int        `json:"limit"      validate:"min=1,max=200"`

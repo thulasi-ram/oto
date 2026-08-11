@@ -33,6 +33,7 @@ import type {
   CreateClusterRequest,
   CreatePolicyRequest,
   CreateSourceRequest,
+  DeliveryDrill,
   Delivery,
   Enricher,
   Enrichment,
@@ -188,6 +189,53 @@ export function listRuleSnapshots(
     ...ctx(c),
     query: query as QueryParams,
   });
+}
+
+/**
+ * Resolve a page's worth of snapshot ids in **one** call (ADR 0025).
+ *
+ * `listAlerts(..., include: ["rule"])` gives each row a `{ id }` reference and
+ * nothing more, because `alerts/api` may not name the rules module's types. This
+ * is the other half of that join: the alert list renders `expr` in two requests
+ * instead of one per row.
+ *
+ * Two behaviours the caller must not be surprised by, both of them deliberate:
+ *
+ *   - **The result can be shorter than the request.** Ids that resolve to
+ *     nothing are absent rather than an error, so one stale id cannot blank the
+ *     whole column. Join by `id`; never by position.
+ *   - **Duplicates are fine.** Snapshots are content-addressed, so a page under
+ *     one unchanged rule is the same id over and over. It is still worth
+ *     deduplicating here — it is what makes the batch small enough to fit in one
+ *     call — but it is not required for correctness.
+ *
+ * Ids beyond the contract's cap are chunked. The chunking is arithmetic, not a
+ * fallback: the cap is a URL-length bound, and a truncated request line fails in
+ * a way no error message ever reaches the user.
+ */
+const MAX_SNAPSHOT_IDS_PER_CALL = 100;
+
+export async function batchGetRuleSnapshots(
+  ids: readonly Uuid[],
+  c: Ctx = {},
+): Promise<readonly RuleSnapshot[]> {
+  const distinct = [...new Set(ids)].filter((id) => id !== "");
+  if (distinct.length === 0) return [];
+
+  const chunks: Uuid[][] = [];
+  for (let i = 0; i < distinct.length; i += MAX_SNAPSHOT_IDS_PER_CALL) {
+    chunks.push(distinct.slice(i, i + MAX_SNAPSHOT_IDS_PER_CALL));
+  }
+
+  const pages = await Promise.all(
+    chunks.map((chunk) =>
+      getUnpagedList<RuleSnapshot>(`${V1}/rule-snapshots/batch`, {
+        ...ctx(c),
+        query: { id: chunk } as QueryParams,
+      }),
+    ),
+  );
+  return pages.flat();
 }
 
 export function listAlertNotifications(
@@ -405,6 +453,47 @@ export function deleteSource(id: Uuid): Promise<void> {
 /** Probe the upstream. Same client and same auth as the real reconciler. */
 export function testSource(id: Uuid): Promise<SourceTest> {
   return postItem<SourceTest>(`${V1}/sources/${id}/test`, {});
+}
+
+/**
+ * Push one synthetic alert through the REAL pipeline and get back its staged
+ * result.
+ *
+ * Not `testSource` (which probes the upstream) and not `testChannel` (which
+ * renders a card and hands it to the provider). This runs ingestion, alert
+ * identity, grouping, the policy match, threading, the ordering gate and the
+ * delivery record — the stages where every real failure lives.
+ *
+ * Answers 202 with everything still `pending`: poll `getDeliveryDrill`.
+ */
+export function startDeliveryDrill(sourceID: Uuid, severity?: string): Promise<DeliveryDrill> {
+  return postItem<DeliveryDrill>(`${V1}/drills`, {
+    source_id: sourceID,
+    ...(severity ? { severity } : {}),
+  });
+}
+
+/** Poll one drill. Settled drills return their frozen verdict unchanged. */
+export function getDeliveryDrill(id: Uuid, c: Ctx = {}): Promise<DeliveryDrill> {
+  return getItem<DeliveryDrill>(`${V1}/drills/${id}`, ctx(c));
+}
+
+/** A source's recent drills, newest first. Uncursored by design. */
+export function listDeliveryDrills(sourceID: Uuid, c: Ctx = {}): Promise<readonly DeliveryDrill[]> {
+  return getUnpagedList<DeliveryDrill>(
+    `${V1}/drills?source_id=${encodeURIComponent(sourceID)}`,
+    ctx(c),
+  );
+}
+
+/**
+ * Delete a drill's synthetic alert now, without waiting for the sweep.
+ *
+ * The receipt survives, which is why this returns the drill rather than void:
+ * "deleted" means the fake alert is gone, not the record that a drill ran.
+ */
+export function disposeDeliveryDrill(id: Uuid): Promise<DeliveryDrill> {
+  return getItem<DeliveryDrill>(`${V1}/drills/${id}`, { method: "DELETE" });
 }
 
 export function getSourceHealth(id: Uuid, c: Ctx = {}): Promise<SourceHealth> {

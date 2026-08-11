@@ -85,10 +85,22 @@ worked. What it established, so it is not re-established:
   did not exist; G3 existed, was not in CI, and failed when run. The AC-49
   vocabulary lint did not exist. There were zero tests.
 
-Gates now in CI: G3, the AC-49 vocabulary lint (`tools/lintvocab`) and
-`TestValidatorMatchesDDL`. G1, G2 and G4 remain unbuilt and are named as such in
-`README.md`. Tests are being written next to the code they cover, not in
-`test/`, whose four subdirectories still hold nothing but a `doc.go`.
+Gates now in CI: **all four of §L.8.1** — G1 (`test/contract/`), G2
+(`test/contract/server/`), G3 (`npm run generate:check`) and G4
+(`npm run gen:validators:check`) — plus the AC-49 vocabulary lint
+(`tools/lintvocab`), the reachability lint (`tools/lintreach`) and
+`TestValidatorMatchesDDL`. `just ci` lists them in the order CI runs them.
+
+G2 deviates from the SPEC, which names `schemathesis`: it is Go-native, driving
+the real container over a real Postgres and validating the bytes each handler
+writes against the contract. `test/contract/server/doc.go` carries the argument
+— a Python runtime for one check, in a repository whose server cannot be started
+without the Go test harness, costs more than it closes — and the exhaustiveness
+schemathesis would have supplied is recovered by a ratchet: an operation the
+contract declares and the probe table does not drive fails the gate.
+
+Each gate was demonstrated to fail against a deliberately planted drift before
+being declared done, which is the standard the depguard rules were held to.
 
 ## Open work handed on from the phase-4 audit
 
@@ -96,16 +108,41 @@ Gates now in CI: G3, the AC-49 vocabulary lint (`tools/lintvocab`) and
   `internal/notification/api/{dto,mapper}.go`. The DB column (00019), the
   contract and the UI all say `unacked_reminder_after_s(econds)`; the Go DTO is
   the last holdout and is listed in `tools/lintvocab/baseline.txt`.
-- G1 (Go DTO → OpenAPI), G2 (schemathesis against a running server) and G4
-  (generated valibot validators) are unbuilt.
-- `deploy/helm/oto/` and `deploy/prometheus/` are empty directories; SPEC
-  acceptance criterion 31 (`helm install oto` is the entire install) is unmet.
+- ~~G1 (Go DTO → OpenAPI), G2 (schemathesis against a running server) and G4
+  (generated valibot validators) are unbuilt.~~ **Closed.** All three are built
+  and in CI; see the gate table in `README.md`. G2 is Go-native rather than
+  schemathesis, for the reasons in `test/contract/server/doc.go`.
+- `deploy/helm/oto/` now holds the chart of SPEC acceptance criterion 31: API and
+  worker Deployments, Service, optional Ingress, ServiceAccount, ConfigMap,
+  Secret with `existingSecret` support, `oto migrate` as a pre-install/pre-upgrade
+  hook (the subcommand, so River's own migrator runs after goose) and an optional
+  `oto bootstrap` post-install hook. Postgres stays external per ADR 0014.
+  **The criterion is still not fully met: no oto container image is published.**
+  There is now a `Dockerfile` at the repository root, but no release workflow
+  builds or pushes it, so `helm install` works only against a registry the
+  operator populates themselves. That is the remaining gap on AC-31.
+- `deploy/prometheus/` is no longer empty: `prometheus.yml` plus `oto-rules.yaml`
+  (the path SPEC §H.8 names) are wired into `docker-compose.yml` and `just infra`,
+  and every rule's `runbook_url` points at a page in `docs/runbooks/`, which now
+  holds one page per `oto_*` metric the binary registers.
+- SPEC AC-34 promises `oto_reconcile_divergence`,
+  `oto_source_degraded_holds_total`, `oto_notification_suppressed_total`,
+  `oto_delivery_attempts_total`, `oto_delivery_dead_total`,
+  `oto_thread_recovered_total`, `oto_render_invalid_total` and
+  `oto_check_violation_total`. **No collector in the tree constructs any of
+  them** — the facts exist in tables and logs instead, and
+  `oto_thread_recovered_total` shipped under the name
+  `oto_thread_gap_recovered_total`. `docs/runbooks/README.md` lists where each
+  one lives today so the gap stays visible rather than being discovered by an
+  alert that never fires.
 
 ## Open defects found by implementers, awaiting SPEC amendment
 
-- `§G.7.2` ordering switch tests "root has not landed" before "thread is dead",
-  which wedges the exact case `§G.7.3` exists to prevent. Implementation
-  inverted the order and added a bounded `MaxWait` escalation; SPEC must catch up.
+- ~~`§G.7.2` ordering switch tests "root has not landed" before "thread is dead"~~
+  **AMENDED.** `§G.7` now states the implemented order (dead → frozen →
+  sequence → root), the bounded `MaxWait` escalation and its dead-letter
+  outcome, and the three-phase send with the claim durable before the provider
+  call. Reasoning is in ADR 0023.
 - `mention_on_reminder` lives in Slack channel config but neither
   `NotificationView` nor `RenderOptions` can carry it to the renderer. Worked
   around with a channel-scoped renderer copy; may want a port field instead.
@@ -126,6 +163,49 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
 5. Silences are a read-only mirror in v1. No write path into the cluster.
 6. `pkg/alertkey` deleted; `internal/alerts/domain` is the shared kernel and the
    single sanctioned cross-domain `domain` import.
+7. **Retention defaults and cold storage (ADR 0024)** — was open question 5.
+   Raw payloads 14d → **30d**, *derived* from the `alert_event_keys` idempotency
+   horizon: past it a stored batch cannot be replayed without appending the
+   timeline twice, so a longer window keeps bytes nothing can act on. Events stay
+   **13 months**, but on ADR 0014's scale ceiling rather than the year-on-year
+   reason that was recorded — year-on-year is served by `alert_quality_daily`,
+   which is never reaped. Retention destroys the *narrative*, never the *record*:
+   `alerts`, `alert_occurrences`, `rule_snapshots`, `notifications`,
+   `notification_deliveries` and `channel_threads` have no reaper at all, so
+   every clause of README's promise outlives both windows. What does die at 13
+   months is human comments and unack notes, which live nowhere else — which is
+   why cold-storage export is **scoped and unbuilt** rather than ruled out.
+   Also fixed: `partitions.manage` read a process-global config and ignored
+   `orgs.settings` entirely, so the per-org keys were enforced nowhere. It now
+   drops at the **maximum** of every org's window — retention is a floor, never
+   a ceiling.
+8. **Tuning defaults derived from a real rule corpus (ADR 0026)** — was open
+   question 4. `refire_grace` 600s → **1200s**, `group_close_delay` 300s →
+   **1200s**, `flap_window` 1800s → **7200s**; `flap_threshold` stays **5** and
+   `flap_digest_interval` stays **900s**. The evidence is two measured tables,
+   not a plausible cluster: `group_interval: 5m` is the one Alertmanager number
+   the ecosystem does not override (upstream, kube-prometheus-stack,
+   kube-prometheus, OpenShift, Grafana all ship it), and `for: 15m` is the mode
+   *and* median of the 155 rules kube-prometheus-stack 88.2.0 ships, with
+   15m+10m+5m being 75.5% of them.
+   Three defects, all arithmetic rather than taste: (a) `refire_grace`'s clock
+   starts at the UPSTREAM `ended_at`, so a re-fire must pay the rule's whole
+   `for:` again — 600s was unreachable for 76% of real rules; (b)
+   `group_close_delay` was *shorter* than `refire_grace`, so the grace reopened
+   the occurrence and the closed generation posted a new Slack root anyway,
+   which is exactly what the grace exists to prevent; (c) the flap ceiling has a
+   TRANSPORT floor the old arithmetic missed — a cycle costs
+   `group_interval + max(group_interval, for)`, so a 30-minute window held at
+   most 6 transitions even for a rule with no `for:`, and 5-in-30m could never
+   be crossed by anything. Bounds were re-checked and NONE moved: the
+   `flap_window` floor of 300s is inert at `group_interval: 5m` and is kept
+   because the one real capture in this repo runs `group_interval: 30s`, where
+   it is exactly right.
+   Also found and NOT fixed here: ADR 0020 grants `refired` a broadcast because
+   its quiet form is invisible, and §H.6's verbosity table then drops that reply
+   entirely at `firing_only` / `firing_and_resolved`. On those channels a
+   re-fire inside the grace is silent. Recorded as an open defect in ADR 0026 —
+   changing what `firing_only` means is a product decision, not a tuning one.
 
 ## Questions genuinely needing the owner
 
@@ -141,8 +221,8 @@ The build is not blocked on any of them.
    Assumed: BYO-token self-hosted, Socket Mode default.
 3. **Licence.** Keep and Robusta are both MIT-cored; AGPL would make oto the
    most restrictive option in a permissive field.
-4. **`refire_grace` (10m) and flap thresholds (5-in-30m)** — the knobs that
-   decide how noisy Slack is. Should be validated against a real
-   `alertmanager.yml` before they harden.
-5. **Retention defaults** — raw 14d, events 13mo. Regulated buyers needing years
-   would make cold-storage export a v1 requirement.
+
+Retention defaults were question 5 here. They are now decision 7 above (ADR
+0024). `refire_grace` and the flap thresholds were question 4. They are now
+decision 8 above (ADR 0026). Both were decided without the owner and both are
+written to be cheap to overturn.

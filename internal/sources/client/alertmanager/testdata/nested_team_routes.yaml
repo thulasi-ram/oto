@@ -1,0 +1,83 @@
+# A realistic multi-team route tree — HAND-WRITTEN, unlike its neighbours.
+#
+# ⚠️ THE `*_v0.28.1.yaml` FILES BESIDE THIS ONE ARE REAL CAPTURES of
+# `config.original` from a live `prom/alertmanager:v0.28.1`, and their value is
+# that they are not approximations. This one is not a capture and must never be
+# read as evidence of what Alertmanager emits. It exists to exercise the SHAPE a
+# real operator's file has and the compose capture does not: several teams, an
+# inherited `group_interval`, a `continue: true` fan-out, both matcher spellings,
+# and a route that can never fire.
+#
+# What it is designed to prove, route by route:
+#
+#   * `group_wait` is stated ONLY at the root, so every route inherits it from
+#     depth 0 — a different fact from stating 30s on each route, and a different
+#     line for the operator to edit. `db-team` overrides it at depth 2, and only
+#     `db-team`.
+#   * `platform` states `group_interval: 2m` and its children inherit it, so
+#     `audit` and `db-team` are batched at 2m without saying so anywhere.
+#   * `pager` sets `continue: true`, so a `severity="page"` alert reaches it AND
+#     carries on to the routes below it. Evaluation does not stop at a match.
+#   * `db-team` uses the deprecated `match` / `match_re` spelling, which still
+#     routes production traffic and must still be read. Ignoring it would make the
+#     route look matcher-less, which is the one structural claim reachability
+#     turns on.
+#   * `platform-catchall` states no matchers at all, so it consumes everything
+#     reaching `platform`: `platform` itself therefore NEVER delivers, and
+#     `never-fires` after it is unreachable at any label set.
+#   * `webhook_configs` appears on TWO receivers, so oto cannot tell which is its
+#     own — Alertmanager redacts the URL that would say so — and the answer must
+#     be `ambiguous` with both candidates named, never a coin toss.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: fallback
+  group_by: [alertname, cluster]
+  group_wait: 30s
+  repeat_interval: 4h
+  routes:
+    - receiver: pager
+      matchers:
+        - severity="page"
+      continue: true
+      group_interval: 30s
+
+    - receiver: platform
+      matchers:
+        - team="platform"
+      group_interval: 2m
+      routes:
+        - receiver: audit
+          matchers:
+            - kind="audit"
+          repeat_interval: 24h
+        - receiver: db-team
+          match:
+            component: database
+          match_re:
+            env: prod|staging
+          group_wait: 10s
+        - receiver: platform-catchall
+          group_by: ["..."]
+        - receiver: never-fires
+          matchers:
+            - alertname="Whatever"
+
+receivers:
+  - name: fallback
+  - name: pager
+    webhook_configs:
+      - send_resolved: true
+        url: <secret>
+  - name: platform
+    webhook_configs:
+      - send_resolved: true
+        url: <secret>
+  - name: audit
+    email_configs:
+      - to: audit@example.com
+  - name: db-team
+  - name: platform-catchall
+  - name: never-fires

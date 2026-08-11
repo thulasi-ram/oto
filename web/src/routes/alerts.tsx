@@ -32,9 +32,9 @@ import {
 import { useNavigate, useSearchParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listAlertRollups, listAlerts } from "~/api/endpoints";
+import { batchGetRuleSnapshots, listAlertRollups, listAlerts } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { Alert, AlertRollup, ListEnvelope, RollupAxis } from "~/api/types";
+import type { Alert, AlertRollup, ListEnvelope, RollupAxis, RuleSnapshot } from "~/api/types";
 import { Button } from "~/components/ui/primitives";
 import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
 import { count as fmtCount } from "~/lib/format";
@@ -162,6 +162,52 @@ export default function AlertsRoute() {
     if (bucketCursor() === null) return page;
     const seen = new Set(keptBuckets().map((b) => b.key));
     return [...keptBuckets(), ...page.filter((b) => !seen.has(b.key))];
+  });
+
+  /* ---- what the rule said (ADR 0025) ------------------------------------- */
+
+  /**
+   * The distinct snapshot ids on screen.
+   *
+   * `include=rule` puts one id on each row and nothing more, because
+   * `alerts/api` may not name the rules module's types. Content addressing is
+   * what makes this set small: a page of alerts firing under one unchanged rule
+   * is **one** id, not one per row. Sorted so the query key is stable — the same
+   * set in a different order is the same question.
+   */
+  const ruleIds = createMemo<readonly string[]>(() => {
+    const ids = new Set<string>();
+    for (const a of alerts()) {
+      const id = a.rule?.id;
+      if (typeof id === "string" && id !== "") ids.add(id);
+    }
+    return [...ids].sort();
+  });
+
+  /**
+   * One call for the whole page, never one per row — the N+1 this endpoint
+   * exists to remove.
+   *
+   * `staleTime: Infinity` is a statement about the data, not a tuning knob: a
+   * rule snapshot is immutable and content-addressed, so once an id has been
+   * resolved its answer can never change. Refetching it would be asking a
+   * settled question again.
+   */
+  const rules = useQuery(() => ({
+    queryKey: qk.rules.batch(ruleIds()),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      batchGetRuleSnapshots(ruleIds(), { signal }),
+    enabled: ruleIds().length > 0,
+    staleTime: Infinity,
+    // Keep what is already resolved while a bigger batch is in flight, so
+    // "Load more" never blanks the rule column of the rows already on screen.
+    placeholderData: (prev: readonly RuleSnapshot[] | undefined) => prev,
+  }));
+
+  const rulesById = createMemo<ReadonlyMap<string, RuleSnapshot>>(() => {
+    const byId = new Map<string, RuleSnapshot>();
+    for (const snapshot of rules.data ?? []) byId.set(snapshot.id, snapshot);
+    return byId;
   });
 
   const hasMore = (): boolean =>
@@ -344,6 +390,8 @@ export default function AlertsRoute() {
           <AlertTable
             alerts={alerts()}
             snoozedKnown={filters().snoozed}
+            rules={rulesById()}
+            rulesPending={rules.isFetching}
             onFilterLabel={onFilterLabel}
             footer={
               <Footer

@@ -330,6 +330,43 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, id uuid.UUID) (
 	return s.repo.Get(ctx, scope, id)
 }
 
+// GetMany returns the stored snapshots for a set of ids, in one round trip.
+//
+// ⭐ THIS IS WHAT THE ALERT LIST READS. `include=rule` gives the list one
+// snapshot id per row and nothing else, because `alerts/api` may not name this
+// module's types (CONTEXT.md §5.4); asking `/alerts/{id}/rule` per row is the
+// N+1 that kept `expr` off the busiest screen in the product. One call with the
+// page's ids answers all of them — and usually with far fewer rows than ids,
+// since a rule that has not changed is ONE content-addressed snapshot however
+// many alerts fired under it (ADR 0025).
+//
+// ⛔ An unknown id is silently absent, never a 404. A single stale id must not
+// be able to blank the rule column of an entire page.
+func (s *Service) GetMany(ctx context.Context, scope db.TenantScope, ids []uuid.UUID) ([]domain.Snapshot, error) {
+	if len(ids) == 0 {
+		return []domain.Snapshot{}, nil
+	}
+	// Duplicates are the NORMAL case here, not a caller error: fifty alerts
+	// firing under one unchanged rule send fifty copies of one id. They are
+	// collapsed before the query so the batch costs what the distinct set costs.
+	seen := make(map[uuid.UUID]struct{}, len(ids))
+	unique := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return []domain.Snapshot{}, nil
+	}
+	return s.repo.GetMany(ctx, scope, unique)
+}
+
 // Latest returns the newest capture for a rule key. The bool is false when the
 // rule has never been captured, which is a state and not an error.
 func (s *Service) Latest(ctx context.Context, scope db.TenantScope, key domain.Key) (domain.Snapshot, bool, error) {

@@ -11,16 +11,23 @@
  *      one. The copy lives in `tuningCopy.ts` and is taken from
  *      `docs/setup/tuning.md` — this screen must not contradict that page.
  *
- *   2. **The Alertmanager relationship is inline, live and PROVENANCED.** Almost
- *      every value here is only meaningful as a multiple of the source's own
- *      `group_wait` / `group_interval` / `repeat_interval`. A re-fire grace
- *      shorter than `group_interval` is unreachable at any value. oto reads those
- *      three off each source's published configuration and serves them on
- *      `SourceHealthDTO.route_timings`, each with one of three states —
+ *   2. **The Alertmanager relationship is inline, live, PROVENANCED and
+ *      ROUTE-RESOLVED.** Almost every value here is only meaningful as a multiple
+ *      of the source's own `group_wait` / `group_interval` / `repeat_interval`. A
+ *      re-fire grace shorter than `group_interval` is unreachable at any value.
+ *      oto reads those three off each source's published configuration and serves
+ *      them on `SourceHealthDTO.route_timings`, each with one of three states —
  *      `observed`, `default_applies`, `unknown` — and this screen renders all
  *      three differently. They were four inputs kept in one browser's
  *      `localStorage` until this rewrite: unshared, unvalidated, and silently
  *      wrong the moment somebody edited `alertmanager.yml`.
+ *
+ *      ⛔ AND THE THREE ARE PER-ROUTE. The numbers that govern the alerts oto is
+ *      sent are the ones on the route delivering to oto's own RECEIVER, not the
+ *      top-level route. `route_timings.route` says which of the two the headline
+ *      three are; `routes` is the whole resolved tree; and where several routes
+ *      reach oto with different timings this screen shows the DISAGREEMENT rather
+ *      than picking one — see `RouteOrigin`.
  *
  *   3. **Origin is the primary fact, not a footnote.** An operator debugging a
  *      noisy Slack needs to see instantly which values are theirs, which are
@@ -59,7 +66,9 @@ import { ApiError, orphanViolations, violationsByField } from "~/api/client";
 import { getOrgSettings, listSources, updateOrgSettings } from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import type {
+  InheritedTiming,
   OrgSettingsView,
+  ReceiverRoute,
   RouteTiming,
   SettingBound,
   SettingOrigin,
@@ -86,6 +95,7 @@ import {
   AM_FIELDS,
   ASSUMED_RULE_FOR_S,
   KNOBS,
+  RECEIVER_BASIS_COPY,
   KNOB_GROUPS,
   MENTION_LIST_MAX,
   MENTION_MODE_OPTIONS,
@@ -135,12 +145,43 @@ function amRefOf(source: Source): AmRef | null {
     groupWait: asTiming(timings.group_wait),
     groupInterval: asTiming(timings.group_interval),
     repeatInterval: asTiming(timings.repeat_interval),
+    route: timings.route,
     childRoutes: timings.child_routes,
     childRoutesWithTimings: timings.child_routes_with_timings,
+    receiver: timings.receiver ?? null,
+    receiverBasis: timings.receiver_basis,
+    webhookReceivers: timings.webhook_receivers,
+    routes: timings.routes,
+    routesAgree: timings.routes_agree,
+    routesDropped: timings.routes_dropped,
     observedAt: timings.observed_at ?? null,
     defaultsFromVersion: timings.defaults_from_version ?? null,
     defaultsVerified: timings.defaults_verified,
   };
+}
+
+/** The routes that deliver to the receiver oto believes is its own. */
+function reachingRoutes(am: AmRef): readonly ReceiverRoute[] {
+  return am.routes.filter((r) => r.reaches_oto);
+}
+
+/**
+ * One route's matcher path, rendered the way an operator's own file reads it.
+ *
+ * The top-level route contributes `{}` and is dropped from the label when there
+ * is anything below it: `route:` is where everybody starts, and repeating it in
+ * every line is noise. A route that IS the top-level one keeps it, because "the
+ * top-level route" is exactly what it needs to say.
+ */
+function routeLabel(r: ReceiverRoute): string {
+  const steps = r.path.map((s) => `{${s.matchers.join(", ")}}`);
+  if (steps.length === 1) return "the top-level route";
+  return steps.slice(1).join(" \u203a ");
+}
+
+/** Whether any route on the path used the deprecated `match` / `match_re`. */
+function usesDeprecatedMatchers(r: ReceiverRoute): boolean {
+  return r.path.some((s) => s.deprecated);
 }
 
 /** How usable a reference is, for picking which source the guidance argues from. */
@@ -675,7 +716,7 @@ const ProvenanceBadge: Component<{ readonly provenance: TimingProvenance }> = (p
         return {
           label: "from your config",
           title:
-            "This value is stated in the route your oto receiver is attached to. Changing it means editing alertmanager.yml.",
+            "This value is stated in your configuration, on the route named just below these three numbers or on one of its parents. Changing it means editing alertmanager.yml.",
           tone: "border-accent-border bg-accent-fill font-semibold text-ink",
         };
       case "default_applies":
@@ -725,6 +766,276 @@ const TimingCell: Component<{ readonly field: AmFieldCopy; readonly am: AmRef }>
   );
 };
 
+/* -------------------------------------------------------------------------- */
+/* Where the three numbers actually came from                                 */
+/* -------------------------------------------------------------------------- */
+
+/** One per-route duration, rendered from milliseconds. */
+function routeDuration(t: InheritedTiming): string {
+  return t.value_ms === null ? "\u2014" : duration(t.value_ms / 1000);
+}
+
+/**
+ * One resolved route: its matchers, its receiver, and its three timings with the
+ * depth each was stated at.
+ *
+ * ⭐ INHERITED AND STATED ARE SHOWN DIFFERENTLY ON PURPOSE. `group_interval: 5m`
+ * inherited from the top-level route and `group_interval: 5m` written on this
+ * route are the same number and two different lines of the operator's file, and
+ * only the second survives them editing the child.
+ */
+const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: number }> = (
+  props,
+) => {
+  const own = (t: InheritedTiming): boolean => t.from_depth === props.ownDepth;
+  const cell = (label: string, t: InheritedTiming): JSX.Element => (
+    <span class="whitespace-nowrap">
+      <code class="font-mono text-[10px] text-ink-subtle">{label}</code>{" "}
+      <span class={cx("tabular-nums", own(t) ? "font-medium text-ink" : "text-ink-muted")}>
+        {routeDuration(t)}
+      </span>
+      <Show when={t.provenance === "default_applies"}>
+        <span class="text-ink-subtle" title="No route on this path states it, so Alertmanager's documented default governs. There is no line in alertmanager.yml to change.">
+          {" "}
+          (default)
+        </span>
+      </Show>
+      <Show when={t.provenance !== "default_applies" && !own(t)}>
+        <span class="text-ink-subtle" title="Inherited from a parent route, not stated on this one.">
+          {" "}
+          (inherited)
+        </span>
+      </Show>
+    </span>
+  );
+
+  return (
+    <li
+      class={cx(
+        "flex flex-col gap-1 border-b border-line px-2 py-1.5 last:border-b-0",
+        props.route.reaches_oto && "bg-accent-fill/40",
+        props.route.unreachable && "opacity-60",
+      )}
+    >
+      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <Show
+          when={props.route.path.length > 1}
+          fallback={<span class="text-[11px] font-medium text-ink">the top-level route</span>}
+        >
+          <code class="font-mono text-[11px] text-ink">{routeLabel(props.route)}</code>
+        </Show>
+        <span class="text-[11px] text-ink-muted">
+          &rarr; <span class="font-medium text-ink">{props.route.receiver}</span>
+        </span>
+        <Show when={props.route.reaches_oto}>
+          <span class="rounded-[3px] border border-accent-border bg-accent-fill px-1 text-[10px] leading-4 text-ink">
+            reaches oto
+          </span>
+        </Show>
+        <Show when={props.route.path.at(-1)?.continue === true}>
+          <span
+            class="rounded-[3px] border border-line-strong px-1 text-[10px] leading-4 text-ink-muted"
+            title="continue: true — evaluation does not stop here, so later sibling routes are still considered. This is why more than one route can reach the same receiver."
+          >
+            continue
+          </span>
+        </Show>
+        <Show when={usesDeprecatedMatchers(props.route)}>
+          <span
+            class="rounded-[3px] border border-line-strong px-1 text-[10px] leading-4 text-ink-muted"
+            title="Written with the deprecated match / match_re keys. Still routing, still read by oto; shown here in the current matchers spelling."
+          >
+            match/match_re
+          </span>
+        </Show>
+        <Show when={props.route.group_by_all}>
+          <span
+            class="rounded-[3px] border border-line-strong px-1 text-[10px] leading-4 text-ink-muted"
+            title="group_by: ['...'] groups by every label, so no group ever accumulates a second member and storm collapse is unreachable at any threshold. That fix is in alertmanager.yml, not on this screen."
+          >
+            group_by: ...
+          </span>
+        </Show>
+      </div>
+      <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
+        {cell("group_wait", props.route.group_wait)}
+        {cell("group_interval", props.route.group_interval)}
+        {cell("repeat_interval", props.route.repeat_interval)}
+      </div>
+      <Show when={props.route.unreachable}>
+        <p class="text-[10px] leading-snug text-ink-muted">
+          <span class="font-medium text-ink">Unreachable. </span>
+          An earlier sibling route states no matchers and no{" "}
+          <code class="font-mono text-[10px]">continue</code>, so it takes everything before
+          evaluation gets this far. Nothing can ever match here.
+        </p>
+      </Show>
+    </li>
+  );
+};
+
+/** The resolved tree, listed. Collapsed by default: calm unless it matters. */
+const RouteList: Component<{
+  readonly am: AmRef;
+  readonly openByDefault: boolean;
+}> = (props) => {
+  const [open, setOpen] = createSignal(props.openByDefault);
+  return (
+    <div class="mt-2">
+      <Show
+        when={open()}
+        fallback={
+          <Button size="sm" variant="ghost" onClick={() => setOpen(true)}>
+            Show all {props.am.routes.length} route{props.am.routes.length === 1 ? "" : "s"}
+          </Button>
+        }
+      >
+        <ul class="rounded-[4px] border border-line">
+          <For each={props.am.routes}>
+            {(r) => <RouteRow route={r} ownDepth={r.path.length - 1} />}
+          </For>
+        </ul>
+        <Show when={props.am.routesDropped > 0}>
+          <p class="mt-1 text-[10px] leading-snug text-ink-muted">
+            {props.am.routesDropped} more route{props.am.routesDropped === 1 ? "" : "s"} exist and
+            were not read: this configuration is past the size oto resolves, so the list above is
+            not the whole tree.
+          </p>
+        </Show>
+        <Show when={!props.openByDefault}>
+          <Button size="sm" variant="ghost" class="mt-1" onClick={() => setOpen(false)}>
+            Hide routes
+          </Button>
+        </Show>
+      </Show>
+    </div>
+  );
+};
+
+/**
+ * WHICH ROUTE the three numbers above came from — the fact that used to be a
+ * caveat and is now the answer.
+ *
+ * ⛔ THIS BLOCK IS THE HONESTY OF THE WHOLE SCREEN. The three timings are
+ * per-route and inherited, so the numbers governing the alerts oto is sent are
+ * the ones on the route delivering to oto's receiver. Where oto can name that
+ * route it says so and shows the matchers. Where it cannot — Alertmanager
+ * redacts the webhook URL that would identify oto's receiver, so several webhook
+ * receivers are genuinely indistinguishable — it says THAT, shows every route,
+ * and claims none. And where several routes reach oto and disagree, it shows the
+ * disagreement rather than picking a side, because there is no single answer and
+ * inventing one is exactly what the old hand-typed form did.
+ */
+const RouteOrigin: Component<{ readonly am: AmRef }> = (props) => {
+  const reaching = (): readonly ReceiverRoute[] => reachingRoutes(props.am);
+  const basis = (): (typeof RECEIVER_BASIS_COPY)[keyof typeof RECEIVER_BASIS_COPY] =>
+    RECEIVER_BASIS_COPY[props.am.receiverBasis];
+
+  return (
+    <div class="mt-2 rounded-[4px] border border-line px-2 py-1.5 text-[11px] leading-snug text-ink-muted">
+      <Switch>
+        {/* The answer. One route reaches oto, or several that agree. */}
+        <Match when={props.am.route === "oto_receiver"}>
+          <p>
+            <span class="font-medium text-ink">
+              Read from the route your oto receiver is attached to.
+            </span>{" "}
+            <Show
+              when={reaching().length === 1}
+              fallback={
+                <>
+                  {reaching().length} routes deliver to{" "}
+                  <span class="font-medium text-ink">{props.am.receiver}</span> and they agree on
+                  all three, so the numbers above describe every one of them.
+                </>
+              }
+            >
+              <code class="font-mono text-[11px] text-ink">{routeLabel(reaching()[0]!)}</code>{" "}
+              delivers to <span class="font-medium text-ink">{props.am.receiver}</span>, and the
+              three numbers above are that route&apos;s — everything it inherits from its parents
+              included.
+            </Show>{" "}
+            oto identified that receiver because this configuration has {basis().label}.
+          </p>
+        </Match>
+
+        {/*
+          ⚠️ THE DISAGREEMENT CASE. Alertmanager evaluates children in order and
+          `continue: true` does not stop it, so two routes can both deliver to
+          oto under different matchers with different timings. There is no single
+          triple; the guidance above is the TOP-LEVEL route's and describes
+          neither of them.
+        */}
+        <Match when={!props.am.routesAgree}>
+          <p>
+            <span class="font-medium text-ink">
+              {reaching().length} routes reach your oto receiver and they disagree.
+            </span>{" "}
+            They state different timings, so there is no single set of numbers for oto&apos;s
+            traffic. The three above are the <span class="font-medium">top-level route&apos;s</span>{" "}
+            and describe none of them — treat every verdict below as approximate until these routes
+            agree or you know which one your alerts take.
+          </p>
+        </Match>
+
+        {/* Identified a receiver, but nothing delivers to it. */}
+        <Match when={props.am.receiver !== null && reaching().length === 0}>
+          <p>
+            <span class="font-medium text-ink">
+              No route delivers to {props.am.receiver}.
+            </span>{" "}
+            oto reads that as its own receiver ({basis().label}), but every alert is consumed by a
+            route pointing somewhere else — so this Alertmanager is not sending oto anything. The
+            numbers above are the top-level route&apos;s.
+          </p>
+        </Match>
+
+        {/* Cannot tell which receiver is oto's. Show everything, claim nothing. */}
+        <Match when={props.am.receiverBasis === "ambiguous"}>
+          <p>
+            <span class="font-medium text-ink">
+              oto cannot tell which of these receivers is its own.
+            </span>{" "}
+            {basis().detail}{" "}
+            <span class="text-ink">
+              Candidates:{" "}
+              <For each={props.am.webhookReceivers}>
+                {(name, i) => (
+                  <>
+                    <code class="font-mono text-[11px]">{name}</code>
+                    {i() < props.am.webhookReceivers.length - 1 ? ", " : ""}
+                  </>
+                )}
+              </For>
+              .
+            </span>{" "}
+            The numbers above are the top-level route&apos;s — what governs every alert matching
+            nothing more specific.
+          </p>
+        </Match>
+
+        <Match when={props.am.receiverBasis === "no_webhook"}>
+          <p>
+            <span class="font-medium text-ink">No receiver here can push to oto.</span>{" "}
+            {basis().detail} The numbers above are the top-level route&apos;s.
+          </p>
+        </Match>
+
+        <Match when={true}>
+          <p>{basis().detail}</p>
+        </Match>
+      </Switch>
+
+      <Show when={props.am.routes.length > 0}>
+        <RouteList
+          am={props.am}
+          openByDefault={!props.am.routesAgree || props.am.receiverBasis === "ambiguous"}
+        />
+      </Show>
+    </div>
+  );
+};
+
 /** One source's three timings, with its caveats. */
 const SourceTimings: Component<{
   readonly am: AmRef;
@@ -762,26 +1073,7 @@ const SourceTimings: Component<{
       <For each={AM_FIELDS}>{(f) => <TimingCell field={f} am={props.am} />}</For>
     </div>
 
-    {/*
-      ⚠️ THE v1 BOUNDARY, STATED RATHER THAN IMPLIED. All three settings are
-      per-route and inherited, so the values governing a PARTICULAR alert are the
-      ones on the route that matched it. oto evaluates the top-level route only,
-      and resolving per alert would mean re-implementing Alertmanager's matcher
-      tree — regex matchers, `continue: true`, mute time intervals — and being
-      wrong in a way nobody could see.
-    */}
-    <Show when={props.am.childRoutes > 0}>
-      <p class="mt-2 rounded-[4px] border border-line px-2 py-1 text-[11px] leading-snug text-ink-muted">
-        <span class="font-medium text-ink">Top-level route only. </span>
-        {props.am.childRoutesWithTimings} of {props.am.childRoutes} child route
-        {props.am.childRoutes === 1 ? "" : "s"}{" "}
-        {props.am.childRoutesWithTimings === 1 ? "states" : "state"} a timing of its own, and oto
-        does not evaluate {props.am.childRoutesWithTimings === 1 ? "it" : "them"} in this version.
-        Alerts matching{" "}
-        {props.am.childRoutesWithTimings === 1 ? "that route" : "those routes"} are batched by
-        different numbers, and the guidance below does not cover them.
-      </p>
-    </Show>
+    <RouteOrigin am={props.am} />
 
     <Show when={props.am.defaultsFromVersion !== null}>
       <p class="mt-2 text-[11px] leading-snug text-ink-subtle">

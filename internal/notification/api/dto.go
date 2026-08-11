@@ -111,16 +111,48 @@ type NotificationDTO struct {
 	// be indistinguishable from "no alert".
 	SuppressedReason *string `json:"suppressed_reason"`
 
+	// DeliverySummary is the fan-out roll-up, and it is OPTIONAL ON THIS SCHEMA:
+	// the intent list does not compute one per row — that would be a fan-out
+	// query per row — and an absent key says "not computed here" rather than
+	// inventing an all-zero fan-out. It is REQUIRED on `NotificationDetailDTO`,
+	// which declares its own non-pointer field for exactly that reason.
 	DeliverySummary *DeliverySummaryDTO `json:"delivery_summary,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// UpdatedAt is when the intent or its delivery roll-up last moved, or `null`
+	// when the read model serving the response does not track one.
+	//
+	// ⛔ IT IS A POINTER BECAUSE THE SCHEMA IS NULLABLE, AND THE SCHEMA IS
+	// NULLABLE BECAUSE ONE PRODUCER GENUINELY HAS NO VALUE. `notifications.
+	// updated_at` is NOT NULL, so this module always sends a timestamp; the
+	// per-alert notification list is served by `alerts/api` out of a projection
+	// that does not read the column at all (`internal/app/adapters.go`), and it
+	// sends `null`. `null` there says "unknown"; echoing `created_at` instead —
+	// which is what it used to do — made "never changed" and "changed a minute
+	// ago" indistinguishable on the wire, with no way for a caller to tell.
+	//
+	// Both Go structs behind the one `NotificationDTO` schema therefore have to
+	// be shaped like the schema, or the schema is describing only one of them.
+	UpdatedAt *time.Time `json:"updated_at"`
 }
 
 // NotificationDetailDTO is one intent with every materialisation of it.
 type NotificationDetailDTO struct {
 	NotificationDTO
-	Deliveries []DeliveryDTO `json:"deliveries"`
+	// DeliverySummary SHADOWS the optional pointer on NotificationDTO with a
+	// value, because the contract lists it among this schema's required members
+	// and a pointer with `omitempty` cannot keep that promise structurally.
+	//
+	// ⛔ THIS IS THE AUDIT'S WORST FINDING, MADE UNREPEATABLE. The summary was
+	// dropped from the detail response for exactly the intents where it matters
+	// most: a SUPPRESSED notification has no deliveries at all, `summarise`
+	// returned nil for an empty fan-out, and `omitempty` then deleted the key —
+	// so "oto formed this intent and told nobody" was indistinguishable from a
+	// server that never computed one. `summarise` now returns an all-zero
+	// summary; this field is what stops a future nil from becoming an absent
+	// key again.
+	DeliverySummary DeliverySummaryDTO `json:"delivery_summary"`
+	Deliveries      []DeliveryDTO      `json:"deliveries"`
 }
 
 // DeliveryDTO is ONE MATERIALISATION of a Notification on ONE Channel.

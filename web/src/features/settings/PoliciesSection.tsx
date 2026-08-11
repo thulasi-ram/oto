@@ -39,6 +39,7 @@ import type {
   CreatePolicyRequest,
   Matcher,
   NotificationReason,
+  NotificationSuppressedReason,
   Policy,
   PolicyPreview,
 } from "~/api/types";
@@ -516,8 +517,22 @@ const PolicyDialog: Component<{
 /* The dry run                                                                */
 /* -------------------------------------------------------------------------- */
 
-const SUPPRESSED_REASON: Record<string, string> = {
+/**
+ * Every reason the dry run can give for a message not being sent.
+ *
+ * ⛔ TYPED AGAINST THE CONTRACT'S OWN ENUM, not `Record<string, string>`. It was
+ * the loose type that let this map lose `snoozed`: the compiler had nothing to
+ * check against, the lookup fell through to `?? r.suppressed_reason`, and the
+ * dry run answered "Would not send — snoozed." — a wire token where a sentence
+ * belongs, in the one place on the screen whose whole job is to explain a
+ * silence before it happens. With the exhaustive type, the next reason the
+ * server publishes is a build failure instead.
+ */
+const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, string> = {
   no_policy: "no policy matched",
+  // §B.8.2 ranks a snooze above every automatic damper: it is a deliberate human
+  // act, and therefore the most useful thing to say about a silence.
+  snoozed: "someone is holding oto's notifications for this alert until a fixed time",
   throttled: "the throttle is already spent",
   storm: "the group is in storm mode",
   flapping: "this alert is damped as flapping",
@@ -525,6 +540,19 @@ const SUPPRESSED_REASON: Record<string, string> = {
   channel_disabled: "the channel is disabled",
   duplicate_render: "the message would be identical to the last one",
 };
+
+/**
+ * The sentence for one suppression, with the two honest fallbacks.
+ *
+ * A reason this build has never heard of renders as its raw wire value rather
+ * than as a blank — gate G3 exists to make that a build failure — and a result
+ * that carries no reason at all says so, because "would not send —  ." is how a
+ * screen loses a fact without anybody noticing.
+ */
+function describeSuppression(reason: NotificationSuppressedReason | undefined): string {
+  if (reason === undefined || reason === null) return "no reason was given";
+  return SUPPRESSED_REASON[reason] ?? reason;
+}
 
 /**
  * "Who would this reach?" answered against an unsaved draft.
@@ -648,9 +676,8 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
                         when={r.would_send}
                         fallback={
                           <p class="mt-1 text-[11px] leading-snug text-ink-muted">
-                            Would not send —{" "}
-                            {SUPPRESSED_REASON[r.suppressed_reason ?? ""] ?? r.suppressed_reason}.
-                            It would still be recorded with that reason.
+                            Would not send — {describeSuppression(r.suppressed_reason)}. It would
+                            still be recorded with that reason.
                           </p>
                         }
                       >

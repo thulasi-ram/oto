@@ -252,18 +252,77 @@ const managePartitionsSQL = `SELECT oto_partitions_manage($1, $2, $3)`
 //
 // It is global rather than per-tenant — partitions are a property of the table,
 // not of a row — so it is the one sweep here with no org fan-out.
+//
+// ⛔ IT DROPS AT THE MAXIMUM RETENTION ANY ORG ASKS FOR, NOT AT THE PROCESS
+// DEFAULT (ADR 0024). A partition holds every tenant's rows, so a per-org
+// retention cannot be honoured by dropping one — the only two honest choices are
+// "shortest wins", which silently deletes data an org configured itself to keep,
+// or "longest wins", which keeps data a shorter org would have let go. oto takes
+// the second: **retention is a floor, never a ceiling.** An org that raises its
+// window gets everything it asked for; an org that lowers its window may have its
+// rows survive a while longer, which costs disk and destroys nothing.
+//
+// Until this existed the two `orgs.settings` retention keys were validated,
+// rendered with an origin and enforced NOWHERE — a settings screen showing a
+// number no reaper read. That is the specific failure this fold exists to close.
 func (c *Container) managePartitions(ctx context.Context, _ *jobs.Job[jobs.PartitionsManageArgs]) error {
-	r := c.Config.Retention
+	rawDays, eventMonths := c.effectiveRetention(ctx)
 	_, err := c.Pools.General.Exec(ctx, managePartitionsSQL,
-		int(r.RawPayloads.Hours()/24),
-		int(r.Events.Hours()/24/30),
-		int(r.UIEvents.Hours()),
+		rawDays, eventMonths, int(c.Config.Retention.UIEvents.Hours()),
 	)
 	if err != nil {
 		return err
 	}
-	c.Logger.InfoContext(ctx, "partitions.manage: partitions created ahead and expired ones dropped")
+	c.Logger.InfoContext(ctx, "partitions.manage: partitions created ahead and expired ones dropped",
+		slog.Int("raw_retention_days", rawDays),
+		slog.Int("event_retention_months", eventMonths))
 	return nil
+}
+
+// effectiveRetention is the widest window any tenant has asked for, floored at
+// the deployment's own configured retention.
+//
+// ⛔ EVERY FAILURE WIDENS THE WINDOW RATHER THAN NARROWING IT. An unreadable org
+// row, an org list that errors, a settings lookup that times out — none of them
+// may make the dropper delete MORE than it would have. Reading a setting is not
+// allowed to cost data, and the direction of the fallback is the whole guarantee:
+// the worst outcome of a broken read is that a partition lives one hour longer
+// and the next tick drops it.
+//
+// `ui_events` is deliberately not folded in. Its 24 hours is the SSE durable
+// resume buffer (ADR 0010), a transport window rather than a record, and it is
+// not an `orgs.settings` key.
+func (c *Container) effectiveRetention(ctx context.Context) (rawDays, eventMonths int) {
+	rawDays = int(c.Config.Retention.RawPayloads.Hours() / 24)
+	eventMonths = int(c.Config.Retention.Events.Hours() / 24 / 30)
+
+	if c.Identity == nil {
+		return rawDays, eventMonths
+	}
+	scopes, err := c.orgs.Scopes(ctx)
+	if err != nil {
+		c.Logger.ErrorContext(ctx, "partitions.manage: could not list tenants, keeping the configured window",
+			slog.String("error", err.Error()))
+		return rawDays, eventMonths
+	}
+	for _, scope := range scopes {
+		org, err := c.Identity.GetOrg(ctx, scope)
+		if err != nil {
+			c.Logger.ErrorContext(ctx, "partitions.manage: could not read one tenant's retention, keeping the wider window",
+				slog.String("org_id", scope.OrgID().String()),
+				slog.String("error", err.Error()))
+			continue
+		}
+		// Settings are already the effective, clamped values (Org.Settings), so
+		// there is no second copy of the bounds here.
+		if d := int(org.Settings.RawRetention.Hours() / 24); d > rawDays {
+			rawDays = d
+		}
+		if m := int(org.Settings.EventRetention.Hours() / 24 / 30); m > eventMonths {
+			eventMonths = m
+		}
+	}
+	return rawDays, eventMonths
 }
 
 // pruneRetention is `retention.prune`: the rows that are NOT reclaimed by
@@ -283,11 +342,53 @@ func (c *Container) pruneRetention(ctx context.Context, _ *jobs.Job[jobs.Retenti
 	if err != nil {
 		return err
 	}
-	if dedup > 0 || sessions > 0 {
+	finalised, disposed := c.sweepDrills(ctx)
+	if dedup > 0 || sessions > 0 || finalised > 0 || disposed > 0 {
 		c.Logger.InfoContext(ctx, "retention.prune",
-			slog.Int64("ingest_dedup", dedup), slog.Int64("sessions", sessions))
+			slog.Int64("ingest_dedup", dedup), slog.Int64("sessions", sessions),
+			slog.Int("drills_finalised", finalised), slog.Int("drills_disposed", disposed))
 	}
 	return nil
+}
+
+// sweepDrills settles abandoned delivery drills and deletes the synthetic signal
+// rows of drills that settled long enough ago.
+//
+// ⭐⭐ IT BELONGS HERE, IN `retention.prune`, AND NOT IN `partitions.manage`.
+// ADR 0024 divides retention in two: partitions dropped wholesale, and a short
+// list of side tables pruned BY ROW because they cannot age out any other way.
+// A drill's rows are the second kind. They live in tables ADR 0024 promises never
+// to reap — and that promise is about the record of an UPSTREAM event, of which a
+// drill is none: nothing fired, no cluster was involved, oto manufactured every
+// byte to answer a question an operator asked by pressing a button. No partition
+// is dropped here and no row recording something a cluster actually did is
+// touched.
+//
+// ⛔ A FAILURE FOR ONE TENANT MUST NOT STOP THE OTHERS, and none of it may fail
+// the job: `retention.prune` also prunes `ingest_dedup`, which guards webhook
+// replay, and letting a drill cleanup error block that would trade a cosmetic
+// problem for a correctness one.
+func (c *Container) sweepDrills(ctx context.Context) (finalised, disposed int) {
+	if c.Drills == nil {
+		return 0, 0
+	}
+	scopes, err := c.orgs.Scopes(ctx)
+	if err != nil {
+		c.Logger.ErrorContext(ctx, "retention.prune: could not list tenants for the drill sweep",
+			slog.String("error", err.Error()))
+		return 0, 0
+	}
+	for _, scope := range scopes {
+		f, d, serr := c.Drills.Sweep(ctx, scope, sweepLimit)
+		if serr != nil {
+			c.Logger.ErrorContext(ctx, "retention.prune: the drill sweep failed for one tenant",
+				slog.String("org_id", scope.OrgID().String()), slog.String("error", serr.Error()))
+			continue
+		}
+		finalised += f
+		disposed += d
+	}
+	return finalised, disposed
 }
 
 // expireCache is `cache.expire`: evict stale `enrichment_cache` entries.

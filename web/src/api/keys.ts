@@ -35,6 +35,16 @@ export const qk = {
   },
   rules: {
     snapshots: (query: RuleSnapshotQuery) => ["rules", "snapshots", query] as const,
+    /**
+     * The rule text behind a page of alert rows, keyed by the SORTED DISTINCT
+     * ids so two pages that happen to share their rules — which content
+     * addressing makes the common case — share one cache entry and one request.
+     *
+     * It sits under `["rules"]` and not `["alerts"]` on purpose: a snapshot is
+     * immutable, so an `alert.upserted` frame changes which snapshots the list
+     * needs but never what any of them says.
+     */
+    batch: (ids: readonly string[]) => ["rules", "batch", [...ids].sort().join(",")] as const,
   },
   groups: {
     all: () => ["groups"] as const,
@@ -56,6 +66,10 @@ export const qk = {
     policies: () => ["settings", "policies"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,
+    /** A source's recent delivery drills. */
+    drills: (sourceID: string) => ["settings", "sources", sourceID, "drills"] as const,
+    /** One drill, polled while it is still running. */
+    drill: (id: string) => ["drills", id] as const,
   },
   deliveries: {
     all: () => ["deliveries"] as const,

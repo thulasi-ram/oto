@@ -216,6 +216,12 @@ func (c *Client) StatusDetail(ctx context.Context) (Status, error) {
 	// to be derived from. A config that names none of them leaves this zero, and
 	// zero here means UNKNOWN in every field — see domain.RouteTimings.
 	out.AM.RouteTimings = cfg.Timings
+	// And the tree those numbers came out of, resolved: which routes deliver to
+	// which receiver, with what inherited timings, under what matchers. The
+	// top-level triple above governs only what matches nothing more specific, so
+	// on any config with an override this is the answer and that one is the
+	// fallback (amroutes.go).
+	out.AM.Routes = cfg.Routes
 	return out, nil
 }
 

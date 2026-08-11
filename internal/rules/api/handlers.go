@@ -85,6 +85,57 @@ func (rt *Router) getRuleSnapshot(w http.ResponseWriter, r *http.Request) {
 	httpx.Data(w, r, http.StatusOK, snapshotDTO(snap), started)
 }
 
+// batchGetRuleSnapshots is `GET /api/v1/rule-snapshots/batch?id=…` — **what lets
+// the alert list say what the rule said** (ADR 0025).
+//
+// ⭐ IT EXISTS BECAUSE `include=rule` ON THE ALERT LIST CARRIES AN ID AND
+// NOTHING MORE. That is not an oversight: `alerts/api` may not name
+// `rules/domain` (CONTEXT.md §5.4), and embedding a fifteen-field copy of
+// `RuleSnapshotDTO` in every row would put `expr` — up to 64 KiB of it — on a
+// two-hundred-row page. So the list answers "which snapshot" and this answers
+// "what did it say", for the whole page in one call. Two requests, not fifty-one.
+//
+// Content addressing is what makes the batch small: a rule that has not changed
+// is ONE row however many alerts fired under it, so the answer is routinely a
+// fraction of the ids asked about.
+//
+// ⛔ AN UNKNOWN ID IS ABSENT FROM THE RESULT, NOT A 404. `rule_snapshots` is
+// append-only, so the only ways to miss are an id belonging to another org or one
+// a caller invented — and failing the whole request for either would blank the
+// rule column of a page that is otherwise entirely answerable. The caller joins
+// by id and renders a miss as unknown, which is the honest rendering: "we have
+// no snapshot" and "the rule said nothing" are different facts, and neither is
+// "the list is broken".
+func (rt *Router) batchGetRuleSnapshots(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, err := scopeOf(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	ids, err := parseBatchSnapshots(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	snaps, err := rt.svc.GetMany(r.Context(), scope, ids)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	out := make([]RuleSnapshotDTO, 0, len(snaps))
+	for _, s := range snaps {
+		out = append(out, snapshotDTO(s))
+	}
+	// ⛔ NOT httpx.List. There is no page here and there must be no `page`
+	// object: a keyset envelope over a bag the caller enumerated itself would
+	// invite a client to follow a `next_cursor` that can never exist.
+	httpx.Data(w, r, http.StatusOK, out, started)
+}
+
 // getAlertRuleHistory is `GET /api/v1/alerts/{id}/rule` — **the differentiator**.
 //
 // It returns the rule as it was WHEN THIS EPISODE FIRED, every version oto has

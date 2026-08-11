@@ -16,7 +16,14 @@ import (
 const (
 	// DefaultRefireGrace decides T7 from T8: a re-fire inside this window reopens
 	// the existing AlertOccurrence, a re-fire after it opens a new one.
-	DefaultRefireGrace = 10 * time.Minute
+	//
+	// ⚠️ It MIRRORS `identity/domain.DefaultRefireGrace` and must move with it.
+	// The number is derived rather than chosen — `for + group_interval` for the
+	// modal real rule, 15m + 5m — because the clock starts at the occurrence's
+	// `ended_at`, which T5 below takes from the UPSTREAM `EndsAt`, so the re-fire
+	// has to pay the rule's whole `for:` dwell again before oto can observe it at
+	// all. See ADR 0026 and docs/setup/tuning.md.
+	DefaultRefireGrace = 20 * time.Minute
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
 	// before an occurrence may expire.
 	DefaultResolveGrace = 5 * time.Minute

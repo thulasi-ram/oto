@@ -60,7 +60,19 @@ type Config struct {
 	// now ONE org-level setting (`unacked_reminder_mention`, ADR 0020), resolved
 	// once, gated on severity, and rendered into the top-level `text` where a
 	// broadcast can actually carry it.
-	// LinkNames makes Slack linkify bare @names in the message text.
+	// LinkNames asks Slack to find and link USER GROUPS in the message text.
+	//
+	// ⚠️ IT NO LONGER DOES WHAT THIS COMMENT USED TO SAY. The description was
+	// "makes Slack linkify bare @names", which is what the parameter did when it
+	// was added and is not what it does now: chat.postMessage documents
+	// `link_names` as "find and link user groups. NO LONGER SUPPORTS LINKING
+	// INDIVIDUAL USERS." So an operator who turns this on expecting `@ram` in an
+	// annotation to become a real mention gets nothing, silently.
+	//
+	// oto does not depend on it either way — every mention oto emits is already in
+	// Slack's wire form (`<@U…>`, `<!subteam^S…>`) from the org's mention policy,
+	// and those need no linkification. Nothing about the setting is wrong; the
+	// sentence describing it was.
 	LinkNames bool `json:"link_names"`
 }
 

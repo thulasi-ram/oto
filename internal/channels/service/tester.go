@@ -176,8 +176,16 @@ func (t *Tester) Test(ctx context.Context, scope db.TenantScope, channelID uuid.
 		OK:                     true,
 		ProviderConversationID: res.Ref.ConversationID,
 		ProviderMessageID:      res.Ref.MessageID,
-		Permalink:              res.Ref.ProviderKey,
-		CheckedAt:              now,
+		// ⛔ `Permalink` IS NOT `Ref.ProviderKey`, and used to be. ProviderKey is
+		// documented in domain/ports.go as "opaque, provider-defined": Slack's is
+		// `channel:ts` and the webhook provider's is the delivery UUID. Neither is
+		// a URL, and `ChannelTestDTO.permalink` is `format: uri` — so every
+		// successful channel test answered 200 with a body its own contract
+		// rejects. Gate G2 is what found it, by validating the bytes a REAL
+		// handler wrote. No provider currently returns a permalink, so the honest
+		// answer is null; the field stays because Slack's `chat.getPermalink` is
+		// the obvious way to fill it.
+		CheckedAt: now,
 	}, nil
 }
 

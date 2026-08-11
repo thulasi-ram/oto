@@ -6,6 +6,11 @@
  * `npm run generate:check` and fails on any diff — that is gate G3 of SPEC
  * §L.8.1, and it is why no hand-written response type may exist in this app.
  *
+ * Its runtime counterpart is `./generated/validators.ts` — one valibot schema
+ * per component schema, from the same file, by `npm run gen:validators`, checked
+ * in and diffed in CI by `npm run gen:validators:check`. That is gate G4, and it
+ * is why no hand-written valibot schema may describe a response.
+ *
  * Paths are relative: the Vite dev server proxies them to the Go process
  * (see vite.config.ts) and in production the same origin serves both.
  */
@@ -250,10 +255,15 @@ async function request(path: string, opts: RequestOptions = {}): Promise<unknown
  * `{ data, meta }` — the single-resource envelope every read endpoint uses.
  *
  * The envelope is checked structurally; the resource inside is trusted to the
- * generated type. SPEC §L.8 forbids hand-written valibot schemas for responses
- * (they must come from gate G4, which does not exist yet — see the report), so
- * this deliberately validates the envelope and nothing deeper rather than
- * duplicating the contract by hand and creating a second source of truth.
+ * generated type.
+ *
+ * Gate G4 now exists, so `./generated/validators.ts` has a runtime schema for
+ * every response body — but this function does not yet take one. SPEC §L.8's
+ * `get<S>(path, schema)` shape, with its dev-throws/prod-degrades split, is
+ * still unbuilt, and saying so here is more useful than implying the bodies are
+ * parsed. What has changed is that closing that gap no longer means writing a
+ * schema by hand: pass `<Name>ResponseSchema` to `v.safeParse` and the contract
+ * is already there.
  */
 export async function getItem<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const body = await request(path, opts);

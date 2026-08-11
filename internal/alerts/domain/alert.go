@@ -48,6 +48,10 @@ type Alert struct {
 	totalOccurrences  int
 	flapScore         float32
 	isFlapping        bool
+	// synthetic marks an Alert oto manufactured for a delivery drill. It is
+	// PROVENANCE, never a label, and it is what keeps a drill out of every number
+	// this product reports.
+	synthetic bool
 }
 
 // AlertParams is the full constructor input for an Alert. It is also the
@@ -83,6 +87,11 @@ type AlertParams struct {
 	// NEVER a state (§B.1).
 	FlapScore  float32
 	IsFlapping bool
+	// Synthetic is true for an Alert oto manufactured for a delivery drill. It
+	// is PROVENANCE — set from the mode of the batch that first observed this
+	// identity — and never a label, because a label is forgeable from the wire
+	// and participates in `alert_key` (§C.2).
+	Synthetic bool
 }
 
 // NewAlert builds an Alert, enforcing every §D.4 invariant.
@@ -158,6 +167,7 @@ func NewAlert(p AlertParams) (Alert, error) {
 		totalOccurrences:    p.TotalOccurrences,
 		flapScore:           p.FlapScore,
 		isFlapping:          p.IsFlapping,
+		synthetic:           p.Synthetic,
 	}, nil
 }
 
@@ -230,6 +240,15 @@ func (a Alert) FlapScore() float32 { return a.flapScore }
 // IsFlapping reports whether the Alert is above flap_threshold. Flapping is a
 // VISIBLE UI state; damping is never silent (§B.6).
 func (a Alert) IsFlapping() bool { return a.isFlapping }
+
+// Synthetic reports whether oto manufactured this Alert for a delivery drill.
+//
+// ⛔ A `true` here means the Alert is EXCLUDED FROM EVERY AGGREGATE — the daily
+// hygiene rollup, the dashboard overview, the alert list and roll-up defaults,
+// and the label typeaheads. It is surfaced so a drill's own result screen can
+// link to the row it made; it is not a filter an ordinary user has any reason to
+// reach for.
+func (a Alert) Synthetic() bool { return a.synthetic }
 
 // HasOpenOccurrence reports whether an episode is currently running.
 func (a Alert) HasOpenOccurrence() bool { return a.currentOccurrenceID != uuid.Nil }

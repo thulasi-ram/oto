@@ -18,6 +18,9 @@ import (
 	channelsregistry "github.com/thulasiram/oto/internal/channels/registry"
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
 	channelsservice "github.com/thulasiram/oto/internal/channels/service"
+	drillapi "github.com/thulasiram/oto/internal/drill/api"
+	drillrepo "github.com/thulasiram/oto/internal/drill/repository"
+	drillservice "github.com/thulasiram/oto/internal/drill/service"
 	enrichapi "github.com/thulasiram/oto/internal/enrichment/api"
 	"github.com/thulasiram/oto/internal/enrichment/enrichers/alerthistory"
 	"github.com/thulasiram/oto/internal/enrichment/enrichers/promrule"
@@ -148,6 +151,10 @@ type Container struct {
 	Silences   *silencesservice.Service
 	Stats      *statsservice.Service
 	Ingestion  *ingestion.Module
+	// Drills runs delivery drills: one synthetic alert pushed through the REAL
+	// pipeline. It is built AFTER ingestion because it drives ingestion — through
+	// the same `Accept` the webhook handler calls, which is the whole point.
+	Drills *drillservice.Service
 
 	Streaming       *streamingservice.Service
 	StreamHub       *streamingservice.Hub
@@ -203,6 +210,7 @@ type routerSet struct {
 	notifs    *notifapi.Router
 	silences  *silencesapi.Router
 	stats     *statsapi.Router
+	drills    *drillapi.Router
 	enrichers *enrichapi.Router
 	streaming *streamingapi.Router
 	ingestion *ingestion.Module
@@ -346,6 +354,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// transport, exactly as the Alertmanager and Prometheus clients do. One
 		// decision for the operator, one SSRF control for the process.
 		AllowPrivateWebhookTargets: o.Config.Security.AllowPrivateTargets,
+		// And the webhook provider gates `config.insecure_skip_verify` on the SAME
+		// switch that gates `alert_sources.tls_skip_verify`. Both are "which
+		// certificates does this deployment trust", and both were tenant-writable.
+		AllowInsecureWebhookTLS: o.Config.Security.AllowInsecureTLS,
 	})
 	channelRepo := channelsrepo.NewChannelRepository(general, clk)
 	credentialRepo := channelsrepo.NewCredentialRepository(general, keyringSealer(c.Keyring), channelsUnsealer(c.Keyring), clk)
@@ -592,8 +604,33 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// resolved" without asking the operator for anything the manifest does
 		// not already request.
 		Notice: slackprovider.NewNotice(o.HTTPClient),
-		Clock:  clk,
-		Logger: logger,
+		// ⭐ `oto_slack_unknown_action_total` (§H.8). An unroutable action id is
+		// answered 200 like every other interaction — Slack disables an app's
+		// subscriptions when deliveries fail — so this counter is the ONLY
+		// evidence that a human pressed a button oto could not route. Left
+		// unregistered it would be the same silent success this endpoint was
+		// fixed for, one layer down.
+		Metrics: channelsservice.NewInteractionMetrics(reg),
+		Clock:   clk,
+		Logger:  logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// ---- delivery drills -------------------------------------------------
+	//
+	// ⭐ AFTER INGESTION, AND THAT ORDER IS THE FEATURE. A drill drives the real
+	// pipeline by handing a manufactured payload to the SAME
+	// `ingestion/service.Service` the webhook handler uses; there is no second
+	// entry point, and if this were ever wired to anything else a passing drill
+	// would stop being evidence.
+	c.Drills, err = drillservice.New(drillservice.Options{
+		Store:   drillrepo.NewDrillRepository(general),
+		Ingest:  drillIngest{svc: c.Ingestion.Service},
+		Sources: drillSources{sources: c.Sources, clusters: clusterRepo},
+		Clock:   clk,
+		Logger:  logger,
 	})
 	if err != nil {
 		return nil, err
@@ -860,6 +897,7 @@ func (c *Container) buildRouters(
 		}),
 		silences:  silencesapi.NewRouter(c.Silences, c.alertmanagerURL(), clk),
 		stats:     statsapi.NewRouter(c.Stats, clk),
+		drills:    drillRouter(c.Drills, clk),
 		enrichers: enrichapi.NewRouter(enricherRegistry, clk),
 		streaming: streamingapi.NewRouter(c.Streaming, c.StreamHub,
 			streamingapi.ScopeResolverFunc(func(ctx context.Context) (db.TenantScope, error) {
@@ -1009,4 +1047,14 @@ func bridgeMetrics(m *streamingservice.Metrics) streamingservice.BridgeMetrics {
 		PollRecovered:   func(n int) { m.PollRecovered.Add(float64(n)) },
 		FetchErrors:     m.FetchErrors.Inc,
 	}
+}
+
+// drillRouter builds the delivery-drill surface, or nothing when drills are not
+// wired. A nil router is skipped by mountDomains, so a deployment without them
+// answers 404 rather than panicking on the first request.
+func drillRouter(svc *drillservice.Service, clk clock.Clock) *drillapi.Router {
+	if svc == nil {
+		return nil
+	}
+	return drillapi.NewRouter(svc, clk)
 }

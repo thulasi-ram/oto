@@ -130,3 +130,25 @@ type ListSnapshotsQuery struct {
 type HistoryQuery struct {
 	Limit int `json:"limit" validate:"min=1,max=200"`
 }
+
+// MaxBatchSnapshotIDs bounds one `GET /rule-snapshots/batch` call.
+//
+// It is 100 and not 200 for a reason that has nothing to do with the database:
+// 200 UUIDs is a 7.4 KB request line, which is inside nginx's default 8 KB
+// header buffer only until a session cookie joins it. 100 is half that, and it
+// is exactly one page of the UI's alert list, so the common case is one call.
+// A caller paging at the contract's 200 ceiling makes two — still O(1) in the
+// size of the page, which is the whole point.
+const MaxBatchSnapshotIDs = 100
+
+// BatchSnapshotsQuery is the validated form of the `batchGetRuleSnapshots`
+// query.
+//
+// ⛔ There is no `unique` on IDs, deliberately. The ids come off a page of alert
+// rows and repetition is the SIGNAL, not a mistake: snapshots are content
+// addressed, so a hundred alerts firing under one unchanged rule carry a hundred
+// copies of one id. Refusing them would push a dedupe onto every caller for no
+// gain — the server collapses the set before it reaches SQL.
+type BatchSnapshotsQuery struct {
+	IDs []string `json:"id" validate:"required,min=1,max=100,dive,uuid"`
+}

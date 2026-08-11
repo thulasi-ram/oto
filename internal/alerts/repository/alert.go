@@ -47,6 +47,7 @@ type alertRow struct {
 	totalOccurrences  int32
 	flapScore         float32
 	isFlapping        bool
+	synthetic         bool
 }
 
 // alertColumnList is the projection every alert query selects, in scan order.
@@ -57,7 +58,7 @@ var alertColumnList = []string{
 	"id", "org_id", "cluster_id", "alert_key", "source_fingerprint", "alertname", "severity",
 	"namespace", "service", "cluster_key", "labels", "annotations", "generator_url", "state",
 	"current_occurrence_id", "ack_state", "snoozed_until", "first_seen_at", "last_seen_at",
-	"last_state_change_at", "total_occurrences", "flap_score", "is_flapping",
+	"last_state_change_at", "total_occurrences", "flap_score", "is_flapping", "synthetic",
 }
 
 // alertColumns is alertColumnList rendered for hand-written SQL.
@@ -69,6 +70,7 @@ func (r *alertRow) scanDest() []any {
 		&r.namespace, &r.service, &r.clusterKey, &r.labels, &r.annotations, &r.generatorURL,
 		&r.state, &r.currentOccurrenceID, &r.ackState, &r.snoozedUntil, &r.firstSeenAt,
 		&r.lastSeenAt, &r.lastStateChangeAt, &r.totalOccurrences, &r.flapScore, &r.isFlapping,
+		&r.synthetic,
 	}
 }
 
@@ -133,6 +135,7 @@ func (r *alertRow) toDomain() (domain.Alert, error) {
 		TotalOccurrences:    int(r.totalOccurrences),
 		FlapScore:           r.flapScore,
 		IsFlapping:          r.isFlapping,
+		Synthetic:           r.synthetic,
 	})
 	if err != nil {
 		return domain.Alert{}, errs.Internal("alert_row_invalid", err)
@@ -173,15 +176,15 @@ func (r *AlertRepository) db(ctx context.Context) db.Querier { return db.FromCon
 var upsertAlertsSQL = `
 INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname, severity,
                     namespace, service, cluster_key, labels, annotations, generator_url,
-                    state, first_seen_at, last_seen_at, last_state_change_at)
+                    state, first_seen_at, last_seen_at, last_state_change_at, synthetic)
 SELECT u.id, $1, u.cluster_id, u.alert_key, u.fingerprint, u.alertname, u.severity,
        u.namespace, u.service, u.cluster_key, u.labels, u.annotations, u.generator_url,
-       u.state, u.seen_at, u.seen_at, u.seen_at
+       u.state, u.seen_at, u.seen_at, u.seen_at, u.synthetic
   FROM unnest($2::uuid[], $3::uuid[], $4::text[], $5::text[], $6::text[], $7::text[],
               $8::text[], $9::text[], $10::text[], $11::jsonb[], $12::jsonb[], $13::text[],
-              $14::text[], $15::timestamptz[])
+              $14::text[], $15::timestamptz[], $16::boolean[])
     AS u(id, cluster_id, alert_key, fingerprint, alertname, severity, namespace, service,
-         cluster_key, labels, annotations, generator_url, state, seen_at)
+         cluster_key, labels, annotations, generator_url, state, seen_at, synthetic)
 ON CONFLICT (org_id, alert_key) DO UPDATE SET
     last_seen_at       = GREATEST(alerts.last_seen_at, EXCLUDED.last_seen_at),
     labels             = EXCLUDED.labels,
@@ -244,6 +247,7 @@ func (r *AlertRepository) UpsertBatch(
 	urls := make([]*string, n)
 	states := make([]string, n)
 	seenAt := make([]time.Time, n)
+	synthetic := make([]bool, n)
 
 	for i, k := range order {
 		u := winner[k]
@@ -290,10 +294,12 @@ func (r *AlertRepository) UpsertBatch(
 		urls[i] = nilIfEmpty(u.GeneratorURL)
 		states[i] = u.State.String()
 		seenAt[i] = u.SeenAt.UTC()
+		synthetic[i] = u.Synthetic
 	}
 
 	rows, err := r.db(ctx).Query(ctx, upsertAlertsSQL, s.OrgID(), ids, clusterIDs, keys, fps, names,
-		sevs, namespaces, services, clusterKeys, labels, annotations, urls, states, seenAt)
+		sevs, namespaces, services, clusterKeys, labels, annotations, urls, states, seenAt,
+		synthetic)
 	if err != nil {
 		return nil, mapErr(err, "upsert alerts")
 	}
@@ -514,6 +520,23 @@ func (r *AlertRepository) ListSorted(
 // a nil or empty value means "no constraint", which is what makes the default
 // list the whole open world rather than an accidental subset.
 func applyAlertFilter(q sq.SelectBuilder, f domain.AlertFilter, now time.Time) (sq.SelectBuilder, error) {
+	// ⭐⭐ SYNTHETICS ARE EXCLUDED BY DEFAULT, and this is the OPPOSITE default
+	// from `Snoozed` two dimensions down. The reason is that they answer opposite
+	// questions. A snoozed alert is a real thing happening in a real cluster and
+	// hiding it is how an incident is lost (§B.8.6). A synthetic alert is
+	// something oto manufactured for a delivery drill; nothing in the cluster
+	// fired, and counting it as history would make the product lie about the
+	// customer's estate. `?synthetic=true` is the explicit, visible way to see
+	// one — normally reached from a drill's own result screen, never a chip an
+	// operator is expected to know about.
+	//
+	// ⛔ This is ONE of the reads that had to change. The complete list is on the
+	// `alerts.synthetic` column comment in 00039_delivery_drills.sql.
+	if f.Synthetic == nil {
+		q = q.Where(sq.Expr("NOT synthetic"))
+	} else {
+		q = q.Where(sq.Eq{"synthetic": *f.Synthetic})
+	}
 	if len(f.States) > 0 {
 		states := make([]string, len(f.States))
 		for i, st := range f.States {
@@ -885,10 +908,15 @@ func (r *AlertRepository) SetSnoozedUntil(
 
 // ------------------------------------------------------------------ discovery
 
+// ⛔ BOTH TYPEAHEADS EXCLUDE SYNTHETICS. A drill writes an `oto_drill` label
+// carrying a uuid, and a label typeahead that offered it — with a count of one,
+// forever — would be advertising oto's own plumbing as if it were the customer's
+// estate. This is two of the reads listed on the `alerts.synthetic` column
+// comment in 00039_delivery_drills.sql.
 const distinctLabelNamesSQL = `
 SELECT k, count(*) AS n
   FROM alerts a, LATERAL jsonb_object_keys(a.labels) AS k
- WHERE a.org_id = $1 AND ($2 = '' OR k LIKE $2 || '%')
+ WHERE a.org_id = $1 AND NOT a.synthetic AND ($2 = '' OR k LIKE $2 || '%')
  GROUP BY k
  ORDER BY n DESC, k ASC
  LIMIT $3`
@@ -925,6 +953,7 @@ const distinctLabelValuesSQL = `
 SELECT a.labels ->> $2 AS v, count(*) AS n
   FROM alerts a
  WHERE a.org_id = $1
+   AND NOT a.synthetic
    AND a.labels ->> $2 IS NOT NULL
    AND ($3 = '' OR a.labels ->> $2 LIKE $3 || '%')
  GROUP BY 1

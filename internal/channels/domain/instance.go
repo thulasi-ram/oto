@@ -226,7 +226,11 @@ type TestResult struct {
 	OK                     bool
 	ProviderConversationID string
 	ProviderMessageID      string
-	Permalink              string
+	// Permalink is a URL a human can click, and `ChannelTestDTO.permalink` is
+	// `format: uri` in the contract.
+	//
+	//oto:reachable-ok no provider can produce one yet, and the value that used to be put here — MessageRef.ProviderKey, which is documented as opaque and is `channel:ts` for Slack and a UUID for webhook — is not a URL, so every successful channel test answered 200 with a body its own contract rejected (found by gate G2). Null is the honest answer until Slack's chat.getPermalink is called; the member stays because the contract publishes it.
+	Permalink string
 	// Error is the human, always-safe-to-render failure. Never a raw payload and
 	// never a credential.
 	Error string

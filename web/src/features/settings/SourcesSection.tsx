@@ -23,33 +23,107 @@ import {
   testSource,
   updateSource,
 } from "~/api/endpoints";
+import { CreateSourceRequestSchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
-import type { Source, SourceCreated, SourceHealthStatus, SourceKind } from "~/api/types";
+import type {
+  CreateSourceRequest,
+  Source,
+  SourceCreated,
+  SourceHealthStatus,
+  SourceKind,
+} from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Dialog, DialogBody } from "~/components/ui/Dialog";
 import { Button, Checkbox, Chip, Field, Input, Panel, PanelHeader, PanelTitle, Select, cx } from "~/components/ui/primitives";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/ui/states";
 import { idempotencyKey } from "~/lib/format";
 
-/** Tier A: an upstream's health is not an alert's state (§M.2). */
+import { DrillPanel } from "./DrillPanel";
+
+/**
+ * Tier A: an upstream's health is not an alert's state (§M.2).
+ *
+ * Each note ends with what the status means for ENDINGS, because that is the part
+ * an operator cannot see from the badge: anything other than `healthy` holds this
+ * source's alerts in place rather than expiring them (§B.4). Reconciliation is
+ * what refreshes this — every source is polled, on its own interval, with no way
+ * to switch it off (ADR 0006), so a stale badge means oto stopped being able to
+ * look rather than being told not to.
+ */
 const HEALTH_NOTE: Record<SourceHealthStatus, string> = {
-  healthy: "Reachable, and reconciling on schedule.",
-  degraded: "Reachable but not entirely well — some reconciles are failing.",
+  healthy: "Reachable, and reconciling on schedule. Alerts oto stops hearing about can expire.",
+  degraded:
+    "Reachable but not entirely well — some reconciles are failing. Nothing from this source will be expired until it recovers.",
   unreachable:
-    "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not.",
-  unknown: "oto has not checked this source yet.",
+    "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not, so oto cannot see a silence here and will not expire anything from this source.",
+  unknown:
+    "oto has not checked this source yet, so nothing from it will be expired until a reconcile pass succeeds.",
 };
 
-const SourceSchema = v.object({
-  name: v.pipe(v.string(), v.trim(), v.minLength(1, "A name is required.")),
-  cluster_id: v.pipe(v.string(), v.minLength(1, "Pick a cluster.")),
-  base_url: v.pipe(
-    v.string(),
-    v.trim(),
-    v.regex(/^https?:\/\/[^\s]+$/i, "An absolute http or https URL."),
-    v.check((s) => !s.endsWith("/"), "No trailing slash."),
-  ),
-});
+/*
+ * SPEC §L.8.1: the form schema stays hand-written — it carries the sentences an
+ * operator should read — but it `v.pipe`s into the **generated**
+ * `CreateSourceRequestSchema` as its final gate, so this dialog cannot build a
+ * body the API would reject. The generated schema comes from
+ * `api/openapi/openapi.yaml` via gate G4 (`npm run gen:validators`), which is
+ * also where the ceilings this form does not repeat (2048-byte URLs, the
+ * 10…3600s reconcile interval) are enforced.
+ */
+
+/** What the dialog holds, before it is anything the API has a name for. */
+interface SourceForm {
+  readonly name: string;
+  readonly cluster_id: string;
+  readonly kind: SourceKind;
+  readonly base_url: string;
+  readonly prometheus_url: string;
+}
+
+/**
+ * The defaults are stated here, once, rather than at the call site: they are
+ * part of what "register an Alertmanager" means, and the generated schema
+ * checks every one of them.
+ *
+ * There is no `reconcile_enabled`: the reconciler runs for every source, and the
+ * interval is the only part of it that is a choice (ADR 0006).
+ */
+function toCreateSourceRequest(form: SourceForm): v.InferInput<typeof CreateSourceRequestSchema> {
+  const prometheus = form.prometheus_url.trim();
+  return {
+    name: form.name.trim(),
+    cluster_id: form.cluster_id,
+    kind: form.kind,
+    base_url: form.base_url.trim(),
+    ...(prometheus !== "" ? { prometheus_url: prometheus } : {}),
+    tls_skip_verify: false,
+    ignore_labels: [
+      "prometheus_replica",
+      "__replica__",
+      "monitor",
+      "replica",
+      "pod_template_hash",
+    ],
+    push_enabled: true,
+    reconcile_interval_seconds: 30,
+  };
+}
+
+const SourceFormSchema = v.pipe(
+  v.strictObject({
+    name: v.pipe(v.string(), v.trim(), v.minLength(1, "A name is required.")),
+    cluster_id: v.pipe(v.string(), v.minLength(1, "Pick a cluster.")),
+    kind: v.picklist(["alertmanager", "grafana"] as const),
+    base_url: v.pipe(
+      v.string(),
+      v.trim(),
+      v.regex(/^https?:\/\/[^\s]+$/i, "An absolute http or https URL."),
+      v.check((s) => !s.endsWith("/"), "No trailing slash."),
+    ),
+    prometheus_url: v.string(),
+  }),
+  v.transform(toCreateSourceRequest),
+  CreateSourceRequestSchema, // the generated schema is the final gate
+);
 
 export const SourcesSection: Component = () => {
   const client = useQueryClient();
@@ -163,6 +237,19 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
             </span>
           )}
         </Show>
+        {/*
+          The cadence is shown beside the last pass because it is the only
+          reconciliation setting there is. There is no on/off switch here and
+          there is no longer one in the API: reconciliation is the only way oto
+          can see an upstream silence, so a source that is not polled would show
+          a silenced alert as firing and then let the reaper end it.
+        */}
+        <span
+          class="text-[11px] text-ink-subtle"
+          title="How often oto polls this Alertmanager's API v2. Every source is polled — it is the only way oto can see a silence, so it cannot be turned off."
+        >
+          every {s().reconcile_interval_seconds}s
+        </span>
 
         <div class="ml-auto flex items-center gap-2">
           <Button size="sm" busy={test.isPending} onClick={() => test.mutate()}>
@@ -202,6 +289,17 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
           </p>
         )}
       </Show>
+
+      {/*
+        The drill sits UNDER the source row and not beside the Test button, and
+        the two are different questions. `Test` probes the upstream: can oto
+        reach this Alertmanager. The drill asks the question an operator actually
+        has on day one — will an alert from this source reach my channel, in a
+        thread, with the right card, and be recorded — by pushing one synthetic
+        alert through the real pipeline. Both are kept: the probe is cheap and
+        answers instantly, the drill costs a Slack message and ninety seconds.
+      */}
+      <DrillPanel sourceID={s().id} />
 
       <Show when={test.error !== null}>
         <ErrorBanner error={test.error} class="mt-1" />
@@ -323,10 +421,12 @@ const CreateSourceDialog: Component<{
   const [touched, setTouched] = createSignal(false);
 
   const parsed = createMemo(() =>
-    v.safeParse(SourceSchema, {
+    v.safeParse(SourceFormSchema, {
       name: name(),
       cluster_id: clusterId(),
+      kind: kind(),
       base_url: baseUrl(),
+      prometheus_url: promUrl(),
     }),
   );
 
@@ -338,22 +438,7 @@ const CreateSourceDialog: Component<{
   };
 
   const create = useMutation(() => ({
-    mutationFn: () =>
-      createSource(
-        {
-          name: name().trim(),
-          cluster_id: clusterId(),
-          kind: kind(),
-          base_url: baseUrl().trim(),
-          ...(promUrl().trim() !== "" ? { prometheus_url: promUrl().trim() } : {}),
-          tls_skip_verify: false,
-          ignore_labels: ["prometheus_replica", "__replica__", "monitor", "replica", "pod_template_hash"],
-          push_enabled: true,
-          reconcile_enabled: true,
-          reconcile_interval_seconds: 30,
-        },
-        idempotencyKey(),
-      ),
+    mutationFn: (body: CreateSourceRequest) => createSource(body, idempotencyKey()),
     onSuccess: (created) => {
       props.onCreated(created as unknown as SourceCreated);
       props.onClose();
@@ -379,7 +464,8 @@ const CreateSourceDialog: Component<{
             busy={create.isPending}
             onClick={() => {
               setTouched(true);
-              if (parsed().success) create.mutate();
+              const result = parsed();
+              if (result.success) create.mutate(result.output);
             }}
           >
             Register

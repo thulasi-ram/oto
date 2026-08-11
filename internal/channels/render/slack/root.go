@@ -446,7 +446,14 @@ func (r *Renderer) actionsBlock(v *domain.NotificationView, state CardState, non
 			}
 			switch {
 			case a.URL != "":
-				btn.URL = truncateURL(a.URL)
+				// ⛔ A LINK BUTTON WHOSE URL IS UNUSABLE IS DROPPED, NOT EMITTED.
+				// `Runbook` carries an upstream annotation verbatim; emitting a
+				// relative or non-http(s) value would fail V10 and kill the entire
+				// card rather than lose one button. See safeURL.
+				btn.URL = safeURL(a.URL)
+				if btn.URL == "" {
+					continue
+				}
 			default:
 				btn.Value = a.Value
 			}
@@ -473,14 +480,28 @@ func (r *Renderer) actionsBlock(v *domain.NotificationView, state CardState, non
 // interaction payload that the handler must ack with a 200 (S9), which is why the
 // action id is in the oto.noop.* family.
 func overflowMenu(v *domain.NotificationView) (Action, bool) {
-	opts := make([]OverflowOption, 0, 5)
+	// FIVE, because Slack's overflow element is documented as "an array of up to
+	// five option objects". A sixth is `invalid_blocks` and takes the card with it.
+	opts := make([]OverflowOption, 0, maxOverflowOptions)
 	addOpt := func(label, url, value string) {
-		if len(opts) >= 5 || (url == "" && value == "") {
+		// `Prometheus` is Alertmanager's `generatorURL` and `Timeline` is oto's own;
+		// the first is upstream-controlled and unvalidated, so an entry whose URL
+		// does not survive safeURL is DROPPED rather than allowed to fail V10 and
+		// take the whole delivery with it.
+		if url != "" {
+			if url = safeURL(url); url == "" {
+				return
+			}
+		}
+		if len(opts) >= maxOverflowOptions || (url == "" && value == "") {
 			return
 		}
 		opts = append(opts, OverflowOption{
-			Text:  *plain(truncateRunes(label, maxButtonText)),
-			URL:   truncateURL(url),
+			// An overflow option's label is a plain_text object capped at 75 — the
+			// OPTION limit, which happens to equal the button's. They are different
+			// rules that agree, not one rule.
+			Text:  *plain(truncateRunes(label, maxOptionText)),
+			URL:   url,
 			Value: value,
 		})
 	}
@@ -761,7 +782,17 @@ func rootText(v *domain.NotificationView, state CardState) string {
 	// The runbook is appended only if the WHOLE of it fits. A URL cut at a
 	// boundary is still a broken URL, and a broken link is worse than no link: it
 	// looks clickable and is not.
-	if u := v.Links.Runbook; u != "" {
+	//
+	// ⛔⛔ AND ONLY IF IT IS A URL AT ALL. This is the one place a raw upstream
+	// annotation reached the top-level `text` UNESCAPED — every other upstream
+	// string on the card goes through `escape` or `code`, and a URL cannot,
+	// because `<`, `>` and `&` are legal in one. So `runbook_url: "<!channel>"` on
+	// any alert put a channel-wide ping in the push notification of every person
+	// in the room, and `runbook_url: "<https://evil.example|Click here>"` put an
+	// attacker-labelled link there. The top-level text is what a locked phone
+	// shows and what a screen reader announces (S5); it is the last string in the
+	// product that should accept unvalidated input.
+	if u := safeURL(v.Links.Runbook); u != "" {
 		tail := " Runbook: " + u
 		if utf8.RuneCountInString(sentence)+utf8.RuneCountInString(tail) <= otoTopLevelText {
 			return sentence + tail

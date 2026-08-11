@@ -177,9 +177,25 @@ func (r *DeliveryRepository) Create(
 	}
 }
 
+// ⭐ EVERY WRITE IN THIS FILE ADVANCES `updated_at` MONOTONICALLY —
+// GREATEST(updated_at, $n) — and that is a correctness guard, not a nicety.
+//
+// Both timestamps on this row come from the application: Create above names
+// `created_at` from the caller's clock. But "the application" is N pods with N
+// clocks, and the pod that DISPATCHES a delivery is never guaranteed to be the
+// pod that fanned it out — that is the entire shape of an at-least-once queue. A
+// few milliseconds of lag between them writes an `updated_at` BELOW `created_at`
+// and fails `deliveries_time_ck` with a 23514.
+//
+// The consequence here is worse than a 500 on a settings screen. These writes
+// bracket a network call to a chat provider, so a constraint failure on the
+// write AFTER the send loses the record of a message that has already landed:
+// the job retries, sends again, and a human gets a duplicate at 3am for a clock
+// reason. It is the same idiom, for the same reason, as `channels`, `orgs` and
+// OrderingStore.Advance.
 const setThreadSeqSQL = `
 UPDATE notification_deliveries
-   SET thread_seq = $3, updated_at = $4
+   SET thread_seq = $3, updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2 AND thread_seq IS NULL`
 
 // SetThreadSeq stamps the FIFO position onto a row this transaction just created.
@@ -259,12 +275,19 @@ func (r *DeliveryRepository) GetForChannel(
 // worse than a visible, labelled duplicate. `ambiguous` is set on exactly those
 // rows and only for `post_root`, the one mode where a duplicate is a new message
 // rather than an idempotent edit.
+//
+// ⚠ `updated_at` IS THE LEASE ITSELF ON THIS STATEMENT — it is what the
+// `updated_at < $3` disjunct reads — so the monotonic write matters twice here.
+// A lagging pod writing a plain `updated_at = $4` would stamp its own claim as
+// already older than the lease cutoff, and the next worker along would reclaim a
+// delivery that is being sent RIGHT NOW. GREATEST cannot move the lease
+// backwards, so a claim is never expired at the moment it is taken.
 const claimSQL = `
 UPDATE notification_deliveries
    SET status     = 'sending',
        attempts   = attempts + 1,
        ambiguous  = ambiguous OR (status = 'sending' AND mode = 'post_root'),
-       updated_at = $4
+       updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1
    AND id = $2
    AND ( status IN ('pending','failed')
@@ -294,7 +317,8 @@ func (r *DeliveryRepository) Claim(
 
 const persistRenderedSQL = `
 UPDATE notification_deliveries
-   SET rendered = $3, rendered_hash = $4, rendered_fallback = $5, updated_at = $6
+   SET rendered = $3, rendered_hash = $4, rendered_fallback = $5,
+       updated_at = GREATEST(updated_at, $6)
  WHERE org_id = $1 AND id = $2`
 
 // PersistRendered writes the exact payload BEFORE the network call (C11, §L.6).
@@ -328,7 +352,7 @@ UPDATE notification_deliveries
        error = NULL,
        error_class = NULL,
        next_attempt_at = NULL,
-       updated_at = $6
+       updated_at = GREATEST(updated_at, $6)
  WHERE org_id = $1 AND id = $2 AND status = 'sending'`
 
 // MarkSent records the provider handle. The `status = 'sending'` guard makes it
@@ -365,9 +389,12 @@ func (r *DeliveryRepository) MarkSent(
 	return tag.RowsAffected() > 0, nil
 }
 
+// `next_attempt_at` is §G.6's schedule and takes the caller's instant verbatim.
+// `updated_at` is the row's version and is monotonic (see setThreadSeqSQL).
 const markFailedSQL = `
 UPDATE notification_deliveries
-   SET status = $3, error = $4, error_class = $5, next_attempt_at = $6, updated_at = $7
+   SET status = $3, error = $4, error_class = $5, next_attempt_at = $6,
+       updated_at = GREATEST(updated_at, $7)
  WHERE org_id = $1 AND id = $2`
 
 // MarkFailed records a retryable failure and when to try again.
@@ -403,7 +430,8 @@ func (r *DeliveryRepository) MarkDead(
 	}
 	const q = `
 UPDATE notification_deliveries
-   SET status = 'dead', error = $3, error_class = $4, next_attempt_at = NULL, updated_at = $5
+   SET status = 'dead', error = $3, error_class = $4, next_attempt_at = NULL,
+       updated_at = GREATEST(updated_at, $5)
  WHERE org_id = $1 AND id = $2`
 	_, err := r.db(ctx).Exec(ctx, q, s.OrgID(), id, message, string(class), now)
 	return mapErr(err, "delivery_not_found", "mark delivery dead")
@@ -411,7 +439,8 @@ UPDATE notification_deliveries
 
 const markSkippedSQL = `
 UPDATE notification_deliveries
-   SET status = 'skipped', error = $3, error_class = NULL, next_attempt_at = NULL, updated_at = $4
+   SET status = 'skipped', error = $3, error_class = NULL, next_attempt_at = NULL,
+       updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2`
 
 // MarkSkipped records a delivery that was deliberately not sent: a coalesced
@@ -444,7 +473,7 @@ UPDATE notification_deliveries
        error = $3,
        error_class = NULL,
        next_attempt_at = $4,
-       updated_at = $4
+       updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2`
 
 // RepointToRoot converts a delivery whose THREAD POINTER died into a fresh root

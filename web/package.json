@@ -8,12 +8,15 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "generate": "openapi-typescript ../api/openapi/openapi.yaml -o src/api/generated/schema.d.ts",
+    "generate": "npm run generate:types && npm run gen:validators",
+    "generate:types": "openapi-typescript ../api/openapi/openapi.yaml -o src/api/generated/schema.d.ts",
     "generate:check": "openapi-typescript ../api/openapi/openapi.yaml -o node_modules/.cache/oto-schema.d.ts && diff -u src/api/generated/schema.d.ts node_modules/.cache/oto-schema.d.ts",
-    "verify": "npm run generate:check && tsc --noEmit && vite build && vitest run --passWithNoTests"
+    "gen:validators": "node scripts/gen-validators.mjs",
+    "gen:validators:check": "node scripts/gen-validators.mjs node_modules/.cache/oto-validators.ts && diff -u src/api/generated/validators.ts node_modules/.cache/oto-validators.ts",
+    "verify": "npm run generate:check && npm run gen:validators:check && tsc --noEmit && vite build && vitest run"
   },
   "dependencies": {
     "@solidjs/router": "^0.15.3",
@@ -22,6 +25,7 @@
     "valibot": "^1.1.0"
   },
   "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
     "@tailwindcss/vite": "^4.1.18",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/node": "^24.9.1",
@@ -31,6 +35,7 @@
     "typescript": "^5.9.3",
     "vite": "^6.3.6",
     "vite-plugin-solid": "^2.11.9",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "yaml": "^2.9.0"
   }
 }

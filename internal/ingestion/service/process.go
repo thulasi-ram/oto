@@ -171,7 +171,12 @@ func (s *Service) normalise(
 		s.metrics.ClockSkew.Observe(skew.Seconds())
 
 		observations = append(observations, alerts.Observation{
-			Source:     observationSource(batch.Mode),
+			Source: observationSource(batch.Mode),
+			// ⭐ THE PROVENANCE MARK, carried from the batch and from nowhere else.
+			// It is deliberately NOT read out of `n.Labels`: a label is what an
+			// upstream sends, and an upstream must never be able to evict its own
+			// alerts from oto's statistics by naming one.
+			Synthetic:  batch.Mode.IsSynthetic(),
 			BatchID:    batch.ID,
 			SourceID:   batch.SourceID,
 			ClusterID:  src.ClusterID,

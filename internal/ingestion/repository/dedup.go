@@ -77,8 +77,9 @@ LIMIT 1`
 //
 // A key last seen more than domain.DedupTTL ago does NOT suppress: the same alert
 // set arriving again after the replay window is the same alert set FIRING again,
-// and the whole point of `refire_grace` being twice this wide is that oto's state
-// machine gets to decide which of those it is.
+// and the whole point of `refire_grace` being at least twice this wide — its
+// bound floor is `2 × DedupTTL`, and it now DEFAULTS to four times it (ADR 0026)
+// — is that oto's state machine gets to decide which of those it is.
 func (r *DedupRepository) Claim(
 	ctx context.Context, sourceID uuid.UUID, dedupKey string, batchID uuid.UUID, at time.Time,
 ) (domain.DedupHit, error) {

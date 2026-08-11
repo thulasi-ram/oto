@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -204,18 +203,33 @@ func NewRuleFingerprint(s string) (RuleFingerprint, error) {
 // `expr` is free-form PromQL out of Prometheus and may carry any byte, which is
 // why the fields are length-prefixed and not NUL-separated.
 //
-// Durations are rendered as whole seconds in base 10, matching Prometheus's own
-// wire form, where `for: 10m` is the number 600.
+// # THIS IS THE ONLY IMPLEMENTATION OF §C.6
 //
-// This MUST agree byte for byte with rules/domain.Fingerprint, which computes the
-// same §C.6 address from a raw map that has never been through NewLabels.
-func ComputeRuleFingerprint(expr string, forDur, keepFiringFor time.Duration, labels Labels, annotations Annotations) RuleFingerprint {
+// There were two, over different input shapes, and they agreed by luck until
+// c133981 cross-checked them — over the inputs they could BOTH express. Outside
+// that overlap they disagreed: this one truncated `for` to whole seconds and the
+// live one rendered it as a float, so `for: 1s500ms` had two content addresses
+// and only one of them was ever stored. `rules/domain.Fingerprint` now calls
+// this, and this renders durations the way the stored values were computed.
+//
+// # THE INPUT SHAPE IS RAW MAPS, DELIBERATELY
+//
+// Every other §C key takes constructed value objects because it hashes labels
+// oto accepted at its own boundary. A rule's labels arrive from Prometheus and
+// have never passed NewLabels — see CanonMap, which is the sanctioned door for
+// exactly that and the reason this function needs no second implementation.
+//
+// Durations are seconds, rendered with strconv.FormatFloat(f, 'f', -1, 64) — the
+// shortest form that round-trips — so 600 and 600.0 are one rule and `for: 500ms`
+// is addressable. Prometheus's `/api/v1/rules` reports `duration` as a float
+// number of seconds, so this is its wire form and not a re-encoding of it.
+func ComputeRuleFingerprint(expr string, forSeconds, keepFiringForSeconds float64, labels, annotations map[string]string) RuleFingerprint {
 	h := sha256.New()
 	writeField(h, []byte(expr))
-	writeField(h, []byte(strconv.FormatInt(int64(forDur/time.Second), 10)))
-	writeField(h, []byte(strconv.FormatInt(int64(keepFiringFor/time.Second), 10)))
-	writeField(h, labels.Canonical(nil))
-	_, _ = h.Write(annotations.Canonical())
+	writeField(h, []byte(strconv.FormatFloat(forSeconds, 'f', -1, 64)))
+	writeField(h, []byte(strconv.FormatFloat(keepFiringForSeconds, 'f', -1, 64)))
+	writeField(h, CanonMap(labels))
+	_, _ = h.Write(CanonMap(annotations))
 	return RuleFingerprint{s: hex.EncodeToString(h.Sum(nil))}
 }
 
@@ -251,8 +265,14 @@ func NewIdempotencyKey(s string) (IdempotencyKey, error) {
 // forgeable through a field's content; it is framed this way because one §C key
 // with a different framing from its neighbours is a trap, not a saving.
 //
-// This MUST agree byte for byte with notification/domain.IdempotencyKey, which is
-// the implementation the notify path actually calls.
+// # THIS IS THE ONLY IMPLEMENTATION OF §C.7
+//
+// It takes strings rather than notification/domain's SubjectKind and Reason for
+// the one reason the kernel takes nothing from another domain: it may not import
+// one. notification/domain.IdempotencyKey is a three-line adapter that owns those
+// closed enums and calls this — it is what notify.go calls, and it is why this
+// function is reachable at all. Until then §C.7 had two implementations and the
+// kernel's, the one a reader would assume canonical, was the dead one.
 func ComputeIdempotencyKey(orgID uuid.UUID, subjectKind string, subjectID uuid.UUID, reason string, stateVersion int) IdempotencyKey {
 	h := sha256.New()
 	writeField(h, orgID[:])
