@@ -44,16 +44,21 @@ func seedSource(t *testing.T, e *env) (db.TenantScope, *repository.SourceReposit
 		orgID, "t"+orgID.String()[:8], "timings org", time.Now().UTC()); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
+	// `created_at`/`updated_at` are NAMED on both: 00034 removed their DEFAULT
+	// now() for the reason 00033 removed `orgs`'.
 	if _, err := e.pool.Exec(e.ctx,
-		`INSERT INTO clusters (id, org_id, cluster_key, display_name) VALUES ($1, $2, $3, $4)`,
-		clusterID, orgID, "prod", "prod"); err != nil {
+		`INSERT INTO clusters (id, org_id, cluster_key, display_name, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $5)`,
+		clusterID, orgID, "prod", "prod", time.Now().UTC()); err != nil {
 		t.Fatalf("seed cluster: %v", err)
 	}
 
 	if _, err := e.pool.Exec(e.ctx,
-		`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url)
-		 VALUES ($1, $2, $3, $4, 'alertmanager', 'http://am.test')`,
-		sourceID, orgID, clusterID, "am-"+sourceID.String()[:8]); err != nil {
+		`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url,
+		                            created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, 'alertmanager', 'http://am.test', $5, $5)`,
+		sourceID, orgID, clusterID, "am-"+sourceID.String()[:8],
+		time.Now().UTC()); err != nil {
 		t.Fatalf("seed source: %v", err)
 	}
 
@@ -196,24 +201,77 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 	}
 }
 
-// TestTheTopThreeMigrationsAreReversible. Expand/contract (CONTEXT.md §6) is only
-// a property if the contract half actually runs: a migration nobody has rolled
-// back is a migration nobody can deploy on a Friday.
+// TestEveryMigrationDownTo00028IsReversible. Expand/contract (CONTEXT.md §6) is
+// only a property if the contract half actually runs: a migration nobody has
+// rolled back is a migration nobody can deploy on a Friday.
 //
-// It rolls back all three of the top migrations — 00030's dropped
-// `rate_limit_buckets`, 00029's delivery-roll-up index and 00028's timing
-// columns — because `migrate.Down` reverts exactly one, and a test that pinned
-// the count would have silently stopped testing the older ones the day a new one
-// landed.
+// It rolls the stack back to 00027 — every migration from the top down to and
+// including 00028 — because `migrate.Down` reverts exactly one, and a test that
+// pinned the count would have silently stopped testing the older ones the day a
+// new one landed. The name says 00028 rather than a count for the same reason:
+// the floor is what this test promises, and the ceiling moves.
 //
-// ⭐ 00030 is a DROP, so its Down is a CREATE, and that is the direction most
-// likely to be written carelessly and never run. Rolling it back here is what
-// proves an operator can undeploy the migration that removed a table.
+// Each Down below is asserted by an OBSERVABLE PROPERTY flipping back, never by
+// `migrate.Down` returning nil. A Down that runs cleanly and restores nothing is
+// the failure this test exists to catch, and it is indistinguishable from a
+// working one at the exit code.
 //
-// 00032 and 00033 are asserted on for the same reason at the other end of the
-// stack: they take DEFAULTs away, so their Downs put them back, and a restored
-// default is what keeps a rolled-back release able to write those tables at all.
-func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
+// WHAT EACH DOWN HAS TO PUT BACK, newest first:
+//
+//   - ⭐ 00039 added `delivery_drills` and WIDENED `ingest_batches_mode_ck` to
+//     admit `synthetic`. Its Down therefore does both halves — drop the table and
+//     NARROW the CHECK back — and both are asserted, the CHECK out of
+//     `pg_get_constraintdef` the way 00035's is. Narrowing a CHECK is the
+//     dangerous half: ADR 0027 records it as a one-way door, because a rollback
+//     past 00039 meets `synthetic` batches that the narrowed CHECK cannot admit.
+//     That warning is EXERCISED rather than believed — a real synthetic batch is
+//     written here, the Down is attempted against it and must REFUSE, and the
+//     stack must still be at 00039 afterwards. A Down that dropped the table and
+//     then failed on the CHECK would leave an operator with neither the old schema
+//     nor the new one, and it would leave this test's remaining assertions running
+//     against a database no migration describes.
+//
+//   - ⭐ 00038 dropped `alert_sources.reconcile_enabled`, so its Down is an ADD
+//     COLUMN — the direction that has never been executed, since the column has
+//     existed since 00004 for every database that has one. It is asserted ABSENT
+//     at the top of the stack, PRESENT after the Down, and absent again after the
+//     final Up: a Down that no-oped would be invisible at the exit code and would
+//     leave a rolled-back release-N pod naming a column in its INSERT that the
+//     database does not have.
+//
+//   - 00037 added `source_health.am_routes`. Its Down is a DROP COLUMN, asserted
+//     gone on the way down and back on the way up.
+//
+//   - 00036 moved `oto_partitions_manage`'s `p_raw_retention_days` DEFAULT from
+//     14 to 30. Its Down is a CREATE OR REPLACE that must land the OLD body,
+//     defaults and all — so the function's argument list is introspected out of
+//     `pg_proc` rather than trusted.
+//
+//   - ⭐ 00035 widened `ingest_rejections_reason_ck` with `invalid_label_value`
+//     and `annotation_unstorable`. Its Down NARROWS the enum, which makes rows
+//     already written under the widened one illegal — so before dropping the
+//     constraint it REWRITES them to `undecodable` with the true reason
+//     preserved at the front of `detail`. That row rewrite is the dangerous
+//     part: `ingest_rejections` is the only place a rejected alert survives, the
+//     rewrite runs during a rollback (when an operator is most likely to be
+//     reading it), and a Down that deleted the rows instead would pass every
+//     schema-shaped assertion. So real rows are written under the widened enum
+//     here and read back after the Down.
+//
+//   - 00034, 00033 and 00032 take DEFAULTs away, so their Downs put them back,
+//     and a restored default is what keeps a rolled-back release able to write
+//     those tables at all.
+//
+//   - ⭐ 00030 is a DROP, so its Down is a CREATE, and that is the direction most
+//     likely to be written carelessly and never run. Rolling it back here is what
+//     proves an operator can undeploy the migration that removed a table.
+//
+//   - 00029 is an index and 00028 is the six route-timing columns this file is
+//     otherwise about.
+//
+// The whole stack is migrated back up at the end, so the rest of the suite sees
+// the schema it expects.
+func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	env := newEnv(t)
 	dsn := env.cfg.DB.URL
 
@@ -221,9 +279,11 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 33 {
-		t.Fatalf("latest migration is %d, want 33 — this test pins the number so that a "+
-			"second migration claiming the same version is caught here", latest)
+	if latest != 39 {
+		t.Fatalf("latest migration is %d, want 39 — this test pins the number so that a "+
+			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
+			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
+			"is the only thing the new migration got and this test quietly shrank", latest)
 	}
 
 	// 00032 and 00033 took the DATABASE's clock away from three tables whose
@@ -258,6 +318,39 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 		return clockDefaults("orgs", "created_at", "updated_at") +
 			clockDefaults("channel_credentials", "created_at")
 	}
+	// 00034 finished the sweep 00032 and 00033 started: twenty columns across
+	// thirteen tables. Counted as one number because they are one migration and
+	// therefore roll back together — unlike 00032 and 00033, which do not.
+	remainingClockDefaults := func() int {
+		t.Helper()
+		return clockDefaults("users", "created_at", "updated_at") +
+			clockDefaults("api_tokens", "created_at") +
+			clockDefaults("sessions", "created_at") +
+			clockDefaults("slack_identities", "created_at") +
+			clockDefaults("clusters", "created_at", "updated_at") +
+			clockDefaults("alert_sources", "created_at", "updated_at") +
+			clockDefaults("source_health", "updated_at") +
+			clockDefaults("ingest_dedup", "seen_at") +
+			clockDefaults("notification_policies", "created_at", "updated_at") +
+			clockDefaults("notifications", "created_at", "updated_at") +
+			clockDefaults("notification_deliveries", "created_at", "updated_at") +
+			clockDefaults("channel_threads", "created_at", "updated_at") +
+			clockDefaults("silences", "mirrored_at")
+	}
+	// ⛔ The six tables 00034 deliberately did NOT touch. Their live writers OMIT
+	// these columns, so a DEFAULT here is load-bearing rather than a trap, and an
+	// over-enthusiastic follow-up that "finished the job" would break the ingest
+	// path and the ui_events partition router. Asserted so that the exception is
+	// pinned rather than remembered.
+	keptDefaults := func() int {
+		t.Helper()
+		return clockDefaults("alerts", "created_at", "updated_at") +
+			clockDefaults("alert_occurrences", "created_at", "updated_at") +
+			clockDefaults("alert_groups", "created_at", "updated_at") +
+			clockDefaults("alert_event_keys", "created_at") +
+			clockDefaults("ui_events", "at") +
+			clockDefaults("alert_snoozes", "created_at")
+	}
 	if channelsDefaults() != 0 {
 		t.Fatal("channels.created_at or channels.updated_at still has a DEFAULT at migration 33; " +
 			"00032 exists to take the database's clock off this table")
@@ -266,11 +359,164 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 		t.Fatal("orgs or channel_credentials still has a DEFAULT now() on a column the " +
 			"application stamps; 00033 exists to take the database's clock off both tables")
 	}
+	if n := remainingClockDefaults(); n != 0 {
+		t.Fatalf("%d column(s) still carry a DEFAULT now() that the repository already "+
+			"supplies explicitly; 00034 exists to take the database's clock off all of them", n)
+	}
+	if n := keptDefaults(); n != 9 {
+		t.Fatalf("the six tables 00034 deliberately left alone have %d defaults, want 9 — "+
+			"their live writers OMIT these columns, so dropping one is not tidying, it is a "+
+			"23502 on the ingest path or a ui_events row with no partition to go in", n)
+	}
 
-	// Migrations land concurrently, so everything ABOVE the trio this test is
-	// about is rolled back one at a time and only 00032 and 00033 are asserted
-	// on: what the rest of this test proves is that 00030, 00029 and 00028 can be
-	// undone, not who else has landed since.
+	// 00039's table and CHECK, 00038's dropped column, 00037's column, 00036's
+	// function defaults and 00035's CHECK, introspected rather than assumed. Each
+	// is read at the top of the stack and again after its own Down, because a Down
+	// asserted only on the way back up would pass on a migration whose Up is
+	// idempotent and whose Down does nothing.
+	//
+	// 00038's is the one where the top-of-stack read carries the weight: its Down
+	// ADDS a column, so "present" is the interesting state and it only ever exists
+	// between that Down and the Up that follows.
+	reconcileEnabledColumns := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM information_schema.columns
+			  WHERE table_name = 'alert_sources' AND column_name = 'reconcile_enabled'`).Scan(&n); err != nil {
+			t.Fatalf("introspect alert_sources.reconcile_enabled: %v", err)
+		}
+		return n
+	}
+	drillTables := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_tables WHERE tablename = 'delivery_drills'`).Scan(&n); err != nil {
+			t.Fatalf("introspect delivery_drills: %v", err)
+		}
+		return n
+	}
+	// Read as rendered SQL rather than as a list of members, for the reason
+	// `rejectionReasonCheck` is: the constraint name is the runtime contract, and
+	// what matters is that the SAME name carries a different member list.
+	batchModeCheck := func() string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			  WHERE conname = 'ingest_batches_mode_ck'
+			    AND conrelid = 'ingest_batches'::regclass`).Scan(&def); err != nil {
+			t.Fatalf("introspect ingest_batches_mode_ck: %v", err)
+		}
+		return def
+	}
+	amRoutesColumns := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM information_schema.columns
+			  WHERE table_name = 'source_health' AND column_name = 'am_routes'`).Scan(&n); err != nil {
+			t.Fatalf("introspect source_health.am_routes: %v", err)
+		}
+		return n
+	}
+	// `pronargs` is the count of IN arguments, so it selects the (int,int,int)
+	// signature and would not silently pick up an overload. The rendered list also
+	// carries the OUT columns of the RETURNS TABLE, hence a substring match on the
+	// one default 00036 moves rather than an equality on the whole string.
+	partitionsManageArgs := func() string {
+		t.Helper()
+		var args string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT pg_get_function_arguments(oid) FROM pg_proc
+			  WHERE proname = 'oto_partitions_manage' AND pronargs = 3`).Scan(&args); err != nil {
+			t.Fatalf("introspect oto_partitions_manage: %v", err)
+		}
+		return args
+	}
+	rejectionReasonCheck := func() string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			  WHERE conname = 'ingest_rejections_reason_ck'
+			    AND conrelid = 'ingest_rejections'::regclass`).Scan(&def); err != nil {
+			t.Fatalf("introspect ingest_rejections_reason_ck: %v", err)
+		}
+		return def
+	}
+	if drillTables() != 1 {
+		t.Fatal("delivery_drills is absent at the top of the stack; 00039 exists to create it")
+	}
+	if def := batchModeCheck(); !strings.Contains(def, "synthetic") {
+		t.Fatalf("ingest_batches_mode_ck does not admit synthetic at the top of the stack: %s — "+
+			"00039 exists to widen it, and the drill endpoint is the only writer of that mode", def)
+	}
+	if n := reconcileEnabledColumns(); n != 0 {
+		t.Fatal("alert_sources.reconcile_enabled is still present at the top of the stack; 00038 " +
+			"exists to drop it, and while it is there the reaper can still be made to trust a " +
+			"frozen health verdict")
+	}
+	if amRoutesColumns() != 1 {
+		t.Fatal("source_health.am_routes is absent at the top of the stack; 00037 exists to add it")
+	}
+	if args := partitionsManageArgs(); !strings.Contains(args, "p_raw_retention_days integer DEFAULT 30") {
+		t.Fatalf("oto_partitions_manage(%s) does not carry 00036's raw-retention default of 30", args)
+	}
+
+	// ⭐ 00039's Down NARROWS `ingest_batches_mode_ck`, and ADR 0027 calls the
+	// widening a one-way door: a rollback past 00039 meets `synthetic` batches the
+	// narrowed CHECK cannot admit. That is a claim about what happens to a real
+	// database, so a real synthetic batch is written here — under the widened
+	// CHECK, which is the state an operator's database is in at the moment they
+	// decide to roll back — and the Down is attempted against it below.
+	//
+	// `ingest_batches` is PARTITION BY RANGE (received_at) with daily partitions
+	// and 00006 creates today plus the next seven, so a `now()` received_at lands
+	// in a partition that exists. `org_id`/`source_id` carry no FK on this table,
+	// which is why a batch can be recorded before anything else is known about it.
+	syntheticBatch := id.New()
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO ingest_batches (id, org_id, source_id, mode, received_at, body_bytes,
+		                             checksum, dedup_key, alert_count, payload)
+		 VALUES ($1, $2, $3, 'synthetic', $4, 512, decode($5, 'hex'), $5, 1,
+		         '{"alerts":[]}'::jsonb)`,
+		syntheticBatch, id.New(), id.New(), time.Now().UTC(), strings.Repeat("ab", 32)); err != nil {
+		t.Fatalf("record a synthetic batch at the top of the stack: %v — 00039 exists to make "+
+			"this mode writable, so a 23514 here means its Up never widened the CHECK", err)
+	}
+
+	// ⭐ 00035's Down rewrites rows, so it needs rows. These two are written under
+	// the WIDENED enum — version N+1's own output — which is exactly the state an
+	// operator's database is in at the moment they decide to roll back.
+	//
+	// `ingest_rejections` is PARTITION BY RANGE (received_at) with daily
+	// partitions, and 00006 creates today plus the next seven, so a `now()`
+	// received_at lands in a partition that exists. `raw` is NOT NULL and so are
+	// the three ids; `batch_id` is legitimately NULL here, because a rejection
+	// that never reached a batch has no batch to point at.
+	rejections := []struct {
+		id             uuid.UUID
+		reason, detail string
+	}{
+		{id.New(), "invalid_label_value", "label instance carries U+0000 at byte 3"},
+		{id.New(), "annotation_unstorable", "annotation description: 2 code points replaced with U+FFFD"},
+	}
+	for _, r := range rejections {
+		if _, err := env.pool.Exec(env.ctx,
+			`INSERT INTO ingest_rejections (id, org_id, source_id, received_at, reason, detail, raw)
+			 VALUES ($1, $2, $3, $4, $5, $6, '{"labels":{"alertname":"x"}}'::jsonb)`,
+			r.id, id.New(), id.New(), time.Now().UTC(), r.reason, r.detail); err != nil {
+			t.Fatalf("record a %s rejection at migration 35: %v — 00035 exists to make this "+
+				"reason writable, so a 23514 here means its Up never widened the CHECK", r.reason, err)
+		}
+	}
+
+	// Migrations land concurrently, and a migration this test has never heard of
+	// must not be rolled back unasserted underneath an assertion meant for another
+	// one. So the rollback is stepped by NAME: `down` refuses to move unless the
+	// top applied version is the one the next assertion is about.
 	appliedTop := func() int64 {
 		t.Helper()
 		st, err := migrate.Statuses(env.ctx, dsn)
@@ -285,10 +531,154 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 		}
 		return top
 	}
-	for appliedTop() > 30 {
-		if err := migrate.Down(env.ctx, dsn); err != nil {
-			t.Fatalf("goose down %s: %v", migrate.FormatVersion(appliedTop()), err)
+	// down rolls back exactly one migration and names the version it BELIEVED it
+	// was undoing, so an assertion that has drifted out of order fails as a
+	// drifted assertion rather than as a baffling introspection result three
+	// steps later.
+	down := func(want int64) {
+		t.Helper()
+		if top := appliedTop(); top != want {
+			t.Fatalf("about to roll back %s, but the top applied migration is %s",
+				migrate.FormatVersion(want), migrate.FormatVersion(top))
 		}
+		if err := migrate.Down(env.ctx, dsn); err != nil {
+			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
+		}
+	}
+
+	// ⛔ 00039 down, ATTEMPT ONE: REFUSED, because a synthetic batch is live. This
+	// is the assertion that turns ADR 0027's warning from a sentence into a
+	// property — and the failure has to be ATOMIC, because 00039's Down drops the
+	// table BEFORE it narrows the CHECK. A non-transactional Down would leave the
+	// operator with `delivery_drills` gone, the CHECK still wide, and goose still
+	// claiming 00039 is applied: neither schema, and nothing to roll forward to.
+	if top := appliedTop(); top != 39 {
+		t.Fatalf("about to attempt %s against a live synthetic batch, but the top applied "+
+			"migration is %s", migrate.FormatVersion(39), migrate.FormatVersion(top))
+	}
+	refusal := migrate.Down(env.ctx, dsn)
+	if refusal == nil {
+		t.Fatal("00039's Down succeeded with a live synthetic batch in ingest_batches — either " +
+			"the narrowed CHECK is not being re-added, or it was added NOT VALID; ADR 0027 " +
+			"records this rollback as a one-way door precisely because the surviving rows " +
+			"violate it, and a Down that quietly accepts them leaves a table whose own " +
+			"constraint is a lie")
+	}
+	// Named, so that this step cannot start passing on an unrelated failure — a
+	// Down that broke for any other reason would otherwise look like the refusal
+	// this asserts.
+	if !strings.Contains(refusal.Error(), "ingest_batches_mode_ck") {
+		t.Fatalf("00039's Down failed, but not on the narrowed CHECK: %v", refusal)
+	}
+	if top := appliedTop(); top != 39 {
+		t.Fatalf("00039 is recorded as %s after a FAILED Down — the rollback is not atomic, so "+
+			"the database is in a state no migration describes", migrate.FormatVersion(top))
+	}
+	if drillTables() != 1 {
+		t.Fatal("delivery_drills was dropped by a Down that then failed; the DROP TABLE and the " +
+			"CHECK narrowing have to succeed or fail together")
+	}
+	if def := batchModeCheck(); !strings.Contains(def, "synthetic") {
+		t.Fatalf("ingest_batches_mode_ck was narrowed by a Down that then failed: %s", def)
+	}
+
+	// What ADR 0027 tells the operator to do first. `retention.prune` disposes of a
+	// drill's rows by id in production; here one DELETE stands in for it, because
+	// what is under test is the migration, not the reaper.
+	if _, err := env.pool.Exec(env.ctx,
+		`DELETE FROM ingest_batches WHERE id = $1`, syntheticBatch); err != nil {
+		t.Fatalf("dispose of the synthetic batch: %v", err)
+	}
+
+	// 00039 down: the drills table goes AND the CHECK narrows. Both halves are
+	// asserted, because a Down that dropped the table and left the widened CHECK
+	// would pass a table-shaped assertion while leaving release N able to write a
+	// mode it has never heard of.
+	down(39)
+	if drillTables() != 0 {
+		t.Fatal("delivery_drills survived 00039's Down, so a release-N deployment keeps a table " +
+			"whose rows nothing will ever finish, dispose of, or read")
+	}
+	if def := batchModeCheck(); strings.Contains(def, "synthetic") {
+		t.Fatalf("ingest_batches_mode_ck still admits synthetic after 00039's Down: %s — the "+
+			"constraint name is a runtime contract (returned as errs.Error.Code on a 23514), so "+
+			"it must be re-added under the same name with the OLD member list", def)
+	}
+
+	// ⭐ 00038 down: the column comes back. This is the interesting direction —
+	// 00038's Up is a DROP COLUMN, so its Down is an ADD COLUMN that no database
+	// has ever executed, and it has to arrive NOT NULL DEFAULT true or a
+	// rolled-back release-N pod meets a 23502 on the first source it writes.
+	down(38)
+	if n := reconcileEnabledColumns(); n != 1 {
+		t.Fatal("alert_sources.reconcile_enabled did not come back on 00038's Down; the Down of " +
+			"a DROP COLUMN is an ADD COLUMN, and one that never runs is the whole reason this " +
+			"test asserts the state rather than the exit code")
+	}
+	var nullable, colDefault string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT is_nullable, coalesce(column_default, '') FROM information_schema.columns
+		  WHERE table_name = 'alert_sources' AND column_name = 'reconcile_enabled'`).
+		Scan(&nullable, &colDefault); err != nil {
+		t.Fatalf("introspect the restored reconcile_enabled: %v", err)
+	}
+	if nullable != "NO" || !strings.HasPrefix(colDefault, "true") {
+		t.Fatalf("reconcile_enabled came back is_nullable=%q default=%q, want NO / true — a "+
+			"release-N writer OMITS this column on some paths and every existing row has to read "+
+			"as enabled, which is the value 00038 says is the only correct one", nullable, colDefault)
+	}
+
+	// 00037 down: the route-tree column goes.
+	down(37)
+	if amRoutesColumns() != 0 {
+		t.Fatal("source_health.am_routes survived 00037's Down, so a release-N pod meets a " +
+			"column its INSERT column list has never heard of")
+	}
+
+	// 00036 down: the function comes back with the OLD default in its signature.
+	down(36)
+	if args := partitionsManageArgs(); !strings.Contains(args, "p_raw_retention_days integer DEFAULT 14") {
+		t.Fatalf("oto_partitions_manage(%s) did not go back to the 14-day raw-retention "+
+			"default; 00036's Down is a CREATE OR REPLACE and it has to replace the whole body, "+
+			"not just the comments", args)
+	}
+
+	// ⭐ 00035 down: the two widened reasons become `undecodable` — what version N
+	// would itself have recorded — WITHOUT losing the rows or the true reason.
+	down(35)
+	for _, r := range rejections {
+		var reason, detail string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT reason, detail FROM ingest_rejections WHERE id = $1`, r.id).Scan(&reason, &detail); err != nil {
+			t.Fatalf("the %s rejection did not survive 00035's Down: %v — this table is the "+
+				"ENTIRE audit trail for a rejected alert, and deleting the rows during a "+
+				"rollback destroys the evidence at the moment somebody is reading it",
+				r.reason, err)
+		}
+		if reason != "undecodable" {
+			t.Fatalf("a %s rejection reads %q after 00035's Down, want undecodable — the "+
+				"narrowed CHECK cannot admit the old value, so a row left alone is a row the "+
+				"next validating scan rejects", r.reason, reason)
+		}
+		if want := "[" + r.reason + "] " + r.detail; detail != want {
+			t.Fatalf("detail = %q, want %q — the true reason is preserved at the FRONT of "+
+				"detail precisely so that rewriting reason to undecodable loses nothing",
+				detail, want)
+		}
+	}
+	if def := rejectionReasonCheck(); strings.Contains(def, "invalid_label_value") ||
+		strings.Contains(def, "annotation_unstorable") {
+		t.Fatalf("ingest_rejections_reason_ck still admits the widened members after 00035's "+
+			"Down: %s — the constraint name is a runtime contract (returned as errs.Error.Code "+
+			"on a 23514), so it must be re-added under the same name with the OLD member list", def)
+	}
+
+	// 00034 through 00031 are rolled back without individual comment; what the
+	// next three assertions prove is that 00034, 00033 and 00032 put their
+	// DEFAULTs back, and what the rest of the test proves is that 00030, 00029 and
+	// 00028 can be undone.
+	for top := appliedTop(); top > 30; top = appliedTop() {
+		down(top)
 	}
 	if channelsDefaults() != 2 {
 		t.Fatal("channels lost its DEFAULT now() permanently: 00032's Down did not restore it, " +
@@ -299,6 +689,11 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 		t.Fatal("orgs or channel_credentials lost its DEFAULT now() permanently: 00033's Down " +
 			"did not restore it, so an operator rolling the release back would meet a not-null " +
 			"violation on the first tenant or credential a release-N pod writes")
+	}
+	if n := remainingClockDefaults(); n != 20 {
+		t.Fatalf("00034's Down restored %d of its 20 defaults; the ones it missed are gone "+
+			"permanently, so an operator rolling the release back would meet a not-null "+
+			"violation on the first row a release-N pod writes to that table", n)
 	}
 
 	// The table 00030 dropped is gone at the top of the stack.
@@ -363,6 +758,47 @@ func TestTheTopThreeMigrationsAreReversible(t *testing.T) {
 	}
 	if buckets() != 0 {
 		t.Fatal("rate_limit_buckets survived the way back up")
+	}
+	// The round trip is only closed if the way back up restores what the way down
+	// removed — and the rest of the suite runs against this schema.
+	if drillTables() != 1 {
+		t.Fatal("delivery_drills did not come back on the way up")
+	}
+	if def := batchModeCheck(); !strings.Contains(def, "synthetic") {
+		t.Fatalf("ingest_batches_mode_ck did not re-widen on the way up: %s — the drill endpoint "+
+			"is the only writer of that mode, and without it every drill fails at accept", def)
+	}
+	// ⚠️ 00038 closes in the OTHER direction: its Up is the DROP, so the column
+	// that came back on the way down has to be gone again, or the rest of the suite
+	// is running against a schema where the flag it deleted still exists.
+	if n := reconcileEnabledColumns(); n != 0 {
+		t.Fatal("alert_sources.reconcile_enabled survived the way back up; 00038's Up is the " +
+			"DROP COLUMN, and a column left behind here is one the ORM-free INSERT column lists " +
+			"in internal/sources no longer name")
+	}
+	if amRoutesColumns() != 1 {
+		t.Fatal("source_health.am_routes did not come back on the way up")
+	}
+	if args := partitionsManageArgs(); !strings.Contains(args, "p_raw_retention_days integer DEFAULT 30") {
+		t.Fatalf("oto_partitions_manage(%s) did not come back up to the 30-day default", args)
+	}
+	if def := rejectionReasonCheck(); !strings.Contains(def, "invalid_label_value") ||
+		!strings.Contains(def, "annotation_unstorable") {
+		t.Fatalf("ingest_rejections_reason_ck did not re-widen on the way up: %s", def)
+	}
+	// ⚠️ The rewritten rows STAY rewritten: 00035's Up widens the enum and does not
+	// undo the Down's rewrite, which is why the true reason is kept in `detail` and
+	// a re-application can be reconciled by eye rather than by re-derivation.
+	for _, r := range rejections {
+		var reason, detail string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT reason, detail FROM ingest_rejections WHERE id = $1`, r.id).Scan(&reason, &detail); err != nil {
+			t.Fatalf("the %s rejection did not survive the round trip: %v", r.reason, err)
+		}
+		if reason != "undecodable" || !strings.HasPrefix(detail, "["+r.reason+"] ") {
+			t.Fatalf("after the round trip the %s rejection reads reason=%q detail=%q; the Up "+
+				"is a pure relaxation and must not touch rows", r.reason, reason, detail)
+		}
 	}
 }
 

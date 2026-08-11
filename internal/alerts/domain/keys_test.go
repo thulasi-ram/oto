@@ -2,11 +2,12 @@ package domain
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -398,7 +399,16 @@ func TestGroupKey_IsInjectiveOverAdversarialReceivers(t *testing.T) {
 // A collision here is a rule edit that oto reports as no edit — the drift
 // detection that is the headline differentiator, silently answering "no".
 func TestRuleFingerprint_IsInjectiveOverAdversarialExprs(t *testing.T) {
-	sets := adversarialLabelSets(t)
+	// The label sets are RAW MAPS, not constructed Labels: §C.6 is the one §C key
+	// whose labels come from Prometheus rather than from oto's boundary, so the
+	// corpus is free to carry the bytes NewLabels refuses — a NUL in a value, a
+	// name outside the label charset — and it must, because those are exactly the
+	// inputs the kernel now accepts through CanonMap.
+	sets := append(adversarialLabelSets(t),
+		map[string]string{"b": "\x00"},
+		map[string]string{"b": "\x00\x00\x00\x01"},
+		map[string]string{"b\x00c": ""},
+	)
 	annSets := []map[string]string{
 		nil,
 		{"summary": ""},
@@ -406,7 +416,9 @@ func TestRuleFingerprint_IsInjectiveOverAdversarialExprs(t *testing.T) {
 		{"summary": "\x00\x00\x00\x01"},
 		{"a\x00b": ""},
 	}
-	durations := []time.Duration{0, time.Second, 10 * time.Minute}
+	// Whole seconds, a fractional second, and a value that renders differently
+	// under the two duration spellings §C.6 used to have (90.4 truncated to "90").
+	durations := []float64{0, 1, 1.5, 600, 90.4}
 
 	seen := map[string]string{}
 	ids := map[string]struct{}{}
@@ -415,14 +427,11 @@ func TestRuleFingerprint_IsInjectiveOverAdversarialExprs(t *testing.T) {
 		for _, in := range sets {
 			for _, an := range annSets {
 				for _, d := range durations {
-					labels := mustLabels(t, in)
-					annotations, err := NewAnnotations(an)
-					require.NoError(t, err)
-
-					id := fieldsID(expr, d.String()) + " " + labelsID(t, in) + " " + labelsID(t, an)
+					id := fieldsID(expr, strconv.FormatFloat(d, 'f', -1, 64)) +
+						" " + labelsID(t, in) + " " + labelsID(t, an)
 					ids[id] = struct{}{}
 
-					fp := ComputeRuleFingerprint(expr, d, 0, labels, annotations).String()
+					fp := ComputeRuleFingerprint(expr, d, 0, in, an).String()
 					if prev, dup := seen[fp]; dup && prev != id {
 						t.Fatalf("RuleFingerprint collision:\n  %s\n  %s\nboth address %s", prev, id, fp)
 					}
@@ -474,11 +483,10 @@ func TestNewGroupKey_Rejects(t *testing.T) {
 }
 
 func TestComputeRuleFingerprint(t *testing.T) {
-	labels := mustLabels(t, map[string]string{"severity": "critical"})
-	annotations, err := NewAnnotations(map[string]string{"summary": "s"})
-	require.NoError(t, err)
+	labels := map[string]string{"severity": "critical"}
+	annotations := map[string]string{"summary": "s"}
 
-	base := ComputeRuleFingerprint("up == 0", 10*time.Minute, 0, labels, annotations)
+	base := ComputeRuleFingerprint("up == 0", 600, 0, labels, annotations)
 
 	assert.Regexp(t, validate.PatternSHA256Hex, base.String())
 	assert.Len(t, base.String(), 64)
@@ -486,40 +494,141 @@ func TestComputeRuleFingerprint(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, base, parsed)
 
-	assert.Equal(t, base, ComputeRuleFingerprint("up == 0", 10*time.Minute, 0, labels, annotations),
+	assert.Equal(t, base, ComputeRuleFingerprint("up == 0", 600, 0, labels, annotations),
 		"content addressing is a pure function")
 
-	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 1", 10*time.Minute, 0, labels, annotations))
-	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 0", 11*time.Minute, 0, labels, annotations))
-	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 0", 10*time.Minute, time.Minute, labels, annotations))
-	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 0", 10*time.Minute, 0,
-		mustLabels(t, map[string]string{"severity": "warning"}), annotations))
-
-	otherAnn, err := NewAnnotations(map[string]string{"summary": "s2"})
-	require.NoError(t, err)
-	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 0", 10*time.Minute, 0, labels, otherAnn))
+	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 1", 600, 0, labels, annotations))
+	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 0", 660, 0, labels, annotations))
+	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 0", 600, 60, labels, annotations))
+	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 0", 600, 0,
+		map[string]string{"severity": "warning"}, annotations))
+	assert.NotEqual(t, base, ComputeRuleFingerprint("up == 0", 600, 0, labels,
+		map[string]string{"summary": "s2"}))
 
 	// `for` and `keep_firing_for` are distinct fields, not a commutative pair.
 	assert.NotEqual(t,
-		ComputeRuleFingerprint("e", time.Minute, 2*time.Minute, Labels{}, Annotations{}),
-		ComputeRuleFingerprint("e", 2*time.Minute, time.Minute, Labels{}, Annotations{}))
+		ComputeRuleFingerprint("e", 60, 120, nil, nil),
+		ComputeRuleFingerprint("e", 120, 60, nil, nil))
 
 	// Labels and annotations are separate fields even when one is empty.
 	assert.NotEqual(t,
-		ComputeRuleFingerprint("e", 0, 0, labels, Annotations{}),
-		ComputeRuleFingerprint("e", 0, 0, Labels{}, annotations))
+		ComputeRuleFingerprint("e", 0, 0, labels, nil),
+		ComputeRuleFingerprint("e", 0, 0, nil, annotations))
+
+	// A nil map and an empty map are the same rule: §C.6 hashes the entries, and
+	// there are none either way.
+	assert.Equal(t,
+		ComputeRuleFingerprint("e", 0, 0, nil, nil),
+		ComputeRuleFingerprint("e", 0, 0, map[string]string{}, map[string]string{}))
 }
 
-func TestComputeRuleFingerprint_DurationsAreWholeSeconds(t *testing.T) {
-	// "Durations are rendered as whole seconds in base 10, matching Prometheus's
-	// own wire form, where `for: 10m` is the number 600." Sub-second precision is
-	// therefore not addressable, by design.
-	assert.Equal(t,
-		ComputeRuleFingerprint("e", 90*time.Second, 0, Labels{}, Annotations{}),
-		ComputeRuleFingerprint("e", 90*time.Second+400*time.Millisecond, 0, Labels{}, Annotations{}))
+// TestComputeRuleFingerprint_DurationsAreShortestRoundTrip pins the rendering of
+// `for` and `keep_firing_for`, which is the ONE place the two §C.6
+// implementations ever disagreed.
+//
+// The kernel used to take a time.Duration and write int64(d/time.Second), so
+// `for: 1s500ms` addressed as "1"; rules/domain took float seconds and wrote
+// strconv.FormatFloat(f, 'f', -1, 64), so the same rule addressed as "1.5". Every
+// stored rule_fingerprint was computed by the second one — NewSnapshot is the only
+// production path — so the float rendering is the one that must survive, and the
+// kernel's truncation was a latent re-keying bug rather than a design choice.
+// TestFingerprintAgreesWithTheKernel could not see it: its corpus was whole
+// seconds, the only inputs the truncating spelling could express.
+func TestComputeRuleFingerprint_DurationsAreShortestRoundTrip(t *testing.T) {
+	// Sub-second precision IS addressable: `for: 1s500ms` is a different rule
+	// from `for: 1s`, and reporting them as the same rule would be missed drift.
 	assert.NotEqual(t,
-		ComputeRuleFingerprint("e", 90*time.Second, 0, Labels{}, Annotations{}),
-		ComputeRuleFingerprint("e", 91*time.Second, 0, Labels{}, Annotations{}))
+		ComputeRuleFingerprint("e", 90, 0, nil, nil),
+		ComputeRuleFingerprint("e", 90.4, 0, nil, nil))
+	assert.NotEqual(t,
+		ComputeRuleFingerprint("e", 90, 0, nil, nil),
+		ComputeRuleFingerprint("e", 91, 0, nil, nil))
+
+	// 600 and 600.0 are one rule: the shortest round-tripping form is the same
+	// string for both, which is why Prometheus reporting `duration: 600.0` after
+	// reporting `600` does not read as an edit.
+	assert.Equal(t,
+		ComputeRuleFingerprint("e", 600, 0, nil, nil),
+		ComputeRuleFingerprint("e", float64(600.0), 0, nil, nil))
+}
+
+// TestComputeRuleFingerprint_PreImage spells the §C.6 pre-image out by hand and
+// hashes it independently. It is the golden vector for the clause: every other
+// §C.6 test compares one call of the function against another, so a change to the
+// framing would move every expected value with it and stay green. This one cannot
+// move — it is written in literal bytes.
+func TestComputeRuleFingerprint_PreImage(t *testing.T) {
+	expr := "up == 0"
+	labels := map[string]string{"b": "2", "a": "1"}
+	ann := map[string]string{"summary": "s"}
+
+	var pre []byte
+	f := func(b []byte) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+		pre = append(pre, n[:]...)
+		pre = append(pre, b...)
+	}
+	// canon(labels): names ASC, each name and value length-prefixed.
+	canonLabels := []byte{
+		0, 0, 0, 1, 'a', 0, 0, 0, 1, '1',
+		0, 0, 0, 1, 'b', 0, 0, 0, 1, '2',
+	}
+	canonAnn := []byte{
+		0, 0, 0, 7, 's', 'u', 'm', 'm', 'a', 'r', 'y', 0, 0, 0, 1, 's',
+	}
+
+	f([]byte(expr))
+	f([]byte("600"))
+	f([]byte("0"))
+	f(canonLabels)
+	pre = append(pre, canonAnn...) // the tail is written raw
+
+	sum := sha256.Sum256(pre)
+	assert.Equal(t, hex.EncodeToString(sum[:]),
+		ComputeRuleFingerprint(expr, 600, 0, labels, ann).String())
+}
+
+// TestComputeIdempotencyKey_PreImage is the same golden vector for §C.7.
+func TestComputeIdempotencyKey_PreImage(t *testing.T) {
+	subject := uuid.MustParse("018f3a4b-0000-7000-8000-0000000000e5")
+
+	var pre []byte
+	f := func(b []byte) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+		pre = append(pre, n[:]...)
+		pre = append(pre, b...)
+	}
+	org, subj := orgA, subject
+	f(org[:])
+	f([]byte("alert_group"))
+	f(subj[:])
+	f([]byte("all_resolved"))
+	pre = append(pre, "7"...) // itoa(state_version) is the tail, written raw
+
+	sum := sha256.Sum256(pre)
+	assert.Equal(t, hex.EncodeToString(sum[:]),
+		ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7).String())
+}
+
+// TestCanonMapAgreesWithLabelsCanonical is what is left of the C.6 cross-check
+// once the two fingerprint implementations have become one: the interesting claim
+// was never "the two digests match", it was "canonicalising a raw map and
+// canonicalising a constructed Labels are the same function". That claim outlives
+// the collapse, because CanonMap is the door §C.6 needs and Labels.Canonical is
+// what §C.2 and §C.4 hash.
+//
+// It holds by construction now — CanonMap IS Labels.canonical, reached without the
+// constructor — and the test stays so that a future edit to either cannot quietly
+// fork them again.
+func TestCanonMapAgreesWithLabelsCanonical(t *testing.T) {
+	for _, in := range adversarialLabelSets(t) {
+		labels := mustLabels(t, in)
+		assert.Equal(t, labels.Canonical(nil), CanonMap(in), "§C.1 has one spelling: %v", in)
+	}
+	assert.Empty(t, CanonMap(nil), "no entries, no bytes")
+	assert.Empty(t, CanonMap(map[string]string{}))
 }
 
 func TestNewRuleFingerprint_Rejects(t *testing.T) {

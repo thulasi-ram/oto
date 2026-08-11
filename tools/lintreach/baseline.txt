@@ -3,7 +3,8 @@
 # Every line is a declaration that exists TODAY and is wired to nothing: a struct
 # field with no production writer or no production reader, a json tag that does
 # not round-trip with api/openapi/openapi.yaml, or an exported New* constructor
-# with no caller outside its own file. They are reported on every run and do NOT
+# or Compute* identity function with no caller outside its own file. They are
+# reported on every run and do NOT
 # fail the build. Nothing else is exempt: a finding on any other key fails
 # immediately, so this list can only shrink. A line here that stops matching is
 # an error — the exemption cannot outlive the debt.
@@ -33,8 +34,8 @@
 go-only:h	a Go api DTO serialises this key; openapi.yaml declares no such property — the contract and the server disagree (internal/alerts/api/query.go:428)
 go-only:h	a Go api DTO serialises this key; openapi.yaml declares no such property — the contract and the server disagree (internal/alerts/api/query.go:428)
 go-only:k	a Go api DTO serialises this key; openapi.yaml declares no such property — the contract and the server disagree (internal/alerts/api/query.go:427)
-go-only:subject	a Go api DTO serialises this key; openapi.yaml declares no such property — the contract and the server disagree (internal/sources/api/dto.go:84)
 go-only:v	a Go api DTO serialises this key; openapi.yaml declares no such property — the contract and the server disagree (internal/stats/api/stats.go:219)
+noctor:github.com/thulasiram/oto/internal/alerts/domain.ComputeSourceFingerprint	exported Compute* has no caller outside its own file — called by 3 test site(s) and nothing else. This is the §C.7/§C.6 defect a third time, and the reason the noctor check was widened to Compute*: production computes the C.3 fingerprint by calling LabelSet.Fingerprint() directly (ingestion/decode/bounds.go, sources/service/reconcile.go, alerts/api/map.go), so this façade is a name a reader would edit to no effect. Unlike C.6 and C.7 it is not a second IMPLEMENTATION — it is one line of delegation — so nothing can silently disagree with it, and its removal means touching SPEC §C.3 (which names this signature as the kernel API) and test/harness/builders.go. Both belong to a change about C.3, not to the one that collapsed C.6 and C.7 (internal/alerts/domain/keys.go:126)
 noctor:github.com/thulasiram/oto/internal/alerts/domain.NewGroupKey	exported constructor has no caller outside its own file — the thing it builds is never constructed (internal/alerts/domain/keys.go:141)
 noctor:github.com/thulasiram/oto/internal/alerts/domain.NewIdempotencyKey	exported constructor has no caller outside its own file — the thing it builds is never constructed (internal/alerts/domain/keys.go:218)
 noctor:github.com/thulasiram/oto/internal/alerts/domain.NewRuleFingerprint	exported constructor has no caller outside its own file — the thing it builds is never constructed (internal/alerts/domain/keys.go:179)
@@ -80,7 +81,6 @@ noread:github.com/thulasiram/oto/internal/channels/providers/slack.Identity.Team
 noread:github.com/thulasiram/oto/internal/channels/providers/slack.Identity.TeamName	field is never read in production — the value goes nowhere (internal/channels/providers/slack/provider.go:170)
 noread:github.com/thulasiram/oto/internal/channels/providers/slack.Identity.UserID	field is never read in production — the value goes nowhere (internal/channels/providers/slack/provider.go:171)
 noread:github.com/thulasiram/oto/internal/channels/providers/slack.Identity.UserName	field is never read in production — the value goes nowhere (internal/channels/providers/slack/provider.go:172)
-noread:github.com/thulasiram/oto/internal/channels/render/slack.Block.AltText	field is never read in production — the value goes nowhere (internal/channels/render/slack/blockkit.go:101)
 noread:github.com/thulasiram/oto/internal/channels/render/slack.Error.Payload	field is never read in production — the value goes nowhere (internal/channels/render/slack/validate.go:51)
 noread:github.com/thulasiram/oto/internal/channels/render/slack.Payload.LinkNames	field is never read in production — the value goes nowhere (internal/channels/render/slack/blockkit.go:65)
 noread:github.com/thulasiram/oto/internal/channels/render/slack.Text.Emoji	field is never read in production — the value goes nowhere (internal/channels/render/slack/blockkit.go:108)
@@ -117,9 +117,6 @@ noread:github.com/thulasiram/oto/internal/enrichment/service.RunResult.Subject	f
 noread:github.com/thulasiram/oto/internal/grouping/service.CloseResult.Considered	field is never read in production — the value goes nowhere (internal/grouping/service/service.go:510)
 noread:github.com/thulasiram/oto/internal/grouping/service.CommentResult.FanOut	field is never read in production — the value goes nowhere (internal/grouping/service/read.go:276)
 noread:github.com/thulasiram/oto/internal/grouping/service.Detail.StormActive	field is never read in production — the value goes nowhere (internal/grouping/service/read.go:99)
-noread:github.com/thulasiram/oto/internal/grouping/service.JoinResult.Joined	field is never read in production — the value goes nowhere (internal/grouping/service/service.go:250)
-noread:github.com/thulasiram/oto/internal/grouping/service.JoinResult.StormEnded	field is never read in production — the value goes nowhere (internal/grouping/service/service.go:254)
-noread:github.com/thulasiram/oto/internal/grouping/service.JoinResult.StormStarted	field is never read in production — the value goes nowhere (internal/grouping/service/service.go:253)
 noread:github.com/thulasiram/oto/internal/identity/domain.Org.CreatedAt	field is never read in production — the value goes nowhere (internal/identity/domain/org.go:37)
 noread:github.com/thulasiram/oto/internal/identity/domain.Org.UpdatedAt	field is never read in production — the value goes nowhere (internal/identity/domain/org.go:38)
 noread:github.com/thulasiram/oto/internal/identity/domain.SlackIdentity.CreatedAt	field is never read in production — the value goes nowhere (internal/identity/domain/slack_identity.go:78)
@@ -308,7 +305,6 @@ nowrite:github.com/thulasiram/oto/internal/sources/domain.SilenceFilter.Filter	f
 nowrite:github.com/thulasiram/oto/internal/sources/domain.SourceFilter.ClusterID	field is never written in production — nothing populates it (internal/sources/domain/source.go:119)
 nowrite:github.com/thulasiram/oto/internal/sources/domain.SourceFilter.IncludeDeleted	field is never written in production — nothing populates it (internal/sources/domain/source.go:122)
 nowrite:github.com/thulasiram/oto/internal/sources/domain.SourceFilter.Kind	field is never written in production — nothing populates it (internal/sources/domain/source.go:120)
-nowrite:github.com/thulasiram/oto/internal/sources/domain.SourceFilter.ReconcileEnabled	field is never written in production — nothing populates it (internal/sources/domain/source.go:121)
 nowrite:github.com/thulasiram/oto/internal/sources/service.HTTPClientFactory.Sleep	field is never written in production — nothing populates it (internal/sources/service/factory.go:38)
 nowrite:github.com/thulasiram/oto/internal/sources/service.HTTPClientFactory.Transport	field is never written in production — nothing populates it (internal/sources/service/factory.go:36)
 nowrite:github.com/thulasiram/oto/internal/stats/domain.Overview.Alerts	field is never written in production — nothing populates it (internal/stats/domain/stats.go:165)

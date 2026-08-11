@@ -30,10 +30,21 @@
 //     is the check that catches a contract shape with no Go home at all, which no
 //     amount of Go-side analysis can see (GroupDetailDTO.threads).
 //
-//  3. noctor — an exported New* constructor with no caller outside its own file.
-//     The Slack Acknowledge service was fully implemented, fully tested, and never
-//     constructed; NewInteractionService had zero callers and nothing else in the
-//     tree could tell.
+//  3. noctor — an exported New* constructor or Compute* identity function with no
+//     caller outside its own file. The Slack Acknowledge service was fully
+//     implemented, fully tested, and never constructed; NewInteractionService had
+//     zero callers and nothing else in the tree could tell.
+//
+//     Compute* is here for the same reason and a sharper one. The SPEC §C identity
+//     functions are the tree's most quotable code: exported from the shared kernel,
+//     documented against a spec clause, heavily tested — and two of them were
+//     called by nothing but their own tests, while a SECOND implementation of the
+//     same clause did the real work elsewhere. That is worse than dead code. A
+//     reader edits the copy that looks canonical, watches the tests go green, and
+//     ships nothing. The prefix is not a naming convention this gate invents: §C
+//     names these functions, and every one of them computes a value some column
+//     stores. If a Compute* has no production caller, either the column is filled
+//     by a duplicate or the column is never filled.
 //
 // # WHAT COUNTS AS A WRITE, AND WHY THE ANSWER IS NOT OBVIOUS
 //
@@ -475,7 +486,19 @@ func (a *analyzer) checkOne(imp types.Importer, path, dir string, names []string
 	a.units = append(a.units, unit{pkg: pkg, files: files, info: info})
 }
 
-// ctorUse attributes one reference to an exported New* function. A reference
+// reachChecked reports whether a package-level function name is one the noctor
+// check follows. `New` is a constructor; `Compute` is a SPEC §C identity function.
+//
+// The list is deliberately two entries and not "every exported function". A
+// package exists to be imported, so "no caller yet" is an ordinary state for
+// general API surface and generalising here would trade two real findings for a
+// baseline nobody reads. These two prefixes are different: both name a function
+// that BUILDS something the product stores, so no caller means nothing is built.
+func reachChecked(name string) bool {
+	return strings.HasPrefix(name, "New") || strings.HasPrefix(name, "Compute")
+}
+
+// ctorUse attributes one reference to an exported New*/Compute* function. A reference
 // from the declaring file proves nothing on its own: the Acknowledge service's
 // own file referenced NewInteractionService and the composition root never did.
 func (a *analyzer) ctorUse(id *ast.Ident, info *types.Info, enclosing *types.Func, file string) {
@@ -483,7 +506,7 @@ func (a *analyzer) ctorUse(id *ast.Ident, info *types.Info, enclosing *types.Fun
 	if !ok || fn.Pkg() == nil || fn.Signature().Recv() != nil {
 		return
 	}
-	if !fn.Exported() || !strings.HasPrefix(fn.Name(), "New") || !inDeclRoot(fn.Pkg().Path()) {
+	if !fn.Exported() || !reachChecked(fn.Name()) || !inDeclRoot(fn.Pkg().Path()) {
 		return
 	}
 	key := fn.Pkg().Path() + "." + fn.Name()
@@ -565,7 +588,7 @@ func (a *analyzer) walk(f *ast.File, pkg *types.Package, info *types.Info) {
 		dv := *v
 		if fd, ok := d.(*ast.FuncDecl); ok {
 			dv.fn, _ = info.Defs[fd.Name].(*types.Func)
-			if fd.Recv == nil && fd.Name.IsExported() && strings.HasPrefix(fd.Name.Name, "New") &&
+			if fd.Recv == nil && fd.Name.IsExported() && reachChecked(fd.Name.Name) &&
 				!isTestFile(file) && !a.generated[file] && inDeclRoot(pkg.Path()) {
 				key := pkg.Path() + "." + fd.Name.Name
 				rec := a.ctors[key]
@@ -973,7 +996,7 @@ func (a *analyzer) findings() []finding {
 			note = fmt.Sprintf("called by %d test site(s) and nothing else", test)
 		}
 		out = append(out, finding{key: "noctor:" + key, pos: pos(rec.pos),
-			why: "exported constructor has no caller outside its own file", note: note})
+			why: "exported constructor or Compute* has no caller outside its own file", note: note})
 	}
 	return out
 }

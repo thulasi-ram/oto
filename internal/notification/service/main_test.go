@@ -74,9 +74,12 @@ func newFixture(t *testing.T, caps domain.Capability) fixture {
 	           created_at, updated_at)
 	        VALUES ($1,$2,'webhook',$3,'{}'::jsonb,$4,'webhook.json',true,$5,$5)`,
 		channelID, org.ID, "chan-"+suffix, int64(caps), h.Now())
-	h.Exec(`INSERT INTO notification_policies (id, org_id, name, priority, reasons, channel_ids)
-	        VALUES ($1,$2,$3,1,ARRAY['fired','new_alerts'],ARRAY[$4::uuid])`,
-		policyID, org.ID, "pol-"+suffix, channelID)
+	// Same story on `notification_policies`, which 00034 took the database's
+	// `DEFAULT now()` away from for the same reason.
+	h.Exec(`INSERT INTO notification_policies (id, org_id, name, priority, reasons, channel_ids,
+	           created_at, updated_at)
+	        VALUES ($1,$2,$3,1,ARRAY['fired','new_alerts'],ARRAY[$4::uuid],$5,$5)`,
+		policyID, org.ID, "pol-"+suffix, channelID, h.Now())
 
 	return fixture{
 		pool:     h.Pool,

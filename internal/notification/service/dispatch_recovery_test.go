@@ -107,9 +107,9 @@ func TestMarkSentReportsALostClaim(t *testing.T) {
 	_, err = fx.pool.Exec(ctx, `
 		INSERT INTO notifications
 		  (id, org_id, subject_kind, subject_id, group_id, reason, policy_id,
-		   state_version, idempotency_key, status)
-		VALUES ($1,$2,'alert_group',$3,$3,'fired',$4,1,$5,'dispatched')`,
-		notificationID, fx.orgID, fx.groupID, fx.policyID, idemKey("c"))
+		   state_version, idempotency_key, status, created_at, updated_at)
+		VALUES ($1,$2,'alert_group',$3,$3,'fired',$4,1,$5,'dispatched',$6,$6)`,
+		notificationID, fx.orgID, fx.groupID, fx.policyID, idemKey("c"), now)
 	require.NoError(t, err)
 
 	d, madeNew, err := deliveries.Create(ctx, fx.scope, repository.NewDelivery{

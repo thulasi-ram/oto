@@ -91,8 +91,13 @@ func (h *H) User(org Org) User {
 		Email:       uniqueSlug("user") + "@example.test",
 		DisplayName: "Test User",
 	}
-	h.Exec(`INSERT INTO users (id, org_id, email, display_name) VALUES ($1, $2, $3, $4)`,
-		u.ID, u.OrgID, u.Email, u.DisplayName)
+	// `created_at`/`updated_at` are NAMED and take the harness clock. 00034 removed
+	// this table's DEFAULT now() for the reason 00032 removed `channels`': the row
+	// is written by the application, so a seed that let `now()` fill it would be
+	// seeding a row the product itself cannot write.
+	h.Exec(`INSERT INTO users (id, org_id, email, display_name, created_at, updated_at)
+	        VALUES ($1, $2, $3, $4, $5, $5)`,
+		u.ID, u.OrgID, u.Email, u.DisplayName, h.Now())
 	return u
 }
 
@@ -113,8 +118,11 @@ func (h *H) Cluster(org Org) Cluster { return h.ClusterNamed(org, "prod") }
 func (h *H) ClusterNamed(org Org, key string) Cluster {
 	h.T.Helper()
 	c := Cluster{ID: id.New(), OrgID: org.ID, Key: ClusterKey(h.T, key)}
-	h.Exec(`INSERT INTO clusters (id, org_id, cluster_key, display_name) VALUES ($1, $2, $3, $4)`,
-		c.ID, c.OrgID, key, key)
+	// `created_at`/`updated_at` are NAMED and take the harness clock; 00034 removed
+	// this table's DEFAULT now(). See `User` above.
+	h.Exec(`INSERT INTO clusters (id, org_id, cluster_key, display_name, created_at, updated_at)
+	        VALUES ($1, $2, $3, $4, $5, $5)`,
+		c.ID, c.OrgID, key, key, h.Now())
 	return c
 }
 
@@ -152,9 +160,12 @@ func (h *H) SourceAt(org Org, cl Cluster, baseURL string) Source {
 		Name:      uniqueSlug("src"),
 		BaseURL:   baseURL,
 	}
-	h.Exec(`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url)
-	        VALUES ($1, $2, $3, $4, 'alertmanager', $5)`,
-		s.ID, s.OrgID, s.ClusterID, s.Name, s.BaseURL)
+	// `created_at`/`updated_at` are NAMED and take the harness clock; 00034 removed
+	// this table's DEFAULT now(). See `User` above.
+	h.Exec(`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url,
+	                                   created_at, updated_at)
+	        VALUES ($1, $2, $3, $4, 'alertmanager', $5, $6, $6)`,
+		s.ID, s.OrgID, s.ClusterID, s.Name, s.BaseURL, h.Now())
 	return s
 }
 

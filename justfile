@@ -30,11 +30,17 @@ up: infra migrate
     (cd {{web_dir}} && npm run dev) &
     wait
 
-# Start Postgres and Alertmanager, blocking until both are healthy.
+# Start Postgres, Alertmanager and Prometheus, blocking until all are healthy.
+#
+# Prometheus is named explicitly like the other two rather than left to a bare
+# `up`, because `--wait` only waits for the services it is given. It carries the
+# always-true rule in deploy/prometheus/oto-rules.yaml, so an alert reaches
+# Alertmanager within a minute of this returning — that, and not a hand-written
+# config, is what makes "bring the stack up and watch an alert arrive" true.
 [group('run')]
 infra:
-    docker compose up -d --wait postgres alertmanager
-    @echo "postgres :5432   alertmanager http://localhost:9093"
+    docker compose up -d --wait postgres alertmanager prometheus
+    @echo "postgres :5432   alertmanager http://localhost:9093   prometheus http://localhost:9090"
 
 # Stop the containers, keeping the data volume.
 [group('run')]
@@ -234,11 +240,47 @@ generate:
     go generate ./...
     cd {{web_dir}} && npm run generate
 
+# Gate G1 (SPEC §L.8.1): Go DTO → OpenAPI. Reflects every `*DTO`/`*Request`/
+# `*Query` struct and diffs the derived schema against api/openapi/openapi.yaml.
+# It reads YAML and runs the reflector; it needs no Docker and takes a second.
+[group('check')]
+dto-check:
+    go test -count=1 ./test/contract/
+
+# Gate G2 (SPEC §L.8.1): running server → OpenAPI. Assembles the REAL container
+# over a REAL migrated Postgres, drives every declared operation over HTTP, and
+# validates the bytes each handler actually wrote against the schema the contract
+# declares for that operation, status and media type.
+#
+# It DEVIATES from the SPEC's `schemathesis`, and test/contract/server/doc.go
+# carries the argument: a Python runtime for one check, in a Go+Node repository
+# whose server cannot be started without the Go test harness, costs more than it
+# closes. Needs Docker.
+[group('check')]
+server-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "${DOCKER_HOST:-}" ] && [ -S "$HOME/.colima/default/docker.sock" ]; then
+      export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+      export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+      echo "→ colima detected — DOCKER_HOST=$DOCKER_HOST"
+    fi
+    go test -count=1 ./test/contract/server/
+
 # Gate G3 (SPEC §L.8.1): the checked-in TS client must match the contract byte
 # for byte. A Go DTO that drifts from openapi.yaml fails here, not in a browser.
 [group('check')]
 generate-check:
     cd {{web_dir}} && npm run generate:check
+
+# Gate G4 (SPEC §L.8.1): OpenAPI → valibot. `web/src/api/generated/validators.ts`
+# is generated from the contract and CHECKED IN; this regenerates it and fails on
+# any diff, exactly as G3 does for the TS types. It is what makes the §L.8 rule
+# — no hand-written valibot schema may describe an API response — enforceable
+# rather than aspirational.
+[group('check')]
+validators-check:
+    cd {{web_dir}} && npm run gen:validators:check
 
 # SCOPE-BOUNDARY AC-49 (SPEC §P-18): the banned vocabulary and the forbidden
 # person-subject columns, over internal/, web/src/ and db/migrations/. Known debt
@@ -260,8 +302,13 @@ lint-reachability:
 
 # Everything CI runs, in the order CI runs it. Keep this list and
 # .github/workflows/ci.yml in step -- a contributor's green must be CI's green.
+#
+# The four drift gates of SPEC §L.8.1 run BEFORE `test`: they are the cheapest
+# failures in the list and the ones whose message points straight at the fix, and
+# a contract failure buried behind a full `go test -race ./...` is a contract
+# failure found ten minutes late.
 [group('check')]
-ci: lint lint-vocabulary lint-reachability generate-check test ui-build ui-test
+ci: lint lint-vocabulary lint-reachability dto-check server-check generate-check validators-check test ui-build ui-test
 
 # Install the toolchain this repo expects.
 [group('check')]

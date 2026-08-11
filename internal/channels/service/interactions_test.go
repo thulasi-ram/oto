@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -163,8 +165,11 @@ func newService(t *testing.T, conv SlackConversations, actors SlackActors, group
 		Groups:        groups,
 		Enqueuer:      enq,
 		Notice:        notice,
-		Clock:         clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)),
-		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		// A real counter on no registry: the increments are observable without
+		// any test having to own a registry or worry about duplicate registration.
+		Metrics: NewInteractionMetrics(nil),
+		Clock:   clock.NewFake(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)),
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("NewInteractionService: %v", err)
@@ -287,6 +292,101 @@ func TestHandleEnqueuesTheAcknowledgeAndNothingElse(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// counterValue reads a counter without pulling in client_golang's `testutil`.
+//
+// `testutil.ToFloat64` is the obvious call and is deliberately not used: it
+// drags `prometheus/common/expfmt` into the test build, which this module does
+// not otherwise require, and one assertion helper is not worth a `go mod tidy`
+// in the dependency graph. `Write` is the same interface `Gather` uses.
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatalf("read counter: %v", err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+// TestUnknownActionIsRecordedAndNotMerelyLogged.
+//
+// ⭐ THE 200 IS NOT NEGOTIABLE, SO THE COUNTER IS THE ONLY RECORD. Slack
+// disables an app's event subscriptions when more than 95 % of deliveries fail
+// inside a 60-minute window, which means oto may not answer 4xx to a button it
+// cannot route — the person who pressed it sees a tick either way. §H.8 requires
+// `slack_unknown_action_total` for exactly that reason: without it an unroutable
+// press is indistinguishable, from outside, from the silent no-op the whole
+// interaction path was fixed to abolish.
+//
+// The counter is asserted to stay STILL for the routable and the deliberately
+// inert ids too. A counter that also fires for `oto.noop.*` would read as a
+// permanent fault on every card oto posts, and an operator learns within a week
+// to ignore a metric that is never zero.
+func TestUnknownActionIsRecordedAndNotMerelyLogged(t *testing.T) {
+	tests := []struct {
+		name     string
+		actionID string
+		want     float64
+	}{
+		{
+			name:     "an unrecognised action id increments the counter",
+			actionID: "oto.something.new",
+			want:     1,
+		},
+		{
+			// Not oto's namespace at all — a button from another app delivered to
+			// oto's request URL, or a forgery inside an authentic envelope.
+			name:     "a foreign action id increments the counter",
+			actionID: "acme.approve",
+			want:     1,
+		},
+		{
+			name:     "a link button is inert, not unknown",
+			actionID: "oto.noop.runbook",
+			want:     0,
+		},
+		{
+			name:     "the Acknowledge button is routable",
+			actionID: ActionAcknowledge,
+			want:     0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newService(t, alphaConversations(), nil, &fakeGroups{}, &fakeEnqueuer{}, nil)
+
+			if err := s.Handle(context.Background(), envelope(tc.actionID, groupOne.String())); err != nil {
+				t.Fatalf("Handle returned %v; an unroutable press must never become a retry", err)
+			}
+			if got := counterValue(t, s.metrics.UnknownAction); got != tc.want {
+				t.Fatalf("oto_slack_unknown_action_total = %v after %q, want %v",
+					got, tc.actionID, tc.want)
+			}
+		})
+	}
+}
+
+// TestUnknownActionOnTheWorkerIsRecordedToo.
+//
+// The worker's default branch is reachable only ACROSS A DEPLOY — `Handle`
+// enqueues nothing it cannot route, so a job naming an unserved action is one an
+// older binary wrote and a newer one drained. It lands on the same series
+// because from an operator's chair it is the same fact: a press oto could not
+// act on. It must also not become a job retry, because retrying it twelve times
+// cannot make the action id known.
+func TestUnknownActionOnTheWorkerIsRecordedToo(t *testing.T) {
+	s := newService(t, alphaConversations(), nil, &fakeGroups{}, &fakeEnqueuer{}, nil)
+
+	args := ackArgs()
+	args.ActionID = "oto.retired.verb"
+	if err := s.Apply(context.Background(), args); err != nil {
+		t.Fatalf("Apply returned %v; an action the worker cannot serve is an outcome, not a transient failure", err)
+	}
+	if got := counterValue(t, s.metrics.UnknownAction); got != 1 {
+		t.Fatalf("oto_slack_unknown_action_total = %v, want 1", got)
 	}
 }
 

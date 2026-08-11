@@ -155,12 +155,13 @@ func TestOriginDistinguishesAnOverrideFromTheDefault(t *testing.T) {
 	// report `org`. It is a different fact — that value will not follow oto's
 	// default when oto's default moves — and collapsing the two is the whole
 	// failure this reporting exists to prevent.
-	same := domain.SettingsPatch{RefireGraceS: intp(int(domain.DefaultRefireGrace / time.Second))}
+	shipped := int(domain.DefaultRefireGrace / time.Second)
+	same := domain.SettingsPatch{RefireGraceS: intp(shipped)}
 	if got := same.Origin(domain.KeyRefireGrace); got != domain.OriginOrg {
 		t.Fatalf("writing the default value reports origin %q; it is still an override", got)
 	}
-	if v, origin, ok := same.EffectiveInt(domain.KeyRefireGrace); !ok || v != 600 || origin != domain.OriginOrg {
-		t.Fatalf("effective (%d, %q, %v), want (600, org, true)", v, origin, ok)
+	if v, origin, ok := same.EffectiveInt(domain.KeyRefireGrace); !ok || v != shipped || origin != domain.OriginOrg {
+		t.Fatalf("effective (%d, %q, %v), want (%d, org, true)", v, origin, ok, shipped)
 	}
 
 	// A key nobody touched, alongside one that was.

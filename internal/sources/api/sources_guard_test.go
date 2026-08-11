@@ -350,7 +350,7 @@ func (f *fakeRegistry) Create(_ context.Context, s db.TenantScope, in domain.Sou
 		ID: uuid.New(), OrgID: s.OrgID(), ClusterID: in.ClusterID,
 		Name: in.Name, Kind: in.Kind, BaseURL: in.BaseURL,
 		PrometheusURL: in.PrometheusURL, TLSSkipVerify: in.TLSSkipVerify,
-		PushEnabled: in.PushEnabled, ReconcileEnabled: in.ReconcileEnabled,
+		PushEnabled:       in.PushEnabled,
 		ReconcileInterval: in.ReconcileInterval,
 		CreatedAt:         time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}, nil
