@@ -19,6 +19,7 @@ import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
 import { listAlertGroups } from "~/api/endpoints";
+import { GroupStateSchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import type { Group, GroupListQuery, GroupState } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
@@ -29,6 +30,12 @@ import { count as fmtCount } from "~/lib/format";
 
 const PAGE_SIZE = 50;
 
+/**
+ * The two group states, the contract's list rather than a copy of it. This only
+ * supplies the capital letter — a state added server-side is a compile error
+ * here rather than a toggle nobody can reach.
+ */
+const GROUP_STATES: readonly GroupState[] = GroupStateSchema.options;
 const STATE_LABEL: Record<GroupState, string> = { open: "Open", closed: "Closed" };
 
 export default function GroupsRoute() {
@@ -39,7 +46,7 @@ export default function GroupsRoute() {
     const raw = typeof params["state"] === "string" ? params["state"] : "";
     return raw
       .split(",")
-      .filter((s): s is GroupState => s === "open" || s === "closed");
+      .filter((s): s is GroupState => (GROUP_STATES as readonly string[]).includes(s));
   });
 
   const search = (): string => (typeof params["q"] === "string" ? params["q"] : "");
@@ -115,7 +122,7 @@ export default function GroupsRoute() {
 
         <ToggleGroup<GroupState>
           legend="Group state"
-          options={(["open", "closed"] as const).map((s) => ({ value: s, label: STATE_LABEL[s] }))}
+          options={GROUP_STATES.map((s) => ({ value: s, label: STATE_LABEL[s] }))}
           selected={states()}
           onChange={(next) => setParam("state", next.length > 0 ? next.join(",") : null)}
         />

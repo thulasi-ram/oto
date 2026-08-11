@@ -1,10 +1,11 @@
 import { Navigate, Route, Router } from "@solidjs/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
-import { lazy, onMount, type Component, type JSX } from "solid-js";
+import { ErrorBoundary, lazy, onMount, type Component, type JSX } from "solid-js";
 
 import { LiveProvider } from "~/api/live";
 import { RequireSession, SessionProvider } from "~/api/session";
 import { AppShell } from "~/components/AppShell";
+import { ErrorState } from "~/components/ui/states";
 import { installThemeEffect } from "~/design/theme";
 
 /**
@@ -49,7 +50,19 @@ const LoginRoute = lazy(() => import("~/routes/login"));
  */
 const Root: Component<{ readonly children?: JSX.Element }> = (props) => {
   onMount(() => installThemeEffect());
-  return <SessionProvider>{props.children}</SessionProvider>;
+  return (
+    // The last resort, and the reason it exists: several modules read their
+    // validation rules off the generated contract at IMPORT time
+    // (`patternOf`/`maxLengthOf`/`enumValuesOf` in `api/bounds.ts`), and those
+    // accessors THROW rather than fall back to a stale literal. That is the right
+    // trade — a rule that silently disagrees with the server is worse than a loud
+    // failure — but without a boundary the throw happens inside a `lazy()` chunk
+    // and Solid paints an empty document. A blank screen tells an operator
+    // nothing; `ErrorState` at least renders the message.
+    <ErrorBoundary fallback={(err) => <ErrorState error={err} />}>
+      <SessionProvider>{props.children}</SessionProvider>
+    </ErrorBoundary>
+  );
 };
 
 /**

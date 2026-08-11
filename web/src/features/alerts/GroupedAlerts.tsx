@@ -18,6 +18,7 @@
  */
 import { For, Show, type Component } from "solid-js";
 
+import { StateSchema } from "~/api/generated/validators";
 import type { AlertRollup, RollupAxis, State } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import {
@@ -38,6 +39,19 @@ const NOUN: Record<RollupAxis, string> = {
 };
 
 const SEVERITY_RANK: Record<KnownSeverity, number> = { critical: 0, warning: 1, info: 2 };
+
+/**
+ * The order a bucket's counts read in: still-live first, then ended.
+ *
+ * The *set* is the contract's, so a lifecycle state added server-side is counted
+ * rather than silently dropped from every bucket. Only the order is local — and
+ * `Record<State, …>` makes it exhaustive, so a new state is a compile error here
+ * asking where it belongs instead of an unranked value sorting arbitrarily.
+ */
+const COUNT_ORDER: Record<State, number> = { firing: 0, suppressed: 1, expired: 2, resolved: 3 };
+const COUNTED_STATES: readonly State[] = [...StateSchema.options].sort(
+  (a, b) => COUNT_ORDER[a] - COUNT_ORDER[b],
+);
 
 /**
  * The most urgent severity present in a bucket.
@@ -119,19 +133,17 @@ const BucketRow: Component<{
   };
 
   const counts = (): readonly { readonly state: State; readonly n: number }[] =>
-    (["firing", "suppressed", "expired", "resolved"] as readonly State[])
-      .map((state) => ({
-        state,
-        n:
-          state === "firing"
-            ? b().firing_count
-            : state === "suppressed"
-              ? b().suppressed_count
-              : state === "expired"
-                ? b().expired_count
-                : b().resolved_count,
-      }))
-      .filter((c) => c.n > 0);
+    COUNTED_STATES.map((state) => ({
+      state,
+      n:
+        state === "firing"
+          ? b().firing_count
+          : state === "suppressed"
+            ? b().suppressed_count
+            : state === "expired"
+              ? b().expired_count
+              : b().resolved_count,
+    })).filter((c) => c.n > 0);
 
   // A component rather than a stored element: `<Show>` may swap between the two
   // branches, and each branch must get its own nodes rather than sharing one set.

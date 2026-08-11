@@ -17,6 +17,8 @@
  *     URL verbatim so a shared link reproduces the exact text, and is only
  *     canonicalised on its way to the `matcher=` parameter.
  */
+import { enumValuesOf } from "~/api/bounds";
+import { AlertRollupDTOSchema, StateSchema } from "~/api/generated/validators";
 import type { AlertListQuery, AlertRollupQuery, RollupAxis, State } from "~/api/types";
 import type { LabelSelector } from "~/api/client";
 import {
@@ -37,16 +39,32 @@ import {
  */
 export type GroupBy = "none" | RollupAxis;
 
+/**
+ * `none` is this UI's own idea — the flat table is not an axis the server
+ * aggregates on — so it is the one member written here. The rest are the
+ * contract's, read off the only runtime value the generator emits for them: the
+ * axis `AlertRollupDTO` echoes back. The `readonly GroupBy[]` annotation is the
+ * cross-check, because `GroupBy` comes from the *request* type — if the echoed
+ * set and the accepted set ever parted, this line would stop compiling.
+ */
 export const GROUP_BY_VALUES: readonly GroupBy[] = [
   "none",
-  "alertname",
-  "namespace",
-  "fingerprint",
+  ...enumValuesOf(AlertRollupDTOSchema, "group_by"),
 ];
 
-export type SortKey = "-last_seen_at" | "-first_seen_at";
+/**
+ * The two sort orders the contract accepts, taken from the contract.
+ *
+ * §E.3 permits only these because keyset pagination needs a total order backed by
+ * an index; anything else is a `422`. The list is not re-typed here — it is the
+ * `sort` query parameter of `listAlerts`, so adding a third order to the contract
+ * is a compile error at every site that switches on it rather than a silent
+ * divergence between what the UI offers and what the server accepts.
+ */
+export type SortKey = NonNullable<AlertListQuery["sort"]>;
 
-export const ALL_STATES: readonly State[] = ["firing", "suppressed", "resolved", "expired"];
+/** Every lifecycle state the contract publishes, in the contract's own order. */
+export const ALL_STATES: readonly State[] = StateSchema.options;
 
 export interface AlertFilters {
   readonly state: readonly State[];

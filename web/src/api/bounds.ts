@@ -1,7 +1,8 @@
 /**
- * The contract's own bounds, read off the generated schemas at runtime.
+ * The contract's own rules, read off the generated schemas at runtime.
  *
- * ⛔ THIS FILE EXISTS SO THAT NO SCREEN EVER RE-TYPES A NUMBER THE SERVER OWNS.
+ * ⛔ THIS FILE EXISTS SO THAT NO SCREEN EVER RE-TYPES A RULE THE SERVER OWNS —
+ * not a bound, not a pattern, not a picklist.
  * `src/api/generated/validators.ts` is produced from `api/openapi/openapi.yaml`
  * by gate G4 and every form already `v.pipe`s into it — so the bound the server
  * will reject with is a *value sitting in memory*, and a form that writes `120`
@@ -31,6 +32,7 @@ interface Node {
   readonly type?: string;
   readonly entries?: Readonly<Record<string, unknown>>;
   readonly wrapped?: unknown;
+  readonly options?: readonly unknown[];
   readonly pipe?: readonly { readonly type?: string; readonly requirement?: unknown }[];
 }
 
@@ -63,41 +65,119 @@ function field(objectSchema: unknown, key: string): Node {
 }
 
 /**
+ * What a rule is read off: one property of a request schema, or a whole schema.
+ *
+ * Some rules are stated by the contract as a named component rather than inline
+ * on a request property — `LabelName` carries both its charset and its 1024-byte
+ * cap, and `gen-validators.mjs` emits it as its own `LabelNameSchema`. Omitting
+ * `key` asks that schema directly, so `~/lib/matchers` can read the same rule the
+ * same way a form reads a request body's.
+ */
+function subject(schema: unknown, key: string | undefined): Node {
+  return key === undefined ? unwrap(schema, "the schema") : field(schema, key);
+}
+
+/** How a subject is named in a throw, whether it is a property or a whole schema. */
+function named(key: string | undefined): string {
+  return key === undefined ? "the schema" : `\`${key}\``;
+}
+
+/**
  * One valibot action's requirement, as a number.
  *
  * The throw is the point. A missing bound here means the contract or the
  * generator lost it, and the honest response is to say so rather than to render
  * an input the server will reject.
  */
-function requirement(objectSchema: unknown, key: string, action: string): number {
-  for (const step of field(objectSchema, key).pipe ?? []) {
+function requirement(schema: unknown, key: string | undefined, action: string): number {
+  for (const step of subject(schema, key).pipe ?? []) {
     if (step.type === action && typeof step.requirement === "number") return step.requirement;
   }
   throw new Error(
-    `oto: the generated contract declares no \`${action}\` on \`${key}\`. Either the ` +
+    `oto: the generated contract declares no \`${action}\` on ${named(key)}. Either the ` +
       `bound was removed from api/openapi/openapi.yaml, or gen-validators.mjs dropped ` +
       `it on the way through — check the YAML before assuming the screen is wrong.`,
   );
 }
 
 /** The `minimum` the contract puts on one numeric request property. */
-export function minValueOf(objectSchema: unknown, key: string): number {
+export function minValueOf(objectSchema: unknown, key?: string): number {
   return requirement(objectSchema, key, "min_value");
 }
 
 /** The `maximum` the contract puts on one numeric request property. */
-export function maxValueOf(objectSchema: unknown, key: string): number {
+export function maxValueOf(objectSchema: unknown, key?: string): number {
   return requirement(objectSchema, key, "max_value");
 }
 
 /** The `minLength` / `minItems` the contract puts on one request property. */
-export function minLengthOf(objectSchema: unknown, key: string): number {
+export function minLengthOf(objectSchema: unknown, key?: string): number {
   return requirement(objectSchema, key, "min_length");
 }
 
 /** The `maxLength` / `maxItems` the contract puts on one request property. */
-export function maxLengthOf(objectSchema: unknown, key: string): number {
+export function maxLengthOf(objectSchema: unknown, key?: string): number {
   return requirement(objectSchema, key, "max_length");
+}
+
+/**
+ * The `pattern` the contract puts on one string property — **the object itself**,
+ * not a re-typing of its source.
+ *
+ * ⛔ A HAND-COPIED REGEX IS WORSE THAN A HAND-COPIED NUMBER, because it can be
+ * wrong in ways that read as right. `SourcesSection.tsx` spelled the base-URL rule
+ * `/^https?:\/\/[^\s]+$/i` plus a separate trailing-slash check: two differences
+ * from the contract's single `/^https?:\/\/[^\s]+[^\/]$/`, one of them a *flag*
+ * that let `HTTP://…` through the form and into a 422. Returning the generated
+ * `RegExp` means the flags travel with the pattern and there is no second copy for
+ * a flag to be added to.
+ */
+export function patternOf(objectSchema: unknown, key?: string): RegExp {
+  for (const step of subject(objectSchema, key).pipe ?? []) {
+    if (step.type === "regex" && step.requirement instanceof RegExp) return step.requirement;
+  }
+  throw new Error(
+    `oto: the generated contract declares no \`regex\` on ${named(key)}. Either the ` +
+      `pattern was removed from api/openapi/openapi.yaml, or gen-validators.mjs dropped ` +
+      `it on the way through — check the YAML before assuming the screen is wrong.`,
+  );
+}
+
+/**
+ * The picklist a property resolves to, as a type, with optionality peeled off.
+ *
+ * This is what makes {@link enumValuesOf} more than a runtime read: the members
+ * come through as a union, so a screen that maps them into a `Record<Enum, …>`
+ * label table stops compiling the day the contract grows one.
+ */
+type Options<E> = E extends { readonly options: readonly (infer T)[] }
+  ? readonly T[]
+  : E extends { readonly wrapped: infer W }
+    ? Options<W>
+    : never;
+
+/**
+ * Every value the contract admits for one property, in the contract's own order.
+ *
+ * A top-level enum needs nothing from this file — `SourceKindSchema.options` is
+ * already the contract's list, and that is the spelling to prefer. This exists for
+ * the enums the generator only emits *inline* on a property (`AlertRollupDTO`'s
+ * `group_by` is one), which otherwise have no name a screen could import and so
+ * get re-typed by hand.
+ */
+export function enumValuesOf<
+  S extends { readonly entries: object },
+  K extends keyof S["entries"] & string,
+>(objectSchema: S, key: K): Options<S["entries"][K]> {
+  const options = field(objectSchema, key).options;
+  if (options === undefined) {
+    throw new Error(
+      `oto: \`${key}\` is not a picklist in the generated contract. Either the contract ` +
+        `widened it to a free-form string, or gen-validators.mjs stopped emitting the ` +
+        `enum — and a control must not offer a list nobody guarantees.`,
+    );
+  }
+  return options as unknown as Options<S["entries"][K]>;
 }
 
 /** Both ends of a numeric property, for the common `min={} max={}` pair. */

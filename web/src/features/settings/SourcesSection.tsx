@@ -14,6 +14,7 @@ import { For, Match, Show, Switch, createMemo, createSignal, type Component } fr
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
+import { maxLengthOf, patternOf } from "~/api/bounds";
 import { violationsByField } from "~/api/client";
 import {
   createCluster,
@@ -78,9 +79,26 @@ const KIND_LABEL: Record<SourceKind, string> = {
  * `CreateSourceRequestSchema` as its final gate, so this dialog cannot build a
  * body the API would reject. The generated schema comes from
  * `api/openapi/openapi.yaml` via gate G4 (`npm run gen:validators`), which is
- * also where the ceilings this form does not repeat (2048-byte URLs, the
- * 10…3600s reconcile interval) are enforced.
+ * also where the ceilings this form does not repeat (the 10…3600s reconcile
+ * interval) are enforced.
  */
+
+/* -------------------------------------------------------------------------- */
+/* The contract's rules, read rather than repeated                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⛔ NEITHER THE PATTERN NOR THE CAPS ARE WRITTEN HERE. This form used to spell
+ * the base-URL rule `/^https?:\/\/[^\s]+$/i` with a separate trailing-slash
+ * `v.check` beside it — a reconstruction of one contract regex that had already
+ * drifted in two ways: the `/i` accepted `HTTP://x` the server rejects, and the
+ * 2048-character cap was simply absent. The name box was uncapped for the same
+ * reason. All three come off `CreateSourceRequestSchema`, the very schema this
+ * form is gated through below, so they cannot disagree with it by construction.
+ */
+const NAME_MAX = maxLengthOf(CreateSourceRequestSchema, "name");
+const BASE_URL_MAX = maxLengthOf(CreateSourceRequestSchema, "base_url");
+const BASE_URL_PATTERN = patternOf(CreateSourceRequestSchema, "base_url");
 
 /** What the dialog holds, before it is anything the API has a name for. */
 interface SourceForm {
@@ -122,7 +140,12 @@ function toCreateSourceRequest(form: SourceForm): v.InferInput<typeof CreateSour
 
 const SourceFormSchema = v.pipe(
   v.strictObject({
-    name: v.pipe(v.string(), v.trim(), v.minLength(1, "A name is required.")),
+    name: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, "A name is required."),
+      v.maxLength(NAME_MAX, `A name is at most ${NAME_MAX} characters.`),
+    ),
     cluster_id: v.pipe(v.string(), v.minLength(1, "Pick a cluster.")),
     // The contract's own picklist, not a second copy of it. The `<option>` list
     // below is generated from the same object, so the control and the schema
@@ -131,8 +154,11 @@ const SourceFormSchema = v.pipe(
     base_url: v.pipe(
       v.string(),
       v.trim(),
-      v.regex(/^https?:\/\/[^\s]+$/i, "An absolute http or https URL."),
-      v.check((s) => !s.endsWith("/"), "No trailing slash."),
+      v.maxLength(BASE_URL_MAX, `A URL is at most ${BASE_URL_MAX.toLocaleString("en")} characters.`),
+      // One action, because the contract states one rule: the pattern already
+      // forbids the trailing slash, and it is case-sensitive — so `HTTP://…`
+      // fails here for exactly the reason it fails at the server.
+      v.regex(BASE_URL_PATTERN, "An absolute http or https URL, with no trailing slash."),
     ),
     prometheus_url: v.string(),
   }),
@@ -495,7 +521,7 @@ const CreateSourceDialog: Component<{
 
         <Field id="src-name" label="Name" required error={localError("name") ?? violations().get("name")}>
           {(a) => (
-            <Input {...a} value={name()} placeholder="alertmanager-prod-eu" onInput={(e) => { setTouched(true); setName(e.currentTarget.value); }} />
+            <Input {...a} value={name()} maxLength={NAME_MAX} placeholder="alertmanager-prod-eu" onInput={(e) => { setTouched(true); setName(e.currentTarget.value); }} />
           )}
         </Field>
 
