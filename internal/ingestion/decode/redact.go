@@ -110,6 +110,14 @@ const (
 // nothing written down. `ApplyBatchBounds` already sanitises the decoded
 // ENVELOPE via B18/B19 — but the envelope is not what is stored, so that pass
 // cleans a copy this one throws away. See `storability_test.go`.
+//
+// ⛔ AND THE PASS IS ONLY AS GOOD AS THE PRE-CHECK THAT SELECTS IT. The rewriting
+// below repairs every unstorable input there is, because `json.Unmarshal` already
+// folds both a NUL escape and a lone surrogate to something Postgres will take.
+// Everything `hasUnstorableBytes` calls clean skips all of it and is returned
+// verbatim, so that function's COMPLETENESS is what actually holds this line. The
+// full rule, and why it is a contract rather than an optimisation, is documented
+// on it.
 func PersistedPayload(body []byte, r *Redactor, truncateAlertsTo int) (json.RawMessage, error) {
 	needsTruncate := truncateAlertsTo > 0
 	needsStorable := hasUnstorableBytes(body)
@@ -145,27 +153,178 @@ func PersistedPayload(body []byte, r *Redactor, truncateAlertsTo int) (json.RawM
 	return out, nil
 }
 
-// nulEscapeBytes is the six characters a JSON encoder writes for U+0000.
-//
-// ⛔ IT IS BUILT FROM BYTES ON PURPOSE. Written literally it is one editor, one
-// formatter or one copy-paste away from becoming the actual NUL it merely
-// denotes — a different input, on a different path, already handled. Conflating
-// the two is exactly why this defect was reported twice and reproduced never.
-var nulEscapeBytes = []byte{'\\', 'u', '0', '0', '0', '0'}
-
 // hasUnstorableBytes is the cheap pre-check that preserves the verbatim fast path
-// for every clean body. It scans the RAW bytes, so it sees the escape sequence
-// that survives decoding as well as the raw byte that does not.
+// for every clean body. It scans the RAW bytes, so it sees the escape sequences
+// that survive decoding as well as the raw bytes that do not.
 //
-// ⭐ THE ESCAPE IS THE ONE THAT MATTERS. A raw 0x00 inside a JSON string is
-// invalid JSON: `json.Unmarshal` refuses it at the door, which is a clean
-// rejection with a row to show for it. The escape is VALID JSON — it decodes to a
-// NUL, it survives a verbatim passthrough as six innocent ASCII characters, and
-// Postgres then refuses it with SQLSTATE 22P05 at the moment of the INSERT.
+// ⭐ THE ESCAPES ARE THE ONES THAT MATTER. A raw 0x00, and a raw encoded
+// surrogate, are both things `json.Unmarshal` either refuses at the door or
+// folds to U+FFFD — either way there is a row to show for it. The ESCAPED
+// spellings are VALID JSON by RFC 8259, decode without complaint, and survive a
+// verbatim passthrough as six innocent ASCII characters each. Postgres is
+// stricter than the RFC and refuses both at the moment of the INSERT.
+//
+// ⛔ THIS SCAN'S COMPLETENESS IS THE CONTRACT, not an optimisation. Every byte
+// sequence it calls clean is returned to the caller VERBATIM and handed straight
+// to `ingest_batches.payload JSONB NOT NULL`; nothing downstream re-examines it.
+// The rewriting slow path below already repairs everything listed here — Go's
+// decoder folds a lone surrogate to U+FFFD all by itself — so any defect of this
+// kind is a defect of THIS FUNCTION ONLY, and the remedy is always to widen the
+// scan, never to touch `storable`. A pre-scan that misses a case Postgres
+// refuses is strictly worse than no pre-scan at all: the INSERT it poisons is
+// the one whose job is to record the rejection, so the failure produces a 503,
+// no `ingest_rejections` row, and an Alertmanager that retries the identical
+// body until its budget runs out. If you close a ticket here, close it with a
+// case in `storability_test.go` proved against a real Postgres.
+//
+// # The complete rule
+//
+// A body is unstorable when ANY of the following holds:
+//
+//  1. it contains a raw 0x00 byte;
+//  2. it is not valid UTF-8 (which also covers a raw CESU-8-style encoded
+//     surrogate half, since those are not valid UTF-8);
+//  3. it contains the six-character escape for U+0000 — a backslash, a `u` and
+//     four zeros — which Postgres refuses with SQLSTATE 22P05,
+//     `unsupported Unicode escape sequence`;
+//  4. it contains an UNPAIRED surrogate escape: a high surrogate `\uD800`
+//     through `\uDBFF` not immediately followed by a low surrogate escape, or a
+//     low surrogate `\uDC00` through `\uDFFF` not immediately preceded by one —
+//     SQLSTATE 22P02, `invalid input syntax for type json`.
+//
+// A well-formed surrogate PAIR is storable and MUST stay on the verbatim path.
+// Getting that wrong would silently re-encode every body carrying an emoji or a
+// CJK supplementary character from any producer that escapes non-BMP text —
+// ES5-era `JSON.stringify`, Jackson with `ESCAPE_NON_ASCII`, `json.dumps` with
+// the default `ensure_ascii=True` — which is most of them.
+//
+// ⛔ ESCAPE-AWARENESS IS LOAD-BEARING IN BOTH DIRECTIONS. A backslash only
+// escapes what follows it when it is the last of an ODD run of backslashes.
+// So the U+0000 escape preceded by ANOTHER backslash is an escaped backslash
+// followed by the plain letters `u0000`: six characters of literal text and no
+// NUL anywhere, and flagging it would needlessly cost a clean body its verbatim
+// guarantee. Symmetrically, a high surrogate escape followed by `\\uDC00` is NOT
+// a pair — that low half is literal text, so the high half is alone.
 func hasUnstorableBytes(body []byte) bool {
-	return bytes.Contains(body, nulEscapeBytes) ||
-		bytes.IndexByte(body, 0x00) >= 0 ||
-		!utf8.Valid(body)
+	if bytes.IndexByte(body, 0x00) >= 0 || !utf8.Valid(body) {
+		return true
+	}
+	return hasUnstorableEscape(body)
+}
+
+// Surrogate code units, in the range JSON escapes them and UTF-8 forbids them.
+const (
+	highSurrogateMin = 0xD800
+	highSurrogateMax = 0xDBFF
+	lowSurrogateMin  = 0xDC00
+	lowSurrogateMax  = 0xDFFF
+)
+
+// escapeLen is the length of a `\uXXXX` escape, in bytes.
+const escapeLen = 6
+
+// hasUnstorableEscape walks the raw bytes once looking for rules 3 and 4 above.
+//
+// It does NOT re-parse the document, and it does not need to: a `\uXXXX` escape
+// is only meaningful inside a JSON string, and a backslash anywhere else is
+// already invalid JSON that `json.Unmarshal` will reject on the slow path. So
+// the scan can stay context-free and still be exact, provided it respects
+// backslash parity — which is the only way `\uXXXX` and the literal text
+// `\uXXXX` differ in the byte stream.
+func hasUnstorableEscape(body []byte) bool {
+	for i := 0; i < len(body); {
+		at := bytes.IndexByte(body[i:], '\\')
+		if at < 0 {
+			return false
+		}
+		i += at
+
+		// Consume the whole run of backslashes at once. Only an odd run ends in a
+		// backslash that escapes the byte after it; an even run is that many
+		// escaped backslashes and the byte after it is ordinary text.
+		run := 1
+		for i+run < len(body) && body[i+run] == '\\' {
+			run++
+		}
+		if run%2 == 0 {
+			i += run
+			continue
+		}
+
+		esc := i + run - 1 // the backslash that actually escapes
+		u, ok := escapedCodeUnitAt(body, esc)
+		if !ok {
+			// Some other escape (`\n`, `\"`, `\/`, …) or a truncated `\u`. The
+			// escaped byte is not a backslash — the run above already ate those —
+			// so skipping one byte past the run cannot desynchronise the parity.
+			i += run + 1
+			continue
+		}
+
+		switch {
+		case u == 0:
+			return true
+		case u >= highSurrogateMin && u <= highSurrogateMax:
+			// A pair must be ADJACENT in the byte stream, and the low half must be
+			// a real escape. Anything else leaves this high surrogate alone.
+			lo, ok := escapedCodeUnitAt(body, esc+escapeLen)
+			if !ok || lo < lowSurrogateMin || lo > lowSurrogateMax {
+				return true
+			}
+			i = esc + 2*escapeLen
+		case u >= lowSurrogateMin && u <= lowSurrogateMax:
+			// A low half that followed a high half was consumed by the case above,
+			// so reaching here means this one has no high half before it.
+			return true
+		default:
+			i = esc + escapeLen
+		}
+	}
+	return false
+}
+
+// escapedCodeUnitAt reads the UTF-16 code unit of the `\uXXXX` escape starting
+// at i, or reports false when there is no complete, well-formed one there.
+//
+// ⛔ ESCAPES ARE RECOGNISED BY PARSING BYTES, NEVER BY COMPARING AGAINST A
+// SOURCE LITERAL, and that is deliberate for two separate reasons. The first is
+// that the literal form is one editor, one formatter or one copy-paste away from
+// becoming the code point it merely DENOTES — a different input, on a different
+// path, already handled, and conflating the two is exactly why the NUL half of
+// this defect was reported twice and reproduced never; it misfired again while
+// this very comment was being written. The second is that there is no single
+// literal to compare against anyway: the hazard is a RANGE of 2,048 code units
+// in two hex spellings, and `bytes.Contains` does not do ranges.
+//
+// The caller guarantees body[i] is a backslash that escapes what follows it.
+// Both hex cases are accepted: RFC 8259 allows `\uD800` and `\ud800` alike, and
+// Postgres refuses both alike.
+func escapedCodeUnitAt(body []byte, i int) (uint16, bool) {
+	if i < 0 || i+escapeLen > len(body) || body[i] != '\\' || body[i+1] != 'u' {
+		return 0, false
+	}
+	var u uint16
+	for _, c := range body[i+2 : i+escapeLen] {
+		d, ok := hexNibble(c)
+		if !ok {
+			return 0, false
+		}
+		u = u<<4 | uint16(d)
+	}
+	return u, true
+}
+
+func hexNibble(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	default:
+		return 0, false
+	}
 }
 
 // storable rewrites a decoded document so that every part of it can be stored.
