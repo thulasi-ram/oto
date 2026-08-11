@@ -55,8 +55,12 @@ var allowedBlocks = map[string]bool{
 //
 // It carries the offending payload deliberately: §L.6 requires the bytes to land
 // in notification_deliveries.rendered so the dead delivery can be debugged, and
-// Check names the counter label (oto_render_invalid_total{check}) that oto alerts
-// itself on. This is always an oto bug.
+// Check names which rule refused it. This is always an oto bug.
+//
+// ⛔ `Check` IS NOT A METRIC LABEL. It reads like one, and this comment used to
+// say so — `oto_render_invalid_total{check}` was promised by an early draft and
+// never built (5bc341a). The check name reaches an operator through the dead
+// delivery and the log line, not through a series.
 type Error struct {
 	Check   string
 	Detail  string

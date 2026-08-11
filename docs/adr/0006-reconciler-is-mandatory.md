@@ -32,8 +32,11 @@ It also owns three other jobs:
    clock-skew measurement.
 2. **Divergence accounting.** Open in oto but absent upstream → a reap candidate. Present
    upstream but absent in oto → we missed a webhook; recover it and count it.
-   `oto_reconcile_divergence` is the canary for every correctness bug in the system and belongs
-   on oto's own dashboard.
+   Divergence is the canary for every correctness bug in the system and belongs on oto's own
+   dashboard. ⛔ This paragraph named a metric `oto_reconcile_divergence` that was never built
+   (5bc341a); the count is durable in `source_health.divergence_count`, served by
+   `GET /api/v1/sources/{id}/health`, summed by `GET /api/v1/stats/*` and logged by
+   `internal/sources/service/reconcile.go`. A dashboard is built from those, not from a series.
 3. **Source health**, which gates the reaper (ADR 0007's sibling rule): three consecutive
    failures mark the source `unreachable`, and an unreachable source **blocks expiry**.
 

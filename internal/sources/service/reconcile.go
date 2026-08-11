@@ -345,8 +345,14 @@ func (r *Reconciler) Reconcile(
 	}
 
 	if out.DivergenceCount > 0 {
-		// `oto_reconcile_divergence` is the canary for every correctness bug in
-		// the system (§G.8.4), so a non-zero pass is never silent.
+		// Divergence is the canary for every correctness bug in the system
+		// (§G.8.4), so a non-zero pass is never silent.
+		//
+		// ⛔ THIS LOG LINE IS THE SIGNAL, not a metric. The comment used to name
+		// `oto_reconcile_divergence`, which no collector ever constructed
+		// (5bc341a) — so an operator alerting on that name would have watched a
+		// series that never existed while this line went by unread. The durable
+		// count is `source_health.divergence_count`.
 		r.log.InfoContext(ctx, "sources: reconcile divergence",
 			"source_id", src.ID, "org_id", scope.OrgID(),
 			"observed", out.Observed, "suppressed", out.SuppressedObserved,

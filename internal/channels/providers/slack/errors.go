@@ -101,8 +101,14 @@ var authFailed = map[string]bool{
 	"ekm_access_denied":      true,
 }
 
-// renderInvalid means oto built an illegal message. It is an oto BUG, it is dead
-// on arrival, and oto alerts on itself for it (oto_render_invalid_total).
+// renderInvalid means oto built an illegal message. It is an oto BUG and it is
+// dead on arrival.
+//
+// ⛔ THERE IS NO `oto_render_invalid_total`. Earlier drafts promised one and no
+// collector was ever written, so this comment used to name a counter that would
+// have read zero forever (5bc341a). The delivery itself is the record:
+// `status='dead'`, `error_class='config_invalid'`, the offending payload kept in
+// `notification_deliveries.rendered`, and `oto_jobs_dead_total` carrying the rate.
 //
 // ⚠️ `msg_blocks_too_long` ("Blocks submitted with this message are too long") is
 // the spelling Slack's chat.postMessage reference carries TODAY, and it was in no
@@ -169,9 +175,10 @@ var renderInvalid = map[string]bool{
 	// Nothing offline can settle it: it is a property of Slack's authorisation
 	// check, and neither a fake nor a validator can observe one. What CAN be
 	// decided offline is what happens when it arrives, and the answer must not be
-	// "retry twelve times". Classified config_invalid so it is terminal, is
-	// counted by oto_render_invalid_total, degrades the Channel and appears in the
-	// UI with the code verbatim — a loud, once, legible failure that names itself.
+	// "retry twelve times". Classified config_invalid so it is terminal, lands as
+	// a dead delivery carrying its own payload, degrades the Channel and appears
+	// in the UI with the code verbatim — a loud, once, legible failure that names
+	// itself.
 	// docs/setup/slack.md's live checklist makes it the FIRST thing a person with
 	// a workspace checks, because it is the one that invalidates everything else.
 	"metadata_must_be_sent_from_app": true,

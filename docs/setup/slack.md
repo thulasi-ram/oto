@@ -358,9 +358,9 @@ messages than expected — look at flap and storm damping in
 
 **This is an oto bug, not a configuration problem.** oto built a message Slack
 would not accept. The delivery is dead on arrival, it is never retried — a
-payload that is illegal is exactly as illegal on the twelfth attempt — and oto
-alerts on itself (`oto_render_invalid_total`). Please file an issue with the
-delivery ID.
+payload that is illegal is exactly as illegal on the twelfth attempt. It lands
+as a dead delivery carrying the offending payload, and `oto_jobs_dead_total`
+carries the rate. Please file an issue with the delivery ID.
 
 The full set oto treats this way:
 `invalid_blocks`, `invalid_blocks_format`, `block_mismatch`,

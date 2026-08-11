@@ -38,8 +38,7 @@ func NewInteractionMetrics(reg prometheus.Registerer) *InteractionMetrics {
 		UnknownAction: prometheus.NewCounter(prometheus.CounterOpts{
 			// ⚠️ SPEC §H.8 spells this `slack_unknown_action_total`, without the
 			// prefix every other metric in the document and in this codebase
-			// carries (`oto_render_invalid_total` is two tables further down the
-			// same section, `oto_ingest_rejected_total` in §C.9.1). The prefix is
+			// carries (`oto_ingest_rejected_total` in §C.9.1). The prefix is
 			// the convention; the SPEC line is an omission, not a second rule, and
 			// an unprefixed metric would be the only one in oto's namespace that a
 			// scrape config could not select with `{__name__=~"oto_.*"}`.

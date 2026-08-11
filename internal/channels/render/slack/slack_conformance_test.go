@@ -29,9 +29,9 @@ func mustValidate(t *testing.T, payload string) error {
 	return slackrender.Validate(json.RawMessage(payload))
 }
 
-// checkName is the §L.6 check that refused the payload. It is the label on
-// `oto_render_invalid_total{check}`, so naming it in an assertion is naming the
-// counter an operator would see.
+// checkName is the §L.6 check that refused the payload. Naming it in an
+// assertion is naming what an operator reads off the dead delivery — the
+// `oto_render_invalid_total{check}` this used to cite was never built (5bc341a).
 func checkName(err error) string {
 	var e *slackrender.Error
 	if err == nil {
