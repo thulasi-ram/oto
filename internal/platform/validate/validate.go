@@ -343,6 +343,38 @@ func IsAbsoluteHTTPURL(s string) bool {
 	return err == nil && u.Fragment == "" && u.RawQuery == "" && u.Host != ""
 }
 
+// IsOperatorLinkURL reports whether s is usable as a LINK SHOWN TO A HUMAN: a
+// runbook, a dashboard, a log search, anything oto renders as something to
+// click.
+//
+// ⛔ IT IS NOT IsAbsoluteHTTPURL AND MUST NOT BE COLLAPSED INTO IT. That one
+// mirrors `alert_sources_base_ck` on a PREFIX oto concatenates API paths onto,
+// so it refuses a query string, a fragment and a trailing slash — correct
+// there, and wrong here. A dashboard link without its `?from=now-1h&to=now` is
+// a link to the wrong thing; a wiki link without its `#step-2` drops the
+// operator at the top of a page instead of at the step they need; and a
+// trailing slash is a directory, not a mistake. Enforcing base_url's bounds on
+// an operator's annotation rejects the three commonest shapes a real runbook
+// link takes.
+//
+// ⭐ The scheme is matched case-insensitively (RFC 3986 §3.1). IsAbsoluteHTTPURL
+// cannot be: it is pinned byte for byte to a Postgres CHECK by
+// TestValidatorMatchesDDL, and loosening it would let layer 1 accept a value
+// layer 6 rejects — a 23514 surfacing as a 500 where a 422 belongs.
+//
+// What it still refuses is everything that makes a link unsafe or unusable
+// rather than merely unusual: a non-http(s) scheme (no `javascript:`, no
+// `file:`), a scheme-relative or relative reference, embedded whitespace, and a
+// missing host. Credential stripping is the CALLER's job — whether a userinfo
+// component is a disclosure depends on where the link is about to be rendered.
+func IsOperatorLinkURL(s string) bool {
+	if !OperatorLinkURLRe.MatchString(s) {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Host != ""
+}
+
 // TrimTrailingSlash is the DEFENCE IN DEPTH half of §L.2.4: `toDomain()` strips
 // trailing slashes before constructing the domain value, so a client that
 // somehow bypasses layer 1 still cannot violate the CHECK. The 422 exists to

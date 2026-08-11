@@ -240,18 +240,19 @@ func TestAnUnusableLinkIsRejectedLoudly(t *testing.T) {
 		{name: "not a URL at all", url: "see the wiki"},
 		{name: "longer than the column allows", url: "https://wiki.example/" + strings.Repeat("a", runbook.MaxURLBytes)},
 
-		// ⚠️ The three below are NOT unusable links. They are rejected because
-		// normalise reuses the `alert_sources.base_url` predicate; see
-		// TestBUG_ADashboardLinkWithATimeRangeIsRejectedAsUnusable. They are
-		// pinned here so today's behaviour is recorded and a fix is a
-		// deliberate change to this table rather than a silent one.
-		{name: "a query string, which a Grafana time range needs", url: "https://grafana.example/d/abc?from=now-1h"},
-		{name: "a fragment, which a wiki deep link needs", url: "https://wiki.example/runbook#step-2"},
-		{name: "a trailing slash", url: "https://wiki.example/runbooks/"},
+		// An unfilled org-template placeholder, pasted into an annotation by hand.
+		// A literal brace is not a legal URI character and `url.URL.String` would
+		// launder it into `%7B`, so it is refused before it can become a button.
+		// See TestAnUnresolvedPlaceholderIsRejectedRatherThanShippedAsAButton.
+		{name: "an unresolved template placeholder", url: "https://wiki.example/org/{region}/runbook"},
 
-		// ⚠️ Nor is this one: a scheme is case-insensitive by RFC 3986 §3.1. See
-		// TestBUG_AnUppercaseSchemeIsRejectedOutright.
-		{name: "an uppercase scheme", url: "HTTPS://wiki.example/runbook"},
+		// ⚠️ WHAT IS NOT IN THIS TABLE MATTERS AS MUCH AS WHAT IS. A query string,
+		// a fragment, a trailing slash and an uppercase scheme were all rejected
+		// here once, because `normalise` reused `validate.IsAbsoluteHTTPURL` — the
+		// `alert_sources.base_url` predicate — on an operator's link. They are all
+		// legal links and are now pinned as ACCEPTED by
+		// TestALinkKeepsItsQueryFragmentAndTrailingSlash and
+		// TestAnUppercaseSchemeIsAcceptedAndLowercased.
 	}
 
 	for _, tc := range tests {
@@ -260,14 +261,12 @@ func TestAnUnusableLinkIsRejectedLoudly(t *testing.T) {
 
 			res := enrich(t, runbook.New(nil), subject(map[string]string{"runbook_url": tc.url}))
 
-			// ⚠️ `skipped`, NOT `partial`, and that is TODAY'S BEHAVIOUR RATHER
-			// THAN THE INTENDED ONE. Enrich sets partial the moment anything is
-			// rejected and then overwrites it unconditionally with skipped when the
-			// link list is empty — which it always is when the only annotation was
-			// the unusable one. The warning and the Rejected list below survive, so
-			// the report is not lost, but the status says "declined to look".
-			// See TestBUG_ARejectedLinkIsReportedAsSkippedRatherThanPartial.
-			assert.Equal(t, domain.StatusSkipped, res.Status)
+			// `partial`, NOT `skipped`: the enricher looked, found a broken
+			// annotation and named it. `skipped` means "Applicable said no", and
+			// Succeeded()/Reusable are both false for it, so filing a real finding
+			// under it would record this run identically to one that never ran.
+			// See TestARejectedLinkIsReportedAsPartial.
+			assert.Equal(t, domain.StatusPartial, res.Status)
 			assert.Contains(t, res.Warnings, "unusable_link_annotations")
 			p := payloadOf(t, res)
 			assert.Equal(t, []string{"runbook_url"}, p.Rejected,
@@ -298,13 +297,11 @@ func TestACredentialInAURLIsACredentialInASlackMessage(t *testing.T) {
 func TestSchemeAndHostAreLowercasedButThePathIsNot(t *testing.T) {
 	t.Parallel()
 
-	// ⚠️ THE SCHEME IS SPELT IN LOWERCASE HERE ON PURPOSE. An annotation reading
-	// `HTTPS://…` never reaches the lowercasing at all — `looksLikeURL` and
-	// `validate.HTTPURLRe` both match `https?://` case-sensitively and reject it
-	// first. So the only case normalisation this enricher actually performs is on
-	// the HOST. (`normalise`'s `u.Scheme = strings.ToLower(u.Scheme)` is a no-op
-	// twice over: unreachable for an uppercase scheme, and `url.Parse` has already
-	// lowercased a legal one.) See TestBUG_AnUppercaseSchemeIsRejectedOutright.
+	// The scheme is spelt in lowercase here so this case pins the HOST rule on its
+	// own; TestAnUppercaseSchemeIsAcceptedAndLowercased pins the scheme. Note that
+	// `normalise`'s `u.Scheme = strings.ToLower(u.Scheme)` is belt and braces
+	// either way — `url.Parse` has already lowercased the scheme by the time it
+	// runs — whereas the host lowercasing is the line doing real work.
 	res := enrich(t, runbook.New(nil), subject(map[string]string{
 		"runbook_url": "https://Wiki.Example/Runbooks/HighErrorRate",
 	}))
@@ -397,30 +394,27 @@ func TestALabelValueInATemplateIsPathEscaped(t *testing.T) {
 	assert.Contains(t, p.Links[0].URL, "%20")
 }
 
-// ------------------------------------------------------------ known defects
+// -------------------------------------------- the four rules that were defects
 
-// TestBUG_AnUnresolvedPlaceholderReachesTheRunbookButton.
+// TestAnUnresolvedPlaceholderIsRejectedRatherThanShippedAsAButton.
 //
-// normalise's own contract says an unresolved placeholder "leaves the template
+// `expand`'s contract says an unresolved placeholder "leaves the template
 // unexpanded, which then fails normalisation and is reported as rejected —
 // better than emitting a link with a literal `{namespace}` in the path and
-// letting somebody click it" (runbook.go, `expand`).
+// letting somebody click it" (runbook.go). It once did not.
+// `validate.IsAbsoluteHTTPURL` accepted `{` and `}` in a path, `url.URL.String`
+// percent-encoded them, and `https://wiki.example/org/%7Bregion%7D/runbook` was
+// HOISTED INTO Payload.Runbook, which SPEC §F.2 renders as the button on the
+// Slack card.
 //
-// It does not fail normalisation. `validate.IsAbsoluteHTTPURL` accepts `{` and
-// `}` in a path, `url.URL.String` percent-encodes them, and the result — here
-// `https://wiki.example/org/%7Bregion%7D/runbook` — is HOISTED INTO
-// Payload.Runbook, which SPEC §F.2 renders as the button on the Slack card.
-//
-// This is the failure mode the enrichment pipeline is otherwise careful to
+// That is the failure mode the enrichment pipeline is otherwise careful to
 // avoid: not a missing field, but a field that LOOKS POPULATED AND IS WRONG. The
-// operator at 3am clicks a button that goes to a 404 on their wiki, and nothing
-// anywhere says the template could not be filled in.
-//
-// The fix belongs in production code (reject a normalised URL still containing
-// `%7B`/`%7D`, or refuse to expand a template with unresolved placeholders), so
-// it is recorded here rather than applied.
-func TestBUG_AnUnresolvedPlaceholderReachesTheRunbookButton(t *testing.T) {
-	t.Skip("BUG: an org runbook template whose placeholder does not resolve is percent-encoded and shipped as the card's runbook button (enrichers/runbook/runbook.go expand+normalise); it must be rejected instead.")
+// operator at 3am clicks a button that 404s on their wiki, and nothing anywhere
+// says the template could not be filled in. `normalise` now refuses a literal
+// brace outright — see the ⛔ comment there for why a brace is unambiguous
+// evidence of an unfilled placeholder rather than of escaped label data.
+func TestAnUnresolvedPlaceholderIsRejectedRatherThanShippedAsAButton(t *testing.T) {
+	t.Parallel()
 
 	e := runbook.New(runbook.StaticTemplates{
 		"HighErrorRate": "https://wiki.example/org/{region}/runbook",
@@ -435,29 +429,25 @@ func TestBUG_AnUnresolvedPlaceholderReachesTheRunbookButton(t *testing.T) {
 	assert.Equal(t, []string{"org_template"}, p.Rejected)
 }
 
-// TestBUG_ADashboardLinkWithATimeRangeIsRejectedAsUnusable.
+// TestALinkKeepsItsQueryFragmentAndTrailingSlash.
 //
-// normalise documents the opposite of what it does:
+// normalise used to document the opposite of what it did:
 //
 //	"the fragment and the query are preserved verbatim, because a dashboard link
 //	 without its time range is a link to the wrong thing"
 //
-// It delegates to `validate.IsAbsoluteHTTPURL`, which is the predicate for
+// while delegating to `validate.IsAbsoluteHTTPURL`, the predicate for
 // `alert_sources.base_url` — a PREFIX oto concatenates API paths onto. That
 // predicate deliberately refuses a query string, a fragment and a trailing
-// slash, and refusing them is correct FOR A BASE URL. Reused here it refuses the
-// three commonest shapes an operator's runbook annotation actually takes:
+// slash, which is correct FOR A BASE URL. Reused here it refused the three
+// commonest shapes an operator's runbook annotation actually takes, so the card
+// lost its runbook button for a large fraction of real alerts and the payload
+// blamed the operator's annotation for a bound belonging to a different column.
 //
-//	https://grafana.example/d/abc?from=now-1h&to=now   -> rejected
-//	https://wiki.example/runbook#step-2                -> rejected
-//	https://wiki.example/runbooks/                     -> rejected
-//
-// The degradation is honest — `partial` plus `unusable_link_annotations`, never
-// a wrong link — but the card loses its runbook button for a large fraction of
-// real alerts, and the payload blames the operator's annotation for a bound that
-// belongs to a different column.
-func TestBUG_ADashboardLinkWithATimeRangeIsRejectedAsUnusable(t *testing.T) {
-	t.Skip("BUG: runbook.link validates operator links with validate.IsAbsoluteHTTPURL, the alert_sources.base_url predicate, so any link carrying a query string, a fragment or a trailing slash is rejected — contradicting normalise's own documented contract (enrichers/runbook/runbook.go).")
+// `normalise` now uses `validate.IsOperatorLinkURL`, a predicate that exists
+// precisely so these two columns cannot be conflated again.
+func TestALinkKeepsItsQueryFragmentAndTrailingSlash(t *testing.T) {
+	t.Parallel()
 
 	for _, raw := range []string{
 		"https://grafana.example/d/abc?from=now-1h&to=now",
@@ -471,32 +461,30 @@ func TestBUG_ADashboardLinkWithATimeRangeIsRejectedAsUnusable(t *testing.T) {
 	}
 }
 
-// TestBUG_ARejectedLinkIsReportedAsSkippedRatherThanPartial.
+// TestARejectedLinkIsReportedAsPartial.
 //
 // Enrich's own comment says a malformed annotation is "a real, fixable problem
 // in somebody's rule file. Reporting it is more useful than hiding it", and it
 // sets `partial` plus the `unusable_link_annotations` warning to do so. Two
-// lines later:
+// lines later it used to overwrite that unconditionally:
 //
 //	if len(links) == 0 {
 //	    status = domain.StatusSkipped
 //	}
 //
-// overwrites that unconditionally — and the list is always empty in exactly the
-// case the report is FOR: the alert's only link annotation was the broken one.
+// and the list is always empty in exactly the case the report is FOR: the
+// alert's only link annotation was the broken one.
 //
-// The consequence is not cosmetic. `StatusSkipped` is documented as "Applicable
+// The consequence was not cosmetic. `StatusSkipped` is documented as "Applicable
 // said no", `Status.Succeeded()` is false for it and `Enrichment.Reusable` is
-// false for it, so a run that DID look and DID find a broken annotation is
+// false for it, so a run that DID look and DID find a broken annotation was
 // filed under the same status as one that never ran. Every sibling enricher
 // uses the other convention: alerthistory and promrule report `partial` with a
 // warning whenever they looked and produced less than they wanted.
 //
-// The fix belongs in production code — order the two branches so a rejection
-// wins over an empty list, or gate the second on `len(rejected) == 0` — so it
-// is recorded here rather than applied.
-func TestBUG_ARejectedLinkIsReportedAsSkippedRatherThanPartial(t *testing.T) {
-	t.Skip("BUG: an alert whose only link annotation is unusable is recorded StatusSkipped, because `len(links)==0` overwrites the StatusPartial that the rejection had just set (enrichers/runbook/runbook.go Enrich); it must stay partial.")
+// The two branches are now ordered so a rejection wins over an empty list.
+func TestARejectedLinkIsReportedAsPartial(t *testing.T) {
+	t.Parallel()
 
 	res := enrich(t, runbook.New(nil), subject(map[string]string{
 		"runbook_url": "see the wiki",
@@ -508,27 +496,28 @@ func TestBUG_ARejectedLinkIsReportedAsSkippedRatherThanPartial(t *testing.T) {
 	assert.Equal(t, []string{"runbook_url"}, payloadOf(t, res).Rejected)
 }
 
-// TestBUG_AnUppercaseSchemeIsRejectedOutright.
+// TestAnUppercaseSchemeIsAcceptedAndLowercased.
 //
 // `normalise` documents itself as accepting "absolute http(s) only" and ends
 // with `u.Scheme = strings.ToLower(u.Scheme)`, which says plainly that the
-// author expected a mixed-case scheme to be normalised. It never is:
+// author expected a mixed-case scheme to be normalised. It never was:
 //
-//   - `looksLikeURL` tests `strings.HasPrefix(v, "https://")`, case-sensitively;
+//   - `looksLikeURL` tested `strings.HasPrefix(v, "https://")`, case-sensitively;
 //   - `validate.HTTPURLRe` is `^https?://[^\s]+$`, with no `(?i)` — it mirrors a
 //     Postgres CHECK on `alert_sources.base_url`, where case-sensitivity is
-//     correct and deliberate;
+//     correct and deliberate, so it could not be loosened;
 //   - and `net/url.Parse` lowercases the scheme itself, so the ToLower line
 //     could never have fired even if the string got that far.
 //
 // RFC 3986 §3.1 makes a scheme case-insensitive, so `HTTPS://wiki/runbook` is a
-// perfectly good link that this enricher files as "unusable" and blames the
-// operator for. It is the same root cause as
-// TestBUG_ADashboardLinkWithATimeRangeIsRejectedAsUnusable — a base-URL
-// predicate reused on an operator's link — plus one case in runbook's own
-// `looksLikeURL`.
-func TestBUG_AnUppercaseSchemeIsRejectedOutright(t *testing.T) {
-	t.Skip("BUG: `HTTPS://…` in a runbook annotation is rejected as unusable — looksLikeURL and validate.HTTPURLRe both match the scheme case-sensitively, making normalise's own strings.ToLower(u.Scheme) unreachable (enrichers/runbook/runbook.go).")
+// perfectly good link that this enricher filed as "unusable" while blaming the
+// operator for it. Same root cause as
+// TestALinkKeepsItsQueryFragmentAndTrailingSlash — a base-URL predicate reused
+// on an operator's link — plus one case in runbook's own `looksLikeURL`. Both
+// are fixed: `looksLikeURL` folds case, and `validate.IsOperatorLinkURL` carries
+// the `(?i)` that HTTPURLRe may not.
+func TestAnUppercaseSchemeIsAcceptedAndLowercased(t *testing.T) {
+	t.Parallel()
 
 	res := enrich(t, runbook.New(nil), subject(map[string]string{
 		"runbook_url": "HTTPS://Wiki.Example/Runbooks/HighErrorRate",
