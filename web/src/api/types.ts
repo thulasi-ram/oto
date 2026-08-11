@@ -73,6 +73,14 @@ export type AlertRef = S["AlertRefDTO"];
 /** One server-side roll-up bucket. **Not** an AlertGroup — it has no row and no thread. */
 export type AlertRollup = S["AlertRollupDTO"];
 export type Snooze = S["SnoozeDTO"];
+/**
+ * One row of the org-wide active-snooze list (§B.8.6).
+ *
+ * `alert` is nullable and the row is listed anyway — a hold whose subject cannot
+ * be read is still a hold somebody has to know about, and dropping it would hide
+ * exactly what the endpoint exists to surface.
+ */
+export type ActiveSnooze = S["ActiveSnoozeDTO"];
 export type SnoozeHistoryEntry = S["SnoozeHistoryDTO"];
 export type SnoozeEndReason = S["SnoozeEndReason"];
 export type Occurrence = S["OccurrenceDTO"];

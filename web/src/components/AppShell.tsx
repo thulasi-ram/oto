@@ -1,14 +1,17 @@
 /**
  * The frame every screen hangs in.
  *
- * It carries three things and deliberately nothing else: where you are, whether
- * what you are looking at is actually live, and the two display preferences an
- * operational surface genuinely needs (theme and density).
+ * It carries four things and deliberately nothing else: where you are, whether
+ * what you are looking at is actually live, whether it is *complete*, and the two
+ * display preferences an operational surface genuinely needs (theme and density).
  *
- * The connection indicator is the load-bearing part. A UI that renders stale
- * rows while implying they are current is the exact failure oto exists to
- * prevent, so this never says "live" unless frames are arriving, and it says
- * what is wrong and what happens next when they are not.
+ * The honesty machinery is the load-bearing part. A UI that renders stale rows
+ * while implying they are current is the exact failure oto exists to prevent, so
+ * this never says "live" unless frames are arriving; and a calm list is only
+ * evidence of calm when oto can still see every source and is not holding its
+ * tongue, which is what the two banners below `ResyncBanner` are for. All three
+ * ride in the header so they reach every route, not just the settings screen
+ * nobody is on when it matters.
  */
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import {
@@ -23,7 +26,9 @@ import {
 import { describeConnection, useLive } from "~/api/live";
 import { useSession } from "~/api/session";
 import { Countdown } from "~/components/Time";
+import { Chime } from "~/components/ui/Chime";
 import { Button, cx } from "~/components/ui/primitives";
+import { ShellBanner, SnoozeBanner, SourceReachBanner } from "~/components/ui/ShellBanner";
 import {
   density,
   setDensity,
@@ -118,10 +123,7 @@ const ResyncBanner = (): JSX.Element => {
   const live = useLive();
   return (
     <Show when={live.detail().resyncReason !== null}>
-      <div
-        role="status"
-        class="flex items-center justify-between gap-3 border-b border-line-strong bg-raised px-4 py-1.5 text-[12px] text-ink"
-      >
+      <ShellBanner onDismiss={() => live.acknowledgeResync()}>
         <span>
           oto could not keep this page's live updates in order
           {live.detail().resyncReason === "replay_window_exceeded"
@@ -129,10 +131,7 @@ const ResyncBanner = (): JSX.Element => {
             : " — the update buffer overflowed"}
           . The data below has been refetched.
         </span>
-        <Button size="sm" variant="ghost" onClick={() => live.acknowledgeResync()}>
-          Dismiss
-        </Button>
-      </div>
+      </ShellBanner>
     </Show>
   );
 };
@@ -297,7 +296,8 @@ export const AppShell: ParentComponent = (props) => {
       <header class="z-30 shrink-0 border-b border-line bg-surface">
         <div class="flex h-11 items-center gap-4 px-4">
           <A href="/alerts" class="flex shrink-0 items-center gap-1.5" aria-label="oto — home">
-            <ChimeMark />
+            {/* The chime — 音. The only piece of brand art in the chrome. */}
+            <Chime size="mark" class="text-accent" />
             <span class="font-mono text-[15px] font-bold tracking-tight text-ink">oto</span>
           </A>
           <Nav />
@@ -308,7 +308,14 @@ export const AppShell: ParentComponent = (props) => {
           <ThemeToggle />
           <SignOut />
         </div>
+        {/* Ordered by how much of the screen each one calls into question: the
+            live stream first, then whether oto can still see every source, then
+            what oto is deliberately keeping quiet about. Each renders nothing at
+            all when it has nothing to say, so the happy path is one flat header
+            and the table below never shifts. */}
         <ResyncBanner />
+        <SourceReachBanner />
+        <SnoozeBanner />
       </header>
 
       <main id="main" class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -328,25 +335,8 @@ export const AppShell: ParentComponent = (props) => {
 /* Glyphs                                                                     */
 /* -------------------------------------------------------------------------- */
 
-/** The chime — 音. The only piece of brand art in the chrome. */
-const ChimeMark = (): JSX.Element => (
-  <svg viewBox="0 0 20 20" class="size-4 text-accent" aria-hidden="true">
-    <path
-      d="M10 3.2c-2.6 0-4.6 2-4.6 4.6v3.6l-1.6 2.6h12.4l-1.6-2.6V7.8c0-2.6-2-4.6-4.6-4.6Z"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linejoin="round"
-    />
-    <path
-      d="M8.4 16.2a1.8 1.8 0 0 0 3.2 0"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-    />
-  </svg>
-);
+/* The chime lives in `~/components/ui/Chime` — one component, two sizes, and a
+   per-size stroke that is optical compensation rather than an inconsistency. */
 
 const SunGlyph = (): JSX.Element => (
   <svg viewBox="0 0 14 14" class="size-3.5" aria-hidden="true">

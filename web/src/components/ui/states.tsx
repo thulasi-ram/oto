@@ -16,6 +16,7 @@
 import { For, Show, type Component, type JSX, type ParentComponent } from "solid-js";
 
 import { ApiError } from "~/api/client";
+import { Chime } from "./Chime";
 import { Button, cx } from "./primitives";
 
 /* -------------------------------------------------------------------------- */
@@ -35,16 +36,7 @@ export const EmptyState: Component<EmptyStateProps> = (props) => (
   >
     {/* A quiet chime mark — the product's own glyph rather than a generic
         "no data" illustration, and the only decorative art in the app. */}
-    <svg viewBox="0 0 40 40" class="size-8 text-line-strong" aria-hidden="true">
-      <path
-        d="M20 6c-5 0-9 4-9 9v7l-3 5h24l-3-5v-7c0-5-4-9-9-9Z"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linejoin="round"
-      />
-      <path d="M17 31a3 3 0 0 0 6 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-    </svg>
+    <Chime size="glyph" class="text-line-strong" />
     <p class="text-[14px] font-medium text-ink">{props.title}</p>
     <Show when={props.body}>
       <p class="max-w-sm text-[12px] leading-relaxed text-ink-muted">{props.body}</p>

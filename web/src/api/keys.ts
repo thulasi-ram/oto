@@ -31,6 +31,16 @@ export const qk = {
     enrichments: (id: string) => ["alerts", "enrichments", id] as const,
     rule: (id: string) => ["alerts", "rule", id] as const,
     snoozes: (id: string) => ["alerts", "snoozes", id] as const,
+    /**
+     * Every quiet period in force across the org — the standing banner of §B.8.6.
+     *
+     * It sits under the `["alerts"]` prefix on purpose: taking a snooze, ending
+     * one early and one expiring all change the alert, so the `alert.upserted`
+     * frame that invalidates the row invalidates this list with it. A banner that
+     * went on naming a hold which had already ended would be worse than no
+     * banner, because it would be the one thing on screen nobody could act on.
+     */
+    activeSnoozes: () => ["alerts", "active-snoozes"] as const,
     notifications: (id: string) => ["alerts", "notifications", id] as const,
   },
   rules: {

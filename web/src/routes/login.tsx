@@ -26,6 +26,7 @@ import { createSignal, Show, type Component } from "solid-js";
 
 import { ApiError } from "~/api/client";
 import { useSession } from "~/api/session";
+import { Chime } from "~/components/ui/Chime";
 import { Button, Field, Input } from "~/components/ui/primitives";
 
 /** What the operator is told, per failure. Never more specific than the server. */
@@ -69,7 +70,17 @@ const LoginRoute: Component = () => {
   };
 
   return (
-    <div class="flex flex-1 items-center justify-center p-8">
+    <div class="flex flex-1 flex-col items-center justify-center gap-10 p-8">
+      {/* The one screen with no incident on it.
+          Everywhere else the fūrin would compete with something an operator is
+          trying to read, so it stays at 16px in the chrome and 32px in an empty
+          panel. Here there is nothing to compete with, and the negative space
+          around it — ma — is doing as much work as the glyph: `gap-10` against
+          the form's own `gap-4` is what makes it read as a threshold rather than
+          as a decoration bolted to a field. Still, quiet, and no larger than the
+          empty state's glyph. */}
+      <Chime size="glyph" class="text-line-strong" />
+
       <form
         class="flex w-full max-w-[320px] flex-col gap-4"
         onSubmit={(e) => void submit(e)}

@@ -20,6 +20,7 @@ import {
   type RequestOptions,
 } from "./client";
 import type {
+  ActiveSnooze,
   Alert,
   AlertDetail,
   AlertEvent,
@@ -318,6 +319,21 @@ export function listAlertSnoozes(
     ...ctx(c),
     query: query as QueryParams,
   });
+}
+
+/**
+ * Every quiet period currently in force across the org, soonest wake-up first.
+ *
+ * This is the counterweight that makes snoozing safe (§B.8.6). It is a top-level
+ * collection rather than a per-alert one because the question it answers — "what
+ * is oto not telling us right now?" — has no alert to ask it from: the operator
+ * who needs it is looking at a list that seems calm.
+ */
+export function listActiveSnoozes(
+  query: { limit?: number; cursor?: string } = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<ActiveSnooze>> {
+  return getList<ActiveSnooze>(`${V1}/snoozes`, { ...ctx(c), query: query as QueryParams });
 }
 
 /* -------------------------------------------------------------------------- */
