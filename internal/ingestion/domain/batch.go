@@ -57,6 +57,10 @@ const (
 	StatusProcessed Status = "processed"
 	// StatusPartial means a batch over ChunkThreshold is mid-chunking (§G.4).
 	// It is RESUMABLE, not terminal — see Resumable.
+	//
+	// ⛔ Its absence proves nothing about how a batch is being processed. EVERY
+	// batch is chunked by ChunkSize; only one over ChunkThreshold wears this mark,
+	// so a batch of 2 000 runs four transactions while still reading `pending`.
 	StatusPartial Status = "partial"
 	// StatusFailed means processing gave up. Terminal; `error` is required.
 	StatusFailed Status = "failed"

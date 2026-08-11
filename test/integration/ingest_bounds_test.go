@@ -693,13 +693,20 @@ func (r *chunkRecorder) distinctTxIDs() int {
 // the one shape that makes a 2 s statement timeout look like an outage — which on
 // this path means a 503 storm during an incident.
 //
-// ⛔ FINDING — THE CODE AND ITS OWN DOC COMMENT DISAGREE. `applyChunks` says "A
-// batch at or under ChunkThreshold is ONE transaction, which is the common case
-// and the fast one." IT IS NOT. The loop slices by ChunkSize unconditionally, so a
-// 2 000-alert batch runs in FOUR transactions of 500, not one. ChunkThreshold
-// gates only the `partial` marking. The cases below assert what the code actually
-// does — the doc comment is what is wrong, not the behaviour — but the two should
-// be reconciled, because the sentence is the thing a reader will believe.
+// ⛔ THE CHUNKING IS UNCONDITIONAL, AND THAT IS THE RULE THESE CASES PIN.
+// `applyChunks` slices by ChunkSize for every batch, so 500 alerts is one
+// transaction, 501 is two and 2 000 is FOUR. ChunkThreshold splits nothing: it is
+// the point above which the batch is additionally marked `partial` while its
+// chunks run, and both `pending` and `partial` are resumable, so the mark costs no
+// batch its resumability.
+//
+// This used to read the other way round — the code's own doc comment and §L.3.2's
+// B17 row both promised "one transaction at or under ChunkThreshold", and only
+// these assertions said otherwise. The comment and the SPEC were corrected to the
+// behaviour rather than the other way about: a chunk is the size of ONE multi-row
+// statement on the ingest pool, and that pool's `statement_timeout` is 2 s
+// (§G.10), so a 2 000-row upsert that crosses it would roll back the whole batch
+// and retry at exactly the same size until the job's budget ran out.
 func TestIngestB17ChunkBoundaries(t *testing.T) {
 	e := newIngestEnv(t, "b17")
 

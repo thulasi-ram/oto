@@ -76,8 +76,11 @@ delivered twice, and nothing wedged.**
 
 ## `single_batch_500` — the case the issue names
 
-500 alerts in ONE Alertmanager notification. Below B17's 2 000 chunk threshold,
-so it is one processing transaction — the shape a real node failure produces.
+500 alerts in ONE Alertmanager notification. Exactly B17's `ChunkSize`, so it is
+one processing transaction — the shape a real node failure produces. (One
+transaction because 500 is the chunk size, not because it is under
+`ChunkThreshold`: chunking is unconditional and the threshold governs only
+`partial` marking.)
 
 | Measure | Value |
 |---|---|

@@ -227,11 +227,40 @@ func (s *Service) normalise(
 // applyChunks hands the observations to the alerts service, in transactions of
 // at most domain.ChunkSize (B17).
 //
-// A batch at or under ChunkThreshold is ONE transaction, which is the common case
-// and the fast one. Above it, the batch is split and marked `partial` until the
-// last chunk commits, because a single transaction holding twenty thousand
-// upserts blocks vacuum, bloats WAL and is the one shape that can make a 2 s
-// statement timeout look like an outage.
+// ⛔ THE CHUNKING IS UNCONDITIONAL, AND ChunkThreshold DOES NOT GATE IT. Every
+// batch is sliced by ChunkSize: 500 alerts is one transaction, 501 is two, 2 000
+// is four. ChunkThreshold governs exactly one thing — whether the batch is marked
+// `partial` while those chunks run. This comment used to say that a batch at or
+// under ChunkThreshold was ONE transaction. It never was, and the sentence was the
+// dangerous kind of wrong: someone tuning ChunkThreshold to bring the transaction
+// count down would have changed nothing at all.
+//
+// ⭐ 500 IS A CAP, NOT A FLOOR TO BE RAISED FOR THE COMMON CASE, because the chunk
+// IS the size of a single SQL statement. ObserveBatch upserts the whole chunk in
+// one round trip (§D.12c) and reads its occurrences in another, on THE INGEST POOL,
+// whose `statement_timeout` is 2 s (§G.10, ADR 0007). A 2 000-row upsert that
+// crosses that timeout takes its whole transaction with it, and the retry runs the
+// same statement at the same size — a deterministic failure that spends the job's
+// entire retry budget and ends with 2 000 alerts in a `failed` batch during the
+// incident they were reporting. At 500 the same slow database loses one chunk: the
+// chunks that committed stay committed, and the retry resumes over them for free,
+// because every write underneath is idempotent by construction (ON CONFLICT plus
+// `alert_event_keys`, §G.5).
+//
+// The same argument covers everything else a transaction holds while it is open:
+// row locks on `alerts`, taken in the ⚠️ lock order that `Service.expire` takes
+// backwards; the xmin horizon that keeps vacuum off the hottest tables in the
+// schema; and the WAL the commit has to flush. Four short transactions cost three
+// extra commits. One long one costs all of that at four times the width, and the
+// alerts service's own re-decide loop would replay 2 000 observations on a lost
+// compare-and-set instead of 500.
+//
+// Above ChunkThreshold the batch is ADDITIONALLY marked `partial` before the first
+// chunk. That is a visibility marker and nothing more: `pending` and `partial` are
+// both resumable (domain.Status.Resumable), so a batch under the threshold that
+// dies between chunks is resumed just the same. What the mark buys is an operator
+// being able to tell a batch that was in the middle of a long job from one that
+// never started.
 func (s *Service) applyChunks(
 	ctx context.Context, scope db.TenantScope, batch domain.Batch, obs []alerts.Observation,
 ) (int, error) {

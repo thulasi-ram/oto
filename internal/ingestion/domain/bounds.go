@@ -61,11 +61,18 @@ const (
 	// `undecodable` — recorded, then 400, because the same bytes never will decode.
 	MaxJSONDepth = 32
 
-	// ChunkSize is B17: alerts per processing transaction.
+	// ChunkSize is B17: alerts per processing transaction, and EVERY batch is
+	// sliced by it. 500 alerts is one transaction, 501 is two, 2 000 is four.
+	// The chunk is the size of one multi-row statement on the ingest pool, whose
+	// `statement_timeout` is 2 s — see service.applyChunks for why that makes 500
+	// a cap rather than a target.
 	ChunkSize = 500
-	// ChunkThreshold is B17's split point. A batch larger than this is processed in
-	// ChunkSize chunks, each its own transaction, with the batch marked `partial`
-	// until the last chunk commits.
+	// ChunkThreshold is B17's PARTIAL-MARKING point. ⛔ It is NOT the point at
+	// which chunking begins: chunking is unconditional. A batch larger than this is
+	// marked `partial` before its first chunk and until the last one commits, so an
+	// operator can tell a batch that was in the middle of a long job from one that
+	// never started. Both states are resumable, so nothing under the threshold is
+	// stranded by not being marked.
 	ChunkThreshold = 2000
 )
 

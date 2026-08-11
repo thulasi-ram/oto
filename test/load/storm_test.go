@@ -31,9 +31,11 @@ import (
 // TestStormSingleBatchOf500Alerts is the case the issue names: at least five
 // hundred alerts in ONE Alertmanager notification.
 //
-// Five hundred is below B17's 2000 chunk threshold, so it is ONE processing
-// transaction — the shape a real node failure produces and the one the O(n)
-// rollup punished hardest.
+// Five hundred is exactly B17's ChunkSize, so it is ONE processing transaction —
+// the shape a real node failure produces and the one the O(n) rollup punished
+// hardest. The reason is the chunk size and NOT ChunkThreshold: chunking is
+// unconditional, and the threshold governs only whether the batch is marked
+// `partial` while the chunks run.
 func TestStormSingleBatchOf500Alerts(t *testing.T) {
 	const alerts = 500
 
