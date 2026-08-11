@@ -270,6 +270,30 @@ func alertEvent(org uuid.UUID, seq int64) domain.Event {
 	}
 }
 
+// otherEvent is a durable row about something an alerts-only client did NOT
+// subscribe to. The payload is deliberately empty: if one of these ever reaches
+// the wire the test has already failed on the `id:` line, and giving it a
+// realistic body would only invite someone to assert against it.
+//
+// Kind and Resource are paired through domain.ResourceFor rather than restated,
+// so a fixture cannot invent a combination the writer path could never produce.
+func otherEvent(t *testing.T, org uuid.UUID, seq int64, kind domain.Kind) domain.Event {
+	t.Helper()
+	res, ok := domain.ResourceFor(kind)
+	if !ok {
+		t.Fatalf("%q is not a persisted kind, so no ui_events row can carry it", kind)
+	}
+	return domain.Event{
+		Seq:        seq,
+		OrgID:      org,
+		Kind:       kind,
+		Resource:   res,
+		ResourceID: uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b78"),
+		Payload:    json.RawMessage(`{}`),
+		At:         time.Date(2026, 8, 7, 9, 20, 12, 443_000_000, time.UTC),
+	}
+}
+
 /* -------------------------------------------------------------------------- */
 /* The promises                                                               */
 /* -------------------------------------------------------------------------- */
@@ -482,6 +506,171 @@ func TestAnEventThatArrivedDuringTheReplayIsDeliveredExactlyOnce(t *testing.T) {
 		t.Fatalf("second frame id = %q, want 501 — an event that committed during the replay was %s",
 			second.ID,
 			"either lost (replay-then-subscribe) or duplicated (no watermark)")
+	}
+}
+
+// ⛔ TestAResumeReplaysOnlyTheResourcesTheClientSubscribedTo.
+//
+// `?resources=` narrowed the LIVE feed and nothing else. Hub.Publish consults
+// Interest.Matches on the way out; the replay path consulted nothing, so a tab
+// watching `resources=alerts` saw alert frames for as long as its socket stayed
+// up and then, on the first reconnect, the entire log — occurrences, alert
+// events, groups — arriving as `alert.upserted` listeners that never fire and
+// payloads the store has no reducer for.
+//
+// The shape below is the one observed against a running server: resume from 10
+// over a gap of 11..16 that holds exactly one alert. The client asked for alerts.
+// It gets one frame.
+//
+// The gap is deliberately arranged so that the alert is NOT last: 13..16 come
+// after it, which is what makes the cursor assertion at the end meaningful rather
+// than accidentally satisfied by the alert's own id.
+func TestAResumeReplaysOnlyTheResourcesTheClientSubscribedTo(t *testing.T) {
+	t.Parallel()
+
+	rg := newStreamRig(t, nil)
+	rg.svc.result = service.ReplayResult{
+		Events: []domain.Event{
+			otherEvent(t, testOrg, 11, domain.KindOccurrenceUpserted),
+			alertEvent(testOrg, 12),
+			otherEvent(t, testOrg, 13, domain.KindEventAppended),
+			otherEvent(t, testOrg, 14, domain.KindEventAppended),
+			otherEvent(t, testOrg, 15, domain.KindEventAppended),
+			otherEvent(t, testOrg, 16, domain.KindGroupUpserted),
+		},
+		LastSeq: 16,
+	}
+
+	resp, cancel := rg.open(t, "?resources=alerts", map[string]string{"Last-Event-ID": "10"})
+	defer resp.Body.Close()
+	defer cancel()
+
+	frames := readFrames(resp.Body)
+
+	// The sequence contract is untouched by the filter: the handler still resolved
+	// the cursor as 10 and the replay still means `seq > 10`. Narrowing the stream
+	// must never narrow the RANGE, or a filtered client would also be a client with
+	// a hole in it.
+	if rg.svc.since != 10 {
+		t.Fatalf("the handler replayed from %d, want 10 — a resume from N must still ask for N+1 onwards",
+			rg.svc.since)
+	}
+
+	first := next(t, frames)
+	if first.ID != "12" || first.Event != string(domain.KindAlertUpserted) {
+		t.Fatalf("first frame is id %q event %q, want id 12 event %s — "+
+			"the replay is ignoring `resources=alerts` and shipping every kind in the gap",
+			first.ID, first.Event, domain.KindAlertUpserted)
+	}
+
+	// ⛔ And the cursor lands on 16, not on 12. See the next test for why that is
+	// the difference between a reconnect that terminates and one that does not.
+	cursor := next(t, frames)
+	if cursor.Data != "" || cursor.Event != "" {
+		t.Fatalf("frame after the replay is event %q data %q, want the id-only cursor line — "+
+			"a filtered-out event was delivered after all", cursor.Event, cursor.Data)
+	}
+	if !cursor.HasID || cursor.ID != "16" {
+		t.Fatalf("cursor line = %q (present=%v), want 16 — the highest seq in the gap, "+
+			"filtered or not", cursor.ID, cursor.HasID)
+	}
+
+	// The live phase resumes from the true watermark, not from 12: the filtered ids
+	// are behind the connection, not pending in front of it.
+	rg.hub.Publish([]domain.Event{alertEvent(testOrg, 17)})
+	if f := next(t, frames); f.ID != "17" {
+		t.Fatalf("live frame id = %q, want 17", f.ID)
+	}
+}
+
+// ⛔ TestAResumeAdvancesTheClientsCursorPastTheEventsItFilteredOut.
+//
+// This is the half of the filter that is easy to get wrong in the direction that
+// looks correct. The server's `watermark` is not the client's cursor: the client
+// resumes from the last `id:` LINE IT RECEIVED. Filter frames away and that value
+// stops moving, so every reconnect hands back the same stale id, and the gap oto
+// is asked to replay only grows — in a busy org with a narrow filter it crosses
+// MaxReplayRows and the connection resyncs forever over events the client never
+// wanted. Putting the filter in the SQL `WHERE` produces exactly this, and it
+// passes a test that only checks which frames arrive.
+//
+// So the gap here contains NOTHING the client asked for. There are no data frames
+// to hide behind: the only thing that may appear on the wire is a bare `id:` line
+// carrying the highest seq in the gap, which moves EventSource.lastEventId without
+// dispatching an event to the page.
+func TestAResumeAdvancesTheClientsCursorPastTheEventsItFilteredOut(t *testing.T) {
+	t.Parallel()
+
+	rg := newStreamRig(t, nil)
+	rg.svc.result = service.ReplayResult{
+		Events: []domain.Event{
+			otherEvent(t, testOrg, 11, domain.KindOccurrenceUpserted),
+			otherEvent(t, testOrg, 12, domain.KindEventAppended),
+			otherEvent(t, testOrg, 13, domain.KindDeliveryUpdated),
+		},
+		LastSeq: 13,
+	}
+
+	resp, cancel := rg.open(t, "?resources=alerts", map[string]string{"Last-Event-ID": "10"})
+	defer resp.Body.Close()
+	defer cancel()
+
+	frames := readFrames(resp.Body)
+
+	f := next(t, frames)
+	if f.Data != "" {
+		t.Fatalf("a frame with data arrived for an alerts-only client over a gap holding no alerts: "+
+			"event=%q data=%s", f.Event, f.Data)
+	}
+	if !f.HasID {
+		t.Fatal("the only thing on the wire carries no `id:`, so the client's cursor is still at 10; " +
+			"it will ask for 11 again on every reconnect, forever")
+	}
+	if f.ID != "13" {
+		t.Fatalf("cursor = %q, want 13 — the cursor must clear the WHOLE gap, not the part of it "+
+			"this subscriber happened to want", f.ID)
+	}
+
+	// Nothing else follows: the cursor line is one block, not a frame with an empty
+	// body, and it must not be repeated per filtered event.
+	rg.hub.Publish([]domain.Event{alertEvent(testOrg, 14)})
+	if live := next(t, frames); live.ID != "14" || live.Event != string(domain.KindAlertUpserted) {
+		t.Fatalf("next frame is id %q event %q, want the live alert 14 — the replay emitted "+
+			"more than one cursor line", live.ID, live.Event)
+	}
+}
+
+// ⛔ TestAFilteredResumeNeverEmitsACursorLineAfterAResync.
+//
+// The two mechanisms are opposites and they must not meet. A resync carries no
+// `id:` precisely so a reconnect cannot resume PAST the events it is being told to
+// refetch; a cursor line does nothing but move the client past events. Emitting
+// one after the other would convert "refetch everything, you have a hole" into
+// "you are up to date", silently, which is the worst outcome in the whole feature.
+func TestAFilteredResumeNeverEmitsACursorLineAfterAResync(t *testing.T) {
+	t.Parallel()
+
+	rg := newStreamRig(t, nil)
+	rg.svc.result = service.ReplayResult{Resync: domain.ResyncReplayWindowExceeded, LastSeq: 10}
+
+	resp, cancel := rg.open(t, "?resources=alerts", map[string]string{"Last-Event-ID": "10"})
+	defer resp.Body.Close()
+	defer cancel()
+
+	frames := readFrames(resp.Body)
+
+	if f := next(t, frames); f.Event != string(domain.KindResync) || f.HasID {
+		t.Fatalf("first frame is event %q (id present=%v), want an id-less resync", f.Event, f.HasID)
+	}
+	// If a cursor line followed the resync it would be the next block on the wire.
+	rg.hub.Publish([]domain.Event{alertEvent(testOrg, 11)})
+	f := next(t, frames)
+	if f.Data == "" {
+		t.Fatalf("a bare cursor line (id %q) followed the resync; the client would reconnect from "+
+			"there and never refetch the gap the resync exists to announce", f.ID)
+	}
+	if f.ID != "11" {
+		t.Fatalf("frame after the resync is id %q, want the live alert 11", f.ID)
 	}
 }
 

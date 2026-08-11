@@ -110,6 +110,27 @@ func (s *SSEWriter) EventSeq(seq int64, name string, data []byte) error {
 	return s.Event(strconv.FormatInt(seq, 10), name, data)
 }
 
+// Cursor advances the client's Last-Event-ID WITHOUT delivering a frame.
+//
+// It writes an `id:` line and nothing else — no `event:`, no `data:`. That is not
+// a malformed frame, it is the one mechanism the EventSource specification gives
+// for moving a cursor over something the client is not being told about: on the
+// blank line the parser assigns the last event ID from its buffer and only THEN
+// returns early because the data buffer is empty. The cursor moves; no event is
+// dispatched; the page never sees it.
+//
+// ⛔ IT IS ONLY EVER CORRECT WHEN THE SKIPPED SEQS ARE ONES THE CLIENT MUST NOT
+// ASK FOR AGAIN — a subscriber filter it declared, not a gap oto failed to
+// deliver. Emitting it over events the client is missing is exactly the mistake
+// `writeResync` avoids by carrying no id at all: the reconnect would resume past
+// the very rows it needed.
+func (s *SSEWriter) Cursor(seq int64) error {
+	if _, err := fmt.Fprintf(s.w, "id: %d\n\n", seq); err != nil {
+		return fmt.Errorf("httpx: write sse cursor: %w", err)
+	}
+	return s.flush()
+}
+
 // Comment writes a bare comment line. This is the heartbeat (`: ping`): it is not
 // a frame, carries no data and does not move the client's cursor, but it does
 // make the write fail promptly once the peer is gone and keeps intermediaries

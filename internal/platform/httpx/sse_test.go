@@ -128,3 +128,46 @@ func TestSSEWriterFramesEvents(t *testing.T) {
 		t.Error("an empty id: line moves the client's cursor to nowhere; omit the field instead")
 	}
 }
+
+// ⛔ TestSSEWriterCursorMovesTheClientWithoutDeliveringAFrame pins the exact bytes
+// of the id-only block, because its whole behaviour depends on them.
+//
+// The EventSource parser assigns the last event ID from its buffer at the top of
+// the dispatch step and only THEN returns early on an empty data buffer, so
+// `id: N\n\n` moves the cursor and dispatches nothing. Add a `data:` line — even
+// an empty one — and the block becomes a real message event with an empty body,
+// which every `onmessage` handler in the client would try to parse as a frame. Add
+// an `event:` line and a typed listener fires with no payload. Neither is a thing
+// the client can survive, and neither would be caught by anything that only checks
+// that the cursor advanced.
+func TestSSEWriterCursorMovesTheClientWithoutDeliveringAFrame(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sse, err := httpx.NewSSEWriter(w)
+		if err != nil {
+			t.Errorf("NewSSEWriter: %v", err)
+			return
+		}
+		_ = sse.Cursor(16)
+		_ = sse.EventSeq(17, "alert.upserted", []byte(`{"seq":17}`))
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL) //nolint:noctx // the server closes the stream itself
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(bufio.NewReader(resp.Body))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	want := "id: 16\n\n" +
+		"id: 17\nevent: alert.upserted\ndata: {\"seq\":17}\n\n"
+	if got := string(body); got != want {
+		t.Errorf("a cursor line must be an `id:` and nothing else\n got: %q\nwant: %q", got, want)
+	}
+}

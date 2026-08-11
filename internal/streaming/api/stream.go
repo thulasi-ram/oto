@@ -144,11 +144,64 @@ func (rt *Router) stream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// ⛔ THE INTEREST FILTER IS APPLIED HERE, IN THE EMIT LOOP, AND NOT IN THE
+	// REPLAY QUERY. Both halves of that sentence are load-bearing.
+	//
+	// Applied at all, because it was not: the live path filters in Hub.Publish and
+	// the resume path filtered nowhere, so `?resources=alerts` delivered alert
+	// frames for as long as the socket stayed up and EVERY kind the moment it
+	// reconnected. The predicate is domain.Interest.Matches — the same function the
+	// hub calls on the live path, so the two cannot answer differently.
+	//
+	// Not in SQL, for three reasons in ascending order of how much they hurt:
+	//
+	//  1. It could only ever be HALF the filter. `resource` is a column, but the
+	//     `alert_id` / `group_id` narrowing is DERIVED from the payload at load
+	//     time (domain.ScopeOf), so a WHERE clause would split one predicate across
+	//     two languages and leave them free to drift.
+	//  2. MaxReplayRows would stop bounding anything. The cap exists so that one
+	//     resume cannot scan an unbounded gap; measured against MATCHING rows, a
+	//     narrow filter would happily walk a million rows to find ten thousand.
+	//  3. The watermark would stop being the truth — ReplayResult.LastSeq would
+	//     become the highest MATCHING seq rather than the highest seq in the gap,
+	//     which is the trap the two comments below exist to keep shut.
+	lastEmitted := sinceSeq
 	for _, e := range replay.Events {
-		if err := rt.writeEvent(sse, e); err != nil {
+		if interest.Matches(e) {
+			if err := rt.writeEvent(sse, e); err != nil {
+				return
+			}
+			lastEmitted = e.Seq
+		}
+		// ⛔ UNCONDITIONAL, AND OUTSIDE THE MATCH. The watermark is a position in
+		// the log, not a count of what this client wanted, so it advances over a
+		// filtered-out row exactly as it does over an emitted one. Moving it only
+		// on matches would leave it behind the events already buffered on the live
+		// subscription, and the de-duplication in pump would then re-deliver the
+		// tail of the gap.
+		watermark = e.Seq
+	}
+
+	// ⛔ AND THE CLIENT'S CURSOR HAS TO ADVANCE TOO, WHICH IS NOT THE SAME THING.
+	//
+	// `watermark` lives on the server for the life of this connection. The client's
+	// resume position is whatever the last `id:` line it actually received said —
+	// so a gap whose tail is entirely filtered out leaves the browser holding a
+	// cursor from BEFORE that tail, and it hands the same stale id back on every
+	// single reconnect. The gap it asks oto to replay then only ever grows: in a
+	// busy org with a narrow filter it eventually crosses MaxReplayRows and the
+	// connection resyncs forever over events the client never wanted.
+	//
+	// A bare `id:` line closes it, and it is the only mechanism SSE offers — see
+	// SSEWriter.Cursor. Never after a resync: that frame deliberately carries no id
+	// so a reconnect cannot skip what it is being told to refetch, and a cursor line
+	// behind it would hand back exactly that skip. Replay and Resync are mutually
+	// exclusive, so in practice the loop above did nothing and the guard is already
+	// true — it is written out rather than inferred.
+	if replay.Resync == "" && watermark > lastEmitted {
+		if err := sse.Cursor(watermark); err != nil {
 			return
 		}
-		watermark = e.Seq
 	}
 
 	log.InfoContext(ctx, "streaming: client attached")
