@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thulasiram/oto/internal/ingestion/decode"
 	"github.com/thulasiram/oto/internal/ingestion/domain"
@@ -333,8 +334,41 @@ func asBackpressure(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
+	if isUnstorableBytes(err) {
+		return errs.Wrap(err, errs.KindUnavailable, CodeAcceptUnstorable,
+			"oto could not durably record this batch right now").WithRetryAfter(domain.RetryAfter)
+	}
 	return errs.Wrap(err, errs.KindUnavailable, CodeAcceptFailed,
 		"oto could not durably record this batch right now").WithRetryAfter(domain.RetryAfter)
+}
+
+// isUnstorableBytes reports whether Postgres refused the BYTES, as opposed to
+// being busy, deadlocked or gone.
+//
+// This is a backstop for a hole in `decode.PersistedPayload`'s pre-scan, not a
+// handler: nothing here can repair the batch, and the answer is still a 503. What
+// it buys is a distinguishable code on a failure that would otherwise be
+// indistinguishable from transient backpressure while being permanent — an
+// Alertmanager retrying one poisoned body until its budget runs out, on a metric
+// that reads as "the database is slow".
+//
+// ⛔ THE MESSAGE MUST NOT WIDEN. `err` here can carry Postgres's own rendering of
+// the offending value, and §L.3.3 forbids the payload reaching a log line or an
+// error string at any level. The wrap above keeps the same neutral sentence every
+// other backpressure case uses; only the CODE changes.
+func isUnstorableBytes(err error) bool {
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) {
+		return false
+	}
+	switch pg.Code {
+	case "22P05", // untranslatable_character — U+0000 in text or jsonb
+		"22021", // character_not_in_repertoire — invalid UTF-8 for the database encoding
+		"22P02": // invalid_text_representation
+		return true
+	default:
+		return false
+	}
 }
 
 // batchRejectionEvidence is the `raw` column for a batch-level rejection. The

@@ -1,10 +1,14 @@
 package decode
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
+	"unicode/utf8"
+
+	alerts "github.com/thulasiram/oto/internal/alerts/domain"
 )
 
 // RedactedValue is what replaces a matched value. It is a constant, not the
@@ -94,11 +98,22 @@ const (
 // The column's documented contract is "the raw body AFTER redaction", so the walk
 // below edits the decoded body in place and changes nothing else.
 //
-// When there is nothing to redact and nothing to truncate — the overwhelmingly
-// common case — the original bytes are returned VERBATIM, byte for byte.
+// When there is nothing to redact, nothing to truncate and nothing UNSTORABLE —
+// the overwhelmingly common case — the original bytes are returned VERBATIM, byte
+// for byte.
+//
+// ⛔ THE STORABILITY PASS IS NOT OPTIONAL, and it is here rather than at a caller
+// because this function's output goes straight into `ingest_batches.payload
+// JSONB NOT NULL` in the SAME transaction that would record a rejection. Bytes
+// Postgres refuses do not produce a recorded failure; they produce a failed
+// INSERT, a 503, and an Alertmanager that retries the identical body forever with
+// nothing written down. `ApplyBatchBounds` already sanitises the decoded
+// ENVELOPE via B18/B19 — but the envelope is not what is stored, so that pass
+// cleans a copy this one throws away. See `storability_test.go`.
 func PersistedPayload(body []byte, r *Redactor, truncateAlertsTo int) (json.RawMessage, error) {
 	needsTruncate := truncateAlertsTo > 0
-	if (r == nil || !r.Enabled()) && !needsTruncate {
+	needsStorable := hasUnstorableBytes(body)
+	if (r == nil || !r.Enabled()) && !needsTruncate && !needsStorable {
 		return body, nil
 	}
 
@@ -117,11 +132,74 @@ func PersistedPayload(body []byte, r *Redactor, truncateAlertsTo int) (json.RawM
 		r.walk(doc)
 	}
 
+	// AFTER redaction, so a redacted value is never scanned, and so the constant
+	// `RedactedValue` cannot itself be rewritten.
+	if needsStorable {
+		doc = storable(doc)
+	}
+
 	out, err := json.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("decode: persisted payload: %w", err)
 	}
 	return out, nil
+}
+
+// nulEscapeBytes is the six characters a JSON encoder writes for U+0000.
+//
+// ⛔ IT IS BUILT FROM BYTES ON PURPOSE. Written literally it is one editor, one
+// formatter or one copy-paste away from becoming the actual NUL it merely
+// denotes — a different input, on a different path, already handled. Conflating
+// the two is exactly why this defect was reported twice and reproduced never.
+var nulEscapeBytes = []byte{'\\', 'u', '0', '0', '0', '0'}
+
+// hasUnstorableBytes is the cheap pre-check that preserves the verbatim fast path
+// for every clean body. It scans the RAW bytes, so it sees the escape sequence
+// that survives decoding as well as the raw byte that does not.
+//
+// ⭐ THE ESCAPE IS THE ONE THAT MATTERS. A raw 0x00 inside a JSON string is
+// invalid JSON: `json.Unmarshal` refuses it at the door, which is a clean
+// rejection with a row to show for it. The escape is VALID JSON — it decodes to a
+// NUL, it survives a verbatim passthrough as six innocent ASCII characters, and
+// Postgres then refuses it with SQLSTATE 22P05 at the moment of the INSERT.
+func hasUnstorableBytes(body []byte) bool {
+	return bytes.Contains(body, nulEscapeBytes) ||
+		bytes.IndexByte(body, 0x00) >= 0 ||
+		!utf8.Valid(body)
+}
+
+// storable rewrites a decoded document so that every part of it can be stored.
+//
+// The rule is B19's, for B19's reason: a VALUE is sanitised to U+FFFD, and a KEY
+// is DROPPED. Sanitising keys would let two distinct unstorable names collapse
+// onto one and the second silently overwrite the first — losing data with no
+// trace, which is the failure mode this function exists to prevent.
+func storable(doc map[string]any) map[string]any {
+	out := make(map[string]any, len(doc))
+	for k, v := range doc {
+		if alerts.UnstorableReason(k) != "" {
+			continue
+		}
+		out[k] = storableAny(v)
+	}
+	return out
+}
+
+func storableAny(v any) any {
+	switch t := v.(type) {
+	case string:
+		s, _ := alerts.SanitiseText(t)
+		return s
+	case map[string]any:
+		return storable(t)
+	case []any:
+		for i, item := range t {
+			t[i] = storableAny(item)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // walk redacts the seven label and annotation containers of a decoded body.

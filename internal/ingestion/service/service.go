@@ -23,6 +23,18 @@ const (
 	// KindUnavailable, NEVER a 4xx: a transient database problem that answered
 	// 4xx would make Alertmanager delete the notification permanently (C4).
 	CodeAcceptFailed = "ingest_accept_failed"
+	// CodeAcceptUnstorable is the accept transaction failing because Postgres
+	// REFUSED THE BYTES rather than because it was busy — SQLSTATE 22P05 and its
+	// neighbours.
+	//
+	// ⛔ IT IS STILL A 503, and it must stay one: a 4xx here would make
+	// Alertmanager discard the notification permanently (C4, ADR 0007). But it is
+	// a 503 that will NEVER succeed on retry, which is the opposite of every other
+	// backpressure case, so it gets its own code. `decode.PersistedPayload` is
+	// supposed to make this unreachable; if it is ever seen, the pre-scan there has
+	// a hole and an operator is watching an Alertmanager retry the same body until
+	// its budget runs out.
+	CodeAcceptUnstorable = "ingest_accept_unstorable"
 	// CodeBatchNotFound is a `ingest.process_batch` job whose batch has aged out
 	// of its retention partition.
 	CodeBatchNotFound = "ingest_batch_not_found"
