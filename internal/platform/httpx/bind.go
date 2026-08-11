@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/validate"
 )
@@ -268,15 +269,7 @@ func (p *Params) UUID(name string) uuid.UUID {
 // MaxPageLimit (SPEC §E.1). A caller asking for more than the ceiling is a
 // caller who will page anyway; silently capping beats a 422 that breaks a UI.
 func (p *Params) Limit() int {
-	n := p.Int("limit", DefaultPageLimit)
-	switch {
-	case n <= 0:
-		return DefaultPageLimit
-	case n > MaxPageLimit:
-		return MaxPageLimit
-	default:
-		return n
-	}
+	return db.ClampLimit(p.Int("limit", DefaultPageLimit))
 }
 
 // Cursor reads the opaque `cursor` parameter, unverified. The filter-hash check

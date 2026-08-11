@@ -13,24 +13,9 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Pagination bounds from SPEC §E.1. There is no OFFSET in this codebase.
-const (
-	// DefaultLimit is the page size when a caller asks for none.
-	DefaultLimit = 50
-	// MaxLimit is the hard ceiling on a page.
-	MaxLimit = 200
-)
-
-func clampLimit(n int) int {
-	switch {
-	case n <= 0:
-		return DefaultLimit
-	case n > MaxLimit:
-		return MaxLimit
-	default:
-		return n
-	}
-}
+// clampLimit applies the §E.1 page bounds, which live in `platform/db` because
+// they bound `db.Keyset.Limit`. There is no OFFSET in this codebase.
+func clampLimit(n int) int { return db.ClampLimit(n) }
 
 // mapErr is the single place a SQLSTATE becomes an errs.Kind for this module
 // (SPEC §L.9). The constraint name travels out as the error Code, because §L.9

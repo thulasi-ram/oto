@@ -17,16 +17,6 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Pagination bounds from SPEC §E.1. They are applied here because every List in
-// this package needs them and a caller that forgets is a caller that asks
-// Postgres for an unbounded scan.
-const (
-	// DefaultLimit is the page size when a caller asks for none.
-	DefaultLimit = 50
-	// MaxLimit is the hard ceiling on a page.
-	MaxLimit = 200
-)
-
 // Sort keys accepted by the alert list (SPEC §E.3). Only these two exist, and
 // they are plain strings so that the port declared in `alerts/service` needs no
 // type from this package — a repository is never imported by a service.
@@ -35,17 +25,10 @@ const (
 	sortFirstSeenDesc = "-first_seen_at"
 )
 
-// clampLimit applies the §E.1 page bounds.
-func clampLimit(n int) int {
-	switch {
-	case n <= 0:
-		return DefaultLimit
-	case n > MaxLimit:
-		return MaxLimit
-	default:
-		return n
-	}
-}
+// clampLimit applies the §E.1 page bounds, which live in `platform/db` because
+// they bound `db.Keyset.Limit`. It is applied at every List in this package: a
+// caller that forgets is a caller that asks Postgres for an unbounded scan.
+func clampLimit(n int) int { return db.ClampLimit(n) }
 
 // mapErr is the single place a SQLSTATE becomes an errs.Kind for this module
 // (SPEC §L.9). The repository never validates a business rule; it does own this
