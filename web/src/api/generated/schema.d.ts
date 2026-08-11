@@ -2000,13 +2000,19 @@ export interface paths {
          * Prometheus exposition
          * @description Standard Prometheus text exposition. Among the metrics oto guarantees are
          *     `oto_ingest_accepted_total`, `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`,
-         *     `oto_reconcile_divergence`, `oto_source_degraded_holds_total`,
-         *     `oto_notification_suppressed_total{reason}`, `oto_delivery_attempts_total{class}`,
-         *     `oto_delivery_dead_total`, `oto_thread_recovered_total`, `oto_clock_skew_seconds`,
-         *     `oto_render_invalid_total` and `oto_check_violation_total`.
+         *     `oto_clock_skew_seconds`, `oto_thread_order_decisions_total{action,reason}`,
+         *     `oto_thread_gap_recovered_total{reason}`, `oto_thread_head_wait_seconds` and
+         *     `oto_delivery_claim_lost_total{mode}`. Every name listed here is constructed by a collector in
+         *     the tree and documented in `docs/runbooks/`.
          *
-         *     The last one should be **zero at all times**: a database constraint violation reaching runtime
-         *     means the validation layers above it have a hole.
+         *     Do not write alert rules against names that are not exposed: a rule whose series never appears
+         *     never fires, which is indistinguishable from a healthy system. Several counters promised by
+         *     earlier drafts of this contract — `oto_reconcile_divergence`, `oto_source_degraded_holds_total`,
+         *     `oto_notification_suppressed_total`, `oto_delivery_attempts_total`, `oto_delivery_dead_total`,
+         *     `oto_render_invalid_total` and `oto_check_violation_total` — were never built. SPEC AC-34 and
+         *     `docs/runbooks/README.md` record which durable fact answers each of those questions instead
+         *     (mostly a column on `source_health`, `notifications` or `notification_deliveries`).
+         *     `oto_thread_recovered_total` was renamed: it ships as `oto_thread_gap_recovered_total`.
          */
         get: operations["getMetrics"];
         put?: never;

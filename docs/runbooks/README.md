@@ -96,22 +96,32 @@ an alert: `ui_events` is durable and the timeline is always re-fetchable.
 | [`oto_stream_poll_recovered_total`](oto_stream_poll_recovered_total.md) | yes, on a spike | Events the reconciling poll caught |
 | [`oto_stream_fetch_errors_total`](oto_stream_fetch_errors_total.md) | yes | Failed catch-up reads of `ui_events` |
 
-## Named in the SPEC, not yet registered
+## Struck from the contract — do not alert on these
 
-SPEC §AC-34 and `api/openapi/openapi.yaml` promise several metrics that no collector in the tree
-constructs today. They are listed here so nobody writes an alert against a name that will never
-appear on `/metrics`, and so the gap stays visible:
+Earlier drafts of SPEC AC-34 and `api/openapi/openapi.yaml` promised several metrics that no
+collector in the tree constructs. **They have been removed from both contracts**, because a name on
+`/metrics` that never produces a series is worse than no promise at all: a rule written against it
+never fires, and a rule that never fires is indistinguishable from a healthy system.
 
-| Promised name | Where the fact lives today |
+They are kept here, not deleted, so that an operator who finds one of these names in an old
+dashboard, an old alert rule or an old ADR can see at a glance that it is gone and what to read
+instead. This table is the maintained copy; SPEC AC-34 mirrors it.
+
+| Struck name | What answers the question instead |
 |---|---|
-| `oto_reconcile_divergence` | `source_health.divergence_count`, surfaced by `GET /api/v1/sources/{id}/health`, and the `sources: reconcile divergence` INFO log (`internal/sources/service/reconcile.go`) |
-| `oto_source_degraded_holds_total` | `source_health.status`; while it is not `healthy` the reaper is blocked (§B.4) |
-| `oto_notification_suppressed_total{reason}` | `notification_suppressions`, `internal/notification/domain/suppression.go` |
+| `oto_reconcile_divergence` | `source_health.divergence_count`, served by `GET /api/v1/sources/{id}/health` and summed by `GET /api/v1/stats/*`; plus the `sources: reconcile divergence` INFO log (`internal/sources/service/reconcile.go`) |
+| `oto_source_degraded_holds_total` | `source_health.status`; while it is not `healthy` the reaper is blocked (§B.4). The hold is a state you can read, not a rate you must integrate |
+| `oto_notification_suppressed_total{reason}` | `notifications.suppressed_reason` — the closed set in `internal/notification/domain/suppression.go`. §B.6 requires every suppression to be a durable row with a place in the UI, so the row is the primary artefact. (There is **no** `notification_suppressions` table; an earlier version of this page named one.) |
 | `oto_delivery_attempts_total{class}` | `notification_deliveries.attempts` / `.error_class`; per-job failures are on `oto_jobs_failed_total{class}` |
-| `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'`; per-job deaths are on `oto_jobs_dead_total` |
-| `oto_thread_recovered_total` | registered under the name `oto_thread_gap_recovered_total` |
-| `oto_render_invalid_total{check}` | `internal/channels/render/slack/validate.go` classifies the checks; the counter is not built |
-| `oto_check_violation_total` | not implemented |
+| `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'` with `error_class`; per-job deaths are on [`oto_jobs_dead_total`](oto_jobs_dead_total.md), which is alertable and paged |
+| `oto_render_invalid_total{check}` | The delivery record: `status='dead'`, `error_class='config_invalid'`, the failing check named in `notification_deliveries.error` and the payload kept in `.rendered` (retrievable via `GET /api/v1/deliveries/{id}`). `internal/channels/render/slack/validate.go` owns the check vocabulary; the rate is on `oto_jobs_dead_total` |
+| `oto_check_violation_total{constraint}` | A `23514` maps to `errs.KindInternal` with the **constraint name as the error `Code`** (SPEC §L.9, `internal/*/repository/errors.go`), so the 500 and its log line name the constraint; on a job path it is counted by `oto_jobs_failed_total{class="internal"}` |
+
+`oto_thread_recovered_total` was an eighth such name, but it is a **rename, not a gap**: the metric
+shipped as [`oto_thread_gap_recovered_total`](oto_thread_gap_recovered_total.md). The SPEC and the
+OpenAPI description now use the registered name. The code was deliberately left alone — the shipped
+name is already scraped, already has this page, and already backs a live rule in
+`deploy/prometheus/oto-rules.yaml`.
 
 ## Adding a metric
 

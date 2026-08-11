@@ -2935,7 +2935,7 @@ One transaction per batch:
 8. `river.InsertTx` for `enrich.run` and `notify.evaluate`.
 9. `UPDATE ingest_batches SET status='processed', processed_at=now()`.
 
-Transaction size guard: a batch with more than 2 000 alerts is split into chunks of 500, each its own transaction, with the batch marked `partial` until the last chunk commits.
+Transaction size guard: a batch is split into chunks of 500, each its own transaction, **unconditionally** — 500 is a cap on how much work one transaction may hold, not a target to grow into. A batch of more than 2 000 alerts is additionally marked `partial` until the last chunk commits, so `ChunkThreshold` governs the marking and never the number of transactions. The chunk is one statement against the ingest pool's 2 s `statement_timeout` (§G.10), and crossing that ceiling rolls back the whole transaction and retries it at the same size; at 500 a slow database loses one chunk of four, and the committed ones stay committed because every write beneath is idempotent (§G.5).
 
 ### G.5 Idempotency and the ambiguous send
 
@@ -3520,7 +3520,7 @@ Use `slack.NewSecretsVerifier`. **Do not hand-roll this.** Pin `github.com/slack
 | `message_not_found`, `cannot_reply_to_message`, `restricted_action_thread_locked` | `permanent` | Thread pointer is gone. **Clear `provider_thread_id`, post a fresh root** with a `continued` marker, re-point the thread. |
 | `edit_window_closed` | `permanent` | Same recovery as above — the workspace disallows the edit. |
 | `token_revoked`, `token_expired`, `account_inactive`, `missing_scope`, `no_permission` | `auth_expired` | `channels.health_status='auth_failed'`; raise a UI banner. **Do not retry.** |
-| `invalid_blocks`, `invalid_blocks_format`, `block_mismatch`, `msg_too_long`, `too_many_attachments`, `metadata_too_large` | `config_invalid` | `dead`. This is an oto bug — alert on it (`oto_render_invalid_total`). |
+| `invalid_blocks`, `invalid_blocks_format`, `block_mismatch`, `msg_too_long`, `too_many_attachments`, `metadata_too_large` | `config_invalid` | `dead`. This is an oto bug — alert on it via `oto_jobs_dead_total`, then read `notification_deliveries.error_class='config_invalid'` for the offending deliveries. |
 | HTTP 5xx, timeout, connection reset | `retryable` | Exponential backoff (§G.6). |
 | anything else | `retryable` | Backoff, cap 12 attempts. |
 
@@ -3811,7 +3811,31 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 31. `helm install oto` with a Postgres URL and a Slack token is the entire install. No Redis, no Kafka, no second datastore.
 32. `oto migrate up` is idempotent, and a rolling deploy of N and N+1 does not corrupt in-flight jobs (payload versions are explicit and unknown versions are parked).
 33. Raw payloads age out at the configured retention by `DROP PARTITION`, never by `DELETE`, and label redaction is applied **before** the raw persist.
-34. `GET /metrics` exposes at minimum: `oto_ingest_accepted_total`, `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`, `oto_reconcile_divergence`, `oto_source_degraded_holds_total`, `oto_notification_suppressed_total{reason}`, `oto_delivery_attempts_total{class}`, `oto_delivery_dead_total`, `oto_thread_recovered_total`, `oto_clock_skew_seconds`, `oto_render_invalid_total`.
+34. `GET /metrics` exposes at minimum: `oto_ingest_accepted_total`,
+    `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`, `oto_clock_skew_seconds`,
+    `oto_thread_order_decisions_total{action,reason}`, `oto_thread_gap_recovered_total{reason}`,
+    `oto_thread_head_wait_seconds` and `oto_delivery_claim_lost_total{mode}`. Every name in this
+    list is constructed by a collector in the tree and has a page in `docs/runbooks/`.
+
+    **Facts that are deliberately not metrics.** Earlier drafts of this criterion promised seven
+    further counters. None was ever built, and a name on `/metrics` that never produces a series
+    is worse than no promise at all: an alert rule written against it never fires, and a rule that
+    never fires is indistinguishable from a healthy system. They are struck from the minimum list
+    and recorded here with the fact that answers the question instead. `docs/runbooks/README.md`
+    carries the same table and is the maintained copy.
+
+    | Struck name | What answers the question instead |
+    |---|---|
+    | `oto_reconcile_divergence` | `source_health.divergence_count`, served by `GET /api/v1/sources/{id}/health` and summed by `GET /api/v1/stats/*`; plus the `sources: reconcile divergence` INFO log (`internal/sources/service/reconcile.go`) |
+    | `oto_source_degraded_holds_total` | `source_health.status`. While it is not `healthy` the reaper is blocked (§B.4) — the hold is a *state you can read*, not a rate you must integrate |
+    | `oto_notification_suppressed_total{reason}` | `notifications.suppressed_reason`, the closed set in `internal/notification/domain/suppression.go`. §B.6 requires every suppression to be a row with a place in the UI, so the durable record is the primary artefact and a counter would only be its shadow |
+    | `oto_delivery_attempts_total{class}` | `notification_deliveries.attempts` and `.error_class`; the per-job rate is already on `oto_jobs_failed_total{class}` |
+    | `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'` with `error_class`; the per-job rate is already on `oto_jobs_dead_total`, which is alertable and paged |
+    | `oto_render_invalid_total{check}` | The delivery itself: `status='dead'`, `error_class='config_invalid'`, the offending payload kept in `notification_deliveries.rendered` and retrievable via `GET /api/v1/deliveries/{id}`. `internal/channels/render/slack/validate.go` names the failing check; `oto_jobs_dead_total` carries the rate |
+    | `oto_check_violation_total{constraint}` | A `23514` is mapped to `errs.KindInternal` with the **constraint name as the error `Code`** (§L.9, `internal/*/repository/errors.go`), so it surfaces as a 500 naming the constraint, in the log line and — on a job path — in `oto_jobs_failed_total{class="internal"}` |
+
+    `oto_thread_recovered_total` was the eighth name here. It is not missing: it **shipped** as
+    `oto_thread_gap_recovered_total`, and this criterion now uses the registered name.
 35. `GET /api/v1/stats/alert-quality` answers *"this rule fired 47 times this month, cost 47 notifications, and was acknowledged 0 times"* — and contains **no per-person data anywhere** (R8).
 36. Replaying a stored `ingest_batch` after a parser fix reproduces the same state without duplicate Slack messages.
 
@@ -3829,10 +3853,14 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
     field-level message derived from the provider's JSON Schema, and the settings form renders and
     pre-validates from that **same** schema with no channel-specific UI code.
 41. A rendered Slack payload that would exceed 50 blocks or 3 000 chars in a section is **never
-    sent**: the delivery goes `dead` with `config_invalid`, the offending payload is retrievable
-    via `GET /api/v1/deliveries/{id}`, and `oto_render_invalid_total` fires.
-42. `oto_check_violation_total` is **zero** across the full integration suite — every DB CHECK is
-    unreachable because layers 1–3 already hold.
+    sent**: the delivery goes `dead` with `config_invalid`, `notification_deliveries.error` names
+    the failing check (`slack render invalid (<check>): …`), and the offending payload is
+    retrievable via `GET /api/v1/deliveries/{id}` — so the bug is diagnosable from the delivery
+    record alone.
+42. **No `23514` reaches the Go layer** across the full integration suite — every DB CHECK is
+    unreachable because layers 1–3 already hold. Asserted against the mapped error (a
+    `KindInternal` whose `Code` is the constraint name, §L.9), not against a counter: a counter
+    that is never constructed reads zero whether or not the property holds.
 43. Adding a field to a Go DTO without updating `api/openapi/` fails CI; regenerating the TS types
     or valibot validators produces no diff.
 
@@ -3975,7 +4003,8 @@ type Violation struct {
   **409 conflict**. A unique-violation on a key *oto* computed (`alert_key`, `idempotency_key`) is
   **not an error at all** — it is the idempotency mechanism, swallowed by `ON CONFLICT`.
 - A `CHECK` violation reaching the HTTP layer is **500 + an alert**. It means layers 1–3 have a
-  hole. `oto_check_violation_total{constraint}` is exported and must be zero in steady state.
+  hole. The mapped error carries **the constraint name as its `Code`** (§L.9), so the 500 and its
+  log line name the violated constraint; there is no `oto_check_violation_total` counter (AC-34).
 - Upstream failures NEVER become the caller's fault. A dead Alertmanager is 502, never 400.
 
 ### L.2 Layer 1 — Transport / API DTOs
@@ -4267,7 +4296,7 @@ type CreateSourceRequest struct {
 | B14 | `generatorURL` length | **8 192 bytes** | truncate; keep the alert |
 | B15 | `receiver` / `groupKey` length | **4 096 bytes** each | truncate; keep the batch |
 | B16 | JSON nesting depth | **32** | `undecodable`, 202 |
-| B17 | Chunk size for processing | **500 alerts per transaction** (batches > 2 000 are split) | — |
+| B17 | Chunk size for processing | **500 alerts per transaction, always.** Every batch is sliced by 500 — 501 alerts is 2 transactions, 2 000 is 4. The 2 000 threshold splits nothing; it is the point above which the batch is additionally marked `partial` while its chunks run | — |
 | B18 | Label value **storability** | no `U+0000`; valid UTF-8 | reject that alert, `invalid_label_value`, 202 |
 | B19 | Annotation name/value **storability** | no `U+0000`; valid UTF-8 | **keep the alert.** Replace the offending code points of a *value* with `U+FFFD`; **drop** an annotation whose *name* is unstorable. Record `annotation_unstorable`, 202 |
 
@@ -4611,9 +4640,15 @@ before `notification_deliveries.rendered` is persisted. Checks, in order:
 | V18 | total payload size | `<= 100 000` bytes | `render_invalid` |
 
 **On failure the delivery goes straight to `status='dead'`, `error_class='config_invalid'`, with
-the offending payload persisted in `notification_deliveries.rendered` and an
-`oto_render_invalid_total{check}` counter incremented.** It is never silently truncated and never
-sent. This is an oto bug and oto alerts on itself for it (`deploy/prometheus/oto-rules.yaml`).
+the offending payload persisted in `notification_deliveries.rendered` and the failing check named
+in `notification_deliveries.error`** (`slack.Error.Check`, rendered as
+`slack render invalid (<check>): …`). It is never silently truncated and never sent.
+
+This is an oto bug, and the alert on it is `oto_jobs_dead_total`
+(`deploy/prometheus/oto-rules.yaml`) — the deliver job dies, so the death is already counted.
+There is **no** `oto_render_invalid_total{check}` counter; earlier drafts promised one and no
+collector was ever built (AC-34). `Check` is the label such a counter *would* carry, and it is
+kept as a stable, closed vocabulary so the delivery records stay greppable by check name.
 
 Renderers additionally have golden files (`testdata/*.golden.json`), and the CI golden test runs
 `Validate` over every golden file — so a limit violation is caught at build time, not in production.
@@ -4639,8 +4674,9 @@ Fully specified as literal DDL in **§D**. The rules governing it:
    `status='sent'` implies `provider_message_id IS NOT NULL`; `state='dead'` implies
    `dead_reason IS NOT NULL`; `ack_state='acked'` implies `acked_at IS NOT NULL`.
 6. **FKs are declared everywhere a relationship exists**, with an explicit `ON DELETE` action.
-7. `CHECK` violations are **bugs**, not user errors: they map to 500 and increment
-   `oto_check_violation_total{constraint}`, which must be zero in steady state.
+7. `CHECK` violations are **bugs**, not user errors: they map to a 500 whose error `Code` is the
+   violated constraint's name (§L.9). Reaching one is never acceptable in steady state — which is
+   asserted against the mapped error in the integration suite (AC-42), not against a counter.
 
 ### L.8 Layer 7 — Frontend
 
@@ -4750,7 +4786,7 @@ service's job, and duplicating it in SQL produces two subtly different rulebooks
 | `23505` unique_violation on a **user-supplied** key | duplicate name/slug | `KindConflict` + the constraint name as `Code` |
 | `23505` on an **oto-computed** key | idempotency working as designed | swallowed by `ON CONFLICT`; reaching Go is `KindInternal` |
 | `23503` foreign_key_violation | referenced row missing or in use | `KindConflict` (`Code` = constraint name) |
-| `23514` check_violation | a hole in layers 1–3 | `KindInternal` + `oto_check_violation_total{constraint}` |
+| `23514` check_violation | a hole in layers 1–3 | `KindInternal`, `Code` = the constraint name |
 | `23502` not_null_violation | mapper bug | `KindInternal` |
 | `40001` serialization_failure / `40P01` deadlock | transient | `KindConflict`, `Retryable: true` |
 | `57014` query_canceled (statement_timeout) | overload | `KindUnavailable`, `Retryable: true` |
