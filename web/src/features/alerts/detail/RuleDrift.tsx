@@ -39,9 +39,11 @@ import { useQuery } from "@tanstack/solid-query";
 import { listRuleSnapshots } from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import type {
+  MatchConfidence,
   RuleChange,
   RuleExprNumberChange,
   RuleHistory,
+  RuleOrigin,
   RuleSnapshot,
   RuleSnapshotQuery,
 } from "~/api/types";
@@ -397,7 +399,10 @@ const DiffBlock: Component<{
 /* The panel                                                                  */
 /* -------------------------------------------------------------------------- */
 
-const ORIGIN_NOTE: Record<string, string> = {
+// ⛔ Both notes are keyed by the contract's own enums rather than by `string`:
+// an origin or a confidence the server adds must fail the build here, not render
+// a bare wire token in the tooltip that explains how much to trust the panel.
+const ORIGIN_NOTE: Record<RuleOrigin, string> = {
   prometheus_api: "Read from the Prometheus rules API — the authoritative source.",
   generator_url:
     "Reconstructed from the alert's generatorURL because the rules API was not reachable. The expression is what the URL encoded, not what the file said.",
@@ -405,7 +410,7 @@ const ORIGIN_NOTE: Record<string, string> = {
     "oto could not obtain the rule at all. The expression below is empty, and that absence is recorded rather than guessed at.",
 };
 
-const CONFIDENCE_NOTE: Record<string, string> = {
+const CONFIDENCE_NOTE: Record<MatchConfidence, string> = {
   exact: "Exactly one rule matched this alert.",
   probable: "More than one rule could have produced this alert; oto picked the best match.",
   ambiguous:

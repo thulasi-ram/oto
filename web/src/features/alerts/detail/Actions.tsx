@@ -22,6 +22,7 @@ import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 import { useMutation, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
+import { maxLengthOf, minLengthOf } from "~/api/bounds";
 import { ApiError, violationsByField, orphanViolations } from "~/api/client";
 import { ackAlert, commentOnAlert, snoozeAlert, unackAlert, unsnoozeAlert } from "~/api/endpoints";
 import {
@@ -50,17 +51,28 @@ import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
  * word on anything.
  */
 
+/**
+ * ⛔ THE CEILINGS ARE READ, NOT WRITTEN. `2000` and `10_000` were each typed
+ * twice by hand — once into a `v.maxLength` and once into a `maxLength`
+ * attribute — which is four copies of two numbers the server owns. They come off
+ * the generated request schemas, which are the same schemas these forms pipe
+ * into below.
+ */
+const NOTE_MAX = maxLengthOf(AckRequestSchema, "note");
+const COMMENT_MIN = minLengthOf(CommentRequestSchema, "body");
+const COMMENT_MAX = maxLengthOf(CommentRequestSchema, "body");
+
 /** The per-field rule, so a control can show one sentence about itself. */
 const NoteSchema = v.pipe(
   v.string(),
-  v.maxLength(2000, "A note is at most 2000 characters."),
+  v.maxLength(NOTE_MAX, `A note is at most ${NOTE_MAX} characters.`),
 );
 
 const CommentSchema = v.pipe(
   v.string(),
   v.trim(),
-  v.minLength(1, "A comment needs some text — the timeline is the record."),
-  v.maxLength(10_000, "A comment is at most 10 000 characters."),
+  v.minLength(COMMENT_MIN, "A comment needs some text — the timeline is the record."),
+  v.maxLength(COMMENT_MAX, `A comment is at most ${COMMENT_MAX.toLocaleString("en")} characters.`),
 );
 
 /**
@@ -322,7 +334,7 @@ const AckDialog: Component<{
             <Textarea
               {...a}
               value={note()}
-              maxLength={2000}
+              maxLength={NOTE_MAX}
               placeholder="Known deploy, rolling back"
               onInput={(e) => {
                 setTouched(true);
@@ -408,7 +420,7 @@ const CommentDialog: Component<{
               {...a}
               value={body()}
               rows={5}
-              maxLength={10_000}
+              maxLength={COMMENT_MAX}
               placeholder="What you found, what you changed, what to check next time."
               onInput={(e) => {
                 setTouched(true);

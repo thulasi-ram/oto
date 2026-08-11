@@ -16,7 +16,12 @@
  */
 import { For, Match, Show, Switch, type Component } from "solid-js";
 
-import type { DeliverySummary, Notification, NotificationSuppressedReason } from "~/api/types";
+import type {
+  DeliverySummary,
+  Notification,
+  NotificationReason,
+  NotificationSuppressedReason,
+} from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Chip, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
@@ -52,7 +57,16 @@ function describeSuppression(reason: string): string {
   return SUPPRESSED_REASON[reason as NonNullable<NotificationSuppressedReason>] ?? reason;
 }
 
-const REASON_LABEL: Record<string, string> = {
+/**
+ * Every reason a notification carries, in plain language.
+ *
+ * ⛔ TYPED AGAINST `NotificationReason`, not `Record<string, string>`. The
+ * suppression map above already learned this the hard way — it lost `snoozed`,
+ * the compiler had nothing to check it against, and a wire token was rendered
+ * where a sentence belongs. This map has the same job and now has the same
+ * guarantee: a reason the server adds is a build failure here.
+ */
+const REASON_LABEL: Record<NotificationReason, string> = {
   fired: "started firing",
   new_alerts: "new alerts joined",
   some_resolved: "some resolved",

@@ -22,7 +22,9 @@ import {
   type Component,
 } from "solid-js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
+import * as v from "valibot";
 
+import { maxLengthOf, maxValueOf, minLengthOf, minValueOf } from "~/api/bounds";
 import { violationsByField } from "~/api/client";
 import {
   createPolicy,
@@ -33,6 +35,12 @@ import {
   previewPolicy,
   updatePolicy,
 } from "~/api/endpoints";
+import {
+  CreatePolicyRequestSchema,
+  MatcherDTOSchema,
+  NotificationReasonSchema,
+  UuidSchema,
+} from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import type {
   Channel,
@@ -62,27 +70,113 @@ import { idempotencyKey } from "~/lib/format";
 import { formatMatchers, parseMatchers } from "~/lib/matchers";
 import { MatcherInput } from "~/features/alerts/MatcherInput";
 
-/** Every fact a policy can choose to communicate. */
-const REASONS: readonly NotificationReason[] = [
-  "fired",
-  "new_alerts",
-  "some_resolved",
-  "all_resolved",
-  "repeat",
-  "suppressed",
-  "unsuppressed",
-  "expired",
-  "refired",
-  "acked",
-  "unacked",
-  "snoozed",
-  "unsnoozed",
-  "enriched",
-  "rule_changed",
-  "comment",
-  "unacked_reminder",
-  "storm",
-];
+/**
+ * Every fact a policy can choose to communicate — READ from the contract's own
+ * enum rather than re-typed from it.
+ *
+ * ⛔ THIS LIST USED TO BE EIGHTEEN LITERALS. A copy can only ever be right about
+ * the day it was written: a reason the server ADDS is one an operator silently
+ * cannot select, and there is nothing on this screen that would look wrong. The
+ * picklist below is the same object the request schema validates `reasons`
+ * against, so the two cannot disagree by construction.
+ */
+const REASONS: readonly NotificationReason[] = NotificationReasonSchema.options;
+
+/* -------------------------------------------------------------------------- */
+/* The contract's bounds, read rather than repeated                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⛔ NOT ONE OF THESE NUMBERS IS WRITTEN HERE. The priority box shipped with no
+ * `min`/`max` at all while the contract says 0–10000, and the four list and text
+ * limits were unenforced — so the first thing an operator learned about any of
+ * them was a 422 with the dialog still full of their work. They come off
+ * `CreatePolicyRequestSchema`, which is generated from `api/openapi/openapi.yaml`
+ * by gate G4 and is the very schema the request is gated through below.
+ */
+const NAME_MAX = maxLengthOf(CreatePolicyRequestSchema, "name");
+const PRIORITY_MIN = minValueOf(CreatePolicyRequestSchema, "priority");
+const PRIORITY_MAX = maxValueOf(CreatePolicyRequestSchema, "priority");
+const MATCHERS_MAX = maxLengthOf(CreatePolicyRequestSchema, "matchers");
+const REASONS_MIN = minLengthOf(CreatePolicyRequestSchema, "reasons");
+const REASONS_MAX = maxLengthOf(CreatePolicyRequestSchema, "reasons");
+const CHANNELS_MIN = minLengthOf(CreatePolicyRequestSchema, "channel_ids");
+const CHANNELS_MAX = maxLengthOf(CreatePolicyRequestSchema, "channel_ids");
+
+const PRIORITY_RANGE = `oto accepts ${PRIORITY_MIN}–${PRIORITY_MAX}. Lower is evaluated first.`;
+
+/** What the dialog holds, before it is anything the API has a name for. */
+interface PolicyForm {
+  readonly name: string;
+  readonly priority: number;
+  readonly enabled: boolean;
+  readonly matchers: readonly Matcher[];
+  readonly reasons: readonly NotificationReason[];
+  readonly channel_ids: readonly string[];
+}
+
+function toCreatePolicyRequest(form: PolicyForm): CreatePolicyRequest {
+  return {
+    name: form.name.trim(),
+    priority: form.priority,
+    enabled: form.enabled,
+    matchers: form.matchers.map((m) => ({ name: m.name, op: m.op, value: m.value })),
+    reasons: [...form.reasons],
+    channel_ids: [...form.channel_ids],
+  };
+}
+
+/*
+ * SPEC §L.8.1: the form schema stays hand-written — the sentences below are the
+ * whole point of it — but it `v.pipe`s into the **generated**
+ * `CreatePolicyRequestSchema` as its final gate. That last line is what makes
+ * the difference between a form that agrees with the contract today and a form
+ * that cannot construct a body the API would refuse. The draft used to be sent
+ * raw.
+ */
+const PolicyFormSchema = v.pipe(
+  v.strictObject({
+    name: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, "A policy needs a name — it is how it is referred to everywhere else."),
+      v.maxLength(NAME_MAX, `A name is at most ${NAME_MAX} characters.`),
+    ),
+    priority: v.pipe(
+      v.number("Priority is a whole number."),
+      v.integer("Priority is a whole number."),
+      v.minValue(PRIORITY_MIN, PRIORITY_RANGE),
+      v.maxValue(PRIORITY_MAX, PRIORITY_RANGE),
+    ),
+    enabled: v.boolean(),
+    matchers: v.pipe(
+      v.array(MatcherDTOSchema),
+      v.maxLength(MATCHERS_MAX, `At most ${MATCHERS_MAX} matchers on one policy.`),
+    ),
+    reasons: v.pipe(
+      v.array(NotificationReasonSchema),
+      v.minLength(
+        REASONS_MIN,
+        "Pick at least one fact. A policy that communicates nothing is a policy that matches and then stays silent.",
+      ),
+      v.maxLength(REASONS_MAX, `At most ${REASONS_MAX} facts on one policy.`),
+    ),
+    channel_ids: v.pipe(
+      v.array(UuidSchema),
+      v.minLength(
+        CHANNELS_MIN,
+        "Pick at least one channel. A policy with nowhere to send records every notification as suppressed.",
+      ),
+      v.maxLength(CHANNELS_MAX, `At most ${CHANNELS_MAX} channels on one policy.`),
+    ),
+  }),
+  // The annotation matters: `CreatePolicyRequest` marks the two defaulted keys
+  // required (openapi-typescript fills a default in), while the generated
+  // schema's *input* leaves them optional. Same contract, two honest readings
+  // of it — so the transform is declared in the schema's own terms.
+  v.transform((form): v.InferInput<typeof CreatePolicyRequestSchema> => toCreatePolicyRequest(form)),
+  CreatePolicyRequestSchema, // the generated schema is the final gate
+);
 
 const REASON_LABEL: Record<NotificationReason, string> = {
   fired: "started firing",
@@ -287,6 +381,9 @@ const PolicyDialog: Component<{
   const [reasons, setReasons] = createSignal<readonly NotificationReason[]>(["fired", "all_resolved"]);
   const [channelIds, setChannelIds] = createSignal<readonly string[]>([]);
   const [seeded, setSeeded] = createSignal(false);
+  // Nothing complains until something has been typed: a dialog that opens
+  // already shouting at an empty name is a dialog people learn to ignore.
+  const [touched, setTouched] = createSignal(false);
 
   // Seed once per *opening*. The dialog stays mounted, so this must be an
   // effect: the component body runs only in the state it mounted in.
@@ -297,6 +394,7 @@ const PolicyDialog: Component<{
     }
     if (seeded()) return;
     setSeeded(true);
+    setTouched(false);
     {
       const p = props.policy;
       if (p !== null) {
@@ -329,21 +427,40 @@ const PolicyDialog: Component<{
     parseMatchers(matcherText()).matchers.map((m) => ({ name: m.name, op: m.op, value: m.value })),
   );
 
-  const draft = createMemo<CreatePolicyRequest>(() => ({
-    name: name().trim(),
+  const form = (): PolicyForm => ({
+    name: name(),
     priority: priority(),
     enabled: enabled(),
-    matchers: [...matchers()],
-    reasons: [...reasons()],
-    channel_ids: [...channelIds()],
-  }));
+    matchers: matchers(),
+    reasons: reasons(),
+    channel_ids: channelIds(),
+  });
+
+  /**
+   * One parse, through the generated request schema.
+   *
+   * ⛔ THIS IS THE GATE THE SCREEN DID NOT HAVE. The draft was handed straight
+   * to `createPolicy`, so every bound in the contract was discovered as a 422 —
+   * which is the exact shape of the bug this file is named after. The per-field
+   * sentences above only decide which message a control shows; this decides
+   * whether the request may leave the browser at all.
+   */
+  const gated = createMemo(() => v.safeParse(PolicyFormSchema, form()));
+
+  /** The first complaint about one field, once the operator has touched anything. */
+  const localError = (field: string): string | undefined => {
+    if (!touched()) return undefined;
+    const result = gated();
+    if (result.success) return undefined;
+    return result.issues.find((i) => i.path?.[0]?.key === field)?.message;
+  };
+
+  const draft = createMemo<CreatePolicyRequest>(() => toCreatePolicyRequest(form()));
 
   const mutation = useMutation(() => ({
-    mutationFn: () => {
+    mutationFn: (body: CreatePolicyRequest) => {
       const p = props.policy;
-      return p !== null
-        ? updatePolicy(p.id, draft())
-        : createPolicy(draft(), idempotencyKey());
+      return p !== null ? updatePolicy(p.id, body) : createPolicy(body, idempotencyKey());
     },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: qk.settings.policies() });
@@ -373,8 +490,13 @@ const PolicyDialog: Component<{
             size="sm"
             variant="primary"
             busy={mutation.isPending}
-            disabled={name().trim() === "" || channelIds().length === 0 || reasons().length === 0}
-            onClick={() => mutation.mutate()}
+            disabled={!gated().success}
+            onClick={() => {
+              setTouched(true);
+              const parsed = gated();
+              if (!parsed.success) return;
+              mutation.mutate(parsed.output);
+            }}
           >
             {editing() ? "Save" : "Create"}
           </Button>
@@ -388,13 +510,22 @@ const PolicyDialog: Component<{
 
         <div class="flex flex-wrap gap-3">
           <div class="min-w-[12rem] flex-[2]">
-            <Field id="pol-name" label="Name" required error={violations().get("name")}>
+            <Field
+              id="pol-name"
+              label="Name"
+              required
+              error={localError("name") ?? violations().get("name")}
+            >
               {(a) => (
                 <Input
                   {...a}
                   value={name()}
+                  maxLength={NAME_MAX}
                   placeholder="critical → #sre-alerts"
-                  onInput={(e) => setName(e.currentTarget.value)}
+                  onInput={(e) => {
+                    setTouched(true);
+                    setName(e.currentTarget.value);
+                  }}
                 />
               )}
             </Field>
@@ -403,17 +534,23 @@ const PolicyDialog: Component<{
             <Field
               id="pol-priority"
               label="Priority"
-              hint="Lower first."
-              error={violations().get("priority")}
+              hint={`Lower first. ${PRIORITY_MIN}–${PRIORITY_MAX}.`}
+              error={localError("priority") ?? violations().get("priority")}
             >
               {(a) => (
                 <Input
                   {...a}
                   type="number"
-                  value={String(priority())}
+                  min={PRIORITY_MIN}
+                  max={PRIORITY_MAX}
+                  step={1}
+                  value={Number.isFinite(priority()) ? String(priority()) : ""}
                   onInput={(e) => {
-                    const n = Number.parseInt(e.currentTarget.value, 10);
-                    if (Number.isFinite(n)) setPriority(n);
+                    setTouched(true);
+                    // An unreadable box becomes `NaN` rather than the last good
+                    // number: silently keeping the previous value would save
+                    // something the operator can no longer see.
+                    setPriority(Number.parseInt(e.currentTarget.value, 10));
                   }}
                 />
               )}
@@ -428,15 +565,19 @@ const PolicyDialog: Component<{
           <MatcherInput
             id="pol-matchers"
             value={matcherText()}
-            onChange={setMatcherText}
+            onChange={(next) => {
+              setTouched(true);
+              setMatcherText(next);
+            }}
             onCommit={() => undefined}
           />
           <p class="mt-1 text-[11px] leading-snug text-ink-subtle">
-            All matchers must match. An empty list matches everything. Unlike the alert-list filter,
-            a policy accepts <code class="font-mono">=~</code> and{" "}
-            <code class="font-mono">!~</code> — the server evaluates those itself.
+            All matchers must match. An empty list matches everything, and at most {MATCHERS_MAX} may
+            be given. Unlike the alert-list filter, a policy accepts{" "}
+            <code class="font-mono">=~</code> and <code class="font-mono">!~</code> — the server
+            evaluates those itself.
           </p>
-          <Show when={violations().get("matchers")}>
+          <Show when={localError("matchers") ?? violations().get("matchers")}>
             {(msg) => (
               <p class="mt-1 text-[11px] font-medium text-ink" role="alert">
                 {msg()}
@@ -460,11 +601,16 @@ const PolicyDialog: Component<{
                 {(c) => (
                   <Checkbox
                     checked={channelIds().includes(c.id)}
-                    onChange={(next) =>
+                    // The cap is the contract's, and a box that cannot be ticked
+                    // says so before the save does. Already-ticked boxes stay
+                    // clickable, or the cap would be a trap you cannot back out of.
+                    disabled={!channelIds().includes(c.id) && channelIds().length >= CHANNELS_MAX}
+                    onChange={(next) => {
+                      setTouched(true);
                       setChannelIds(
                         next ? [...channelIds(), c.id] : channelIds().filter((id) => id !== c.id),
-                      )
-                    }
+                      );
+                    }}
                     label={
                       <span>
                         {c.name}
@@ -479,7 +625,7 @@ const PolicyDialog: Component<{
               </For>
             </div>
           </Show>
-          <Show when={violations().get("channel_ids")}>
+          <Show when={localError("channel_ids") ?? violations().get("channel_ids")}>
             {(msg) => (
               <p class="mt-1 text-[11px] font-medium text-ink" role="alert">
                 {msg()}
@@ -494,9 +640,12 @@ const PolicyDialog: Component<{
             legend="About these facts"
             options={REASONS.map((r) => ({ value: r, label: REASON_LABEL[r] }))}
             selected={reasons()}
-            onChange={setReasons}
+            onChange={(next) => {
+              setTouched(true);
+              setReasons(next);
+            }}
           />
-          <Show when={violations().get("reasons")}>
+          <Show when={localError("reasons") ?? violations().get("reasons")}>
             {(msg) => (
               <p class="mt-1 text-[11px] font-medium text-ink" role="alert">
                 {msg()}

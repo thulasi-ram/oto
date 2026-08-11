@@ -24,6 +24,7 @@ import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 import { useMutation } from "@tanstack/solid-query";
 import * as v from "valibot";
 
+import { maxLengthOf, maxValueOf, minValueOf } from "~/api/bounds";
 import { ApiError, orphanViolations, violationsByField } from "~/api/client";
 import { SnoozeRequestSchema } from "~/api/generated/validators";
 import type { SnoozeRequest } from "~/api/types";
@@ -36,8 +37,18 @@ import { absoluteTime, duration as fmtDuration, idempotencyKey } from "~/lib/for
 /* §B.8's bounds and presets, mirrored exactly                                */
 /* -------------------------------------------------------------------------- */
 
-export const SNOOZE_MIN_SECONDS = 5 * 60;
-export const SNOOZE_MAX_SECONDS = 30 * 24 * 3600;
+/**
+ * ⛔ READ FROM `SnoozeRequestSchema`, NOT WRITTEN HERE. §B.8 says the bounds are
+ * "identical in this document, in the domain constructor and in the database
+ * CHECK constraint" — a fourth copy in the browser is the one that can drift
+ * without anything noticing, and it is the copy that decides what an operator is
+ * allowed to type. `5 * 60` and `30 * 24 * 3600` were exactly that copy.
+ */
+export const SNOOZE_MIN_SECONDS = minValueOf(SnoozeRequestSchema, "duration_seconds");
+export const SNOOZE_MAX_SECONDS = maxValueOf(SnoozeRequestSchema, "duration_seconds");
+
+/** The note ceiling the server answers 422 with, for the control and the schema. */
+const NOTE_MAX = maxLengthOf(SnoozeRequestSchema, "note");
 
 /**
  * The five presets §B.8.3 makes binding, and the five values the contract's
@@ -63,7 +74,10 @@ export const SNOOZE_PRESETS: readonly { readonly label: string; readonly seconds
  * `api/openapi/openapi.yaml` via gate G4 (`npm run gen:validators`).
  */
 
-const NoteSchema = v.pipe(v.string(), v.maxLength(2000, "A note is at most 2000 characters."));
+const NoteSchema = v.pipe(
+  v.string(),
+  v.maxLength(NOTE_MAX, `A note is at most ${NOTE_MAX} characters.`),
+);
 
 const TOO_LONG =
   "The longest snooze is 30 days. There is no indefinite snooze — that would be a mute, and mutes are how channels go quiet forever.";
@@ -323,8 +337,8 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
             <Input
               {...a}
               type="number"
-              min={5}
-              max={30 * 24 * 60}
+              min={SNOOZE_MIN_SECONDS / 60}
+              max={SNOOZE_MAX_SECONDS / 60}
               value={Math.round(seconds() / 60)}
               onInput={(e) => {
                 setTouched(true);
@@ -372,7 +386,7 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
               {...a}
               value={note()}
               rows={2}
-              maxLength={2000}
+              maxLength={NOTE_MAX}
               placeholder="Deploy window, expected until 17:00"
               onInput={(e) => {
                 setTouched(true);

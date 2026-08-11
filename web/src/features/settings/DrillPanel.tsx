@@ -18,7 +18,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 
 import { disposeDeliveryDrill, getDeliveryDrill, startDeliveryDrill } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { DeliveryDrill, DrillStage, DrillStageName } from "~/api/types";
+import type { DeliveryDrill, DrillStage, DrillStageName, DrillStageStatus } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Button, Chip, Input, cx } from "~/components/ui/primitives";
 import { ErrorBanner } from "~/components/ui/states";
@@ -46,14 +46,21 @@ const STAGE_TITLE: Record<DrillStageName, string> = {
  * deliberately a character rather than an icon component: it copies and pastes
  * into a support ticket alongside the text, which an SVG does not.
  */
-const STAGE_GLYPH: Record<string, string> = {
+const STAGE_GLYPH: Record<DrillStageStatus, string> = {
   passed: "✓",
   failed: "✕",
   skipped: "–",
   pending: "·",
 };
 
-const STAGE_WORD: Record<string, string> = {
+/**
+ * ⛔ BOTH MAPS ARE TYPED AGAINST `DrillStageStatus`, not `Record<string, string>`.
+ * A loose map is checked for keys it must not have and never for the one it is
+ * missing — so a status the server adds renders as a blank glyph and a blank
+ * word, on the panel whose entire job is to say how far the drill got. Exhaustive
+ * records make that a build failure instead.
+ */
+const STAGE_WORD: Record<DrillStageStatus, string> = {
   passed: "passed",
   failed: "failed",
   skipped: "skipped",

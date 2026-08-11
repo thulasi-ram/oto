@@ -8,7 +8,7 @@
  */
 import { For, Match, Show, Switch, type Component } from "solid-js";
 
-import type { Occurrence, ResolveReason } from "~/api/types";
+import type { Occurrence, ResolveReason, SuppressionReason } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { STATE_BAR, StateChip } from "~/components/StateChip";
 import { Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
@@ -40,7 +40,14 @@ const suppressors = (by: Occurrence["suppressed_by"]): string | undefined => {
   return ids.length > 0 ? ids.join(", ") : undefined;
 };
 
-const SUPPRESSION_NOTE: Record<string, string> = {
+/**
+ * What is doing the suppressing, in words.
+ *
+ * ⛔ Keyed by the contract's own `SuppressionReason` rather than by `string`, so
+ * an upstream suppression kind oto learns to report is a build failure here
+ * instead of "suppressed by mute_time_interval" appearing in a sentence.
+ */
+const SUPPRESSION_NOTE: Record<NonNullable<SuppressionReason>, string> = {
   silence: "an Alertmanager silence",
   inhibition: "an inhibition rule",
   mute_time_interval: "a mute time interval",

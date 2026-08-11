@@ -23,7 +23,7 @@ import {
   testSource,
   updateSource,
 } from "~/api/endpoints";
-import { CreateSourceRequestSchema } from "~/api/generated/validators";
+import { CreateSourceRequestSchema, SourceKindSchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import type {
   CreateSourceRequest,
@@ -58,6 +58,18 @@ const HEALTH_NOTE: Record<SourceHealthStatus, string> = {
     "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not, so oto cannot see a silence here and will not expire anything from this source.",
   unknown:
     "oto has not checked this source yet, so nothing from it will be expired until a reconcile pass succeeds.",
+};
+
+/**
+ * How each upstream kind is spelled for a person.
+ *
+ * ⛔ TYPED AGAINST THE CONTRACT'S ENUM, so a kind the server starts accepting is
+ * a build failure here rather than an `<option>` reading `grafana_oncall`. The
+ * *list* comes from `SourceKindSchema`; this only supplies the capital letter.
+ */
+const KIND_LABEL: Record<SourceKind, string> = {
+  alertmanager: "Alertmanager",
+  grafana: "Grafana",
 };
 
 /*
@@ -112,7 +124,10 @@ const SourceFormSchema = v.pipe(
   v.strictObject({
     name: v.pipe(v.string(), v.trim(), v.minLength(1, "A name is required.")),
     cluster_id: v.pipe(v.string(), v.minLength(1, "Pick a cluster.")),
-    kind: v.picklist(["alertmanager", "grafana"] as const),
+    // The contract's own picklist, not a second copy of it. The `<option>` list
+    // below is generated from the same object, so the control and the schema
+    // that gates it cannot come to disagree.
+    kind: SourceKindSchema,
     base_url: v.pipe(
       v.string(),
       v.trim(),
@@ -496,8 +511,9 @@ const CreateSourceDialog: Component<{
         <Field id="src-kind" label="Kind" required error={violations().get("kind")}>
           {(a) => (
             <Select {...a} value={kind()} onChange={(e) => setKind(e.currentTarget.value as SourceKind)}>
-              <option value="alertmanager">Alertmanager</option>
-              <option value="grafana">Grafana</option>
+              <For each={SourceKindSchema.options}>
+                {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
+              </For>
             </Select>
           )}
         </Field>

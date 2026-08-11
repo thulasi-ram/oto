@@ -33,12 +33,20 @@
  * `tools/lintvocab`. Notably: the unacked reminder is a reminder, never a
  * ladder; oto measures a signal's **firing duration**, never anyone's response.
  */
+import { maxLengthOf } from "~/api/bounds";
+import {
+  ReminderMentionSchema,
+  ReminderMentionSeveritySchema,
+  UpdateOrgSettingsRequestSchema,
+  VerbositySchema,
+} from "~/api/generated/validators";
 import type {
   ReceiverBasis,
   ReceiverRoute,
   ReminderMention,
   ReminderMentionSeverity,
   TimingProvenance,
+  UpdateOrgSettingsRequest,
   Verbosity,
 } from "~/api/types";
 import { duration } from "~/lib/format";
@@ -242,24 +250,20 @@ export function amPhrase(label: string, t: AmTiming): string {
 /* Knob descriptions                                                          */
 /* -------------------------------------------------------------------------- */
 
-export type KnobKey =
-  | "refire_grace_s"
-  | "resolve_grace_s"
-  | "group_close_delay_s"
-  | "flap_threshold"
-  | "flap_window_s"
-  | "flap_digest_interval_s"
-  | "storm_threshold"
-  | "storm_window_s"
-  | "storm_cooldown_s"
-  | "raw_retention_days"
-  | "event_retention_months"
-  | "unacked_reminder_after_s"
-  | "default_verbosity"
-  | "broadcast_on_resolved"
-  | "unacked_reminder_mention"
-  | "unacked_reminder_mention_list"
-  | "unacked_reminder_mention_min_severity";
+/**
+ * Every knob this screen can edit — DERIVED from the write contract itself.
+ *
+ * ⛔ IT WAS SEVENTEEN LITERALS, AND `KNOBS` BELOW IS A `Record<KnobKey, …>`. So
+ * the day the contract grows a setting, this union grows with it and `KNOBS`
+ * stops compiling until somebody writes the two failure modes for it — which is
+ * exactly the outcome worth having on the one screen where a badly-explained
+ * control does real damage. A hand-written union would instead have quietly
+ * omitted it, and the new setting would be invisible and unreachable here.
+ *
+ * `reset` is excluded because it is not a setting: it is the verb that removes
+ * one, and the screen models it as `resets[]` rather than as a knob.
+ */
+export type KnobKey = Exclude<keyof UpdateOrgSettingsRequest, "reset">;
 
 /** How the control renders and how the value is parsed for the PATCH. */
 export type KnobKind =
@@ -923,15 +927,32 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
 /* Verbosity                                                                  */
 /* -------------------------------------------------------------------------- */
 
-// Every option list below is typed against the generated enum, so a value the
-// contract drops fails the build here rather than rendering a control that
-// offers something the server will refuse.
-export const VERBOSITY_OPTIONS: readonly { readonly value: Verbosity; readonly label: string }[] = [
-  { value: "all", label: "all — every transition, including comments and enrichments" },
-  { value: "status_changes", label: "status_changes — firing, resolved, acknowledged, snoozed" },
-  { value: "firing_and_resolved", label: "firing_and_resolved — the two ends, nothing between" },
-  { value: "firing_only", label: "firing_only — the quietest; resolves never reach the channel" },
-];
+/**
+ * ⛔ EVERY OPTION LIST BELOW IS AN EXHAUSTIVE `Record` OVER THE GENERATED ENUM,
+ * ORDERED BY THE ENUM ITSELF.
+ *
+ * The distinction matters and it is the whole point of this change. A
+ * `readonly {value, label}[]` typed against the union is checked for values it
+ * must not contain and never for the one it forgot — a member the server ADDS is
+ * simply not offered, and the screen looks perfectly fine. An exhaustive record
+ * is a build failure instead, and the list is then generated from the picklist
+ * so the two can never fall out of step.
+ */
+function labelled<T extends string>(
+  options: readonly T[],
+  labels: Record<T, string>,
+): readonly { readonly value: T; readonly label: string }[] {
+  return options.map((value) => ({ value, label: labels[value] }));
+}
+
+const VERBOSITY_LABEL: Record<Verbosity, string> = {
+  all: "all — every transition, including comments and enrichments",
+  status_changes: "status_changes — firing, resolved, acknowledged, snoozed",
+  firing_and_resolved: "firing_and_resolved — the two ends, nothing between",
+  firing_only: "firing_only — the quietest; resolves never reach the channel",
+};
+
+export const VERBOSITY_OPTIONS = labelled<Verbosity>(VerbositySchema.options, VERBOSITY_LABEL);
 
 /**
  * The mention vocabulary. `here` and `channel` are offered because they are
@@ -939,31 +960,44 @@ export const VERBOSITY_OPTIONS: readonly { readonly value: Verbosity; readonly l
  * that the documentation does not say — but the label says what the evidence
  * says, because a control that silently does nothing is the worst outcome here.
  */
-export const MENTION_MODE_OPTIONS: readonly {
-  readonly value: ReminderMention;
-  readonly label: string;
-}[] = [
-  { value: "none", label: "none — no mention (oto's default)" },
-  { value: "here", label: "here — @here; believed not to notify from a thread" },
-  { value: "channel", label: "channel — @channel; believed not to notify from a thread" },
-  { value: "list", label: "list — the explicit audience below; the only form documented to notify" },
-];
+const MENTION_MODE_LABEL: Record<ReminderMention, string> = {
+  none: "none — no mention (oto's default)",
+  here: "here — @here; believed not to notify from a thread",
+  channel: "channel — @channel; believed not to notify from a thread",
+  list: "list — the explicit audience below; the only form documented to notify",
+};
+
+export const MENTION_MODE_OPTIONS = labelled<ReminderMention>(
+  ReminderMentionSchema.options,
+  MENTION_MODE_LABEL,
+);
 
 /** The entries a mention list accepts, stated so the shape is not a guessing game. */
 export const MENTION_TOKEN_HINT =
   "A Slack user id as <@U…> or a usergroup id as <!subteam^S…>. @here and @channel are modes, not entries.";
 
-export const SEVERITY_OPTIONS: readonly {
-  readonly value: ReminderMentionSeverity;
-  readonly label: string;
-}[] = [
-  { value: "critical", label: "critical — only the loudest (oto's default)" },
-  { value: "warning", label: "warning — critical and warning" },
-  { value: "info", label: "info — every severity" },
-];
+const SEVERITY_LABEL: Record<ReminderMentionSeverity, string> = {
+  critical: "critical — only the loudest (oto's default)",
+  warning: "warning — critical and warning",
+  info: "info — every severity",
+};
 
-/** The list cap, which the server also enforces. Ten is a cap, not a courtesy. */
-export const MENTION_LIST_MAX = 10;
+export const SEVERITY_OPTIONS = labelled<ReminderMentionSeverity>(
+  ReminderMentionSeveritySchema.options,
+  SEVERITY_LABEL,
+);
+
+/**
+ * The list cap — READ from the write schema the server enforces it with.
+ *
+ * It is a cap, not a courtesy, and it was written here as `10`. That copy is the
+ * one that decides what the screen refuses locally, so it is also the one that
+ * can start refusing what the server accepts.
+ */
+export const MENTION_LIST_MAX = maxLengthOf(
+  UpdateOrgSettingsRequestSchema,
+  "unacked_reminder_mention_list",
+);
 
 /* -------------------------------------------------------------------------- */
 /* Units                                                                      */

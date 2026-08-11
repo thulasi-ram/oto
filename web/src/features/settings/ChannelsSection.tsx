@@ -32,6 +32,7 @@ import {
   testChannel,
   updateChannel,
 } from "~/api/endpoints";
+import { VerbositySchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import type {
   Channel,
@@ -273,12 +274,15 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
 
 /* -------------------------------------------------------------------------- */
 
-const VERBOSITIES: readonly Verbosity[] = [
-  "all",
-  "status_changes",
-  "firing_and_resolved",
-  "firing_only",
-];
+/**
+ * Every verbosity the contract publishes, READ from its own enum.
+ *
+ * ⛔ IT WAS FOUR LITERALS, AND THIS IS THE THIRD PLACE THE SAME ENUM LIVED —
+ * `tuningCopy.ts` holds the labelled version and the generated schema holds the
+ * truth. A copy cannot fail: the day `Verbosity` grows a member, a hand-written
+ * list simply stops offering it, and no screen looks wrong.
+ */
+const VERBOSITIES: readonly Verbosity[] = VerbositySchema.options;
 
 const ChannelDialog: Component<{
   readonly open: boolean;
