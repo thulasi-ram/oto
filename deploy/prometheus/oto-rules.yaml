@@ -1,0 +1,331 @@
+# Alerting rules for oto, watching oto.
+#
+# Every rule below except the first names a metric that is actually registered
+# in the Go tree, and carries a `runbook_url` pointing at that metric's page in
+# docs/runbooks/. If you add a rule here, add the runbook in the same commit —
+# an alert with no documented response is the thing this repository exists to
+# complain about.
+#
+# The `oto-demo` group is the exception: it fires unconditionally so that an
+# evaluator sees a card in Alertmanager within a minute of `just infra`, without
+# having to break something first.
+
+groups:
+  # -------------------------------------------------------------------------
+  # The always-true rule. `vector(1) > 0` is a constant, so this fires on the
+  # first evaluation after `for` elapses: 15 s pending + one 15 s evaluation
+  # interval, well inside a minute. Delete this group once you have seen it.
+  - name: oto-demo
+    interval: 15s
+    rules:
+      - alert: OtoStackSmokeTest
+        expr: vector(1) > 0
+        for: 15s
+        labels:
+          severity: info
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "The oto dev stack is wired end to end"
+          description: >-
+            This alert is always true on purpose. Seeing it in Alertmanager at
+            http://localhost:9093 proves Prometheus is evaluating rules and
+            routing to Alertmanager. Seeing it in oto proves Alertmanager's
+            webhook receiver reaches the ingest endpoint. If it is in
+            Alertmanager but not in oto, the receiver URL in
+            deploy/alertmanager/alertmanager.yml still has the placeholder
+            source id, or its bearer token is not that source's ingest token.
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/README.md
+
+  # -------------------------------------------------------------------------
+  # Is oto there at all.
+  - name: oto-availability
+    interval: 15s
+    rules:
+      - alert: OtoDown
+        expr: up{job="oto"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "oto is not being scraped"
+          description: "Prometheus cannot reach oto's /metrics. Under compose this is normal until `just up` is running."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/README.md
+
+  # -------------------------------------------------------------------------
+  # The job runtime. `dead`, `panics` and `unknown_version` are the three the
+  # code itself labels ALERT ON THIS.
+  - name: oto-jobs
+    interval: 15s
+    rules:
+      - alert: OtoJobsDead
+        expr: sum by (kind, queue, class) (increase(oto_jobs_dead_total[10m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "{{ $labels.kind }} jobs are dying ({{ $labels.class }})"
+          description: "Work oto accepted will never be done. The payload is in the `jobs: job is dead` ERROR log."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_jobs_dead_total.md
+
+      - alert: OtoJobPanic
+        expr: sum by (kind, queue) (increase(oto_jobs_panics_total[10m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "A panic was recovered in {{ $labels.kind }}"
+          description: "Always a bug. File it with the stack from the `jobs: panic in job handler` log record."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_jobs_panics_total.md
+
+      - alert: OtoJobUnknownPayloadVersion
+        expr: sum by (kind, queue) (increase(oto_jobs_unknown_version_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "{{ $labels.kind }} jobs are parked: payload version too new"
+          description: "A rollback left an old binary holding jobs a newer one enqueued. Roll forward or drain."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_jobs_unknown_version_total.md
+
+      - alert: OtoJobsFailing
+        expr: sum by (kind, queue, class) (rate(oto_jobs_failed_total[10m])) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "{{ $labels.kind }} is failing steadily ({{ $labels.class }})"
+          description: "Retries are absorbing it for now; at the attempt ceiling these become dead jobs."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_jobs_failed_total.md
+
+      - alert: OtoQueueBacklog
+        expr: max by (queue) (oto_job_queue_depth{state="available"}) > 25000
+        for: 5m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "The {{ $labels.queue }} queue is {{ $value }} jobs deep"
+          description: "25 000 is the ingest shedding threshold; past it oto starts answering 503."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_job_queue_depth.md
+
+      - alert: OtoJobsSlow
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (kind, queue, le) (rate(oto_job_duration_seconds_bucket[10m]))) > 60
+        for: 15m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "p99 of {{ $labels.kind }} is over a minute"
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_job_duration_seconds.md
+
+  # -------------------------------------------------------------------------
+  # Ingestion: the promise a 202 makes.
+  - name: oto-ingestion
+    interval: 15s
+    rules:
+      - alert: OtoIngestShedding
+        expr: sum by (reason) (rate(oto_ingest_shed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "oto is shedding webhooks ({{ $labels.reason }})"
+          description: "503 + Retry-After is designed backpressure, but sustained shedding spends Alertmanager's ~5 minute retry budget."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_ingest_shed_total.md
+
+      - alert: OtoIngestLatencyBudget
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (le) (rate(oto_ingest_duration_seconds_bucket[5m]))) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "Ingest p99 is over its 250 ms budget"
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_ingest_duration_seconds.md
+
+      - alert: OtoIngestRejecting
+        expr: sum by (reason) (rate(oto_ingest_rejected_total[15m])) > 0.05
+        for: 15m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "oto is rejecting observations ({{ $labels.reason }})"
+          description: "Nothing is silently dropped — every one of these is a row in ingest_rejections with the offending element kept."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_ingest_rejected_total.md
+
+      - alert: OtoIngestStopped
+        expr: sum(rate(oto_ingest_accepted_total[30m])) == 0
+        for: 30m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "No webhook batch has been accepted for half an hour"
+          description: "Either the upstream stopped sending or nothing is firing. The reconciler is what tells the two apart."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_ingest_accepted_total.md
+
+      - alert: OtoFingerprintMismatch
+        expr: rate(oto_ingest_fingerprint_mismatch_total[30m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "Wire fingerprints disagree with oto's recomputation"
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_ingest_fingerprint_mismatch_total.md
+
+      - alert: OtoClockSkew
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (le) (rate(oto_clock_skew_seconds_bucket[30m]))) > 60
+        for: 30m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "Upstream clocks are more than a minute ahead of or behind oto"
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_clock_skew_seconds.md
+
+  # -------------------------------------------------------------------------
+  # Delivery and thread ordering: what actually reached a human.
+  - name: oto-delivery
+    interval: 15s
+    rules:
+      - alert: OtoDeliveryClaimLost
+        expr: sum by (mode) (increase(oto_delivery_claim_lost_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "A send reached the provider and could not be recorded"
+          description: "There is a message in somebody's channel with no `sent` row behind it. oto may send it again."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_delivery_claim_lost_total.md
+
+      - alert: OtoThreadGapRecovered
+        expr: sum by (reason) (rate(oto_thread_gap_recovered_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "Thread slots are being advanced past unsent ({{ $labels.reason }})"
+          description: "Sustained non-zero means a channel is broken."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_thread_gap_recovered_total.md
+
+      - alert: OtoSlackUnknownAction
+        expr: increase(oto_slack_unknown_action_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "Somebody pressed a Slack button oto could not route"
+          description: >-
+            Answered 200 because Slack disables an app whose deliveries fail, so
+            this counter is the only evidence it happened. The action id is on
+            the WARN log beside it.
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_slack_unknown_action_total.md
+
+      - alert: OtoThreadHeadWaitHigh
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(oto_thread_head_wait_seconds_bucket[15m]))) > 300
+        for: 15m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "Deliveries are waiting minutes behind the thread head"
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_thread_head_wait_seconds.md
+
+  # -------------------------------------------------------------------------
+  # The SSE spine. These are about the UI being live, not about alerts being lost.
+  - name: oto-streaming
+    interval: 15s
+    rules:
+      - alert: OtoStreamFetchErrors
+        expr: rate(oto_stream_fetch_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "The SSE bridge cannot read ui_events"
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_stream_fetch_errors_total.md
+
+      - alert: OtoStreamNotifyMalformed
+        expr: increase(oto_stream_notify_malformed_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "NOTIFY payloads on oto_events are not parsing"
+          description: "Always a bug or a foreign writer on the channel."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_stream_notify_malformed_total.md
+
+      - alert: OtoStreamListenerFlapping
+        expr: increase(oto_stream_listener_reconnects_total[15m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "The LISTEN connection keeps dropping"
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_stream_listener_reconnects_total.md
+
+      - alert: OtoStreamResyncStorm
+        expr: sum by (reason) (rate(oto_stream_resync_total[15m])) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "Clients are being told to refetch repeatedly ({{ $labels.reason }})"
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_stream_resync_total.md
+
+      - alert: OtoStreamPollRecoverySpike
+        expr: rate(oto_stream_poll_recovered_total[15m]) > 1
+        for: 15m
+        labels:
+          severity: warning
+          namespace: oto
+          service: oto
+        annotations:
+          summary: "The reconciling poll is carrying the stream"
+          description: "Non-zero is normal. Sustained above the NOTIFY rate means doorbells are being missed."
+          runbook_url: https://github.com/thulasiram/oto/blob/main/docs/runbooks/oto_stream_poll_recovered_total.md

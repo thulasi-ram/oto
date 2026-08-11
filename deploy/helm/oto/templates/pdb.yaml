@@ -1,0 +1,21 @@
+{{- if and .Values.api.podDisruptionBudget.enabled (or (gt (int .Values.api.replicaCount) 1) .Values.api.autoscaling.enabled) }}
+{{/*
+Only rendered when there is more than one API replica. A PDB with minAvailable: 1
+over a single-replica Deployment blocks every node drain forever, which is a
+cluster upgrade that never finishes rather than an availability guarantee.
+
+The worker gets none: its jobs are transactionally claimed and re-runnable, so
+evicting one costs queue latency, not correctness.
+*/}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "oto.fullname" . }}-api
+  labels:
+    {{- include "oto.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.api.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "oto.selectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+{{- end }}

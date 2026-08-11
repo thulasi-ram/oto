@@ -1,0 +1,138 @@
+oto {{ default .Chart.AppVersion .Values.image.tag }} is installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+The migration hook has already run `oto migrate`, which applies BOTH migration
+systems: goose over oto's own schema, then River's own migrator for the job
+queue. Running goose alone would leave River's tables absent and every worker
+pod would die at boot.
+
+WATCH IT COME UP
+────────────────
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "oto.fullname" . }}-api
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "oto.fullname" . }}-worker
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "oto.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -fsS localhost:8080/healthz     # liveness: never touches Postgres
+  curl -sS  localhost:8080/readyz      # readiness: the truth about the database
+                                       # AND whether the applied schema matches
+                                       # this binary
+{{- if .Values.config.telemetry.metrics_enabled }}
+  curl -fsS localhost:8080{{ .Values.config.telemetry.metrics_path }} | grep '^oto_'
+{{- end }}
+
+{{ if not .Values.bootstrap.enabled }}
+1. CREATE THE FIRST ORG — THE INSTALL IS NOT USABLE UNTIL YOU DO
+────────────────────────────────────────────────────────────────
+v1 has no signup and no org-creation API on purpose, so the migrated database
+holds no credential that can log in. `oto bootstrap` creates the first org, its
+first user and its first API token. Let the chart run it:
+
+  helm upgrade {{ .Release.Name }} <this chart> --reuse-values \
+    --set bootstrap.enabled=true \
+    --set bootstrap.orgSlug=acme \
+    --set bootstrap.email=you@example.com \
+    --set secrets.bootstrapPassword='<a password you choose>'
+
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "oto.fullname" . }}-bootstrap
+
+⛔ THE POST-INSTALL HOOK ONLY RUNS ON `helm install`. On an existing release use
+the Job directly instead:
+
+  kubectl -n {{ .Release.Namespace }} create job oto-bootstrap \
+    --image={{ include "oto.image" . }} -- \
+    oto bootstrap --org-slug=acme --email=you@example.com
+
+and give that Job OTO_DB_URL and OTO_BOOTSTRAP_PASSWORD; it needs nothing else.
+The token is printed ONCE, to stdout and never to the log. Store it before the
+pod goes away.
+{{- else }}
+1. YOUR API TOKEN IS IN THE BOOTSTRAP JOB'S LOG, AND ONLY THERE
+───────────────────────────────────────────────────────────────
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "oto.fullname" . }}-bootstrap
+
+It was printed once, to stdout, never to the logger. The Job is garbage-collected
+after {{ .Values.bootstrap.ttlSecondsAfterFinished }}s; after that the token is
+unrecoverable and you bootstrap a new one.
+{{- end }}
+
+2. REGISTER AN ALERT SOURCE AND POINT ALERTMANAGER AT IT
+────────────────────────────────────────────────────────
+Create a source with POST /api/v1/sources, then add ONE receiver block to
+alertmanager.yml — no other Alertmanager configuration is needed:
+
+  receivers:
+    - name: oto
+      webhook_configs:
+        - url: {{ .Values.config.http.base_url }}/api/v1/ingest/alertmanager/<source_id>
+          http_config:
+            authorization: {type: Bearer, credentials: <ingest token>}
+          send_resolved: true
+
+{{- if not .Values.config.security.allow_private_targets }}
+
+  ⚠️ `config.security.allow_private_targets` is false, which is the safe default
+  and probably wrong for you. oto's SSRF guard refuses to dial private addresses,
+  so a source pointing at a cluster-internal Alertmanager or Prometheus Service
+  will be REFUSED and the reconciler — which SPEC calls mandatory — cannot run.
+  Turn it on knowingly: it opens for the whole process, on behalf of every tenant.
+{{- end }}
+{{- if not .Values.secrets.secretKey }}
+{{- if not .Values.existingSecret }}
+
+3. ⛔ NO KEYRING. `secrets.secretKey` IS EMPTY
+──────────────────────────────────────────────
+oto booted without a keyring and logged a warning. Every credential read fails at
+the repository, so NO CHANNEL CAN BE CONFIGURED — no Slack, no webhook. Nothing
+is stored in the clear, which is the correct blast radius, but oto cannot notify
+anything until you set it:
+
+  openssl rand -base64 32
+
+  helm upgrade {{ .Release.Name }} ... --set secrets.secretKey='<that value>'
+
+Back it up where you back up the database. Losing it loses every sealed
+credential.
+{{- end }}
+{{- end }}
+{{- if and .Values.config.slack.enabled (eq .Values.config.slack.mode "socket") }}
+
+⚠️ SLACK IS ENABLED IN `socket` MODE AND SOCKET MODE IS NOT IMPLEMENTED. The
+Acknowledge button on every alert card will render and nothing will be listening
+for it. Set `config.slack.mode=http`, supply `secrets.slackSigningSecret`, and
+point the Slack app's Request URL at
+{{ .Values.config.http.base_url }}/api/v1/integrations/slack/interactions.
+See docs/setup/slack.md.
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+INGRESS
+───────
+{{- $scheme := ternary "https" "http" (gt (len .Values.ingress.tls) 0) }}
+{{- range .Values.ingress.hosts }}
+{{- $host := .host }}
+{{- range .paths }}
+  {{ $scheme }}://{{ $host }}{{ .path }}
+{{- end }}
+{{- end }}
+
+  ⚠️ `config.http.base_url` is {{ .Values.config.http.base_url | quote }}. It must be
+  the URL above, because it is what every "open in oto" deep link in every Slack
+  card points at. And `config.http.cors_origins` must name your UI's browser
+  origin or the UI cannot read an authenticated response at all.
+{{- else }}
+
+There is no Ingress: `ingress.enabled` is false. oto's ingest endpoint is
+authenticated by a bearer token and nothing else, and /healthz, /readyz, /metrics
+and /openapi.json sit outside the authenticator entirely, so exposing it is a
+decision rather than a default.
+{{- end }}
+
+POSTGRES IS YOURS
+─────────────────
+This chart bundles no database and never will (ADR 0014, ADR 0015, SPEC R7:
+"No second datastore. No Redis, no Kafka, no ClickHouse."). It is pointed at the
+URL you gave it.
+
+Every pod opens TWO pgx pools over that one database — ingest and general,
+{{ .Values.config.db.max_conns }} connections between them — and this release runs {{ .Values.api.replicaCount }} API + {{ .Values.worker.replicaCount }} worker pods,
+so it will hold up to {{ mul (int .Values.config.db.max_conns) (add (int .Values.api.replicaCount) (int .Values.worker.replicaCount)) }}. Check that against Postgres's `max_connections`
+before you scale either Deployment.

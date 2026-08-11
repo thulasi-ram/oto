@@ -1,0 +1,63 @@
+# Dev-only Prometheus configuration for the compose stack.
+#
+# It exists so that "bring the stack up and watch an alert arrive" is true
+# without an operator writing a config first. It does three things:
+#
+#   1. Scrapes oto's own /metrics on the host, so every `oto_*` metric the
+#      runbooks in docs/runbooks/ describe is real and queryable at :9090.
+#   2. Sends every firing alert to the Alertmanager in the same compose project,
+#      which is the one configured to webhook oto's ingest endpoint.
+#   3. Loads oto-rules.yaml — the path SPEC §H.8 names — whose first rule is
+#      deliberately always true with `for: 15s`, so an alert reaches Alertmanager
+#      inside a minute of the stack coming up rather than only when something is
+#      genuinely broken.
+#
+# Prometheus here is ALSO a legitimate `prometheus_url` for an alert source:
+# oto reads GET /api/v1/rules from it to snapshot what a rule said at fire time
+# (ADR 0009). Point a source at http://localhost:9090 and the rule text in the
+# UI comes from this instance.
+
+global:
+  scrape_interval: 15s
+  # 15 s so the demo rule's `for: 15s` clears in two evaluations, not eight.
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    monitor: oto-dev
+
+rule_files:
+  - /etc/prometheus/oto-rules.yaml
+
+alerting:
+  alertmanagers:
+    # The compose service name. Both containers are on the project network, so
+    # this resolves without any host mapping.
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # oto itself. The API serves /metrics unauthenticated on the same port as the
+  # rest of the API, and it runs on the HOST under `just up` — not in compose —
+  # so it is reached through host.docker.internal.
+  #
+  # `up{job="oto"} == 0` until `just up` is running. That is not a
+  # misconfiguration: OtoDown firing while oto is stopped is the scrape path
+  # proving itself.
+  - job_name: oto
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          namespace: oto
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels:
+          namespace: oto
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          namespace: oto
