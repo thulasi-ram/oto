@@ -23,26 +23,29 @@ Use the manifest instead.
 1. Go to <https://api.slack.com/apps> and click **Create New App**.
 2. Choose **From an app manifest**.
 3. Pick the workspace oto should post into.
-4. Paste the contents of [`deploy/slack/manifest.yaml`](../../deploy/slack/manifest.yaml).
-5. Review the summary Slack shows you, then **Create**.
+4. Copy the contents of [`deploy/slack/manifest.yaml`](../../deploy/slack/manifest.yaml)
+   and **replace the one placeholder in it** — `<your-oto-host>` in
+   `settings.interactivity.request_url` — with the public HTTPS host oto is
+   reachable at, so the line reads:
 
-> ### ⛔ The manifest and this page currently disagree, and the manifest is wrong
->
-> `deploy/slack/manifest.yaml` still sets **`socket_mode_enabled: true`** and
-> leaves `interactivity.request_url` commented out. That is the configuration
-> this page spends [section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button)
-> telling you does not work: **Socket Mode is not implemented in oto**, so an app
-> installed exactly as written above delivers button presses to a WebSocket
-> nothing is listening on.
->
-> Until the manifest is fixed, after creating the app do **both** of these:
->
-> - **Settings → Socket Mode → Enable Socket Mode: Off.**
-> - **Interactivity & Shortcuts → Request URL:**
->   `https://<your-oto-host>/api/v1/integrations/slack/interactions`
->
-> Slack will not let you save a Request URL while Socket Mode is on, so the order
-> matters. If you do not need buttons, leave both alone — oto works without them.
+   ```yaml
+   request_url: https://oto.your-company.example/api/v1/integrations/slack/interactions
+   ```
+
+   That is the endpoint the **Acknowledge** button POSTs to. Nothing else in the
+   file needs editing. If you have not decided on a host yet, see
+   [section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button) —
+   you can paste the manifest as-is and set the Request URL later, but the button
+   will not work until you do.
+5. Paste it into Slack.
+6. Review the summary Slack shows you, then **Create**.
+
+The manifest sets **`socket_mode_enabled: false`**, which is the only correct
+value: **Socket Mode is not implemented in oto** (see
+[section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button) and
+[Why there is no Socket Mode](#why-there-is-no-socket-mode)). Do not switch it on
+in the Slack UI afterwards — Slack will drop the Request URL you just set, and
+button presses will go to a WebSocket nothing is listening on.
 
 The manifest is commented with a justification for every scope it asks for, and a
 list of the scopes it deliberately does **not** ask for. If your security team
@@ -106,17 +109,26 @@ and this is not one.
 
 ### 3.1 Point Slack at your oto
 
+**The manifest already does this** — `interactivity.is_enabled: true`,
+`socket_mode_enabled: false`, and a `request_url` you filled the host into in
+[section 1](#1-create-the-app-from-the-manifest). So this section is a *check*,
+not a chore, unless you pasted the manifest with the placeholder still in it.
+
 1. Make oto reachable at a public HTTPS URL (an ingress, a load balancer, a
    tunnel — oto does not care which).
-2. In the Slack app: **Interactivity & Shortcuts → Interactivity → On.**
-3. Set **Request URL** to:
+2. In the Slack app, open **Interactivity & Shortcuts**. **Interactivity** should
+   already be **On** and **Request URL** should already read:
 
    ```
    https://<your-oto-host>/api/v1/integrations/slack/interactions
    ```
 
-4. Save. Slack does **not** verify the URL on save for interactivity, so a typo
-   here surfaces later as a button that fails rather than as an error now.
+   with your own host in place of `<your-oto-host>`. If it is empty, or still has
+   the literal placeholder in it, set it now and **Save**.
+
+3. Slack does **not** verify the URL on save for interactivity, so a typo here
+   surfaces later as a button that fails rather than as an error now. The path is
+   fixed by oto's router — only the host is yours.
 
 ### 3.2 Copy the signing secret
 
@@ -422,9 +434,9 @@ the **metadata**. Those need 8.2.
 
 ### 8.2 Twenty-five minutes, with a workspace: the six behaviours
 
-Install the app ([section 1](#1-create-the-app-from-the-manifest), including the
-Socket Mode correction), invite it to a scratch channel, point an oto channel at
-that conversation id, and fire a synthetic alert.
+Install the app ([section 1](#1-create-the-app-from-the-manifest), with your host
+filled into the manifest's `request_url`), invite it to a scratch channel, point
+an oto channel at that conversation id, and fire a synthetic alert.
 
 **Do the first check before anything else — it can invalidate every other one.**
 
@@ -476,8 +488,11 @@ mistakes their absence for a passing result.
 Socket Mode is the transport most self-hosted installs would prefer: oto would
 dial **out** to Slack over a WebSocket and receive button presses on it, with no
 ingress rule, no TLS certificate and no public URL. The documentation used to say
-that was the default. **It was never built** — there is no WebSocket client in
-oto, and `OTO_SLACK_APP_TOKEN` has no reader.
+that was the default, and the manifest used to ship `socket_mode_enabled: true`.
+**It was never built** — there is no WebSocket client in oto, and
+`OTO_SLACK_APP_TOKEN` has no reader. The manifest now ships
+`socket_mode_enabled: false` and a Request URL, which is the only combination
+that produces a working Acknowledge button.
 
 Until it exists, interactivity means an HTTPS Request URL and a signing secret.
 If you cannot expose one, run oto without buttons: alerts, grouping, cards,
