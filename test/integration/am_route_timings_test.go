@@ -279,8 +279,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 39 {
-		t.Fatalf("latest migration is %d, want 39 — this test pins the number so that a "+
+	if latest != 40 {
+		t.Fatalf("latest migration is %d, want 40 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -446,6 +446,35 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 		return def
 	}
+	snapshotUniqCols := func() string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			  WHERE conname = 'rule_snapshots_content_uniq'
+			    AND conrelid = 'rule_snapshots'::regclass`).Scan(&def); err != nil {
+			t.Fatalf("introspect rule_snapshots_content_uniq: %v", err)
+		}
+		return def
+	}
+
+	// ⛔ 00040 WIDENS `rule_snapshots_content_uniq` from (org, source,
+	// fingerprint) to include the rule key, and its Down is LOSSY IN ONE
+	// DIRECTION ONLY. Widening cannot fail: no existing row can violate a
+	// constraint with more columns in it. Narrowing can, because the whole point
+	// of e670d5b was that an `unavailable` capture has an empty expr and therefore
+	// hashes identically for every rule in a source — so the rows the Up allows to
+	// exist separately are exactly the rows the Down must fold back together.
+	//
+	// The assertion here is on the TOP of the stack; the Down is exercised by the
+	// rollback below, and a Down that silently dropped the constraint rather than
+	// restoring the narrow one would leave the fold undone and let a re-Up succeed
+	// against data the original schema forbade.
+	if def := snapshotUniqCols(); !strings.Contains(def, "rule_name") {
+		t.Fatalf("rule_snapshots_content_uniq does not carry the rule key at the top of the "+
+			"stack: %s — 00040 exists to widen it, and without the key every unrecoverable "+
+			"rule in a source collapses into one row named after whichever failed first", def)
+	}
 	if drillTables() != 1 {
 		t.Fatal("delivery_drills is absent at the top of the stack; 00039 exists to create it")
 	}
@@ -544,6 +573,31 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		if err := migrate.Down(env.ctx, dsn); err != nil {
 			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
 		}
+	}
+
+	// 00040 down: the rule-snapshot uniqueness tuple narrows back to (org, source,
+	// fingerprint).
+	//
+	// ⛔ THIS DIRECTION IS LOSSY AND THE UP IS NOT. Widening cannot fail — no row
+	// can violate a constraint with more columns in it — but narrowing folds
+	// together exactly the rows 00040 exists to keep apart: an `unavailable`
+	// capture has an empty expr, so every unrecoverable rule in a source hashes
+	// identically, which is the whole of e670d5b. The Down therefore keeps the
+	// earliest row per content address and drops the rest, and occurrences
+	// unbind rather than vanish because `occ_rule_fk` is ON DELETE SET NULL.
+	//
+	// It is asserted here rather than trusted because a Down that DROPPED the
+	// constraint instead of restoring the narrow one would leave the fold undone,
+	// and a later re-Up would then succeed against data the original schema forbade.
+	down(40)
+	if def := snapshotUniqCols(); strings.Contains(def, "rule_name") {
+		t.Fatalf("rule_snapshots_content_uniq still carries the rule key after 00040's Down: %s — "+
+			"the narrow constraint has to come back, or a rollback leaves a schema that admits "+
+			"rows 00039 and earlier could never have stored", def)
+	}
+	if !strings.Contains(snapshotUniqCols(), "rule_fingerprint") {
+		t.Fatalf("rule_snapshots_content_uniq is not the narrow (org, source, fingerprint) tuple "+
+			"after 00040's Down: %s", snapshotUniqCols())
 	}
 
 	// ⛔ 00039 down, ATTEMPT ONE: REFUSED, because a synthetic batch is live. This

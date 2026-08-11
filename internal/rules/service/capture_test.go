@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,11 +45,17 @@ import (
 // memRepo is a SnapshotRepository whose whole memory is a map.
 //
 // It reproduces the ONE property the real table is built around: rows are
-// deduplicated by (org, source, rule_fingerprint), so capturing the same rule
+// deduplicated by (org, rule key, rule_fingerprint), so capturing the same rule
 // text a thousand times yields one row and `inserted` is true exactly once. A
 // fake that inserted a row per call could not tell "a new version of the rule"
 // from "the thousandth fire of an unchanged one", which is the distinction under
 // test.
+//
+// ⛔ THE RULE KEY IS IN THE DEDUP TUPLE because it is in
+// rule_snapshots_content_uniq (00040), and a fake that left it out would go on
+// passing the tests the defect used to pin. The fingerprint addresses the
+// DEFINITION only, so it cannot separate two rules whose recovered text is
+// identical — and every `unavailable` capture's text is identical.
 //
 // It also re-runs Snapshot.Validate, because the real repository does: an
 // invalid snapshot must be refused by storage and not only by the caller.
@@ -61,12 +68,23 @@ type memRepo struct {
 	latestErr error
 	// upserts counts writes, so "one row per rule text" is provable.
 	upserts int
+	// listByKeyCalls counts history reads, so "the store was never asked" is
+	// provable — which is the only way to assert that an UNADDRESSABLE key never
+	// reaches SQL. The real repository refuses such a key with a validation
+	// error, and this fake cannot: it matches on struct fields, so an empty
+	// source id simply matches nothing and the refusal is invisible here.
+	listByKeyCalls int
 }
 
 func newMemRepo() *memRepo { return &memRepo{rows: map[string]domain.Snapshot{}} }
 
+// contentKey mirrors rule_snapshots_content_uniq: (org, source, name, group,
+// file, fingerprint). The components are joined on a byte no rule key component
+// can contain, so two different keys cannot alias into one string.
 func contentKey(s domain.Snapshot) string {
-	return s.OrgID + "|" + s.Key.SourceID + "|" + s.Fingerprint
+	return strings.Join([]string{
+		s.OrgID, s.Key.SourceID, s.Key.Name, s.Key.Group, s.Key.File, s.Fingerprint,
+	}, "\x00")
 }
 
 func (r *memRepo) Upsert(_ context.Context, s db.TenantScope, snap domain.Snapshot) (domain.Snapshot, bool, error) {
@@ -125,18 +143,19 @@ func (r *memRepo) GetMany(_ context.Context, s db.TenantScope, ids []uuid.UUID) 
 }
 
 // matchesKey mirrors the repository's keyPredicate: an EMPTY file or group means
-// "unknown", not "the empty string", so it is not matched on. A generatorURL
-// capture knows the expression but not the file it is written in, and treating
-// that as an equality would split one rule's history in two on the day
-// Prometheus became reachable.
+// "unknown", not "the empty string", ON BOTH SIDES. A generatorURL capture knows
+// the expression but not the file it is written in, and treating that as an
+// equality in EITHER direction splits one rule's history in two on the day
+// Prometheus becomes reachable — the query direction was always lenient, and the
+// stored direction now is too.
 func matchesKey(row domain.Snapshot, key domain.Key) bool {
 	if row.Key.SourceID != key.SourceID || row.Key.Name != key.Name {
 		return false
 	}
-	if key.Group != "" && row.Key.Group != key.Group {
+	if key.Group != "" && row.Key.Group != "" && row.Key.Group != key.Group {
 		return false
 	}
-	if key.File != "" && row.Key.File != key.File {
+	if key.File != "" && row.Key.File != "" && row.Key.File != key.File {
 		return false
 	}
 	return true
@@ -157,6 +176,7 @@ func (r *memRepo) forKey(s db.TenantScope, key domain.Key) []domain.Snapshot {
 func (r *memRepo) ListByKey(_ context.Context, s db.TenantScope, key domain.Key, limit int) ([]domain.Snapshot, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.listByKeyCalls++
 	out := r.forKey(s, key)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
@@ -606,33 +626,30 @@ func TestDriftIsPerRuleKey(t *testing.T) {
 	assert.False(t, unedited.Drifted, "AlertB was not touched")
 }
 
-// TestTwoRulesWithIdenticalContentCollapseIntoOneRow DOCUMENTS A DEFECT, and one
-// that is reachable on an ordinary day rather than by contrivance.
+// TestTwoRulesWithIdenticalContentKeepTheirOwnRows: identical CONTENT is not
+// identical IDENTITY, and the row is not pure content.
 //
-// `rule_snapshots_content_uniq` is (org_id, source_id, rule_fingerprint), and the
-// fingerprint is over the DEFINITION only — the rule KEY is not in it. So two
-// alerts whose recovered definitions are byte-identical share one row, and the
-// row keeps the rule_name of whichever alert got there first. The upsert's UNION
-// arm returns that incumbent, so `Capture` hands back a Snapshot whose
-// `Key.Name` is not the alert that fired.
+// ⭐ WHY THIS IS NOT DE-DUPLICATION. It looks like it could be — two rules whose
+// definitions are byte-identical could plausibly share one content-addressed
+// row, the way two fires of one unchanged rule do. They cannot, and the reason is
+// structural rather than aesthetic: a `rule_snapshots` row is NOT the definition,
+// it is the definition PLUS the RuleKey it was captured under (SPEC §C.6 keeps
+// the key out of `rule_fingerprint` deliberately, so that a renamed rule can be
+// recognised as the same text). One row cannot carry two keys. So a shared row
+// must pick one rule_name and be WRONG about the other — and every read path in
+// the module (Latest, ListByKey, ListPage) filters on rule_name, which makes the
+// loser's own capture unreachable to it forever. De-duplication that the reader
+// cannot undo is not de-duplication, it is loss.
 //
-// The contrived-looking case is the common one: an `unavailable` recovery has an
-// empty expr, no durations and empty maps, so EVERY unavailable capture in a
-// source has the SAME fingerprint. One Prometheus behind a firewall therefore
-// produces a single shared "we could not see it" row for every rule in that
-// source, named after the first alert that failed.
+// The saving was illusory anyway. The case that makes it common is an
+// `unavailable` recovery: empty expr, no durations, empty maps, therefore ONE
+// fingerprint for every unrecoverable rule in a source. That is the case where
+// per-rule rows matter most, because "oto could not see YOUR rule" is the entire
+// content of the row.
 //
-// Two visible consequences:
-//
-//   - `rule.snapshot_captured` / `rule.lookup_failed` payloads carry the wrong
-//     `rule_name` for every alert but the first;
-//   - `Latest` filters on rule_name, so no alert but the first can ever find its
-//     own unavailable capture — `NewVersion` is false and `Drifted` is false for
-//     a rule oto has genuinely never captured.
-//
-// Asserted as-is so that a fix is visible as a test change and not as a silent
-// pass. The fix is production code and out of scope here.
-func TestTwoRulesWithIdenticalContentCollapseIntoOneRow(t *testing.T) {
+// 00040 put the rule key in rule_snapshots_content_uniq. Dedup still costs one
+// row per rule text — it just counts texts per RULE now, not per source.
+func TestTwoRulesWithIdenticalContentKeepTheirOwnRows(t *testing.T) {
 	t.Parallel()
 
 	// Neither alert's rule can be recovered — the ordinary firewalled case.
@@ -662,20 +679,32 @@ func TestTwoRulesWithIdenticalContentCollapseIntoOneRow(t *testing.T) {
 
 	assert.Equal(t, first.Snapshot.Fingerprint, second.Snapshot.Fingerprint,
 		"every unavailable capture has the same content: nothing")
-	assert.Equal(t, first.Snapshot.ID, second.Snapshot.ID,
-		"KNOWN DEFECT: one row is shared by two different rules")
-	assert.Equal(t, "AlertA", second.Snapshot.Key.Name,
-		"KNOWN DEFECT: AlertB's capture comes back named AlertA, and the timeline event says so too")
-	assert.False(t, second.NewVersion,
-		"KNOWN DEFECT: AlertB's first capture is not reported as a new version")
+	assert.NotEqual(t, first.Snapshot.ID, second.Snapshot.ID,
+		"...but two rules are two rows, because the row carries a rule key and one row cannot carry two")
+	assert.Equal(t, "AlertB", second.Snapshot.Key.Name,
+		"AlertB's capture is AlertB's, not the first failure's")
+	assert.True(t, second.NewVersion,
+		"a rule oto had never captured is a new version, whatever else in the source hashes the same")
+	assert.False(t, second.Drifted, "AlertB has no predecessor of its own")
 
-	// The timeline is where an operator would see it: AlertB's own event names
-	// somebody else's rule.
+	// Each alert can find its own capture again, which is the property the shared
+	// row destroyed: Latest filters on rule_name.
+	for name, want := range map[string]service.Capture{"AlertA": first, "AlertB": second} {
+		latest, ok, err := r.svc.Latest(ctx, r.scope, domain.Key{SourceID: r.source.String(), Name: name})
+		require.NoError(t, err)
+		require.True(t, ok, "%s must be able to reach its own stored capture", name)
+		assert.Equal(t, want.Snapshot.ID, latest.ID)
+	}
+
+	// And the timeline is where an operator would have seen the old lie: each
+	// event now names the rule it is actually about.
 	all := r.events.all()
 	require.Len(t, all, 2)
 	assert.Equal(t, "AlertA", all[0].Payload["rule_name"])
-	assert.Equal(t, "AlertA", all[1].Payload["rule_name"],
-		"KNOWN DEFECT: this event is about AlertB")
+	assert.Equal(t, "AlertB", all[1].Payload["rule_name"])
+	assert.Equal(t, service.EventLookupFailed, all[1].Type)
+	assert.Contains(t, all[1].Summary, "AlertB",
+		`the "could not be recovered" line must name the rule that could not be recovered`)
 }
 
 // ---------------------------------------------------------------------------
@@ -988,6 +1017,83 @@ func TestDiffVersionsRejectsAVersionThatDoesNotExist(t *testing.T) {
 
 	_, err := r.svc.DiffVersions(context.Background(), r.scope, c.Snapshot.Key, 1, 9)
 	requireCode(t, err, service.CodeUnknownVersion)
+}
+
+// ⛔ TestAKeyThatCannotAddressTheStoreHasAnEmptyHistoryRatherThanARefusal.
+//
+// `rule_snapshots` is addressed on `(org_id, source_id, rule_name, …)`, so
+// `repository.keyPredicate` parses `key.SourceID` and refuses the key as a
+// VALIDATION error — `422 rules_invalid_id` — when it cannot. That is the right
+// answer for a caller who typed a source id and typed it wrong, and the wrong
+// answer for a key OTO ITSELF derived and had nothing to derive from: the
+// alertname-only key `rules/api` builds for an alert with no captured snapshot.
+//
+// What broke when it did not hold (TICKET 015b25b): `GET
+// /api/v1/alerts/{id}/rule` answered 422 "a rule key's source id must be a UUID"
+// for every alert whose `generatorURL` carried no expression — measured at four
+// in five on a real server — and the alert detail page rendered oto's own
+// missing data as the operator's mistake, with a Try again button that could
+// never succeed.
+//
+// The store must not even be asked. An unaddressable key describes no rows, so a
+// round trip for it is a query that cannot match wearing the costume of one that
+// might.
+func TestAKeyThatCannotAddressTheStoreHasAnEmptyHistoryRatherThanARefusal(t *testing.T) {
+	t.Parallel()
+
+	r := newRig(t, func(service.LookupRequest) (domain.Recovery, error) {
+		return recoveredRule("up == 0", 300), nil
+	})
+	captured := r.capture(t, id.New(), id.New())
+	require.NotEmpty(t, captured.Snapshot.Key.SourceID)
+
+	// The addressable key still works, and reading it is what proves the counter
+	// below is counting something real.
+	full, err := r.svc.History(context.Background(), r.scope, captured.Snapshot.Key)
+	require.NoError(t, err)
+	require.Equal(t, 1, full.Len())
+	before := r.repo.listByKeyCalls
+	require.Positive(t, before)
+
+	unaddressable := []struct {
+		name string
+		key  domain.Key
+	}{
+		{
+			// The exact key `rules/api.keyOf` builds when no snapshot was bound:
+			// the alertname and nothing else.
+			name: "the alertname alone, which is what oto can name from an alert with no capture",
+			key:  domain.Key{Name: captured.Snapshot.Key.Name},
+		},
+		{
+			name: "a source id that is not a uuid",
+			key:  domain.Key{SourceID: "not-a-uuid", Name: captured.Snapshot.Key.Name},
+		},
+		{
+			// It parses, so the repository would build a predicate from it — and
+			// no AlertSource is ever the zero id, so the round trip cannot match.
+			name: "the nil uuid, which parses and still addresses nothing",
+			key:  domain.Key{SourceID: uuid.Nil.String(), Name: captured.Snapshot.Key.Name},
+		},
+		{
+			name: "a real source with no rule name",
+			key:  domain.Key{SourceID: r.source.String(), Name: "   "},
+		},
+	}
+
+	for _, tc := range unaddressable {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.False(t, service.Addressable(tc.key))
+
+			h, err := r.svc.History(context.Background(), r.scope, tc.key)
+			require.NoError(t, err,
+				"absence of a capture is not a client error; this is the 422 the ticket is about")
+			assert.Equal(t, 0, h.Len(), "an unaddressable key describes no rows")
+			assert.Equal(t, tc.key, h.Key, "the key is still echoed back; it is nameable, just not queryable")
+			assert.Equal(t, before, r.repo.listByKeyCalls,
+				"the store was asked about a key that cannot address it")
+		})
+	}
 }
 
 func TestNewRequiresARepository(t *testing.T) {

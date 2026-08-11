@@ -24,14 +24,22 @@ import (
 type SnapshotRepository interface {
 	// Upsert stores a snapshot, returning the stored row.
 	//
-	// It is an INSERT ... ON CONFLICT (org_id, source_id, rule_fingerprint) DO
-	// NOTHING followed by the read of the winner, so capturing the same rule
-	// text on every one of a thousand fires costs one row and never raises a
-	// conflict error. The returned Snapshot's ID and CapturedAt are those of
-	// the row that already existed when the content matched, and the bool
-	// reports whether THIS call inserted it — which is how the service
-	// distinguishes "a new version of the rule" from "the thousandth fire of an
-	// unchanged one" without a second query.
+	// It is an INSERT ... ON CONFLICT (org_id, source_id, rule_name, rule_group,
+	// rule_file, rule_fingerprint) DO NOTHING followed by the read of the
+	// winner, so capturing the same rule text on every one of a thousand fires
+	// costs one row and never raises a conflict error. The returned Snapshot's
+	// ID and CapturedAt are those of the row that already existed when the
+	// content matched, and the bool reports whether THIS call inserted it —
+	// which is how the service distinguishes "a new version of the rule" from
+	// "the thousandth fire of an unchanged one" without a second query.
+	//
+	// ⛔ THE RULE KEY IS PART OF THAT TUPLE and an implementation may not drop
+	// it. `rule_fingerprint` addresses the DEFINITION only (SPEC §C.6), so it
+	// is not an identity: every `unavailable` capture in a source has the same
+	// empty content and therefore the same digest. Deduplicating on content
+	// alone gave one firewalled Prometheus a single shared row for every rule
+	// it owns, named after whichever alert failed first, which no read path
+	// could then retrieve (00040).
 	Upsert(ctx context.Context, s db.TenantScope, snap domain.Snapshot) (domain.Snapshot, bool, error)
 
 	// Get returns one snapshot by id, or an errs.KindNotFound.

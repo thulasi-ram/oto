@@ -26,8 +26,9 @@ import (
 //   - the CTE upsert really does return the incumbent row when the content
 //     matches, so `inserted` distinguishes a new version of a rule from the
 //     thousandth fire of an unchanged one WITHOUT a second round trip;
-//   - `rule_snapshots_content_uniq` really does collapse repeat captures to one
-//     row, which is what makes "snapshot on every fire" affordable;
+//   - `rule_snapshots_content_uniq` really does collapse repeat captures OF ONE
+//     RULE to one row, which is what makes "snapshot on every fire" affordable,
+//     while keeping two different rules apart however alike their text (00040);
 //   - both snapshots survive the edit and are still readable by id, because the
 //     table has no UPDATE and no DELETE — that absence IS the drift feature;
 //   - the eleven CHECK constraints agree with Snapshot.Validate, so a snapshot
@@ -450,22 +451,23 @@ func TestCaptureDegradesToAStorableRowWhenNothingIsRecovered(t *testing.T) {
 	require.NoError(t, c.Snapshot.Validate())
 }
 
-// TestEveryUnrecoverableRuleInASourceSharesOneRow DOCUMENTS A DEFECT, against
-// the real SQL rather than a fake, because the mechanism IS the SQL.
+// TestEveryUnrecoverableRuleInASourceGetsItsOwnRow, against the real SQL rather
+// than a fake, because the mechanism IS the SQL.
 //
-// `rule_snapshots_content_uniq` is (org_id, source_id, rule_fingerprint) and the
-// fingerprint is over the DEFINITION only — the rule key is not in it. An
-// `unavailable` capture has an empty expr, zero durations and empty maps, so
-// every unavailable capture in a source hashes to the SAME content address.
-// The upsert's UNION arm then hands back the incumbent row, which carries the
-// rule_name of whichever alert failed first.
+// ⭐ ONE FIREWALLED PROMETHEUS IS THE WHOLE TEST. An `unavailable` capture has an
+// empty expr, zero durations and empty maps — rule_snapshots_expr_ck requires
+// exactly that shape — so every unavailable capture in a source hashes to the
+// SAME content address. `rule_fingerprint` is over the DEFINITION only (SPEC
+// §C.6) and cannot be asked to identify a rule as well, which is why 00040 put
+// the rule key in `rule_snapshots_content_uniq`.
 //
-// One firewalled Prometheus is enough to reach it: every rule in that source
-// shares a single "we could not see it" row, and every alert but the first gets
-// a capture that names somebody else's rule and is not reported as new.
-//
-// Asserted as-is so a fix shows up as a test change rather than a silent pass.
-func TestEveryUnrecoverableRuleInASourceSharesOneRow(t *testing.T) {
+// Keyed on content alone, the upsert's UNION arm handed every later alert the
+// incumbent row: one shared "we could not see it" row for every rule in the
+// source, named after whichever alert failed first, unreachable to all the
+// others because every read path filters on rule_name. What is asserted here is
+// the property that fixed it: each rule's failure is ITS failure, stored under
+// its own name and findable again under its own name.
+func TestEveryUnrecoverableRuleInASourceGetsItsOwnRow(t *testing.T) {
 	t.Parallel()
 
 	r := newDBRig(t)
@@ -499,53 +501,61 @@ func TestEveryUnrecoverableRuleInASourceSharesOneRow(t *testing.T) {
 
 	assert.Equal(t, first.Snapshot.Fingerprint, second.Snapshot.Fingerprint,
 		"every unavailable capture has the same content: nothing")
-	assert.Equal(t, 1, r.rowCount(t),
-		"KNOWN DEFECT: two rules, one row — the content address does not include the rule key")
-	assert.Equal(t, first.Snapshot.ID, second.Snapshot.ID)
-	assert.Equal(t, "AlertA", second.Snapshot.Key.Name,
-		"KNOWN DEFECT: AlertB's capture comes back named AlertA")
-	assert.False(t, second.NewVersion,
-		"KNOWN DEFECT: AlertB's first capture is not reported as a new version")
+	assert.Equal(t, 2, r.rowCount(t),
+		"two rules, two rows — the uniqueness tuple carries the rule key (00040)")
+	assert.NotEqual(t, first.Snapshot.ID, second.Snapshot.ID)
+	assert.Equal(t, "AlertB", second.Snapshot.Key.Name,
+		"AlertB's capture comes back named AlertB")
+	assert.True(t, second.NewVersion,
+		"AlertB had never been captured, so its first capture is a new version")
+	assert.False(t, second.Drifted, "and it has no predecessor of its own to have drifted from")
 
-	// And AlertB can never find it again, because Latest filters on rule_name.
-	_, ok, err := r.svc.Latest(r.h.Ctx, r.scope, domain.Key{
-		SourceID: r.source.String(), Name: "AlertB",
-	})
-	require.NoError(t, err)
-	assert.False(t, ok, "KNOWN DEFECT: AlertB has a stored capture it cannot reach")
+	// Each alert can reach its own capture again. This is the assertion the old
+	// row-sharing behaviour could not satisfy for anybody but the first alert.
+	for name, want := range map[string]service.Capture{"AlertA": first, "AlertB": second} {
+		latest, ok, err := r.svc.Latest(r.h.Ctx, r.scope, domain.Key{
+			SourceID: r.source.String(), Name: name,
+		})
+		require.NoError(t, err)
+		require.True(t, ok, "%s must be able to reach its own stored capture", name)
+		assert.Equal(t, want.Snapshot.ID, latest.ID)
+		assert.Equal(t, name, latest.Key.Name)
+	}
+
+	// Repeat failures still cost nothing: the SAME rule failing again is the same
+	// row, which is what keeps "capture on every fire" affordable for a source
+	// whose Prometheus is down for a week.
+	r.h.Advance(time.Minute)
+	againA := fireNamed("AlertA")
+	assert.False(t, againA.NewVersion, "AlertA's second failure is AlertA's first row")
+	assert.Equal(t, first.Snapshot.ID, againA.Snapshot.ID)
+	assert.Equal(t, 2, r.rowCount(t), "still two rules, still two rows")
 }
 
-// TestTheRuleKeySplitsWhenPrometheusBecomesReachable DOCUMENTS A DEFECT. It is
-// written to the behaviour as it is, not as it should be, so that the day
-// somebody fixes it the test says so out loud rather than silently continuing to
-// pass.
+// TestTheRuleKeySurvivesPrometheusBecomingReachable.
 //
-// `keyPredicate` is deliberately lenient about an EMPTY rule_file/rule_group in
-// the QUERY — a generatorURL capture knows the expression but not the file it is
-// written in, and its own comment says treating that as an equality "would split
-// one rule's history into two on the day Prometheus became reachable". The
-// leniency is only applied to one side. The STORED rows keep `”`, so a query
-// carrying a now-known file and group does not match the rows captured before it
-// was known, and the history splits in exactly the direction the comment set out
-// to prevent.
+// ⭐ AN EMPTY rule_file OR rule_group MEANS "UNKNOWN", ON BOTH SIDES. A
+// generatorURL capture knows the expression but not the file it is written in,
+// so it is stored with `”` there; when Prometheus becomes reachable the same
+// rule arrives with both. `keyPredicate` was lenient about the empty component
+// only when the CALLER's key carried it, and the stored `”` was compared as an
+// equality — so a query with a now-known file and group missed every row
+// captured before it was known, and one rule's history split in two on exactly
+// the day the predicate's own comment said it must not.
 //
-// The visible consequence is an ASYMMETRY in drift reporting:
-//
-//   - generator_url after prometheus_api → the previous capture IS found (the
-//     query omits the file/group filters), so drift is reported;
-//   - prometheus_api after generator_url → the previous capture is NOT found, so
-//     `Drifted` is false and the promotion is silent.
-//
-// Neither direction is a rule edit, so "no drift" is arguably the friendlier
-// answer — but it is reached by accident, in one direction only, and the same
-// mechanism hides a REAL edit that lands in the same fire as the promotion.
-func TestTheRuleKeySplitsWhenPrometheusBecomesReachable(t *testing.T) {
+// ⛔ THE REASON IT MATTERED IS NOT TIDINESS. The split showed up as drift
+// reported in ONE DIRECTION ONLY: generator_url after prometheus_api found the
+// predecessor (that query omits the filters) and reported drift; prometheus_api
+// after generator_url found nothing and reported none. Neither direction is a
+// rule edit by itself — but the promotion is exactly when a REAL edit is likely
+// to be sitting in the same fire, and the silent direction hid it. Here the
+// promotion carries an edited `for`, and it must be reported.
+func TestTheRuleKeySurvivesPrometheusBecomingReachable(t *testing.T) {
 	t.Parallel()
 
 	r := newDBRig(t)
 
-	// Fire 1: the zero-API-call path. No file, no group.
-	*r.recovery = domain.Recovery{
+	viaGeneratorURL := domain.Recovery{
 		Origin:         domain.OriginGeneratorURL,
 		Strategy:       domain.StrategyGeneratorURL,
 		Confidence:     domain.ConfidenceExact,
@@ -553,6 +563,9 @@ func TestTheRuleKeySplitsWhenPrometheusBecomesReachable(t *testing.T) {
 		RuleName:       "HighErrorRate",
 		Expr:           "up == 0",
 	}
+
+	// Fire 1: the zero-API-call path. No file, no group.
+	*r.recovery = viaGeneratorURL
 	viaGenerator := r.fire(t)
 	require.True(t, viaGenerator.NewVersion)
 	assert.Empty(t, viaGenerator.Snapshot.Key.Group)
@@ -567,38 +580,45 @@ func TestTheRuleKeySplitsWhenPrometheusBecomesReachable(t *testing.T) {
 	require.True(t, viaAPI.NewVersion)
 	assert.Equal(t, 2, r.rowCount(t), "both captures are stored; nothing is lost")
 
-	// ⚠️ THE DEFECT. The two captures are the same rule and oto cannot tell.
-	assert.False(t, viaAPI.Drifted,
-		"KNOWN DEFECT: the fuller rule key does not match the row stored under the emptier one, "+
-			"so the previous capture is invisible and no drift is reported")
-	assert.Empty(t, viaAPI.PreviousFingerprint)
+	// ⭐ The fuller key finds the row stored under the emptier one, so the edit
+	// that rode in with the promotion is reported rather than swallowed.
+	assert.True(t, viaAPI.Drifted,
+		"the `for` went from unknown to 300s in a capture of the same rule, and that is drift")
+	assert.Equal(t, viaGenerator.Snapshot.Fingerprint, viaAPI.PreviousFingerprint)
 
-	// The history splits: asked under the FULL key, version 1 is the API capture
-	// and the generatorURL capture has vanished from the rule's history.
+	// One rule, ONE history, whichever end of the key it is asked from.
 	full, err := r.svc.History(r.h.Ctx, r.scope, viaAPI.Snapshot.Key)
 	require.NoError(t, err)
-	assert.Equal(t, 1, full.Len(), "KNOWN DEFECT: the earlier capture of the same rule is not in this history")
+	assert.Equal(t, 2, full.Len(), "the earlier capture of the same rule is still its own history")
 
-	// Asked under the EMPTIER key it is whole, because that predicate omits the
-	// file and group filters entirely. One rule, two histories.
 	partial, err := r.svc.History(r.h.Ctx, r.scope, viaGenerator.Snapshot.Key)
 	require.NoError(t, err)
-	assert.Equal(t, 2, partial.Len(), "the lenient direction sees both")
+	assert.Equal(t, 2, partial.Len())
+	assert.Equal(t, full.Versions[0].Snapshot.ID, partial.Versions[0].Snapshot.ID,
+		"and they are the same two captures in the same order, not two views that happen to be the same size")
+	assert.Equal(t, full.Versions[1].Snapshot.ID, partial.Versions[1].Snapshot.ID)
+	assert.Equal(t, viaGenerator.Snapshot.ID, full.Versions[0].Snapshot.ID,
+		"version 1 is the OLDEST capture, which is the one made before the file was known")
 
-	// And the asymmetry itself: firing once more down the generatorURL path DOES
-	// report drift, because that query matches both rows.
+	// ⭐ SYMMETRY. Firing back down the generatorURL path reports drift too, and
+	// against the same predecessor pair — the direction of the promotion is not
+	// allowed to change the answer.
 	r.h.Advance(time.Hour)
-	*r.recovery = domain.Recovery{
-		Origin:         domain.OriginGeneratorURL,
-		Strategy:       domain.StrategyGeneratorURL,
-		Confidence:     domain.ConfidenceExact,
-		CandidateCount: 1,
-		RuleName:       "HighErrorRate",
-		Expr:           "up == 0",
-	}
+	*r.recovery = viaGeneratorURL
 	back := r.fire(t)
-	assert.False(t, back.NewVersion, "the content is one it has seen before")
-	assert.True(t, back.Drifted,
-		"the same pair of captures reports drift in this direction and not in the other")
+
+	assert.False(t, back.NewVersion, "the content is one it has seen before, under a key it has seen it under")
+	assert.Equal(t, viaGenerator.Snapshot.ID, back.Snapshot.ID)
+	assert.True(t, back.Drifted)
 	assert.Equal(t, viaAPI.Snapshot.Fingerprint, back.PreviousFingerprint)
+	assert.Equal(t, 2, r.rowCount(t), "three fires, two rule texts")
+
+	// The alert card's question, asked from the capture the first fire was bound
+	// to: the rule HAS changed since, and the newest text is the API one.
+	since, ok, err := r.svc.DiffSince(r.h.Ctx, r.scope, viaAPI.Snapshot.Key, viaGenerator.Snapshot.Fingerprint)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, viaGenerator.Snapshot.Fingerprint, since.From.Fingerprint)
+	assert.Equal(t, viaAPI.Snapshot.Fingerprint, since.To.Fingerprint)
+	assert.True(t, since.ForChanged)
 }

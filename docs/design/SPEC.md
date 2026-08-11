@@ -1294,7 +1294,7 @@ CREATE TABLE rule_snapshots (
                                 CHECK (match_confidence IN ('exact','probable','ambiguous','none')),
   candidate_count   INT         NOT NULL DEFAULT 1,
   captured_at       TIMESTAMPTZ NOT NULL,
-  CONSTRAINT rule_snapshots_content_uniq UNIQUE (org_id, source_id, rule_fingerprint),
+  CONSTRAINT rule_snapshots_content_uniq UNIQUE (org_id, source_id, rule_name, rule_group, rule_file, rule_fingerprint),
   CONSTRAINT rule_snapshots_fp_ck     CHECK (rule_fingerprint ~ '^[0-9a-f]{64}$'),
   CONSTRAINT rule_snapshots_name_ck   CHECK (length(btrim(rule_name)) BETWEEN 1 AND 1024),
   CONSTRAINT rule_snapshots_expr_ck   CHECK ((origin = 'unavailable') = (length(btrim(expr)) = 0)),

@@ -120,13 +120,30 @@ func NewSnapshotRepository(q db.Querier) *SnapshotRepository { return &SnapshotR
 func (r *SnapshotRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
 // upsertSnapshotSQL inserts a capture, or returns the row that already holds
-// this content.
+// this content FOR THIS RULE KEY.
 //
 // The CTE is what makes "captured on every fire" cost one row: the INSERT is
 // ON CONFLICT DO NOTHING against rule_snapshots_content_uniq, and the UNION arm
 // reads the incumbent only when the insert produced nothing. The `inserted`
 // column is how the service tells a NEW VERSION of a rule from the ten
 // thousandth fire of an unchanged one, without a second round trip.
+//
+// ⭐ THE RULE KEY IS IN THE CONFLICT TARGET, and 00040 is the migration that put
+// it in the constraint. `rule_fingerprint` is over the DEFINITION only (SPEC
+// §C.6), so it cannot double as the identity of a rule: an `unavailable` capture
+// is an empty expr, zero durations and empty maps, which means EVERY unavailable
+// capture in a source hashes identically. Keyed on content alone, one firewalled
+// Prometheus produced one shared row for every rule in the source, named after
+// whichever alert failed first — and every read path filters on rule_name, so
+// nobody could ever retrieve it again to notice.
+//
+// ⛔ THE UNION ARM'S PREDICATE MUST BE THE CONFLICT TARGET, COLUMN FOR COLUMN.
+// It is the row the INSERT lost to, so anything looser could return a different
+// row than the one that won, and anything tighter would return NOTHING on a
+// conflict and fail the capture. This is the one place in the module where an
+// empty rule_file or rule_group is compared as an EQUALITY rather than read as
+// "unknown" (contrast keyPredicate): the constraint compares them that way, so
+// the recovery read has to as well.
 const upsertSnapshotSQL = `
 WITH ins AS (
   INSERT INTO rule_snapshots (
@@ -134,7 +151,7 @@ WITH ins AS (
     expr, for_seconds, keep_firing_for_seconds, rule_labels, rule_annotations,
     origin, prometheus_url, match_confidence, candidate_count, captured_at)
   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17)
-  ON CONFLICT (org_id, source_id, rule_fingerprint) DO NOTHING
+  ON CONFLICT (org_id, source_id, rule_name, rule_group, rule_file, rule_fingerprint) DO NOTHING
   RETURNING ` + snapshotColumns + `, true AS inserted
 )
 SELECT * FROM ins
@@ -142,6 +159,7 @@ UNION ALL
 SELECT ` + snapshotColumns + `, false AS inserted
   FROM rule_snapshots
  WHERE org_id = $2 AND source_id = $3 AND rule_fingerprint = $4
+   AND rule_name = $7 AND rule_group = $6 AND rule_file = $5
    AND NOT EXISTS (SELECT 1 FROM ins)
  LIMIT 1`
 
@@ -270,12 +288,32 @@ func (r *SnapshotRepository) GetMany(
 
 // keyPredicate builds the rule-key filter.
 //
-// rule_file and rule_group are matched ONLY when the caller supplied them. That
-// is deliberate: a generatorURL capture knows the expression but not the file
-// it is written in, so an empty component means "unknown", not "the empty
-// string". Treating it as an equality would split one rule's history into two
-// on the day Prometheus became reachable. The predicate stays a prefix of
-// rule_snapshots_key_idx (org_id, source_id, rule_name, …) either way.
+// ⭐ AN EMPTY rule_file OR rule_group MEANS "UNKNOWN" ON BOTH SIDES OF THE
+// COMPARISON. That symmetry is the whole point, and it is what this function got
+// wrong for as long as it only applied the leniency to the query.
+//
+// A generatorURL capture knows the expression but not the file it is written in,
+// so it is stored with `”` in those columns; a later /api/v1/rules recovery of
+// the SAME rule supplies both. Skipping the filter when the CALLER's component is
+// empty handles the first direction — a query that does not know the file matches
+// rows that do. The stored `”` needs the same treatment in reverse, or a query
+// carrying a now-known file and group misses every row captured before it was
+// known, which is exactly "the rule's history splits in two on the day Prometheus
+// became reachable" that this comment used to promise it prevented. The asymmetry
+// was visible in the product as drift reported in one direction only: promoting
+// generator_url → prometheus_api found no predecessor and reported no drift, so a
+// real rule edit landing in the same fire as the promotion was hidden with it.
+//
+// ⛔ TWO SAME-NAMED RULES IN DIFFERENT FILES CAN BOTH MATCH a query for one of
+// them, when there is also a capture whose file is unknown. That is inherent: a
+// row whose file is `”` may belong to either, and there is no evidence in the
+// table that says which. Attributing it to both is the lesser error — the
+// alternative is a rule whose own history cannot see its earliest captures.
+//
+// The predicate stays usable as a prefix of rule_snapshots_key_idx
+// (org_id, source_id, rule_name, rule_group, rule_file, captured_at DESC): an
+// `IN ($n, ”)` is a ScalarArrayOp the planner can still drive the index with,
+// not a filter it has to apply after the fact.
 func keyPredicate(key domain.Key, args *[]any) (string, error) {
 	sourceID, err := uuid.Parse(key.SourceID)
 	if err != nil {
@@ -285,11 +323,11 @@ func keyPredicate(key domain.Key, args *[]any) (string, error) {
 	sql := " AND source_id = $2 AND rule_name = $3"
 	if key.Group != "" {
 		*args = append(*args, key.Group)
-		sql += fmt.Sprintf(" AND rule_group = $%d", len(*args))
+		sql += fmt.Sprintf(" AND rule_group IN ($%d, '')", len(*args))
 	}
 	if key.File != "" {
 		*args = append(*args, key.File)
-		sql += fmt.Sprintf(" AND rule_file = $%d", len(*args))
+		sql += fmt.Sprintf(" AND rule_file IN ($%d, '')", len(*args))
 	}
 	return sql, nil
 }
