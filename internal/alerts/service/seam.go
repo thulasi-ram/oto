@@ -109,56 +109,6 @@ func (s *Service) AppendGroupEvent(ctx context.Context, scope db.TenantScope, in
 	return err
 }
 
-// MemberStates is the per-occurrence state of a group's members, keyed by
-// occurrence id.
-//
-// It exists so that `grouping` can roll up `firing_count`, `acked_count` and the
-// group's own state without reading `alert_occurrences` itself.
-type MemberStates struct {
-	// State is the occurrence state: firing | suppressed | resolved | expired.
-	State map[uuid.UUID]string
-	// Acked reports which members a human has taken. Orthogonal to State: an
-	// acked alert is still firing (§B.1).
-	Acked map[uuid.UUID]bool
-	// Severity is the RAW upstream severity label of each member's Alert, kept
-	// raw because users filter on their own vocabulary (§L.4.2).
-	Severity map[uuid.UUID]string
-}
-
-// OccurrenceStates reads the current state of many episodes at once.
-func (s *Service) OccurrenceStates(
-	ctx context.Context, scope db.TenantScope, occurrenceIDs []uuid.UUID,
-) (MemberStates, error) {
-	out := MemberStates{
-		State:    map[uuid.UUID]string{},
-		Acked:    map[uuid.UUID]bool{},
-		Severity: map[uuid.UUID]string{},
-	}
-	for _, oid := range occurrenceIDs {
-		occ, err := s.occurrences.GetByID(ctx, scope, oid)
-		if err != nil {
-			if errs.IsKind(err, errs.KindNotFound) {
-				continue
-			}
-			return MemberStates{}, err
-		}
-		out.State[oid] = occ.State().String()
-		out.Acked[oid] = occ.AckState().IsAcked()
-
-		alert, err := s.alerts.GetByID(ctx, scope, occ.AlertID())
-		if err != nil {
-			if errs.IsKind(err, errs.KindNotFound) {
-				continue
-			}
-			return MemberStates{}, err
-		}
-		if raw, ok := alert.Labels().Get(domain.LabelSeverity); ok {
-			out.Severity[oid] = raw
-		}
-	}
-	return out, nil
-}
-
 // ------------------------------------------------- primitive action wrappers
 
 // AcknowledgeAs is Acknowledge with the actor described in primitives.

@@ -85,11 +85,6 @@ cmd/oto/          the binary: server, worker, operational subcommands
 internal/app/     explicit constructor wiring; the dependency graph is readable
 internal/platform config, log, telemetry, db (two pools + tx), httpx, jobs, errs, id, clock
 internal/<domain> api / service / repository / domain — see CONTEXT.md §5
-pkg/alertkey/     ⚠️ EMPTY — a doc.go and nothing else. The canonical label
-                  serialisation and the identity keys it describes actually live
-                  in `internal/alerts/domain`, the shared kernel, and CONTEXT.md
-                  §5.2b says this package does not exist. Delete it or amend
-                  CONTEXT.md; both cannot be true.
 db/migrations/    goose SQL, expand/contract only
 web/              Vite 6 + SolidJS + TypeScript strict + Tailwind v4
 deploy/           alertmanager config; `prometheus/` with the sample
@@ -117,10 +112,17 @@ test/harness/     real Postgres via testcontainers (one container, a migrated
                   externals — Alertmanager, Prometheus, Slack, outbound webhooks
                   — and object builders. Every DB test goes through this.
 test/integration/ cross-module tests over the harness.
-test/{contract,load}/  ⚠️ still a `doc.go` and no test. `test/load/` in
-                  particular claims the 5 000-alert storm batch that CONTEXT.md
-                  §6 says to write BEFORE the feature handling it. Treat these
-                  two as a plan, not as coverage.
+test/contract/    the drift gates. Nine test files, including
+                  `coverage_test.go` — the RATCHET that fails when an operation
+                  is added to `api/openapi/openapi.yaml` with no test behind it.
+                  `server/` drives the real container over a real Postgres. G1
+                  and G2 below run from here, and CI runs them.
+test/load/        the storm cases: `storm_test.go` over `driver_test.go` and
+                  `env_test.go`, with `RESULTS.md` recording what a run actually
+                  measured. ⚠️ THEY ARE BEHIND `//go:build load`, so
+                  `go test ./...` does not compile them in and CI never runs
+                  them — `go test -tags load ./test/load/`. These are real
+                  tests, but a green CI says nothing about them.
 ```
 
 ## What is actually enforced

@@ -53,7 +53,7 @@ var (
 	// --- the cross-module ports this package writes adapters for -------------
 	_ alertsservice.StreamAppender       = streamAppender{}
 	_ groupingservice.StreamAppender     = streamAppender{}
-	_ alertsservice.NotificationReader   = (*lateNotificationReader)(nil)
+	_ alertsservice.NotificationReader   = (*notificationReader)(nil)
 	_ alertsservice.GroupVersionReader   = (*groupVersions)(nil)
 	_ alertsservice.EnrichmentReader     = enrichmentReader{}
 	_ alertsservice.SourceHealth         = sourceHealth{}

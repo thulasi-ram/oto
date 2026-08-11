@@ -435,7 +435,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general)
 
 	groupVersionsPort := &groupVersions{}
-	notificationsPort := &lateNotificationReader{}
+	notificationsPort := &notificationReader{}
 
 	c.Alerts, err = alertsservice.New(alertsservice.Deps{
 		Alerts:        alertRepo,
@@ -517,7 +517,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	if err := c.buildNotification(general, reg, clk, logger); err != nil {
 		return nil, err
 	}
-	notificationsPort.inner = notificationReader{svc: c.NotifyHistory}
+	notificationsPort.svc = c.NotifyHistory
 
 	// ---- silences and stats ---------------------------------------------
 	//
@@ -676,7 +676,11 @@ func (c *Container) buildNotification(
 
 	// The snapshot is read AT CLAIM TIME, always (§C11). A cached one would make
 	// a card describe a world the alert has already left.
-	snapshots := snapshotSource(notifrepo.NewSnapshotRepository(general, clk))
+	//
+	// This is the repository itself, not a port wrapper: `notifservice.SnapshotSource`
+	// has exactly one implementation and `assertions.go` pins it. Should
+	// `alerts/service` ever publish an equivalent, the swap is this one constructor.
+	snapshots := notifrepo.NewSnapshotRepository(general, clk)
 
 	if c.Views, err = notifservice.NewViewService(notifservice.ViewConfig{
 		Snapshots: snapshots,

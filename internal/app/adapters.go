@@ -797,38 +797,21 @@ func (g *groupVersions) StateVersion(ctx context.Context, s db.TenantScope, grou
 	return g.svc.StateVersion(ctx, s, groupID)
 }
 
-// lateNotificationReader is `alerts/service.NotificationReader`, late-bound for
-// the same reason: `notification` is constructed after `alerts`.
-type lateNotificationReader struct {
-	inner notificationReader
-}
-
-func (l *lateNotificationReader) ListForAlert(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset,
-) ([]alertsservice.NotificationSummary, db.Cursor, error) {
-	if l == nil {
-		return nil, db.Cursor{}, nil
-	}
-	return l.inner.ListForAlert(ctx, s, alertID, p)
-}
-
-func (l *lateNotificationReader) DeliveryRollupForAlert(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
-) (alertsservice.DeliveryRollup, error) {
-	if l == nil {
-		return alertsservice.DeliveryRollup{}, nil
-	}
-	return l.inner.DeliveryRollupForAlert(ctx, s, alertID)
-}
-
-func (l *lateNotificationReader) DeliveryRollupForOccurrence(
-	ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID,
-) (alertsservice.DeliveryRollup, error) {
-	if l == nil {
-		return alertsservice.DeliveryRollup{}, nil
-	}
-	return l.inner.DeliveryRollupForOccurrence(ctx, s, occurrenceID)
-}
+// `notification` is late-bound for the same reason — it is constructed after
+// `alerts` — but it needs no holder type of its own. The container hands `alerts`
+// a `*notificationReader` with no service in it and fills the field once
+// `notification` exists; `notificationReader`'s own `svc == nil` branches are the
+// degraded answer during that window, and they are the same branches a deployment
+// with notifications wired out entirely relies on.
+//
+// The asymmetry with `groupVersions` above is deliberate but thin: that type
+// guards `g == nil` as well, because `grouping`'s `StateVersion` has no
+// nil-receiver guard of its own. `notificationReader`'s methods take VALUE
+// receivers, so a nil `*notificationReader` would panic before any `svc == nil`
+// branch could run. Nothing can produce one today — `container.go` allocates the
+// holder unconditionally — but a future `dropNotifications` degradation that left
+// the port nil would be a startup panic, not a degraded read. Allocate the holder
+// or add the guard; do not leave the port nil.
 
 // ---------------------------------------------------------------- job scopes
 
@@ -889,14 +872,6 @@ func (l orgLister) Scopes(ctx context.Context) ([]db.TenantScope, error) {
 	}
 	return out, rows.Err()
 }
-
-// snapshotSource is the concrete `notification/service.SnapshotSource`.
-//
-// The notification module ships its own read model for this port and documents
-// the swap: "once `alerts/service` publishes an equivalent, the wiring swaps one
-// constructor". Today that constructor is here, in one place, which is the whole
-// point of naming it.
-func snapshotSource(repo *notifrepo.SnapshotRepository) notifservice.SnapshotSource { return repo }
 
 // ---------------------------------------------------------------- ingestion
 
