@@ -373,12 +373,47 @@ func (s *Service) Latest(ctx context.Context, scope db.TenantScope, key domain.K
 	return s.repo.Latest(ctx, scope, key)
 }
 
+// Addressable reports whether a RuleKey can name rows in the snapshot store.
+//
+// ⭐ IT IS THE DIFFERENCE BETWEEN "A KEY THAT FINDS NOTHING" AND "NOT A KEY AT
+// ALL", and the two must not be confused. `rule_snapshots` is indexed on
+// `(org_id, source_id, rule_name, …)`, so a key with no AlertSource behind it
+// cannot be turned into a predicate: the repository refuses it as a VALIDATION
+// error, which is exactly right when a caller typed the source id and exactly
+// wrong when oto derived the key itself and had nothing to derive it from.
+//
+// That second case is ordinary and expected. `rules/api.keyOf` builds a key
+// from an alert's `alertname` alone when no snapshot was ever bound to the
+// episode — a Grafana-sourced alert, a hand-fired one, an Alertmanager whose
+// Prometheus is unreachable. Asking such a key for its history is not a client
+// mistake; the honest answer is "oto has captured nothing here", and this
+// predicate is what lets callers say that instead of raising a 422.
+//
+// The nil UUID is not addressable either. It parses, so the repository would
+// happily build a predicate from it, but no AlertSource is ever the zero id —
+// a query under it is a round trip that cannot match.
+func Addressable(key domain.Key) bool {
+	if strings.TrimSpace(key.Name) == "" {
+		return false
+	}
+	id, err := uuid.Parse(key.SourceID)
+	return err == nil && id != uuid.Nil
+}
+
 // History returns the rule's numbered edit history, oldest first.
 //
 // The versions are the DISTINCT TEXTS the rule has had, not the fires: a rule
 // that fired ten thousand times unchanged has exactly one version, and a rule
 // whose threshold was doubled last Tuesday has two.
+//
+// ⛔ AN UNADDRESSABLE KEY IS AN EMPTY HISTORY, NEVER AN ERROR. See Addressable:
+// the key oto derives from an alert with no captured snapshot names no source,
+// and pushing it down to the repository turns "we captured nothing" into "your
+// request was invalid" — a 422 on the one screen the product exists for.
 func (s *Service) History(ctx context.Context, scope db.TenantScope, key domain.Key) (domain.History, error) {
+	if !Addressable(key) {
+		return domain.NewHistory(key, nil), nil
+	}
 	snaps, err := s.repo.ListByKey(ctx, scope, key, DefaultHistoryLimit)
 	if err != nil {
 		return domain.History{}, err

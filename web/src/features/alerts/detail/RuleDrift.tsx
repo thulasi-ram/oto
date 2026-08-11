@@ -428,12 +428,31 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
         </Show>
       </PanelHeader>
 
+      {/* ⛔ NO RULE IS AN ORDINARY ANSWER AND IS RENDERED AS ONE.
+          `current: null` with an empty `versions` means oto captured nothing
+          for this alert, and that is normal rather than broken: a
+          Grafana-sourced alert, an alert fired by hand, an Alertmanager whose
+          Prometheus is unreachable, a `generatorURL` with no `g0.expr` in it.
+
+          This used to be a red "Validation failed — a rule key's source id must
+          be a UUID" box with a Try again button and a request id, because the
+          server reported the absence as a 422 (TICKET 015b25b). Three things
+          were wrong with that and all three are worth naming, because they are
+          the trap any absence-as-error falls into: it was not a validation
+          failure and nothing the operator did caused it; the sentence was
+          internal vocabulary about a database index; and the retry could never
+          succeed, so the button was an invitation to waste time at 3am.
+
+          The alert LIST has always rendered these same alerts as a plain
+          em-dash. This is the same fact at the size a panel affords: a sentence
+          instead of a dash, and the ordinary causes named so the operator knows
+          whether to go and configure something or to stop looking. */}
       <Show
         when={current()}
         fallback={
           <EmptyState
-            title="No rule was captured for this occurrence."
-            body="oto records the absence rather than guessing. The rules API may have been unreachable when this fired, or the alert may not come from a Prometheus rule at all."
+            title="oto captured no rule for this alert."
+            body="That is an ordinary outcome, not a failure. The alert may not come from a Prometheus alerting rule at all — one raised by Grafana, or fired by hand — or its generatorURL carried no expression and the rules API was not reachable when it fired. oto records the absence rather than guessing at a definition it never saw."
           />
         }
       >

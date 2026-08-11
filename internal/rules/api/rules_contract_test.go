@@ -82,8 +82,18 @@ const (
 	ruleContractAlertName = "HighErrorRate"
 	ruleContractBlindName = "DiskFillingUp"
 	ruleContractPromURL   = "https://prometheus.example.com"
-	ruleContractOldExpr   = `sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05`
-	ruleContractNewExpr   = `sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.1`
+
+	// ruleContractGeneratorURL is the link Prometheus puts on an alert: it
+	// carries `g0.expr`, which is the whole input to the zero-API-call recovery
+	// path and the reason a rule can be captured without reaching Prometheus.
+	ruleContractGeneratorURL = "https://prometheus.example.com/graph?g0.expr=up"
+	// ruleContractBareGeneratorURL is a generatorURL with NO EXPRESSION IN IT,
+	// which is entirely ordinary — a Grafana-sourced alert, a hand-fired one, an
+	// Alertmanager pointed at a Prometheus that is unreachable. Nothing can be
+	// recovered from it, so nothing is bound to the episode.
+	ruleContractBareGeneratorURL = "https://grafana.example.com/alerting/grafana/abc123/view"
+	ruleContractOldExpr          = `sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05`
+	ruleContractNewExpr          = `sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.1`
 )
 
 // ruleContractEpoch is when the episode under test fired. The rule was edited
@@ -174,9 +184,15 @@ func ruleContractBlindSnapshot(t *testing.T) domain.Snapshot {
 	return s
 }
 
-// ruleContractAlert builds the alert through `alerts/domain`, so `alert_key` and
-// the label set are the real derivations rather than strings that look like them.
-func ruleContractAlert(t *testing.T) alertdomain.Alert {
+// ruleContractAlertFrom builds the alert through `alerts/domain`, so `alert_key`
+// and the label set are the real derivations rather than strings that look like
+// them.
+//
+// The `generatorURL` is a parameter because it is the whole input to the
+// zero-API-call recovery path, and therefore the whole difference between an
+// alert oto can capture a rule for and one it cannot — which is the distinction
+// 015b25b turned from a 422 into an honest empty history.
+func ruleContractAlertFrom(t *testing.T, generatorURL string) alertdomain.Alert {
 	t.Helper()
 
 	labels, err := alertdomain.NewLabelSet(map[string]string{
@@ -201,7 +217,7 @@ func ruleContractAlert(t *testing.T) alertdomain.Alert {
 		Fingerprint:         alertdomain.ComputeSourceFingerprint(labels),
 		ClusterKey:          clusterKey,
 		Labels:              labels,
-		GeneratorURL:        "https://prometheus.example.com/graph?g0.expr=up",
+		GeneratorURL:        generatorURL,
 		State:               alertdomain.StateFiring,
 		AckState:            alertdomain.AckStateUnacked,
 		CurrentOccurrenceID: ruleContractOccurrenceID,
@@ -292,10 +308,25 @@ func (s *stubRuleReads) GetMany(
 	return out, nil
 }
 
+// History mirrors the REPOSITORY, refusals included.
+//
+// ⛔ THIS REFUSAL IS THE GATE THAT WAS MISSING. `rule_snapshots` is addressed on
+// `(org_id, source_id, rule_name, …)`, so `repository.keyPredicate` parses
+// `key.SourceID` and returns `422 rules_invalid_id` — "a rule key's source id
+// must be a UUID" — when it cannot. A double that answered an empty history for
+// a key with no source id was MORE FORGIVING THAN PRODUCTION, and that gap is
+// precisely where the bug lived: the handler asked for the history of the
+// alertname-only key it derives when nothing was captured, the stub said "no
+// versions", the test went green, and a real server answered 422 for four
+// alerts in five.
 func (s *stubRuleReads) History(
 	_ context.Context, _ db.TenantScope, key domain.Key,
 ) (domain.History, error) {
 	s.historyCalls++
+	if _, err := uuid.Parse(key.SourceID); err != nil {
+		return domain.History{}, errs.New(errs.KindValidation, "rules_invalid_id",
+			"a rule key's source id must be a UUID")
+	}
 	return domain.NewHistory(key, s.hist[key]), nil
 }
 
@@ -394,6 +425,17 @@ func newRuleContractFixture(t *testing.T) *ruleContractFixture {
 // newest text" arrangement is reachable too.
 func newRuleContractFixtureBoundTo(t *testing.T, boundSnapshot uuid.UUID) *ruleContractFixture {
 	t.Helper()
+	return newRuleContractFixtureFor(t, boundSnapshot, ruleContractGeneratorURL)
+}
+
+// newRuleContractFixtureFor is newRuleContractFixtureBoundTo with the alert's
+// `generatorURL` chosen too, so the ordinary "there was never anything to
+// capture" world — no expression in the URL, nothing bound to the episode — is
+// reachable as the single arrangement it really is.
+func newRuleContractFixtureFor(
+	t *testing.T, boundSnapshot uuid.UUID, generatorURL string,
+) *ruleContractFixture {
+	t.Helper()
 
 	oldSnap := ruleContractSnapshot(t, ruleContractOldSnapshotID, ruleContractOldExpr, ruleContractEpoch)
 	newSnap := ruleContractSnapshot(t, ruleContractNewSnapshotID, ruleContractNewExpr,
@@ -418,7 +460,7 @@ func newRuleContractFixtureBoundTo(t *testing.T, boundSnapshot uuid.UUID) *ruleC
 	current := ruleContractOccurrence(t, ruleContractOccurrenceID, 3, boundSnapshot)
 	reader := &stubAlertReads{
 		detail: alerts.AlertDetail{
-			Alert:             ruleContractAlert(t),
+			Alert:             ruleContractAlertFrom(t, generatorURL),
 			CurrentOccurrence: &current,
 			LatestOccurrence:  &current,
 		},
@@ -680,6 +722,103 @@ func TestAnAlertNoRuleWasEverCapturedForIsAnEmptyHistoryAndNotAFourOhFour(t *tes
 	if len(versions) != 0 {
 		t.Fatalf("versions has %d entries, want 0 — the key oto can derive from the alert has no captures",
 			len(versions))
+	}
+}
+
+// ⛔ TestAnAlertWhoseGeneratorURLCarriesNoExpressionIsNotAValidationFailure.
+//
+// This is TICKET 015b25b, and it is the ordinary case rather than the exotic
+// one: measured against a real server, four of five alerts ingested through the
+// real webhook answered `422 rules_invalid_id` — "a rule key's source id must be
+// a UUID" — and the only one that answered 200 was the only one whose
+// `generatorURL` carried `g0.expr`. An alert with no expression in its URL is a
+// Grafana-sourced alert, a hand-fired one, or an Alertmanager whose Prometheus
+// is unreachable. All three are normal.
+//
+// The promise, in three parts, each of which the 422 broke:
+//
+//   - the STATUS is 200. Absence of a snapshot is not a client error, and 4xx
+//     says the caller did something wrong;
+//   - the RULE STORE IS NEVER ASKED. The key oto derives from an alert with no
+//     capture names no AlertSource, and `rule_snapshots` cannot be addressed
+//     without one — the repository refuses such a key as a validation error, so
+//     the handler must not hand it one. `stubRuleReads.History` refuses it here
+//     exactly as the repository does, which is what makes this assertion real
+//     rather than a restatement of a permissive double;
+//   - the BODY says so: `current: null`, `versions: []`. That is the shape the
+//     contract already declares (`RuleHistoryDTO.current` is `oneOf
+//     [RuleSnapshotDTO, null]`) and the shape the alert LIST already renders as
+//     a plain em-dash, so the detail page can be as calm as the list is.
+//
+// What broke when it did not hold: the "Rule at fire time" panel — the product's
+// headline promise, the first thing the README claims — rendered a red
+// "Validation failed — a rule key's source id must be a UUID" box with a Try
+// again button. Internal vocabulary, blaming the operator for something they did
+// not do, and inviting a retry that can never succeed.
+func TestAnAlertWhoseGeneratorURLCarriesNoExpressionIsNotAValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	f := newRuleContractFixtureFor(t, uuid.Nil, ruleContractBareGeneratorURL)
+	resp := f.c.GET(alertRulePath(ruleContractAlertID.String())).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getAlertRuleHistory", http.StatusOK, resp.Body())
+
+	if f.rules.historyCalls != 0 {
+		t.Fatalf("the rule store was asked for the history of an unaddressable key %d time(s); "+
+			"that read is the 422 this test exists to prevent", f.rules.historyCalls)
+	}
+	if f.rules.diffCalls != 0 {
+		t.Fatalf("a diff was computed %d time(s) against a snapshot that does not exist", f.rules.diffCalls)
+	}
+
+	data, ok := resp.JSON(t)["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("the body has no data object: %s", resp)
+	}
+	if raw, present := data["current"]; !present || raw != nil {
+		t.Fatalf("current = %v, want null — no expression in the generatorURL means nothing to capture: %s",
+			raw, resp)
+	}
+	if raw, present := data["change"]; present && raw != nil {
+		t.Fatalf("change = %v, want null — there is no pair of snapshots to compare", raw)
+	}
+	versions, ok := data["versions"].([]any)
+	if !ok || len(versions) != 0 {
+		t.Fatalf("versions = %v, want []", data["versions"])
+	}
+
+	// ⚠️ The refusal's own words must not reach the operator by any route. They
+	// are the vocabulary of a database index, not of an alerting tool.
+	if body := string(resp.Body()); strings.Contains(body, "rules_invalid_id") ||
+		strings.Contains(body, "must be a UUID") {
+		t.Fatalf("the answer carries the repository's validation vocabulary: %s", resp)
+	}
+}
+
+// TestTheOccurrenceVariantOfTheSameAlertIsAFourOhFourAndNotA422.
+//
+// The sibling read of the same fact, checked at the same time because it has the
+// same shape of hole. `/occurrences/{id}/rule` answers ONE snapshot and its
+// success schema is a `RuleSnapshotDTO` — there is no 200 that can spell "there
+// isn't one", so absence is the 404 the contract declares in as many words. It
+// must still never be a 422, and it must never reach the rule store with an id
+// it knows is nil.
+//
+// Two endpoints, two statuses, one reason: the answer is shaped by what the
+// operation returns, not by a house preference for 404s.
+func TestTheOccurrenceVariantOfTheSameAlertIsAFourOhFourAndNotA422(t *testing.T) {
+	t.Parallel()
+
+	f := newRuleContractFixtureFor(t, uuid.Nil, ruleContractBareGeneratorURL)
+	resp := f.c.GET(occurrenceRulePath(ruleContractBareOccurrenceID.String())).
+		MustStatus(t, http.StatusNotFound)
+	schema.AssertProblem(t, "getOccurrenceRule", http.StatusNotFound, resp.Body())
+
+	if code := resp.Problem(t).Code; code != "not_found" {
+		t.Fatalf("code = %q, want not_found — absence is not a validation failure", code)
+	}
+	if f.rules.getCalls != 0 || f.rules.historyCalls != 0 {
+		t.Fatalf("the rule store was consulted (get=%d, history=%d) for an episode bound to nothing",
+			f.rules.getCalls, f.rules.historyCalls)
 	}
 }
 

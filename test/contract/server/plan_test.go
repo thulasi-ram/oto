@@ -265,8 +265,13 @@ func plan() []probe {
 		},
 		{
 			method: http.MethodGet, tmpl: "/api/v1/alerts/{id}/rule", url: "/api/v1/alerts/{{alert}}/rule",
-			want: http.StatusUnprocessableEntity,
-			why:  "the fixture alert carries no rule provenance, so no rule key can be built; the 422 body is still a Problem the contract must describe",
+			want: http.StatusOK,
+			why: "the fixture alert carries no rule provenance, and absence is not a client error — " +
+				"`RuleHistoryDTO.current` is already `oneOf [RuleSnapshotDTO, null]`, so the 200 " +
+				"spelling for \"oto captured no rule for this alert\" was always in the contract. " +
+				"This asserted 422 until 015b25b: four of five real alerts hit it, and the detail " +
+				"page painted \"Validation failed — a rule key's source id must be a UUID\" with a " +
+				"Try again button that could never succeed",
 		},
 		{
 			method: http.MethodGet, tmpl: "/api/v1/alerts/{id}/notifications", url: "/api/v1/alerts/{{alert}}/notifications",

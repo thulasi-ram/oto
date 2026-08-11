@@ -9,6 +9,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 	"github.com/thulasiram/oto/internal/rules/domain"
+	"github.com/thulasiram/oto/internal/rules/service"
 )
 
 // listRuleSnapshots is `GET /api/v1/rule-snapshots` — the version history for one
@@ -183,22 +184,49 @@ func (rt *Router) getAlertRuleHistory(w http.ResponseWriter, r *http.Request) {
 		out.Current = &dto
 	}
 
-	history, err := rt.svc.History(r.Context(), scope, bound.Key)
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	for _, v := range newestFirst(history) {
-		if len(out.Versions) == limit {
-			break
+	// ⛔ THE HISTORY IS ONLY ASKED FOR WHEN THE KEY CAN ADDRESS ONE, AND AN
+	// ALERT WITH NO SNAPSHOT HAS NO SUCH KEY.
+	//
+	// `boundSnapshot` falls back to `keyOf(alert)` — the alertname and nothing
+	// else — when no snapshot was ever bound to the episode. That key names no
+	// AlertSource, and `rule_snapshots` is addressed on `(org_id, source_id,
+	// rule_name, …)`, so the repository refused it with a VALIDATION error:
+	// `422 rules_invalid_id`, "a rule key's source id must be a UUID". The alert
+	// detail page rendered that as "Validation failed" with a Try again button,
+	// for the four alerts in five whose generatorURL carries no `g0.expr` — a
+	// Grafana-sourced alert, a hand-fired one, an Alertmanager whose Prometheus
+	// is unreachable. None of those is a client mistake, none of them is
+	// retryable, and telling an operator their request was invalid when the
+	// truth is "oto captured no rule for this alert" is the headline promise
+	// failing in the exact place the README points at.
+	//
+	// So the answer stays a 200 carrying `current: null` and `versions: []`,
+	// which is what the contract already declares (`RuleHistoryDTO.current` is
+	// `oneOf [RuleSnapshotDTO, null]`) and what the alert LIST already renders
+	// as a plain em-dash. A 404 was the alternative and is wrong here: this
+	// operation already spends its 404 on "no such alert", and collapsing "the
+	// alert is not there" into "the alert has no rule" would make a page that
+	// plainly exists look deleted. `/occurrences/{id}/rule` answers a single
+	// snapshot and has no 200 spelling for absence, which is why IT is a 404 —
+	// different shape, different answer, both honest.
+	if service.Addressable(bound.Key) {
+		history, err := rt.svc.History(r.Context(), scope, bound.Key)
+		if err != nil {
+			httpx.WriteProblem(w, r, err)
+			return
 		}
-		out.Versions = append(out.Versions, snapshotDTO(v))
-	}
+		for _, v := range newestFirst(history) {
+			if len(out.Versions) == limit {
+				break
+			}
+			out.Versions = append(out.Versions, snapshotDTO(v))
+		}
 
-	if bound.Fingerprint != "" {
-		if diff, changed, err := rt.svc.DiffSince(r.Context(), scope, bound.Key, bound.Fingerprint); err == nil && changed {
-			c := changeDTO(diff)
-			out.Change = &c
+		if bound.Fingerprint != "" {
+			if diff, changed, err := rt.svc.DiffSince(r.Context(), scope, bound.Key, bound.Fingerprint); err == nil && changed {
+				c := changeDTO(diff)
+				out.Change = &c
+			}
 		}
 	}
 
@@ -272,14 +300,22 @@ func (rt *Router) boundSnapshot(
 		occ = detail.LatestOccurrence
 	}
 	if occ == nil || occ.RuleSnapshotID() == uuid.Nil {
-		// No snapshot was ever bound. The key is still answerable from the
-		// alert itself, so the caller gets an empty history rather than a 404 —
-		// "we have never captured this rule" is a fact worth returning.
+		// No snapshot was ever bound. The key is still NAMEABLE from the alert
+		// itself, so the caller gets an empty history rather than a 404 — "we
+		// have never captured this rule" is a fact worth returning.
+		//
+		// ⛔ Nameable is not the same as ADDRESSABLE. This key carries the
+		// alertname and no source id, so it can be rendered but it cannot be
+		// queried; the caller must check `service.Addressable` before handing it
+		// to a read, which is the whole of the fix described in
+		// getAlertRuleHistory.
 		return domain.Snapshot{Key: keyOf(detail.Alert)}, nil
 	}
 
 	snap, err := rt.svc.Get(r.Context(), scope, occ.RuleSnapshotID())
 	if err != nil {
+		// Same fallback, same caveat: the key that comes back is nameable and
+		// not addressable.
 		return domain.Snapshot{Key: keyOf(detail.Alert)}, nil //nolint:nilerr // a missing snapshot is an empty history, not an error
 	}
 	return snap, nil
