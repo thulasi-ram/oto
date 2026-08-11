@@ -215,6 +215,25 @@ func (r *memRepo) Latest(_ context.Context, s db.TenantScope, key domain.Key) (d
 	return rows[len(rows)-1], true, nil
 }
 
+// LatestDefinition mirrors the real one's `AND origin <> 'unavailable'`. A fake
+// that returned the newest row whatever it held would go on passing the tests
+// the outage defect used to pin: the drift comparison would be handed a row with
+// an empty expr, and every fire recovering from an outage would report an edit.
+func (r *memRepo) LatestDefinition(_ context.Context, s db.TenantScope, key domain.Key) (domain.Snapshot, bool, error) {
+	if r.latestErr != nil {
+		return domain.Snapshot{}, false, r.latestErr
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rows := r.forKey(s, key)
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Available() {
+			return rows[i], true, nil
+		}
+	}
+	return domain.Snapshot{}, false, nil
+}
+
 // stubLookup is the upstream. `fn` is nil for "no rule recovery configured".
 type stubLookup struct {
 	fn    func(service.LookupRequest) (domain.Recovery, error)

@@ -85,9 +85,12 @@ type Payload struct {
 	CandidateCount int    `json:"candidate_count"`
 	Available      bool   `json:"available"`
 
-	// Drifted reports that the rule differs from the capture bound to the
-	// previous fire — SPEC §C.6's definition. PreviousFingerprint is what to
-	// diff against.
+	// Drifted reports that the rule was EDITED between the previous capture and
+	// this one — SPEC §C.6's definition, decided by rules/domain.Drifted over
+	// what the two captures both observed, so that an outage or a change of
+	// recovery path in between is not rendered as somebody editing the rule.
+	// PreviousFingerprint is what to diff against: the last capture that held a
+	// definition, which an `unavailable` one in between does not displace.
 	Drifted             bool   `json:"drifted"`
 	NewVersion          bool   `json:"new_version"`
 	PreviousFingerprint string `json:"previous_fingerprint,omitempty"`

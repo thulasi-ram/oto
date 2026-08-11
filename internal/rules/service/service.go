@@ -117,11 +117,15 @@ type Capture struct {
 	Recovery domain.Recovery
 	// NewVersion reports that this exact rule text had not been stored before.
 	NewVersion bool
-	// Drifted reports that the rule differs from the previous capture for this
-	// rule key: SPEC §C.6's definition of drift.
+	// Drifted reports that the rule was EDITED between the previous capture and
+	// this one: SPEC §C.6's definition of drift, decided by domain.Drifted over
+	// what the two captures both observed. An outage between the two fires is
+	// not an edit, and neither is a change of recovery path.
 	Drifted bool
-	// PreviousFingerprint is the content address this rule had before, empty on
-	// a first capture.
+	// PreviousFingerprint is the content address of the last capture that held
+	// a DEFINITION, empty when the rule has never been recovered before. An
+	// `unavailable` capture in between does not move it: what oto last knew the
+	// rule to be is still what it last knew.
 	PreviousFingerprint string
 	// Warnings are the lookup's stable note codes plus any degradation this
 	// service applied. They are shown, never swallowed.
@@ -182,7 +186,16 @@ func (s *Service) Capture(ctx context.Context, scope db.TenantScope, req Capture
 	// The previous capture is read BEFORE the write so that "the newest
 	// snapshot for this rule key" means the one the last fire saw, not the one
 	// this fire just created.
-	previous, hadPrevious, err := s.repo.Latest(ctx, scope, snap.Key)
+	//
+	// ⭐ LatestDefinition, NOT Latest. The predecessor drift is measured against
+	// is the last capture that WAS a definition — an `unavailable` row records
+	// that oto could not see the rule, and "we went blind" is not an edit to
+	// diff against. Reading it here as though it were made every fire that
+	// recovered from an outage announce that the rule had changed, against an
+	// empty expression, for every rule in the source. Stepping over it rather
+	// than declining to compare is the other half: a threshold edited during
+	// the outage is still reported, by the first fire that can see it.
+	previous, hadPrevious, err := s.repo.LatestDefinition(ctx, scope, snap.Key)
 	if err != nil {
 		return Capture{}, err
 	}
@@ -200,7 +213,7 @@ func (s *Service) Capture(ctx context.Context, scope db.TenantScope, req Capture
 	}
 	if hadPrevious {
 		out.PreviousFingerprint = previous.Fingerprint
-		out.Drifted = previous.Fingerprint != stored.Fingerprint
+		out.Drifted = domain.Drifted(previous, stored)
 	}
 
 	s.narrate(ctx, scope, req, out)
@@ -466,8 +479,15 @@ func (s *Service) DiffVersions(ctx context.Context, scope db.TenantScope, key do
 // one, which is what the alert card needs to say "this rule has changed since
 // this alert last fired".
 //
-// The bool is false when there is nothing to compare: no history, or the bound
-// fingerprint is the newest one.
+// The bool is false when there is nothing to compare: no history, the bound
+// fingerprint is the newest one, or the difference is not an EDIT.
+//
+// ⛔ THE NEWEST VERSION IS THE NEWEST DEFINITION, and the difference has to
+// satisfy domain.Drifted before it is offered as a change. The alert card renders
+// this as "the rule has changed since this alert fired", which is a sentence
+// about a person editing a rule; an outage that stored an empty capture after the
+// alert fired, or a fire that recovered through a different path, is neither, and
+// rendering it as one turns the one panel the product exists for into noise.
 func (s *Service) DiffSince(ctx context.Context, scope db.TenantScope, key domain.Key, boundFingerprint string) (domain.Diff, bool, error) {
 	h, err := s.History(ctx, scope, key)
 	if err != nil {
@@ -477,8 +497,8 @@ func (s *Service) DiffSince(ctx context.Context, scope db.TenantScope, key domai
 	if !ok {
 		return domain.Diff{}, false, nil
 	}
-	latest, ok := h.Latest()
-	if !ok || latest.Number == bound.Number {
+	latest, ok := h.LatestDefinition()
+	if !ok || latest.Number == bound.Number || !domain.Drifted(bound.Snapshot, latest.Snapshot) {
 		return domain.Diff{}, false, nil
 	}
 	return domain.Compare(bound.Snapshot, latest.Snapshot), true, nil

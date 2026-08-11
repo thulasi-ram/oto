@@ -277,3 +277,68 @@ func TestVersionNumberingIsContiguous(t *testing.T) {
 		assert.Equal(t, v, got)
 	}
 }
+
+// TestHistoryLatestDefinitionStepsOverAnOutage.
+//
+// ⭐ AN `unavailable` CAPTURE IS A VERSION AND NOT A COMPARISON. It belongs in
+// the list an operator reads — "oto looked at 03:00 and could not see it" is a
+// fact — and it is not a rule anything can be compared against. Latest and
+// LatestDefinition therefore disagree by design, and every question of the form
+// "...compared to now" asks the second one.
+func TestHistoryLatestDefinitionStepsOverAnOutage(t *testing.T) {
+	t.Parallel()
+
+	real1 := snapAt("a > 1", capturedAt)
+	real2 := snapAt("a > 2", capturedAt.Add(time.Hour))
+	outage := unavailableSnap()
+	outage.CapturedAt = capturedAt.Add(2 * time.Hour)
+
+	h := domain.NewHistory(validKey(), []domain.Snapshot{real1, real2, outage})
+	require.Equal(t, 3, h.Len(), "the outage is a version and is not hidden")
+
+	newest, ok := h.Latest()
+	require.True(t, ok)
+	assert.Equal(t, 3, newest.Number)
+	assert.False(t, newest.Snapshot.Available())
+
+	def, ok := h.LatestDefinition()
+	require.True(t, ok)
+	assert.Equal(t, 2, def.Number, "the newest capture that actually holds a rule")
+	assert.Equal(t, real2.Fingerprint, def.Snapshot.Fingerprint)
+
+	// ⛔ And therefore the alert card does not claim an edit against an empty
+	// expression: the occurrence bound to the newest real text has not drifted,
+	// and the one bound to the text before it has.
+	assert.False(t, h.Drifted(real2.Fingerprint),
+		"an outage after this alert fired is not somebody editing the rule")
+	assert.True(t, h.Drifted(real1.Fingerprint),
+		"...and a real edit before the outage is still reported")
+
+	// A history that holds nothing but outages can answer no comparison at all.
+	only := domain.NewHistory(validKey(), []domain.Snapshot{outage})
+	_, ok = only.LatestDefinition()
+	assert.False(t, ok)
+	assert.False(t, only.Drifted(outage.Fingerprint))
+}
+
+// TestHistoryDriftedAcrossRecoveryPaths: the same rule seen through g0.expr and
+// through /api/v1/rules has two content addresses and one text, and the alert
+// card must not read the difference as an edit. See domain.Drifted.
+func TestHistoryDriftedAcrossRecoveryPaths(t *testing.T) {
+	t.Parallel()
+
+	gen := viaGeneratorURLSnap("a > 1")
+	gen.CapturedAt = capturedAt
+	api := snap("a > 1", 300, 0, nil, nil)
+	api.CapturedAt = capturedAt.Add(time.Hour)
+	require.NotEqual(t, gen.Fingerprint, api.Fingerprint)
+
+	h := domain.NewHistory(validKey(), []domain.Snapshot{gen, api})
+	assert.False(t, h.Drifted(gen.Fingerprint),
+		"oto learned the `for:` it could never see through g0.expr; nobody edited the rule")
+
+	// An expression edit through the same promotion IS reported.
+	edited := snap("a > 2", 300, 0, nil, nil)
+	edited.CapturedAt = capturedAt.Add(2 * time.Hour)
+	assert.True(t, domain.NewHistory(validKey(), []domain.Snapshot{gen, edited}).Drifted(gen.Fingerprint))
+}

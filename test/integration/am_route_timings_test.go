@@ -575,6 +575,99 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 	}
 
+	// ⭐ 00040's Down FOLDS ROWS, so it needs rows — and it needs the exact rows
+	// that make the fold interesting, written under the WIDE constraint, which is
+	// the state an operator's database is in at the moment they decide to roll
+	// back. Asserting only the constraint text after the rollback tested a DELETE
+	// against an empty table: a Down that folded on the WRONG key, or that folded
+	// nothing, or that let `occ_rule_fk` blank every occurrence's bound rule,
+	// would all have been green.
+	//
+	// The three snapshots are e670d5b's own scenario. Two `unavailable` captures
+	// of DIFFERENT rules share a content address, because an unavailable capture
+	// is an empty expr, zero durations and empty maps and there is nothing else in
+	// the digest (SPEC §C.6) — under the narrow tuple they are one row, which is
+	// the defect 00040 fixed, and the Down has to put them back into one. The
+	// third is a real recovered rule that happens to share a rule_name with the
+	// first, so a Down that folded on the rule KEY rather than on the content
+	// address would delete it and be caught here.
+	foldOrg, _, foldHealth := seedSource(t, env)
+	foldSource := foldHealth.SourceID
+	var foldCluster uuid.UUID
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT cluster_id FROM alert_sources WHERE id = $1`, foldSource).Scan(&foldCluster); err != nil {
+		t.Fatalf("read the seeded source's cluster: %v", err)
+	}
+
+	emptyFP := strings.Repeat("ab", 32) // every unavailable capture's address
+	recoveredFP := strings.Repeat("cd", 32)
+	base := time.Now().UTC().Add(-time.Hour)
+
+	// (id, rule_name, fingerprint, captured_at) — `survivor` is the earliest row
+	// per (org, source, fingerprint), which is the row the pre-00040 upsert would
+	// itself have kept as the incumbent.
+	survivor, folded, untouched := id.New(), id.New(), id.New()
+	snapshots := []struct {
+		snapID     uuid.UUID
+		name, fp   string
+		origin     string
+		expr       string
+		promURL    any
+		confidence string
+		candidates int
+		at         time.Time
+	}{
+		{survivor, "AlertA", emptyFP, "unavailable", "", nil, "none", 0, base},
+		{folded, "AlertB", emptyFP, "unavailable", "", nil, "none", 0, base.Add(time.Minute)},
+		{untouched, "AlertA", recoveredFP, "prometheus_api", "up == 0",
+			"http://prom.test", "exact", 1, base.Add(2 * time.Minute)},
+	}
+	for _, s := range snapshots {
+		if _, err := env.pool.Exec(env.ctx,
+			`INSERT INTO rule_snapshots (id, org_id, source_id, rule_fingerprint, rule_name,
+			                             expr, origin, prometheus_url, match_confidence,
+			                             candidate_count, captured_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			s.snapID, foldOrg.OrgID(), foldSource, s.fp, s.name, s.expr, s.origin, s.promURL,
+			s.confidence, s.candidates, s.at); err != nil {
+			t.Fatalf("store the %s/%s snapshot under the wide constraint: %v — 00040 exists to "+
+				"make two rules with one content address storable, so a 23505 here means its Up "+
+				"never widened the tuple", s.name, s.origin, err)
+		}
+	}
+
+	// One occurrence bound to the row that is about to be folded away, and one
+	// bound to a row that survives. `occ_open_uniq` allows at most one open
+	// occurrence per alert, so they hang off two alerts.
+	boundToFolded, boundToUntouched := id.New(), id.New()
+	occurrences := []struct {
+		occID, snapID uuid.UUID
+		alertname     string
+	}{
+		{boundToFolded, folded, "AlertB"},
+		{boundToUntouched, untouched, "AlertA"},
+	}
+	for i, o := range occurrences {
+		alertID := id.New()
+		if _, err := env.pool.Exec(env.ctx,
+			`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
+			                     cluster_key, labels, state, first_seen_at, last_seen_at,
+			                     last_state_change_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, 'prod', $7::jsonb, 'firing', $8, $8, $8)`,
+			alertID, foldOrg.OrgID(), foldCluster,
+			"ak_"+strings.Repeat(string(rune('a'+i)), 26), strings.Repeat("0f", 8), o.alertname,
+			`{"alertname":"`+o.alertname+`"}`, base); err != nil {
+			t.Fatalf("seed the alert behind %s: %v", o.alertname, err)
+		}
+		if _, err := env.pool.Exec(env.ctx,
+			`INSERT INTO alert_occurrences (id, org_id, alert_id, seq, state, started_at,
+			                                last_observed_at, source_starts_at, rule_snapshot_id)
+			 VALUES ($1, $2, $3, 1, 'firing', $4, $4, $4, $5)`,
+			o.occID, foldOrg.OrgID(), alertID, base, o.snapID); err != nil {
+			t.Fatalf("bind an occurrence of %s to its rule snapshot: %v", o.alertname, err)
+		}
+	}
+
 	// 00040 down: the rule-snapshot uniqueness tuple narrows back to (org, source,
 	// fingerprint).
 	//
@@ -583,8 +676,11 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// together exactly the rows 00040 exists to keep apart: an `unavailable`
 	// capture has an empty expr, so every unrecoverable rule in a source hashes
 	// identically, which is the whole of e670d5b. The Down therefore keeps the
-	// earliest row per content address and drops the rest, and occurrences
-	// unbind rather than vanish because `occ_rule_fk` is ON DELETE SET NULL.
+	// earliest row per content address, drops the rest, and REMAPS the
+	// occurrences bound to the dropped rows onto the survivor first — every
+	// folded row is byte-identical in definition to the row it folds into, so
+	// letting `occ_rule_fk` null the pointer instead would discard "what the rule
+	// said when this fired" for an answer sitting one row away.
 	//
 	// It is asserted here rather than trusted because a Down that DROPPED the
 	// constraint instead of restoring the narrow one would leave the fold undone,
@@ -598,6 +694,60 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if !strings.Contains(snapshotUniqCols(), "rule_fingerprint") {
 		t.Fatalf("rule_snapshots_content_uniq is not the narrow (org, source, fingerprint) tuple "+
 			"after 00040's Down: %s", snapshotUniqCols())
+	}
+
+	// The fold itself: two rows out of three, and the RIGHT two.
+	snapshotSurvives := func(snapID uuid.UUID) bool {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM rule_snapshots WHERE id = $1`, snapID).Scan(&n); err != nil {
+			t.Fatalf("introspect rule_snapshots after the fold: %v", err)
+		}
+		return n == 1
+	}
+	if !snapshotSurvives(survivor) {
+		t.Fatal("00040's Down deleted the EARLIEST row of the folded pair; the survivor has to be " +
+			"the one the narrow constraint's own upsert would have kept as the incumbent, or a " +
+			"rollback and a re-Up disagree about which capture is version 1")
+	}
+	if snapshotSurvives(folded) {
+		t.Fatal("00040's Down left both unavailable captures in place, so the narrow constraint " +
+			"was re-added over rows that violate it — either the fold DELETE did nothing, or it " +
+			"folded on a key that keeps them apart, which is the key the narrow tuple does not have")
+	}
+	if !snapshotSurvives(untouched) {
+		t.Fatal("00040's Down deleted a snapshot with its OWN content address, which no narrowing " +
+			"of (org, source, fingerprint) can require — the fold is running on the rule key, not " +
+			"on the content address, and it is destroying real captured rules")
+	}
+
+	// ⭐ AND THE OCCURRENCES STILL KNOW WHAT THE RULE SAID. This is the assertion
+	// the `ON DELETE SET NULL` would fail: the folded row and its survivor carry
+	// the same rule_fingerprint and therefore byte-identical text, so unbinding
+	// loses the one fact the product exists to show for no reason at all.
+	boundSnapshot := func(occID uuid.UUID) *uuid.UUID {
+		t.Helper()
+		var out *uuid.UUID
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT rule_snapshot_id FROM alert_occurrences WHERE id = $1`, occID).Scan(&out); err != nil {
+			t.Fatalf("read the occurrence's bound snapshot: %v", err)
+		}
+		return out
+	}
+	switch got := boundSnapshot(boundToFolded); {
+	case got == nil:
+		t.Fatal("the occurrence bound to the folded snapshot came out of 00040's Down unbound — " +
+			"occ_rule_fk is ON DELETE SET NULL, so a Down that deletes before it remaps throws " +
+			"away the rule text behind a fired alert while an identical copy of that text " +
+			"survives in the row it was folded into")
+	case *got != survivor:
+		t.Fatalf("the occurrence bound to the folded snapshot now points at %s, want the survivor "+
+			"%s", *got, survivor)
+	}
+	if got := boundSnapshot(boundToUntouched); got == nil || *got != untouched {
+		t.Fatalf("an occurrence bound to a snapshot that was never folded came out of the Down "+
+			"pointing at %v; the remap must touch only the rows being deleted", got)
 	}
 
 	// ⛔ 00039 down, ATTEMPT ONE: REFUSED, because a synthetic batch is live. This

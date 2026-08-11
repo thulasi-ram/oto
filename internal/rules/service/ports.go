@@ -70,7 +70,24 @@ type SnapshotRepository interface {
 
 	// Latest returns the newest capture for one rule key. The bool is false
 	// when the rule has never been captured, which is a state and not an error.
+	//
+	// An `unavailable` capture counts: it is the newest thing oto knows, and
+	// "we looked and could not see it" is what the read paths want to render.
 	Latest(ctx context.Context, s db.TenantScope, key domain.Key) (domain.Snapshot, bool, error)
+
+	// LatestDefinition returns the newest capture that CARRIES a definition,
+	// skipping `unavailable` rows. The bool is false when this rule has never
+	// been successfully recovered, which is a state and not an error.
+	//
+	// ⛔ DRIFT IS MEASURED AGAINST THIS ONE, NEVER AGAINST Latest. An
+	// unavailable row has an empty expr and an empty rule key beyond the name,
+	// so it is both the newest row and a row every query for the key matches;
+	// comparing a recovered capture against it reports a rule edit on every
+	// fire for the whole of an outage's recovery. Stepping OVER it rather than
+	// declining to compare is equally load-bearing: an edit made while
+	// Prometheus was unreachable has to be reported by the fire that can first
+	// see it (domain.Drifted).
+	LatestDefinition(ctx context.Context, s db.TenantScope, key domain.Key) (domain.Snapshot, bool, error)
 }
 
 // RuleLookup recovers an alert's originating rule from its upstream.

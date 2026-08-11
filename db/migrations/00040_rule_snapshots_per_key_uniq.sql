@@ -70,9 +70,49 @@ COMMENT ON CONSTRAINT rule_snapshots_content_uniq ON rule_snapshots IS
 -- row that lives is the one the old code would itself have kept as the incumbent.
 --
 -- alert_occurrences.rule_snapshot_id is ON DELETE SET NULL (occ_rule_fk), so an
--- occurrence bound to a deleted snapshot unbinds rather than disappearing: the
--- alert history survives, the rule text behind some of it does not.
+-- occurrence bound to a deleted snapshot CAN unbind rather than disappear: the
+-- alert history would survive and the rule text behind some of it would not.
+--
+-- ⭐ SO THE OCCURRENCES ARE REMAPPED FIRST, AND ALMOST NOTHING IS ACTUALLY LOST.
+-- Every folded row shares its `rule_fingerprint` with the survivor it folds into
+-- — that is the definition of the fold — and `rule_fingerprint` is the content
+-- address of the DEFINITION (SPEC §C.6), so the survivor's expr, for_seconds,
+-- keep_firing_for_seconds, rule_labels and rule_annotations are BYTE FOR BYTE the
+-- doomed row's. Letting the FK null the pointer would throw away "what the rule
+-- said when this fired" for an occurrence whose answer is sitting unchanged one
+-- row away, and that answer is the whole product. The UPDATE runs before the
+-- DELETE because after it there is nothing left to read the mapping from.
+--
+-- ⛔ WHAT IS STILL LOST IS THE RULE KEY, and it cannot be otherwise. The survivor
+-- may carry a different rule_name, rule_group or rule_file — that is exactly the
+-- distinction the narrow tuple cannot represent — so an occurrence remapped onto
+-- it keeps the right rule TEXT under somebody else's rule NAME. That is 00009's
+-- behaviour, faithfully restored, and it is why this direction is a one-way door
+-- in practice even though it runs cleanly.
 
+WITH survivors AS (
+  SELECT DISTINCT ON (org_id, source_id, rule_fingerprint)
+         org_id, source_id, rule_fingerprint, id
+    FROM rule_snapshots
+   ORDER BY org_id, source_id, rule_fingerprint, captured_at, id
+), folded AS (
+  SELECT r.id AS doomed_id, s.id AS survivor_id
+    FROM rule_snapshots r
+    JOIN survivors s
+      ON s.org_id = r.org_id
+     AND s.source_id = r.source_id
+     AND s.rule_fingerprint = r.rule_fingerprint
+   WHERE r.id <> s.id
+)
+UPDATE alert_occurrences o
+   SET rule_snapshot_id = f.survivor_id
+  FROM folded f
+ WHERE o.rule_snapshot_id = f.doomed_id;
+
+-- The DELETE's predicate is the complement of `survivors` above, expressed the
+-- same way: a row dies exactly when some row with its content address in its
+-- source is older by (captured_at, id). The two must agree, or occurrences would
+-- be remapped onto rows that are themselves about to be deleted.
 DELETE FROM rule_snapshots r
  WHERE EXISTS (
    SELECT 1 FROM rule_snapshots k

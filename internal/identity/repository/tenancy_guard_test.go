@@ -99,8 +99,8 @@ var notARequestResolver = map[string]string{
 	"app.listOrgIDsSQL": "the tenant enumerator for the reaper, the group close and the flap score. Not a " +
 		"resolver for the same reason listOrgsSQL is not. ⚠️ UNLIKE listOrgsSQL IT DOES NOT FILTER " +
 		"`deleted_at`, so those sweeps still visit deleted tenants — wasted work and rows written for a " +
-		"dead org, not a cross-tenant read. It belongs to `internal/app` and is left for the owner of " +
-		"that file; the two enumerators should agree",
+		"dead org, not a cross-tenant read. It lives in `internal/app` and is left to a change scoped " +
+		"to that package; the two enumerators should agree",
 }
 
 // knownGaps names statements that DO turn an inbound request's credential into a

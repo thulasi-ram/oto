@@ -51,6 +51,13 @@ type dbRig struct {
 	// recovery is what the next Capture will recover. Reassign it to edit the
 	// rule between fires.
 	recovery *domain.Recovery
+	// events is the timeline this rig narrates into. It is here because the
+	// drift DECISION and the drift EVENT are not the same assertion: a capture
+	// whose `Drifted` is wrong is a bug in a struct field, and the
+	// `rule.definition_changed` it emits is the "the rule changed" reply that
+	// reaches the Slack thread. The second is the one that costs an operator's
+	// trust, so it is asserted directly.
+	events *eventLog
 }
 
 func newDBRig(t *testing.T) *dbRig {
@@ -68,11 +75,13 @@ func newDBRig(t *testing.T) *dbRig {
 		scope:    org.Scope,
 		source:   source.ID,
 		recovery: &rec,
+		events:   &eventLog{},
 	}
 
 	svc, err := service.New(service.Options{
 		Repo:   r.repo,
 		Lookup: &stubLookup{fn: func(service.LookupRequest) (domain.Recovery, error) { return *r.recovery, nil }},
+		Events: r.events,
 		Clock:  h.Clock,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -532,6 +541,164 @@ func TestEveryUnrecoverableRuleInASourceGetsItsOwnRow(t *testing.T) {
 	assert.Equal(t, 2, r.rowCount(t), "still two rules, still two rows")
 }
 
+// unavailableRecovery is what the lookup hands back when Prometheus cannot be
+// reached at all: no expr, no durations, no maps. rule_snapshots_expr_ck
+// requires exactly that shape, which is why every unavailable capture in a
+// source has the SAME content address.
+func unavailableRecovery() domain.Recovery {
+	return domain.Recovery{
+		Origin:     domain.OriginUnavailable,
+		Strategy:   domain.StrategyNone,
+		Confidence: domain.ConfidenceNone,
+		RuleName:   "HighErrorRate",
+		Notes:      []string{"rule_lookup_failed"},
+	}
+}
+
+// TestAnOutageBetweenTwoFiresIsNotARuleEdit.
+//
+// ⭐ AN `unavailable` CAPTURE IS THE ABSENCE OF A DEFINITION, NOT A DEFINITION
+// THAT HAPPENS TO BE EMPTY, and drift is a claim about a DEFINITION. Prometheus
+// goes behind a firewall for an hour and comes back with the same rule it always
+// had; nobody edited anything; the fire that follows the outage must not say the
+// rule changed.
+//
+// ⛔ IT SAID EXACTLY THAT, AND IT SAID IT FOR EVERY RULE IN THE SOURCE. The
+// outage row is stored with an empty rule_file and rule_group — the lookup
+// recovered nothing, so there is no file and no group to store — and it is the
+// NEWEST row for the key. `Latest` therefore handed the recovery fire an empty
+// predecessor, `previous.Fingerprint != stored.Fingerprint` was trivially true,
+// and every recovering occurrence recorded a `rule.definition_changed` whose
+// diff is "" against the real PromQL. `dedupeKey` is per-occurrence, so it is
+// not one bad event: it is one per rule per fire, for as long as the recovery
+// takes. domain/fingerprint_stability_test.go names this the cardinal failure of
+// the whole mechanism — the drift signal becoming noise an operator learns to
+// ignore — and web/src/features/alerts/detail/RuleDrift.tsx delivers drift
+// regardless of channel verbosity precisely BECAUSE it is never noise.
+func TestAnOutageBetweenTwoFiresIsNotARuleEdit(t *testing.T) {
+	t.Parallel()
+
+	r := newDBRig(t)
+
+	// T1 — Prometheus answers, and the rule is stored.
+	first := r.fire(t)
+	require.True(t, first.NewVersion)
+	require.False(t, first.Drifted, "nothing to have drifted from")
+
+	// T2 — Prometheus is firewalled. The capture degrades to a stored row that
+	// honestly says "we could not see it", which is the specified behaviour.
+	r.h.Advance(time.Hour)
+	*r.recovery = unavailableRecovery()
+	outage := r.fire(t)
+	require.False(t, outage.Recovered())
+	require.Equal(t, 2, r.rowCount(t), "the outage is a row of its own")
+	assert.False(t, outage.Drifted,
+		"oto stopped being able to SEE the rule; that is not the rule changing")
+	assert.Equal(t, first.Snapshot.Fingerprint, outage.PreviousFingerprint,
+		"the last thing oto knew the rule to be is still the last thing it knew")
+
+	// T3 — Prometheus is back, and the rule is what it always was, byte for byte.
+	r.h.Advance(time.Hour)
+	*r.recovery = recoveredRule("rate(errors_total[5m]) > 0.05", 300)
+	recovered := r.fire(t)
+
+	require.Equal(t, first.Snapshot.Fingerprint, recovered.Snapshot.Fingerprint,
+		"the same rule text is the same content address")
+	assert.False(t, recovered.NewVersion, "and therefore the same row")
+	assert.Equal(t, first.Snapshot.ID, recovered.Snapshot.ID)
+	assert.Equal(t, first.Snapshot.Fingerprint, recovered.PreviousFingerprint,
+		"the predecessor is the last capture that WAS a definition, not the outage row")
+	assert.False(t, recovered.Drifted,
+		"nobody edited the rule; Prometheus was unreachable for an hour and then was not")
+
+	// The assertion the operator actually sees.
+	assert.NotContains(t, r.events.types(), service.EventDefinitionChanged,
+		"a `rule.definition_changed` here is a reply in the Slack thread that says the rule "+
+			"changed when it did not, with an empty expr as the evidence")
+}
+
+// TestAnOutageOnTheGeneratorURLPathIsNotARuleEditEither is the same lie reached
+// without the key predicate being involved at all.
+//
+// ⛔ IT IS WHY THE FIX IS NOT IN `keyPredicate`. A generatorURL capture knows the
+// expression but not the file it is written in, so it is stored with an empty
+// rule_file and rule_group — the same shape an `unavailable` row has. A query
+// built from such a capture therefore matches the outage row on a plain equality,
+// with no "empty means unknown" leniency needed anywhere: the source whose
+// Prometheus is not reachable through the API at all, which is the population
+// most likely to have outages, has always been able to reach this.
+func TestAnOutageOnTheGeneratorURLPathIsNotARuleEditEither(t *testing.T) {
+	t.Parallel()
+
+	r := newDBRig(t)
+	viaGeneratorURL := domain.Recovery{
+		Origin:         domain.OriginGeneratorURL,
+		Strategy:       domain.StrategyGeneratorURL,
+		Confidence:     domain.ConfidenceExact,
+		CandidateCount: 1,
+		RuleName:       "HighErrorRate",
+		Expr:           "up == 0",
+	}
+
+	*r.recovery = viaGeneratorURL
+	first := r.fire(t)
+	require.True(t, first.NewVersion)
+	require.Empty(t, first.Snapshot.Key.File, "the generatorURL path stores no file")
+
+	r.h.Advance(time.Hour)
+	*r.recovery = unavailableRecovery()
+	require.False(t, r.fire(t).Recovered())
+
+	r.h.Advance(time.Hour)
+	*r.recovery = viaGeneratorURL
+	back := r.fire(t)
+
+	assert.Equal(t, first.Snapshot.ID, back.Snapshot.ID)
+	assert.False(t, back.Drifted, "the alert carried the same g0.expr all three times")
+	assert.Equal(t, first.Snapshot.Fingerprint, back.PreviousFingerprint)
+	assert.NotContains(t, r.events.types(), service.EventDefinitionChanged)
+}
+
+// TestARuleEditedDuringAnOutageIsReportedWhenPrometheusComesBack is the other
+// half, and the half that stops the fix from being "never mind, skip it".
+//
+// ⛔ THE FINGERPRINT'S TWO FAILURE MODES ARE OPPOSITE AND BOTH FATAL
+// (domain/fingerprint_stability_test.go). Suppressing the drift claim across an
+// outage by simply refusing to compare — "the previous row is unavailable, so
+// there is nothing to say" — trades the spurious event for a SILENT MISS: the
+// threshold really was lowered while nobody could see it, and the first fire
+// that can see it again is the only chance oto has to say so. So the predecessor
+// is not "the previous row", it is THE MOST RECENT ROW THAT CARRIED A
+// DEFINITION, and the outage is stepped over rather than compared against.
+func TestARuleEditedDuringAnOutageIsReportedWhenPrometheusComesBack(t *testing.T) {
+	t.Parallel()
+
+	r := newDBRig(t)
+
+	before := r.fire(t)
+	require.True(t, before.NewVersion)
+
+	r.h.Advance(time.Hour)
+	*r.recovery = unavailableRecovery()
+	require.False(t, r.fire(t).Recovered())
+
+	// Somebody lowered the threshold while Prometheus was unreachable.
+	r.h.Advance(time.Hour)
+	*r.recovery = recoveredRule("rate(errors_total[5m]) > 0.02", 300)
+	after := r.fire(t)
+
+	require.True(t, after.NewVersion)
+	assert.True(t, after.Drifted,
+		"the edit landed during the outage, and this fire is the first one that can see it")
+	assert.Equal(t, before.Snapshot.Fingerprint, after.PreviousFingerprint,
+		"drift is measured against the last definition oto held, not against the gap")
+
+	ev, ok := r.events.find(service.EventDefinitionChanged)
+	require.True(t, ok, "the operator has to be told")
+	assert.Equal(t, before.Snapshot.Fingerprint, ev.Payload["previous_fingerprint"])
+	assert.Equal(t, after.Snapshot.Fingerprint, ev.Payload["fingerprint"])
+}
+
 // TestTheRuleKeySurvivesPrometheusBecomingReachable.
 //
 // ⭐ AN EMPTY rule_file OR rule_group MEANS "UNKNOWN", ON BOTH SIDES. A
@@ -543,13 +710,32 @@ func TestEveryUnrecoverableRuleInASourceGetsItsOwnRow(t *testing.T) {
 // captured before it was known, and one rule's history split in two on exactly
 // the day the predicate's own comment said it must not.
 //
-// ⛔ THE REASON IT MATTERED IS NOT TIDINESS. The split showed up as drift
-// reported in ONE DIRECTION ONLY: generator_url after prometheus_api found the
-// predecessor (that query omits the filters) and reported drift; prometheus_api
-// after generator_url found nothing and reported none. Neither direction is a
-// rule edit by itself — but the promotion is exactly when a REAL edit is likely
-// to be sitting in the same fire, and the silent direction hid it. Here the
-// promotion carries an edited `for`, and it must be reported.
+// ⛔ THE REASON IT MATTERED IS NOT TIDINESS. The split cost the promotion fire
+// its predecessor: a query built from the now-known file and group found NOTHING
+// stored under the emptier key, so the rule looked like one oto had never seen,
+// its history began again from that day, and a real edit landing in the same fire
+// as the promotion had nothing to be compared against. That is what is asserted
+// here, and it is asserted through the PREDECESSOR — `PreviousFingerprint` and
+// the single unified history — rather than through `Drifted`.
+//
+// ⛔⛔ BECAUSE THE PROMOTION ITSELF IS NOT AN EDIT, IN EITHER DIRECTION. This test
+// was once written the other way round: it asserted that promoting reports drift,
+// and that firing back down the generatorURL path reports it again, under the
+// heading SYMMETRY. The symmetry is real and the conclusion drawn from it was
+// backwards — if BOTH directions are drift then a Prometheus that is
+// intermittently reachable emits `rule.definition_changed` on every single fire,
+// alternating forever, for every rule in the source, while nobody touches
+// anything. The observation that the two directions must agree is right; what
+// they must agree ON is "no edit". g0.expr carries no `for:`, so a promotion is
+// oto learning a field it never knew, and the demotion is oto forgetting it
+// again. Neither is a person editing a rule, and `rule.definition_changed` is a
+// sentence about a person editing a rule. See domain.Drifted: captures are
+// compared over what they BOTH observed, which across a change of path is the
+// expression.
+//
+// So the edit that must not be hidden by the promotion is an edited EXPRESSION,
+// which is the field every recovery path recovers and the only one about which
+// oto holds evidence from both sides. Fire 4 carries one.
 func TestTheRuleKeySurvivesPrometheusBecomingReachable(t *testing.T) {
 	t.Parallel()
 
@@ -571,20 +757,24 @@ func TestTheRuleKeySurvivesPrometheusBecomingReachable(t *testing.T) {
 	assert.Empty(t, viaGenerator.Snapshot.Key.Group)
 	assert.Empty(t, viaGenerator.Snapshot.Key.File)
 
-	// Fire 2: Prometheus is reachable now, so the same rule arrives with its file
-	// and group — and, at the same moment, an edited `for`.
+	// Fire 2: Prometheus is reachable now, so the SAME rule arrives with its file,
+	// its group and the `for:` the generatorURL never carried.
 	r.h.Advance(time.Hour)
 	*r.recovery = recoveredRule("up == 0", 300)
 	viaAPI := r.fire(t)
 
-	require.True(t, viaAPI.NewVersion)
+	require.True(t, viaAPI.NewVersion,
+		"a capture that observed more of the rule is a row of its own; nothing is overwritten")
 	assert.Equal(t, 2, r.rowCount(t), "both captures are stored; nothing is lost")
 
-	// ⭐ The fuller key finds the row stored under the emptier one, so the edit
-	// that rode in with the promotion is reported rather than swallowed.
-	assert.True(t, viaAPI.Drifted,
-		"the `for` went from unknown to 300s in a capture of the same rule, and that is drift")
-	assert.Equal(t, viaGenerator.Snapshot.Fingerprint, viaAPI.PreviousFingerprint)
+	// ⭐ THE FULLER KEY FINDS THE ROW STORED UNDER THE EMPTIER ONE. This is the
+	// assertion the split failed: with the predicate lenient in one direction
+	// only, `PreviousFingerprint` here was EMPTY, because the promotion fire could
+	// not see its own rule's past.
+	assert.Equal(t, viaGenerator.Snapshot.Fingerprint, viaAPI.PreviousFingerprint,
+		"the predecessor is the generatorURL capture of the same rule, not nothing")
+	assert.False(t, viaAPI.Drifted,
+		"oto learned the `for:` it could never see before; the rule did not change")
 
 	// One rule, ONE history, whichever end of the key it is asked from.
 	full, err := r.svc.History(r.h.Ctx, r.scope, viaAPI.Snapshot.Key)
@@ -600,25 +790,56 @@ func TestTheRuleKeySurvivesPrometheusBecomingReachable(t *testing.T) {
 	assert.Equal(t, viaGenerator.Snapshot.ID, full.Versions[0].Snapshot.ID,
 		"version 1 is the OLDEST capture, which is the one made before the file was known")
 
-	// ⭐ SYMMETRY. Firing back down the generatorURL path reports drift too, and
-	// against the same predecessor pair — the direction of the promotion is not
-	// allowed to change the answer.
+	// ⭐ SYMMETRY, STATED CORRECTLY. Firing back down the generatorURL path finds
+	// the same predecessor pair the promotion did — the direction is not allowed
+	// to change the answer — and the answer both directions give is "nobody
+	// edited this rule".
 	r.h.Advance(time.Hour)
 	*r.recovery = viaGeneratorURL
 	back := r.fire(t)
 
 	assert.False(t, back.NewVersion, "the content is one it has seen before, under a key it has seen it under")
 	assert.Equal(t, viaGenerator.Snapshot.ID, back.Snapshot.ID)
-	assert.True(t, back.Drifted)
-	assert.Equal(t, viaAPI.Snapshot.Fingerprint, back.PreviousFingerprint)
-	assert.Equal(t, 2, r.rowCount(t), "three fires, two rule texts")
+	assert.Equal(t, viaAPI.Snapshot.Fingerprint, back.PreviousFingerprint,
+		"the predecessor is found in this direction too; that half was never broken")
+	assert.False(t, back.Drifted,
+		"Prometheus became unreachable again and oto fell back to g0.expr; the rule is the rule")
+	assert.Equal(t, 2, r.rowCount(t), "three fires, two captures")
 
-	// The alert card's question, asked from the capture the first fire was bound
-	// to: the rule HAS changed since, and the newest text is the API one.
+	// And the alert card says nothing, because there is nothing to say.
+	_, ok, err := r.svc.DiffSince(r.h.Ctx, r.scope, viaAPI.Snapshot.Key, viaGenerator.Snapshot.Fingerprint)
+	require.NoError(t, err)
+	assert.False(t, ok,
+		"'this rule has changed since it fired' must not be shown for a rule that has not changed")
+	assert.NotContains(t, r.events.types(), service.EventDefinitionChanged,
+		"three fires, two recovery paths, zero edits, zero 'the rule changed' replies")
+
+	// ⭐ FIRE 4: THE EDIT THE PROMOTION MUST NOT HIDE. Somebody rewrote the
+	// expression, and this fire recovers it through the API — the same path fire 2
+	// used, so the comparison is over the whole definition again.
+	r.h.Advance(time.Hour)
+	*r.recovery = recoveredRule("up == 1", 300)
+	edited := r.fire(t)
+
+	require.True(t, edited.NewVersion)
+	assert.True(t, edited.Drifted, "THIS is an edit, and it is the one the split used to swallow")
+	assert.Equal(t, viaAPI.Snapshot.Fingerprint, edited.PreviousFingerprint,
+		"measured against the newest capture that held a definition, which is fire 2's")
+	assert.Equal(t, 3, r.rowCount(t))
+
+	ev, found := r.events.find(service.EventDefinitionChanged)
+	require.True(t, found)
+	assert.Equal(t, viaAPI.Snapshot.Fingerprint, ev.Payload["previous_fingerprint"])
+
+	// The alert card's question, asked from the capture the FIRST fire was bound
+	// to: across a change of recovery path AND an edit, the edit is what carries
+	// the claim, and `OriginChanged` is on the diff so the reader knows the `for:`
+	// difference is oto learning rather than somebody editing.
 	since, ok, err := r.svc.DiffSince(r.h.Ctx, r.scope, viaAPI.Snapshot.Key, viaGenerator.Snapshot.Fingerprint)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, viaGenerator.Snapshot.Fingerprint, since.From.Fingerprint)
-	assert.Equal(t, viaAPI.Snapshot.Fingerprint, since.To.Fingerprint)
-	assert.True(t, since.ForChanged)
+	assert.Equal(t, edited.Snapshot.Fingerprint, since.To.Fingerprint)
+	assert.True(t, since.ExprChanged)
+	assert.True(t, since.OriginChanged)
 }

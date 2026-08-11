@@ -35,6 +35,25 @@ func (h History) Latest() (Version, bool) {
 	return h.Versions[len(h.Versions)-1], true
 }
 
+// LatestDefinition returns the newest version that actually CARRIES a rule
+// definition, and false when this rule has never been recovered.
+//
+// ⭐ IT IS Latest FOR EVERY QUESTION THAT ENDS "...COMPARED TO NOW". An
+// `unavailable` capture is a real version and belongs in the list an operator
+// reads — "oto looked at 03:00 and could not see it" is a fact worth showing —
+// but it is not a rule the newest text can be compared against. Answering "has
+// this changed since it fired?" with the outage row makes the alert card claim
+// an edit whose evidence is an empty expression, on every alert in the source,
+// for as long as the outage lasts.
+func (h History) LatestDefinition() (Version, bool) {
+	for i := len(h.Versions) - 1; i >= 0; i-- {
+		if h.Versions[i].Snapshot.Available() {
+			return h.Versions[i], true
+		}
+	}
+	return Version{}, false
+}
+
 // At returns the version with the given 1-based number.
 func (h History) At(number int) (Version, bool) {
 	if number < 1 || number > len(h.Versions) {
@@ -54,14 +73,27 @@ func (h History) ByFingerprint(fp string) (Version, bool) {
 	return Version{}, false
 }
 
-// Drifted reports whether the rule has been edited since the version carrying
-// fp — that is, whether the newest text differs from the one an occurrence was
-// bound to. This is SPEC §C.6's definition of drift, evaluated over the
-// history rather than with a second query.
+// Drifted reports whether the rule has been EDITED since the version carrying
+// fp — that is, whether the newest text an occurrence could be compared against
+// differs from the one it was bound to. This is SPEC §C.6's definition of drift,
+// evaluated over the history rather than with a second query.
+//
+// ⛔ THE COMPARISON IS AGAINST LatestDefinition, and it goes through Drifted
+// rather than comparing the digests, so that an outage or a change of recovery
+// path in between is not reported as somebody editing the rule. When fp names a
+// version this history holds, both snapshots are in hand and the full evidence
+// rule applies; when it does not — a fingerprint from another key, or a row
+// beyond DefaultHistoryLimit — the digests are all there is.
 func (h History) Drifted(fp string) bool {
-	latest, ok := h.Latest()
-	if !ok || fp == "" {
+	if fp == "" {
 		return false
+	}
+	latest, ok := h.LatestDefinition()
+	if !ok {
+		return false
+	}
+	if bound, found := h.ByFingerprint(fp); found {
+		return Drifted(bound.Snapshot, latest.Snapshot)
 	}
 	return latest.Snapshot.Fingerprint != fp
 }

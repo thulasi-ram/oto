@@ -310,6 +310,17 @@ func (r *SnapshotRepository) GetMany(
 // table that says which. Attributing it to both is the lesser error — the
 // alternative is a rule whose own history cannot see its earliest captures.
 //
+// ⛔ AN `unavailable` ROW ALWAYS HAS AN EMPTY FILE AND GROUP — a lookup that
+// recovered no rule recovered no file to store — so it is matched by EVERY query
+// for its rule name, including the fully-keyed ones. That is correct: it is a
+// capture of that rule, and hiding it would be hiding the fact that oto looked
+// and could not see. It is also why the drift comparison does not read this
+// predicate's newest row: see LatestDefinition, and rules/domain.Drifted for
+// what a capture that observed nothing can and cannot evidence. Tightening the
+// predicate instead would not even fix it — a generatorURL query carries an
+// empty file and group of its own and matches the outage row on plain equality,
+// with no leniency involved anywhere.
+//
 // The predicate stays usable as a prefix of rule_snapshots_key_idx
 // (org_id, source_id, rule_name, rule_group, rule_file, captured_at DESC): an
 // `IN ($n, ”)` is a ScalarArrayOp the planner can still drive the index with,
@@ -467,12 +478,55 @@ func (r *SnapshotRepository) ListPage(
 	return out, cursor, nil
 }
 
-// Latest returns the newest capture for one rule key.
+// Latest returns the newest capture for one rule key, whatever it holds.
+//
+// An `unavailable` row is a capture like any other here, and deliberately so:
+// "oto looked at 03:00 and could not see it" is the honest answer to "what is
+// the newest thing you know about this rule", and every read that renders the
+// current state of a rule wants it. LatestDefinition is the one that does not.
 func (r *SnapshotRepository) Latest(ctx context.Context, s db.TenantScope, key domain.Key) (domain.Snapshot, bool, error) {
+	return r.latest(ctx, s, key, false)
+}
+
+// LatestDefinition returns the newest capture that actually CARRIES a rule
+// definition — the newest row whose origin is not `unavailable`.
+//
+// ⭐ IT EXISTS FOR DRIFT, AND ONLY FOR DRIFT. An unavailable capture has an empty
+// expr and empty everything else, and it is stored with an empty rule_file and
+// rule_group because a lookup that recovered nothing recovered no file either.
+// It is therefore the newest row for its key AND a row every query for that key
+// matches — the fully-keyed ones through keyPredicate's "empty means unknown",
+// the generatorURL-keyed ones through plain equality. Handing it to the capture
+// path as "the version the previous fire was bound to" made every recovering
+// fire report a rule edit against an empty expression.
+//
+// ⛔ SKIPPING THE ROW IS NOT THE SAME AS SKIPPING THE COMPARISON. The predecessor
+// has to be the last row that WAS a definition, not nothing at all, or a
+// threshold edited while Prometheus was unreachable is never reported: the fire
+// that recovers is the first one that can see the edit, and it is the only one
+// that will ever have both sides to compare. See domain.Drifted.
+//
+// NOTE (planner): `origin` is not in rule_snapshots_key_idx, so this is the same
+// index range as Latest with one more filter applied over it. The range is one
+// rule's distinct texts — a handful — so the filter is free and an index on
+// origin would be a write cost paid for nothing.
+func (r *SnapshotRepository) LatestDefinition(ctx context.Context, s db.TenantScope, key domain.Key) (domain.Snapshot, bool, error) {
+	return r.latest(ctx, s, key, true)
+}
+
+func (r *SnapshotRepository) latest(
+	ctx context.Context, s db.TenantScope, key domain.Key, definitionsOnly bool,
+) (domain.Snapshot, bool, error) {
 	args := []any{s.OrgID()}
 	pred, err := keyPredicate(key, &args)
 	if err != nil {
 		return domain.Snapshot{}, false, err
+	}
+	if definitionsOnly {
+		// A literal, not a parameter: it is a constant of the schema
+		// (rule_snapshots_origin_ck), not an input, and inlining it keeps the
+		// argument numbering the caller-independent thing it is above.
+		pred += ` AND origin <> 'unavailable'`
 	}
 
 	sql := `SELECT ` + snapshotColumns + ` FROM rule_snapshots WHERE org_id = $1` + pred +
