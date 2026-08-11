@@ -98,11 +98,16 @@ function barButton(name: string): HTMLElement {
   return found[0]!;
 }
 
-/** The one dialog currently open, which is where every form control lives. */
-function openDialog(): ReturnType<typeof within> {
+/** The one dialog currently open. Ack, comment and snooze are all mounted. */
+function openDialogEl(): HTMLElement {
   const dialog = document.querySelector("dialog[open]");
   expect(dialog, "no dialog is open").not.toBeNull();
-  return within(dialog as HTMLElement);
+  return dialog as HTMLElement;
+}
+
+/** The one dialog currently open, which is where every form control lives. */
+function openDialog(): ReturnType<typeof within> {
+  return within(openDialogEl());
 }
 
 /** The button that starts an acknowledgement, once the query has settled. */
@@ -247,6 +252,11 @@ describe("ending a snooze", () => {
     fireEvent.click(barButton("Resume notifications"));
 
     await until(() => expect(screen.getByText(/not snoozed — it woke before/)).toBeTruthy());
+    // ⛔ And it is ANNOUNCED, not merely printed. This is the one refusal on this
+    // screen with no dialog to appear inside: it lands in the bar beside a button
+    // that still reads "Resume notifications", so without a live region the
+    // person who pressed that button hears nothing and presses it again.
+    expect(screen.getByRole("alert").textContent).toMatch(/not snoozed — it woke before/);
     // The alert is still snoozed as far as anyone knows, so the control still
     // offers to end the hold rather than to start one.
     expect(barButtons("Resume notifications")).toHaveLength(1);
@@ -265,6 +275,74 @@ describe("ending a snooze", () => {
     // above all not silence.
     await until(() => expect(screen.getByText("upstream")).toBeTruthy());
     expectNoUndefined(document.body);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* What the open dialog is announced as                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⛔ THIS BAR IS WHERE THE WRONG-LABEL BUG LIVED, because it is the only place
+ * that mounts three dialogs at once. `Dialog` renders its `<dialog>` whether or
+ * not it is open — the platform's `showModal()` needs an element to be called on
+ * — so ack, comment and snooze all exist in the document from the first paint.
+ *
+ * While the label ids were the constants `oto-dialog-title` and
+ * `oto-dialog-desc`, all three shared them, and IDREF resolution takes the FIRST
+ * match in document order. So the comment form's `aria-labelledby` resolved to
+ * the *ack* dialog's heading and a screen reader opened it with "Acknowledge this
+ * alert". A wrong label is worse than a missing one: the operator acts on it.
+ */
+describe("the dialog a screen reader is told about", () => {
+  /** Resolve an IDREF the way a screen reader does, and say where it landed. */
+  const target = (dialog: HTMLElement, attr: string): HTMLElement => {
+    const id = dialog.getAttribute(attr);
+    expect(id, `the open dialog has no ${attr}`).toBeTruthy();
+    const el = document.getElementById(id as string);
+    expect(el, `${attr} points at #${id as string}, which is not in the document`).not.toBeNull();
+    // The name must come from inside THIS dialog. Resolving to a sibling
+    // dialog's heading is precisely the defect, and it is invisible to a test
+    // that only checks the attribute is present.
+    expect(
+      dialog.contains(el),
+      `${attr} resolves to an element outside the open dialog`,
+    ).toBe(true);
+    return el as HTMLElement;
+  };
+
+  it("names the comment dialog with its own heading, not the first one in the document", async () => {
+    mount(firing());
+    await until(() => expect(barButtons("Comment")).toHaveLength(1));
+    fireEvent.click(barButton("Comment"));
+
+    const dialog = openDialogEl();
+    expect(target(dialog, "aria-labelledby").textContent).toBe("Add a comment");
+    expect(target(dialog, "aria-describedby").textContent).toMatch(/Comments are events like any/);
+  });
+
+  it("names the snooze dialog with its own heading too", async () => {
+    mount(firing());
+    await until(() => expect(barButtons("Snooze")).toHaveLength(1));
+    fireEvent.click(barButton("Snooze"));
+
+    const dialog = openDialogEl();
+    expect(target(dialog, "aria-labelledby").textContent).toBe("Snooze notifications");
+  });
+
+  it("still names the ack dialog correctly, and gives no two dialogs the same id", async () => {
+    mount(firing());
+    fireEvent.click(await ackButton());
+
+    expect(target(openDialogEl(), "aria-labelledby").textContent).toBe("Acknowledge this alert");
+
+    // Every label id in the document is distinct — the property the constants
+    // could never have, and the reason the first-in-document-order rule bit.
+    const ids = Array.from(document.querySelectorAll("dialog"))
+      .flatMap((d) => [d.getAttribute("aria-labelledby"), d.getAttribute("aria-describedby")])
+      .filter((id): id is string => id !== null);
+    expect(ids.length).toBeGreaterThan(3);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });
 

@@ -209,8 +209,15 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         </Button>
       </Show>
 
+      {/* Unlike every other failure on this screen, this one has no dialog to
+          appear inside — it lands in the bar, next to a button that still reads
+          "Resume notifications". Without `role="alert"` nothing moves and nothing
+          is announced, so a screen reader user presses the button and hears
+          silence, which is the one thing oto is not allowed to do about a
+          failure. `role="alert"` is the same idiom the other 17 refusal sites
+          use (AppShell's sign-out failure, `ErrorBanner`, `Field`). */}
       <Show when={unsnooze.error !== null}>
-        <span class="text-[11px] leading-snug text-ink">
+        <span role="alert" class="text-[11px] leading-snug text-ink">
           {unsnooze.error instanceof ApiError && unsnooze.error.status === 412
             ? "This alert is not snoozed — it woke before the request landed."
             : (unsnooze.error as Error | null)?.message}

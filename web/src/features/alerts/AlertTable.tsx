@@ -22,6 +22,7 @@ import {
   Switch,
   createMemo,
   createSignal,
+  createUniqueId,
   type Component,
   type JSX,
 } from "solid-js";
@@ -105,6 +106,9 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
   const [focusIndex, setFocusIndex] = createSignal(-1);
   const [rowHeight, setRowHeight] = createSignal(readRowHeight());
 
+  /** Names the scroll region below with the caption the table already carries. */
+  const captionId = createUniqueId();
+
   let scroller: HTMLDivElement | undefined;
 
   const virt = createVirtualiser({
@@ -159,10 +163,30 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
         requestAnimationFrame(() => setRowHeight(readRowHeight()));
       }}
       class="min-h-0 flex-1 overflow-auto"
+      // ⛔ THE KEYBOARD CONTRACT NEEDS SOMETHING THAT CAN HOLD FOCUS, and the
+      // caption below was promising one that did not exist. `onKeyDown` is bound
+      // here, but a scrollable `<div>` is not focusable in Chrome or Safari, and
+      // the global handler on the alerts route binds only `/` and `f`. So `j`,
+      // `k`, the arrows and `Home` did nothing at all until the operator had
+      // already Tabbed into a row link — which is the person who least needs the
+      // shortcut. `tabindex` is also what makes this scroller reachable at all:
+      // a scroll container that cannot take focus cannot be scrolled from the
+      // keyboard (WCAG 2.1.1), and on this screen everything scrolls in here.
+      //
+      // It adds one tab stop between the filter bar and the first row, and that
+      // stop is the point rather than the cost: `role="region"` named by the
+      // caption means landing here announces "Alerts, newest activity first. Use
+      // j and k or the arrow keys…", so the shortcut is *told to* the keyboard
+      // user instead of being described to a mouse user. Nothing traps focus —
+      // the region is a plain element in source order, Tab leaves it for the
+      // first row link, and `move()` hands focus to the rows on the first `j`.
+      tabindex="0"
+      role="region"
+      aria-labelledby={captionId}
       onKeyDown={onKeyDown}
     >
       <table class="w-full border-collapse text-[13px]">
-        <caption class="sr-only-focusable">
+        <caption id={captionId} class="sr-only-focusable">
           Alerts, newest activity first. Use j and k or the arrow keys to move between rows, Enter
           to open one.
         </caption>
