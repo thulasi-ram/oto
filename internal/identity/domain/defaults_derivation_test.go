@@ -1,6 +1,12 @@
 package domain_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +14,7 @@ import (
 	lifecycle "github.com/thulasiram/oto/internal/alerts/service"
 	grouping "github.com/thulasiram/oto/internal/grouping/domain"
 	identity "github.com/thulasiram/oto/internal/identity/domain"
+	"github.com/thulasiram/oto/internal/platform/tuning"
 	sources "github.com/thulasiram/oto/internal/sources/domain"
 )
 
@@ -26,7 +33,17 @@ import (
 // ⚠️ These are test-only cross-package imports, the same idiom as
 // `refire_grace_replay_test.go`: `identity/domain` is a settings vocabulary and
 // must not depend on the lifecycle, the grouping engine or the source client at
-// build time. The invariant lives in a test instead.
+// build time.
+//
+// ⭐ WHAT CHANGED, AND WHY THE LAST SECTION OF THIS FILE IS NOW A TRIPWIRE RATHER
+// THAN A LOAD-BEARING WALL. The four packages that need a shipped default used to
+// each spell it out, and this file's agreement check was the ONLY thing holding
+// them together — delete it and four packages could silently disagree, which is a
+// note in a test file standing in for a mechanism. The numbers now live once, in
+// `platform/tuning`, and every other declaration is a REFERENCE to that constant,
+// so the compiler holds them together and the arithmetic below is what this file
+// is for. The agreement check is kept anyway, one layer down: it fires if someone
+// types a literal back in.
 
 // ---------------------------------------------------------------- the corpus
 
@@ -364,14 +381,24 @@ func TestEveryShippedDefaultIsInsideItsOwnBound(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------- the mirrored copies
+// ------------------------------------------------------------- the one home
 
-// ⛔ FOUR PACKAGES CARRY THESE NUMBERS AND ONLY ONE OF THEM IS THE SOURCE.
+// ⛔ FOUR PACKAGES NEED THESE NUMBERS AND EXACTLY ONE PLACE WRITES THEM.
 // `identity/domain` owns the tenant's tuning; the lifecycle machine, the grouping
 // engine and the alerts service each keep a fallback for the case where no
 // SettingsReader is wired. A fallback that disagrees is a silent second product:
 // an org whose settings failed to load would run the OLD arithmetic and nobody
-// would be told. This is the only thing keeping them together.
+// would be told, which is exactly what ADR 0026 caused when it moved three
+// defaults and two copies were missed.
+//
+// None of those packages may import each other — CONTEXT.md §5.4, enforced by
+// depguard — so the numbers moved DOWN to `platform/tuning`, the layer everything
+// may import and that may import nothing, and each package now declares its name
+// as a reference to that constant. This test therefore checks something the
+// compiler mostly checks already; it is kept because the one thing the compiler
+// cannot object to is somebody replacing a reference with a literal that happens
+// to agree today. See TestNoPackageSpellsATuningDefaultAsALiteral below, which
+// objects to that in the syntax, and this one, which objects to it in the value.
 func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -416,5 +443,140 @@ func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 	if svc.FlapWindow != identity.DefaultFlapWindow {
 		t.Errorf("alerts/service.DefaultSettings().FlapWindow = %s, identity/domain says %s",
 			svc.FlapWindow, identity.DefaultFlapWindow)
+	}
+
+	// And the home itself is the home: identity does not merely AGREE with
+	// platform/tuning, it IS it. A `!=` here is unreachable while the declaration
+	// is `= tuning.DefaultRefireGrace`, and reachable the moment it is not.
+	if identity.DefaultRefireGrace != tuning.DefaultRefireGrace {
+		t.Errorf("identity/domain.DefaultRefireGrace = %s but platform/tuning says %s: the "+
+			"settings vocabulary has stopped naming the one home",
+			identity.DefaultRefireGrace, tuning.DefaultRefireGrace)
+	}
+	if identity.DefaultGroupCloseDelay != tuning.DefaultGroupCloseDelay {
+		t.Errorf("identity/domain.DefaultGroupCloseDelay = %s but platform/tuning says %s",
+			identity.DefaultGroupCloseDelay, tuning.DefaultGroupCloseDelay)
+	}
+	if identity.DefaultFlapWindow != tuning.DefaultFlapWindow {
+		t.Errorf("identity/domain.DefaultFlapWindow = %s but platform/tuning says %s",
+			identity.DefaultFlapWindow, tuning.DefaultFlapWindow)
+	}
+}
+
+// sharedTuningDefaults are the constant names that MUST NOT be spelled as a value
+// anywhere but `platform/tuning`. They are the ones more than one package needs;
+// a default only its own package reads (`DefaultUnackedReminderAfter`, the
+// mention policy) is not here and is correctly a literal where it lives.
+var sharedTuningDefaults = map[string]bool{
+	"DefaultRefireGrace":     true,
+	"DefaultResolveGrace":    true,
+	"DefaultGroupCloseDelay": true,
+	"DefaultFlapThreshold":   true,
+	"DefaultFlapWindow":      true,
+	"DefaultStormThreshold":  true,
+	"DefaultStormWindow":     true,
+	"DefaultStormCooldown":   true,
+	"DefaultRawRetention":    true,
+	"DefaultEventRetention":  true,
+}
+
+// ⛔⛔ THE GUARD THAT SURVIVES A FUTURE EDITOR, AND THE ONE THE OLD VERSION OF THIS
+// FILE COULD NOT BE.
+//
+// Value agreement is not the property that was missing. Four packages agreeing
+// TODAY was always true; what was missing was any reason they had to agree
+// TOMORROW, because each one spelled its own number and the only tie between them
+// was the test above. The property that actually holds them together is
+// syntactic: outside `platform/tuning`, every one of these names is declared as a
+// reference to `tuning.<Name>` and never as a literal. That is what makes a
+// divergence a thing you have to do on purpose — and this test is what notices
+// when somebody does it by accident, which is how it happened the first time.
+//
+// The check reads source rather than values on purpose: `DefaultFlapWindow = 2 *
+// time.Hour` in `alerts/service` agreed with identity for a year and was still
+// the defect.
+func TestNoPackageSpellsATuningDefaultAsALiteral(t *testing.T) {
+	t.Parallel()
+
+	// Relative to internal/identity/domain, which is where this test file lives.
+	// A package that grows a copy and is not listed here is not caught, so the
+	// list is every package the numbers are known to have reached.
+	dirs := []string{
+		".",
+		"../../alerts/domain",
+		"../../alerts/service",
+		"../../grouping/domain",
+	}
+
+	fset := token.NewFileSet()
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("reading %s: %v", dir, err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			// Production files only: a test may legitimately write the literal —
+			// `damping_test.go` PINS 20m against the constant, which is the check that
+			// says what the shipped number is.
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatalf("parsing %s: %v", path, err)
+			}
+			for _, decl := range file.Decls {
+				gd, ok := decl.(*ast.GenDecl)
+				if !ok || gd.Tok != token.CONST {
+					continue
+				}
+				for _, spec := range gd.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, ident := range vs.Names {
+						if !sharedTuningDefaults[ident.Name] || i >= len(vs.Values) {
+							continue
+						}
+						if referencesTuning(vs.Values[i]) {
+							continue
+						}
+						t.Errorf("%s declares %s with a value of its own instead of `tuning.%s`. "+
+							"That is the defect ADR 0026 shipped: the copy agrees until the day "+
+							"somebody moves the original, and then an org whose settings failed to "+
+							"load runs the old arithmetic and is told nothing",
+							fset.Position(ident.Pos()), ident.Name, ident.Name)
+					}
+				}
+			}
+		}
+	}
+}
+
+// referencesTuning reports whether an expression is rooted in the `tuning`
+// package. It accepts arithmetic — `2 * tuning.DefaultFlapWindow` is a derived
+// value that still moves with its source, which is the property being protected —
+// and rejects anything that names no constant from the one home.
+func referencesTuning(e ast.Expr) bool {
+	switch v := e.(type) {
+	case *ast.SelectorExpr:
+		id, ok := v.X.(*ast.Ident)
+		return ok && id.Name == "tuning"
+	case *ast.BinaryExpr:
+		return referencesTuning(v.X) || referencesTuning(v.Y)
+	case *ast.ParenExpr:
+		return referencesTuning(v.X)
+	case *ast.CallExpr:
+		for _, a := range v.Args {
+			if referencesTuning(a) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
 	}
 }

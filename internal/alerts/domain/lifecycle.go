@@ -9,24 +9,36 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/tuning"
 )
 
 // Lifecycle defaults (SPEC §B.5, §D.1 org settings). A caller always passes the
 // org's configured value; these are what the configuration defaults to.
+//
+// ⛔ THEY ARE REFERENCES, NOT COPIES, AND THAT IS THE WHOLE FIX. These two used to
+// be spelled here as literals with a ⚠️ comment saying they MIRROR
+// `identity/domain` and must move with it — which is a note, not a mechanism. ADR
+// 0026 moved three of oto's tuning defaults at once and two mirrored copies were
+// missed; the failure is silent, because a stale fallback is only reached by an
+// org whose settings failed to load, so exactly that tenant runs the OLD
+// arithmetic and nobody is told.
+//
+// This package may not import `identity/domain` — CONTEXT.md §5.4, enforced by
+// depguard — so the numbers live one layer below both of us, in
+// `platform/tuning`, which every module may import and which may import none.
+// The derivation for each is stated there.
 const (
 	// DefaultRefireGrace decides T7 from T8: a re-fire inside this window reopens
-	// the existing AlertOccurrence, a re-fire after it opens a new one.
-	//
-	// ⚠️ It MIRRORS `identity/domain.DefaultRefireGrace` and must move with it.
-	// The number is derived rather than chosen — `for + group_interval` for the
-	// modal real rule, 15m + 5m — because the clock starts at the occurrence's
-	// `ended_at`, which T5 below takes from the UPSTREAM `EndsAt`, so the re-fire
-	// has to pay the rule's whole `for:` dwell again before oto can observe it at
-	// all. See ADR 0026 and docs/setup/tuning.md.
-	DefaultRefireGrace = 20 * time.Minute
+	// the existing AlertOccurrence, a re-fire after it opens a new one. The number
+	// is derived rather than chosen — `for + group_interval` for the modal real
+	// rule, 15m + 5m — because the clock starts at the occurrence's `ended_at`,
+	// which T5 below takes from the UPSTREAM `EndsAt`, so the re-fire has to pay
+	// the rule's whole `for:` dwell again before oto can observe it at all. See
+	// ADR 0026 and docs/setup/tuning.md.
+	DefaultRefireGrace = tuning.DefaultRefireGrace
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
 	// before an occurrence may expire.
-	DefaultResolveGrace = 5 * time.Minute
+	DefaultResolveGrace = tuning.DefaultResolveGrace
 )
 
 // Trigger is what happened to make the lifecycle machine run. There are exactly

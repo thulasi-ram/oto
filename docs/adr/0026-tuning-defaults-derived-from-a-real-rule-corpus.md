@@ -242,10 +242,19 @@ runs a `group_interval` other than `5m`, is outside it. **If the owner has one r
 
 Reversal is cheap, in ascending order of cost:
 
-- **The numbers** are five Go constants in `identity/domain/org.go`, mirrored in three places that
-  `defaults_derivation_test.go` pins: `alerts/domain/lifecycle.go`, `grouping/domain/damping.go` and
-  `alerts/service/deps.go`. Changing them changes nothing else, and no migration is involved because
-  a default is not stored.
+- **The numbers** are Go constants in `platform/tuning/defaults.go` and are written nowhere else.
+  Changing them changes nothing else, and no migration is involved because a default is not stored.
+
+  ⛔ **They were mirrored, and this ADR is why they are not any more.** The five constants lived in
+  `identity/domain/org.go` and were COPIED into `alerts/domain/lifecycle.go`,
+  `grouping/domain/damping.go` and `alerts/service/deps.go` — the last as bare literals — because
+  CONTEXT.md §5.4 forbids those packages importing identity. This change moved three of them at
+  once and two of the copies were missed; only `defaults_derivation_test.go` caught it, and a test
+  that is the only guard is not a guard. The numbers now live in a constants-only leaf under
+  `platform`, which every module may import and which may import no domain (CONTEXT.md §5.2c), and
+  every other declaration is a reference the compiler resolves. A miss here is not loud: the copies
+  are the fallback used when an org's settings fail to load, so a stale one means exactly the tenant
+  already having a bad day runs the old arithmetic and is told nothing.
 - **The derivation** is one test. It recomputes each default from the corpus constants, so changing a
   default without changing the reasoning fails the build rather than drifting quietly.
 - **The corpus** is two tables in `docs/setup/tuning.md` and the constants at the top of that test.

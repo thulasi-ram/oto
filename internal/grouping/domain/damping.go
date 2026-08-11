@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/thulasiram/oto/internal/platform/tuning"
+)
 
 // Damping is SPEC §B.6 — oto's automatic defences against its own noise.
 //
@@ -21,25 +25,31 @@ import "time"
 
 // The §D.1 storm defaults. An org may tune them; it may not turn the visibility
 // off, because there is nothing to turn off — the state is the message.
+//
+// ⛔ EVERY ONE OF THEM IS A REFERENCE TO `platform/tuning`, NOT A LITERAL. They
+// were literals, each with a ⚠️ comment saying it MIRRORS `identity/domain` — and
+// a comment is not a mechanism: ADR 0026 moved three of oto's defaults in one
+// change and two mirrored copies were missed. `grouping/domain` may not import
+// `identity/domain` (CONTEXT.md §5.4, enforced by depguard), so the numbers live
+// one layer below both, where every module may name them and nothing may name a
+// module. The derivations are stated there.
 const (
 	// DefaultStormThreshold is how many DISTINCT alerts must join one generation
 	// inside the window before it collapses to a single message.
-	DefaultStormThreshold = 25
+	DefaultStormThreshold = tuning.DefaultStormThreshold
 	// DefaultStormWindow is the window those joins are counted over.
-	DefaultStormWindow = 60 * time.Second
+	DefaultStormWindow = tuning.DefaultStormWindow
 	// DefaultStormCooldown is how long a generation must go WITHOUT a new member
 	// before storm mode ends.
-	DefaultStormCooldown = 10 * time.Minute
+	DefaultStormCooldown = tuning.DefaultStormCooldown
 	// DefaultGroupCloseDelay is how long a generation with no live member stays
-	// open before it closes and freezes its thread.
-	//
-	// ⚠️ It MIRRORS `identity/domain.DefaultGroupCloseDelay`, which is pinned EQUAL
-	// to `refire_grace`: closing this generation is what makes the next fire post a
+	// open before it closes and freezes its thread. It is pinned EQUAL to
+	// `refire_grace`: closing this generation is what makes the next fire post a
 	// brand-new Slack root, so a close delay shorter than the re-fire grace hands a
 	// re-fire that oto classified as "the same problem coming back" a new card
 	// anyway. It was 5m against a 10m grace, and the mismatch defeated the grace.
 	// See ADR 0026.
-	DefaultGroupCloseDelay = 20 * time.Minute
+	DefaultGroupCloseDelay = tuning.DefaultGroupCloseDelay
 )
 
 // StormPolicy is the tuning of storm collapse for one org.

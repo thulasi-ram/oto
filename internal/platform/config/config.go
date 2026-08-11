@@ -14,6 +14,7 @@ import (
 	"github.com/knadh/koanf/v2"
 
 	"github.com/thulasiram/oto/internal/platform/ratelimit"
+	"github.com/thulasiram/oto/internal/platform/tuning"
 )
 
 // EnvPrefix is the prefix every oto environment variable carries.
@@ -319,12 +320,18 @@ func Default() Config {
 		},
 		// The FLOOR the partition dropper starts from, not the last word: §D.11
 		// retention is a table-level property, so `partitions.manage` takes the
-		// MAXIMUM of this and every org's `orgs.settings` value (ADR 0024). These
-		// mirror `identity/domain.DefaultRawRetention` and `DefaultEventRetention`
-		// and must move with them.
+		// MAXIMUM of this and every org's `orgs.settings` value (ADR 0024).
+		//
+		// ⛔ THESE ARE THE SAME NUMBERS `identity/domain` SERVES, so they are the
+		// same CONSTANTS now. They used to be literals under a comment saying they
+		// "mirror identity/domain.DefaultRawRetention and DefaultEventRetention and
+		// must move with them" — and platform may never import a domain (rule 7),
+		// so there was no way to say it in code until the numbers moved down to
+		// `platform/tuning`. A floor that drifted BELOW an org's own retention would
+		// drop a partition that org still expects to be able to read.
 		Retention: RetentionConfig{
-			RawPayloads: 30 * 24 * time.Hour,
-			Events:      13 * 30 * 24 * time.Hour,
+			RawPayloads: tuning.DefaultRawRetention,
+			Events:      tuning.DefaultEventRetention,
 			UIEvents:    24 * time.Hour,
 		},
 		Slack: SlackConfig{

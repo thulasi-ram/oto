@@ -258,6 +258,15 @@ linters:
             - github.com/thulasiram/oto/internal/platform/clock
             - github.com/thulasiram/oto/internal/platform/id
             - github.com/thulasiram/oto/internal/platform/errs
+            # THE ONE HOME OF THE SHIPPED §D.1 TUNING DEFAULTS. `identity/domain`
+            # owns the tenant's tuning, but `alerts/domain`, `grouping/domain`,
+            # `alerts/service` and `platform/config` each need the shipped NUMBER
+            # and none of them may import identity (rule 3 below). They used to
+            # copy it, and ADR 0026 moved three defaults at once with two copies
+            # missed. The numbers therefore live in a constants-only leaf under
+            # platform — the layer everything may import and that may import no
+            # domain (rule 7) — so a mirror is a REFERENCE and cannot drift.
+            - github.com/thulasiram/oto/internal/platform/tuning
           deny:
             - pkg: net/http
               desc: "domain is pure Go: no HTTP"

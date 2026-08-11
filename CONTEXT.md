@@ -139,7 +139,7 @@ Rules you must not get wrong:
 
 | Module | Mark | Responsibility |
 |---|---|---|
-| `platform` | CORE | Config, logging, telemetry, **two** DB pools + tx, httpx, authn, jobs, secrets, ratelimit, errs, clock, id. Not a domain. |
+| `platform` | CORE | Config, logging, telemetry, **two** DB pools + tx, httpx, authn, jobs, secrets, ratelimit, errs, clock, id, and `tuning` — the one home of the shipped §D.1 defaults (§5.2c). Not a domain. |
 | `identity` | CORE | Orgs, users, sessions, PATs and ingest tokens → `Principal` + `TenantScope`. |
 | `sources` | CORE | Alertmanager/Prometheus registry, credentials, health; owns the AM v2 + Prom v1 clients. |
 | `ingestion` | CORE | Durably accept raw batches, normalise to Observations, run the reconciler. Nothing else. |
@@ -189,6 +189,17 @@ internal/<domain>/
    cross-domain `domain` import: it owns `LabelSet`, `AlertKey`, `GroupKey`, `RuleFingerprint`,
    `IdempotencyKey`, `ClusterKey`, `SlackTS`, `Severity`, `State`, `AckState`. It must import no
    other domain package. `pkg/alertkey` does not exist — `pkg/` is reserved for `otoclient`.
+2c. **`internal/platform/tuning` is the ONE home of the shipped §D.1 tuning defaults.** It is
+   constants and nothing else — no types, no behaviour, no import but `time`. `identity/domain`
+   still OWNS the tenant's tuning (the keys, the bounds, the provenance, the `Settings` struct);
+   what moved is only the shipped NUMBER, because `alerts/domain`, `grouping/domain`,
+   `alerts/service` and `platform/config` all need it and rule 4 forbids every one of them
+   importing identity. They used to keep copies with a ⚠️ comment each, ADR 0026 moved three
+   defaults at once and two copies were missed, and the miss is silent — a stale fallback is what
+   an org gets when its settings row fails to load. Every declaration outside this package is now
+   a REFERENCE to it, which the compiler keeps honest; a default only one package reads stays
+   where it lives. This is not a general dumping ground: platform may import no domain (rule 7),
+   so nothing with a domain type in it can come here.
 3. `service` imports `domain` and its own port interfaces. Concretes are injected by
    `internal/app/container.go`.
 4. Cross-domain calls are **service → service**, through an interface declared by the

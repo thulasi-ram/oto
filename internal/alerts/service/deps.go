@@ -8,6 +8,7 @@ import (
 
 	"github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/tuning"
 )
 
 // This file holds the ports `alerts/service` declares for itself BEYOND the four
@@ -272,14 +273,19 @@ func DefaultSettings() Settings {
 	return Settings{
 		RefireGrace:  domain.DefaultRefireGrace,
 		ResolveGrace: domain.DefaultResolveGrace,
-		// ⚠️ MIRRORS `identity/domain.DefaultFlapThreshold` / `DefaultFlapWindow`.
-		// The window is 2h, not 30m: one observable fire→resolve→fire cycle costs
+		// ⛔ THESE TWO WERE BARE LITERALS — `5` and `2 * time.Hour` — under a ⚠️
+		// comment saying they mirror `identity/domain`. They did not even name a
+		// constant, so a reader grepping for the flap defaults found a number here
+		// with nothing tying it to the one that ships, and ADR 0026's window move
+		// (1800→7200) had to be made by hand in every copy. The window is 2h and not
+		// 30m because one observable fire→resolve→fire cycle costs
 		// `group_interval + max(group_interval, for)`, so at the 5m group_interval
 		// the ecosystem actually runs, a 30-minute window could hold at most 6
 		// transitions — and only 2 for the modal `for: 15m` rule — which made a
-		// threshold of 5 unreachable. See ADR 0026.
-		FlapThreshold: 5,
-		FlapWindow:    2 * time.Hour,
+		// threshold of 5 unreachable. The derivation lives with the constants in
+		// `platform/tuning`; this is now a reference to them, like the two above.
+		FlapThreshold: tuning.DefaultFlapThreshold,
+		FlapWindow:    tuning.DefaultFlapWindow,
 	}
 }
 
