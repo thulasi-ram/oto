@@ -262,8 +262,13 @@ export function onUnauthenticated(fn: () => void): () => void {
   return () => unauthenticatedListeners.delete(fn);
 }
 
+// An EXACT match, not a suffix. `endsWith` was exempting any path that merely
+// ended in the same characters — and route params are interpolated unencoded, so
+// an id containing `%2Fauth%2Flogin` produced `/api/v1/alerts/x/auth/login` and
+// silently opted that request out of the publisher. Harmless in practice (the
+// server answers 404, not 401) and free to close.
 function isLoginAttempt(path: string): boolean {
-  return path.endsWith("/auth/login");
+  return path === "/api/v1/auth/login";
 }
 
 /** Perform a request and return the decoded body, or throw an `ApiError`. */

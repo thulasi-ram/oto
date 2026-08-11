@@ -16,7 +16,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RequireSession, SessionProvider } from "~/api/session";
+import type { Component } from "solid-js";
+
+import { RequireSession, SessionProvider, useSession, type Session } from "~/api/session";
 import LoginRoute from "~/routes/login";
 import { item, problem, stubFetch, until, type FetchStub } from "~/test/harness";
 
@@ -39,9 +41,16 @@ const ME = item({
  * guarded room. The room's body is a sentinel string, because "did the guard let
  * them in" is the only thing these tests need to see.
  */
-function renderApp(at: string): void {
+// ⛔ `gcTime` IS A PARAMETER BECAUSE THE DEFAULT OF 0 HID A REAL BUG. A client
+// that evicts the instant a query unmounts cannot demonstrate a cache surviving a
+// sign-out — which is the one property that made the cross-account leak possible.
+// The app's real client is module-scoped with a five minute gcTime.
+function renderApp(at: string, opts: { readonly gcTime?: number } = {}): QueryClient {
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 }, mutations: { retry: 0 } },
+    defaultOptions: {
+      queries: { retry: false, gcTime: opts.gcTime ?? 0, staleTime: 0 },
+      mutations: { retry: 0 },
+    },
   });
   const history = createMemoryHistory();
   history.set({ value: at });
@@ -55,13 +64,23 @@ function renderApp(at: string): void {
           component={() => (
             <RequireSession>
               <p>the alert list</p>
+              <SessionProbe />
             </RequireSession>
           )}
         />
       </MemoryRouter>
     </QueryClientProvider>
   ));
+  return client;
 }
+
+// A handle on the session from inside the guarded tree, so a test can drive the
+// real `signOut` rather than a reimplementation of it.
+let probed: Session | undefined;
+const SessionProbe: Component = () => {
+  probed = useSession();
+  return null;
+};
 
 /** Fill both fields and submit, the way an operator does. */
 async function fillAndSubmit(email: string, password: string): Promise<void> {
@@ -150,6 +169,51 @@ describe("the login screen", () => {
     // trying would spend a budget that is already counting against them.
     expect(alert.textContent).toMatch(/too many attempts/i);
     expect(alert.textContent).toMatch(/30s/);
+  });
+
+  // ⛔ THESE TWO WERE FOUND BY A RED TEAM, NOT BY THIS FILE, and the reason is
+  // worth keeping: every test above drives the app from OUTSIDE the session —
+  // boot, login, refusal, expiry. None of them signed out. The one action a
+  // signed-in operator takes to protect themselves was the one path with no
+  // coverage at all, and it had two security defects in it.
+
+  it("evicts the previous account's cached data on sign out", async () => {
+    http.on("GET /api/v1/me", ME);
+    http.on("POST /api/v1/auth/logout", { status: 204 });
+
+    // A realistic cache, not the gcTime: 0 that made this invisible.
+    const client = renderApp("/alerts", { gcTime: 5 * 60_000 });
+    await until(() => expect(screen.getByText("the alert list")).toBeTruthy());
+
+    // Stand in for a loaded screen: a key with no org or user in it, which is
+    // every key this app uses.
+    client.setQueryData(["alerts", "list", {}], { data: [{ id: "org-a-secret" }] });
+    expect(client.getQueryData(["alerts", "list", {}])).toBeTruthy();
+
+    await probed!.signOut();
+
+    expect(client.getQueryData(["alerts", "list", {}])).toBeUndefined();
+    expect(client.getQueryCache().getAll()).toHaveLength(0);
+    // invalidateQueries would leave the payload in place and merely mark it
+    // stale — and stale data still renders synchronously to the next account.
+  });
+
+  it("keeps the operator signed in when the revoke fails", async () => {
+    http.on("GET /api/v1/me", ME);
+    http.on("POST /api/v1/auth/logout", problem(503, "unavailable"));
+
+    renderApp("/alerts");
+    await until(() => expect(screen.getByText("the alert list")).toBeTruthy());
+
+    // The revoke and the Set-Cookie clear are ONE response. A failed logout
+    // means the cookie is still in the jar and still resolves, so reporting
+    // success would send the operator away while the session is live — and the
+    // next person to press F5 lands inside their account.
+    await expect(probed!.signOut()).rejects.toBeTruthy();
+
+    expect(probed!.me()).not.toBeNull();
+    expect(screen.getByText("the alert list")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /sign in to oto/i })).toBeNull();
   });
 
   it("returns a visitor to the door when the session dies mid-visit", async () => {

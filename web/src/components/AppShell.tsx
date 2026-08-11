@@ -234,27 +234,43 @@ const SignOut: Component = () => {
   const session = useSession();
   const navigate = useNavigate();
   const [busy, setBusy] = createSignal(false);
+  const [failed, setFailed] = createSignal(false);
 
   const go = async (): Promise<void> => {
     setBusy(true);
+    setFailed(false);
     try {
       await session.signOut();
       navigate("/login", { replace: true });
+    } catch {
+      // ⛔ STILL SIGNED IN, AND THE UI MUST SAY SO. The revoke and the cookie
+      // clear are one response, so a failure means the session is live. Bouncing
+      // to /login here would be the dangerous lie: the operator walks away and
+      // the next person's refresh resolves the surviving cookie straight back
+      // into this account.
+      setFailed(true);
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <button
-      type="button"
-      onClick={() => void go()}
-      disabled={busy()}
-      title={session.me()?.user?.email ?? undefined}
-      class="rounded-[4px] px-1.5 py-1 text-[11px] font-medium text-ink-muted transition-colors duration-100 hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
-    >
-      Sign out
-    </button>
+    <>
+      <Show when={failed()}>
+        <span role="alert" class="text-[11px] font-medium text-ink">
+          Still signed in — sign-out failed. Try again.
+        </span>
+      </Show>
+      <button
+        type="button"
+        onClick={() => void go()}
+        disabled={busy()}
+        title={session.me()?.user?.email ?? undefined}
+        class="rounded-[4px] px-1.5 py-1 text-[11px] font-medium text-ink-muted transition-colors duration-100 hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        Sign out
+      </button>
+    </>
   );
 };
 

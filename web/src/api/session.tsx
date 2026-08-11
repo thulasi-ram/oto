@@ -34,6 +34,7 @@
  * redirect fired from inside a fetch handler.
  */
 import { useNavigate } from "@solidjs/router";
+import { useQueryClient } from "@tanstack/solid-query";
 import {
   createContext,
   createResource,
@@ -54,6 +55,14 @@ export interface Session {
   /** True until the boot probe has answered. Nothing authenticated renders yet. */
   readonly resolving: Accessor<boolean>;
   readonly signIn: (body: LoginRequest) => Promise<void>;
+  /**
+   * Revoke the session server-side and tear down every trace of it locally.
+   *
+   * ⛔ IT REJECTS IF THE REVOKE FAILED, and the caller must keep the user signed
+   * in when it does. See the ⛔ on the implementation: a failed logout leaves a
+   * LIVE cookie, so reporting success would be a lie with a live credential
+   * behind it.
+   */
   readonly signOut: () => Promise<void>;
 }
 
@@ -69,6 +78,27 @@ export function useSession(): Session {
 export const SessionProvider: ParentComponent = (props) => {
   // `undefined` = not yet asked. `null` = asked, and the answer was nobody.
   const [me, setMe] = createSignal<Me | null | undefined>(undefined);
+  const queryClient = useQueryClient();
+
+  /**
+   * Forget the previous session completely.
+   *
+   * ⛔ `setMe(null)` IS NOT ENOUGH, and the gap was a cross-tenant data leak.
+   * The `QueryClient` is created once at module scope in App.tsx with a five
+   * minute `gcTime`, and NO cache key carries an org or a user — `qk.alerts.list`
+   * is `["alerts","list",{…filters}]` and nothing else. So operator A could sign
+   * out, operator B sign in on the same browser within five minutes, and B's
+   * `/alerts` would paint A's rows synchronously from cache before any refetch
+   * returned — and keep them if the refetch was slow or failed. Because
+   * `ResolveByEmail` is org-blind, A and B need not even be in the same tenant.
+   *
+   * `invalidateQueries` is NOT the tool: it marks stale and keeps the data, which
+   * is exactly the payload that must not be rendered. Only `clear()` evicts.
+   */
+  const forget = (): void => {
+    setMe(null);
+    queryClient.clear();
+  };
 
   // The boot probe. A 401 is an ANSWER here, not a failure: it is how the server
   // says "nobody", and treating it as an error would put the app in an error
@@ -84,7 +114,9 @@ export const SessionProvider: ParentComponent = (props) => {
   });
 
   // A session that dies mid-visit. Flip state; the guard decides where to go.
-  onCleanup(onUnauthenticated(() => setMe(null)));
+  // Through `forget`, because a session that expired under one account and is
+  // replaced by another leaks the same way a sign-out does.
+  onCleanup(onUnauthenticated(() => forget()));
 
   const session: Session = {
     me,
@@ -95,14 +127,23 @@ export const SessionProvider: ParentComponent = (props) => {
       setMe(await postLogin(body));
     },
     signOut: async () => {
-      try {
-        await postLogout();
-      } finally {
-        // Signed out locally even if the revoke failed. Leaving the shell up
-        // after the user asked to leave is worse than a session row that lives
-        // until it expires on its own.
-        setMe(null);
-      }
+      // ⛔ THE REVOKE MUST SUCCEED BEFORE ANYTHING LOCAL CHANGES, and an earlier
+      // version of this function got that exactly backwards. It cleared local
+      // state in a `finally`, reasoning that "leaving the shell up after the user
+      // asked to leave is worse than a session row that lives until it expires".
+      //
+      // That reasoning is wrong about WHERE the credential lives. Server-side
+      // revocation and the `Set-Cookie` clear are the SAME RESPONSE: if the POST
+      // fails — a network blip, a 502 from a proxy, a 503 during a rolling deploy
+      // — no `Set-Cookie` arrives, `oto_session` is still in the jar, and it still
+      // resolves server-side. Signing out locally would then send the operator
+      // away believing they were out while the next person to press F5 lands
+      // inside their account with no password.
+      //
+      // So a failed sign-out keeps the user signed in and says so. Optimistic UI
+      // is safe for almost everything; it is never safe for this.
+      await postLogout();
+      forget();
     },
   };
 
