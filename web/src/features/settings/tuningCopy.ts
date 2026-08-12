@@ -418,23 +418,32 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     ],
     amRule:
       "Keep it at or above group_interval, and at or above the re-fire grace — the second one is not a suggestion. A close delay shorter than the grace gives you a re-fire that oto correctly classified as the same problem coming back, and then posts a brand-new root card for it anyway, which is the entire thing the grace exists to prevent. oto shipped 5m against a 10m grace and defeated half its own grace that way; the two defaults are now equal. Equal is safe rather than racy: this clock starts at the group's last activity, which is the resolve as oto observed it, while the grace clock starts at the upstream ended_at, which is the same instant or earlier.",
+    // ⛔ ONE SUGGESTION CLEARS BOTH FLOORS, BECAUSE THERE ARE TWO AND THE BUTTON
+    // WRITES ONE NUMBER. The first branch used to offer `group_interval` alone
+    // while saying nothing about the grace — so against the shipped pair
+    // (group_interval 5m, grace 20m) the button read "use 300", and clicking it
+    // landed the operator straight in the second branch: a second warning and a
+    // second button, from a fix that was known-insufficient when it was offered.
     guide: (v, am, num) => {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
       const named = amPhrase("group_interval", am.groupInterval);
+      const refire = num("refire_grace_s");
+      // An empty or mid-edit grace box parses to NaN. It withdraws the second
+      // comparison rather than poisoning the first one.
+      const want = Number.isFinite(refire) ? Math.max(gi, refire) : gi;
       if (v < gi) {
         return {
           level: "inert",
           text: `Below ${named}. A generation can close between two batches of one incident.`,
-          suggest: gi,
+          suggest: want,
         };
       }
-      const refire = num("refire_grace_s");
       if (Number.isFinite(refire) && v < refire) {
         return {
           level: "tight",
           text: `Shorter than the re-fire grace (${duration(refire)}). A re-fire inside the grace window would still find a closed group, so it gets a new root message despite the grace.`,
-          suggest: refire,
+          suggest: want,
         };
       }
       return ok(`At or above ${named}, and not shorter than the re-fire grace.`);
@@ -494,6 +503,14 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
       const w = num("flap_window_s");
+      // ⛔ WITHOUT THE WINDOW THERE IS NO ARITHMETIC, AND THIS USED TO SAY "ok"
+      // ANYWAY. Every number below is derived from `w`: an empty or mid-edit
+      // window box makes the ceiling NaN, both comparisons then read false, and
+      // control fell through to `ok()` — the operator was told "About half the
+      // observable ceiling of NaN" in the confident tone they act on, on the
+      // strength of no computation at all. The discipline stated at the top of
+      // `KnobCopy.guide` is to withhold instead.
+      if (!Number.isFinite(w)) return null;
       const cadence = observableCycleS(gi, ASSUMED_RULE_FOR_S);
       const ceiling = 2 * Math.floor(w / cadence);
       // oto does not read rule files, so the `for:` half of this arithmetic is an
@@ -540,18 +557,28 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       if (gi === null) return null;
       const named = amPhrase("group_interval", am.groupInterval);
       const cycle = observableCycleS(gi, ASSUMED_RULE_FOR_S);
-      if (v < cycle) {
-        return {
-          level: "inert",
-          text: `Shorter than one observable cycle (${duration(cycle)}, from ${named} and an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}). The window cannot contain a single fire-resolve-fire cycle, so no threshold is reachable.`,
-          suggest: cycle * 3,
-        };
-      }
       const t = num("flap_threshold");
       // `threshold ~ floor(W / cycle)` is the "half the ceiling" rule solved for W.
       // It used to carry an extra `x 2`, which demanded a quarter of the ceiling and
       // disagreed with the threshold knob's own verdict on the same two numbers.
-      const need = Math.round(t * cycle);
+      //
+      // ⛔ IT IS ALSO WHAT THE `inert` BRANCH OFFERS, AND THAT BRANCH USED TO OFFER
+      // `cycle x 3` — a 3 appearing in neither `amRule` nor `docs/setup/tuning.md`,
+      // and insufficient by construction for any threshold above 3, so the operator
+      // was asked to click twice. There is one rule for this knob and one suggestion
+      // derived from it. When the threshold box does not parse there is no such
+      // number, and the floor the `inert` branch checks — one whole cycle — is the
+      // most that can honestly be offered. `Math.ceil` because `group_wait: 500ms`
+      // is legal upstream, so a sub-second `group_interval` makes the cycle
+      // fractional while the knob is `v.integer()`.
+      const need = Math.max(Math.ceil(cycle), Number.isFinite(t) ? Math.round(t * cycle) : 0);
+      if (v < cycle) {
+        return {
+          level: "inert",
+          text: `Shorter than one observable cycle (${duration(cycle)}, from ${named} and an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}). The window cannot contain a single fire-resolve-fire cycle, so no threshold is reachable.`,
+          suggest: need,
+        };
+      }
       if (Number.isFinite(t) && v < need) {
         return {
           level: "tight",
@@ -560,7 +587,9 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
         };
       }
       return ok(
-        `Wide enough for a threshold of ${t} at an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}, against ${named}.`,
+        Number.isFinite(t)
+          ? `Wide enough for a threshold of ${t} at an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}, against ${named}.`
+          : `At least one observable cycle (${duration(cycle)}) wide, against ${named} and an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}. The threshold box does not currently hold a number, so there is no threshold to size this against.`,
       );
     },
   },
@@ -600,8 +629,17 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
           suggest: gi * 3,
         };
       }
+      // ⛔ `amRule` STATES TWO DIFFERENT THINGS AND THE SENTENCE USED TO CONFLATE
+      // THEM. The floor is "at or above group_interval" — that is what decides the
+      // level, and it is right. The recommendation is "two to four times
+      // group_interval is the useful range". Between 1 x and 2 x the old copy read
+      // "1.0 x group_interval — inside the useful 2 x to 4 x range", which refutes
+      // itself in eight words, on the screen whose entire purpose is prose.
+      const ratio = `${(v / gi).toFixed(1)} x group_interval`;
       return ok(
-        `${(v / gi).toFixed(1)} x group_interval — inside the useful 2 x to 4 x range, against ${named}.`,
+        v < gi * 2
+          ? `${ratio} — at or above ${named}, so it is a real digest, though the useful range starts at 2 x (${duration(gi * 2)}).`
+          : `${ratio} — inside the useful 2 x to 4 x range, against ${named}.`,
       );
     },
   },
@@ -663,8 +701,17 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
           suggest: gw * 2,
         };
       }
+      // ⛔ `group_wait: 0` IS A REAL SETTING AND THE RATIO DIVIDED BY IT. It is what
+      // an operator writes to switch batching delay off entirely, oto's own parser
+      // covers it (`amconfig_test.go:158`), and `RouteTimingDTO.value_ms` says
+      // outright that `0` is never a stand-in for "not known" — so every legal
+      // window here reported "Infinity x group_wait", a number nobody can act on,
+      // for a value that is in fact fine. With no batching delay there is no batch
+      // boundary to be past, and that is what the sentence says instead.
       return ok(
-        `${(v / gw).toFixed(1)} x group_wait — comfortably past the batch boundary, against ${named}.`,
+        gw > 0
+          ? `${(v / gw).toFixed(1)} x group_wait — comfortably past the batch boundary, against ${named}.`
+          : `No batching delay at all (${named}), so there is no batch boundary for a burst to fall either side of.`,
       );
     },
   },
