@@ -40,18 +40,42 @@ SELECT cache_key, org_id, payload, computed_at, expires_at
   FROM enrichment_cache
  WHERE cache_key = $1 AND org_id = $2 AND expires_at > now()`
 
+// cacheRow is the row model of `enrichment_cache`. Unexported, per the
+// three-model rule: it never leaves this package.
+type cacheRow struct {
+	key        string
+	orgID      uuid.UUID
+	payload    []byte
+	computedAt time.Time
+	expiresAt  time.Time
+}
+
+func (r *cacheRow) scanDest() []any {
+	return []any{&r.key, &r.orgID, &r.payload, &r.computedAt, &r.expiresAt}
+}
+
+func (r *cacheRow) toDomain() (domain.CacheEntry, error) {
+	return domain.NewCacheEntry(domain.CacheEntryParams{
+		Key:        r.key,
+		OrgID:      r.orgID.String(),
+		Payload:    r.payload,
+		ComputedAt: r.computedAt,
+		ExpiresAt:  r.expiresAt,
+	})
+}
+
 // Get returns a live entry. A miss and an expired entry are the same answer.
 func (r *CacheRepository) Get(ctx context.Context, s db.TenantScope, key string) (domain.CacheEntry, bool, error) {
+	// This guard stays in the repository even though NewCacheEntry now owns
+	// enrichment_cache_key_ck: `key` here is a caller's LOOKUP string, which never
+	// becomes a CacheEntry. A key the column cannot hold cannot be in the table,
+	// so it is a miss, and answering it without a round trip is the point.
 	if key == "" || len(key) > domain.MaxCacheKeyBytes {
 		return domain.CacheEntry{}, false, nil
 	}
 
-	var (
-		e     domain.CacheEntry
-		orgID uuid.UUID
-	)
-	err := r.db(ctx).QueryRow(ctx, getCacheSQL, key, s.OrgID()).
-		Scan(&e.Key, &orgID, &e.Payload, &e.ComputedAt, &e.ExpiresAt)
+	var row cacheRow
+	err := r.db(ctx).QueryRow(ctx, getCacheSQL, key, s.OrgID()).Scan(row.scanDest()...)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return domain.CacheEntry{}, false, nil
@@ -59,9 +83,11 @@ func (r *CacheRepository) Get(ctx context.Context, s db.TenantScope, key string)
 		return domain.CacheEntry{}, false, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
 			"could not read the enrichment cache")
 	}
-	e.OrgID = orgID.String()
-	e.ComputedAt = e.ComputedAt.UTC()
-	e.ExpiresAt = e.ExpiresAt.UTC()
+
+	e, err := row.toDomain()
+	if err != nil {
+		return domain.CacheEntry{}, false, errs.Internal("enrichment_cache_row_invalid", err)
+	}
 	return e, true, nil
 }
 
@@ -75,25 +101,13 @@ ON CONFLICT (cache_key) DO UPDATE SET
   expires_at  = EXCLUDED.expires_at`
 
 // Put writes an entry, overwriting any existing one for the key.
+//
+// It re-checks nothing: enrichment_cache_key_ck and enrichment_cache_exp_ck are
+// proven by NewCacheEntry, and a CacheEntry that reached this method is one the
+// constructor already vouched for.
 func (r *CacheRepository) Put(ctx context.Context, s db.TenantScope, e domain.CacheEntry) error {
-	switch {
-	case e.Key == "" || len(e.Key) > domain.MaxCacheKeyBytes:
-		return errs.New(errs.KindValidation, "enrichment_bad_cache_key",
-			"a cache key must be 1..512 bytes")
-	case !e.ExpiresAt.After(e.ComputedAt):
-		// enrichment_cache_exp_ck. An entry that expires before it was computed
-		// is a clock bug, and storing it would make the constraint the thing
-		// that reports it.
-		return errs.New(errs.KindValidation, "enrichment_bad_cache_expiry",
-			"expires_at must be strictly after computed_at")
-	}
-	payload := e.Payload
-	if len(payload) == 0 {
-		payload = []byte(`{}`)
-	}
-
 	if _, err := r.db(ctx).Exec(ctx, putCacheSQL,
-		e.Key, s.OrgID(), payload, e.ComputedAt.UTC(), e.ExpiresAt.UTC()); err != nil {
+		e.Key(), s.OrgID(), e.Payload(), e.ComputedAt(), e.ExpiresAt()); err != nil {
 		return errs.Wrap(err, errs.KindInternal, CodeWriteFailed,
 			"could not write the enrichment cache")
 	}

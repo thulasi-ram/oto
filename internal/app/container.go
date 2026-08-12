@@ -432,7 +432,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	occurrenceRepo := alertsrepo.NewOccurrenceRepository(general)
 	eventRepo := alertsrepo.NewEventRepository(general, clk)
 	snoozeRepo := alertsrepo.NewSnoozeRepository(general, clk)
-	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general)
+	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general).WithLogger(logger)
 
 	groupVersionsPort := &groupVersions{}
 	notificationsPort := &notificationReader{}

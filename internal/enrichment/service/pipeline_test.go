@@ -83,7 +83,7 @@ func TestNewTreatsTheOptionalPortsAsOptional(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, domain.StatusOK, out.Results[0].Status)
+	assert.Equal(t, domain.StatusOK, out.Results[0].Status())
 	assert.False(t, out.Released, "there is nothing to release the card to")
 	assert.Equal(t, 1, e.repo.writes(), "the provenanced record is written regardless")
 }
@@ -113,7 +113,7 @@ func TestRunDefaultsAnUnknownPhaseToInline(t *testing.T) {
 	assert.Equal(t, domain.PhaseInline, out.Phase,
 		"an unreadable phase means the pass that blocks the notification")
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, domain.PhaseInline, out.Results[0].Phase)
+	assert.Equal(t, domain.PhaseInline, out.Results[0].Phase())
 }
 
 // ---------------------------------------------------- isolation between enrichers
@@ -136,19 +136,19 @@ func TestOneFailingEnricherDoesNotTakeTheOthersDown(t *testing.T) {
 	got := byName(out.Results)
 	require.Len(t, got, 4, "every enricher is accounted for, however it ended")
 
-	assert.Equal(t, domain.StatusFailed, got["test.boom"].Status)
-	assert.Contains(t, got["test.boom"].Error, "prometheus refused")
+	assert.Equal(t, domain.StatusFailed, got["test.boom"].Status())
+	assert.Contains(t, got["test.boom"].ErrorText(), "prometheus refused")
 
-	assert.Equal(t, domain.StatusFailed, got["test.crash"].Status)
-	assert.Contains(t, got["test.crash"].Error, "panicked",
+	assert.Equal(t, domain.StatusFailed, got["test.crash"].Status())
+	assert.Contains(t, got["test.crash"].ErrorText(), "panicked",
 		"a panicking enricher is a recorded failure, not a dead process")
 
-	assert.Equal(t, domain.StatusTimeout, got["test.slow"].Status)
+	assert.Equal(t, domain.StatusTimeout, got["test.slow"].Status())
 
-	assert.Equal(t, domain.StatusOK, got["test.good"].Status,
+	assert.Equal(t, domain.StatusOK, got["test.good"].Status(),
 		"the healthy enricher's answer survives its neighbours")
-	assert.Equal(t, map[string]any{"who": "test.good"}, got["test.good"].Payload)
-	assert.Empty(t, got["test.good"].Error)
+	assert.Equal(t, map[string]any{"who": "test.good"}, got["test.good"].Payload())
+	assert.Empty(t, got["test.good"].ErrorText())
 
 	assert.Equal(t, 1, out.Succeeded(), "one of four produced usable content")
 }
@@ -203,14 +203,13 @@ func TestEveryFailurePathDegradesToAnExplicitNotAvailable(t *testing.T) {
 			require.Len(t, out.Results, 1)
 			rec := out.Results[0]
 
-			assert.Equal(t, tc.status, rec.Status)
-			assert.False(t, rec.Status.Succeeded(), "a failure never counts as content")
-			assert.Equal(t, map[string]any{}, rec.Payload,
+			assert.Equal(t, tc.status, rec.Status())
+			assert.False(t, rec.Status().Succeeded(), "a failure never counts as content")
+			assert.Equal(t, map[string]any{}, rec.Payload(),
 				"a failed enrichment carries an EMPTY payload, never a partly-filled one")
-			assert.NotEmpty(t, rec.Error,
+			assert.NotEmpty(t, rec.ErrorText(),
 				"enrichments_err_ck: a failure that cannot say why is a rumour")
-			assert.False(t, rec.FromCache)
-			assert.NoError(t, rec.Validate(), "and the row is still storable")
+			assert.False(t, rec.FromCache())
 		})
 	}
 }
@@ -233,13 +232,12 @@ func TestAPartialAnswerAlongsideAnErrorIsKept(t *testing.T) {
 
 	require.Len(t, out.Results, 1)
 	rec := out.Results[0]
-	assert.Equal(t, domain.StatusPartial, rec.Status)
-	assert.Equal(t, map[string]any{"count_24h": 3}, rec.Payload)
-	assert.Empty(t, rec.Error, "a partial answer is not a failure, so it needs no error string")
-	assert.Contains(t, rec.Warnings, "only_one_window_available")
-	assert.Contains(t, strings.Join(rec.Warnings, "|"), "30-day window",
+	assert.Equal(t, domain.StatusPartial, rec.Status())
+	assert.Equal(t, map[string]any{"count_24h": 3}, rec.Payload())
+	assert.Empty(t, rec.ErrorText(), "a partial answer is not a failure, so it needs no error string")
+	assert.Contains(t, rec.Warnings(), "only_one_window_available")
+	assert.Contains(t, strings.Join(rec.Warnings(), "|"), "30-day window",
 		"the reason is demoted to a warning rather than dropped")
-	assert.NoError(t, rec.Validate())
 }
 
 // TestSkippedEnricherIsRecordedNotDropped: a missing enrichment and one that
@@ -253,9 +251,9 @@ func TestSkippedEnricherIsRecordedNotDropped(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, domain.StatusSkipped, out.Results[0].Status)
-	assert.Equal(t, map[string]any{}, out.Results[0].Payload)
-	assert.Empty(t, out.Results[0].Error, "declining is not failing")
+	assert.Equal(t, domain.StatusSkipped, out.Results[0].Status())
+	assert.Equal(t, map[string]any{}, out.Results[0].Payload())
+	assert.Empty(t, out.Results[0].ErrorText(), "declining is not failing")
 	assert.Zero(t, declines.callCount(), "Applicable said no, so Enrich was never called")
 }
 
@@ -398,7 +396,7 @@ func TestAFailedDeferralStillLeavesAnHonestRecord(t *testing.T) {
 
 	assert.Equal(t, []string{"test.slow"}, out.Deferred)
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, domain.StatusTimeout, out.Results[0].Status,
+	assert.Equal(t, domain.StatusTimeout, out.Results[0].Status(),
 		"the UI is honest either way; only the retry is lost")
 	assert.True(t, out.Released, "and the card still goes out")
 }
@@ -414,7 +412,7 @@ func TestThePhaseBudgetIsACeilingNotAWait(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, domain.StatusTimeout, out.Results[0].Status)
+	assert.Equal(t, domain.StatusTimeout, out.Results[0].Status())
 	assert.True(t, out.Released, "the notification did not wait for it")
 }
 
@@ -432,12 +430,29 @@ func TestTheAsyncBudgetIsTheGenerousOne(t *testing.T) {
 	out := e.run(t, domain.PhaseAsync)
 
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, domain.StatusTimeout, out.Results[0].Status,
+	assert.Equal(t, domain.StatusTimeout, out.Results[0].Status(),
 		"the async pass is bounded too: a wedged enricher must not hold a worker forever")
 	assert.False(t, out.Notified, "a timeout produced no content to announce")
 }
 
 // -------------------------------------------------------------------- caching
+
+// cacheEntry seeds the fake cache. It goes through the constructor because there
+// is no other way in: an entry the table would refuse is not representable, so a
+// fixture cannot seed one either.
+func cacheEntry(t *testing.T, key, orgID, payload string, computed, expires time.Time) domain.CacheEntry {
+	t.Helper()
+
+	e, err := domain.NewCacheEntry(domain.CacheEntryParams{
+		Key:        key,
+		OrgID:      orgID,
+		Payload:    []byte(payload),
+		ComputedAt: computed,
+		ExpiresAt:  expires,
+	})
+	require.NoError(t, err)
+	return e
+}
 
 // TestACacheHitIsServedAndSaysSo. FromCache is PROVENANCE, not an optimisation
 // detail: a reader must be able to tell a fresh answer from a reused one.
@@ -449,21 +464,16 @@ func TestACacheHitIsServedAndSaysSo(t *testing.T) {
 
 	key := domain.CacheKey(e.orgID.String(), "test.alpha", 1, "an-alert-key")
 	require.NotEmpty(t, key)
-	e.cache.entries[key] = domain.CacheEntry{
-		Key:        key,
-		OrgID:      e.orgID.String(),
-		Payload:    []byte(`{"cached":true}`),
-		ComputedAt: baseTime.Add(-time.Minute),
-		ExpiresAt:  baseTime.Add(time.Minute),
-	}
+	e.cache.entries[key] = cacheEntry(t, key, e.orgID.String(), `{"cached":true}`,
+		baseTime.Add(-time.Minute), baseTime.Add(time.Minute))
 
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
 	rec := out.Results[0]
-	assert.Equal(t, domain.StatusOK, rec.Status)
-	assert.True(t, rec.FromCache, "provenance: this answer was reused, not recomputed")
-	assert.Equal(t, baseTime.Add(time.Minute), rec.ExpiresAt, "and it inherits the entry's expiry")
+	assert.Equal(t, domain.StatusOK, rec.Status())
+	assert.True(t, rec.FromCache(), "provenance: this answer was reused, not recomputed")
+	assert.Equal(t, baseTime.Add(time.Minute), rec.ExpiresAt(), "and it inherits the entry's expiry")
 	assert.Zero(t, alpha.callCount(), "a hit means the upstream was never called")
 }
 
@@ -488,8 +498,8 @@ func TestACacheMissComputesAndWritesBack(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.False(t, out.Results[0].FromCache)
-	assert.Equal(t, baseTime.Add(5*time.Minute), out.Results[0].ExpiresAt)
+	assert.False(t, out.Results[0].FromCache())
+	assert.Equal(t, baseTime.Add(5*time.Minute), out.Results[0].ExpiresAt())
 	assert.Equal(t, 1, alpha.callCount())
 
 	keys := e.cache.keys()
@@ -511,19 +521,14 @@ func TestAnExpiredCacheEntryIsNeverServed(t *testing.T) {
 	e := newEnv(t, nil, alpha)
 
 	key := domain.CacheKey(e.orgID.String(), "test.alpha", 1, "an-alert-key")
-	e.cache.entries[key] = domain.CacheEntry{
-		Key:        key,
-		OrgID:      e.orgID.String(),
-		Payload:    []byte(`{"stale":true}`),
-		ComputedAt: baseTime.Add(-2 * time.Hour),
-		ExpiresAt:  baseTime.Add(-time.Hour),
-	}
+	e.cache.entries[key] = cacheEntry(t, key, e.orgID.String(), `{"stale":true}`,
+		baseTime.Add(-2*time.Hour), baseTime.Add(-time.Hour))
 
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.False(t, out.Results[0].FromCache, "an expired entry is a miss")
-	assert.Equal(t, map[string]any{"who": "test.alpha"}, out.Results[0].Payload)
+	assert.False(t, out.Results[0].FromCache(), "an expired entry is a miss")
+	assert.Equal(t, map[string]any{"who": "test.alpha"}, out.Results[0].Payload())
 	assert.Equal(t, 1, alpha.callCount(), "so the upstream is consulted again")
 }
 
@@ -536,24 +541,19 @@ func TestAnEntryStopsBeingServedTheInstantItExpires(t *testing.T) {
 	e := newEnv(t, nil, alpha)
 
 	key := domain.CacheKey(e.orgID.String(), "test.alpha", 1, "an-alert-key")
-	e.cache.entries[key] = domain.CacheEntry{
-		Key:        key,
-		OrgID:      e.orgID.String(),
-		Payload:    []byte(`{"cached":true}`),
-		ComputedAt: baseTime,
-		ExpiresAt:  baseTime.Add(time.Minute),
-	}
+	e.cache.entries[key] = cacheEntry(t, key, e.orgID.String(), `{"cached":true}`,
+		baseTime, baseTime.Add(time.Minute))
 
 	first := e.run(t, domain.PhaseInline)
 	require.Len(t, first.Results, 1)
-	require.True(t, first.Results[0].FromCache, "inside the TTL it is a hit")
+	require.True(t, first.Results[0].FromCache(), "inside the TTL it is a hit")
 
 	// Exactly at the expiry, not past it: Expired is `!ExpiresAt.After(now)`.
 	e.clk.Advance(time.Minute)
 
 	second := e.run(t, domain.PhaseInline)
 	require.Len(t, second.Results, 1)
-	assert.False(t, second.Results[0].FromCache, "at its expiry the entry is dead, not nearly dead")
+	assert.False(t, second.Results[0].FromCache(), "at its expiry the entry is dead, not nearly dead")
 	assert.Equal(t, 1, alpha.callCount())
 }
 
@@ -574,7 +574,7 @@ func TestACacheThatIsDownIsASlowPipelineNeverABrokenOne(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, domain.StatusOK, out.Results[0].Status, "a read failure is a miss, not a failure")
+	assert.Equal(t, domain.StatusOK, out.Results[0].Status(), "a read failure is a miss, not a failure")
 	assert.Equal(t, 1, alpha.callCount())
 	gets, puts := e.cache.counts()
 	assert.Equal(t, 1, gets)
@@ -591,7 +591,7 @@ func TestAnEnricherThatCannotNameItsInputsAlwaysComputes(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.False(t, out.Results[0].FromCache)
+	assert.False(t, out.Results[0].FromCache())
 	gets, puts := e.cache.counts()
 	assert.Zero(t, gets, "no seed, no lookup")
 	assert.Zero(t, puts)
@@ -626,8 +626,8 @@ func TestAFailedResultIsNeverCached(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, domain.StatusFailed, out.Results[0].Status)
-	assert.Zero(t, out.Results[0].ExpiresAt, "a failure does not go stale, it is simply not reused")
+	assert.Equal(t, domain.StatusFailed, out.Results[0].Status())
+	assert.Zero(t, out.Results[0].ExpiresAt(), "a failure does not go stale, it is simply not reused")
 	_, puts := e.cache.counts()
 	assert.Zero(t, puts, "the next fire must try again rather than inherit the failure")
 }
@@ -662,10 +662,10 @@ func TestARequestedTTLIsClampedIntoTheStorableRange(t *testing.T) {
 
 			require.Len(t, out.Results, 1)
 			if tc.want == 0 {
-				assert.Zero(t, out.Results[0].ExpiresAt)
+				assert.Zero(t, out.Results[0].ExpiresAt())
 				return
 			}
-			assert.Equal(t, baseTime.Add(tc.want), out.Results[0].ExpiresAt)
+			assert.Equal(t, baseTime.Add(tc.want), out.Results[0].ExpiresAt())
 		})
 	}
 }
@@ -680,17 +680,9 @@ func TestAStillFreshStoredResultIsSkippedRatherThanRecomputed(t *testing.T) {
 
 	alpha := &stubEnricher{name: "test.alpha"}
 	e := newEnv(t, nil, alpha)
-	e.repo.existing = []domain.Enrichment{{
-		OrgID:       e.orgID.String(),
-		SubjectKind: domain.SubjectOccurrence,
-		SubjectID:   e.occurrenceID.String(),
-		Enricher:    "test.alpha",
-		Version:     1,
-		Phase:       domain.PhaseInline,
-		Status:      domain.StatusOK,
-		ComputedAt:  baseTime.Add(-time.Minute),
-		ExpiresAt:   baseTime.Add(time.Hour),
-	}}
+	e.repo.existing = []domain.Enrichment{e.priorResult(t, func(p *domain.EnrichmentParams) {
+		p.ExpiresAt = baseTime.Add(time.Hour)
+	})}
 
 	out := e.run(t, domain.PhaseInline)
 
@@ -706,34 +698,34 @@ func TestAStoredResultIsNotReusedWhenItShouldNotBe(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		existing domain.Enrichment
+		existing func(p *domain.EnrichmentParams)
 	}{
 		{
 			name: "the enricher's version was bumped",
-			existing: domain.Enrichment{
-				Enricher: "test.alpha", Version: 1, Status: domain.StatusOK,
-				ExpiresAt: baseTime.Add(time.Hour),
+			existing: func(p *domain.EnrichmentParams) {
+				p.Version, p.Status = 1, domain.StatusOK
+				p.ExpiresAt = baseTime.Add(time.Hour)
 			},
 		},
 		{
 			name: "the stored result is stale",
-			existing: domain.Enrichment{
-				Enricher: "test.alpha", Version: 2, Status: domain.StatusOK,
-				ExpiresAt: baseTime.Add(-time.Second),
+			existing: func(p *domain.EnrichmentParams) {
+				p.Version, p.Status = 2, domain.StatusOK
+				p.ExpiresAt = baseTime.Add(-time.Second)
 			},
 		},
 		{
 			name: "the stored result was a failure",
-			existing: domain.Enrichment{
-				Enricher: "test.alpha", Version: 2, Status: domain.StatusFailed, Error: "boom",
-				ExpiresAt: baseTime.Add(time.Hour),
+			existing: func(p *domain.EnrichmentParams) {
+				p.Version, p.Status, p.Error = 2, domain.StatusFailed, "boom"
+				p.ExpiresAt = baseTime.Add(time.Hour)
 			},
 		},
 		{
 			name: "the stored result was a timeout",
-			existing: domain.Enrichment{
-				Enricher: "test.alpha", Version: 2, Status: domain.StatusTimeout, Error: "budget",
-				ExpiresAt: baseTime.Add(time.Hour),
+			existing: func(p *domain.EnrichmentParams) {
+				p.Version, p.Status, p.Error = 2, domain.StatusTimeout, "budget"
+				p.ExpiresAt = baseTime.Add(time.Hour)
 			},
 		},
 	}
@@ -744,7 +736,7 @@ func TestAStoredResultIsNotReusedWhenItShouldNotBe(t *testing.T) {
 
 			alpha := &stubEnricher{name: "test.alpha", version: 2}
 			e := newEnv(t, nil, alpha)
-			e.repo.existing = []domain.Enrichment{tc.existing}
+			e.repo.existing = []domain.Enrichment{e.priorResult(t, tc.existing)}
 
 			out := e.run(t, domain.PhaseInline)
 
@@ -762,13 +754,11 @@ func TestPriorCarriesWhatIsAlreadyKnownIntoTheRun(t *testing.T) {
 
 	async := &stubEnricher{name: "test.async", phase: domain.PhaseAsync}
 	e := newEnv(t, nil, async)
-	e.repo.existing = []domain.Enrichment{{
-		Enricher: "test.inline",
-		Version:  1,
-		Status:   domain.StatusOK,
-		Payload:  map[string]any{"expr": "up == 0"},
-		Warnings: []string{"ambiguous_rule_match"},
-	}}
+	e.repo.existing = []domain.Enrichment{e.priorResult(t, func(p *domain.EnrichmentParams) {
+		p.Enricher = "test.inline"
+		p.Payload = map[string]any{"expr": "up == 0"}
+		p.Warnings = []string{"ambiguous_rule_match"}
+	})}
 
 	e.run(t, domain.PhaseAsync)
 
@@ -1015,12 +1005,11 @@ func TestAnEnricherThatMisreportsItselfIsCorrectedRatherThanTrusted(t *testing.T
 
 			require.Len(t, out.Results, 1)
 			rec := out.Results[0]
-			assert.Equal(t, tc.wantSt, rec.Status)
-			assert.Equal(t, tc.wantPay, rec.Payload)
+			assert.Equal(t, tc.wantSt, rec.Status())
+			assert.Equal(t, tc.wantPay, rec.Payload())
 			if tc.wantErr {
-				assert.NotEmpty(t, rec.Error, "enrichments_err_ck is restated in Go")
+				assert.NotEmpty(t, rec.ErrorText(), "enrichments_err_ck is restated in Go")
 			}
-			assert.NoError(t, rec.Validate(), "whatever the enricher said, the row is storable")
 		})
 	}
 }
@@ -1044,9 +1033,9 @@ func TestWarningsAreClampedBecauseTheColumnIsNotALog(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.Len(t, out.Results[0].Warnings, domain.MaxWarnings,
+	assert.Len(t, out.Results[0].Warnings(), domain.MaxWarnings,
 		"an enricher emitting more than this is reporting noise")
-	for _, w := range out.Results[0].Warnings {
+	for _, w := range out.Results[0].Warnings() {
 		assert.NotEmpty(t, strings.TrimSpace(w), "blank warnings are dropped, not stored")
 		assert.LessOrEqual(t, len(w), 500)
 	}
@@ -1081,8 +1070,8 @@ func TestEachEnricherSeesItsOwnCopyOfTheSubject(t *testing.T) {
 
 	got := byName(out.Results)
 	require.Contains(t, got, "test.witness")
-	assert.Equal(t, map[string]any{"alertname": "HighErrorRate"}, got["test.witness"].Payload)
-	assert.Equal(t, e.occurrenceID.String(), got["test.vandal"].SubjectID,
+	assert.Equal(t, map[string]any{"alertname": "HighErrorRate"}, got["test.witness"].Payload())
+	assert.Equal(t, e.occurrenceID.String(), got["test.vandal"].SubjectID(),
 		"and the recorded row still names the real subject")
 	assert.Equal(t, e.occurrenceID.String(), out.Subject.SubjectID)
 }
@@ -1103,7 +1092,7 @@ func TestResultsAreOrderedByEnricherName(t *testing.T) {
 
 	names := make([]string, 0, len(out.Results))
 	for _, r := range out.Results {
-		names = append(names, r.Enricher)
+		names = append(names, r.Enricher())
 	}
 	assert.Equal(t, []string{"test.alpha", "test.mike", "test.zulu"}, names,
 		"the guarantee is independent of how Select was asked")
@@ -1112,13 +1101,14 @@ func TestResultsAreOrderedByEnricherName(t *testing.T) {
 // ------------------------------------------------------------- the record
 
 // TestEveryRecordedResultSatisfiesTheDomainInvariants runs the full matrix of
-// enricher behaviours through the pipeline and re-checks each stored row
-// against Enrichment.Validate.
+// enricher behaviours through the pipeline and counts what came back.
 //
-// That method is exactly what EnrichmentRepository.UpsertMany calls before it
-// queues a batch, so a row the pipeline can mint but Validate rejects would be
-// a run that fails at the write with a validation error — a 3am CHECK-shaped
-// surprise rather than a recorded failure.
+// The count IS the assertion. Every branch of runOne ends in one
+// domain.NewEnrichment call, and a set of params the constructor refuses FAILS
+// THE RUN — so an enricher behaviour that can produce an unbuildable record
+// shows up here as a failed run, not as a missing row and not as a 3am
+// CHECK-shaped surprise at the write. Seven enrichers, seven rows, whatever
+// they did.
 func TestEveryRecordedResultSatisfiesTheDomainInvariants(t *testing.T) {
 	t.Parallel()
 
@@ -1137,18 +1127,16 @@ func TestEveryRecordedResultSatisfiesTheDomainInvariants(t *testing.T) {
 	)
 
 	out := e.run(t, domain.PhaseInline)
-	require.Len(t, out.Results, 7)
+	require.Len(t, out.Results, 7, "no enricher's outcome is a record the domain refuses to build")
 
 	for _, rec := range out.Results {
-		t.Run(rec.Enricher, func(t *testing.T) {
-			require.NoError(t, rec.Validate(),
-				"the pipeline may not mint a row the repository would refuse")
-			assert.True(t, rec.Status.Valid())
-			assert.NotNil(t, rec.Payload, "enrichments_payload_ck: never a nil payload")
-			assert.GreaterOrEqual(t, rec.Duration, time.Duration(0))
-			assert.NotEmpty(t, rec.ID)
-			assert.Equal(t, e.orgID.String(), rec.OrgID)
-			assert.Equal(t, domain.SubjectOccurrence, rec.SubjectKind)
+		t.Run(rec.Enricher(), func(t *testing.T) {
+			assert.True(t, rec.Status().Valid())
+			assert.NotNil(t, rec.Payload(), "enrichments_payload_ck: never a nil payload")
+			assert.GreaterOrEqual(t, rec.Duration(), time.Duration(0))
+			assert.NotEmpty(t, rec.ID())
+			assert.Equal(t, e.orgID.String(), rec.OrgID())
+			assert.Equal(t, domain.SubjectOccurrence, rec.SubjectKind())
 		})
 	}
 
@@ -1171,9 +1159,56 @@ func TestTheRunFillsInTheSubjectCoordinatesTheLoaderOmitted(t *testing.T) {
 		"an enrichment is a fact about a FIRE, not about an identity")
 	assert.Equal(t, e.occurrenceID.String(), out.Subject.SubjectID)
 	assert.Equal(t, e.orgID.String(), out.Subject.OrgID)
-	require.Len(t, out.Results, 1)
-	assert.NoError(t, out.Results[0].Validate())
+	require.Len(t, out.Results, 1,
+		"and the row is built from them: without an org it would not have been recorded at all")
+	assert.Equal(t, e.orgID.String(), out.Results[0].OrgID())
 }
+
+// TestASubjectKindTheDomainRejectsFailsTheRun is the other half of the test
+// above, and the one that matters more.
+//
+// Run fills in a BLANK subject kind. It does not correct a non-blank one, and it
+// should not: SubjectLoader's contract is a string, `workspace` is a string, and
+// a loader that supplies a kind the domain does not know is a bug in oto that
+// the port cannot express away. Every slot then fails construction, so the run
+// has no results, skips the write entirely, and would otherwise return nil while
+// logging `ran=0` — a silent success covering a phase that recorded nothing,
+// with no error for the job to retry on and nothing in the UI to say the context
+// is missing rather than empty. A construction failure is a bug, and a bug that
+// reports success is worse than one that crashes.
+func TestASubjectKindTheDomainRejectsFailsTheRun(t *testing.T) {
+	t.Parallel()
+
+	alpha := &stubEnricher{name: "test.alpha"}
+	beta := &stubEnricher{name: "test.beta"}
+	e := newEnv(t, nil, alpha, beta)
+	e.subjects.loaded.Subject.SubjectKind = "workspace"
+
+	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
+		OccurrenceID: e.occurrenceID,
+		Phase:        domain.PhaseInline,
+	})
+
+	require.Error(t, err, "a phase that recorded nothing because oto built nothing is not a success")
+	assert.Equal(t, "enrichment_bad_subject_kind", errs.CodeOf(err),
+		"and it says which invariant, so the bug is findable from the job's failure alone")
+	assert.Empty(t, out.Results)
+	assert.Zero(t, e.repo.writes(),
+		"nothing is written: a phase never lands half-written on a bug nobody has diagnosed")
+	assert.Empty(t, e.notifier.releaseCalls(),
+		"like the storage-failure path, the release is not reached and `alerts`' scheduled "+
+			"backstop is what sends the card")
+
+	// The enrichers still ran, all of them. A construction failure is collected
+	// per slot and acted on after the fan-out, so one enricher's bug never cuts
+	// another's goroutine short — that half of the isolation rule is unchanged.
+	assert.Equal(t, 1, alpha.callCount())
+	assert.Equal(t, 1, beta.callCount())
+}
+
+// The converse — an ENRICHER error is degraded to a recorded row and the run
+// still succeeds — is TestOneFailingEnricherDoesNotTakeTheOthersDown, above.
+// Only a CONSTRUCTION failure is a bug in oto, and only it fails the run.
 
 // -------------------------------------------------------------- cache.expire
 

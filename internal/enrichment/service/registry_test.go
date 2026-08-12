@@ -254,7 +254,7 @@ func TestDisabledEnricherIsNotRunByThePipeline(t *testing.T) {
 	out := e.run(t, domain.PhaseInline)
 
 	require.Len(t, out.Results, 1)
-	assert.Equal(t, "test.bravo", out.Results[0].Enricher)
+	assert.Equal(t, "test.bravo", out.Results[0].Enricher())
 	assert.Zero(t, alpha.callCount(), "a disabled enricher is not called")
 	assert.NotContains(t, byName(out.Results), "test.alpha",
 		"and it produces no row, so nothing in the UI claims it failed")
@@ -281,7 +281,7 @@ func TestEnricherTimeoutIsBoundedByThePhaseBudget(t *testing.T) {
 	got := byName(out.Results)
 
 	require.Contains(t, got, "test.greedy")
-	assert.Equal(t, domain.StatusTimeout, got["test.greedy"].Status,
+	assert.Equal(t, domain.StatusTimeout, got["test.greedy"].Status(),
 		"an enricher may not declare its way past the phase ceiling")
-	assert.Contains(t, got["test.greedy"].Error, "budget")
+	assert.Contains(t, got["test.greedy"].ErrorText(), "budget")
 }

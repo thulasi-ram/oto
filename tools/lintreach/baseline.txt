@@ -93,7 +93,6 @@ noread:github.com/thulasiram/oto/internal/enrichment/domain.AlertSnapshot.Cluste
 noread:github.com/thulasiram/oto/internal/enrichment/domain.AlertSnapshot.Service	field is never read in production — the value goes nowhere (internal/enrichment/domain/ports.go:71)
 noread:github.com/thulasiram/oto/internal/enrichment/domain.AlertSnapshot.Severity	field is never read in production — the value goes nowhere (internal/enrichment/domain/ports.go:71)
 noread:github.com/thulasiram/oto/internal/enrichment/domain.AlertSnapshot.SourceFingerprint	field is never read in production — the value goes nowhere (internal/enrichment/domain/ports.go:70)
-noread:github.com/thulasiram/oto/internal/enrichment/domain.CacheEntry.OrgID	field is never read in production — the value goes nowhere (internal/enrichment/domain/enrichment.go:246)
 noread:github.com/thulasiram/oto/internal/enrichment/domain.OccurrenceSnapshot.Seq	field is never read in production — the value goes nowhere (internal/enrichment/domain/ports.go:79)
 noread:github.com/thulasiram/oto/internal/enrichment/domain.OccurrenceSnapshot.SourceStartsAt	field is never read in production — the value goes nowhere (internal/enrichment/domain/ports.go:82)
 noread:github.com/thulasiram/oto/internal/enrichment/domain.OccurrenceSnapshot.State	field is never read in production — the value goes nowhere (internal/enrichment/domain/ports.go:80)

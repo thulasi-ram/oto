@@ -455,25 +455,24 @@ func (r enrichmentReader) ListForAlert(
 	out := make([]alertsservice.EnrichmentSummary, 0, len(rows))
 	for _, e := range rows {
 		summary := alertsservice.EnrichmentSummary{
-			SubjectKind:     e.SubjectKind,
+			SubjectKind:     e.SubjectKind(),
 			SubjectID:       subject,
-			Enricher:        e.Enricher,
-			EnricherVersion: e.Version,
-			Phase:           int(e.Phase),
-			Status:          string(e.Status),
-			Payload:         payloadMap(e.Payload),
-			Warnings:        e.Warnings,
-			Error:           e.Error,
-			DurationMS:      int(e.Duration / time.Millisecond),
-			FromCache:       e.FromCache,
-			ComputedAt:      e.ComputedAt,
+			Enricher:        e.Enricher(),
+			EnricherVersion: e.Version(),
+			Phase:           int(e.Phase()),
+			Status:          string(e.Status()),
+			Payload:         payloadMap(e.Payload()),
+			Warnings:        e.Warnings(),
+			Error:           e.ErrorText(),
+			DurationMS:      int(e.Duration() / time.Millisecond),
+			FromCache:       e.FromCache(),
+			ComputedAt:      e.ComputedAt(),
 		}
-		if parsed, perr := uuid.Parse(e.ID); perr == nil {
+		if parsed, perr := uuid.Parse(e.ID()); perr == nil {
 			summary.ID = parsed
 		}
-		if !e.ExpiresAt.IsZero() {
-			expires := e.ExpiresAt
-			summary.ExpiresAt = &expires
+		if expiresAt := e.ExpiresAt(); !expiresAt.IsZero() {
+			summary.ExpiresAt = &expiresAt
 		}
 		out = append(out, summary)
 	}

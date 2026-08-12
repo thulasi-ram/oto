@@ -9,7 +9,6 @@ import (
 
 	"github.com/thulasiram/oto/internal/enrichment/domain"
 	"github.com/thulasiram/oto/internal/enrichment/repository"
-	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/id"
 	"github.com/thulasiram/oto/test/harness"
 )
@@ -35,14 +34,23 @@ var (
 	longPast = harness.Epoch.Add(time.Minute)
 )
 
-func entry(key string, orgID string, computed, expires time.Time, payload string) domain.CacheEntry {
-	return domain.CacheEntry{
+// entry builds a storable entry. It goes through the constructor because there
+// is no other way in: `enrichment_cache_key_ck` and `enrichment_cache_exp_ck`
+// are proven by domain.NewCacheEntry, so an entry the table would refuse cannot
+// reach the repository at all — which is why this file no longer tests the
+// repository's reaction to one.
+func entry(t *testing.T, key string, orgID string, computed, expires time.Time, payload string) domain.CacheEntry {
+	t.Helper()
+
+	e, err := domain.NewCacheEntry(domain.CacheEntryParams{
 		Key:        key,
 		OrgID:      orgID,
 		Payload:    []byte(payload),
 		ComputedAt: computed,
 		ExpiresAt:  expires,
-	}
+	})
+	require.NoError(t, err)
+	return e
 }
 
 // cacheKey is a realistic key: the domain owns the derivation, and it embeds the
@@ -63,20 +71,20 @@ func TestAWrittenEntryIsServedBackVerbatim(t *testing.T) {
 
 	key := cacheKey(org.ID.String(), "prom.rule", 1, "an-alert-key")
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		entry(key, org.ID.String(), harness.Epoch, farFuture, `{"expr":"up == 0","for_seconds":600}`)))
+		entry(t, key, org.ID.String(), harness.Epoch, farFuture, `{"expr":"up == 0","for_seconds":600}`)))
 
 	got, ok, err := repo.Get(h.Ctx, org.Scope, key)
 	require.NoError(t, err)
 	require.True(t, ok, "a live entry is a hit")
 
-	assert.Equal(t, key, got.Key)
-	assert.Equal(t, org.ID.String(), got.OrgID)
-	assert.JSONEq(t, `{"expr":"up == 0","for_seconds":600}`, string(got.Payload),
+	assert.Equal(t, key, got.Key())
+	assert.Equal(t, org.ID.String(), got.OrgID())
+	assert.JSONEq(t, `{"expr":"up == 0","for_seconds":600}`, string(got.Payload()),
 		"the payload is handed back as raw JSON: decoding it is the reader's job")
-	assert.True(t, got.ComputedAt.Equal(harness.Epoch))
-	assert.True(t, got.ExpiresAt.Equal(farFuture))
-	assert.Equal(t, time.UTC, got.ComputedAt.Location(), "every timestamp leaves this layer in UTC")
-	assert.Equal(t, time.UTC, got.ExpiresAt.Location())
+	assert.True(t, got.ComputedAt().Equal(harness.Epoch))
+	assert.True(t, got.ExpiresAt().Equal(farFuture))
+	assert.Equal(t, time.UTC, got.ComputedAt().Location(), "every timestamp leaves this layer in UTC")
+	assert.Equal(t, time.UTC, got.ExpiresAt().Location())
 }
 
 func TestWritingTheSameKeyTwiceOverwritesRatherThanConflicts(t *testing.T) {
@@ -88,15 +96,15 @@ func TestWritingTheSameKeyTwiceOverwritesRatherThanConflicts(t *testing.T) {
 
 	key := cacheKey(org.ID.String(), "alert.history", 1, "an-alert-id")
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		entry(key, org.ID.String(), harness.Epoch, farFuture, `{"count_24h":1}`)))
+		entry(t, key, org.ID.String(), harness.Epoch, farFuture, `{"count_24h":1}`)))
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		entry(key, org.ID.String(), harness.Epoch.Add(time.Hour), farFuture, `{"count_24h":9}`)))
+		entry(t, key, org.ID.String(), harness.Epoch.Add(time.Hour), farFuture, `{"count_24h":9}`)))
 
 	got, ok, err := repo.Get(h.Ctx, org.Scope, key)
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.JSONEq(t, `{"count_24h":9}`, string(got.Payload), "the newer answer wins")
-	assert.True(t, got.ComputedAt.Equal(harness.Epoch.Add(time.Hour)))
+	assert.JSONEq(t, `{"count_24h":9}`, string(got.Payload()), "the newer answer wins")
+	assert.True(t, got.ComputedAt().Equal(harness.Epoch.Add(time.Hour)))
 
 	var rows int
 	require.NoError(t, h.Pool.QueryRow(h.Ctx,
@@ -151,7 +159,7 @@ func TestAnExpiredEntryIsNeverServed(t *testing.T) {
 
 	key := cacheKey(org.ID.String(), "prom.rule", 1, "long-dead")
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		entry(key, org.ID.String(), harness.Epoch, longPast, `{"expr":"up == 0"}`)))
+		entry(t, key, org.ID.String(), harness.Epoch, longPast, `{"expr":"up == 0"}`)))
 
 	// The row is really there…
 	var rows int
@@ -164,56 +172,25 @@ func TestAnExpiredEntryIsNeverServed(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "an expired entry and an absent one are the same answer")
 	assert.Equal(t, domain.CacheEntry{}, got)
-	assert.Empty(t, got.Payload, "the dead payload does not leak out alongside the false")
+	assert.Empty(t, got.Payload(), "the dead payload does not leak out alongside the false")
 }
 
-func TestAnEntryThatExpiresBeforeItWasComputedIsRefused(t *testing.T) {
+// TestADerivedKeyIsAlwaysStorable. `enrichment_cache_key_ck` (1..512 bytes) is
+// refused by domain.NewCacheEntry now — see the domain tests — so what is left
+// to prove HERE is the other half of that bargain: a key the domain derived
+// always fits the column, because CacheKey hashes the seed and an arbitrarily
+// long seed full of label values still comes out 512 bytes or less.
+func TestADerivedKeyIsAlwaysStorable(t *testing.T) {
 	t.Parallel()
 
 	h := harness.New(t)
 	org := h.Org()
 	repo := repository.NewCacheRepository(h.Pool)
 
-	for _, tc := range []struct {
-		name              string
-		computed, expires time.Time
-	}{
-		{name: "expiry before computation", computed: harness.Epoch, expires: harness.Epoch.Add(-time.Second)},
-		{name: "expiry equal to computation", computed: harness.Epoch, expires: harness.Epoch},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := repo.Put(h.Ctx, org.Scope,
-				entry(cacheKey(org.ID.String(), "prom.rule", 1, tc.name), org.ID.String(),
-					tc.computed, tc.expires, `{}`))
-
-			require.Error(t, err, "enrichment_cache_exp_ck, restated in Go so the failure names the invariant")
-			assert.Equal(t, errs.KindValidation, errs.KindOf(err),
-				"an entry that expires before it was computed is a clock bug, and a CHECK is the wrong reporter")
-			assert.Equal(t, "enrichment_bad_cache_expiry", errs.CodeOf(err))
-		})
-	}
-}
-
-func TestAnUnusableKeyIsRefusedByTheRepositoryNotByAConstraint(t *testing.T) {
-	t.Parallel()
-
-	h := harness.New(t)
-	org := h.Org()
-	repo := repository.NewCacheRepository(h.Pool)
-
-	for _, key := range []string{"", string(make([]byte, domain.MaxCacheKeyBytes+1))} {
-		err := repo.Put(h.Ctx, org.Scope, entry(key, org.ID.String(), harness.Epoch, farFuture, `{}`))
-		require.Error(t, err, "enrichment_cache_key_ck: 1..512 bytes")
-		assert.Equal(t, errs.KindValidation, errs.KindOf(err))
-		assert.Equal(t, "enrichment_bad_cache_key", errs.CodeOf(err))
-	}
-
-	// A key the DOMAIN derived is always storable: CacheKey hashes the seed, so
-	// an arbitrarily long seed full of label values still fits the column.
 	derived := cacheKey(org.ID.String(), "prom.rule", 1, string(make([]byte, 64<<10)))
 	require.LessOrEqual(t, len(derived), domain.MaxCacheKeyBytes)
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		entry(derived, org.ID.String(), harness.Epoch, farFuture, `{}`)))
+		entry(t, derived, org.ID.String(), harness.Epoch, farFuture, `{}`)))
 }
 
 func TestAnEmptyPayloadIsStoredAsAnObject(t *testing.T) {
@@ -225,12 +202,12 @@ func TestAnEmptyPayloadIsStoredAsAnObject(t *testing.T) {
 
 	key := cacheKey(org.ID.String(), "prom.rule", 1, "empty-payload")
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		domain.CacheEntry{Key: key, OrgID: org.ID.String(), ComputedAt: harness.Epoch, ExpiresAt: farFuture}))
+		entry(t, key, org.ID.String(), harness.Epoch, farFuture, "")))
 
 	got, ok, err := repo.Get(h.Ctx, org.Scope, key)
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.JSONEq(t, `{}`, string(got.Payload), "a nil payload is stored as {}, never as null")
+	assert.JSONEq(t, `{}`, string(got.Payload()), "an empty payload is stored as {}, never as null")
 }
 
 // --------------------------------------------------------------- tenancy
@@ -251,18 +228,18 @@ func TestOneOrgNeverReadsAnotherOrgsEntry(t *testing.T) {
 	// A key that COLLIDES: both tenants ask for the same physical row.
 	shared := "e:prom.rule:v1:collision"
 	require.NoError(t, repo.Put(h.Ctx, alice.Scope,
-		entry(shared, alice.ID.String(), harness.Epoch, farFuture, `{"secret":"alice"}`)))
+		entry(t, shared, alice.ID.String(), harness.Epoch, farFuture, `{"secret":"alice"}`)))
 
 	got, ok, err := repo.Get(h.Ctx, bob.Scope, shared)
 	require.NoError(t, err)
 	assert.False(t, ok, "a cross-tenant cache hit would be a data leak, not a performance win")
-	assert.Empty(t, got.Payload)
+	assert.Empty(t, got.Payload())
 
 	// Alice still has hers.
 	got, ok, err = repo.Get(h.Ctx, alice.Scope, shared)
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.JSONEq(t, `{"secret":"alice"}`, string(got.Payload))
+	assert.JSONEq(t, `{"secret":"alice"}`, string(got.Payload()))
 }
 
 // ------------------------------------------------------------- the sweep
@@ -283,11 +260,11 @@ func TestTheSweepEvictsOnlyWhatIsPastTheInstantItWasGiven(t *testing.T) {
 	alive := cacheKey(org.ID.String(), "prom.rule", 1, "alive")
 
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		entry(oneMinute, org.ID.String(), harness.Epoch, harness.Epoch.Add(time.Minute), `{}`)))
+		entry(t, oneMinute, org.ID.String(), harness.Epoch, harness.Epoch.Add(time.Minute), `{}`)))
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		entry(fiveMinutes, org.ID.String(), harness.Epoch, harness.Epoch.Add(5*time.Minute), `{}`)))
+		entry(t, fiveMinutes, org.ID.String(), harness.Epoch, harness.Epoch.Add(5*time.Minute), `{}`)))
 	require.NoError(t, repo.Put(h.Ctx, org.Scope,
-		entry(alive, org.ID.String(), harness.Epoch, farFuture, `{}`)))
+		entry(t, alive, org.ID.String(), harness.Epoch, farFuture, `{}`)))
 
 	// Three minutes past Epoch: the first entry is dead, the second is not.
 	h.Advance(3 * time.Minute)
@@ -321,7 +298,7 @@ func TestTheSweepIsBounded(t *testing.T) {
 	repo := repository.NewCacheRepository(h.Pool)
 
 	for i := 0; i < 5; i++ {
-		require.NoError(t, repo.Put(h.Ctx, org.Scope, entry(
+		require.NoError(t, repo.Put(h.Ctx, org.Scope, entry(t,
 			cacheKey(org.ID.String(), "prom.rule", 1, "dead-"+string(rune('a'+i))),
 			org.ID.String(), harness.Epoch, harness.Epoch.Add(time.Duration(i+1)*time.Minute), `{}`)))
 	}
@@ -354,7 +331,7 @@ func TestAnUnboundedSweepIsGivenABound(t *testing.T) {
 	org := h.Org()
 	repo := repository.NewCacheRepository(h.Pool)
 
-	require.NoError(t, repo.Put(h.Ctx, org.Scope, entry(
+	require.NoError(t, repo.Put(h.Ctx, org.Scope, entry(t,
 		cacheKey(org.ID.String(), "prom.rule", 1, "dead"),
 		org.ID.String(), harness.Epoch, harness.Epoch.Add(time.Minute), `{}`)))
 
@@ -372,10 +349,10 @@ func TestTheSweepIsGlobalAndTakesNoTenant(t *testing.T) {
 	alice, bob := h.Org(), h.Org()
 	repo := repository.NewCacheRepository(h.Pool)
 
-	require.NoError(t, repo.Put(h.Ctx, alice.Scope, entry(
+	require.NoError(t, repo.Put(h.Ctx, alice.Scope, entry(t,
 		cacheKey(alice.ID.String(), "prom.rule", 1, "dead"),
 		alice.ID.String(), harness.Epoch, harness.Epoch.Add(time.Minute), `{}`)))
-	require.NoError(t, repo.Put(h.Ctx, bob.Scope, entry(
+	require.NoError(t, repo.Put(h.Ctx, bob.Scope, entry(t,
 		cacheKey(bob.ID.String(), "prom.rule", 1, "dead"),
 		bob.ID.String(), harness.Epoch, harness.Epoch.Add(time.Minute), `{}`)))
 
@@ -399,7 +376,7 @@ func TestTheCacheHasNoForeignKeyToItsOrg(t *testing.T) {
 	scope := harness.Scope(t, orphan)
 
 	key := cacheKey(orphan.String(), "prom.rule", 1, "orphan")
-	require.NoError(t, repo.Put(h.Ctx, scope, entry(key, orphan.String(), harness.Epoch, farFuture, `{}`)),
+	require.NoError(t, repo.Put(h.Ctx, scope, entry(t, key, orphan.String(), harness.Epoch, farFuture, `{}`)),
 		"no FK: this is a disposable cache and must not participate in a delete cascade")
 
 	_, ok, err := repo.Get(h.Ctx, scope, key)

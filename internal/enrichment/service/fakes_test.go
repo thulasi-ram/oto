@@ -228,7 +228,7 @@ func (c *fakeCache) Put(_ context.Context, _ db.TenantScope, e domain.CacheEntry
 	if c.putErr != nil {
 		return c.putErr
 	}
-	c.entries[e.Key] = e
+	c.entries[e.Key()] = e
 	return nil
 }
 
@@ -483,7 +483,34 @@ func (e *env) run(t *testing.T, phase domain.Phase, names ...string) service.Run
 func byName(results []domain.Enrichment) map[string]domain.Enrichment {
 	out := make(map[string]domain.Enrichment, len(results))
 	for _, r := range results {
-		out[r.Enricher] = r
+		out[r.Enricher()] = r
 	}
+	return out
+}
+
+// priorResult builds a row the repository already holds for this subject. It
+// goes through the constructor because there is no other way in: a result the
+// table would refuse is not representable, so a fixture cannot seed one either.
+func (e *env) priorResult(t *testing.T, with func(p *domain.EnrichmentParams)) domain.Enrichment {
+	t.Helper()
+
+	p := domain.EnrichmentParams{
+		ID:          id.NewString(),
+		OrgID:       e.orgID.String(),
+		SubjectKind: domain.SubjectOccurrence,
+		SubjectID:   e.occurrenceID.String(),
+		Enricher:    "test.alpha",
+		Version:     1,
+		Phase:       domain.PhaseInline,
+		Status:      domain.StatusOK,
+		// Computed an hour before baseTime, so a fixture may state any expiry it
+		// likes around baseTime without tripping enrichments_exp_ck.
+		ComputedAt: baseTime.Add(-time.Hour),
+	}
+	if with != nil {
+		with(&p)
+	}
+	out, err := domain.NewEnrichment(p)
+	require.NoError(t, err)
 	return out
 }
