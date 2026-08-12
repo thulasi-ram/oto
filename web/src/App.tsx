@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { ErrorBoundary, lazy, onMount, type Component, type JSX } from "solid-js";
 
 import { LiveProvider } from "~/api/live";
+import { DEFAULT_STALE_MS } from "~/api/queries";
 import { RequireSession, SessionProvider } from "~/api/session";
 import { AppShell } from "~/components/AppShell";
 import { ErrorState } from "~/components/ui/states";
@@ -14,7 +15,10 @@ import { installThemeEffect } from "~/design/theme";
  * `staleTime` is short because this is an operational surface and a stale row
  * is a wrong row. It is not zero, because the live stream already invalidates
  * on change (§E.4) and refetching on every mount as well would double the
- * traffic for no extra truth.
+ * traffic for no extra truth. It is stated in `api/queries.ts`, with the
+ * per-resource policies it is the floor under — a default is a freshness policy
+ * too, and keeping it here would put it out of reach of the one test that
+ * checks every entry has exactly one.
  *
  * Retries are off for mutations. A retried acknowledgement is only safe with an
  * idempotency key, the key is minted per user gesture, and a blind library
@@ -23,7 +27,7 @@ import { installThemeEffect } from "~/design/theme";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 15_000,
+      staleTime: DEFAULT_STALE_MS,
       gcTime: 5 * 60_000,
       retry: 1,
       refetchOnWindowFocus: true,

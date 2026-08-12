@@ -13,8 +13,7 @@
 import { For, Show, createMemo, createSignal, type Component, type JSX } from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listClusters } from "~/api/endpoints";
-import { qk } from "~/api/keys";
+import { clustersQuery } from "~/api/queries";
 import { Button, Input, Select, ToggleGroup, cx } from "~/components/ui/primitives";
 import { STATE_LABEL } from "~/components/StateChip";
 import type { State } from "~/api/types";
@@ -58,11 +57,7 @@ export interface FilterBarProps {
 export const FilterBar: Component<FilterBarProps> = (props) => {
   const [qDraft, setQDraft] = createSignal(props.filters.q);
 
-  const clusters = useQuery(() => ({
-    queryKey: qk.settings.clusters(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listClusters({ signal }),
-    staleTime: 5 * 60_000,
-  }));
+  const clusters = useQuery(() => clustersQuery());
 
   const patch = (part: Partial<AlertFilters>): void => {
     props.onChange({ ...props.filters, ...part });

@@ -29,9 +29,6 @@ import { violationsByField } from "~/api/client";
 import {
   createPolicy,
   deletePolicy,
-  listAlerts,
-  listChannels,
-  listPolicies,
   previewPolicy,
   updatePolicy,
 } from "~/api/endpoints";
@@ -42,7 +39,9 @@ import {
   UuidSchema,
 } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
+import { channelsQuery, policiesQuery, recentAlertsQuery } from "~/api/queries";
 import type {
+  Alert,
   Channel,
   CreatePolicyRequest,
   Matcher,
@@ -217,15 +216,8 @@ export const PoliciesSection: Component = () => {
   const [editing, setEditing] = createSignal<Policy | null>(null);
   const [creating, setCreating] = createSignal(false);
 
-  const policies = useQuery(() => ({
-    queryKey: qk.settings.policies(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listPolicies({ signal }),
-  }));
-
-  const channels = useQuery(() => ({
-    queryKey: qk.settings.channels(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listChannels({ signal }),
-  }));
+  const policies = useQuery(() => policiesQuery());
+  const channels = useQuery(() => channelsQuery());
 
   const byId = createMemo(() => {
     const map = new Map<string, Channel>();
@@ -704,6 +696,24 @@ function describeSuppression(reason: NotificationSuppressedReason | undefined): 
 }
 
 /**
+ * An alert as the dry-run picker holds it: what to send, and what to call it.
+ *
+ * The label is captured with the choice rather than looked up later, because
+ * the point of holding it is to survive the row leaving the list.
+ */
+interface PickedAlert {
+  readonly id: string;
+  readonly label: string;
+}
+
+function pickedAlert(a: Alert): PickedAlert {
+  return {
+    id: a.id,
+    label: `${a.alertname} · ${a.cluster_key}${a.namespace ? ` · ${a.namespace}` : ""}`,
+  };
+}
+
+/**
  * "Who would this reach?" answered against an unsaved draft.
  *
  * The endpoint evaluates the inline policy **in addition to** the stored ones,
@@ -712,21 +722,39 @@ function describeSuppression(reason: NotificationSuppressedReason | undefined): 
  * policy would do in isolation.
  */
 const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (props) => {
-  const [alertId, setAlertId] = createSignal("");
+  // ⛔ THE CHOICE IS THE ALERT, NOT ITS ID. The list is the twenty most recently
+  // seen alerts and the stream reorders it, so an id held on its own can stop
+  // naming any option the picker offers: `<Select>` would fall back to blank
+  // while Preview stayed enabled, and the operator would dry-run a routing
+  // policy against an alert the screen could no longer name. Holding what was
+  // chosen means the picker can keep offering it.
+  const [picked, setPicked] = createSignal<PickedAlert | null>(null);
   const [reason, setReason] = createSignal<NotificationReason>("fired");
 
   // A short list of recent alerts to dry-run against, so nobody has to paste a
-  // UUID to answer a routing question.
-  const recent = useQuery(() => ({
-    queryKey: ["policy-preview", "recent-alerts"] as const,
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      listAlerts({ limit: 20, sort: "-last_seen_at" }, {}, { signal }),
-    staleTime: 60_000,
-  }));
+  // UUID to answer a routing question. `recentAlertsQuery` keys it under
+  // `["alerts"]` so the stream reaches it, and rate-limits what it does about
+  // that — the whole policy is stated there, not restated here.
+  const recent = useQuery(() => recentAlertsQuery());
+
+  /**
+   * What the picker offers: the recent twenty, plus the alert already chosen if
+   * a refetch has since pushed it off the end.
+   *
+   * The chosen one goes last, and it is still the selected option, so nothing
+   * silently changes under the operator between reading the list and pressing
+   * Preview.
+   */
+  const options = createMemo<readonly PickedAlert[]>(() => {
+    const rows = (recent.data?.data ?? []).map(pickedAlert);
+    const chosen = picked();
+    if (chosen === null || rows.some((o) => o.id === chosen.id)) return rows;
+    return [...rows, chosen];
+  });
 
   const preview = useMutation(() => ({
     mutationFn: (): Promise<PolicyPreview> =>
-      previewPolicy({ alert_id: alertId(), reason: reason(), policy: props.draft }),
+      previewPolicy({ alert_id: picked()?.id ?? "", reason: reason(), policy: props.draft }),
   }));
 
   return (
@@ -747,18 +775,14 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
           </label>
           <Select
             id="preview-alert"
-            value={alertId()}
-            onChange={(e) => setAlertId(e.currentTarget.value)}
+            value={picked()?.id ?? ""}
+            onChange={(e) => {
+              const id = e.currentTarget.value;
+              setPicked(options().find((o) => o.id === id) ?? null);
+            }}
           >
             <option value="">— pick a recent alert —</option>
-            <For each={recent.data?.data ?? []}>
-              {(a) => (
-                <option value={a.id}>
-                  {a.alertname} · {a.cluster_key}
-                  {a.namespace ? ` · ${a.namespace}` : ""}
-                </option>
-              )}
-            </For>
+            <For each={options()}>{(o) => <option value={o.id}>{o.label}</option>}</For>
           </Select>
         </div>
 
@@ -778,7 +802,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
         <Button
           size="md"
           busy={preview.isPending}
-          disabled={alertId() === ""}
+          disabled={picked() === null}
           onClick={() => preview.mutate()}
         >
           Preview

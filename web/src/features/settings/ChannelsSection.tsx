@@ -27,13 +27,12 @@ import { violationsByField } from "~/api/client";
 import {
   createChannel,
   deleteChannel,
-  listChannelTypes,
-  listChannels,
   testChannel,
   updateChannel,
 } from "~/api/endpoints";
 import { VerbositySchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
+import { channelTypesQuery, channelsQuery } from "~/api/queries";
 import type {
   Channel,
   ChannelHealthStatus,
@@ -87,16 +86,8 @@ export const ChannelsSection: Component = () => {
   const [editing, setEditing] = createSignal<Channel | null>(null);
   const [creating, setCreating] = createSignal(false);
 
-  const types = useQuery(() => ({
-    queryKey: qk.settings.channelTypes(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listChannelTypes({ signal }),
-    staleTime: 30 * 60_000,
-  }));
-
-  const channels = useQuery(() => ({
-    queryKey: qk.settings.channels(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listChannels({ signal }),
-  }));
+  const types = useQuery(() => channelTypesQuery());
+  const channels = useQuery(() => channelsQuery());
 
   return (
     <div class="flex flex-col gap-4">

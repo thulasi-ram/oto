@@ -28,9 +28,10 @@ import { A } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 import { For, Show, createMemo, createSignal, type JSX, type ParentComponent } from "solid-js";
 
-import { getStatsOverview, listActiveSnoozes, listSources } from "~/api/endpoints";
+import { getStatsOverview, listActiveSnoozes } from "~/api/endpoints";
 import type { ActiveSnooze } from "~/api/types";
 import { qk } from "~/api/keys";
+import { sourcesQuery } from "~/api/queries";
 import { RelativeTime } from "~/components/Time";
 import { Button, cx } from "~/components/ui/primitives";
 import type { Source } from "~/api/types";
@@ -172,11 +173,9 @@ const NAMED_SOURCES_MAX = 3;
  * on the first transient timeout would be back to being ignorable within a week.
  */
 export const SourceReachBanner = (): JSX.Element => {
-  const sources = useQuery(() => ({
-    queryKey: qk.settings.sources(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listSources({ signal }),
-    refetchInterval: SAFETY_NET_MS,
-  }));
+  // The resource's own definition plus the one thing that is this strip's and
+  // not the resource's: the safety net under a stream a proxy may have killed.
+  const sources = useQuery(() => ({ ...sourcesQuery(), refetchInterval: SAFETY_NET_MS }));
 
   /**
    * Whether the page in hand is the whole org — `page.has_more` on `GET /sources`.

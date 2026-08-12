@@ -25,8 +25,7 @@
 import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listLabelNames } from "~/api/endpoints";
-import { qk } from "~/api/keys";
+import { labelNamesQuery } from "~/api/queries";
 import { Input, cx } from "~/components/ui/primitives";
 import { count as fmtCount } from "~/lib/format";
 import {
@@ -56,11 +55,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
   const parsed = createMemo(() => parseMatchers(text()));
   const compiled = createMemo(() => compileMatchers(parsed().matchers));
 
-  const names = useQuery(() => ({
-    queryKey: qk.labels.names(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listLabelNames({ signal }),
-    staleTime: 5 * 60_000,
-  }));
+  const names = useQuery(() => labelNamesQuery());
 
   const hasProblem = (): boolean =>
     parsed().errors.length > 0 || compiled().rejected.length > 0;

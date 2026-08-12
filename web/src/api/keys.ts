@@ -5,6 +5,26 @@
  * invalidates by prefix: an `alert.upserted` frame invalidates `["alerts"]`,
  * which covers every filtered list without the stream needing to know what
  * filters are on screen.
+ *
+ * ⛔ THE PREFIX IS THE WHOLE MECHANISM, SO A KEY OUTSIDE IT IS NOT A KEY —
+ * IT IS A LEAK. A cache entry no invalidation reaches has no way of learning
+ * that its data changed, and the failure is silent: the list simply keeps
+ * showing what it fetched. `["policy-preview","recent-alerts"]` was a filtered
+ * alert list written as a literal outside `["alerts"]`, so the frame that
+ * changed it — the one frame the screen existed to react to — went past it.
+ *
+ * Two rules follow, and `api/queries.ts` is where both are enforced rather than
+ * remembered:
+ *
+ *   1. **A key's group in this object is its first segment.** Everything under
+ *      `settings` starts `["settings", …]`, so a key is reachable by the prefix
+ *      it reads like. `settings.drill` used to be `["drills", id]` — filed with
+ *      the settings keys, invalidated by nothing that invalidates settings.
+ *   2. **Every key names one source of freshness** — a stream frame, the
+ *      mutation that is the only thing which can change it, a declared poll, or
+ *      immutability. `api/queries.ts` holds that declaration for every path
+ *      below, and `api/queries.test.tsx` checks each one against what the app
+ *      actually invalidates. A key added here with no answer fails there.
  */
 import type {
   AlertListQuery,
@@ -27,6 +47,20 @@ export const qk = {
      * server-side aggregate exists to prevent.
      */
     rollups: (query: AlertRollupQuery) => ["alerts", "rollups", query] as const,
+    /**
+     * The short list of recent alerts the policy dry run is offered to run
+     * against — a segment of its own, not `list({ limit: 20, … })`.
+     *
+     * Under `["alerts"]`, so every frame that changes an alert reaches it. Not
+     * SHARING an entry with the alerts screen, because this one carries a
+     * freshness policy no other alert list wants: it is deliberately quiet for a
+     * minute at a time (`recentAlertsQuery`). `staleTime` is per-observer over a
+     * shared entry and solid-query treats an entry as static if ANY of its
+     * observers says so, so a filtered list that happened to compile to the same
+     * query object would inherit the picker's quiet minute and stop refreshing
+     * mid-storm — a screen changing another screen's freshness from a distance.
+     */
+    recent: () => ["alerts", "recent"] as const,
     detail: (id: string) => ["alerts", "detail", id] as const,
     events: (id: string, query: TimelineQuery) => ["alerts", "events", id, query] as const,
     occurrences: (id: string) => ["alerts", "occurrences", id] as const,
@@ -67,19 +101,15 @@ export const qk = {
   },
   labels: {
     names: () => ["labels", "names"] as const,
-    values: (name: string, q: string) => ["labels", "values", name, q] as const,
   },
   settings: {
     clusters: () => ["settings", "clusters"] as const,
     sources: () => ["settings", "sources"] as const,
-    sourceHealth: (id: string) => ["settings", "sources", id, "health"] as const,
     channelTypes: () => ["settings", "channel-types"] as const,
     channels: () => ["settings", "channels"] as const,
     policies: () => ["settings", "policies"] as const,
     /** The org's tuning, its origins and its bounds — one query, one screen. */
     org: () => ["settings", "org"] as const,
-    /** A source's recent delivery drills. */
-    drills: (sourceID: string) => ["settings", "sources", sourceID, "drills"] as const,
     /**
      * One page of a source's rejection feed. The query is part of the key
      * because the cursor is bound to the filter set server-side — two reason
@@ -89,11 +119,14 @@ export const qk = {
       ["settings", "sources", sourceID, "rejections", query] as const,
     failedBatches: (sourceID: string, query: FailedBatchListQuery) =>
       ["settings", "sources", sourceID, "failed-batches", query] as const,
-    /** One drill, polled while it is still running. */
-    drill: (id: string) => ["drills", id] as const,
-  },
-  deliveries: {
-    all: () => ["deliveries"] as const,
+    /**
+     * One drill, polled while it is still running.
+     *
+     * Under `["settings","drills"]` and not a root of its own: a drill is a
+     * settings-screen object, and a key whose path here disagreed with its
+     * prefix would be reachable by an invalidation nobody would think to write.
+     */
+    drill: (id: string) => ["settings", "drills", id] as const,
   },
   stats: {
     /**
@@ -109,9 +142,5 @@ export const qk = {
      */
     overview: (query: Readonly<Record<string, string>> = {}) =>
       ["stats", "overview", query] as const,
-  },
-  meta: {
-    me: () => ["meta", "me"] as const,
-    version: () => ["meta", "version"] as const,
   },
 } as const;

@@ -6,10 +6,12 @@
  * refetch rather than patching a cached row from a partial payload. These tests
  * pin the two halves of that:
  *
- *   1. Every kind the contract publishes lands on the right prefix. A
- *      `delivery.updated` that only invalidated `["deliveries"]` would leave the
- *      alert's own delivery summary stale on screen, which is the class of drift
- *      nobody notices until an incident.
+ *   1. Every kind the contract publishes lands on the right prefix — and on a
+ *      prefix some query actually owns. A `delivery.updated` that only
+ *      invalidated `["deliveries"]` would leave the alert's own delivery summary
+ *      stale on screen, which is the class of drift nobody notices until an
+ *      incident; `api/queries.test.tsx` is where the other half of that claim
+ *      lives, that no key is left with nothing to refresh it.
  *   2. A kind this build does not know, and a frame about an entity nothing on
  *      screen holds, are both **non-events** rather than errors — and neither
  *      tears the provider down.
@@ -108,7 +110,10 @@ describe("frames become invalidations", () => {
     { kind: "occurrence.upserted", expects: [["alerts"], ["groups"]] },
     { kind: "group.upserted", expects: [["groups"]] },
     { kind: "event.appended", expects: [["alerts"], ["groups"]] },
-    { kind: "delivery.updated", expects: [["deliveries"], ["alerts"]] },
+    // `["alerts"]` alone: a delivery is read as part of an alert
+    // (`qk.alerts.notifications`), and the `["deliveries"]` prefix this used to
+    // invalidate as well owned no query at all.
+    { kind: "delivery.updated", expects: [["alerts"]] },
     { kind: "source.health", expects: [["settings", "sources"]] },
   ];
 

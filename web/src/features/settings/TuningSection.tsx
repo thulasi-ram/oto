@@ -63,8 +63,9 @@ import {
 } from "solid-js";
 
 import { ApiError, orphanViolations, violationsByField } from "~/api/client";
-import { getOrgSettings, listSources, updateOrgSettings } from "~/api/endpoints";
+import { getOrgSettings, updateOrgSettings } from "~/api/endpoints";
 import { qk } from "~/api/keys";
+import { sourcesQuery } from "~/api/queries";
 import type {
   InheritedTiming,
   OrgSettingsView,
@@ -259,10 +260,7 @@ export const TuningSection: Component = () => {
 
   // The upstream timings, read per source. This is the query that replaced four
   // number inputs and a localStorage key.
-  const sources = useQuery(() => ({
-    queryKey: qk.settings.sources(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listSources({ signal }),
-  }));
+  const sources = useQuery(() => sourcesQuery());
 
   const refs = createMemo<readonly AmRef[]>(() =>
     (sources.data?.data ?? []).map(amRefOf).filter((r): r is AmRef => r !== null),

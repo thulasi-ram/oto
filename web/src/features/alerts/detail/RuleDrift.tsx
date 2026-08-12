@@ -36,8 +36,7 @@ import {
 } from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listRuleSnapshots } from "~/api/endpoints";
-import { qk } from "~/api/keys";
+import { ruleSnapshotsQuery } from "~/api/queries";
 import type {
   MatchConfidence,
   RuleChange,
@@ -589,8 +588,9 @@ const VersionHistory: Component<{
   });
 
   const page = useQuery(() => ({
-    queryKey: qk.rules.snapshots(query()),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listRuleSnapshots(query(), { signal }),
+    ...ruleSnapshotsQuery(query()),
+    // The only thing that is this screen's rather than the resource's: history
+    // is fetched when the operator asks for it, not when the panel renders.
     enabled: atCap() && started(),
   }));
 

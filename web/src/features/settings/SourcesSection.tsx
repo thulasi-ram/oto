@@ -19,13 +19,12 @@ import { violationsByField } from "~/api/client";
 import {
   createCluster,
   createSource,
-  listClusters,
-  listSources,
   testSource,
   updateSource,
 } from "~/api/endpoints";
 import { CreateSourceRequestSchema, SourceKindSchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
+import { clustersQuery, sourcesQuery } from "~/api/queries";
 import type {
   CreateSourceRequest,
   Source,
@@ -172,15 +171,8 @@ export const SourcesSection: Component = () => {
   const [creating, setCreating] = createSignal(false);
   const [token, setToken] = createSignal<SourceCreated | null>(null);
 
-  const sources = useQuery(() => ({
-    queryKey: qk.settings.sources(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listSources({ signal }),
-  }));
-
-  const clusters = useQuery(() => ({
-    queryKey: qk.settings.clusters(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listClusters({ signal }),
-  }));
+  const sources = useQuery(() => sourcesQuery());
+  const clusters = useQuery(() => clustersQuery());
 
   return (
     <div class="flex flex-col gap-4">
@@ -367,10 +359,7 @@ const ClustersPanel: Component = () => {
   const [key, setKey] = createSignal("");
   const [name, setName] = createSignal("");
 
-  const clusters = useQuery(() => ({
-    queryKey: qk.settings.clusters(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listClusters({ signal }),
-  }));
+  const clusters = useQuery(() => clustersQuery());
 
   const create = useMutation(() => ({
     mutationFn: () =>
