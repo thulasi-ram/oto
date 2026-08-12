@@ -223,6 +223,31 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 //
 // WHAT EACH DOWN HAS TO PUT BACK, newest first:
 //
+//   - ⭐ 00045 added `alert_labels` and `alert_label_names`, the projection the
+//     two label typeaheads now read instead of scanning the tenant's `alerts`
+//     per keystroke, so its Down is two DROP TABLEs and the property that flips
+//     is their existence. It is asserted WITH ROWS IN BOTH, because that is the
+//     only state an operator ever rolls this back from — the Up backfills them
+//     from `alerts`, so they are never empty on a database that has any alerts —
+//     and because a Down that had left a dependency behind would fail here
+//     rather than at 02:00. The rows are recoverable by definition: both tables
+//     are a pure function of `alerts.labels`, which the Down does not touch, so
+//     what the rollback loses is speed and nothing else. Whether the indexes are
+//     USED is a different question and not one a round trip can answer; that is
+//     asserted against a real plan, with each index dropped as the control, in
+//     internal/alerts/repository/labels_plan_test.go.
+//
+//   - 00044 added `gm_current_idx`, the PARTIAL index the only read of a
+//     generation's current members rides, so its Down is a DROP INDEX and the
+//     property that flips is its presence in `pg_indexes`. The partial predicate
+//     is asserted with it, out of `pg_indexes.indexdef`: an index of the same
+//     name over the same columns WITHOUT `WHERE left_at IS NULL` would be green
+//     on a presence check while being a different index — one the size of the
+//     generation's whole history rather than of its living membership. Whether
+//     it is USED is a different question and not one a round trip can answer;
+//     that is asserted against a real plan, with the index dropped as the
+//     control, in internal/grouping/repository/member_plan_test.go.
+//
 //   - 00043 changed two COMMENTs and nothing else — `alert_event_keys` and its
 //     prune index — so its Down is two more COMMENTs and the property that flips
 //     is the text `obj_description` returns. It is the one migration here with no
@@ -314,8 +339,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 43 {
-		t.Fatalf("latest migration is %d, want 43 — this test pins the number so that a "+
+	if latest != 45 {
+		t.Fatalf("latest migration is %d, want 45 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -518,6 +543,21 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 		return n
 	}
+	// 00044's index, read as its rendered DEFINITION rather than as a name. The
+	// name coming back proves an index exists; the definition is what proves it is
+	// THE index — partial on `left_at IS NULL`, which is what keeps it the size of
+	// a generation's living membership instead of its whole history, and what the
+	// two replay reads deliberately cannot ride. An empty string means absent.
+	currentMemberIndexDef := func() string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT coalesce(max(indexdef), '') FROM pg_indexes
+			  WHERE indexname = 'gm_current_idx'`).Scan(&def); err != nil {
+			t.Fatalf("introspect gm_current_idx: %v", err)
+		}
+		return def
+	}
 	// 00043's two comments, read as text because text is all they are. The table
 	// comment is the one that carries the property: it stated a 30-day pruner as
 	// FACT from 00007 until `retention.prune` finally swept this table, and the
@@ -543,6 +583,52 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			t.Fatalf("introspect rule_snapshots_content_uniq: %v", err)
 		}
 		return def
+	}
+
+	// 00045's two tables, counted together because they are one migration and
+	// therefore roll back together. `pg_tables` rather than `pg_class` so a name
+	// that came back as something other than a table would not count.
+	labelProjectionTables := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_tables WHERE tablename = ANY($1::text[])`,
+			[]string{"alert_labels", "alert_label_names"}).Scan(&n); err != nil {
+			t.Fatalf("introspect the label projection tables: %v", err)
+		}
+		return n
+	}
+
+	// ⭐ 00045's projection, asserted at the top of the stack because "the Down
+	// dropped them" is only interesting if the Up created them in the first
+	// place. Without these two tables the label typeahead is back to expanding
+	// every non-synthetic alert in the org through a LATERAL jsonb_object_keys
+	// once per keystroke, on a table ADR 0024 never reaps — and no index on
+	// `alerts` can replace them, because Postgres refuses a set-returning
+	// function in an index expression and the value typeahead takes its label
+	// name as a runtime parameter.
+	if n := labelProjectionTables(); n != 2 {
+		t.Fatalf("%d of 00045's two tables exist at the top of the stack, want 2 — "+
+			"alert_labels and alert_label_names are what GET /api/v1/labels and "+
+			"GET /api/v1/labels/{name}/values read, and without them both read `alerts` in "+
+			"full on the filter bar of the incident view", n)
+	}
+
+	// 00044's index, asserted at the top of the stack as well as after the round
+	// trip, because "the Down dropped it" is only interesting if the Up put it
+	// there in the first place. The partial predicate is asserted with the
+	// columns: without `WHERE left_at IS NULL` this is an index over every
+	// membership row the generation has ever had, which is the shape the two
+	// bounded reads do not want and the two replay reads cannot use anyway.
+	if def := currentMemberIndexDef(); def == "" {
+		t.Fatal("gm_current_idx is absent at the top of the stack; 00044 exists to create it, " +
+			"and without it the only read of a generation's current members sorts the whole " +
+			"membership to return twenty rows — on the detail page and on every ack, snooze " +
+			"and unsnooze reply that re-renders it")
+	} else if !strings.Contains(def, "left_at IS NULL") {
+		t.Fatalf("gm_current_idx is not partial at the top of the stack: %s — the predicate is "+
+			"half the decision, and an index over departed members too is a different index "+
+			"under the same name", def)
 	}
 
 	// ⭐ 00043 is comments and nothing else, which is exactly why it is asserted:
@@ -704,6 +790,70 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		if err := migrate.Down(env.ctx, dsn); err != nil {
 			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
 		}
+	}
+
+	// ⭐ 00045 down: both projection tables go, and they have to go WITH ROWS IN
+	// THEM. A real alert is written first, and its label rows with it, because
+	// that is the only state an operator ever rolls this back from: 00045's Up
+	// backfills from `alerts`, so on any database with alerts these tables are
+	// populated the moment the migration lands. Dropping them loses nothing that
+	// cannot be recomputed — both are a pure function of `alerts.labels`, which
+	// the Down does not touch — and a re-Up backfills them again, which is why
+	// this is the rare Down in this list that is genuinely free.
+	labelOrg, _, labelHealth := seedSource(t, env)
+	var labelCluster uuid.UUID
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT cluster_id FROM alert_sources WHERE id = $1`, labelHealth.SourceID).
+		Scan(&labelCluster); err != nil {
+		t.Fatalf("read the seeded source's cluster: %v", err)
+	}
+	labelAlert := id.New()
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
+		                     cluster_key, labels, state, first_seen_at, last_seen_at,
+		                     last_state_change_at)
+		 VALUES ($1, $2, $3, $4, $5, 'RollbackProbe', 'prod',
+		         '{"alertname":"RollbackProbe","severity":"critical"}'::jsonb,
+		         'firing', now(), now(), now())`,
+		labelAlert, labelOrg.OrgID(), labelCluster,
+		"ak_"+strings.Repeat("a", 26), strings.Repeat("ab", 8)); err != nil {
+		t.Fatalf("seed an alert to project: %v", err)
+	}
+	// Written the way `upsertAlertsSQL` writes them and the way 00045's backfill
+	// defines them, so the rows the Down meets are the rows the ingest path makes.
+	if _, err := env.pool.Exec(env.ctx,
+		`WITH put AS (
+		   INSERT INTO alert_labels (org_id, alert_id, label_name, label_value)
+		   SELECT a.org_id, a.id, e.key, coalesce(e.value, '')
+		     FROM alerts a, LATERAL jsonb_each_text(a.labels) AS e(key, value)
+		    WHERE a.id = $1 AND NOT a.synthetic
+		   RETURNING org_id, label_name)
+		 INSERT INTO alert_label_names (org_id, label_name, alert_count)
+		 SELECT org_id, label_name, count(*) FROM put GROUP BY org_id, label_name
+		     ON CONFLICT ON CONSTRAINT alert_label_names_pk DO UPDATE
+		    SET alert_count = alert_label_names.alert_count + EXCLUDED.alert_count`,
+		labelAlert); err != nil {
+		t.Fatalf("project the seeded alert's labels: %v — 00045 exists to make these rows "+
+			"writable, so a failure here means its Up never created the tables it describes", err)
+	}
+	down(45)
+	if n := labelProjectionTables(); n != 0 {
+		t.Fatalf("%d of 00045's two tables survived its Down, want 0 — a rolled-back release "+
+			"neither reads nor maintains them, so what would be left is a projection of "+
+			"`alerts.labels` that silently stops tracking it and is wrong from the next "+
+			"observation onwards", n)
+	}
+
+	// 00044 down: the current-member index goes. Like 00042's pair this is a
+	// `DROP INDEX IF EXISTS`, the kind of statement that runs cleanly whether or
+	// not it does anything — so the property is read afterwards rather than the
+	// error trusted. The release this rolls back to still returns the right twenty
+	// members; it just sorts the storm to find them, which is the state the index
+	// exists to leave behind.
+	down(44)
+	if def := currentMemberIndexDef(); def != "" {
+		t.Fatalf("gm_current_idx survived 00044's Down: %s — a rolled-back deployment would "+
+			"carry an index for a query the release it rolled back to does not run", def)
 	}
 
 	// 00042 down: both range indexes go. `DROP INDEX IF EXISTS` is the kind of
@@ -1144,6 +1294,36 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 	if buckets() != 0 {
 		t.Fatal("rate_limit_buckets survived the way back up")
+	}
+	// ⭐ 00045 comes back AND REFILLS ITSELF. Its Up is a CREATE plus a backfill,
+	// so the way up is the only place the backfill runs against a database that
+	// already has alerts in it — the alert seeded above for the Down is still
+	// there, and its labels have to be back in the projection. A round trip that
+	// restored the tables empty would be green on a presence check and would leave
+	// the typeahead silently offering nothing for every alert that predates the
+	// rollback.
+	if n := labelProjectionTables(); n != 2 {
+		t.Fatalf("%d of 00045's two tables came back on the way up, want 2 — the rest of the "+
+			"suite runs against this schema, and both label typeaheads read them", n)
+	}
+	var reprojected int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM alert_labels WHERE alert_id = $1`, labelAlert).Scan(&reprojected); err != nil {
+		t.Fatalf("introspect the re-backfilled projection: %v", err)
+	}
+	if reprojected != 2 {
+		t.Fatalf("the alert seeded before 00045's Down has %d projected labels after the way "+
+			"back up, want 2 — the Up's backfill IS the definition of these tables, and a "+
+			"re-created pair that only tracks alerts observed after the rollback is a typeahead "+
+			"that has silently forgotten the estate", reprojected)
+	}
+	if def := currentMemberIndexDef(); def == "" {
+		t.Fatal("gm_current_idx did not come back on the way up — the rest of the suite runs " +
+			"against this schema, and the member plan test asserts a plan that only exists " +
+			"while it does")
+	} else if !strings.Contains(def, "left_at IS NULL") {
+		t.Fatalf("gm_current_idx came back without its partial predicate: %s — the round trip "+
+			"has to restore the index, not merely the name", def)
 	}
 	if n := rollupRangeIndexes(); n != 2 {
 		t.Fatalf("%d of 00042's two range indexes came back on the way up, want 2 — the rest of "+
