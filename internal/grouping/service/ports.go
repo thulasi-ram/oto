@@ -49,11 +49,16 @@ type GroupRepository interface {
 type MemberRepository interface {
 	Join(ctx context.Context, s db.TenantScope, groupID, occurrenceID, alertID uuid.UUID, at time.Time) (bool, error)
 	Leave(ctx context.Context, s db.TenantScope, groupID, occurrenceID uuid.UUID, at time.Time) (bool, error)
-	CurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]domain.Member, error)
-	// ListCurrentMembers is CurrentMembers, keyset-paginated, for the one caller
-	// that renders a page rather than a rollup.
+	// ListCurrentMembers is the ONLY read of a generation's current members, and
+	// it is bounded. There was an unbounded `CurrentMembers` beside it until the
+	// detail page's twenty-row preview stopped fetching a storm to render twenty
+	// of it; a port that offers both is a port whose next caller picks the wrong
+	// one.
 	ListCurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset) ([]domain.Member, db.Cursor, error)
 	AllMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]domain.Member, error)
+	// MembersAt takes the INSTANT, because the alternative is AllMembers plus a
+	// loop, and that is a filter the database was asked to skip.
+	MembersAt(ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time) ([]domain.Member, error)
 	GroupsForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Member, error)
 	DistinctJoinsSince(ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time) (int, time.Time, error)
 	Rollup(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (domain.Counts, string, error)

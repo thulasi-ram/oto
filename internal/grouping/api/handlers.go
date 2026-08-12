@@ -2,22 +2,23 @@ package api
 
 import (
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/google/uuid"
 
 	alerts "github.com/thulasiram/oto/internal/alerts/service"
-	"github.com/thulasiram/oto/internal/grouping/domain"
 	"github.com/thulasiram/oto/internal/grouping/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 )
 
-// maxTopAlerts bounds the member preview on the detail view. The full list is
-// `/alert-groups/{id}/alerts`.
-const maxTopAlerts = 20
+// ⛔ NO BOUND IS DECLARED OR APPLIED IN THIS PACKAGE. `top_alerts` is
+// `maxItems: 20` in the contract, and the ONE number behind that is
+// `grouping/domain.MemberPreviewLimit`, applied exactly once as the SQL LIMIT of
+// the preview read in `service.Get`. `detailDTO` renders the rows that read
+// returned and cuts nothing, so a constant here could only ever be a second copy
+// of a ceiling this side of the boundary does not enforce.
 
 // listAlertGroups is `GET /api/v1/alert-groups` — the default UI landing view.
 func (rt *Router) listAlertGroups(w http.ResponseWriter, r *http.Request) {
@@ -421,10 +422,17 @@ func (rt *Router) detailDTO(
 		return GroupDetailDTO{}, err
 	}
 	dto.DeliverySummary = deliverySummaryDTO(rollup)
-	for _, m := range sortedMembers(d.Members) {
-		if len(dto.TopAlerts) >= maxTopAlerts {
-			break
-		}
+	// ⭐ NO SORT AND NO BREAK. `d.Members` arrives newest join first and already
+	// cut to domain.MemberPreviewLimit rows by SQL, so there is nothing here to
+	// order and nothing to discard. This loop used to copy the ENTIRE membership,
+	// sort the copy and stop at the twentieth — a storm of five thousand members
+	// rendered as twenty, at the price of five thousand.
+	//
+	// A member whose alert cannot be read still leaves the preview one row
+	// shorter rather than reaching for a twenty-first: the rows past the LIMIT
+	// are not here to reach for, and a card that is short is better than a card
+	// that pays a second query to stay exactly twenty long.
+	for _, m := range d.Members {
 		a, ok := rt.alert(r, scope, m.AlertID())
 		if !ok {
 			continue
@@ -491,20 +499,4 @@ func (rt *Router) alert(r *http.Request, scope db.TenantScope, alertID uuid.UUID
 		return alerts.AlertDetail{}, false
 	}
 	return detail, true
-}
-
-// sortedMembers orders membership newest join first, with the occurrence id as a
-// deterministic tiebreak so two identical requests produce the same preview.
-//
-// It survives for `detailDTO`'s BOUNDED preview only, over a slice the service
-// already holds. The paginated list is SQL's job — see listAlertGroupAlerts.
-func sortedMembers(in []domain.Member) []domain.Member {
-	out := append([]domain.Member(nil), in...)
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].JoinedAt().Equal(out[j].JoinedAt()) {
-			return out[i].OccurrenceID().String() > out[j].OccurrenceID().String()
-		}
-		return out[i].JoinedAt().After(out[j].JoinedAt())
-	})
-	return out
 }

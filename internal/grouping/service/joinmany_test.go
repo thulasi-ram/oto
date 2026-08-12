@@ -348,7 +348,9 @@ func (f *fakeMembers) Leave(context.Context, db.TenantScope, uuid.UUID, uuid.UUI
 	return false, nil
 }
 
-func (f *fakeMembers) CurrentMembers(context.Context, db.TenantScope, uuid.UUID) ([]domain.Member, error) {
+func (f *fakeMembers) MembersAt(
+	context.Context, db.TenantScope, uuid.UUID, time.Time,
+) ([]domain.Member, error) {
 	return nil, nil
 }
 

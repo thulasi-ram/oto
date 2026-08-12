@@ -135,27 +135,6 @@ func (r *MemberRepository) Leave(
 	return tag.RowsAffected() == 1, nil
 }
 
-var currentMembersSQL = `
-SELECT ` + memberColumns + `
-  FROM alert_group_members
- WHERE org_id = $1 AND group_id = $2 AND left_at IS NULL
- ORDER BY joined_at ASC`
-
-// CurrentMembers lists the occurrences still in a generation.
-func (r *MemberRepository) CurrentMembers(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
-) ([]domain.Member, error) {
-	if err := requireScope(s); err != nil {
-		return nil, err
-	}
-	rows, err := r.db(ctx).Query(ctx, currentMembersSQL, s.OrgID(), groupID)
-	if err != nil {
-		return nil, mapErr(err, "list group members")
-	}
-	defer rows.Close()
-	return collectMembers(rows)
-}
-
 var allMembersSQL = `
 SELECT ` + memberColumns + `
   FROM alert_group_members
@@ -173,6 +152,51 @@ func (r *MemberRepository) AllMembers(
 	rows, err := r.db(ctx).Query(ctx, allMembersSQL, s.OrgID(), groupID)
 	if err != nil {
 		return nil, mapErr(err, "list group members")
+	}
+	defer rows.Close()
+	return collectMembers(rows)
+}
+
+// membersAtSQL is domain.Member.WasMemberAt, written as a predicate.
+//
+// ⭐ THE INSTANT IS AN ARGUMENT, NOT A FILTER THE CALLER APPLIES AFTERWARDS.
+// `joined_at <= $3` is `!t.Before(joinedAt)` and `left_at IS NULL OR left_at >
+// $3` is `leftAt.IsZero() || t.Before(leftAt)` — the same two clauses, in the
+// place that can discard the rows instead of shipping them. The service used to
+// read `AllMembers` (every membership the generation has ever had, joined and
+// departed) and drop most of them in Go, which is a replay of a forty-member
+// group paid for at the size of its whole history.
+var membersAtSQL = `
+SELECT ` + memberColumns + `
+  FROM alert_group_members
+ WHERE org_id = $1 AND group_id = $2
+   AND joined_at <= $3
+   AND (left_at IS NULL OR left_at > $3)
+ ORDER BY joined_at ASC`
+
+// MembersAt lists the occurrences that were in a generation at one instant.
+//
+// NOTE (planner): NO INDEX SERVES THIS ONE, and that is a decision rather than
+// an omission. gm_current_idx (00044) is PARTIAL on `left_at IS NULL` and a
+// replay is precisely the read that wants the departed rows back, so this falls
+// to the `(group_id, occurrence_id)` primary key's group prefix or to a
+// sequential scan by size, with both time clauses as filters and a Sort for the
+// ORDER BY. That is affordable only because the read has NO PAGE: it answers
+// "what was in the group when the thread was posted", the caller wants the whole
+// set, and a sort of the answer is not a sort of the membership. What SQL buys
+// here is the departed rows never crossing the wire. The day this read acquires
+// a bound it needs `(org_id, group_id, joined_at)` unpartialled, and not before
+// — a second btree on the ingest path's own table, to serve a method with one
+// caller, would be paying for a page nobody has asked for.
+func (r *MemberRepository) MembersAt(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time,
+) ([]domain.Member, error) {
+	if err := requireScope(s); err != nil {
+		return nil, err
+	}
+	rows, err := r.db(ctx).Query(ctx, membersAtSQL, s.OrgID(), groupID, at.UTC())
+	if err != nil {
+		return nil, mapErr(err, "list group members at")
 	}
 	defer rows.Close()
 	return collectMembers(rows)
@@ -285,14 +309,17 @@ func (r *MemberRepository) Rollup(
 	}, strOrEmpty(severity), nil
 }
 
-// listCurrentMembersSQL is the keyset page of a generation's current members.
+// listCurrentMembersSQL is the keyset page of a generation's current members,
+// and the ONLY read of them: there is no unbounded sibling to reach for.
 //
 // ⭐ It orders NEWEST JOIN FIRST and pages by `(joined_at, occurrence_id)`,
 // which is a total order because `(group_id, occurrence_id)` is the table's
-// primary key. The handler used to read EVERY member through `Get()` and slice
+// primary key. Both callers used to read EVERY member through `Get()` and slice
 // the result in Go: correct for a group of forty, a full membership fetch for a
 // storm of five thousand, and a page whose `has_more` was computed from a list
-// the caller had already paid to materialise.
+// the caller had already paid to materialise. `/alert-groups/{id}/alerts` came
+// here first; `/alert-groups/{id}` followed, and its twenty-row preview is now
+// this query with `LIMIT 21` rather than a `sort.SliceStable` over the storm.
 var listCurrentMembersSQL = `
 SELECT ` + memberColumns + `
   FROM alert_group_members
@@ -303,10 +330,18 @@ SELECT ` + memberColumns + `
 
 // ListCurrentMembers returns one keyset page of a generation's current members.
 //
-// NOTE (planner): the driving path is the `(group_id, occurrence_id)` primary
-// key with `left_at IS NULL` and the keyset applied as a filter. A generation
-// holds at most a few thousand members, so this is a bounded index range and not
-// the org-wide scan the alert list is careful about.
+// NOTE (planner): the driving index is gm_current_idx (00044), `(org_id,
+// group_id, joined_at DESC, occurrence_id DESC) WHERE left_at IS NULL`. It
+// carries the two equalities, the partial predicate and the WHOLE sort key, so
+// the LIMIT stops the scan and nothing is sorted in memory — asserted against a
+// real plan in member_plan_test.go, with the index dropped as the control. The
+// keyset arrives inside `$3 IS NULL OR …`, which a CUSTOM plan folds away so the
+// row comparison becomes an index bound and a deep page starts at the cursor; a
+// GENERIC plan cannot fold it and re-walks the rows it has passed, which a
+// generation of a few thousand members can afford. Before 00044 there was no
+// index carrying `joined_at` under `group_id` at all, so every read of this
+// statement — including the twenty-row preview on the detail page — sorted the
+// generation's whole current membership to return its first page.
 func (r *MemberRepository) ListCurrentMembers(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset,
 ) ([]domain.Member, db.Cursor, error) {

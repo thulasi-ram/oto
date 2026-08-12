@@ -8,6 +8,24 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
+// MemberPreviewLimit is how many currently-joined members the detail view shows.
+// `top_alerts` is `maxItems: 20` in the contract, and this is that number.
+//
+// ⭐ IT IS THE ONLY COPY, and it lives in `domain` because that is the one place
+// all three layers may name: `service.Get` passes it as the SQL LIMIT of the
+// preview read, `api` renders exactly the rows that read returned and caps
+// nothing of its own, and `repository`'s plan test EXPLAINs the statement at
+// `MemberPreviewLimit + 1` — the extra row `ListCurrentMembers` reads to answer
+// `has_more`. It cannot live in `service`: `service` imports `repository`, so a
+// repository test naming it back would be an import cycle, which is exactly how
+// the third hand-written 21 got there.
+//
+// Two literals could drift, and the direction they would drift in is the one
+// where the endpoint fetches more rows than it can render.
+//
+// The full list is `GET /alert-groups/{id}/alerts`, which pages.
+const MemberPreviewLimit = 20
+
 // Member is the membership of ONE AlertOccurrence in ONE AlertGroup generation.
 //
 // ⭐ Membership is HISTORY, NOT A BOOLEAN. `left_at` is nullable rather than a

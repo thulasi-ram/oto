@@ -90,8 +90,12 @@ func (s *Service) List(ctx context.Context, scope db.TenantScope, q ListQuery) (
 // Detail is `GET /api/v1/alert-groups/{id}` — the generation and its rollup.
 type Detail struct {
 	Group domain.Group
-	// Members are the CURRENTLY-JOINED members. Past members are reachable
-	// through History, because membership is history and not a boolean.
+	// Members is the PREVIEW: at most domain.MemberPreviewLimit currently-joined
+	// members, newest join first, as SQL returned them. It is not the membership
+	// — a generation in a storm holds thousands — and nothing may count it. The
+	// counts are in Group's rollup, the page is `/alert-groups/{id}/alerts`, and
+	// past members are reachable through History, because membership is history
+	// and not a boolean.
 	Members []domain.Member
 	// StormActive mirrors Group.StormMode and is repeated here because the UI
 	// renders it as a badge next to the counts, and a damper the user cannot see
@@ -105,12 +109,29 @@ type Detail struct {
 }
 
 // Get serves `GET /api/v1/alert-groups/{id}`.
+//
+// ⭐ THE PREVIEW IS ONE PAGE, AND FOUR ENDPOINTS PAY FOR IT. Ack, snooze and
+// unsnooze all render their reply through this method, so a group action during
+// a storm used to re-read the whole membership — five thousand rows fetched,
+// copied, sorted and 4 980 of them thrown away — every time a human pressed a
+// button, which is exactly when they are pressing them. It now takes the first
+// domain.MemberPreviewLimit rows of the same keyset read that
+// `/alert-groups/{id}/alerts` pages through, already ordered newest-join-first
+// by gm_current_idx.
+//
+// ⭐ THIS LIMIT IS THE ONLY PLACE THE PREVIEW IS BOUNDED. Nothing downstream cuts
+// the slice again — `api` renders exactly what this returns — so the contract's
+// `top_alerts: maxItems: 20` is satisfied here or nowhere.
+//
+// The cursor is discarded on purpose: a preview is not a page, and "there is
+// more" is already on the card as the generation's member counts.
 func (s *Service) Get(ctx context.Context, scope db.TenantScope, groupID uuid.UUID) (Detail, error) {
 	g, err := s.groups.GetByID(ctx, scope, groupID)
 	if err != nil {
 		return Detail{}, err
 	}
-	members, err := s.members.CurrentMembers(ctx, scope, groupID)
+	members, _, err := s.members.ListCurrentMembers(ctx, scope, groupID,
+		db.Keyset{Limit: domain.MemberPreviewLimit})
 	if err != nil {
 		return Detail{}, err
 	}
@@ -141,6 +162,10 @@ type MemberResult struct {
 // handler could not call it at all and reached for `Get().Members` instead,
 // materialising the whole membership and slicing it in Go. A service method the
 // only caller that needs it is forbidden to name is not a service method.
+//
+// `Get` now reads through the same repository query for its preview, so the
+// membership is bounded in SQL on BOTH routes and there is no longer a method on
+// this service that returns every member row.
 func (s *Service) Members(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, p db.Keyset,
 ) (MemberResult, error) {
@@ -163,20 +188,16 @@ func (s *Service) History(
 //
 // This is what makes "what was in this group when the thread was posted?"
 // answerable, and it is why a member that leaves keeps its row.
+//
+// ⭐ THE INSTANT GOES DOWN TO SQL. This used to read `AllMembers` — every
+// membership row the generation has ever had, joined and departed — and then run
+// domain.Member.WasMemberAt over the lot in Go, which is a question the WHERE
+// clause could answer while the rows were still in the database. The predicate
+// in `membersAtSQL` is that method, clause for clause.
 func (s *Service) MembersAt(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, at time.Time,
 ) ([]domain.Member, error) {
-	all, err := s.members.AllMembers(ctx, scope, groupID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domain.Member, 0, len(all))
-	for _, m := range all {
-		if m.WasMemberAt(at) {
-			out = append(out, m)
-		}
-	}
-	return out, nil
+	return s.members.MembersAt(ctx, scope, groupID, at)
 }
 
 // GroupsForAlert answers "which groups has this alert been part of", newest

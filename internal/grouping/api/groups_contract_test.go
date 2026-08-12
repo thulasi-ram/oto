@@ -936,36 +936,36 @@ func TestTheTimelineAcceptsEveryDeclaredEventType(t *testing.T) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Live divergences between the handlers and the contract                     */
+/* §E.3 on the detail read                                                    */
 /* -------------------------------------------------------------------------- */
 
-// ⛔ TestBUG_ADetailReadCanAnswerAnUndeclared400.
+// TestADetailReadRefusesAnUnknownQueryParameterWithADeclared400.
 //
-// WHAT THE SERVER DOES: `getAlertGroup` runs every request through
-// `httpx.NewParams(r)` with an EMPTY allow-list (internal/grouping/api/handlers.go:371),
-// so any query parameter at all — `?foo=1`, a cache-buster, a tracking
-// parameter a proxy appended — is `400 unknown_parameter`. That is §E.3 and it
-// is the right behaviour.
+// `getAlertGroup` runs every request through `httpx.NewParams(r)` with an EMPTY
+// allow-list, so any query parameter at all — `?foo=1`, a cache-buster, a
+// tracking parameter a proxy appended — is `400 unknown_parameter`. That is §E.3
+// and it is the right behaviour.
 //
-// WHAT THE CONTRACT SAYS: `getAlertGroup` declares 200, 401, 403, 404, 429, 500
-// and 503 and NO 400 (api/openapi/openapi.yaml:1653). A generated client
-// therefore has no branch for the status it will receive the first time a proxy
-// or a browser adds a parameter to the URL.
-//
-// WHICH IS WRONG: the CONTRACT. The refusal is correct and is specified in
-// §E.3; the response list simply never gained the `BadRequest` entry that
-// `listAlertGroupAlerts` and `getAlertGroupTimeline` both have. The same gap
-// exists on `getRuleSnapshot` and `getOccurrenceRule`.
-//
-// The test asserts the CONTRACT — that the 400 this server really emits has a
-// schema to be validated against — and is skipped until the entry is added.
-func TestBUG_ADetailReadCanAnswerAnUndeclared400(t *testing.T) {
-	t.Skip("getAlertGroup emits 400 unknown_parameter, which the contract does not declare; " +
-		"the contract is wrong — see the comment above")
+// ⭐ WHAT WAS WRONG WAS THE CONTRACT (git-bug ee3ae9c): the response list never
+// gained the `BadRequest` entry that `listAlertGroupAlerts` and
+// `getAlertGroupTimeline` both have, so a generated client had no branch for the
+// status it receives the first time a browser adds a parameter to the URL, and
+// `schema.AssertProblem` failed at the lookup rather than at the validation.
+func TestADetailReadRefusesAnUnknownQueryParameterWithADeclared400(t *testing.T) {
 	t.Parallel()
+
+	if !schema.Op(t, "getAlertGroup").Declares(http.StatusBadRequest) {
+		t.Fatal("getAlertGroup declares no 400, and §E.3 makes one reachable with any unknown " +
+			"query parameter")
+	}
 
 	rt, _ := newGroupRouter(t)
 	resp := apitest.New(rt).GET(groupPath("?foo=1")).MustStatus(t, http.StatusBadRequest)
 
 	schema.AssertProblem(t, "getAlertGroup", http.StatusBadRequest, resp.Body())
+
+	p := resp.MustViolate(t, "foo")
+	if p.Code != "unknown_parameter" {
+		t.Fatalf("code = %q, want unknown_parameter", p.Code)
+	}
 }
