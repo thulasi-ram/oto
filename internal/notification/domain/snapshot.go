@@ -86,9 +86,22 @@ type GroupFacts struct {
 	// they act on at 03:00.
 	FiringSince time.Time
 
-	// AlertmanagerURL is the source's `base_url`. It is what the Silence and
-	// "Open in Alertmanager" deep links are built from (§H.3, R3): oto never
-	// writes a silence, it only shows you where to write one.
+	// AlertmanagerURL is an Alertmanager UI root oto CAN VOUCH FOR — the base the
+	// Silence and "Open in Alertmanager" deep links are built from (§H.3, R3): oto
+	// never writes a silence, it only shows you where to write one — or the empty
+	// string, meaning there is nowhere to send anyone.
+	//
+	// ⛔ IT IS NOT SIMPLY THE SOURCE'S `base_url`, and filling it as if it were is
+	// the bug this field's name once invited. `base_url` is the Alertmanager API
+	// ROOT; only for a source of kind `alertmanager` is that also the UI root. A
+	// grafana source's base_url addresses an AM-compat API whose console keeps
+	// silences somewhere else entirely, so `<base>/#/silences/new` is a 404 with a
+	// button on it. Whoever implements `SnapshotSource` owes that check before
+	// setting this — the read model does it in `groupFactsSQL`.
+	//
+	// EMPTY IS A REAL ANSWER, not a missing one, and every consumer already draws
+	// it as no link and no Silence button. A fabricated link that 404s at 03:00
+	// costs an operator the one affordance v1 offers them.
 	AlertmanagerURL string
 
 	FirstSeenAt    time.Time

@@ -399,6 +399,16 @@ func (v *ViewService) links(snap domain.Snapshot) Links {
 	// The filter is Alertmanager's own matcher syntax, `{a="b", c="d"}`, built from
 	// the GROUP LABELS — the labels Alertmanager itself grouped by, so the silence
 	// covers exactly this card and not the whole alertname across every cluster.
+	//
+	// ⛔ THE EMPTY CHECK IS ALSO THE SOURCE-KIND GUARD, and both of these URL
+	// shapes are ALERTMANAGER'S OWN CONSOLE — `/#/alerts`, `/#/silences/new` — not
+	// a shape every source serves. `AlertmanagerURL` is a UI root oto has vouched
+	// for or nothing at all (see its doc on `domain.GroupFacts`), so a group whose
+	// source is a Grafana, or whose source resolved to nothing, arrives here empty
+	// and leaves with no link — and `actions` below already reads an empty
+	// `AlertmanagerSilenceNew` as no Silence button. Never guess the missing half:
+	// an operator who clicks a fabricated link mid-incident and lands on a 404 has
+	// lost the one action v1 offers and gained a reason not to trust the next card.
 	if base := strings.TrimRight(snap.Group.AlertmanagerURL, "/"); base != "" {
 		if filter := alertmanagerFilter(snap); filter != "" {
 			escaped := url.QueryEscape(filter)

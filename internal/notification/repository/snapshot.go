@@ -46,12 +46,40 @@ func (r *SnapshotRepository) db(ctx context.Context) db.Querier { return db.From
 
 const orgFactsSQL = `SELECT id, slug, name FROM orgs WHERE id = $1`
 
+// groupFactsSQL reads the card's group-level facts, and decides ONE thing about
+// the joined source beyond its address: whether that address is somewhere oto
+// may send an operator.
+//
+// ⛔ THE `kind` PREDICATE IS THE WHOLE POINT OF THE `CASE`, and it is why this
+// query reads a second column it never returns. `base_url` is documented
+// everywhere as the Alertmanager API root; for `alertmanager` the API root and
+// the UI root are the same origin, so `<base>/#/alerts` and
+// `<base>/#/silences/new` resolve. For `grafana` neither half holds: the source
+// factory appends stock `/api/v2/...` paths without ever reading kind, so a
+// grafana `base_url` must already carry Grafana's AM-compat prefix — and Grafana
+// serves its silences at `/alerting/silences`, not at `/#/silences`. Whichever
+// way an operator configured it, the link would be wrong.
+//
+// So a source oto cannot vouch for yields the EMPTY STRING, which the renderer
+// already draws as no link and no Silence button. That is the same verdict
+// `silenceBaseURLs` reaches on the silences feed by leaving such a source out of
+// its map (`internal/app/silencesource.go`): kind is the filter, absence is the
+// answer, and the layer above renders nothing rather than something wrong.
+//
+// ⚠️ IT IS DECIDED HERE, NOT UPSTAIRS, and that is deliberate. This file is
+// already the one place in `notification` that names `alert_sources` and its
+// columns; carrying the raw kind instead would put the source-kind taxonomy into
+// `notification/domain` (a field) and `notification/service` (a comparison) as
+// well — three copies of an enum this module has no business knowing. What
+// crosses the boundary is a URL oto has vouched for, or nothing, and the layers
+// above have no vocabulary for the difference.
 const groupFactsSQL = `
 SELECT g.id, g.group_key, g.generation, coalesce(g.source_group_key,''), g.receiver,
        g.group_labels, g.title, g.state, coalesce(g.severity,''), g.state_version,
        g.firing_count, g.suppressed_count, g.resolved_count, g.expired_count,
        g.total_count, g.acked_count, g.storm_mode, g.storm_since,
-       coalesce(g.last_notification_reason,''), coalesce(s.base_url,''),
+       coalesce(g.last_notification_reason,''),
+       CASE WHEN s.kind = 'alertmanager' THEN coalesce(s.base_url,'') ELSE '' END,
        g.first_seen_at, g.last_activity_at, g.closed_at
   FROM alert_groups g
   LEFT JOIN alert_sources s ON s.id = g.source_id

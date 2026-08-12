@@ -29,7 +29,21 @@ import (
 const (
 	// MaxPolicyMatchers is policies_matchers_ck.
 	MaxPolicyMatchers = 32
-	// MaxPolicyReasons is policies_reasons_ck.
+	// MaxPolicyReasons is policies_reasons_ck, and it is a STORAGE bound, not the
+	// wire bound. The CHECK is `array_length(reasons, 1) BETWEEN 1 AND 32` with no
+	// uniqueness, and Validate below checks length and membership but likewise not
+	// uniqueness — so the column can genuinely hold 32 entries, duplicates and all,
+	// and 32 is the number a running database is already holding rows against.
+	//
+	// The contract caps `reasons` at 18 instead, because there `uniqueItems: true`
+	// over the 18-value NotificationReason enum makes a 19th element unreachable;
+	// a wire ceiling above 18 would be a number no request could ever test. The two
+	// differ on purpose and neither is drift.
+	//
+	// ⚠️ Uniqueness is enforced ONLY by the `unique` tag on the request DTOs. There
+	// is no constructor check here and no DDL constraint, so a duplicate reason is
+	// storable by any path that does not go through a DTO — a real CONTEXT.md §5b
+	// gap rather than a deliberate looseness.
 	MaxPolicyReasons = 32
 	// MaxPolicyChannels is policies_chan_ck.
 	MaxPolicyChannels = 16

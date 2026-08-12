@@ -185,6 +185,11 @@ type Links struct {
 	Prometheus, Alertmanager string
 	// AlertmanagerSilenceNew is a deep link into the Alertmanager UI. It is v1's
 	// ONLY silence affordance: oto has no write path into the cluster (R3).
+	//
+	// It and `Alertmanager` are EMPTY unless the card's source is an Alertmanager
+	// whose console oto can address — both are Alertmanager's own `/#/…` URL
+	// shapes, and a Grafana-backed source does not serve them. A renderer draws
+	// the empty string as no button, which is the intended card.
 	AlertmanagerSilenceNew                       string
 	Runbook                                      string
 	GrafanaDashboard, GrafanaPanel, GrafanaImage string // Grafana-sourced only
