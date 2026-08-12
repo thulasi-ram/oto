@@ -28,7 +28,7 @@ import { A } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 import { For, Show, createMemo, createSignal, type JSX, type ParentComponent } from "solid-js";
 
-import { listActiveSnoozes, listSources } from "~/api/endpoints";
+import { getStatsOverview, listActiveSnoozes, listSources } from "~/api/endpoints";
 import type { ActiveSnooze } from "~/api/types";
 import { qk } from "~/api/keys";
 import { RelativeTime } from "~/components/Time";
@@ -178,43 +178,121 @@ export const SourceReachBanner = (): JSX.Element => {
     refetchInterval: SAFETY_NET_MS,
   }));
 
-  // Health travels embedded on each source — `GET /sources` serves "a page of
-  // sources, each with its current health" — so the whole org costs one request
-  // and no per-source fan-out.
-  const unreachable = createMemo<readonly Source[]>(() =>
+  /**
+   * Whether the page in hand is the whole org — `page.has_more` on `GET /sources`.
+   *
+   * This is the gate on the second query below and the reason a normal org pays
+   * nothing for the paragraph above it.
+   */
+  const truncated = (): boolean => sources.data?.page.has_more === true;
+
+  /**
+   * ⛔ THE SECOND READ IS GATED ON THE FIRST BEING SHORT, AND THAT GATE IS THE
+   * WHOLE DESIGN.
+   *
+   * Health travels embedded on each source — `GET /sources` serves "a page of
+   * sources, each with its current health" — so the names, and the upstream error
+   * behind each one, cost one request and no per-source fan-out. But that page is
+   * keyset with a default `limit` of 50 (§E.1), so an org whose only unreachable
+   * source sorts 51st would get no strip at all, and the strip could not even tell
+   * that it was looking at part of a list.
+   *
+   * The org-wide count is on the dashboard roll-up, and `GET /stats/overview` is
+   * twenty-six columns across five tables — including a `notification_deliveries`
+   * scan with two joins — to be read for one of them. So it is asked for ONLY when
+   * `has_more` says the page cannot answer: an org whose sources fit on one page
+   * makes no second request, ever, and `enabled` is what enforces that rather than
+   * a branch after the fact.
+   *
+   * The count is trustworthy now, and was not always: the roll-up's source CTE was
+   * a bare `FROM source_health WHERE org_id = $1`, and because `SoftDelete` leaves
+   * the health row at its last verdict, an org that ever deleted a source while it
+   * was unreachable would have carried this strip forever with no source left to
+   * name. That CTE now joins `alert_sources` and filters `deleted_at IS NULL`, the
+   * way its channel CTE always did.
+   *
+   * It rides the same sixty-second safety net and no live invalidation: a
+   * `source.health` frame refetches the source list, which is where the names are,
+   * and putting the whole roll-up behind every reconciler heartbeat would cost far
+   * more than the one minute it can lag by.
+   */
+  const overview = useQuery(() => ({
+    queryKey: qk.stats.overview(),
+    queryFn: ({ signal }: { signal: AbortSignal }) => getStatsOverview({}, { signal }),
+    enabled: truncated(),
+    refetchInterval: SAFETY_NET_MS,
+  }));
+
+  /** The unreachable sources on the page in hand — the only ones with a name. */
+  const seen = createMemo<readonly Source[]>(() =>
     (sources.data?.data ?? []).filter((s) => s.health?.status === "unreachable"),
   );
 
-  const named = (): readonly Source[] => unreachable().slice(0, NAMED_SOURCES_MAX);
-  const unnamed = (): number => Math.max(0, unreachable().length - NAMED_SOURCES_MAX);
-  const plural = (): boolean => unreachable().length > 1;
+  /**
+   * How many sources oto cannot reach, org-wide.
+   *
+   * The page's own tally is the floor rather than an alternative: while the
+   * roll-up is in flight — or if it somehow answers with less than the page can
+   * already see — the strip still says what it has seen for itself, and never
+   * less.
+   */
+  const count = (): number =>
+    Math.max(seen().length, truncated() ? (overview.data?.sources.unreachable ?? 0) : 0);
+
+  const named = (): readonly Source[] => seen().slice(0, NAMED_SOURCES_MAX);
+  /** Sources in the count that this strip cannot put a name to. */
+  const unnamed = (): number => Math.max(0, count() - named().length);
+  const plural = (): boolean => count() > 1;
+
+  /**
+   * The opening clause when the count runs past the names.
+   *
+   * ⛔ THE STRIP MAY NEVER IMPLY IT HAS NAMED EVERYTHING IT IS COUNTING. Two
+   * different things put a source out of naming range — it sorted past the page,
+   * or the enumeration stopped at three so the alert table keeps its screen — and
+   * the operator's next move is the same either way: open the sources screen. So
+   * both collapse into one honest sentence that leads with the number and admits
+   * how much of it is spelled out.
+   */
+  const counted = (): string => {
+    const label = `${count()} source${plural() ? "s" : ""}`;
+    if (named().length > 0) {
+      return `oto cannot reach ${label}, of which it can name ${named().length}`;
+    }
+    return plural()
+      ? `oto cannot reach ${label}, none of which it can name here`
+      : `oto cannot reach ${label}, which it cannot name here`;
+  };
+
+  const names = (): JSX.Element => (
+    <For each={named()}>
+      {(s, i) => (
+        <>
+          {i() > 0 ? ", " : ""}
+          <span
+            class="font-medium"
+            title={s.health?.last_error ?? "oto's last attempt to read this source did not succeed."}
+          >
+            {s.name}
+          </span>
+        </>
+      )}
+    </For>
+  );
 
   return (
     // `when` rather than a `<Show>` out here: the region has to be mounted while
     // the source list is still in flight, so that losing sight of a source is a
     // mutation inside it rather than the arrival of a fully-formed region.
-    <ShellBanner when={unreachable().length > 0}>
+    <ShellBanner when={count() > 0}>
       <p>
-        oto cannot reach{" "}
-        <For each={named()}>
-          {(s, i) => (
-            <>
-              {i() > 0 ? ", " : ""}
-              <span
-                class="font-medium"
-                title={
-                  s.health?.last_error ?? "oto's last attempt to read this source did not succeed."
-                }
-              >
-                {s.name}
-              </span>
-            </>
-          )}
-        </For>
-        <Show when={unnamed() > 0}> and {unnamed()} more</Show>. {plural() ? "Their" : "Its"} alerts
-        are held exactly where they are — never resolved, never expired — so a row that has gone
-        quiet may be one oto can no longer see, and this list is incomplete until{" "}
-        {plural() ? "they are" : "it is"} back.{" "}
+        <Show when={unnamed() > 0} fallback={<>oto cannot reach {names()}.</>}>
+          {counted()}
+          <Show when={named().length > 0}>: {names()}</Show>.
+        </Show>{" "}
+        {plural() ? "Their" : "Its"} alerts are held exactly where they are — never resolved, never
+        expired — so a row that has gone quiet may be one oto can no longer see, and this list is
+        incomplete until {plural() ? "they are" : "it is"} back.{" "}
         <A href="/settings/sources" class="font-medium text-accent">
           Source health
         </A>

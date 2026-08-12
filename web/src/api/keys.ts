@@ -95,6 +95,21 @@ export const qk = {
   deliveries: {
     all: () => ["deliveries"] as const,
   },
+  stats: {
+    /**
+     * The org-wide dashboard roll-up for one window.
+     *
+     * The window is part of the key because it is part of the question: two
+     * windows are two different aggregates and must never share a cache entry.
+     * The default — no window at all — is the shell's, and it is deliberately
+     * NOT under any entity prefix: a `source.health` frame changes the roll-up,
+     * but the roll-up is twenty-six columns over five tables and refetching it
+     * on every reconciler heartbeat would cost more than the sixty-second
+     * safety net it already rides.
+     */
+    overview: (query: Readonly<Record<string, string>> = {}) =>
+      ["stats", "overview", query] as const,
+  },
   meta: {
     me: () => ["meta", "me"] as const,
     version: () => ["meta", "version"] as const,

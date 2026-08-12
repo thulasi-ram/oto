@@ -645,8 +645,23 @@ export function listEnrichers(c: Ctx = {}): Promise<readonly Enricher[]> {
   return getUnpagedList<Enricher>(`${V1}/enrichers`, ctx(c));
 }
 
+/**
+ * The dashboard roll-up for one window.
+ *
+ * The three parameters are the three the contract declares and the server reads
+ * — `since`, `until`, `cluster` (`GET /stats/overview` binds exactly that set and
+ * 400s on anything else). This used to take `{ window?: string }`, which no
+ * version of the endpoint has ever accepted; passing it would have been rejected
+ * rather than narrowed. `cluster` goes on the wire comma-separated, as everywhere
+ * else in this file.
+ *
+ * `since`/`until` bound the alert, group and delivery counts only. The source and
+ * channel counts are current state and ignore the window entirely, so calling
+ * this with no arguments still costs the full aggregate — it does not become a
+ * cheap read by asking for nothing.
+ */
 export function getStatsOverview(
-  query: { window?: string } = {},
+  query: { since?: string; until?: string; cluster?: string } = {},
   c: Ctx = {},
 ): Promise<StatsOverview> {
   return getItem<StatsOverview>(`${V1}/stats/overview`, {

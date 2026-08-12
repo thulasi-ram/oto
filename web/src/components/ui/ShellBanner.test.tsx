@@ -35,8 +35,16 @@ import { SnoozeBanner, SourceReachBanner, resetDismissedSnoozes } from "./ShellB
 import { LiveProvider } from "~/api/live";
 import { qk } from "~/api/keys";
 import { ResyncBanner } from "~/components/AppShell";
-import { expectNoUndefined, flush, list, renderScreen, stubFetch, until } from "~/test/harness";
-import { frame, snooze, source, sse } from "~/test/fixtures";
+import {
+  expectNoUndefined,
+  flush,
+  item,
+  list,
+  renderScreen,
+  stubFetch,
+  until,
+} from "~/test/harness";
+import { frame, snooze, source, sse, statsOverview } from "~/test/fixtures";
 import type { QueryClient } from "@tanstack/solid-query";
 import type { ActiveSnooze, Source } from "~/api/types";
 import type { FetchStub } from "~/test/harness";
@@ -78,6 +86,16 @@ function activeSnooze(id: string, alertname: string, by = "Ada Lovelace"): Activ
 
 interface World {
   readonly sources?: readonly Source[];
+  /** The org has more sources than the page above — `page.has_more` on `GET /sources`. */
+  readonly moreSources?: boolean;
+  /**
+   * `sources.unreachable` on the dashboard roll-up: the org-wide count, over
+   * sources the page above may not contain.
+   *
+   * It defaults to zero rather than to something interesting, because a world
+   * that does not say otherwise is a world where the roll-up must never be read.
+   */
+  readonly overviewUnreachable?: number;
   readonly snoozes?: readonly ActiveSnooze[];
   readonly hasMore?: boolean;
 }
@@ -95,7 +113,23 @@ interface Mounted {
  */
 function mount(world: World = {}): Mounted {
   const stub = stubFetch({
-    "GET /api/v1/sources": list(world.sources ?? [source()]),
+    "GET /api/v1/sources": list(world.sources ?? [source()], {
+      has_more: world.moreSources ?? false,
+    }),
+    // Registered in every world, so "the strip did not ask for it" is an
+    // assertion a test can make rather than an unrouted call that throws. The
+    // strip is only allowed to read it when `GET /sources` said `has_more`, and
+    // the cases below assert both halves of that.
+    "GET /api/v1/stats/overview": item(
+      statsOverview({
+        sources: {
+          healthy: 0,
+          degraded: 0,
+          unreachable: world.overviewUnreachable ?? 0,
+          unknown: 0,
+        },
+      }),
+    ),
     "GET /api/v1/snoozes": list(world.snoozes ?? [], { has_more: world.hasMore ?? false }),
   });
 
@@ -137,6 +171,11 @@ describe("a healthy org", () => {
     expect(text()).not.toContain("holding notifications");
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
     expect(document.querySelectorAll("li")).toHaveLength(0);
+
+    // And it cost exactly the two requests the two strips need: an org whose
+    // page of sources IS the org has nothing to learn from the dashboard
+    // roll-up, so it never asks for it.
+    expect(stub.to("/stats/overview")).toHaveLength(0);
 
     // ⛔ WHAT IS MOUNTED HERE, AND WHY IT IS STILL "NOTHING". The announcement
     // region has to pre-date the news or the news is announced to no one, so it
@@ -215,15 +254,108 @@ describe("an unreachable source", () => {
     expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
     expect(document.querySelectorAll("p")).toHaveLength(1);
 
-    // Three named, the rest counted, and the reachable one never mentioned.
+    // Three named, and the fourth is counted rather than quietly dropped — the
+    // strip leads with the number the moment it cannot spell the whole of it out.
+    expect(text()).toContain("oto cannot reach 4 sources");
+    expect(text()).toContain("of which it can name 3");
     expect(text()).toContain("am-eu");
     expect(text()).toContain("am-us");
     expect(text()).toContain("am-ap");
-    expect(text()).toContain("and 1 more");
     expect(text()).not.toContain("am-sa");
     expect(text()).not.toContain("am-well");
     // Plural copy, because four sources are not "it".
     expect(text()).toContain("Their");
+  });
+
+  it("costs one request while the page it read was the whole org", async () => {
+    // ⛔ THE GATE IS THE DESIGN, AND THIS IS THE HALF THAT DECAYS. `GET /sources`
+    // came back with `has_more: false`, so the page IS the org and there is
+    // nothing the roll-up could add. It is not asked — not once, and not every
+    // sixty seconds — because it computes twenty-six columns across five tables,
+    // including a `notification_deliveries` scan with two joins, to be read for
+    // one of them.
+    const { stub } = mount({ sources: [unreachable("am-eu", "src-1", "i/o timeout")] });
+    await settled(stub);
+    await until(() => expect(text()).toContain("cannot reach"));
+
+    expect(stub.to("/stats/overview")).toHaveLength(0);
+  });
+
+  it("raises the strip for an unreachable source that sorts past the first page", async () => {
+    // ⛔⛔ THE DEFECT THIS STRIP WAS SILENT ON. `GET /sources` is keyset with a
+    // default `limit` of 50 (§E.1), so an org whose only unreachable source sorts
+    // 51st used to get no strip — and could not tell that it was looking at part
+    // of a list. An operator then read a held, frozen alert list as calm, which is
+    // the one failure the §B.4 guard's only surface must not have.
+    //
+    // The page here is fifty healthy sources and `has_more`. The org-wide count
+    // comes off the roll-up, whose source CTE now joins `alert_sources` and
+    // filters `deleted_at IS NULL` — without that it would count sources the
+    // operator deleted and pin this strip open forever.
+    const wholePage = Array.from({ length: 50 }, (_, i) =>
+      source({ id: `src-${i}`, name: `am-${i}` }),
+    );
+    const { stub } = mount({ sources: wholePage, moreSources: true, overviewUnreachable: 1 });
+    await settled(stub);
+
+    await until(() => expect(stub.to("/stats/overview").length).toBeGreaterThan(0));
+    await until(() => expect(text()).toContain("cannot reach"));
+
+    // One source, no name for it, and the copy says exactly that rather than
+    // implying the strip has enumerated anything.
+    expect(text()).toContain("oto cannot reach 1 source, which it cannot name here");
+    expect(text()).toContain("never resolved, never expired");
+    expect(screen.getByRole("link", { name: "Source health" })).toBeTruthy();
+    // Singular copy: one source is "it", however the count was arrived at.
+    expect(text()).toContain("Its");
+    expectNoUndefined(document.body);
+
+    // Announced through the one region, as every other strip is.
+    const regions = document.querySelectorAll("[aria-live]");
+    expect(regions).toHaveLength(1);
+    expect(regions[0]!.textContent).toContain("cannot reach");
+  });
+
+  it("names what it saw and counts what it did not, without conflating the two", async () => {
+    // ⛔ THE STRIP MAY NEVER CLAIM A SOURCE IT CANNOT NAME WITHOUT SAYING SO. The
+    // page in hand holds one unreachable source; the org has three. Naming one
+    // and stopping would understate the outage, and saying "three" beside one
+    // name would read as if the other two were listed somewhere on this line.
+    const page = [
+      unreachable("am-eu", "src-1", "i/o timeout"),
+      ...Array.from({ length: 49 }, (_, i) => source({ id: `src-${i + 2}`, name: `am-${i}` })),
+    ];
+    const { stub } = mount({ sources: page, moreSources: true, overviewUnreachable: 3 });
+    await settled(stub);
+
+    await until(() => expect(text()).toContain("cannot reach"));
+    expect(text()).toContain("oto cannot reach 3 sources");
+    expect(text()).toContain("of which it can name 1");
+    expect(text()).toContain("am-eu");
+    // Plural copy, because the count is what the sentence is about.
+    expect(text()).toContain("Their");
+    // The one source it did see keeps its upstream error, one hover away.
+    expect(screen.getByTitle("i/o timeout")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Source health" })).toBeTruthy();
+    expectNoUndefined(document.body);
+  });
+
+  it("never says less than it has seen for itself", async () => {
+    // The roll-up is the org-wide authority, not a veto. While it is in flight —
+    // or if it somehow answers with fewer than the page already shows — the page
+    // in hand is still evidence, and the strip states what it has seen.
+    const page = [
+      unreachable("am-eu", "src-1", "i/o timeout"),
+      unreachable("am-us", "src-2", "connection refused"),
+      ...Array.from({ length: 48 }, (_, i) => source({ id: `src-${i + 3}`, name: `am-${i}` })),
+    ];
+    const { stub } = mount({ sources: page, moreSources: true, overviewUnreachable: 0 });
+    await settled(stub);
+
+    await until(() => expect(text()).toContain("cannot reach"));
+    expect(text()).toContain("am-eu");
+    expect(text()).toContain("am-us");
+    expect(text()).not.toContain("cannot name");
   });
 });
 

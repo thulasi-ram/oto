@@ -194,6 +194,30 @@ func (r *StatsRepository) AlertQuality(
 // the dashboard they check first. The other two CTEs need no predicate:
 // `source_health` and `channels` count configuration, and a drill creates
 // neither.
+//
+// ⛔ AND THE SOURCE CTE JOINS `alert_sources`, BECAUSE A DELETED SOURCE GOES ON
+// REPORTING ITS LAST VERDICT FOREVER. `SoftDelete` sets `alert_sources.deleted_at`
+// and leaves the `source_health` row exactly as the reconciler last wrote it;
+// nothing in the system ever removes that row, and the `ON DELETE CASCADE` the
+// table declares fires only on a hard delete this codebase deliberately never
+// performs. Unjoined, an org that deleted a source while it was unreachable read
+// as permanently unreachable — on the dashboard, and on the shell strip that is
+// the sole surface for the reaper guard, over a sources screen with nothing wrong
+// on it and no source left to name. The `c` CTE has always carried the same
+// `deleted_at IS NULL` predicate; it needs no join only because a channel carries
+// its own health column.
+//
+// `max_skew` and `divergence` were overstated by exactly the same rows and are
+// corrected by the same join. The worst skew oto ever measured on a source it no
+// longer polls is not a fact about the estate, and a divergence count from a
+// retired Alertmanager is a canary for a correctness bug nobody can act on.
+//
+// The join needs no new index: `source_health.source_id` is that table's primary
+// key and `alert_sources.id` is its own, so this is a key lookup per source over
+// a table holding one row per configured Alertmanager. `source_health_status_idx
+// (org_id, status)` still serves the org filter. The redundant `org_id` equality
+// is deliberate — `source_health.org_id` is denormalised with no FK (§D.2), so
+// joining on it is what asserts the two rows agree about the tenant.
 const overviewSQL = `
 WITH a AS (
   SELECT
@@ -232,14 +256,15 @@ WITH a AS (
    AND dv.created_at >= $3 AND dv.created_at <= $4
 ), s AS (
   SELECT
-    COUNT(*) FILTER (WHERE status = 'healthy')     AS healthy,
-    COUNT(*) FILTER (WHERE status = 'degraded')    AS degraded,
-    COUNT(*) FILTER (WHERE status = 'unreachable') AS unreachable,
-    COUNT(*) FILTER (WHERE status = 'unknown')     AS unknown,
-    COALESCE(MAX(ABS(clock_skew_ms)), 0)           AS max_skew,
-    COALESCE(SUM(divergence_count), 0)             AS divergence
-  FROM source_health
- WHERE org_id = $1
+    COUNT(*) FILTER (WHERE sh.status = 'healthy')     AS healthy,
+    COUNT(*) FILTER (WHERE sh.status = 'degraded')    AS degraded,
+    COUNT(*) FILTER (WHERE sh.status = 'unreachable') AS unreachable,
+    COUNT(*) FILTER (WHERE sh.status = 'unknown')     AS unknown,
+    COALESCE(MAX(ABS(sh.clock_skew_ms)), 0)           AS max_skew,
+    COALESCE(SUM(sh.divergence_count), 0)             AS divergence
+  FROM source_health sh
+  JOIN alert_sources src ON src.id = sh.source_id AND src.org_id = sh.org_id
+ WHERE sh.org_id = $1 AND src.deleted_at IS NULL
 ), c AS (
   SELECT
     COUNT(*) FILTER (WHERE health_status = 'healthy')        AS healthy,
