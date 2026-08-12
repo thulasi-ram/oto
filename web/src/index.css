@@ -133,6 +133,7 @@
   }
 }
 
+/* U9, form (a) — a one-shot on a discrete event. 140 ms, opacity + transform. */
 @utility oto-enter {
   animation: oto-enter 140ms ease-out;
 }
@@ -144,6 +145,51 @@
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+/* U9, form (a) — the fūrin's greeting, and the only decorative motion in the
+   product (§M.3 U9, ADR 0028). It is a *brand* one-shot, so it fires at most
+   once per document, on the header mark's first mount. It says nothing: no
+   connection state, no severity, no count reaches it, which is why it is
+   allowed to be silent about what it means.
+
+   180 ms is the whole budget U9 allows, and it is spent on rotation alone —
+   two swings and the rest at zero. The researched 1400 ms damped swing is not
+   here because U9 forbids it; see the ADR, which rejected it deliberately
+   rather than widening the rule to fit the feature.
+
+   ⛔ THE ROTATION IS ON THE `<svg>` ELEMENT, NEVER ON AN INNER `<g>`. The SVG
+   viewport clips at `overflow: hidden`, so an inner group swings its shoulders
+   straight out of the box; `overflow: visible` is not an escape either, because
+   the wordmark sits 6 px away. Rotating the element rotates its clip with it,
+   and at the 8° peak the mark's furthest corner travels 0.25 px past its own
+   edge — a quarter of the gap it has.
+
+   `transform-origin: 50% 15%` is the hanger, not the centre: y=6 of the 40-unit
+   viewBox is where the dome's crown meets the cord, and a bell that pivots
+   anywhere else reads as a wobbling icon rather than as something hanging.
+
+   Suppression is doubled on purpose. The call site writes `motion-safe:`, so no
+   rule is even generated under `reduce`; and the `*` sweep in `@layer base`
+   would neutralise it regardless. Neither is a list of class names, so neither
+   can forget this one. */
+@utility oto-chime-swing {
+  transform-origin: 50% 15%;
+  animation: oto-chime-swing 180ms cubic-bezier(0.32, 0.72, 0.35, 1);
+}
+@keyframes oto-chime-swing {
+  0% {
+    transform: rotate(0deg);
+  }
+  32% {
+    transform: rotate(8deg);
+  }
+  68% {
+    transform: rotate(-3.2deg);
+  }
+  100% {
+    transform: rotate(0deg);
   }
 }
 

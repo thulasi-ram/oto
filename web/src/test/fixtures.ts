@@ -20,6 +20,7 @@ import type {
   SettingBound,
   Snooze,
   Source,
+  StatsOverview,
   StreamFrame,
 } from "~/api/types";
 import type { Bound } from "~/test/contract";
@@ -341,6 +342,29 @@ export function drill(
     deadline_at: "2026-08-09T09:01:30.000Z",
     ...patch,
   } as DeliveryDrill;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The dashboard roll-up                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The roll-up, empty everywhere but the counts a case is about.
+ *
+ * The source counts are the interesting half here: they are computed over the
+ * whole of the org's `source_health` and are the only thing that can tell a
+ * caller whether ANY source is out, however many sources the org has.
+ */
+export function statsOverview(patch: Partial<StatsOverview> = {}): StatsOverview {
+  return {
+    alerts: { firing: 0, suppressed: 0, resolved: 0, expired: 0, acked: 0, unacked: 0, flapping: 0 },
+    groups: { open: 0, closed: 0, storm: 0 },
+    deliveries: { sent: 0, failed: 0, dead: 0, skipped: 0, pending: 0, ambiguous: 0 },
+    sources: { healthy: 0, degraded: 0, unreachable: 0, unknown: 0 },
+    channels: { healthy: 0, degraded: 0, auth_failed: 0, config_invalid: 0 },
+    generated_at: T0,
+    ...patch,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

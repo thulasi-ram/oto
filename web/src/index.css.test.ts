@@ -176,13 +176,23 @@ describe("first-party utilities", () => {
 
 describe("reduced motion", () => {
   it("suppresses motion by sweeping every element, not by naming classes", async () => {
-    const css = await buildCss(["oto-pulse", "oto-enter", "open:oto-enter", "motion-safe:oto-enter"]);
+    const css = await buildCss([
+      "oto-pulse",
+      "oto-enter",
+      "open:oto-enter",
+      "motion-safe:oto-enter",
+      "motion-safe:oto-chime-swing",
+    ]);
 
     // `motion-safe:` is a real guard: the rule lives inside no-preference, so
     // under `reduce` it is not applied at all.
     const safe = atRuleBody(css, /@media\s*\(prefers-reduced-motion:\s*no-preference\)/);
     expect(safe, "`motion-safe:` no longer compiles to a no-preference media query").not.toBeNull();
     expect(safe ?? "").toContain(".motion-safe\\:oto-enter");
+    // The fūrin's swing (U9, ADR 0028) is the one animation whose only reason to
+    // exist is decoration, so its guard is the one worth naming: under `reduce`
+    // no rule for it is generated at all, before the sweep below is even reached.
+    expect(safe ?? "").toContain(".motion-safe\\:oto-chime-swing");
 
     // `open:` carries no guard of its own, so the sweep is what stops it — and
     // the sweep has to reach `*`. A rule naming `.oto-enter` would not match

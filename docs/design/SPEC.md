@@ -3873,7 +3873,9 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 46. Every alert state is legible without colour: each row carries a state icon and a text label,
     verified by a greyscale screenshot test.
 47. No saturated Tier-B hue appears anywhere in the product chrome or in a chart series; the only
-    urgency motion is the unacked-critical pulse, which disappears under `prefers-reduced-motion`.
+    **urgency** motion is the unacked-critical pulse (U4); every other animation in the product is
+    non-urgency motion permitted by U9; and **all** of it — the pulse and every U9 animation alike
+    — disappears under `prefers-reduced-motion`.
 48. The six Slack state hex values are byte-identical to §H.2 and appear nowhere in `web/`.
 
 **Scope boundary (§I.1.1, ADR 0013)**
@@ -4867,6 +4869,22 @@ a distance, unmistakable at a glance, and legible for everyone.
 | U6 | Density is a first-class concern: the alert table is a dense operational surface. Pastel must not mean airy — row height 36 px comfortable / 28 px compact. |
 | U7 | Focus is always visible: `--oto-focus` ring, 2 px, 2 px offset, ≥ 3:1 against both the control and its background. Never `outline: none`. |
 | U8 | Severity (`critical`/`warning`/`info`) is carried by the **icon**; state (`firing`/`acked`/`suppressed`/`resolved`/`expired`) is carried by the **colour**. This is the same split as the Slack card, and it is the only thing the two systems share. |
+| U9 | **Non-urgency motion comes in exactly two kinds** (ADR 0028). **(a) One-shot:** triggered by a discrete event (a mount, an open, a commit), ≤ 200 ms, animating `opacity` and `transform` only, never looping — and a *purely decorative* one-shot (brand motion, carrying no fact) fires **at most once per document**. **(b) Indeterminate-activity:** a loop is permitted only while something is genuinely pending (loading, connecting, in flight), must stop when the pending thing does, and is limited to an opacity cycle of period ≥ 1 s or a uniform rotation. Both kinds: no luminance oscillation beyond U4's prohibition, never the sole carrier of a state fact (U1), and **absent under `prefers-reduced-motion: reduce`**. **No animation announces a connection-state change.** A (b) loop may run *while* the connection is pending, beside the label that says so; nothing may mark the transition itself. Connection health is a labelled Tier-A fact, and a silent channel for it violates U1. **A colour transition is not motion, and is therefore neither kind.** A control settling from one Tier-A token to another on hover, focus or `aria-current` displaces nothing and repeats nothing; U9 binds it only with bounds — colour properties alone (`transition-colors`: never `all`, never a length, never a layout property), **≤ 150 ms**, and **between Tier-A tokens only**, because U5 already reserves saturated hue for state. That is the feedback U7 and Tier A already require, written in CSS rather than in two class names, and the reduced-motion sweep flattens it regardless. |
+
+> **U9 does not qualify U4.** U4's *"No flashing, no blinking, ever"* stays absolute and keeps its
+> single urgency animation. U9 governs a different class of motion: the button spinner, the skeleton
+> rows, the `connecting` dot, the dialog's 140 ms entrance, and the fūrin's 180 ms greeting on the
+> header mark's first mount in a document. The first four predate ADR 0028 and are classified
+> there; the fifth is its consequence, and the ADR records why the researched 1400 ms swing and the
+> `connecting → live` trigger were both rejected.
+>
+> **The `transition-colors duration-100` on buttons, primary nav, settings tabs and filter chips is
+> deliberately not in that list.** Five call sites carry it — `primitives.tsx:42` and `:315`,
+> `AppShell.tsx:218` and `:278`, `settings.tsx:48` — all of them older than ADR 0028, none of them
+> classified by it. U9's first draft said *"`opacity` and `transform` only"* without saying what it
+> was scoped to, which outlawed every one of them on the day it was written. The clause above is the
+> correction, and ADR 0028 §5 records it: a rule that quietly makes the shipping product illegal is
+> not a rule.
 
 ### M.4 Light palette (CSS custom properties, with measured contrast)
 
@@ -5065,19 +5083,31 @@ Why they must stay separate:
    aesthetic would be trading correctness for coherence — the wrong trade in this product.
 
 A renderer MUST NOT read a `--oto-*` token. A stylesheet MUST NOT reference an `#a30200`-family
-hex. `TestSlackPaletteUnchanged` pins the six Slack hex values, and a lint rule forbids Slack hex
-literals in `web/`.
+hex. **Neither prohibition is enforced yet.** `TestSlackPaletteUnchanged` does not exist, and no
+lint rule forbids Slack hex literals in `web/` — `web/src/design/tokens.css:12` states that rule as
+a comment, which is not a rule. See §M.7 and git-bug `c49baaa`.
 
 ### M.7 Enforcement
 
-| Test | Asserts |
-|---|---|
-| `web/src/design/contrast.test.ts` | every pair in M.4 and M.5 computes to the stated ratio ±0.05 and meets its requirement |
-| `web/src/design/tokens.test.ts` | light and dark define exactly the same token names; no token is defined in one theme only |
-| `TestNoStateHueInChrome` (lint) | no component stylesheet uses a `--oto-state-*` token outside a state badge, row-status or timeline-marker component |
-| `TestSlackPaletteUnchanged` (Go) | the six §H.2 hex values are byte-identical to the constants in `render/slack/palette.go` |
-| Playwright `a11y.spec.ts` | axe-core reports zero contrast violations on the alert list, alert detail and timeline, in **both** themes |
-| `prefers-reduced-motion` snapshot | the unacked-critical pulse is absent when the media query is set |
+> **Two of these eight rows are gates. The other six are intentions, and are marked as such.**
+> **RUNS** means the named test exists and `.github/workflows/ci.yml` invokes it. **UNWRITTEN**
+> means it does not exist in this tree, under that name or any other, and nothing equivalent runs
+> in its place except where the row says so. This distinction is in the table because it was not,
+> and a reader who greps for `contrast.test.ts`, finds the §M.7 row and stops looking is the exact
+> harm the marking prevents. Closing the gap — writing the tests, or deleting the rows and
+> scheduling the work through §N — is git-bug `c49baaa`. Until it closes, an UNWRITTEN row states
+> what this document intends to be true, not what CI will catch.
+
+| Test | Status | Asserts |
+|---|---|---|
+| `web/src/design/contrast.test.ts` | **UNWRITTEN.** `web/src/design/` holds `.gitkeep`, `theme.ts` and `tokens.css`, and nothing else | every pair in M.4 and M.5 computes to the stated ratio ±0.05 and meets its requirement |
+| `web/src/design/tokens.test.ts` | **UNWRITTEN.** Same directory | light and dark define exactly the same token names; no token is defined in one theme only |
+| `TestNoStateHueInChrome` (lint) | **UNWRITTEN.** No such rule in `.golangci.yml`, and the two first-party linters under `tools/` — `lintvocab` and `lintreach` — check neither stylesheets nor tokens | no component stylesheet uses a `--oto-state-*` token outside a state badge, row-status or timeline-marker component |
+| `TestSlackPaletteUnchanged` (Go) | **UNWRITTEN** under that name. The hexes are pinned *incidentally* and *partially*: `TestTheSlackCardCorpusMatchesItsCheckedInCaptures` (`test/harness`) byte-compares the rendered corpus against `test/fixtures/slack/*.message.json`, which carry five of the six literals — `expired` has no capture — and `TestEachCardStateCarriesItsOwnColourForAHumanToVerify` asserts only that the six are distinct, never what they are | the six §H.2 hex values are byte-identical to the constants in `internal/channels/render/slack/palette.go` |
+| Playwright `a11y.spec.ts` | **UNWRITTEN.** `web/e2e/` holds one 0-byte `.gitkeep`; neither `playwright` nor `axe` appears in `web/package.json`, which declares no e2e script for a spec to run in and no CI job that would invoke one | axe-core reports zero contrast violations on the alert list, alert detail and timeline, in **both** themes |
+| `prefers-reduced-motion` snapshot | **UNWRITTEN.** The clause it would check is nevertheless enforced, structurally and more strongly, by the row below: a rendered snapshot proves one tree at one moment, the sweep assertion proves the guard reaches every animation including the ones not yet written | **no** animation runs when the media query is set — the unacked-critical pulse (U4) and every U9 animation alike |
+| `web/src/index.css.test.ts` | **RUNS.** `npm run test` in the `ui` job | every first-party utility is declared with `@utility` (so variants of it compile), and the reduced-motion guard suppresses motion by sweeping `*` rather than by naming class names — which is why it cannot fall behind the next animation added |
+| `web/src/components/ui/Chime.test.tsx` | **RUNS.** Same job | the fūrin's swing fires on the header mark's first mount in a document, at most once per document, never on a connection transition (neither a reload holding a resume point nor a quiet install's endless reconnects can change whether it fires), and carries the `motion-safe:` guard |
 ---
 
 ## N. Amendment procedure
