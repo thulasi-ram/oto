@@ -132,7 +132,8 @@ not have. What CI runs today, and therefore what will stop a bad change:
 
 | Gate | Where | Status |
 |---|---|---|
-| Layering (`depguard`) | `.golangci.yml`, `go-lint` job | **enforced** |
+| Layering (`depguard`) | `.golangci.yml`, `go-lint` job | **enforced** — but layering only. The `<module>-must-not-reach-into-other-domains` rules are symmetric (each re-allows every other module's `/service`), so they say nothing about direction |
+| Module **direction** (CONTEXT.md §4) | `test/arch/arch_test.go`, `go-test` job | **enforced** — the real import graph is diffed against the declared edge list; a new cross-module edge fails, a declared edge the code has dropped fails, and an edge list with a cycle in it fails |
 | gofmt / `go mod tidy` clean | `go-lint` job | **enforced** |
 | `go build` + `go vet` | `go-build` job | **enforced** |
 | `go test -race ./...` | `go-test` job | **enforced.** Every domain now has tests; the service and repository tiers largely do not. A green means the domain logic holds, not that a feature works end to end — that gap is what [ADR 0021](docs/adr/0021-correctness-and-testing-strategy.md) §3–§4 exist to close |
@@ -151,7 +152,9 @@ is a gate nobody knows works.
 The layering rules are mechanically enforced by `depguard` in `.golangci.yml`: `api` cannot import
 `repository`, `repository` cannot import `api`, `domain` packages import no I/O at all, and no
 domain can reach into another domain's internals. If `just lint` rejects an import, the import is
-wrong — not the rule.
+wrong — not the rule. Which *way* an edge may point is a separate question and a separate gate:
+`test/arch/arch_test.go` owns it, because depguard's cross-domain rules are symmetric and cannot
+express direction or acyclicity.
 
 ## Where to read next
 
