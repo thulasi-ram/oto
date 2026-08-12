@@ -106,55 +106,51 @@
   }
 }
 
-@layer utilities {
-  /* U4: the ONLY urgency motion in the product — a slow 2 s opacity pulse on
-     the unacked-critical dot. No flashing, no blinking, ever, and nothing at
-     all under prefers-reduced-motion. */
-  .oto-pulse {
-    animation: oto-pulse 2s ease-in-out infinite;
-  }
-  @keyframes oto-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
-  }
+/* Every first-party utility below is declared with `@utility`, never as a plain
+   rule inside `@layer utilities`. The distinction is not cosmetic: a rule in a
+   `@layer utilities` block is pass-through CSS that Tailwind copies out
+   verbatim, so the class name is never registered and the variant machinery
+   cannot see it. Writing `motion-safe:oto-enter` against such a class makes the
+   scanner resolve the variant, fail to resolve the utility, and silently drop
+   the whole candidate — no rule is emitted and the markup looks correct while
+   doing nothing. `@utility` registers the name, so `motion-safe:`, `open:`,
+   `hover:` and friends compose exactly as they do on a built-in utility.
+   `web/src/index.css.test.ts` fails the build if this convention is broken. */
 
-  .oto-enter {
-    animation: oto-enter 140ms ease-out;
+/* U4: the ONLY urgency motion in the product — a slow 2 s opacity pulse on
+   the unacked-critical dot. No flashing, no blinking, ever, and nothing at
+   all under prefers-reduced-motion. */
+@utility oto-pulse {
+  animation: oto-pulse 2s ease-in-out infinite;
+}
+@keyframes oto-pulse {
+  0%,
+  100% {
+    opacity: 1;
   }
-  @keyframes oto-enter {
-    from {
-      opacity: 0;
-      transform: translateY(-2px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
+  50% {
+    opacity: 0.45;
   }
+}
 
-  @media (prefers-reduced-motion: reduce) {
-    .oto-pulse,
-    .oto-enter {
-      animation: none !important;
-    }
-    *,
-    *::before,
-    *::after {
-      transition-duration: 0.01ms !important;
-      animation-duration: 0.01ms !important;
-      animation-iteration-count: 1 !important;
-      scroll-behavior: auto !important;
-    }
+@utility oto-enter {
+  animation: oto-enter 140ms ease-out;
+}
+@keyframes oto-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
   }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 
-  /* Visually hidden but reachable by assistive tech. Used for live regions and
-     for the table's semantic column headers. */
-  .sr-only-focusable:not(:focus):not(:focus-within) {
+/* Visually hidden but reachable by assistive tech. Used for live regions and
+   for the table's semantic column headers. */
+@utility sr-only-focusable {
+  &:not(:focus):not(:focus-within) {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -164,5 +160,32 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border-width: 0;
+  }
+}
+
+@layer base {
+  /* The single reduced-motion guard for the whole product. It sits in `base`
+     rather than `utilities` because `!important` reverses layer order: an
+     important declaration in an earlier layer beats one in a later layer, so
+     from here it also overrides an important-flagged utility (`animate-spin!`).
+
+     There is deliberately no list of animation class names here. Once a utility
+     is registered with `@utility`, a variant use of it generates a *different*
+     selector — `.open\:oto-enter`, not `.oto-enter` — which a hand-maintained
+     list would silently miss. The wildcard sweep is what actually suppresses
+     motion, and it needs no maintenance when a utility is added.
+
+     0.01 ms rather than `animation: none` on purpose: the animation still
+     starts and ends within a frame, so anything waiting on `animationend`
+     resolves instead of hanging, while nothing is visible to the user. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
