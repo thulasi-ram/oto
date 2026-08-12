@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -20,45 +19,25 @@ import (
 // they bound `db.Keyset.Limit`.
 func clampLimit(n int) int { return db.ClampLimit(n) }
 
-// mapErr is the single place a SQLSTATE becomes an errs.Kind for this module
-// (SPEC §L.9). The constraint name travels out as the error Code because §L.9
-// makes constraint names a runtime contract.
+// mapErr turns a database error into an errs.Kind for this module. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository — this
+// module contributes only the two codes it alone can name. The constraint name
+// travels out as the error Code because §L.9 makes constraint names a runtime
+// contract.
+//
+// Nothing about the mapping moved when this stopped being its own copy: the copy
+// spelled all eight rows, with the same Kinds, the same codes and the same retry
+// hints. Two messages were its own wording of a shared row — "the row already
+// exists" for `23505` and "missing or in use" for `23503` — and they are now the
+// table's, because a message that differs per module is a drift waiting to
+// happen, not a fact about grouping.
 func mapErr(err error, what string) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errs.NotFound("not_found", "no such row")
-	}
-
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) {
-		code := pg.ConstraintName
-		if code == "" {
-			code = "sqlstate_" + pg.Code
-		}
-		switch pg.Code {
-		case "23505":
-			return errs.Wrap(err, errs.KindConflict, code, "the row already exists")
-		case "23503":
-			return errs.Wrap(err, errs.KindConflict, code,
-				"the row references something that is missing or in use")
-		case "23514":
-			return errs.Wrap(err, errs.KindInternal, code, "a row violated a database constraint")
-		case "23502":
-			return errs.Wrap(err, errs.KindInternal, code, "a required column was null")
-		case "40001", "40P01":
-			return errs.Wrap(err, errs.KindConflict, code, "the transaction conflicted; retry").
-				WithRetryAfter(0)
-		case "57014":
-			return errs.Wrap(err, errs.KindUnavailable, code, "the query exceeded its time budget").
-				WithRetryAfter(time.Second)
-		case "53300":
-			return errs.Wrap(err, errs.KindUnavailable, code, "the database is at capacity").
-				WithRetryAfter(time.Second)
-		}
-	}
-	return errs.Wrap(err, errs.KindInternal, "grouping_query_failed", fmt.Sprintf("could not %s", what))
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           "not_found",
+		NotFoundMessage:    "no such row",
+		QueryFailed:        "grouping_query_failed",
+		QueryFailedMessage: fmt.Sprintf("could not %s", what),
+	})
 }
 
 // requireScope refuses a scope that names no tenant. A missing org_id predicate

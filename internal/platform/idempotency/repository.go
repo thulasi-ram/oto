@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -169,40 +168,46 @@ func derefID(p *uuid.UUID) uuid.UUID {
 	return *p
 }
 
-// mapErr is the single place a SQLSTATE becomes an errs.Kind for this package
-// (SPEC §L.9), with the CONSTRAINT NAME as the machine code because those names
-// are a runtime contract (CONTEXT.md §6).
+// mapErr turns a database error into an errs.Kind for this package. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository, with the
+// CONSTRAINT NAME as the machine code because those names are a runtime contract
+// (CONTEXT.md §6).
 //
-// ⚠️ A 23505 IS DELIBERATELY INTERNAL HERE. Every unique violation this table can
-// produce is swallowed by `ON CONFLICT DO NOTHING` above, so one reaching Go means
-// the statement drifted from the constraint — which is §L.9's rule for an
-// oto-swallowed key, and is never the caller's fault.
+// ⚠️ A 23505 IS DELIBERATELY INTERNAL HERE, which is what `ComputedKeys` says.
+// Every unique violation this table can produce is swallowed by `ON CONFLICT DO
+// NOTHING` above, so one reaching Go means the statement drifted from the
+// constraint — which is §L.9 row 2's rule for an oto-swallowed key, and is never
+// the caller's fault. The same holds for a `23503`: every row this table
+// references, oto wrote itself.
 //
-// ⚠️ No branch may put a pgx type, a row struct or a SQL string into a message.
+// ⚠️ No message here may carry a pgx type, a row struct or a SQL string.
+//
+// The not-found codes are defensive: the one query that can return
+// `pgx.ErrNoRows` answers it above with `idempotency_claim_vanished`, because a
+// claim that disappeared between the INSERT and the SELECT is a bug and not a
+// 404. The other two call sites are Execs, which never produce it.
 func mapErr(err error) error {
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) {
-		switch pg.Code {
-		case "23505", "23514", "23502", "23503":
-			return errs.Wrap(err, errs.KindInternal, constraintCode(pg, "idempotency_constraint_violation"),
-				"an internal error occurred")
-		case "40001", "40P01": // serialization_failure / deadlock_detected
-			return errs.Wrap(err, errs.KindConflict, "idempotency_serialization_failure",
-				"the request conflicted with a concurrent one; retry")
-		case "57014": // query_canceled (statement_timeout)
-			return errs.Wrap(err, errs.KindUnavailable, "idempotency_query_timeout",
-				"the request could not be served in time; retry")
-		case "53300": // too_many_connections
-			return errs.Wrap(err, errs.KindUnavailable, "idempotency_overloaded",
-				"the service is busy; retry")
-		}
-	}
-	return errs.Wrap(err, errs.KindInternal, "idempotency_query_failed", "an internal error occurred")
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           "idempotency_not_found",
+		NotFoundMessage:    "no such idempotency record",
+		QueryFailed:        "idempotency_query_failed",
+		QueryFailedMessage: "an internal error occurred",
+		ComputedKeys:       true,
+		Codes:              idempotencyCodes,
+	})
 }
 
-func constraintCode(pg *pgconn.PgError, fallback string) string {
-	if pg.ConstraintName != "" {
-		return pg.ConstraintName
-	}
-	return fallback
+// idempotencyCodes are the codes this package has always published where
+// Postgres names no constraint. `idempotency_serialization_failure` is the one a
+// caller can act on — two requests raced for the same key — and collapsing it to
+// `sqlstate_40001` would break anything branching on it.
+var idempotencyCodes = map[string]string{
+	"23505": "idempotency_constraint_violation",
+	"23503": "idempotency_constraint_violation",
+	"23514": "idempotency_constraint_violation",
+	"23502": "idempotency_constraint_violation",
+	"40001": "idempotency_serialization_failure",
+	"40P01": "idempotency_serialization_failure",
+	"57014": "idempotency_query_timeout",
+	"53300": "idempotency_overloaded",
 }

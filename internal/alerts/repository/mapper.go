@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -30,45 +29,28 @@ const (
 // caller that forgets is a caller that asks Postgres for an unbounded scan.
 func clampLimit(n int) int { return db.ClampLimit(n) }
 
-// mapErr is the single place a SQLSTATE becomes an errs.Kind for this module
-// (SPEC §L.9). The repository never validates a business rule; it does own this
-// translation, and the constraint name travels out as the error Code because
-// §L.9 makes constraint names a runtime contract.
+// mapErr turns a database error into an errs.Kind for this module. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository — this
+// module contributes only the two codes it alone can name. A repository never
+// validates a business rule; it does own this translation, and the constraint
+// name travels out as the error Code because §L.9 makes constraint names a
+// runtime contract.
+//
+// Nothing about the Kinds, the codes or the retry hints moved: the copy spelled
+// all eight rows and spelled them the same way. TWO MESSAGES DID, and they are
+// rendered rather than dropped, because `23505` and `23503` are 409s: "the row
+// already exists" is now "that value is already in use", and "missing or in use"
+// is now "missing or still in use". Both are this module's wording of a shared
+// row rather than a fact about alerts, and `grouping` reworded identically for
+// the same reason — but a 409 body reads differently after this change, so it is
+// stated here rather than left to be found.
 func mapErr(err error, what string) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errs.NotFound("not_found", "no such row")
-	}
-
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) {
-		code := pg.ConstraintName
-		if code == "" {
-			code = "sqlstate_" + pg.Code
-		}
-		switch pg.Code {
-		case "23505": // unique_violation
-			return errs.Wrap(err, errs.KindConflict, code, "the row already exists")
-		case "23503": // foreign_key_violation
-			return errs.Wrap(err, errs.KindConflict, code, "the row references something that is missing or in use")
-		case "23514": // check_violation — a hole in layers 1-3
-			return errs.Wrap(err, errs.KindInternal, code, "a row violated a database constraint")
-		case "23502": // not_null_violation — a mapper bug
-			return errs.Wrap(err, errs.KindInternal, code, "a required column was null")
-		case "40001", "40P01": // serialization_failure, deadlock_detected
-			return errs.Wrap(err, errs.KindConflict, code, "the transaction conflicted; retry").
-				WithRetryAfter(0)
-		case "57014": // query_canceled (statement_timeout)
-			return errs.Wrap(err, errs.KindUnavailable, code, "the query exceeded its time budget").
-				WithRetryAfter(time.Second)
-		case "53300": // too_many_connections
-			return errs.Wrap(err, errs.KindUnavailable, code, "the database is at capacity").
-				WithRetryAfter(time.Second)
-		}
-	}
-	return errs.Wrap(err, errs.KindInternal, "alerts_query_failed", fmt.Sprintf("could not %s", what))
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           "not_found",
+		NotFoundMessage:    "no such row",
+		QueryFailed:        "alerts_query_failed",
+		QueryFailedMessage: fmt.Sprintf("could not %s", what),
+	})
 }
 
 // requireScope refuses a scope that names no tenant. A missing org_id predicate

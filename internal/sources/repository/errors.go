@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -18,47 +17,19 @@ import (
 // they bound `db.Keyset.Limit`. There is no OFFSET in this codebase.
 func clampLimit(n int) int { return db.ClampLimit(n) }
 
-// mapErr is the single place a SQLSTATE becomes an errs.Kind for this module
-// (SPEC §L.9). The repository never validates a business rule; it does own this
-// translation, and the CONSTRAINT NAME travels out as the error Code because
-// §L.9 makes constraint names a runtime contract — `alert_sources_name_uniq` is
-// what lets the API say "that name is taken" instead of "conflict".
+// mapErr turns a database error into an errs.Kind for this module. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository — this
+// module contributes only the two codes it alone can name. The CONSTRAINT NAME
+// travels out as the error Code because §L.9 makes constraint names a runtime
+// contract: `alert_sources_name_uniq` is what lets the API say "that name is
+// taken" instead of "conflict".
 func mapErr(err error, notFoundCode, what string) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errs.NotFound(notFoundCode, "no such row")
-	}
-
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) {
-		code := pg.ConstraintName
-		if code == "" {
-			code = "sqlstate_" + pg.Code
-		}
-		switch pg.Code {
-		case "23505": // unique_violation
-			return errs.Wrap(err, errs.KindConflict, code, "that value is already in use")
-		case "23503": // foreign_key_violation
-			return errs.Wrap(err, errs.KindConflict, code,
-				"the row references something that is missing or still in use")
-		case "23514": // check_violation — a hole in layers 1-3
-			return errs.Wrap(err, errs.KindInternal, code, "a row violated a database constraint")
-		case "23502": // not_null_violation — a mapper bug
-			return errs.Wrap(err, errs.KindInternal, code, "a required column was null")
-		case "40001", "40P01": // serialization_failure, deadlock_detected
-			return errs.Wrap(err, errs.KindConflict, code, "the transaction conflicted; retry").
-				WithRetryAfter(0)
-		case "57014": // query_canceled (statement_timeout)
-			return errs.Wrap(err, errs.KindUnavailable, code, "the query exceeded its time budget").
-				WithRetryAfter(time.Second)
-		case "53300": // too_many_connections
-			return errs.Wrap(err, errs.KindUnavailable, code, "the database is at capacity").
-				WithRetryAfter(time.Second)
-		}
-	}
-	return errs.Wrap(err, errs.KindInternal, "sources_query_failed", fmt.Sprintf("could not %s", what))
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           notFoundCode,
+		NotFoundMessage:    "no such row",
+		QueryFailed:        "sources_query_failed",
+		QueryFailedMessage: fmt.Sprintf("could not %s", what),
+	})
 }
 
 // requireScope refuses a scope that names no tenant. A missing org_id predicate

@@ -331,12 +331,39 @@ func requireScope(s db.TenantScope) error {
 	return nil
 }
 
-// mapErr is the single place a SQLSTATE becomes an errs.Kind for this package
-// (§L.9). A drill has no unique key a caller can collide with, so everything here
-// is either not-found or an internal failure.
+// mapErr turns a database error into an errs.Kind for this package. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository — this
+// module contributes only the two codes it alone can name.
+//
+// It previously translated no SQLSTATE at all: everything that was not
+// `pgx.ErrNoRows` became `drill_query_failed` with `KindInternal`. A drill has no
+// unique key a caller can collide with, which is why that looked sufficient — but
+// a `57014` is not about the caller's key. Every pool sets `statement_timeout`,
+// and §L.9 says a query cancelled by it is 503 with a retry, not a 500.
+//
+// ⛔ `ComputedKeys` IS WHY THIS IS STILL NOT A 409. `delivery_drills` has exactly
+// one unique key, its `id` PRIMARY KEY, and the service mints it with `id.New()`
+// immediately before the INSERT — so a `23505` reaching Go is a uuid collision or
+// a statement that drifted from the schema, which is §L.9 row 2's oto bug and
+// never something a caller can fix by changing the request. Its foreign keys are
+// the same shape: `org_id`, `source_id` and `started_by` are all resolved and
+// checked before the row is written. Without this flag the shared table would
+// have turned both into a 409 that nobody asked for and that no caller could act
+// on; with it, every key violation stays the 500 it was before this ticket.
+//
+// A `40001`/`40P01` DOES become a 409 where it used to be a 500, and that one is
+// deliberate. §L.1 defines KindConflict as "the caller must re-read and retry",
+// which is precisely what a serialization failure asks of the two browser tabs
+// racing on `Freeze`; eight of the ten copies of this table already said so, and
+// this module simply never wrote the row. Drills are polled over HTTP rather than
+// run from a job, so no `jobs.Classify` behaviour is involved — and in any case
+// KindConflict and KindInternal are the same ClassRetryable there.
 func mapErr(err error, what string) error {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errs.NotFound("drill_not_found", "no such delivery drill")
-	}
-	return errs.Wrap(err, errs.KindInternal, "drill_query_failed", "could not "+what)
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           "drill_not_found",
+		NotFoundMessage:    "no such delivery drill",
+		QueryFailed:        "drill_query_failed",
+		QueryFailedMessage: "could not " + what,
+		ComputedKeys:       true,
+	})
 }
