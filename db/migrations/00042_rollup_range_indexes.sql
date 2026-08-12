@@ -1,0 +1,168 @@
+-- The two range indexes `stats.rollup` has always needed and never had.
+--
+-- ⭐⭐ WHY. `rollupDaySQL` (internal/stats/repository/rollup.go) recomputes one
+-- UTC day for one org out of three source tables. Two of its three CTEs filter a
+-- table on `(org_id, <timestamp>)` and NEITHER table had an index that could
+-- lead with that pair:
+--
+--   occ    -- alert_occurrences WHERE org_id = $1 AND started_at >= day_start
+--            AND started_at < day_end
+--   notif  -- notifications      WHERE org_id = $1 AND created_at >= day_start
+--            AND created_at < day_end
+--
+-- `alert_occurrences` carried five indexes (00007) and `notifications` three
+-- (00011, 00029). All eight fail this query, but they fail it in THREE DIFFERENT
+-- WAYS, and only the first is the one that reads like the obvious problem:
+--
+--   1. A SECOND EQUALITY between org_id and the timestamp, pushing the range off
+--      the leading edge. FOUR do this: `occ_group_idx`
+--      `(org_id, group_id, started_at DESC)`, `occ_ack_idx`
+--      `(org_id, ack_state, started_at DESC)`, `notif_subject_idx`
+--      `(org_id, subject_kind, subject_id, created_at DESC)` and
+--      `notif_alert_idx` `(org_id, alert_id, created_at DESC)`. The rollup
+--      supplies none of those equalities.
+--   2. NO org_id ON THE LEADING EDGE at all, which makes the tenant predicate a
+--      post-scan filter. TWO do this, both on purpose: `occ_one_open_idx`
+--      `(alert_id) WHERE ended_at IS NULL` is the one-open-episode invariant,
+--      and `occ_reap_idx` `(source_ends_at) WHERE ended_at IS NULL AND
+--      source_ends_at IS NOT NULL` serves a global sweep that is deliberately
+--      not tenant-scoped.
+--   3. NO TIMESTAMP IN THE KEY at all, so no column order could have helped.
+--      THREE do this: `occ_alert_idx` `(org_id, alert_id, seq DESC)` -- `seq`
+--      orders episodes, it does not date them -- `notif_occurrence_idx`
+--      `(org_id, occurrence_id)`, and `occ_one_open_idx` again.
+--
+-- `occ_ack_idx` is the most misleading of the eight and earns its own sentence:
+-- `(org_id, ack_state, started_at DESC)` looks nearly right, but it is PARTIAL
+-- on `ended_at IS NULL`, which is exactly the set of rows this rollup does not
+-- count -- it counts `state = 'resolved'` and `state = 'expired'`, both of which
+-- have an `ended_at` by `occ_terminal_ended`.
+--
+-- The third CTE, `flaps`, was already fine and is left alone: `alert_events` is
+-- PARTITION BY RANGE (recorded_at) with monthly partitions, so its day predicate
+-- prunes to one partition before any index question is asked.
+--
+-- ⛔ WHAT IT COST. `internal/stats/worker/rollup.go` enumerates every tenant and
+-- calls the service once per org; the service recomputes `RollupBackfillDays`
+-- (2) days each. The job is periodic at fifteen minutes with a five-minute
+-- timeout (internal/platform/jobs/registry.go). So one tick was `2 x N` full
+-- passes over BOTH tables, and both are on ADR 0024's never-reaped list, so the
+-- volume scanned only ever rises. At twenty orgs that is forty passes inside a
+-- five-minute budget.
+--
+-- The failure is silent by design, which is what makes it bad. The worker logs
+-- and continues per tenant, so the visible symptom is not a crash: the hygiene
+-- report simply stops updating for whichever tenants are at the back of the loop
+-- and `oto_jobs_failed_total` climbs on timeout. That report is the one an
+-- operator is meant to trust enough to DELETE AN ALERT RULE. A report that
+-- silently stops refreshing is worse than one that is absent.
+--
+-- ⭐ THE FIX. One plain composite btree per table, org_id first and the
+-- timestamp second, and NOTHING ELSE IN THE KEY:
+--
+--   occ_started_idx    alert_occurrences (org_id, started_at)
+--   notif_created_idx  notifications     (org_id, created_at)
+--
+-- ⛔ THE COLUMN ORDER AND THE COLUMN COUNT ARE BOTH LOAD-BEARING. org_id leads
+-- because every read in oto is tenant-scoped and an index that does not lead
+-- with it makes the tenant predicate a post-scan filter (CONTEXT.md §5 rule 7).
+-- The timestamp is SECOND and LAST because it is the only remaining predicate:
+-- a third key column in front of it would push the range back off the leading
+-- edge and reproduce precisely the defect of failure mode 1 above -- the four of
+-- the eight existing indexes that do carry a usable timestamp -- and a
+-- third column AFTER it buys nothing -- there is no sort to satisfy, since both
+-- CTEs immediately GROUP BY columns of `alerts`.
+--
+-- ⛔ NEITHER TABLE IS PARTITIONED, so these are ordinary indexes on ordinary
+-- tables. Only `alert_events`, `ingest_batches`, `ingest_rejections` and
+-- `ui_events` are partitioned in this schema, and none of them is touched here.
+-- There is therefore no partition key to carry and no ON ONLY / ATTACH dance.
+--
+-- ⚠️ AND NO `INCLUDE` LIST, deliberately. A covering index reads tempting here
+-- and is the wrong trade on these two tables. `occ` needs alert_id, state,
+-- ack_state, ended_at and started_at, and `notif` needs id and group_id -- and
+-- `notifications.id` is the primary key, which a btree payload cannot carry
+-- anyway, so an index-only scan of the `notif` CTE is unreachable at any width.
+-- Worse, `alert_occurrences` is one of the most UPDATE-heavy tables in the
+-- schema (every ack, every resolve, every reap rewrites a row), so an
+-- index-only scan would depend on a visibility map these rows keep dirtying,
+-- while the wider index would be paid for on every one of those updates.
+--
+-- ⚠️ WHAT THE PLANNER ACTUALLY SEES, because it is not what it looks like.
+-- `bounds` is a CTE referenced four times, so Postgres MATERIALISES it (it
+-- inlines only single-reference CTEs), and the day bounds therefore reach both
+-- scans as JOIN QUALS against a one-row relation rather than as constants. The
+-- planner cannot consult a histogram for those, falls back to its default
+-- inequality selectivity, and estimates roughly a ninth of the table. That is
+-- still far cheaper by index than by sequential scan -- as an index range for a
+-- correlated column like an append-mostly timestamp, and as a bitmap heap scan
+-- when correlation decays -- which is why a two-column index is enough and why
+-- the estimate must not be diluted further. It is also why the fix is verified
+-- by an EXPLAIN of the real statement rather than by reasoning:
+-- internal/stats/repository/rollup_plan_test.go asserts both scans name these
+-- indexes, and asserts they fall back to a Seq Scan when the indexes are dropped
+-- inside a rolled-back transaction. A plan test that would pass without the
+-- index proves nothing.
+--
+-- ⭐ ONE INDEX, TWO CALLERS. `occ_started_idx` is not only for the background
+-- job. `relatedAlertsSQL` (internal/enrichment/repository/alertread.go) filters
+-- `alert_occurrences` on org_id plus a `started_at` window with the same shape,
+-- on the REQUEST PATH, to answer "what else was firing" on an incident page --
+-- and there it is even better served, because the window arrives as real
+-- parameters rather than through a materialised CTE.
+--
+-- ⭐ THE PRICE, stated plainly. Two more btrees to maintain: one on a table
+-- written on every ingest observation and updated on every ack and resolve, one
+-- on a table written once per notification intent. That is real write
+-- amplification on the hot path, and it buys a background job and one enrichment
+-- read. It is worth it because the alternative is not "a slower rollup" but "a
+-- rollup that stops finishing", and because both tables grow forever: the cost
+-- of the index is proportional to the write rate, and the cost of not having it
+-- is proportional to the accumulated size.
+--
+-- ⚠️ NOT `CONCURRENTLY`, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
+-- `CREATE INDEX` takes a SHARE lock: reads continue, writes on that table block
+-- for the length of the build. `CREATE INDEX CONCURRENTLY` avoids that, and
+-- cannot run inside a transaction, which under goose means the NO TRANSACTION
+-- annotation. (Spelling that annotation out here, even inside a comment, makes
+-- goose parse this line as a real one and refuse the file -- which is how this
+-- paragraph was first proved wrong.) THERE IS NO SUCH ANNOTATION ANYWHERE IN
+-- THIS TREE: all forty-one migrations before this one run inside goose's
+-- transaction, and sixteen of them create at least one index -- including
+-- 00021, 00022 and 00029, the three whose only structural statement IS a
+-- CREATE INDEX. Taking this one out of it would trade a bounded write pause
+-- for a migration that can fail HALFWAY --
+-- leaving an INVALID index behind that no `goose down` removes and that the
+-- planner silently ignores -- and it would break the all-or-nothing property
+-- that `just migrate-roundtrip` and TestEveryMigrationDownTo00028IsReversible
+-- both exercise by rolling the stack down and back up. The house decision stands
+-- until an ADR changes it for every migration at once, not for this one in
+-- passing.
+--
+-- WHAT THE PAUSE ACTUALLY IS, so the decision can be checked rather than
+-- believed: two btree builds over two tables, reads unaffected throughout, and
+-- the blocked writers are the ingest path and the notifier, both of which are
+-- retrying queue workers rather than a user waiting on a page. An operator whose
+-- tables have grown past what that allows can build both indexes by hand with
+-- CONCURRENTLY and then record 00042 as applied -- but that is a decision taken
+-- with the table sizes in front of you, and a migration cannot take it on your
+-- behalf.
+--
+-- EXPAND/CONTRACT (CONTEXT.md §6). An index is a pure widening: nothing to
+-- backfill, no constraint a release-N writer can violate, and the Down drops it
+-- and loses only speed.
+
+-- +goose Up
+
+CREATE INDEX occ_started_idx   ON alert_occurrences (org_id, started_at);
+CREATE INDEX notif_created_idx ON notifications     (org_id, created_at);
+
+COMMENT ON INDEX occ_started_idx IS
+  'Serves the occ CTE of stats.rollup — every episode an org OPENED on one UTC day — and the candidates CTE of relatedAlertsSQL, which asks the same shape on the request path. Two columns and no more: a third key column in front of started_at would put the range back off the leading edge, which is the exact reason the two of the five from 00007 that do carry started_at (occ_group_idx, occ_ack_idx) could not drive this. The other three carry no timestamp, or no leading org_id, at all.';
+COMMENT ON INDEX notif_created_idx IS
+  'Serves the notif CTE of stats.rollup — every notification an org minted on one UTC day. The other three indexes on this table (00011, 00029) each demand a second equality a day-scoped rollup does not have: notif_subject_idx leaves created_at fourth behind subject_kind and subject_id, notif_alert_idx leaves it third behind alert_id, and notif_occurrence_idx does not carry created_at at all.';
+
+-- +goose Down
+
+DROP INDEX IF EXISTS notif_created_idx;
+DROP INDEX IF EXISTS occ_started_idx;

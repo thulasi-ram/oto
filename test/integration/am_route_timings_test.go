@@ -223,6 +223,16 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 //
 // WHAT EACH DOWN HAS TO PUT BACK, newest first:
 //
+//   - 00042 added the two range indexes `stats.rollup` filters on,
+//     `occ_started_idx` and `notif_created_idx`, so its Down is a pair of DROP
+//     INDEXes and the property that flips is their presence in `pg_indexes`. An
+//     index is the cheapest thing in this list to roll back — nothing to
+//     backfill, no row it can make illegal — which is exactly why its Down is the
+//     one most likely to be written from memory and never run. Whether the
+//     indexes are USED is a different question and not one a round trip can
+//     answer; that is asserted against a real plan in
+//     internal/stats/repository/rollup_plan_test.go.
+//
 //   - ⭐ 00041 added `idempotency_claims`, so its Down is a DROP TABLE and the
 //     property that flips is the table's existence. What is asserted on the way
 //     back UP is the PRIMARY KEY's tuple, not merely the table: the four columns
@@ -296,8 +306,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 41 {
-		t.Fatalf("latest migration is %d, want 41 — this test pins the number so that a "+
+	if latest != 42 {
+		t.Fatalf("latest migration is %d, want 42 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -486,6 +496,20 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 		return def
 	}
+	// 00042's two indexes, counted together because they are one migration and
+	// therefore roll back together. `pg_indexes` rather than `pg_class` so a name
+	// that came back as something other than an index would not count.
+	rollupRangeIndexes := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_indexes
+			  WHERE indexname = ANY($1::text[])`,
+			[]string{"occ_started_idx", "notif_created_idx"}).Scan(&n); err != nil {
+			t.Fatalf("introspect the rollup range indexes: %v", err)
+		}
+		return n
+	}
 	snapshotUniqCols := func() string {
 		t.Helper()
 		var def string
@@ -496,6 +520,16 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			t.Fatalf("introspect rule_snapshots_content_uniq: %v", err)
 		}
 		return def
+	}
+
+	// 00042's two indexes. Asserted at the top of the stack as well as after the
+	// round trip because "the Down dropped them" is only interesting if the Up put
+	// them there in the first place.
+	if n := rollupRangeIndexes(); n != 2 {
+		t.Fatalf("%d of 00042's two range indexes exist at the top of the stack, want 2 — "+
+			"occ_started_idx and notif_created_idx are the only indexes either table has that "+
+			"lead with (org_id, timestamp), and without them stats.rollup scans both tables in "+
+			"full, twice per org, every fifteen minutes", n)
 	}
 
 	// ⭐ 00041's table, and the tuple that makes it worth having. The four columns
@@ -631,6 +665,17 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		if err := migrate.Down(env.ctx, dsn); err != nil {
 			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
 		}
+	}
+
+	// 00042 down: both range indexes go. `DROP INDEX IF EXISTS` is the kind of
+	// statement that runs cleanly whether or not it does anything, which is
+	// precisely why the property is read afterwards instead of the error being
+	// trusted — a Down that named a typo'd index would be green at the exit code
+	// and would leave a rolled-back deployment carrying indexes for a query the
+	// release it rolled back to does not run.
+	down(42)
+	if n := rollupRangeIndexes(); n != 0 {
+		t.Fatalf("%d of 00042's two range indexes survived its Down, want 0", n)
 	}
 
 	// 00041 down: the claims table goes, and it has to go WITH ROWS IN IT. A claim
@@ -1045,6 +1090,11 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 	if buckets() != 0 {
 		t.Fatal("rate_limit_buckets survived the way back up")
+	}
+	if n := rollupRangeIndexes(); n != 2 {
+		t.Fatalf("%d of 00042's two range indexes came back on the way up, want 2 — the rest of "+
+			"the suite runs against this schema, and stats.rollup is a sequential scan of two "+
+			"never-reaped tables without them", n)
 	}
 	// ⭐ 00041 comes back WITH ITS KEY. The table alone is not the migration: a
 	// re-created `idempotency_claims` whose PK had lost a column would take every
