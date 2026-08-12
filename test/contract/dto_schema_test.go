@@ -1107,6 +1107,153 @@ func TestEnumFilterCeilingsMatchTheirEnum(t *testing.T) {
 	f.report(t, "gate G1: an enum-backed filter is bounded at something other than its enum")
 }
 
+// TestEnumArrayCeilingsMatchTheirEnum is the same tie as
+// TestEnumFilterCeilingsMatchTheirEnum, applied to every array the contract
+// declares in `components/schemas` — request bodies and responses alike.
+//
+// THE RULE: an array whose items are a closed enum declares `maxItems` equal to
+// the size of that enum. There is no exemption list, and adding one is the wrong
+// fix: a ceiling that disagrees with its enum is either a wire bound nobody
+// maintains or a storage bound wearing the wrong hat, and both are cheaper to
+// correct than to record.
+//
+// The rule is deliberately the same as the filter rule, but the failure it
+// prevents is NOT the same, and pretending otherwise would leave the next
+// reader with a rule they cannot apply. A filter ceiling below its enum refuses
+// "give me everything" in the caller's own generated client. Every ceiling this
+// walk found sat ABOVE its enum instead, and a ceiling above an enum refuses
+// nothing: with `uniqueItems: true` the extra room is unreachable, and without
+// it the room only buys duplicates — a second `slack.default` in `renderers`
+// names nothing the first one did not. So what is being prevented here is not a
+// refused request. It is an unmaintained number: six ceilings, each written
+// beside a `$ref` whose enum lives a thousand lines away, none of which moved
+// the last time an enum moved and none of which would have moved the next time.
+// Equality is the only value that makes the next enum edit either correct or
+// loud, which is the whole reason to assert a relationship between two numbers
+// rather than to assert either number.
+//
+// Three alternatives were considered and rejected:
+//
+//   - DELETE `maxItems` where `uniqueItems: true` already makes it unreachable.
+//     That is true of four of the six and would be the smallest diff, but it
+//     silently drops the bound from the generated clients for the two that have
+//     no `uniqueItems`, and it makes "this array has no ceiling" mean two
+//     different things in one document. A number that is checked is worth more
+//     than a number that is absent.
+//   - Declare bodies OUT OF SCOPE. That is the state the walk was already in,
+//     and it is the state that produced the six.
+//   - EXEMPT `reasons` as owned by `policies_reasons_ck`. This is what was done
+//     first, and it was wrong. The CHECK is `array_length(reasons, 1) BETWEEN 1
+//     AND 32` with no uniqueness, and the domain constructor checks length and
+//     membership but not uniqueness either — so 32 is what the COLUMN holds,
+//     duplicates included, and it is not a statement about the wire at all. On
+//     the wire `uniqueItems: true` over an 18-value enum already makes a 19th
+//     element unreachable, so the contract now says 18 and the column keeps 32,
+//     with no migration and nothing exempted. Storage and wire bounds may differ;
+//     what may not differ is a wire bound and the vocabulary it is drawn from.
+//
+// `ChannelTypeDTO` is the case that costs nothing: a static, server-authored
+// descriptor no client ever sends, backed by no column and no `validate` tag,
+// whose providers between them declare three credential kinds, six
+// capabilities and one renderer. Its 16/16/8 became 6/6/3 with no migration and
+// nothing to break.
+//
+// The walk reads `components/schemas` and nothing else because that is where
+// every body and every response in this contract is declared — the only inline
+// schemas under `paths` are parameters, which the filter gate already owns. It
+// descends into inline property nodes and STOPS at a `$ref`, so each ceiling is
+// reported once, against the schema whose text must actually change.
+func TestEnumArrayCeilingsMatchTheirEnum(t *testing.T) {
+	d := loadDoc(t)
+	var f failures
+	checked := 0
+
+	for _, name := range sortedKeys(d.schemas) {
+		node, ok := d.schema(name)
+		if !ok {
+			continue
+		}
+		for _, site := range d.enumArraySites(node) {
+			checked++
+			// A component that IS an array of an enum has no property name to
+			// give; it is named by itself.
+			prop := site.path
+			if prop == "" {
+				prop = "(the schema itself)"
+			}
+			enum := len(site.elem.enum)
+			origin := enumOrigin(site.elem, site.arr.items)
+
+			if site.arr.maxItems == nil {
+				f.addf("%s: `%s` is an array of %s, a closed enum of %d values, and declares "+
+					"no `maxItems` — an array over a closed vocabulary is bounded by that "+
+					"vocabulary. Set `maxItems: %d`", name, prop, origin, enum, enum)
+				continue
+			}
+			found := *site.arr.maxItems
+
+			if found != enum {
+				f.addf("%s: `%s` declares `maxItems: %d` but its items are %s, a closed enum "+
+					"of %d values — %d is a number nobody maintains, and the next edit to that "+
+					"enum will not move it. Set `maxItems: %d`. A storage bound that is genuinely "+
+					"wider belongs in the DDL and the domain, not in this array's ceiling",
+					name, prop, found, origin, enum, found, enum)
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("found no enum-backed array in `components.schemas` at all — the walk is " +
+			"looking in the wrong place and this gate is asserting nothing")
+	}
+	f.report(t, "gate G1: an enum-backed array is bounded at something other than its enum")
+}
+
+// enumArraySite is one place a component schema declares an array whose items
+// are a closed enum: the resolved array node, its resolved element, and the
+// dotted property path to reach it from the schema's root.
+type enumArraySite struct {
+	path string
+	arr  flat
+	elem flat
+}
+
+// enumArraySites returns the enum-backed arrays a component schema declares
+// ITSELF. It descends into inline property nodes and into inline `items`, and
+// stops at a `$ref`: the referenced component is walked under its own name, and
+// a ceiling reported from every route that reaches it is a one-line fix filed
+// as five failures.
+func (d *doc) enumArraySites(node map[string]any) []enumArraySite {
+	var out []enumArraySite
+	var walk func(path string, n map[string]any, depth int)
+	walk = func(path string, n map[string]any, depth int) {
+		if n == nil || depth > 12 {
+			return
+		}
+		fl := d.flatten(n)
+		if fl.types["array"] && fl.items != nil {
+			if elem := d.flatten(fl.items); len(elem.enum) > 0 {
+				out = append(out, enumArraySite{path: path, arr: fl, elem: elem})
+			} else if refName(fl.items) == "" {
+				walk(path+"[]", fl.items, depth+1)
+			}
+		}
+		for _, name := range sortedKeys(fl.props) {
+			child := fl.props[name]
+			if refName(child) != "" {
+				continue
+			}
+			next := name
+			if path != "" {
+				next = path + "." + name
+			}
+			walk(next, child, depth+1)
+		}
+	}
+	walk("", node, 0)
+	return out
+}
+
 // enumOrigin names the enum a failure is about: the component schema when the
 // items are a `$ref`, and the enum's own values when the contract spells them
 // inline and there is no name to give.

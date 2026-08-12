@@ -8197,14 +8197,14 @@ components:
             is going to refuse with a 422.
         credential_kinds:
           type: array
-          maxItems: 16
+          maxItems: 6
           items:
             type: string
             enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, none]
           description: Which credential kinds this provider accepts. Secrets are write-only everywhere in this API.
         capabilities:
           type: array
-          maxItems: 16
+          maxItems: 6
           uniqueItems: true
           items:
             type: string
@@ -8214,7 +8214,7 @@ components:
             asserted by a provider at send time.
         renderers:
           type: array
-          maxItems: 8
+          maxItems: 3
           items:
             $ref: '#/components/schemas/RendererId'
         rate_limit_class:
@@ -8407,7 +8407,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 32
+          maxItems: 18
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -10508,7 +10508,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 32
+          maxItems: 18
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -10552,7 +10552,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 32
+          maxItems: 18
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
