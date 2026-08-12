@@ -811,9 +811,10 @@ paths:
           schema:
             type: array
             # The bound is the SIZE OF THE CLOSED ENUM, so "give me everything"
-            # is always expressible. It stayed 34 after `alert.snoozed` and
-            # `alert.unsnoozed` joined `AlertEventType`, which refused a caller
-            # for asking for two types this API already emits.
+            # is always expressible. It must never fall below `AlertEventType`:
+            # a ceiling under the enum it filters refuses a caller for naming a
+            # type this API already emits, and does it in the caller's own
+            # generated client.
             maxItems: 36
             uniqueItems: true
             items:
@@ -1438,9 +1439,10 @@ paths:
           schema:
             type: array
             # The bound is the SIZE OF THE CLOSED ENUM, so "give me everything"
-            # is always expressible. It stayed 34 after `alert.snoozed` and
-            # `alert.unsnoozed` joined `AlertEventType`, which refused a caller
-            # for asking for two types this API already emits.
+            # is always expressible. It must never fall below `AlertEventType`:
+            # a ceiling under the enum it filters refuses a caller for naming a
+            # type this API already emits, and does it in the caller's own
+            # generated client.
             maxItems: 36
             uniqueItems: true
             items:
@@ -1731,9 +1733,10 @@ paths:
           schema:
             type: array
             # The bound is the SIZE OF THE CLOSED ENUM, so "give me everything"
-            # is always expressible. It stayed 34 after `alert.snoozed` and
-            # `alert.unsnoozed` joined `AlertEventType`, which refused a caller
-            # for asking for two types this API already emits.
+            # is always expressible. It must never fall below `AlertEventType`:
+            # a ceiling under the enum it filters refuses a caller for naming a
+            # type this API already emits, and does it in the caller's own
+            # generated client.
             maxItems: 36
             uniqueItems: true
             items:
@@ -3121,7 +3124,7 @@ paths:
           description: Comma-separated reasons.
           schema:
             type: array
-            maxItems: 16
+            maxItems: 18
             uniqueItems: true
             items:
               $ref: '#/components/schemas/NotificationReason'

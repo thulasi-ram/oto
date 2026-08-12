@@ -1041,6 +1041,84 @@ func TestQueryParamsMatchContract(t *testing.T) {
 	f.report(t, "gate G1: query objects and the contract's operation parameters disagree")
 }
 
+// TestEnumFilterCeilingsMatchTheirEnum asserts that an array query parameter
+// whose elements are a closed enum is bounded at exactly the size of that enum.
+//
+// A filter ceiling BELOW the enum it filters is a bound that can only ever be
+// wrong: "give me everything" is the one request every such filter must be able
+// to express, and the caller is refused by its OWN generated client, before a
+// server that would have answered it ever sees the request. `?type=` on the
+// three timelines spent two releases in that state, because `maxItems` is
+// written next to the `$ref` and the enum grows somewhere else entirely —
+// nothing tied the two numbers together. This is that tie.
+//
+// A ceiling ABOVE the enum is harmless but is still a failure here, because
+// `uniqueItems: true` makes it unreachable: it can only mean the enum shrank
+// and the bound did not, and a bound nobody maintains is the one that falls
+// behind next.
+//
+// Parameters whose items are NOT enum-backed are skipped DELIBERATELY. A
+// free-text filter — `cluster`, `namespace`, `alertname`, `severity` — is
+// bounded by how many values a query string may sensibly carry, which is a
+// judgement about request size and has no enum to be equal to. Asserting
+// anything about those numbers here would be inventing a rule, not enforcing
+// one.
+func TestEnumFilterCeilingsMatchTheirEnum(t *testing.T) {
+	d := loadDoc(t)
+	ops := d.operations()
+	var f failures
+	checked := 0
+
+	for _, opID := range sortedKeys(ops) {
+		params := ops[opID].queryParams(d)
+		for _, name := range sortedKeys(params) {
+			node, _ := params[name]["schema"].(map[string]any)
+			if node == nil {
+				continue
+			}
+			fl := d.flatten(node)
+			if !fl.types["array"] || fl.items == nil {
+				continue
+			}
+			if elem := d.flatten(fl.items); len(elem.enum) > 0 {
+				checked++
+				switch {
+				case fl.maxItems == nil:
+					f.addf("%s: query parameter `%s` is an array of %s, a closed enum of %d "+
+						"values, and declares no `maxItems` — every other array parameter in "+
+						"this contract carries one", opID, name, enumOrigin(elem, fl.items), len(elem.enum))
+				case *fl.maxItems != len(elem.enum):
+					f.addf("%s: query parameter `%s` declares `maxItems: %d` but its items are "+
+						"%s, a closed enum of %d values — a caller asking for every value it is "+
+						"allowed to name writes a request its own client refuses to send. Set "+
+						"`maxItems: %d`", opID, name, *fl.maxItems, enumOrigin(elem, fl.items),
+						len(elem.enum), len(elem.enum))
+				}
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("found no enum-backed array query parameter at all — the walk is looking in " +
+			"the wrong place and this gate is asserting nothing")
+	}
+	f.report(t, "gate G1: an enum-backed filter is bounded at something other than its enum")
+}
+
+// enumOrigin names the enum a failure is about: the component schema when the
+// items are a `$ref`, and the enum's own values when the contract spells them
+// inline and there is no name to give.
+func enumOrigin(elem flat, items map[string]any) string {
+	if name := refName(items); name != "" {
+		return "`" + name + "`"
+	}
+	vals := make([]string, 0, len(elem.enum))
+	for _, v := range elem.enum {
+		vals = append(vals, fmt.Sprint(v))
+	}
+	return "the inline enum [" + strings.Join(vals, " ") + "]"
+}
+
 // queryField relaxes required-ness for a query parameter: a query object always
 // has every field present in Go, and absence is expressed by the zero value,
 // not by `omitempty`.

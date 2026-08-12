@@ -897,6 +897,44 @@ func TestMemberAlertRowsCarrySynthetic(t *testing.T) {
 	schema.Assert(t, "listAlertGroupAlerts", http.StatusOK, resp.Body())
 }
 
+// TestTheTimelineAcceptsEveryDeclaredEventType.
+//
+// "Show me everything that happened on this group" is the request a filter
+// ceiling can most easily make unsendable. `?type=` is bounded twice — by
+// `maxItems` in the contract and by `max=36` on `TimelineQuery.Type` — and both
+// bounds are the SIZE OF THE CLOSED ENUM for one reason: a ceiling below the
+// enum it filters is a bound that can only ever be wrong. It refuses a caller
+// for naming types this API already emits, and it does so in the caller's own
+// generated client, before the server ever sees a request it would have
+// answered. That is what happened when `alert.snoozed` and `alert.unsnoozed`
+// joined `AlertEventType` and the ceiling stayed where it was.
+//
+// The bound is the size of the enum exactly — `TestEnumFilterCeilingsMatchTheirEnum`
+// holds every enum-backed ceiling in the contract to that equality, because a
+// ceiling that merely happens to sit high enough is one that drifts unnoticed.
+// This asks for the whole of `alertdomain.AllEventTypes()` by name, so the 37th
+// event type fails here rather than in a client.
+func TestTheTimelineAcceptsEveryDeclaredEventType(t *testing.T) {
+	t.Parallel()
+
+	rt, _ := newGroupRouter(t)
+
+	all := alertdomain.AllEventTypes()
+	names := make([]string, 0, len(all))
+	for _, ty := range all {
+		names = append(names, ty.String())
+	}
+
+	resp := apitest.New(rt).GET(groupPath("/timeline?type=" + joinSorted(names)))
+	if resp.Code() != http.StatusOK {
+		t.Fatalf("asking for all %d declared event types answered %d, want 200 — "+
+			"the ?type= ceiling has fallen below the enum it filters\n%s",
+			len(names), resp.Code(), resp)
+	}
+
+	schema.Assert(t, "getAlertGroupTimeline", http.StatusOK, resp.Body())
+}
+
 /* -------------------------------------------------------------------------- */
 /* Live divergences between the handlers and the contract                     */
 /* -------------------------------------------------------------------------- */
@@ -930,44 +968,4 @@ func TestBUG_ADetailReadCanAnswerAnUndeclared400(t *testing.T) {
 	resp := apitest.New(rt).GET(groupPath("?foo=1")).MustStatus(t, http.StatusBadRequest)
 
 	schema.AssertProblem(t, "getAlertGroup", http.StatusBadRequest, resp.Body())
-}
-
-// ⛔ TestBUG_TheTimelineTypeFilterCeilingIsSmallerThanTheEnum.
-//
-// WHAT THE CONTRACT SAYS: the `type` parameter of `getAlertGroupTimeline` is an
-// array with `maxItems: 34` (api/openapi/openapi.yaml:1725).
-//
-// WHAT THE SERVER DOES: `TimelineQuery.Type` is bounded at `max=36`
-// (internal/grouping/api/dto.go:257), which is the size of the closed
-// `AlertEventType` set — and the contract's own enum has 36 values
-// (api/openapi/openapi.yaml:5177–5213).
-//
-// WHICH IS WRONG: the CONTRACT. `maxItems` was never updated when
-// `alert.snoozed` and `alert.unsnoozed` joined the enum, so a caller asking for
-// EVERY type it is allowed to see — "show me everything on this group" — writes
-// a request its own generated client refuses to send, while the server would
-// have answered it. A filter ceiling below the enum it filters is a bound that
-// can only ever be wrong.
-//
-// The test asserts the CONTRACT: 35 types would be refused. It is skipped
-// because the server (correctly) accepts them.
-func TestBUG_TheTimelineTypeFilterCeilingIsSmallerThanTheEnum(t *testing.T) {
-	t.Skip("the contract caps ?type= at 34 items while its own AlertEventType enum has 36; " +
-		"the contract is wrong — see the comment above")
-	t.Parallel()
-
-	rt, _ := newGroupRouter(t)
-
-	all := alertdomain.AllEventTypes()
-	names := make([]string, 0, len(all))
-	for _, ty := range all {
-		names = append(names, ty.String())
-	}
-
-	target := groupPath("/timeline?type=" + joinSorted(names))
-	resp := apitest.New(rt).GET(target)
-	if resp.Code() != http.StatusUnprocessableEntity {
-		t.Fatalf("asking for all %d declared event types answered %d, "+
-			"but the contract caps the parameter at 34 items\n%s", len(names), resp.Code(), resp)
-	}
 }

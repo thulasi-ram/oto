@@ -87,7 +87,12 @@ type flat struct {
 	addl     map[string]any
 	// addlFalse records `additionalProperties: false`.
 	addlFalse bool
-	enum      []any
+	// maxItems is the array bound, nil when the node declares none. It is read
+	// through the same `$ref`/`allOf` resolution as everything else so that an
+	// array declared once in `components.schemas` and referenced from a
+	// parameter is bounded by what it really resolves to.
+	maxItems *int
+	enum     []any
 	// variants is a non-null oneOf/anyOf with more than one real branch: the
 	// node is a union and a field-by-field comparison is not meaningful.
 	variants []map[string]any
@@ -169,6 +174,9 @@ func (d *doc) mergeInto(f *flat, s map[string]any, depth int) {
 	}
 	if e, ok := s["enum"].([]any); ok {
 		f.enum = e
+	}
+	if m, ok := s["maxItems"].(int); ok {
+		f.maxItems = &m
 	}
 
 	if all, ok := s["allOf"].([]any); ok {

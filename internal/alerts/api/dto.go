@@ -479,10 +479,9 @@ type ListRollupsQuery struct {
 // `listAlertEvents`, `listOccurrenceEvents` and `getAlertGroupTimeline`.
 type TimelineQuery struct {
 	// The bound is the SIZE OF THE CLOSED ENUM (domain.AllEventTypes), so that
-	// "give me everything" is always expressible. It was 34 while
-	// `alert.snoozed` and `alert.unsnoozed` were missing from the contract; the
-	// domain has always emitted 36, and a caller enumerating them all was
-	// refused for asking for two types the server was already writing.
+	// "give me everything" is always expressible. It must never fall below that
+	// enum: a ceiling under it refuses a caller for naming a type the server is
+	// already writing.
 	Type   []string   `json:"type"      validate:"omitempty,max=36,unique"`
 	Since  *time.Time `json:"since"`
 	Until  *time.Time `json:"until"`
