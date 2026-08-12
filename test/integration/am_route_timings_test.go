@@ -223,6 +223,14 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 //
 // WHAT EACH DOWN HAS TO PUT BACK, newest first:
 //
+//   - 00043 changed two COMMENTs and nothing else — `alert_event_keys` and its
+//     prune index — so its Down is two more COMMENTs and the property that flips
+//     is the text `obj_description` returns. It is the one migration here with no
+//     structure at all, which makes it the one whose Down is likeliest to be a
+//     copy of its Up; and the text matters because the sentence it replaces
+//     ("Pruned at created_at < now() - 30 days") was stated as fact from 00007
+//     while nothing on earth pruned the table.
+//
 //   - 00042 added the two range indexes `stats.rollup` filters on,
 //     `occ_started_idx` and `notif_created_idx`, so its Down is a pair of DROP
 //     INDEXes and the property that flips is their presence in `pg_indexes`. An
@@ -306,8 +314,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 42 {
-		t.Fatalf("latest migration is %d, want 42 — this test pins the number so that a "+
+	if latest != 43 {
+		t.Fatalf("latest migration is %d, want 43 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -510,6 +518,21 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 		return n
 	}
+	// 00043's two comments, read as text because text is all they are. The table
+	// comment is the one that carries the property: it stated a 30-day pruner as
+	// FACT from 00007 until `retention.prune` finally swept this table, and the
+	// index comment is what stops the next reader wondering what
+	// `alert_event_keys_prune_idx` is for.
+	eventKeyComments := func() (table, index string) {
+		t.Helper()
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT coalesce(obj_description('alert_event_keys'::regclass, 'pg_class'), ''),
+			        coalesce(obj_description('alert_event_keys_prune_idx'::regclass, 'pg_class'), '')`).
+			Scan(&table, &index); err != nil {
+			t.Fatalf("introspect the alert_event_keys comments: %v", err)
+		}
+		return table, index
+	}
 	snapshotUniqCols := func() string {
 		t.Helper()
 		var def string
@@ -520,6 +543,22 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			t.Fatalf("introspect rule_snapshots_content_uniq: %v", err)
 		}
 		return def
+	}
+
+	// ⭐ 00043 is comments and nothing else, which is exactly why it is asserted:
+	// a migration with no structure to introspect is the one whose Down is most
+	// likely to be a copy of its Up. The table comment promised a 30-day pruner as
+	// fact for thirty-six migrations while nothing swept the table, so the sentence
+	// an operator reads at `\d+` is the deliverable here.
+	if table, index := eventKeyComments(); !strings.Contains(table, "retention.prune") {
+		t.Fatalf("alert_event_keys still describes its own pruning as %q at the top of the "+
+			"stack — 00043 exists to name the job that finally does it, and to stop the comment "+
+			"claiming a flat 30 days when the sweep widens to the longest raw_retention_days any "+
+			"tenant configured", table)
+	} else if !strings.Contains(index, "retention.prune") {
+		t.Fatalf("alert_event_keys_prune_idx carries %q at the top of the stack — the index has "+
+			"existed since 00007 to serve one query that did not exist, and 00043 is where it "+
+			"finally names the one it does serve", index)
 	}
 
 	// 00042's two indexes. Asserted at the top of the stack as well as after the
@@ -673,6 +712,21 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// trusted — a Down that named a typo'd index would be green at the exit code
 	// and would leave a rolled-back deployment carrying indexes for a query the
 	// release it rolled back to does not run.
+	// 00043 down: both comments go back to what 00007 wrote, and the index comment
+	// back to nothing. A Down that simply left the new text would be green on every
+	// structural assertion in this file, which is the whole reason a comment-only
+	// migration is worth rolling back at all: the rolled-back release does NOT
+	// sweep this table, and a comment that says it does would send an operator
+	// looking for a job that is not running.
+	down(43)
+	if table, index := eventKeyComments(); strings.Contains(table, "retention.prune") {
+		t.Fatalf("alert_event_keys still names retention.prune after 00043's Down: %q — the "+
+			"release this rolls back to does not prune the table, so the comment would be the "+
+			"same false promise 00007 shipped, now pointing at a job by name", table)
+	} else if index != "" {
+		t.Fatalf("alert_event_keys_prune_idx kept its comment %q after 00043's Down", index)
+	}
+
 	down(42)
 	if n := rollupRangeIndexes(); n != 0 {
 		t.Fatalf("%d of 00042's two range indexes survived its Down, want 0", n)

@@ -19,6 +19,32 @@ const (
 	MaxDedupeKeyBytes = 200
 )
 
+// DedupeKeyRetention is how long a claimed C.8 key stays claimed in
+// `alert_event_keys` — the horizon SPEC §D.4 and the table's own comment have
+// always named, and which nothing enforced until `retention.prune` did.
+//
+// ⭐ IT IS THE PRIMARY NUMBER, NOT A DERIVED ONE, and the direction matters
+// because five places state the coupling the other way round.
+// `tuning.DefaultRawRetention` is 30 days BECAUSE THIS IS: SPEC acceptance
+// criterion 36 says replaying a stored `ingest_batch` after a parser fix must
+// reproduce the same state without duplicate Slack messages, and that replay is
+// idempotent only while the batch's event keys are still claimed here. A raw
+// payload kept past this horizon is a payload that can no longer be used for the
+// one thing it is kept for. Move this and `DefaultRawRetention` moves with it —
+// ADR 0024 says so in as many words.
+//
+// ⛔ IT IS A FLOOR, AND THE SWEEP MAY ONLY WIDEN IT. `raw_retention_days` is a
+// per-org setting bounded 1..365, and `partitions.manage` already drops raw
+// partitions at the LONGEST window any tenant asked for (ADR 0024, "retention is
+// a floor, never a ceiling"). So `retention.prune` deletes a key at the wider of
+// this constant and that window: a tenant holding replayable payloads for a year
+// must keep for a year the keys that make them replayable, or its every replay
+// appends the timeline a second time and reports success while doing it. The
+// floor is what stops the reverse — an operator who lowers raw retention to a day
+// must not thereby unclaim the keys of episodes that are still open, whose
+// transitions the reconciler re-applies and which nothing but this table dedupes.
+const DedupeKeyRetention = 30 * 24 * time.Hour
+
 // EventType is the closed enum of alert_events.type (SPEC §D.4.1).
 //
 // Adding a type requires a SPEC amendment. Implementers MUST NOT invent types:

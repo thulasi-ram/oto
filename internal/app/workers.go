@@ -7,6 +7,7 @@ import (
 
 	"github.com/riverqueue/river"
 
+	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
 	enrichworker "github.com/thulasiram/oto/internal/enrichment/worker"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
@@ -141,6 +142,24 @@ func (c *Container) applySlackInteraction(ctx context.Context, job *jobs.Job[job
 // sweepLimit bounds one tick's work per tenant. A sweep that is not bounded is a
 // sweep that becomes an outage the first time somebody has a bad night.
 const sweepLimit = 500
+
+// keySweepLimit bounds one tick's `alert_event_keys` prune, and it is forty times
+// `sweepLimit` for a reason that is arithmetic rather than taste.
+//
+// ADR 0024's own volume model is ~8 events per firing episode at 10 000 firings a
+// day, and every lifecycle transition carries a dedupe key: ~80 000 new keys a
+// day, ~3 400 an hour. `retention.prune` is HOURLY, so a 500-row tick would
+// delete 12 000 a day against 80 000 written — a pruner that provably cannot keep
+// up, which is a table that still grows forever with a job in front of it saying
+// otherwise. 20 000 an hour is ~6× the modelled write rate: it keeps up at that
+// volume and still drains a backlog (~480 000 a day) on an install that has been
+// accumulating keys since the day it shipped.
+//
+// It stays BOUNDED because the first tick on such an install meets tens of
+// millions of rows, and one unbounded DELETE over them is the outage this whole
+// pattern exists to avoid. Deleting 20 000 four-column rows through the PRIMARY
+// KEY is a sub-second statement on the maintenance queue.
+const keySweepLimit = 20_000
 
 // forEachOrg runs fn for every tenant, logging and CONTINUING on failure.
 //
@@ -326,6 +345,68 @@ func (c *Container) effectiveRetention(ctx context.Context) (rawDays, eventMonth
 	return rawDays, eventMonths
 }
 
+// dedupeKeyHorizon is how long a claimed C.8 key survives: the wider of
+// `alertsdomain.DedupeKeyRetention` and the raw-payload window `partitions.manage`
+// actually drops on.
+//
+// ⭐ THE TWO HALVES ARE TWO DIFFERENT FAILURES, and taking either number alone
+// re-opens one of them.
+//
+//   - TOO SHORT and SPEC acceptance criterion 36 breaks SILENTLY. A stored
+//     `ingest_batch` is replayable only while its event keys are still claimed:
+//     replay it after the keys are gone and `AppendBatch` appends the timeline a
+//     SECOND time. Every org's raw partitions are kept to the LONGEST window any
+//     tenant asked for (ADR 0024, "retention is a floor, never a ceiling"), so the
+//     keys have to be kept that long too or the two jobs disagree about what is
+//     still replayable. Reading the window from the same `effectiveRetention` the
+//     dropper reads is what makes the disagreement impossible rather than unlikely.
+//   - TOO SHORT THE OTHER WAY: the DEPLOYMENT's `OTO_RETENTION_RAW_PAYLOADS` has
+//     no lower bound, and an operator who sets it under 720h must not thereby
+//     unclaim the keys of episodes that are still open — the reconciler re-applies
+//     transitions, and this table is the only thing that stops a re-applied chunk
+//     writing the timeline twice. That is what the floor is for, and it is the
+//     number the schema comment, SPEC §D.4 and `tuning.DefaultRawRetention` have
+//     all named all along. Note it is NOT `raw_retention_days` that reaches the
+//     floor: `effectiveRetention` starts the fold at `Config.Retention.RawPayloads`
+//     and only ever widens, so a per-org setting of 1 day cannot pull the window
+//     below the deployment's own, which ships as 30 days.
+//
+// It follows `effectiveRetention`'s own rule that every failure WIDENS the window:
+// the fold cannot return less than the floor, so the worst a broken settings read
+// can do is keep a key an hour longer.
+func (c *Container) dedupeKeyHorizon(ctx context.Context) time.Duration {
+	rawDays, _ := c.effectiveRetention(ctx)
+	return dedupeKeyHorizonOf(rawDays)
+}
+
+// rawPartitionGrainDays is the grain `partitions.manage` drops raw payloads on:
+// `ingest_batches` and `ingest_rejections` are DAILY partitions
+// (00005_partitions.sql, `oto_partitions_manage`).
+const rawPartitionGrainDays = 1
+
+// dedupeKeyHorizonOf is the fold itself, kept separate from the settings read so
+// the rule can be asserted as arithmetic rather than through a container.
+//
+// ⛔ THE EXTRA GRAIN IS NOT A SAFETY MARGIN — IT IS THE PARTITION-DROP RULE, and
+// without it the horizon is SHORTER than the payload window it is meant to
+// outlive. `oto_drop_partitions_before` (00005_partitions.sql:146) drops a
+// partition only when its WHOLE range is past the cutoff — `CONTINUE WHEN v_hi >
+// p_cutoff` — so a payload landing at any time on day D lives until D+rawDays+1,
+// not D+rawDays. A key, by contrast, dies exactly at `created_at + horizon`. Take
+// the raw `rawDays` and a batch received at 00:05 on day D and left `partial`
+// (which `Status.Resumable` includes) has its key swept at D+rawDays 00:05 while
+// its payload survives another 23h55m: replaying it from the failed-batch feed in
+// that window appends every event a SECOND time, sends duplicate Slack, and
+// reports success with `written>0`. Covering the grain closes that window to
+// zero, which is exactly what SPEC acceptance criterion 36 asks for.
+func dedupeKeyHorizonOf(rawDays int) time.Duration {
+	horizon := time.Duration(rawDays+rawPartitionGrainDays) * 24 * time.Hour
+	if horizon < alertsdomain.DedupeKeyRetention {
+		return alertsdomain.DedupeKeyRetention
+	}
+	return horizon
+}
+
 // pruneRetention is `retention.prune`: the rows that are NOT reclaimed by
 // dropping a partition.
 //
@@ -350,15 +431,24 @@ func (c *Container) pruneRetention(ctx context.Context, _ *jobs.Job[jobs.Retenti
 	if err != nil {
 		return err
 	}
+	// `alert_event_keys` is the THIRD unpartitioned idempotency sibling, and until
+	// this line it was the one nothing swept — its own `alert_event_keys_prune_idx`
+	// and its own table comment have named a 30-day pruner since 00007, and the
+	// index was therefore an unbounded write cost serving a query nobody had
+	// written (ADR 0024, open defect 1).
+	eventKeys, err := c.Alerts.PruneEventKeys(ctx, c.Clock.Now().Add(-c.dedupeKeyHorizon(ctx)), keySweepLimit)
+	if err != nil {
+		return err
+	}
 	sessions, err := c.Identity.SweepExpiredSessions(ctx, sweepLimit)
 	if err != nil {
 		return err
 	}
 	finalised, disposed := c.sweepDrills(ctx)
-	if dedup > 0 || claims > 0 || sessions > 0 || finalised > 0 || disposed > 0 {
+	if dedup > 0 || claims > 0 || eventKeys > 0 || sessions > 0 || finalised > 0 || disposed > 0 {
 		c.Logger.InfoContext(ctx, "retention.prune",
 			slog.Int64("ingest_dedup", dedup), slog.Int64("idempotency_claims", claims),
-			slog.Int64("sessions", sessions),
+			slog.Int64("alert_event_keys", eventKeys), slog.Int64("sessions", sessions),
 			slog.Int("drills_finalised", finalised), slog.Int("drills_disposed", disposed))
 	}
 	return nil

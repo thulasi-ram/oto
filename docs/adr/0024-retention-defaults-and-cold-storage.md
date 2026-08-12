@@ -34,11 +34,14 @@ Four tables age out, and only four. Everything else in the schema is unpartition
 | `ui_events` | hourly | 24 h (SSE resume buffer, ADR 0010) | same |
 
 Plus three small side tables pruned by row: `ingest_dedup` (10 min), `sessions` (on expiry),
-`enrichment_cache` (on expiry).
+`enrichment_cache` (on expiry). *(`alert_event_keys` is now a fourth — Amendment 1 — and
+`idempotency_claims`, added later, a fifth at 24 hours.)*
 
 **Never reaped, by anything, at any setting:** `alerts`, `alert_occurrences`, `alert_groups`,
 `alert_group_members`, `rule_snapshots`, `notifications`, `notification_deliveries`,
-`channel_threads`, `enrichments`, `silences`, `alert_quality_daily`, `alert_event_keys`.
+`channel_threads`, `enrichments`, `silences`, `alert_quality_daily`, ~~`alert_event_keys`~~
+(⚠️ `alert_event_keys` is now pruned by row — see
+[Amendment 1](#amendment-1--the-alert_event_keys-pruner-exists-and-the-horizon-is-a-floor)).
 
 ### 2. What survives each boundary — the reconstructibility answer
 
@@ -209,10 +212,13 @@ That is a true sentence, which is the only kind worth giving a buyer.
   destroys, in operator language, including that comments and unack notes are unrecoverable.
 - **Two defects surfaced and are NOT fixed here**, because both are separable and neither changes the
   decision:
-  1. **Nothing prunes `alert_event_keys`.** SPEC §D.4 and its own table comment promise 30 days;
+  1. ✅ **CLOSED — see [Amendment 1](#amendment-1--the-alert_event_keys-pruner-exists-and-the-horizon-is-a-floor).**
+     ~~**Nothing prunes `alert_event_keys`.** SPEC §D.4 and its own table comment promise 30 days;
      `pruneRetention` prunes only `ingest_dedup` and `sessions`. The table grows forever. Today this
      makes the 30-day raw default *conservative* rather than wrong — replay is currently safe
-     indefinitely — but the moment the pruner is implemented the coupling above becomes live.
+     indefinitely — but the moment the pruner is implemented the coupling above becomes live.~~ **The
+     pruner is now implemented, so the coupling is live, and Amendment 1 states what that made the
+     horizon: a floor of 30 days that widens to the longest `raw_retention_days` any tenant set.**
   2. **`ingest_rejections` has no read API.** Its table comment calls the per-source rejection feed
      "the whole point of the table" and the SPEC's "we never silently drop" promise rests on it, but
      no route in `openapi.yaml` reads it. A rejection nobody can look at, deleted 30 days later, is a
@@ -265,3 +271,54 @@ tenant's data to do it. Never acceptable for an irreversible operation.
 **Parquet, or S3, in the first export.** Both are the right long-term shape and both add a dependency
 and a failure mode to a feature whose entire value is that it runs before a `DROP TABLE`. A file in a
 directory can be verified by `ls`.
+
+## Amendment 1 — the `alert_event_keys` pruner exists, and the horizon is a floor
+
+Open defect 1 above is closed. `retention.prune` now sweeps `alert_event_keys` alongside
+`ingest_dedup`, `idempotency_claims` and `sessions` — the rows no partition drop can reclaim.
+The index `alert_event_keys_prune_idx (created_at)` had been carried since 00007 for exactly this
+statement and served no other; migration 00043 rewrites the table comment that stated the sweep as
+fact for thirty-six migrations while nothing performed it.
+
+**The horizon is not flatly 30 days, and this is the part that changed the decision above.** The body
+of this ADR reads the coupling in one direction — `raw_retention_days` derives from the key horizon —
+which is right, and incomplete the moment the pruner is real. `raw_retention_days` is a per-org
+setting bounded 1..365, and "longest wins" means the raw partitions of every tenant are kept to the
+widest window any single tenant asked for. A key horizon fixed at 30 days would therefore leave an org
+on 365 days holding replayable payloads for eleven months after the keys that make them replayable
+were deleted, and every replay of one would append the timeline a second time and report success.
+
+So the sweep deletes at the **wider** of `alerts/domain.DedupeKeyRetention` (30 days) and the same
+`Container.effectiveRetention` window the partition dropper already computes — **plus one day of
+partition grain.** That last day is not slack. `oto_drop_partitions_before` drops a DAILY raw partition
+only once its whole range is past `now − rawDays`, so a payload that landed at any hour of day D stays
+readable until D+rawDays+1, while a key dies exactly at `created_at + horizon`. Taking `rawDays`
+straight would kill the key up to 24h before the batch it guards, and a `partial` batch replayed from
+the failed-batch feed inside that window appends its whole timeline a second time and reports success.
+
+The 30 remains the **floor**, and the path that reaches it is the deployment's own
+`OTO_RETENTION_RAW_PAYLOADS`, not the per-org setting: `effectiveRetention` seeds the fold with
+`Config.Retention.RawPayloads` (shipped at 30 days) and only widens it, so an org on
+`raw_retention_days=1` never pulls the horizon down at all. An operator who drops the install-wide raw
+window under 720h must not thereby unclaim the keys of episodes that are still open, whose transitions
+the reconciler re-applies and which nothing else dedupes. Both directions are pinned by
+`TestTheDedupeKeyHorizonIsAFloorThatOnlyWidens`, the grain by
+`TestAKeyOutlivesThePartitionHoldingItsPayload` (which asserts the two jobs' clocks against each other
+rather than restating the arithmetic), and the constants' equality by
+`TestTheShippedRawRetentionIsStillDerivedFromTheKeyHorizon` — prose stating a coupling does not fail
+a build.
+
+**What it costs.** One tick is bounded at 20 000 rows, which is arithmetic rather than taste: this
+ADR's own volume model is ~8 events per firing episode at 10 000 firings a day, every lifecycle
+transition carries a dedupe key, and `retention.prune` is hourly — so the generic 500-row sweep limit
+would delete 12 000 a day against 80 000 written, which is a table that still grows forever with a job
+in front of it saying otherwise. 20 000 an hour is ~6× the modelled write rate: ~480 000 deletions a
+day GROSS, so against the same model's ~80 000 daily arrivals a backlog drains at ~400 000 a day NET,
+while remaining a sub-second statement. That is the number to plan with — an install that has been
+accumulating keys since it shipped holds tens of millions of them, so it converges over **50 to 75
+days**, not over "days" and certainly not in one transaction. The bound is chosen to keep each tick
+cheap, not to make the first drain fast.
+
+**What it does not change.** `alert_event_keys` leaves this ADR's "never reaped" list at §2 and joins
+the row-pruned side tables. Nothing about the event partitions, the raw partitions or the export
+scope moves.

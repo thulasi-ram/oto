@@ -524,6 +524,31 @@ func (s *Service) ScoreFlaps(ctx context.Context, scope db.TenantScope, limit in
 	return res, nil
 }
 
+// PruneEventKeys ages out the C.8 dedupe keys of `alert_event_keys` and reports
+// how many went. It is the alerts half of `retention.prune`.
+//
+// ⛔ THE CALLER OWNS THE HORIZON, and it is not this method's to guess. The floor
+// is `domain.DedupeKeyRetention`, reached only when the DEPLOYMENT's
+// `OTO_RETENTION_RAW_PAYLOADS` is set under 720h — not by any per-org
+// `raw_retention_days`, which `app.effectiveRetention` can only ever widen past the
+// deployment value. Above that floor the sweep widens to the longest
+// `raw_retention_days` any tenant configured, plus the day of partition grain the
+// raw payloads outlive their nominal window by, because a key deleted while its
+// batch is still replayable turns SPEC acceptance criterion 36's replay into a
+// silent no-op — `AppendBatch` finds nothing to write, returns zero, and zero is
+// documented as the idempotency mechanism working. `app.pruneRetention` computes
+// it from the same `effectiveRetention` its sibling `partitions.manage` drops on,
+// so the two windows cannot drift apart.
+//
+// ⚠️ NO TenantScope, and this is the one place in the alerts service where that
+// is right: a per-tenant sweep would need a per-tenant horizon, and the horizon
+// is deliberately the widest one — a key claimed by an org that keeps payloads
+// for a day still guards a timeline the reconciler may re-apply, and that org's
+// raw partitions are on the install-wide window anyway.
+func (s *Service) PruneEventKeys(ctx context.Context, before time.Time, limit int) (int64, error) {
+	return s.events.PruneDedupeKeys(ctx, before, limit)
+}
+
 func errsInvariant(what string) error {
 	return errs.New(errs.KindInternal, "invariant_violated", what)
 }

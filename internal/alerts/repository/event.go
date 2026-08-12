@@ -278,6 +278,79 @@ func (r *EventRepository) claimDedupeKeys(
 	return won, nil
 }
 
+// ---------------------------------------------------------------- the pruner
+
+// pruneDedupeKeysSQL is the only reader of `alert_event_keys_prune_idx
+// (created_at)`, the index 00007 created FOR THIS STATEMENT and for no other — the
+// idempotency probe itself rides the PRIMARY KEY, so until this query existed the
+// index was an unbounded write cost serving nothing. Its INNER SELECT is the half
+// that rides it, and only when the planner can see that the tail past the horizon
+// is a small fraction of the table: measured on PG16 that case is a `Bitmap Index
+// Scan on alert_event_keys_prune_idx`, while a first sweep over a mostly-expired
+// table — or a generic plan, which a long-lived pooled connection may settle on
+// once pgx has prepared this statement — reasonably takes a `Seq Scan` instead.
+// Either is bounded: the LIMIT stops the scan at `batch` matching rows, and on an
+// append-only table heap order tracks `created_at`, so the expired rows are the
+// ones a sequential scan meets first.
+//
+// The inner SELECT is what bounds the tick. A bare `DELETE ... WHERE created_at <
+// $1 LIMIT` is not legal SQL and an unbounded `DELETE ... WHERE created_at < $1`
+// is the outage this shape exists to avoid: the first sweep on an install that has
+// been growing this table since it shipped would otherwise be one statement over
+// tens of millions of rows.
+//
+// ⛔ IT MATCHES ON `ctid`, AND THE OBVIOUS `(org_id, dedupe_key) IN (…)` IS THE
+// TRAP — it makes the tick O(table) while reading as O(batch). The planner does
+// not re-probe the PRIMARY KEY for each returned tuple; measured on PG16 with
+// 400k ANALYZEd rows it takes a `Hash Semi Join` whose outer input is a full `Seq
+// Scan on alert_event_keys`, so every hourly tick reads the whole table however
+// small the batch is — the growing table this sweep exists to bound is the very
+// thing it would then scan. Matching on `ctid` gets the plan the shape implies:
+//
+//	Delete on alert_event_keys
+//	  ->  Nested Loop
+//	        ->  HashAggregate  (the bounded batch)
+//	        ->  Tid Scan on alert_event_keys  (actual rows=1 loops=20000)
+//	              TID Cond: (ctid = "ANY_subquery".ctid)
+//
+// ⚠️ `ctid` IS ONLY SAFE HERE BECAUSE THIS TABLE IS APPEND-ONLY. A row's ctid moves
+// when the row is UPDATEd, and nothing updates `alert_event_keys` — the C.8 write
+// is `INSERT ... ON CONFLICT DO NOTHING` and this sweep is the only DELETE, so a
+// tid captured by the subquery still names the same key when the outer half reaches
+// it (one statement, one snapshot). Should anything ever UPDATE this table, this
+// query has to go back to matching the key.
+const pruneDedupeKeysSQL = `
+DELETE FROM alert_event_keys
+ WHERE ctid IN (
+   SELECT ctid FROM alert_event_keys WHERE created_at < $1 LIMIT $2)`
+
+// PruneDedupeKeys deletes claimed C.8 keys past the horizon, in bounded batches,
+// and returns how many went.
+//
+// ⚠️ UNSCOPED BY DESIGN, exactly like `SessionRepository.DeleteExpired` and
+// `DedupRepository.Prune`: it is a maintenance sweep across every tenant, run by
+// `retention.prune` and reachable from no request. The horizon is passed in
+// rather than written as `now() - interval '30 days'` so the clock stays
+// injectable — a sweeper whose window only exists in SQL is a sweeper no test can
+// pin.
+//
+// ⚠️ THE COLUMN IT KEYS ON HAS TWO WRITERS WITH TWO CLOCKS (00034 says so): this
+// repository lets the DEFAULT stamp `created_at` from the database, while
+// `notification/repository/events.go` names it from the injected clock. Both are
+// wall clocks and the horizon is thirty days, so skew between them is immaterial
+// here; it is recorded because this sweep is now the reader that makes the column
+// mean something.
+func (r *EventRepository) PruneDedupeKeys(ctx context.Context, before time.Time, batch int) (int64, error) {
+	if batch <= 0 {
+		batch = 1000
+	}
+	tag, err := r.db(ctx).Exec(ctx, pruneDedupeKeysSQL, before.UTC(), batch)
+	if err != nil {
+		return 0, mapErr(err, "prune alert event dedupe keys")
+	}
+	return tag.RowsAffected(), nil
+}
+
 func strPtr(s string) *string {
 	if s == "" {
 		return nil

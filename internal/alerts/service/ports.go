@@ -84,6 +84,13 @@ type OccurrenceRepository interface {
 // EventRepository is APPEND ONLY. There is no Update and there is no Delete —
 // alert_events is the truth and everything else is a projection. Events age out
 // by dropping a partition, never by a statement.
+//
+// ⚠️ `PruneDedupeKeys` IS NOT AN EXCEPTION TO THAT, and reading it as one would
+// be reading it as the opposite of what it is. It deletes from
+// `alert_event_keys`, the unpartitioned SIDE TABLE that holds the C.8 idempotency
+// tokens — not from `alert_events`, which it cannot reach. The side table has no
+// partition to age out with, so a statement is the only way it ages out at all,
+// and its own DDL comment has promised that statement since 00007.
 type EventRepository interface {
 	// Append returns written=false when the C.8 dedupe key had already been
 	// recorded, which is the idempotency mechanism working, not an error.
@@ -94,6 +101,10 @@ type EventRepository interface {
 	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
 	ListByOccurrence(ctx context.Context, s db.TenantScope, occID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
 	ListByGroup(ctx context.Context, s db.TenantScope, groupID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
+	// PruneDedupeKeys ages out `alert_event_keys` and takes no TenantScope: it is
+	// the maintenance sweep `retention.prune` runs across every tenant, and it is
+	// reachable from no request. `batch` bounds one tick.
+	PruneDedupeKeys(ctx context.Context, before time.Time, batch int) (int64, error)
 }
 
 // SnoozeRepository owns `alert_snoozes` (§B.8, §F.5.2).
