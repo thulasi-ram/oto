@@ -129,6 +129,20 @@ func plan() []probe {
 			method: http.MethodGet, tmpl: "/api/v1/sources/{id}/health", url: "/api/v1/sources/{{newsource}}/health",
 			want: http.StatusOK,
 		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/sources/{id}/rejections",
+			url:  "/api/v1/sources/{{newsource}}/rejections?reason=undecodable",
+			want: http.StatusOK,
+			why: "the per-source rejection feed rides ingest_rejections_source_idx across every " +
+				"retained daily partition; an empty page over a partitioned table is exactly the " +
+				"query a unit test cannot exercise",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/sources/{id}/failed-batches",
+			url:  "/api/v1/sources/{{newsource}}/failed-batches",
+			want: http.StatusOK,
+			why:  "the same, for the batches that were accepted and never processed",
+		},
 
 		/* -------------------------------------------------------------- ingest */
 		// Runs before rotate-token, because rotating invalidates the credential

@@ -200,6 +200,119 @@ func (r *BatchRepository) ResolveOrg(ctx context.Context, batchID uuid.UUID, rec
 	return orgID, nil
 }
 
+// ---------------------------------------------------------------------- reads
+
+// batchFailureColumns is the feed's projection. `payload` and `checksum` are NOT
+// in it: the payload is up to 8 MiB per row and a page of fifty would be four
+// hundred megabytes to render a table of error strings.
+const batchFailureColumns = `
+       id, source_id, mode, received_at, status, processed_at, coalesce(error, ''),
+       alert_count, truncated_alerts`
+
+// listFailedBatchesSQL is the FIRST page. See ListFailed for the partition note.
+const listFailedBatchesSQL = `
+SELECT` + batchFailureColumns + `
+  FROM ingest_batches
+ WHERE org_id = $1 AND source_id = $2 AND status = ANY($3::text[])
+ ORDER BY received_at DESC, id DESC
+ LIMIT $4`
+
+// listFailedBatchesFromSQL is every subsequent page. The `received_at <= $5` is
+// redundant against the row comparison below it and is what makes the partition
+// pruning happen — see listRejectionsFromSQL, which carries the full argument.
+const listFailedBatchesFromSQL = `
+SELECT` + batchFailureColumns + `
+  FROM ingest_batches
+ WHERE org_id = $1 AND source_id = $2 AND status = ANY($3::text[])
+   AND received_at <= $5
+   AND (received_at, id) < ($5, $6)
+ ORDER BY received_at DESC, id DESC
+ LIMIT $4`
+
+// ListFailed is the failed-batch feed: the batches whose alerts are on disk and
+// never reached the product, newest first.
+//
+// It is the batch-level half of the same question `RejectionRepository.List`
+// answers per alert. A rejection says "oto refused this element and here is why";
+// this says "oto accepted the whole body and then could not process it" — and
+// without it, a 202 that never became an alert is invisible outside `psql`.
+//
+// It rides `ingest_batches_source_idx (org_id, source_id, received_at DESC)`
+// with `status` as a filter over that range. The other index on this table,
+// `ingest_batches_status_idx`, leads with `status` and carries NO `org_id`: it
+// exists for the worker sweeping unfinished work across every tenant, and a
+// tenant-scoped screen must not ride an index that cannot express its scope.
+//
+// ⚠️ Same partition scope as the rejection feed: the first page has no bound on
+// `received_at` and therefore merges every retained daily partition; every page
+// after it prunes.
+func (r *BatchRepository) ListFailed(
+	ctx context.Context, s db.TenantScope, f domain.BatchFailureFilter, p db.Keyset,
+) ([]domain.BatchFailure, db.Cursor, error) {
+	if err := requireScope(s); err != nil {
+		return nil, db.Cursor{}, err
+	}
+	if f.SourceID == uuid.Nil {
+		return nil, db.Cursor{}, errs.New(errs.KindInternal, "batch_source_required",
+			"a failed-batch feed is about one source")
+	}
+
+	statuses := make([]string, 0, 2)
+	for _, st := range f.Statuses {
+		if !st.Troubled() {
+			// `pending` and `processed` are not failures, and a caller asking for one
+			// here is asking the wrong question rather than asking for nothing.
+			return nil, db.Cursor{}, errs.Newf(errs.KindInternal, "ingest_batches_state_ck",
+				"%q is not a status the failed-batch feed lists", st)
+		}
+		statuses = append(statuses, st.String())
+	}
+	if len(statuses) == 0 {
+		statuses = []string{domain.StatusFailed.String(), domain.StatusPartial.String()}
+	}
+
+	limit := clampLimit(p.Limit)
+	sql, args := listFailedBatchesSQL, []any{s.OrgID(), f.SourceID, statuses, limit + 1}
+	if !p.Cursor.IsZero() {
+		sql = listFailedBatchesFromSQL
+		args = append(args, p.Cursor.SortKey.UTC(), p.Cursor.ID)
+	}
+
+	rows, err := r.db(ctx).Query(ctx, sql, args...)
+	if err != nil {
+		return nil, db.Cursor{}, mapErr(err, "list failed ingest batches")
+	}
+	defer rows.Close()
+
+	collected := make([]domain.BatchFailure, 0, limit+1)
+	for rows.Next() {
+		var (
+			b                      domain.BatchFailure
+			mode, status           string
+			alertCount, truncCount int32
+		)
+		if err := rows.Scan(&b.ID, &b.SourceID, &mode, &b.ReceivedAt, &status,
+			&b.ProcessedAt, &b.Error, &alertCount, &truncCount); err != nil {
+			return nil, db.Cursor{}, mapErr(err, "scan failed ingest batch")
+		}
+		b.Mode = domain.Mode(mode)
+		b.Status = domain.Status(status)
+		b.AlertCount = int(alertCount)
+		b.TruncatedAlerts = int(truncCount)
+		collected = append(collected, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, db.Cursor{}, mapErr(err, "read failed ingest batches")
+	}
+
+	page, hasMore := pageOf(collected, limit)
+	if len(page) == 0 {
+		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
+	}
+	last := page[len(page)-1]
+	return page, nextCursor(last.ReceivedAt, last.ID, p.Cursor.Hash, hasMore), nil
+}
+
 func deref(p *string) string {
 	if p == nil {
 		return ""

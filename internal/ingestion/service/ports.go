@@ -36,6 +36,13 @@ type BatchRepository interface {
 	MarkProcessed(ctx context.Context, s db.TenantScope, id uuid.UUID, receivedAt time.Time,
 		status domain.Status, at time.Time, failure string) error
 
+	// ListFailed is the failed-batch feed, newest first, keyset-paginated. It is
+	// the only READ here that is not addressed by primary key, and it exists so
+	// that a batch which was accepted and never processed is visible in the
+	// product rather than only in `psql`.
+	ListFailed(ctx context.Context, s db.TenantScope, f domain.BatchFailureFilter,
+		p db.Keyset) ([]domain.BatchFailure, db.Cursor, error)
+
 	// ⚠️ ResolveOrg is the ONE method here without a TenantScope, and the reason is
 	// structural rather than lazy: `IngestProcessBatchArgs` carries `{batch_id,
 	// received_at}` and no org (SPEC §G.3), so the org has to be discovered before
@@ -70,6 +77,15 @@ type DedupRepository interface {
 type RejectionRepository interface {
 	Record(ctx context.Context, s db.TenantScope, r domain.Rejection) error
 	RecordBatch(ctx context.Context, s db.TenantScope, r []domain.Rejection) error
+
+	// List is THE PER-SOURCE REJECTION FEED, newest first, keyset-paginated —
+	// the screen the table was built for, riding
+	// `ingest_rejections_source_idx (org_id, source_id, received_at DESC)`. It
+	// carries the rejected label set out of `raw` alongside the reason, because
+	// "something was refused" is a metric and "THIS alert was refused" is the
+	// answer an operator came for.
+	List(ctx context.Context, s db.TenantScope, f domain.RejectionFilter,
+		p db.Keyset) ([]domain.RejectionEntry, db.Cursor, error)
 }
 
 // SourceConfigs supplies the five per-source facts the ingest path needs.

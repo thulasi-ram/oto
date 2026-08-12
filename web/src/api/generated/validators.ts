@@ -126,6 +126,12 @@ export const SourceKindSchema = v.picklist(["alertmanager", "grafana"]);
 
 export const SourceHealthStatusSchema = v.picklist(["healthy", "degraded", "unreachable", "unknown"]);
 
+export const RejectionReasonSchema = v.picklist(["too_many_labels", "label_value_too_large", "label_name_too_large", "labelset_too_large", "too_many_annotations", "annotation_too_large", "annotation_unstorable", "missing_alertname", "invalid_label_name", "invalid_label_value", "timestamp_out_of_window", "too_many_alerts", "body_too_large", "undecodable", "unknown_source"]);
+
+export const FailedBatchStatusSchema = v.picklist(["failed", "partial"]);
+
+export const IngestBatchModeSchema = v.picklist(["push", "reconcile", "synthetic"]);
+
 export const RuleOriginSchema = v.picklist(["prometheus_api", "generator_url", "unavailable"]);
 
 export const MatchConfidenceSchema = v.picklist(["exact", "probable", "ambiguous", "none"]);
@@ -1246,6 +1252,42 @@ export const ReconcileResultDTOSchema = v.looseObject({
     v.string(),
     v.maxLength(2000),
   ))),
+});
+
+export const RejectionDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "source_id": UuidSchema,
+  "batch_id": v.exactOptional(v.nullable(UuidSchema)),
+  "received_at": TimestampSchema,
+  "reason": RejectionReasonSchema,
+  "detail": v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  ),
+  "labels": v.record(v.string(), v.string()),
+});
+
+export const FailedBatchDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "source_id": UuidSchema,
+  "mode": IngestBatchModeSchema,
+  "received_at": TimestampSchema,
+  "status": FailedBatchStatusSchema,
+  "processed_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "error": v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  ),
+  "alert_count": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "truncated_alerts": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
 });
 
 export const ChannelTypeDTOSchema = v.looseObject({
@@ -2729,6 +2771,18 @@ export const SourceHealthResponseSchema = v.looseObject({
 
 export const ReconcileResultResponseSchema = v.looseObject({
   "data": ReconcileResultDTOSchema,
+  "meta": MetaSchema,
+});
+
+export const RejectionListResponseSchema = v.looseObject({
+  "data": v.array(RejectionDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const FailedBatchListResponseSchema = v.looseObject({
+  "data": v.array(FailedBatchDTOSchema),
+  "page": PageInfoSchema,
   "meta": MetaSchema,
 });
 

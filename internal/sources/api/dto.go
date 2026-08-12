@@ -363,6 +363,67 @@ type ReconcileResultDTO struct {
 	Error *string `json:"error"`
 }
 
+// RejectionDTO is one element oto refused to normalise, kept so that nothing
+// disappears without a trace (§C.9.1).
+//
+// ⛔ THERE IS NO `raw` FIELD AND THERE MUST NEVER BE ONE. The write side keeps
+// the whole evidence document; this list answers the one question an operator is
+// asking — WHICH ALERT was refused — and that is the label set. Shipping every
+// `raw` document would ship a batch's worth of evidence to render a table of
+// reasons.
+type RejectionDTO struct {
+	ID       uuid.UUID `json:"id"`
+	SourceID uuid.UUID `json:"source_id"`
+	// BatchID is null when no batch row exists: an undecodable body, a body over
+	// the size cap, or a batch for a source oto cannot serve.
+	BatchID    *uuid.UUID `json:"batch_id"`
+	ReceivedAt time.Time  `json:"received_at"`
+	Reason     string     `json:"reason"`
+	// Detail is the human-readable specifics: which label exceeded which cap. It
+	// is written AFTER redaction, so it never carries a secret.
+	Detail string `json:"detail"`
+	// Labels is the rejected alert's label set as it was stored — already
+	// redacted, so a matched value reads `[redacted]` here because it reads
+	// `[redacted]` on disk.
+	//
+	// ⚠️ It is deliberately NOT a `LabelMap` on the wire. This is the set oto
+	// REFUSED, so it is exactly the set that may break LabelMap's bounds: a
+	// `too_many_labels` rejection carries more than 64 entries and a
+	// `label_value_too_large` one carries a value over 4096 bytes. Bounding the
+	// evidence by the rule it violated would make the evidence unrenderable.
+	//
+	// Empty, never nil: the rejections that name no alert — an undecodable body,
+	// an unknown source, a truncated batch — have no label set to show, and an
+	// absent map would read as "unknown" where "there is no alert here" is the
+	// truth.
+	Labels map[string]string `json:"labels"`
+}
+
+// FailedBatchDTO is one batch whose alerts are durably on disk and never reached
+// the product.
+//
+// ⛔ NO `payload`. The column holds up to 8 MiB of redacted body per row, and a
+// page of fifty would be four hundred megabytes to render a table of error
+// strings.
+type FailedBatchDTO struct {
+	ID         uuid.UUID `json:"id"`
+	SourceID   uuid.UUID `json:"source_id"`
+	Mode       string    `json:"mode"`
+	ReceivedAt time.Time `json:"received_at"`
+	// Status is `failed` or `partial` and nothing else. `pending` is excluded on
+	// purpose: every accepted batch passes through it, so listing it would drown
+	// the answer in the normal case.
+	Status      string     `json:"status"`
+	ProcessedAt *time.Time `json:"processed_at"`
+	// Error is why it stopped. Always set for `failed`; usually empty for
+	// `partial`, which stopped by dying rather than by deciding.
+	Error string `json:"error"`
+	// AlertCount is how many alerts are sitting in that payload unprocessed,
+	// which is the number that says what the failure cost.
+	AlertCount      int32 `json:"alert_count"`
+	TruncatedAlerts int32 `json:"truncated_alerts"`
+}
+
 // ----------------------------------------------------------------- requests
 
 // CredentialInputDTO is secret material for an upstream.

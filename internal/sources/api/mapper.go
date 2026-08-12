@@ -333,6 +333,40 @@ func reconcileDTO(r domain.ReconcileResult) ReconcileResultDTO {
 	return out
 }
 
+// rejectionDTO maps one refused element onto the wire.
+//
+// ⛔ THE LABEL MAP IS NEVER NIL. `{}` and `null` mean different things to the
+// screen: the empty set is the honest answer for a rejection with no alert to
+// name — an undecodable body, an unknown source, a truncated batch — and a
+// `null` would read as "we do not know", which is the one thing this feed is
+// never allowed to say.
+func rejectionDTO(e RejectionEntry) RejectionDTO {
+	return RejectionDTO{
+		ID:         e.ID,
+		SourceID:   e.SourceID,
+		BatchID:    e.BatchID,
+		ReceivedAt: e.ReceivedAt.UTC(),
+		Reason:     e.Reason,
+		Detail:     e.Detail,
+		Labels:     nonNilMap(e.Labels),
+	}
+}
+
+// failedBatchDTO maps one unprocessed batch onto the wire.
+func failedBatchDTO(b BatchFailure) FailedBatchDTO {
+	return FailedBatchDTO{
+		ID:              b.ID,
+		SourceID:        b.SourceID,
+		Mode:            b.Mode,
+		ReceivedAt:      b.ReceivedAt.UTC(),
+		Status:          b.Status,
+		ProcessedAt:     utcPtr(b.ProcessedAt),
+		Error:           b.Error,
+		AlertCount:      int32(b.AlertCount),      //nolint:gosec // an alert count in one batch
+		TruncatedAlerts: int32(b.TruncatedAlerts), //nolint:gosec // an alert count in one batch
+	}
+}
+
 // ------------------------------------------------------------- request → domain
 
 // toDraft maps a create request onto the domain command.

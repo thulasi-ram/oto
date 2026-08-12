@@ -59,6 +59,11 @@ export type ReminderMentionSeverity = S["ReminderMentionSeverity"];
 export type ChannelHealthStatus = S["ChannelHealthStatus"];
 export type SourceKind = S["SourceKind"];
 export type SourceHealthStatus = S["SourceHealthStatus"];
+/** Why oto refused one element. Closed, and the only vocabulary the feed may use. */
+export type RejectionReason = S["RejectionReason"];
+/** `failed` (it stopped by deciding) or `partial` (it stopped by dying). */
+export type FailedBatchStatus = S["FailedBatchStatus"];
+export type IngestBatchMode = S["IngestBatchMode"];
 export type RuleOrigin = S["RuleOrigin"];
 export type MatchConfidence = S["MatchConfidence"];
 export type EnrichmentStatus = S["EnrichmentStatus"];
@@ -141,6 +146,18 @@ export type ReceiverBasis = S["ReceiverBasis"];
  */
 export type TimingProvenance = S["TimingProvenance"];
 export type SourceTest = S["SourceTestDTO"];
+/**
+ * One element oto refused, kept so that nothing disappears without a trace.
+ *
+ * `labels` is deliberately **not** a `LabelMap`: it is the set oto refused, so it
+ * is precisely the one that may break `LabelMap`'s bounds — a `too_many_labels`
+ * rejection carries more than 64 entries. It is stored already redacted, so a
+ * value reading `[redacted]` here reads `[redacted]` on disk; there is no
+ * plaintext behind it to ask for.
+ */
+export type Rejection = S["RejectionDTO"];
+/** One batch whose alerts are durably on disk and never reached the product. */
+export type FailedBatch = S["FailedBatchDTO"];
 /**
  * One delivery drill: a synthetic alert oto pushed through the REAL pipeline,
  * with a per-stage verdict. `failed_stage` is the field the screen exists for —
@@ -241,6 +258,12 @@ export type NotificationListQuery = NonNullable<
 export type DeliveryListQuery = NonNullable<operations["listDeliveries"]["parameters"]["query"]>;
 export type SilenceListQuery = NonNullable<operations["listSilences"]["parameters"]["query"]>;
 export type LabelValueQuery = NonNullable<operations["listLabelValues"]["parameters"]["query"]>;
+export type RejectionListQuery = NonNullable<
+  operations["listSourceRejections"]["parameters"]["query"]
+>;
+export type FailedBatchListQuery = NonNullable<
+  operations["listSourceFailedBatches"]["parameters"]["query"]
+>;
 export type StreamQuery = NonNullable<operations["streamEvents"]["parameters"]["query"]>;
 
 export type { components, operations };

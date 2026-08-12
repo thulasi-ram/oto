@@ -855,6 +855,11 @@ func (c *Container) buildRouters(
 			// same pass has already recorded the failure in `source_health`, where
 			// three of them block the reaper (§B.4).
 			Reconcile: c.Reconciler,
+			// `GET /sources/{id}/rejections` and `/failed-batches`: the read half
+			// of ingestion, which was written from the first migration and could
+			// not be read back from anywhere but `psql`. It is the SAME
+			// `ingestion/service.Service` the webhook handler writes through.
+			Feeds: ingestFeeds{svc: c.Ingestion.Service},
 			// One transaction for the source row and its ingest credential. They
 			// used to be independent commits, and a source without its token can
 			// never receive a webhook.

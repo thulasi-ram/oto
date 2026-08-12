@@ -2527,6 +2527,124 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/sources/{id}/rejections:
+    get:
+      operationId: listSourceRejections
+      summary: Why this source's alerts never appeared
+      tags: [Sources]
+      description: |
+        Every element oto refused to normalise, newest first, with the reason it was refused and the
+        label set it carried.
+
+        **This is the answer to "my alert never showed up".** oto never silently drops: an alert that
+        breaks a bound is recorded here with a reason and a metric, and a `202` for a partially bad
+        payload is only honest because this record exists. Before this endpoint the record was
+        reachable from `psql` and nowhere else.
+
+        Not every rejection names an alert. A body oto could not decode, a body over the 8 MiB cap and
+        a batch for an unknown source are recorded against the source with no element to point at, and
+        `too_many_alerts` is about the payload rather than about any one alert in it. Those rows carry
+        an **empty** `labels`, and `reason` plus `detail` are the whole answer.
+
+        Records age out with `raw_retention_days` (14 by default). A rejection older than that is gone,
+        which is a retention decision rather than a filter.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - name: reason
+          in: query
+          description: Comma-separated rejection reasons. Absent means every reason.
+          schema:
+            type: array
+            maxItems: 15
+            uniqueItems: true
+            items:
+              $ref: '#/components/schemas/RejectionReason'
+          style: form
+          explode: false
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of rejections, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/sources/{id}/failed-batches:
+    get:
+      operationId: listSourceFailedBatches
+      summary: Batches this source delivered that never became alerts
+      tags: [Sources]
+      description: |
+        The batch-level half of the same question the rejection feed answers per alert. A rejection
+        says oto refused one element; this says oto took the whole body, answered `202`, and then could
+        not turn it into alerts.
+
+        Only the two troubled states are listable. `failed` gave up and carries an `error`; `partial`
+        stopped mid-chunking, which is the state a batch is left in when a worker dies between chunks,
+        and usually carries no error because it stopped by dying rather than by deciding. `pending` is
+        excluded on purpose — every accepted batch passes through it, so listing it would drown the
+        answer in the normal case.
+
+        `alert_count` is how many alerts are sitting in that payload unprocessed, which is what the
+        failure actually cost. The payload itself is deliberately **not** on this list: it is up to
+        8 MiB per row.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - name: status
+          in: query
+          description: Comma-separated batch statuses. Absent means both.
+          schema:
+            type: array
+            maxItems: 2
+            uniqueItems: true
+            items:
+              $ref: '#/components/schemas/FailedBatchStatus'
+          style: form
+          explode: false
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of failed batches, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FailedBatchListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/clusters:
     get:
       operationId: listClusters
@@ -5459,6 +5577,54 @@ components:
         current state** and can never be expired — losing sight of an alert is not the alert resolving.
       examples: [healthy]
 
+    RejectionReason:
+      type: string
+      enum:
+        - too_many_labels
+        - label_value_too_large
+        - label_name_too_large
+        - labelset_too_large
+        - too_many_annotations
+        - annotation_too_large
+        - annotation_unstorable
+        - missing_alertname
+        - invalid_label_name
+        - invalid_label_value
+        - timestamp_out_of_window
+        - too_many_alerts
+        - body_too_large
+        - undecodable
+        - unknown_source
+      description: |
+        Why oto refused to normalise an element. The same closed set as the `ingest_rejections.reason`
+        CHECK and the `reason` label of `oto_ingest_rejected_total`; adding a member takes a migration.
+
+        Three of them do **not** mean the alert was dropped. `too_many_annotations` drops the excess
+        and keeps the alert, `annotation_too_large` truncates the value and keeps it, and
+        `timestamp_out_of_window` may clamp the timestamp rather than refuse the alert. The row is
+        recorded either way, because a value oto quietly changed is a fact an operator is owed.
+
+        `undecodable` means these bytes were not a webhook payload at all. It is deliberately never
+        used for a payload that decoded and then failed a bound — `invalid_label_value` exists because
+        that fallback once sent operators hunting for malformed JSON that was never there.
+      examples: [label_value_too_large]
+
+    FailedBatchStatus:
+      type: string
+      enum: [failed, partial]
+      description: |
+        The two states in which a batch's alerts are on disk and not in the product. `failed` gave up
+        and carries an `error`; `partial` is mid-chunking and is resumable in principle.
+      examples: [failed]
+
+    IngestBatchMode:
+      type: string
+      enum: [push, reconcile, synthetic]
+      description: |
+        Which code path accepted the batch. It appears in no request body, so no upstream can forge
+        one — which is why `synthetic`, the delivery-drill mark, is a mode rather than a label.
+      examples: [push]
+
     RuleOrigin:
       type: string
       enum: [prometheus_api, generator_url, unavailable]
@@ -7842,6 +8008,98 @@ components:
         The outcome of one forced reconcile pass. The reconciler is **not** a second ingestion path: it
         produces observations that feed the same state machine, and there is exactly one write path into
         alerts.
+
+    RejectionDTO:
+      type: object
+      required: [id, source_id, received_at, reason, detail, labels]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        source_id:
+          $ref: '#/components/schemas/Uuid'
+        batch_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: |
+            The batch this element came from. `null` when no batch row exists — an undecodable body, a
+            body over the size cap, or a batch for a source oto cannot serve.
+        received_at:
+          $ref: '#/components/schemas/Timestamp'
+        reason:
+          $ref: '#/components/schemas/RejectionReason'
+        detail:
+          type: string
+          maxLength: 2000
+          description: |
+            Human-readable specifics: which label exceeded which cap. Written **after** redaction, so
+            it never carries a secret. Empty when the reason is the whole story.
+          examples: ['label value for `password` is 5121 bytes, over the 4096 cap']
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            The rejected alert's label set, exactly as it was stored — that is, already redacted per
+            the source's `redact_labels`, so a matched value reads `[redacted]` here because it reads
+            `[redacted]` on disk. There is no plaintext behind this field to ask for.
+
+            Deliberately **not** a `LabelMap`: this is the set oto refused, so it is precisely the one
+            that may break `LabelMap`'s bounds — a `too_many_labels` rejection carries more than 64
+            entries, and `label_value_too_large` carries a value over 4096 bytes. Bounding the evidence
+            by the rule it violated would make the evidence unrenderable.
+
+            **Empty, never absent**, for the rejections that name no alert.
+          examples:
+            - alertname: HighErrorRate
+              cluster: prod-eu
+              severity: critical
+      description: |
+        One element oto refused to normalise, kept so that nothing disappears without a trace.
+
+    FailedBatchDTO:
+      type: object
+      required: [id, source_id, mode, received_at, status, error, alert_count, truncated_alerts]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        source_id:
+          $ref: '#/components/schemas/Uuid'
+        mode:
+          $ref: '#/components/schemas/IngestBatchMode'
+        received_at:
+          $ref: '#/components/schemas/Timestamp'
+        status:
+          $ref: '#/components/schemas/FailedBatchStatus'
+        processed_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: When the batch stopped.
+        error:
+          type: string
+          maxLength: 2000
+          description: |
+            Why it stopped. Always present for `failed`, and usually empty for `partial`, which stopped
+            by dying rather than by deciding.
+          examples: ['alert upsert failed: context deadline exceeded']
+        alert_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: How many alerts are sitting in that payload unprocessed — what the failure cost.
+          examples: [37]
+        truncated_alerts:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How many alerts were dropped from the payload at accept time for exceeding the per-batch
+            cap. Each one is also a `too_many_alerts` rejection.
+          examples: [0]
+      description: |
+        One batch whose alerts are durably on disk and never reached the product. The `payload` column
+        is deliberately absent: it holds up to 8 MiB per row.
 
     # ---------------------------------------------------------------------------------------------
     # Channels
@@ -10612,6 +10870,34 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/ReconcileResultDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    RejectionListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RejectionDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    FailedBatchListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/FailedBatchDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
         meta:
           $ref: '#/components/schemas/Meta'
 

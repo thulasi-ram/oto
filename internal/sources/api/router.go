@@ -40,6 +40,10 @@ type Options struct {
 	Creds     CredentialWriter
 	Tokens    IngestTokenIssuer
 	Reconcile Reconciler
+	// Feeds is the ingestion module's read half: the per-source rejection feed
+	// and the failed-batch list. Nil means this deployment cannot answer "why did
+	// my alert never appear", which is a declared 503 rather than a panic.
+	Feeds IngestFeeds
 	// Tx makes a source and its ingest token one commit. A nil Tx degrades to
 	// two commits, which is what this endpoint used to do and what left orphan
 	// sources behind; production always wires it.
@@ -69,6 +73,7 @@ type Router struct {
 	creds       CredentialWriter
 	tokens      IngestTokenIssuer
 	reconcile   Reconciler
+	feeds       IngestFeeds
 	tx          UnitOfWork
 	guard       AddressGuard
 	allowNoTLSV bool
@@ -89,6 +94,7 @@ func NewRouter(o Options) *Router {
 		creds:       o.Creds,
 		tokens:      o.Tokens,
 		reconcile:   o.Reconcile,
+		feeds:       o.Feeds,
 		tx:          o.Tx,
 		guard:       o.Guard,
 		allowNoTLSV: o.AllowInsecureTLS,
@@ -120,6 +126,13 @@ func (rt *Router) Register(r chi.Router) {
 			r.Post("/rotate-token", rt.rotateSourceIngestToken)
 			r.Post("/reconcile", rt.reconcileSource)
 			r.Get("/health", rt.getSourceHealth)
+			// The two ingestion feeds. They hang off `/sources/{id}` rather than
+			// off the ingest surface because the ingest router is mounted with NO
+			// middleware at all — no session, no body cap, no timeout — so a UI
+			// read cannot live there, and because the question they answer is
+			// asked while looking at the source.
+			r.Get("/rejections", rt.listSourceRejections)
+			r.Get("/failed-batches", rt.listSourceFailedBatches)
 		})
 	})
 

@@ -86,6 +86,16 @@ func (s Status) String() string { return string(s) }
 // the ones the "no longer pending" rule is about.
 func (s Status) Resumable() bool { return s == StatusPending || s == StatusPartial }
 
+// Troubled reports whether this status is one an operator has to look at.
+//
+// `failed` gave up and `partial` is mid-chunking — resumable in principle, and
+// the state a batch is left in when a worker dies between chunks. Those two are
+// what the failed-batch feed lists, because they are the two states in which
+// alerts are on disk and not in the product. `pending` is excluded on purpose:
+// every accepted batch passes through it, so listing it would drown the answer
+// in the normal case.
+func (s Status) Troubled() bool { return s == StatusFailed || s == StatusPartial }
+
 // TopStatus is the batch-level `status` field of the webhook envelope
 // (ingest_batches_status_ck). It is `resolved` only when EVERY alert in the group
 // is resolved; a single payload may mix both, and the per-alert status is what
@@ -172,6 +182,44 @@ type NewBatchParams struct {
 	AlertCount         int
 	TruncatedAlerts    int
 	Payload            json.RawMessage
+}
+
+// BatchFailureFilter narrows the failed-batch feed.
+//
+// SourceID is REQUIRED for the same reason RejectionFilter's is:
+// `ingest_batches_source_idx` is `(org_id, source_id, received_at DESC)`. The
+// other index over this table, `ingest_batches_status_idx`, is deliberately not
+// org-scoped — it serves the worker picking up unfinished work across every
+// tenant — so it is not the one a tenant-scoped screen may ride.
+type BatchFailureFilter struct {
+	SourceID uuid.UUID
+	// Statuses is an OR over the TROUBLED statuses only. Empty means both, which
+	// is the question the screen is asking.
+	Statuses []Status
+}
+
+// BatchFailure is one row of that feed: a batch whose alerts are on disk and not
+// in the product, with the reason it stopped.
+//
+// It is a READ model and it deliberately does NOT carry `payload`. The column
+// holds up to 8 MiB of redacted body per row, and a page of fifty is four
+// hundred megabytes to render a table of error strings.
+type BatchFailure struct {
+	ID         uuid.UUID
+	SourceID   uuid.UUID
+	Mode       Mode
+	ReceivedAt time.Time
+	Status     Status
+	// ProcessedAt is when the batch stopped. Never nil for a troubled batch:
+	// ingest_batches_proc_ck ties every non-pending status to a timestamp.
+	ProcessedAt *time.Time
+	// Error is why it stopped. Required for `failed` (ingest_batches_err_ck) and
+	// usually empty for `partial`, which stopped by dying rather than by deciding.
+	Error string
+	// AlertCount is how many alerts are sitting in that payload unprocessed, which
+	// is the number that says how much this failure cost.
+	AlertCount      int
+	TruncatedAlerts int
 }
 
 // DedupHit is the outcome of the `ingest_dedup` insert (§C.5).

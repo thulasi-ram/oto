@@ -3,10 +3,13 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
@@ -52,4 +55,48 @@ func constraintCode(pg *pgconn.PgError, fallback string) string {
 		return pg.ConstraintName
 	}
 	return fallback
+}
+
+// ------------------------------------------------------------- keyset helpers
+//
+// The same three helpers `alerts/repository` has, for the same reason: this
+// package cannot import that one (two repositories never see each other), and
+// re-deriving the limit+1 trick per query is how one List quietly stops
+// reporting HasMore.
+
+// clampLimit applies the §E.1 page bounds, which live in `platform/db` because
+// they bound `db.Keyset.Limit`. Every List here calls it: a List that forgets is
+// a List that asks Postgres for an unbounded scan.
+func clampLimit(n int) int { return db.ClampLimit(n) }
+
+// pageOf trims a slice fetched with limit+1 rows down to the page and reports
+// whether a further page exists. The extra row is what makes HasMore honest
+// without a COUNT — and there is no COUNT to be had here anyway, because these
+// are partitioned tables and counting one means touching every partition.
+func pageOf[T any](rows []T, limit int) ([]T, bool) {
+	if len(rows) > limit {
+		return rows[:limit], true
+	}
+	return rows, false
+}
+
+// nextCursor mints the cursor for the page after the one just returned. The hash
+// travels through untouched: `platform/httpx` binds it to the filter and rejects
+// a cursor presented against a different one (§E.1), and a repository is not the
+// layer that knows what the filter looked like on the wire.
+func nextCursor(sortKey time.Time, id uuid.UUID, hash string, hasMore bool) db.Cursor {
+	if !hasMore {
+		return db.Cursor{Hash: hash}
+	}
+	return db.Cursor{SortKey: sortKey.UTC(), ID: id, Hash: hash, HasMore: true}
+}
+
+// requireScope refuses a scope that names no tenant. A missing `org_id`
+// predicate is a data leak, so it is refused here rather than defended against
+// downstream.
+func requireScope(s db.TenantScope) error {
+	if !s.Valid() {
+		return errs.Internal("missing_tenant_scope", db.ErrNoTenant)
+	}
+	return nil
 }

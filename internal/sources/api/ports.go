@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -110,6 +111,78 @@ type IngestTokenIssuer interface {
 // a URL to paste and it answers 401 forever.
 type UnitOfWork interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// IngestFeeds is the READ half of ingestion, as the source screen needs it: why
+// this source's alerts never appeared.
+//
+// ⭐ IT IS EXPRESSED IN PLAIN TYPES, and that is not laziness. `sources` may not
+// import `ingestion/domain` (depguard, sources-must-not-reach-into-other-domains)
+// — only `ingestion/service` — so the reasons and statuses travel as strings and
+// the two row shapes below are declared here, by the consumer. The composition
+// root supplies the adapter over `ingestion/service.Service`, exactly as it does
+// for CredentialWriter and Reconciler. An unknown reason is refused by the
+// handler before it ever reaches the port, so nothing downstream has to guess
+// what a string means.
+//
+// ⛔ Both feeds are TENANT-SCOPED READS and neither takes a `raw` document. The
+// rejection feed carries the label set lifted out of `raw` and the batch feed
+// carries no payload at all: the columns behind them hold up to 8 MiB per row,
+// and a page of fifty would be four hundred megabytes to render a table of
+// reasons.
+type IngestFeeds interface {
+	// ListRejections is the per-source rejection feed, newest first. An empty
+	// `reasons` means every reason, which is what the screen opens with.
+	ListRejections(
+		ctx context.Context, s db.TenantScope, sourceID uuid.UUID, reasons []string, p db.Keyset,
+	) ([]RejectionEntry, db.Cursor, error)
+	// ListFailedBatches lists the batches that were accepted and never processed.
+	// An empty `statuses` means both `failed` and `partial`.
+	ListFailedBatches(
+		ctx context.Context, s db.TenantScope, sourceID uuid.UUID, statuses []string, p db.Keyset,
+	) ([]BatchFailure, db.Cursor, error)
+}
+
+// RejectionEntry is one element oto refused to normalise.
+//
+// Labels is the rejected alert's label set AS IT WAS STORED — already redacted
+// per the source's `redact_labels`, so a matched value reads `[redacted]` here
+// because it reads `[redacted]` on disk. There is no plaintext behind it and
+// this layer must never grow a way to ask for one.
+//
+// It is EMPTY, never absent, for the rejections that name no alert: a body oto
+// could not decode, a body over the size cap, a batch for an unknown source, and
+// the batch-level truncation are all about the payload rather than about any one
+// alert in it. For those, Reason and Detail are the whole answer.
+type RejectionEntry struct {
+	ID       uuid.UUID
+	SourceID uuid.UUID
+	// BatchID is nil when no batch row exists.
+	BatchID    *uuid.UUID
+	ReceivedAt time.Time
+	Reason     string
+	Detail     string
+	Labels     map[string]string
+}
+
+// BatchFailure is one batch whose alerts are durably on disk and never reached
+// the product.
+type BatchFailure struct {
+	ID         uuid.UUID
+	SourceID   uuid.UUID
+	Mode       string
+	ReceivedAt time.Time
+	// Status is `failed` or `partial`; nothing else is listable.
+	Status string
+	// ProcessedAt is when the batch stopped.
+	ProcessedAt *time.Time
+	// Error is why it stopped. Always set for `failed`, usually empty for
+	// `partial`, which stopped by dying rather than by deciding.
+	Error string
+	// AlertCount is how many alerts are sitting in that payload unprocessed,
+	// which is the number that says what the failure cost.
+	AlertCount      int
+	TruncatedAlerts int
 }
 
 // AddressGuard is the SSRF control, satisfied by `*platform/netguard.Guard`.

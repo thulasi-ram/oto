@@ -39,6 +39,8 @@ import type {
   Delivery,
   Enricher,
   Enrichment,
+  FailedBatch,
+  FailedBatchListQuery,
   Group,
   GroupDetail,
   GroupListQuery,
@@ -53,6 +55,8 @@ import type {
   Policy,
   PolicyPreview,
   PolicyPreviewRequest,
+  Rejection,
+  RejectionListQuery,
   RuleHistory,
   RuleSnapshot,
   RuleSnapshotQuery,
@@ -516,6 +520,46 @@ export function disposeDeliveryDrill(id: Uuid): Promise<DeliveryDrill> {
 
 export function getSourceHealth(id: Uuid, c: Ctx = {}): Promise<SourceHealth> {
   return getItem<SourceHealth>(`${V1}/sources/${id}/health`, ctx(c));
+}
+
+/**
+ * Everything oto refused from one source, newest first (SPEC AC-6, AC-38).
+ *
+ * This is the read half of "oto never silently drops". Each row carries the
+ * reason, the specifics, and the label set that was refused — already redacted,
+ * because that is how it is stored.
+ *
+ * Keyset, and the cursor is bound to the filter set: a cursor minted under a
+ * different `reason` selection is answered `400 cursor_filter_mismatch`, so a
+ * caller that changes the filter must drop the cursor rather than reuse it.
+ */
+export function listSourceRejections(
+  id: Uuid,
+  query: RejectionListQuery = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Rejection>> {
+  return getList<Rejection>(`${V1}/sources/${id}/rejections`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
+ * The batches from one source that stopped, newest first.
+ *
+ * The other half of the same question, and not the same fact: a rejection is an
+ * alert oto looked at and refused, whereas a failed batch is a payload oto never
+ * finished reading — its alerts are on disk and were never seen by anything.
+ */
+export function listSourceFailedBatches(
+  id: Uuid,
+  query: FailedBatchListQuery = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<FailedBatch>> {
+  return getList<FailedBatch>(`${V1}/sources/${id}/failed-batches`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
 }
 
 /**

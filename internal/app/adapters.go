@@ -36,6 +36,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/id"
 	rulesdomain "github.com/thulasiram/oto/internal/rules/domain"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
+	sourcesapi "github.com/thulasiram/oto/internal/sources/api"
 	sourcesrepo "github.com/thulasiram/oto/internal/sources/repository"
 	"github.com/thulasiram/oto/internal/sources/rulematch"
 	sourcesservice "github.com/thulasiram/oto/internal/sources/service"
@@ -1358,4 +1359,89 @@ func (d drillSources) DrillTarget(
 		out.ClusterKey = cluster.Key
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------- ingestion
+
+// ingestFeeds is `sources/api.IngestFeeds` over `ingestion/service`.
+//
+// ⭐ IT IS THE SEAM THAT PUTS "WHY DID MY ALERT NEVER APPEAR" ON THE SOURCE
+// SCREEN. The rejection feed and the failed-batch list are ingestion's data, and
+// the route that serves them sits beside `/sources/{id}/health` — because the
+// ingest router is mounted with no middleware at all and a UI read cannot live
+// there, and because that is where the question is asked. `sources` may not
+// import `ingestion/domain` (depguard), so the reasons and statuses cross this
+// boundary as plain strings and become typed here, exactly as `streamAppender`
+// does for a `ui_events.kind`.
+//
+// An unknown member is refused by the handler's own allow-list before it reaches
+// this adapter, and refused AGAIN by the service: a closed enum matches no row,
+// so a typo'd reason served rather than refused would return an empty page that
+// reads as "nothing was rejected".
+type ingestFeeds struct {
+	svc *ingestionservice.Service
+}
+
+func (f ingestFeeds) ListRejections(
+	ctx context.Context, s db.TenantScope, sourceID uuid.UUID, reasons []string, p db.Keyset,
+) ([]sourcesapi.RejectionEntry, db.Cursor, error) {
+	if f.svc == nil {
+		return nil, db.Cursor{}, errs.Unavailable("ingestion_unavailable",
+			"the ingestion service is not wired in this deployment", 0)
+	}
+	filter := ingestiondomain.RejectionFilter{SourceID: sourceID}
+	for _, r := range reasons {
+		filter.Reasons = append(filter.Reasons, ingestiondomain.Reason(r))
+	}
+	rows, next, err := f.svc.ListRejections(ctx, s, filter, p)
+	if err != nil {
+		return nil, db.Cursor{}, err
+	}
+	out := make([]sourcesapi.RejectionEntry, 0, len(rows))
+	for _, e := range rows {
+		out = append(out, sourcesapi.RejectionEntry{
+			ID:         e.ID,
+			SourceID:   e.SourceID,
+			BatchID:    e.BatchID,
+			ReceivedAt: e.ReceivedAt,
+			Reason:     e.Reason.String(),
+			Detail:     e.Detail,
+			// Already redacted on disk (`decode.Redactor`, §C.9.2). Nothing here
+			// un-redacts anything and nothing here may ever grow a way to.
+			Labels: e.Labels,
+		})
+	}
+	return out, next, nil
+}
+
+func (f ingestFeeds) ListFailedBatches(
+	ctx context.Context, s db.TenantScope, sourceID uuid.UUID, statuses []string, p db.Keyset,
+) ([]sourcesapi.BatchFailure, db.Cursor, error) {
+	if f.svc == nil {
+		return nil, db.Cursor{}, errs.Unavailable("ingestion_unavailable",
+			"the ingestion service is not wired in this deployment", 0)
+	}
+	filter := ingestiondomain.BatchFailureFilter{SourceID: sourceID}
+	for _, st := range statuses {
+		filter.Statuses = append(filter.Statuses, ingestiondomain.Status(st))
+	}
+	rows, next, err := f.svc.ListFailedBatches(ctx, s, filter, p)
+	if err != nil {
+		return nil, db.Cursor{}, err
+	}
+	out := make([]sourcesapi.BatchFailure, 0, len(rows))
+	for _, b := range rows {
+		out = append(out, sourcesapi.BatchFailure{
+			ID:              b.ID,
+			SourceID:        b.SourceID,
+			Mode:            b.Mode.String(),
+			ReceivedAt:      b.ReceivedAt,
+			Status:          b.Status.String(),
+			ProcessedAt:     b.ProcessedAt,
+			Error:           b.Error,
+			AlertCount:      b.AlertCount,
+			TruncatedAlerts: b.TruncatedAlerts,
+		})
+	}
+	return out, next, nil
 }

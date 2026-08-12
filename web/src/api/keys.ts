@@ -9,7 +9,9 @@
 import type {
   AlertListQuery,
   AlertRollupQuery,
+  FailedBatchListQuery,
   GroupListQuery,
+  RejectionListQuery,
   RuleSnapshotQuery,
   TimelineQuery,
 } from "./types";
@@ -78,6 +80,15 @@ export const qk = {
     org: () => ["settings", "org"] as const,
     /** A source's recent delivery drills. */
     drills: (sourceID: string) => ["settings", "sources", sourceID, "drills"] as const,
+    /**
+     * One page of a source's rejection feed. The query is part of the key
+     * because the cursor is bound to the filter set server-side — two reason
+     * selections are two different keysets, never one cache entry.
+     */
+    rejections: (sourceID: string, query: RejectionListQuery) =>
+      ["settings", "sources", sourceID, "rejections", query] as const,
+    failedBatches: (sourceID: string, query: FailedBatchListQuery) =>
+      ["settings", "sources", sourceID, "failed-batches", query] as const,
     /** One drill, polled while it is still running. */
     drill: (id: string) => ["drills", id] as const,
   },

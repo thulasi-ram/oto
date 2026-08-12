@@ -377,11 +377,13 @@ type contractStack struct {
 	tokens    *fakeTokens
 	tx        *fakeTx
 	reconcile *contractReconciler
+	feeds     *contractFeeds
 
 	dropRegistry  bool
 	dropClusters  bool
 	dropTokens    bool
 	dropReconcile bool
+	dropFeeds     bool
 }
 
 func newContractStack() *contractStack {
@@ -393,6 +395,7 @@ func newContractStack() *contractStack {
 		tokens:    &fakeTokens{},
 		tx:        &fakeTx{},
 		reconcile: &contractReconciler{res: contractReconcile()},
+		feeds:     newContractFeeds(),
 	}
 }
 
@@ -419,6 +422,9 @@ func (s *contractStack) router() *Router {
 	}
 	if !s.dropReconcile {
 		o.Reconcile = s.reconcile
+	}
+	if !s.dropFeeds {
+		o.Feeds = s.feeds
 	}
 	return NewRouter(o)
 }

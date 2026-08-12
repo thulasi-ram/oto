@@ -40,6 +40,7 @@ import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/u
 import { idempotencyKey } from "~/lib/format";
 
 import { DrillPanel } from "./DrillPanel";
+import { RejectionsPanel } from "./RejectionsPanel";
 
 /**
  * Tier A: an upstream's health is not an alert's state (§M.2).
@@ -341,6 +342,16 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
         answers instantly, the drill costs a Slack message and ninety seconds.
       */}
       <DrillPanel sourceID={s().id} />
+
+      {/*
+        And under the drill, the question the drill cannot answer. The drill
+        proves what WOULD happen to a new alert; this says what DID happen to the
+        ones already sent — which of them oto refused, why, and with which
+        labels, plus any batch that stopped before its alerts were ever read.
+        Both are closed by default: an operator with twenty sources should not
+        pay forty requests for a screen they came to rename a cluster on.
+      */}
+      <RejectionsPanel sourceID={s().id} />
 
       <Show when={test.error !== null}>
         <ErrorBanner error={test.error} class="mt-1" />

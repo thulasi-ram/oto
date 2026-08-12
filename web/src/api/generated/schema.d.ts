@@ -1083,6 +1083,72 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sources/{id}/rejections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Why this source's alerts never appeared
+         * @description Every element oto refused to normalise, newest first, with the reason it was refused and the
+         *     label set it carried.
+         *
+         *     **This is the answer to "my alert never showed up".** oto never silently drops: an alert that
+         *     breaks a bound is recorded here with a reason and a metric, and a `202` for a partially bad
+         *     payload is only honest because this record exists. Before this endpoint the record was
+         *     reachable from `psql` and nowhere else.
+         *
+         *     Not every rejection names an alert. A body oto could not decode, a body over the 8 MiB cap and
+         *     a batch for an unknown source are recorded against the source with no element to point at, and
+         *     `too_many_alerts` is about the payload rather than about any one alert in it. Those rows carry
+         *     an **empty** `labels`, and `reason` plus `detail` are the whole answer.
+         *
+         *     Records age out with `raw_retention_days` (14 by default). A rejection older than that is gone,
+         *     which is a retention decision rather than a filter.
+         */
+        get: operations["listSourceRejections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{id}/failed-batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Batches this source delivered that never became alerts
+         * @description The batch-level half of the same question the rejection feed answers per alert. A rejection
+         *     says oto refused one element; this says oto took the whole body, answered `202`, and then could
+         *     not turn it into alerts.
+         *
+         *     Only the two troubled states are listable. `failed` gave up and carries an `error`; `partial`
+         *     stopped mid-chunking, which is the state a batch is left in when a worker dies between chunks,
+         *     and usually carries no error because it stopped by dying rather than by deciding. `pending` is
+         *     excluded on purpose — every accepted batch passes through it, so listing it would drown the
+         *     answer in the normal case.
+         *
+         *     `alert_count` is how many alerts are sitting in that payload unprocessed, which is what the
+         *     failure actually cost. The payload itself is deliberately **not** on this list: it is up to
+         *     8 MiB per row.
+         */
+        get: operations["listSourceFailedBatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clusters": {
         parameters: {
             query?: never;
@@ -2409,6 +2475,36 @@ export interface components {
          * @enum {string}
          */
         SourceHealthStatus: "healthy" | "degraded" | "unreachable" | "unknown";
+        /**
+         * @description Why oto refused to normalise an element. The same closed set as the `ingest_rejections.reason`
+         *     CHECK and the `reason` label of `oto_ingest_rejected_total`; adding a member takes a migration.
+         *
+         *     Three of them do **not** mean the alert was dropped. `too_many_annotations` drops the excess
+         *     and keeps the alert, `annotation_too_large` truncates the value and keeps it, and
+         *     `timestamp_out_of_window` may clamp the timestamp rather than refuse the alert. The row is
+         *     recorded either way, because a value oto quietly changed is a fact an operator is owed.
+         *
+         *     `undecodable` means these bytes were not a webhook payload at all. It is deliberately never
+         *     used for a payload that decoded and then failed a bound — `invalid_label_value` exists because
+         *     that fallback once sent operators hunting for malformed JSON that was never there.
+         * @example label_value_too_large
+         * @enum {string}
+         */
+        RejectionReason: "too_many_labels" | "label_value_too_large" | "label_name_too_large" | "labelset_too_large" | "too_many_annotations" | "annotation_too_large" | "annotation_unstorable" | "missing_alertname" | "invalid_label_name" | "invalid_label_value" | "timestamp_out_of_window" | "too_many_alerts" | "body_too_large" | "undecodable" | "unknown_source";
+        /**
+         * @description The two states in which a batch's alerts are on disk and not in the product. `failed` gave up
+         *     and carries an `error`; `partial` is mid-chunking and is resumable in principle.
+         * @example failed
+         * @enum {string}
+         */
+        FailedBatchStatus: "failed" | "partial";
+        /**
+         * @description Which code path accepted the batch. It appears in no request body, so no upstream can forge
+         *     one — which is why `synthetic`, the delivery-drill mark, is a mode rather than a label.
+         * @example push
+         * @enum {string}
+         */
+        IngestBatchMode: "push" | "reconcile" | "synthetic";
         /**
          * @description How the snapshot was obtained. `generator_url` means the expression was recovered by decoding
          *     `g0.expr` out of the alert's `generatorURL` with zero API calls — the robust primary path.
@@ -4058,6 +4154,76 @@ export interface components {
             divergence_count: number;
             error?: string | null;
         };
+        /** @description One element oto refused to normalise, kept so that nothing disappears without a trace. */
+        RejectionDTO: {
+            id: components["schemas"]["Uuid"];
+            source_id: components["schemas"]["Uuid"];
+            /**
+             * @description The batch this element came from. `null` when no batch row exists — an undecodable body, a
+             *     body over the size cap, or a batch for a source oto cannot serve.
+             */
+            batch_id?: components["schemas"]["Uuid"] | null;
+            received_at: components["schemas"]["Timestamp"];
+            reason: components["schemas"]["RejectionReason"];
+            /**
+             * @description Human-readable specifics: which label exceeded which cap. Written **after** redaction, so
+             *     it never carries a secret. Empty when the reason is the whole story.
+             * @example label value for `password` is 5121 bytes, over the 4096 cap
+             */
+            detail: string;
+            /**
+             * @description The rejected alert's label set, exactly as it was stored — that is, already redacted per
+             *     the source's `redact_labels`, so a matched value reads `[redacted]` here because it reads
+             *     `[redacted]` on disk. There is no plaintext behind this field to ask for.
+             *
+             *     Deliberately **not** a `LabelMap`: this is the set oto refused, so it is precisely the one
+             *     that may break `LabelMap`'s bounds — a `too_many_labels` rejection carries more than 64
+             *     entries, and `label_value_too_large` carries a value over 4096 bytes. Bounding the evidence
+             *     by the rule it violated would make the evidence unrenderable.
+             *
+             *     **Empty, never absent**, for the rejections that name no alert.
+             * @example {
+             *       "alertname": "HighErrorRate",
+             *       "cluster": "prod-eu",
+             *       "severity": "critical"
+             *     }
+             */
+            labels: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * @description One batch whose alerts are durably on disk and never reached the product. The `payload` column
+         *     is deliberately absent: it holds up to 8 MiB per row.
+         */
+        FailedBatchDTO: {
+            id: components["schemas"]["Uuid"];
+            source_id: components["schemas"]["Uuid"];
+            mode: components["schemas"]["IngestBatchMode"];
+            received_at: components["schemas"]["Timestamp"];
+            status: components["schemas"]["FailedBatchStatus"];
+            /** @description When the batch stopped. */
+            processed_at?: components["schemas"]["Timestamp"] | null;
+            /**
+             * @description Why it stopped. Always present for `failed`, and usually empty for `partial`, which stopped
+             *     by dying rather than by deciding.
+             * @example alert upsert failed: context deadline exceeded
+             */
+            error: string;
+            /**
+             * Format: int32
+             * @description How many alerts are sitting in that payload unprocessed — what the failure cost.
+             * @example 37
+             */
+            alert_count: number;
+            /**
+             * Format: int32
+             * @description How many alerts were dropped from the payload at accept time for exceeding the per-batch
+             *     cap. Each one is also a `too_many_alerts` rejection.
+             * @example 0
+             */
+            truncated_alerts: number;
+        };
         /**
          * @description A static provider descriptor. `GET /api/v1/channel-types` is what makes the settings UI dynamic:
          *     the form is generated from `config_schema`, so the UI has no per-provider code.
@@ -5701,6 +5867,16 @@ export interface components {
         };
         ReconcileResultResponse: {
             data: components["schemas"]["ReconcileResultDTO"];
+            meta: components["schemas"]["Meta"];
+        };
+        RejectionListResponse: {
+            data: components["schemas"]["RejectionDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        FailedBatchListResponse: {
+            data: components["schemas"]["FailedBatchDTO"][];
+            page: components["schemas"]["PageInfo"];
             meta: components["schemas"]["Meta"];
         };
         ClusterListResponse: {
@@ -8096,6 +8272,90 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listSourceRejections: {
+        parameters: {
+            query?: {
+                /** @description Comma-separated rejection reasons. Absent means every reason. */
+                reason?: components["schemas"]["RejectionReason"][];
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of rejections, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RejectionListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listSourceFailedBatches: {
+        parameters: {
+            query?: {
+                /** @description Comma-separated batch statuses. Absent means both. */
+                status?: components["schemas"]["FailedBatchStatus"][];
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of failed batches, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FailedBatchListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

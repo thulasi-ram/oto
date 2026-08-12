@@ -118,6 +118,8 @@ var bindings = []binding{
 	{"sources", "SourceHealthDTO", sourcesapi.SourceHealthDTO{}},
 	{"sources", "SourceTestDTO", sourcesapi.SourceTestDTO{}},
 	{"sources", "ReconcileResultDTO", sourcesapi.ReconcileResultDTO{}},
+	{"sources", "RejectionDTO", sourcesapi.RejectionDTO{}},
+	{"sources", "FailedBatchDTO", sourcesapi.FailedBatchDTO{}},
 	{"sources", "CreateSourceRequest", sourcesapi.CreateSourceRequest{}},
 	{"sources", "UpdateSourceRequest", sourcesapi.UpdateSourceRequest{}},
 	{"sources", "RouteTimingsDTO", sourcesapi.RouteTimingsDTO{}},

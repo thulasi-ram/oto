@@ -156,3 +156,46 @@ type Rejection struct {
 	// point of the table is the evidence.
 	Raw json.RawMessage
 }
+
+// RejectionFilter narrows the per-source rejection feed.
+//
+// SourceID is REQUIRED and is not a convenience: `ingest_rejections_source_idx`
+// is `(org_id, source_id, received_at DESC)`, so a feed without a source is a
+// query with no index to ride. The screen is per-source anyway (§C.9.1).
+type RejectionFilter struct {
+	SourceID uuid.UUID
+	// Reasons is an OR over the closed enum. Empty means every reason, which is
+	// the default the screen opens with — an operator asking "why did my alert
+	// never appear" does not yet know which bound it hit.
+	Reasons []Reason
+}
+
+// RejectionEntry is one row of that feed, and it is a READ model rather than
+// `Rejection` with extra fields.
+//
+// The difference is `Labels` versus `Raw`. The write side owns the whole
+// evidence document; the feed owns the one question an operator is asking —
+// WHICH ALERT was refused — and that is the label set, lifted out of `raw`. A
+// list that shipped every `raw` document would ship the batch's worth of
+// evidence to render a table of reasons.
+//
+// Labels is EMPTY, never absent, for the rejections that have no alert to name.
+// A body oto could not decode, a body over the size cap and an unknown source
+// are recorded against the source with no element to point at (§L.3.2), and a
+// batch-level rejection like B2's truncation is about the payload rather than
+// about any one alert in it. For all of those, `Reason` and `Detail` are the
+// whole answer.
+type RejectionEntry struct {
+	ID         uuid.UUID
+	SourceID   uuid.UUID
+	BatchID    *uuid.UUID
+	ReceivedAt time.Time
+	Reason     Reason
+	// Detail is the human-readable specifics: which label exceeded which cap.
+	Detail string
+	// Labels is the rejected alert's label set as it was WRITTEN — that is,
+	// already redacted per `alert_sources.redact_labels`. A matched value reads
+	// `[redacted]` here because it reads `[redacted]` on disk; this feed does not
+	// have the plaintext and must never grow a way to get it.
+	Labels map[string]string
+}
