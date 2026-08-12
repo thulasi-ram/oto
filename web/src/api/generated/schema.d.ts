@@ -1022,6 +1022,11 @@ export interface paths {
          *     Update the Alertmanager receiver promptly: between rotation and reconfiguration the old token is
          *     rejected with `401`, which Alertmanager treats as permanent, so notifications sent in that window
          *     are lost.
+         *
+         *     Retrying with the same `Idempotency-Key` is a `409 idempotency_key_reuse` and rotates nothing.
+         *     That is stricter than "act once" and deliberately so: a rotation *destroys* the credential it
+         *     replaces, so a blind retry after a dropped response would revoke the secret the caller may still
+         *     be holding from the first attempt and hand the replacement to a response that never arrived.
          */
         post: operations["rotateSourceIngestToken"];
         delete?: never;
@@ -1971,6 +1976,12 @@ export interface paths {
         /**
          * Revoke a personal access token
          * @description Revocation takes effect within the credential cache TTL, at most 60 seconds.
+         *
+         *     Revoking is idempotent by construction: repeating it succeeds and does not move the revocation
+         *     timestamp, which is *when the credential stopped working*. Repeating it **with the same
+         *     `Idempotency-Key`** is a `409 idempotency_key_reuse` instead — one key names one request, and
+         *     this endpoint answers the header by the same rule as the two that mint a secret. A caller that
+         *     means a second, separate revoke sends a second key.
          */
         delete: operations["revokeApiToken"];
         options?: never;
@@ -2657,7 +2668,8 @@ export interface components {
              *     `payload_too_large` (413), `unsupported_media_type` (415), `rate_limited` (429),
              *     `internal_error` (500), `upstream_unavailable` (502), `unavailable` (503),
              *     `upstream_timeout` (504). More specific codes (`alert_not_found`, `occurrence_terminal`,
-             *     `cursor_filter_mismatch`, `unknown_parameter`) refine these without changing the status.
+             *     `cursor_filter_mismatch`, `unknown_parameter`, `idempotency_key_reuse`) refine these
+             *     without changing the status.
              * @example validation_failed
              */
             code: string;
@@ -6225,8 +6237,16 @@ export interface components {
          * @description `409 conflict` — a unique violation on a key **the caller supplied** (an org slug, a channel
          *     name, a policy name, a cluster key), or a concurrent update. The caller must re-read and retry.
          *
-         *     A unique violation on a key *oto* computed (`alert_key`, `group_key`, `idempotency_key`) is
-         *     never an error — it is the idempotency mechanism, and it is swallowed silently.
+         *     A unique violation on a key *oto* computed (`alert_key`, `group_key`, the notification
+         *     `idempotency_key` of §C.7) is never an error — it is the idempotency mechanism, and it is
+         *     swallowed silently. Nothing below changes that: oto computed those keys, so a collision means
+         *     oto already did the work and the caller was never asking a second question.
+         *
+         *     A collision on a key **the client supplied** in the `Idempotency-Key` header is the opposite
+         *     case, and on the endpoints that mint or revoke a credential it is answered `409` with
+         *     `code: idempotency_key_reuse` rather than swallowed. The caller *did* ask a second time, and it
+         *     is entitled to know that its first attempt already succeeded — see `IdempotencyKeyHeader` for
+         *     why those responses cannot simply be replayed.
          */
         Conflict: {
             headers: {
@@ -6441,6 +6461,41 @@ export interface components {
          * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
          *     body within the retention window returns the original result rather than acting twice; replaying
          *     it with a *different* body is a `409`.
+         *
+         *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+         *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+         *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+         *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+         *     forgotten and re-sending it acts again.
+         *
+         *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+         *     the operationId**, so one member's key never refuses another's request and one key can be used
+         *     once per endpoint.
+         *
+         *     ### The carve-out: endpoints whose response carries a secret
+         *
+         *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+         *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+         *     the original result" is impossible to honour honestly here: the original result of a create or a
+         *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+         *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+         *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+         *     against; minting a fresh one would hand out a second live credential whose secret went to a
+         *     response that may never have arrived.
+         *
+         *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+         *     what it created, and the secret cannot be produced again. A caller that never received it
+         *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+         *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+         *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+         *     send no key at all.
+         *
+         *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+         *     request by the resource in its path as well as by the key, so one key spent on two *different*
+         *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+         *
+         *     The problem body names an `id`, and only when the first call created something. **It never
+         *     contains a secret, and never a token prefix.**
          */
         IdempotencyKeyHeader: string;
         /**
@@ -7077,6 +7132,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -7122,6 +7212,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -7167,6 +7292,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -7212,6 +7372,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -7269,6 +7464,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -7659,6 +7889,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -7704,6 +7969,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -7750,6 +8050,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -7795,6 +8130,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8001,6 +8371,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8071,6 +8476,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8100,6 +8540,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8179,6 +8654,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8203,6 +8713,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
@@ -8216,6 +8727,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8404,6 +8950,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8444,6 +9025,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8548,6 +9164,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8618,6 +9269,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8647,6 +9333,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8692,6 +9413,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8769,6 +9525,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8810,6 +9601,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8851,6 +9677,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -8879,6 +9740,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -9096,6 +9992,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -9547,6 +10478,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -9736,6 +10702,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -9775,6 +10776,41 @@ export interface operations {
                  * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
                  *     body within the retention window returns the original result rather than acting twice; replaying
                  *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
             };
@@ -9790,6 +10826,8 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];

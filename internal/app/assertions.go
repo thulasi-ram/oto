@@ -10,6 +10,7 @@ import (
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
 	enrichworker "github.com/thulasiram/oto/internal/enrichment/worker"
 	groupingservice "github.com/thulasiram/oto/internal/grouping/service"
+	identityapi "github.com/thulasiram/oto/internal/identity/api"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
 	ingestservice "github.com/thulasiram/oto/internal/ingestion/service"
@@ -18,6 +19,7 @@ import (
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	notifworker "github.com/thulasiram/oto/internal/notification/worker"
 	"github.com/thulasiram/oto/internal/platform/authn"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/secrets"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
 	silencesservice "github.com/thulasiram/oto/internal/silences/service"
@@ -116,4 +118,14 @@ var (
 	_ notifservice.HistoryStore   = (*notifrepo.NotificationRepository)(nil)
 	_ notifservice.GateFactory    = (*notifrepo.OrderingGates)(nil)
 	_ notifservice.SnapshotSource = (*notifrepo.SnapshotRepository)(nil)
+
+	// --- `Idempotency-Key`: one store, read by two transports ----------------
+	//
+	// The header was declared on 28 operations and read by NONE of them. These two
+	// lines are what make "the credential endpoints honour it" a compile-time fact
+	// rather than a wiring the container could quietly drop again.
+	_ identityapi.IdempotencyClaims = (*idempotency.Repository)(nil)
+	_ sourcesapi.IdempotencyClaims  = (*idempotency.Repository)(nil)
+	_ identityapi.UnitOfWork        = (*identityrepo.TxRunner)(nil)
+	_ sourcesapi.UnitOfWork         = (*sourcesrepo.TxRunner)(nil)
 )

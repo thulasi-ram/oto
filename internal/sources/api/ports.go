@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/sources/domain"
 	"github.com/thulasiram/oto/internal/sources/service"
 )
@@ -111,6 +112,21 @@ type IngestTokenIssuer interface {
 // a URL to paste and it answers 401 forever.
 type UnitOfWork interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// IdempotencyClaims takes a client-supplied `Idempotency-Key` for one operation,
+// satisfied by `*platform/idempotency.Repository`.
+//
+// ⭐ IT GUARDS THE ONE ENDPOINT HERE THAT HANDS OUT A SECRET.
+// `rotateSourceIngestToken` mints an ingest credential and returns its plaintext
+// exactly once, so a retried rotation minted a SECOND one — and because a
+// rotation also revokes what came before, the retry destroyed the credential the
+// caller may still have been holding from the first attempt. The claim is taken
+// inside the rotation's own transaction, so a key somebody already holds rolls
+// the whole rotation back rather than leaving the source with a token nobody
+// knows.
+type IdempotencyClaims interface {
+	Claim(ctx context.Context, s db.TenantScope, c idempotency.Claim) (idempotency.Result, error)
 }
 
 // IngestFeeds is the READ half of ingestion, as the source screen needs it: why

@@ -54,6 +54,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/test/contract/apitest"
 	"github.com/thulasiram/oto/test/contract/schema"
 )
@@ -105,6 +106,10 @@ const (
 
 	// contractCreateTokenBody mints a token that expires.
 	contractCreateTokenBody = `{"name":"laptop CLI","expires_at":"2027-03-01T09:00:00.000Z"}`
+	// contractCreateTokenOtherBody is a DIFFERENT request that is equally legal. It
+	// exists so "the same key with a different body" can be sent as something a real
+	// client would send, rather than as a body the server would have refused anyway.
+	contractCreateTokenOtherBody = `{"name":"desktop CLI"}`
 	// contractCreateTokenBlankNameBody is a name the contract permits (minLength 1)
 	// and `notblank` refuses: present is not the same as meaningful.
 	contractCreateTokenBlankNameBody = `{"name":"   "}`
@@ -179,12 +184,161 @@ type contractIdentityService struct {
 	cleared []domain.SettingKey
 
 	calls identityCalls
+	// unguarded counts writes that ran outside every transaction. A mint on this
+	// path used to be one, which is why the claim guarding it had nowhere to join.
+	unguarded int
 }
 
 // identityCalls is the fake's call ledger. It is a comparable struct on purpose,
 // so "the service was never reached" is one assertion rather than seven.
+//
+// ⭐ `issue` AND `revoke` COUNT WHAT SURVIVED ITS TRANSACTION, not what was
+// called. The token handlers mint first and claim the caller's `Idempotency-Key`
+// second — the claim records the id of what the mint produced, so it cannot run
+// before it — and a refused replay therefore reaches IssueToken and is then
+// rolled back. A ledger that counted calls would report two credentials for a
+// retry that produced one, and the only assertion that matters on this path,
+// "the same key minted exactly one credential", could not be written.
 type identityCalls struct {
 	me, getOrg, update, list, issue, revoke, expire int
+}
+
+// txScope is one open transaction of contractTx: the undo hooks registered
+// inside it.
+type txScope struct{ undo []func() }
+
+type contractTxKey struct{}
+
+// contractTx is the identity fixture's unit of work.
+//
+// ⭐⭐ IT MARKS THE CONTEXT AND IT ROLLS BACK, and both halves are load-bearing.
+// A real transaction travels in the context (`platform/db.FromContext`), and
+// `idempotency.Repository.Claim` REFUSES to run outside one — so a write that
+// received an unmarked context is a write that committed on its own, and the
+// fakes below record that rather than letting it pass. The rollback is what makes
+// the mint-then-claim ordering observable: without it the fixture could not tell
+// "minted and rolled back" from "minted and kept".
+type contractTx struct {
+	mu         sync.Mutex
+	begun      int
+	committed  int
+	rolledBack int
+}
+
+func (x *contractTx) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	// Mirror `db.TxOptions`, which returns fn(ctx) unchanged when the context is
+	// already in a transaction: a nested call must not issue a second BEGIN.
+	if inContractTx(ctx) {
+		return fn(ctx)
+	}
+
+	x.mu.Lock()
+	x.begun++
+	x.mu.Unlock()
+
+	scope := &txScope{}
+	err := fn(context.WithValue(ctx, contractTxKey{}, scope))
+
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if err != nil {
+		for i := len(scope.undo) - 1; i >= 0; i-- {
+			scope.undo[i]()
+		}
+		x.rolledBack++
+		return err
+	}
+	x.committed++
+	return nil
+}
+
+func (x *contractTx) counts() (begun, committed, rolledBack int) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.begun, x.committed, x.rolledBack
+}
+
+// inContractTx reports whether ctx is one contractTx handed to its closure.
+func inContractTx(ctx context.Context) bool {
+	s, ok := ctx.Value(contractTxKey{}).(*txScope)
+	return ok && s != nil
+}
+
+// onRollback registers an undo with the transaction travelling in ctx, and
+// reports whether there WAS one to register with. A false is a write that ran
+// outside every unit of work, which on this path is the whole defect.
+func onRollback(ctx context.Context, undo func()) bool {
+	s, ok := ctx.Value(contractTxKey{}).(*txScope)
+	if !ok || s == nil {
+		return false
+	}
+	s.undo = append(s.undo, undo)
+	return true
+}
+
+// claimKey is the tuple `idempotency_claims_pk` is built on. Nothing about a
+// claim's identity is left out of it: two tenants must not collide, two
+// principals must not block each other, and one key must not be replayable
+// across two operations.
+type claimKey struct {
+	org, principal      uuid.UUID
+	operation, supplied string
+}
+
+// contractClaims is `platform/idempotency.Repository` as a map, with the same
+// three outcomes and the same refusal to run outside a transaction.
+//
+// ⛔ IT HOLDS NO RESPONSE AND NO SECRET, exactly like the table it stands in for.
+// A fake that cached the 201 would let a test pass against a design oto refused
+// to build.
+type contractClaims struct {
+	mu sync.Mutex
+
+	held map[claimKey]idempotency.Claim
+	// calls is every Claim call, so "the header was not read at all" is visible.
+	calls int
+	// unguarded counts claims taken on a context carrying no transaction — the
+	// arrangement in which a claim can commit without the mint it guards.
+	unguarded int
+}
+
+func (c *contractClaims) Claim(
+	ctx context.Context, _ db.TenantScope, in idempotency.Claim,
+) (idempotency.Result, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.calls++
+	if !inContractTx(ctx) {
+		c.unguarded++
+	}
+
+	k := claimKey{in.OrgID, in.PrincipalID, in.Operation.String(), in.Key.String()}
+	if held, ok := c.held[k]; ok {
+		if held.RequestHash != in.RequestHash {
+			return idempotency.Result{Outcome: idempotency.Conflicted, Existing: held}, nil
+		}
+		return idempotency.Result{Outcome: idempotency.Replayed, Existing: held}, nil
+	}
+
+	if c.held == nil {
+		c.held = map[claimKey]idempotency.Claim{}
+	}
+	c.held[k] = in
+	// A claim that loses its transaction loses the key with it, or a failed
+	// request would poison a key the caller is entitled to spend.
+	onRollback(ctx, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.held, k)
+	})
+	return idempotency.Result{Outcome: idempotency.Claimed, Existing: in}, nil
+}
+
+func (c *contractClaims) counts() (calls, unguarded int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls, c.unguarded
 }
 
 func (s *contractIdentityService) Login(context.Context, service.LoginCommand) (service.LoginResult, error) {
@@ -249,31 +403,54 @@ func (s *contractIdentityService) ListTokens(
 }
 
 func (s *contractIdentityService) IssueToken(
-	_ context.Context, _ db.TenantScope, _ authn.Principal, cmd service.CreateTokenCommand,
+	ctx context.Context, _ db.TenantScope, _ authn.Principal, cmd service.CreateTokenCommand,
 ) (service.IssuedToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls.issue++
 	s.issued = cmd
+	if !onRollback(ctx, func() { s.adjust(func(c *identityCalls) { c.issue-- }) }) {
+		s.unguarded++
+	}
 	return service.IssuedToken{Token: s.token, Secret: contractTokenSecret}, nil
 }
 
-func (s *contractIdentityService) RevokeToken(_ context.Context, _ db.TenantScope, id uuid.UUID) error {
+func (s *contractIdentityService) RevokeToken(ctx context.Context, _ db.TenantScope, id uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls.revoke++
 	if id != s.token.ID {
 		// ⛔ Anything this tenant does not own is a 404, never a 403 and never
-		// somebody else's row.
+		// somebody else's row. The call still counts — the tenant probe asserts that
+		// the service WAS reached and refused — and registers no undo, because a
+		// refusal has nothing to roll back.
 		return errs.NotFound("not_found", "no such resource")
 	}
+	if !onRollback(ctx, func() { s.adjust(func(c *identityCalls) { c.revoke-- }) }) {
+		s.unguarded++
+	}
 	return nil
+}
+
+// adjust applies an undo to the ledger. It takes the lock itself because a
+// rollback runs long after the call that registered it returned.
+func (s *contractIdentityService) adjust(fn func(*identityCalls)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fn(&s.calls)
 }
 
 func (s *contractIdentityService) counts() identityCalls {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
+}
+
+// unguardedWrites is how many credential writes ran outside every transaction.
+func (s *contractIdentityService) unguardedWrites() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unguarded
 }
 
 // ------------------------------------------------------------------ fixtures
@@ -396,6 +573,8 @@ func contractToken(t *testing.T) domain.APIToken {
 type identityFixture struct {
 	svc      *contractIdentityService
 	resolver *contractSessionResolver
+	tx       *contractTx
+	claims   *contractClaims
 	c        *apitest.Client
 }
 
@@ -416,14 +595,25 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 		token: contractToken(t),
 	}
 	resolver := &contractSessionResolver{}
+	tx := &contractTx{}
+	claims := &contractClaims{}
 
 	rt := NewRouter(Options{
 		Service: svc,
 		Auth:    authn.NewMiddleware(resolver, contractCookieName),
 		Cookie:  DefaultCookieConfig(contractCookieName),
+		Tx:      tx,
+		Claims:  claims,
 		Clock:   clock.New(),
 	})
-	return &identityFixture{svc: svc, resolver: resolver, c: apitest.New(rt)}
+	return &identityFixture{svc: svc, resolver: resolver, tx: tx, claims: claims, c: apitest.New(rt)}
+}
+
+// keyed sends one signed-in request carrying an `Idempotency-Key`.
+func (f *identityFixture) keyed(method, target string, raw []byte, key string) *apitest.Response {
+	req := f.request(method, target, raw, true)
+	req.Header.Set("Idempotency-Key", key)
+	return f.c.Do(req)
 }
 
 // signedIn sends one request carrying the session cookie.
@@ -921,46 +1111,194 @@ func TestAnUnauthenticatedCallerGetsTheContractsProblemOnEveryIdentityRoute(t *t
 	}
 }
 
-// ⛔ TestBUG_ARetriedCreateApiTokenWithTheSameIdempotencyKeyMintsASecondCredential.
+// contractIdempotencyKey is the key every case below spends. It is the
+// contract's own example, so the value a client would copy out of the document is
+// the value the server is proven against.
+const contractIdempotencyKey = "01JD8Z2K7M3TQ9YB4V6H0XW5RE"
+
+// TestARetriedCreateApiTokenWithTheSameIdempotencyKeyIsRefusedAndMintsNothing.
 //
-// The contract declares `Idempotency-Key` on `createApiToken` and on
-// `revokeApiToken`, and states what it means: "Replaying the same key with the
-// same body within the retention window returns the original result rather than
-// acting twice; replaying it with a *different* body is a `409`."
+// The promise: a create carrying an `Idempotency-Key` that has already been spent
+// is a `409 idempotency_key_reuse` naming the token the FIRST call created, and
+// exactly one credential exists afterwards.
 //
-// Nothing in oto reads the header. `internal/platform/httpx/middleware` allows it
-// through CORS and that is the only mention of it in the process, so a client that
-// retries a create — a dropped response, a proxy timeout, a user double-clicking
-// "generate" — gets a SECOND live credential it never learns the secret of, and no
-// way to tell that from the first attempt having worked. That is the exact failure
-// an idempotency key exists to prevent, on the one endpoint in oto that hands out
-// credentials.
-func TestBUG_ARetriedCreateApiTokenWithTheSameIdempotencyKeyMintsASecondCredential(t *testing.T) {
-	t.Skip("BUG: Idempotency-Key is declared on createApiToken and revokeApiToken " +
-		"(api/openapi/openapi.yaml, parameters/IdempotencyKeyHeader) and is read by nothing " +
-		"(identity/api/tokens.go createAPIToken, revokeAPIToken); a retried create must replay the " +
-		"original 201 rather than minting a second credential, and the same key with a different body " +
-		"must be a 409.")
+// What broke when it did not hold: the header was declared on `createApiToken`
+// and read by nothing — `internal/platform/httpx/middleware` allowed it through
+// CORS and that was its only mention in the process. A client that retried a
+// create after a dropped response, a proxy timeout or a double-clicked button got
+// a SECOND live credential, and no way to tell that outcome from the first
+// attempt having worked. The secret of the extra token went to a response that
+// may never have arrived, so a live credential could exist that nobody knew the
+// value of and nobody knew to revoke.
+//
+// ⭐⭐ IT IS REFUSED RATHER THAN REPLAYED, AND THE ASSERTION BELOW IS WHY. The
+// header's own wording — "returns the original result rather than acting twice" —
+// reads as an instruction to cache the 201, and this 201 IS a plaintext
+// credential. Caching it would put every minted secret in the clear under a
+// string the client chose, which is a worse exposure than the bug. So the secret
+// appears EXACTLY ONCE across the two responses, and the refusal names an id.
+func TestARetriedCreateApiTokenWithTheSameIdempotencyKeyIsRefusedAndMintsNothing(t *testing.T) {
+	t.Parallel()
 
 	raw := []byte(contractCreateTokenBody)
 	schema.AssertRequest(t, "createApiToken", raw)
 
 	f := newIdentityFixture(t)
-	const key = "01JD8Z2K7M3TQ9YB4V6H0XW5RE"
 
-	send := func() *apitest.Response {
-		req := f.request(http.MethodPost, "/api-tokens", raw, true)
-		req.Header.Set("Idempotency-Key", key)
-		return f.c.Do(req)
+	first := f.keyed(http.MethodPost, "/api-tokens", raw, contractIdempotencyKey).
+		MustStatus(t, http.StatusCreated)
+	schema.Assert(t, "createApiToken", http.StatusCreated, first.Body())
+
+	second := f.keyed(http.MethodPost, "/api-tokens", raw, contractIdempotencyKey).
+		MustStatus(t, http.StatusConflict)
+	schema.AssertProblem(t, "createApiToken", http.StatusConflict, second.Body())
+
+	problem := second.Problem(t)
+	if problem.Code != "idempotency_key_reuse" {
+		t.Fatalf("code = %q, want idempotency_key_reuse", problem.Code)
 	}
 
-	first := send().MustStatus(t, http.StatusCreated)
-	schema.Assert(t, "createApiToken", http.StatusCreated, first.Body())
-	second := send().MustStatus(t, http.StatusCreated)
-	schema.Assert(t, "createApiToken", http.StatusCreated, second.Body())
+	// ⭐ The refusal is ACTIONABLE. A caller that never received the secret has to
+	// be told which credential already exists, or its only remedy is to revoke
+	// everything it can see.
+	if !strings.Contains(problem.Detail, contractTokenID.String()) {
+		t.Fatalf("the refusal does not name what the first call created: %q", problem.Detail)
+	}
 
 	if got := f.svc.counts().issue; got != 1 {
 		t.Fatalf("the same Idempotency-Key minted %d credential(s), want 1", got)
+	}
+
+	// ⛔ THE SECRET APPEARS EXACTLY ONCE ACROSS BOTH RESPONSES. Twice would mean
+	// oto stored it to replay it; zero would mean the first call never delivered
+	// the credential it charged the caller for.
+	var seen int
+	for _, resp := range []*apitest.Response{first, second} {
+		seen += strings.Count(string(resp.Body()), contractTokenSecret)
+	}
+	if seen != 1 {
+		t.Fatalf("the token secret appears %d time(s) across the two responses, want exactly 1", seen)
+	}
+
+	// ⭐⭐ THE MINT AND THE CLAIM ARE ONE UNIT OF WORK. The handler mints and then
+	// claims, so the refused retry DID reach IssueToken; only the transaction is
+	// what stops that mint from becoming a live credential. A claim taken outside a
+	// transaction is the arrangement `idempotency.Repository.Claim` refuses
+	// outright, and this is where that would show up.
+	begun, committed, rolledBack := f.tx.counts()
+	if begun != 2 || committed != 1 || rolledBack != 1 {
+		t.Fatalf("transactions: begun=%d committed=%d rolled back=%d, want 2/1/1",
+			begun, committed, rolledBack)
+	}
+	if _, unguarded := f.claims.counts(); unguarded != 0 {
+		t.Fatalf("%d claim(s) were taken outside a transaction", unguarded)
+	}
+	if got := f.svc.unguardedWrites(); got != 0 {
+		t.Fatalf("%d credential write(s) ran outside a transaction", got)
+	}
+}
+
+// TestACreateApiTokenReusingAKeyWithADifferentBodyIsRefused.
+//
+// The promise the contract has always made: "replaying it with a *different* body
+// is a `409`". A key names ONE request; a second, different request wearing the
+// same key is a client bug, and answering it as a replay would attribute one
+// caller's token to another caller's intent.
+func TestACreateApiTokenReusingAKeyWithADifferentBodyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	first, other := []byte(contractCreateTokenBody), []byte(contractCreateTokenOtherBody)
+	schema.AssertRequest(t, "createApiToken", first)
+	schema.AssertRequest(t, "createApiToken", other)
+
+	f := newIdentityFixture(t)
+
+	f.keyed(http.MethodPost, "/api-tokens", first, contractIdempotencyKey).
+		MustStatus(t, http.StatusCreated)
+
+	resp := f.keyed(http.MethodPost, "/api-tokens", other, contractIdempotencyKey).
+		MustStatus(t, http.StatusConflict)
+	schema.AssertProblem(t, "createApiToken", http.StatusConflict, resp.Body())
+
+	if code := resp.Problem(t).Code; code != "idempotency_key_reuse" {
+		t.Fatalf("code = %q, want idempotency_key_reuse", code)
+	}
+	if got := f.svc.counts().issue; got != 1 {
+		t.Fatalf("a reused key with a different body minted %d credential(s), want 1", got)
+	}
+	if strings.Contains(string(resp.Body()), contractTokenSecret) {
+		t.Fatalf("the refusal carries a credential: %s", resp)
+	}
+}
+
+// TestARetriedRevokeApiTokenWithTheSameIdempotencyKeyIsRefused.
+//
+// Revoking is idempotent by construction — repeating it succeeds and does not
+// move the revocation timestamp — so this endpoint needs no key to be SAFE. It
+// still answers one, and answers it the same way the two credential-minting
+// endpoints do: the family of endpoints that hand out and destroy credentials
+// answers `Idempotency-Key` by one rule rather than three, and a caller that
+// means a second, separate revoke sends a second key.
+//
+// This is also why the contract now declares a `409` here at all: it declared
+// none, so the status the server is about to produce had no schema to be
+// validated against.
+func TestARetriedRevokeApiTokenWithTheSameIdempotencyKeyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	f := newIdentityFixture(t)
+	target := "/api-tokens/" + contractTokenID.String()
+
+	first := f.keyed(http.MethodDelete, target, nil, contractIdempotencyKey).
+		MustStatus(t, http.StatusNoContent)
+	schema.AssertNoBody(t, "revokeApiToken", http.StatusNoContent, first.Body())
+
+	second := f.keyed(http.MethodDelete, target, nil, contractIdempotencyKey).
+		MustStatus(t, http.StatusConflict)
+	schema.AssertProblem(t, "revokeApiToken", http.StatusConflict, second.Body())
+
+	if code := second.Problem(t).Code; code != "idempotency_key_reuse" {
+		t.Fatalf("code = %q, want idempotency_key_reuse", code)
+	}
+	// A revoke creates nothing, so the refusal has no id to name and must not
+	// invent one.
+	if got := f.svc.counts().revoke; got != 1 {
+		t.Fatalf("the same Idempotency-Key revoked %d time(s), want 1", got)
+	}
+	if _, unguarded := f.claims.counts(); unguarded != 0 {
+		t.Fatalf("%d claim(s) were taken outside a transaction", unguarded)
+	}
+}
+
+// TestTheTokenEndpointsAreUnchangedForACallerThatSendsNoIdempotencyKey.
+//
+// ⛔ THE HEADER IS OPTIONAL AND MUST STAY OPTIONAL. The contract declares it
+// `required: false`, oto's own frontend sends it on some operations and not
+// others, and there is no `createApiToken` caller in the UI at all. A fix that
+// made the key mandatory — or that changed what an unkeyed request does — would
+// break every existing client in order to protect the ones that opted in.
+func TestTheTokenEndpointsAreUnchangedForACallerThatSendsNoIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(contractCreateTokenBody)
+	schema.AssertRequest(t, "createApiToken", raw)
+
+	f := newIdentityFixture(t)
+
+	for range 2 {
+		resp := f.signedIn(http.MethodPost, "/api-tokens", raw).MustStatus(t, http.StatusCreated)
+		schema.Assert(t, "createApiToken", http.StatusCreated, resp.Body())
+	}
+	target := "/api-tokens/" + contractTokenID.String()
+	for range 2 {
+		f.signedIn(http.MethodDelete, target, nil).MustStatus(t, http.StatusNoContent)
+	}
+
+	if got := f.svc.counts(); got.issue != 2 || got.revoke != 2 {
+		t.Fatalf("unkeyed calls: issue=%d revoke=%d, want 2 and 2", got.issue, got.revoke)
+	}
+	if calls, _ := f.claims.counts(); calls != 0 {
+		t.Fatalf("an unkeyed request claimed a key %d time(s), want 0", calls)
 	}
 }
 

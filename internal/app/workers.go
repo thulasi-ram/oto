@@ -9,6 +9,7 @@ import (
 
 	enrichworker "github.com/thulasiram/oto/internal/enrichment/worker"
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	silencesworker "github.com/thulasiram/oto/internal/silences/worker"
 	sourcesworker "github.com/thulasiram/oto/internal/sources/worker"
@@ -338,14 +339,26 @@ func (c *Container) pruneRetention(ctx context.Context, _ *jobs.Job[jobs.Retenti
 	if err != nil {
 		return err
 	}
+	// `idempotency_claims` is the same kind of row for the same reason: a
+	// client-supplied `Idempotency-Key` has no partition key to carry, so the
+	// uniqueness that stops a retried create minting a second live credential has
+	// to be global, so the table cannot be partitioned and ages out only here.
+	// ⛔ THE HORIZON IS THE ONE THE CONTRACT PROMISES, so a claim that is still
+	// inside `idempotency.RetentionWindow` must survive this sweep: deleting one
+	// early re-opens the exact hole the table closes, silently.
+	claims, err := c.Idempotency.Prune(ctx, c.Clock.Now().Add(-idempotency.RetentionWindow))
+	if err != nil {
+		return err
+	}
 	sessions, err := c.Identity.SweepExpiredSessions(ctx, sweepLimit)
 	if err != nil {
 		return err
 	}
 	finalised, disposed := c.sweepDrills(ctx)
-	if dedup > 0 || sessions > 0 || finalised > 0 || disposed > 0 {
+	if dedup > 0 || claims > 0 || sessions > 0 || finalised > 0 || disposed > 0 {
 		c.Logger.InfoContext(ctx, "retention.prune",
-			slog.Int64("ingest_dedup", dedup), slog.Int64("sessions", sessions),
+			slog.Int64("ingest_dedup", dedup), slog.Int64("idempotency_claims", claims),
+			slog.Int64("sessions", sessions),
 			slog.Int("drills_finalised", finalised), slog.Int("drills_disposed", disposed))
 	}
 	return nil

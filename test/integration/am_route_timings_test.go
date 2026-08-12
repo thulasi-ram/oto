@@ -41,7 +41,12 @@ func seedSource(t *testing.T, e *env) (db.TenantScope, *repository.SourceReposit
 	// now(), because `orgs` timestamps come from the application's clock.
 	if _, err := e.pool.Exec(e.ctx,
 		`INSERT INTO orgs (id, slug, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $4)`,
-		orgID, "t"+orgID.String()[:8], "timings org", time.Now().UTC()); err != nil {
+		// The slug carries the WHOLE id, hyphens stripped. The first eight hex
+		// digits of a uuidv7 are the high bits of its millisecond timestamp, which
+		// only turn over every ~65 seconds — so two orgs seeded inside one test
+		// collided on `orgs_slug_key` and the failure read as a migration defect.
+		orgID, "t"+strings.ReplaceAll(orgID.String(), "-", ""), "timings org",
+		time.Now().UTC()); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
 	// `created_at`/`updated_at` are NAMED on both: 00034 removed their DEFAULT
@@ -218,6 +223,18 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 //
 // WHAT EACH DOWN HAS TO PUT BACK, newest first:
 //
+//   - ⭐ 00041 added `idempotency_claims`, so its Down is a DROP TABLE and the
+//     property that flips is the table's existence. What is asserted on the way
+//     back UP is the PRIMARY KEY's tuple, not merely the table: the four columns
+//     (org, principal, operation, key) ARE the security property — a round trip
+//     that restored the table with a narrower key would leave one tenant's or one
+//     principal's key able to refuse another's create, and a round trip that
+//     restored it without the key at all would let the same key be claimed twice
+//     and mint the second credential the table exists to prevent. Nothing
+//     references these rows and their horizon is 24 hours, so the Down loses no
+//     history; what it loses is the protection, which is a property of rolling
+//     back to a release that never claimed keys.
+//
 //   - ⭐ 00039 added `delivery_drills` and WIDENED `ingest_batches_mode_ck` to
 //     admit `synthetic`. Its Down therefore does both halves — drop the table and
 //     NARROW the CHECK back — and both are asserted, the CHECK out of
@@ -279,8 +296,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 40 {
-		t.Fatalf("latest migration is %d, want 40 — this test pins the number so that a "+
+	if latest != 41 {
+		t.Fatalf("latest migration is %d, want 41 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -446,6 +463,29 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 		return def
 	}
+	claimTables := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_tables WHERE tablename = 'idempotency_claims'`).Scan(&n); err != nil {
+			t.Fatalf("introspect idempotency_claims: %v", err)
+		}
+		return n
+	}
+	// Read as rendered SQL, like the CHECKs above: the tuple is what carries the
+	// property, and a PK under the same name with fewer columns in it is the
+	// failure worth catching.
+	claimKeyTuple := func() string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			  WHERE conname = 'idempotency_claims_pk'
+			    AND conrelid = 'idempotency_claims'::regclass`).Scan(&def); err != nil {
+			t.Fatalf("introspect idempotency_claims_pk: %v", err)
+		}
+		return def
+	}
 	snapshotUniqCols := func() string {
 		t.Helper()
 		var def string
@@ -456,6 +496,24 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			t.Fatalf("introspect rule_snapshots_content_uniq: %v", err)
 		}
 		return def
+	}
+
+	// ⭐ 00041's table, and the tuple that makes it worth having. The four columns
+	// are asserted here rather than only after the round trip because "the table
+	// exists" is the weakest possible reading of this migration: a claim keyed on
+	// less than (org, principal, operation, key) is a claim that refuses somebody
+	// else's request, and one keyed on more would never recognise a retry at all.
+	if claimTables() != 1 {
+		t.Fatal("idempotency_claims is absent at the top of the stack; 00041 exists to create it, " +
+			"and without it every `Idempotency-Key` the contract declares is read by nothing")
+	}
+	for _, column := range []string{"org_id", "principal_id", "operation", "idempotency_key"} {
+		if def := claimKeyTuple(); !strings.Contains(def, column) {
+			t.Fatalf("idempotency_claims_pk does not carry %s at the top of the stack: %s — the "+
+				"four-column tuple IS the property: without org_id two tenants collide, without "+
+				"principal_id one org member's key refuses another's, and without operation one "+
+				"key claimed on a create refuses the revoke of the same gesture", column, def)
+		}
 	}
 
 	// ⛔ 00040 WIDENS `rule_snapshots_content_uniq` from (org, source,
@@ -573,6 +631,31 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		if err := migrate.Down(env.ctx, dsn); err != nil {
 			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
 		}
+	}
+
+	// 00041 down: the claims table goes, and it has to go WITH ROWS IN IT. A claim
+	// is written first because that is the only state an operator ever rolls this
+	// back from — the table is useless empty — and because a Down that tried to
+	// preserve the rows, or that had left a dependency behind, would fail here
+	// rather than in production at 02:00. Nothing references these rows and their
+	// horizon is 24 hours, so dropping them loses no history; what it loses is the
+	// protection, and that is a property of running a release that never claimed
+	// keys rather than of this statement.
+	claimOrg, _, _ := seedSource(t, env)
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO idempotency_claims (org_id, principal_id, operation, idempotency_key,
+		                                 request_hash, created_ref, claimed_at)
+		 VALUES ($1, $2, 'createApiToken', $3, decode($4, 'hex'), $5, now())`,
+		claimOrg.OrgID(), id.New(), "01JD8Z2K7M3TQ9YB4V6H0XW5RE", strings.Repeat("ab", 32),
+		id.New()); err != nil {
+		t.Fatalf("claim a key at the top of the stack: %v — 00041 exists to make this row "+
+			"writable, so a failure here means its Up never created the table it describes", err)
+	}
+	down(41)
+	if claimTables() != 0 {
+		t.Fatal("idempotency_claims survived 00041's Down, so a rolled-back release keeps a table " +
+			"nothing writes, nothing reads and `retention.prune` no longer sweeps — rows with a " +
+			"24-hour horizon that now live forever")
 	}
 
 	// ⭐ 00040's Down FOLDS ROWS, so it needs rows — and it needs the exact rows
@@ -962,6 +1045,21 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 	if buckets() != 0 {
 		t.Fatal("rate_limit_buckets survived the way back up")
+	}
+	// ⭐ 00041 comes back WITH ITS KEY. The table alone is not the migration: a
+	// re-created `idempotency_claims` whose PK had lost a column would take every
+	// claim without complaint and refuse the wrong caller's request, and nothing
+	// downstream would notice until two operators shared a key.
+	if claimTables() != 1 {
+		t.Fatal("idempotency_claims did not come back on the way up; every `Idempotency-Key` the " +
+			"contract declares is claimed against this table, and without it the credential " +
+			"endpoints are unguarded again")
+	}
+	for _, column := range []string{"org_id", "principal_id", "operation", "idempotency_key"} {
+		if def := claimKeyTuple(); !strings.Contains(def, column) {
+			t.Fatalf("idempotency_claims_pk came back without %s: %s — the round trip has to "+
+				"restore the tuple, not merely the table", column, def)
+		}
 	}
 	// The round trip is only closed if the way back up restores what the way down
 	// removed — and the rest of the suite runs against this schema.

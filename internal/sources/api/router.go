@@ -48,6 +48,11 @@ type Options struct {
 	// two commits, which is what this endpoint used to do and what left orphan
 	// sources behind; production always wires it.
 	Tx UnitOfWork
+	// Claims is the store behind `Idempotency-Key`. Nil means this deployment
+	// cannot honour the header, which is the declared `503` rather than a rotation
+	// that silently mints a second secret — the header being declared and unread is
+	// the defect this exists to close.
+	Claims IdempotencyClaims
 	// Guard refuses a base or Prometheus URL that resolves somewhere oto must not
 	// dial. Nil means no configuration-time feedback — the dialer still refuses.
 	Guard AddressGuard
@@ -75,6 +80,7 @@ type Router struct {
 	reconcile   Reconciler
 	feeds       IngestFeeds
 	tx          UnitOfWork
+	claims      IdempotencyClaims
 	guard       AddressGuard
 	allowNoTLSV bool
 	clk         clock.Clock
@@ -96,6 +102,7 @@ func NewRouter(o Options) *Router {
 		reconcile:   o.Reconcile,
 		feeds:       o.Feeds,
 		tx:          o.Tx,
+		claims:      o.Claims,
 		guard:       o.Guard,
 		allowNoTLSV: o.AllowInsecureTLS,
 		clk:         clk,
@@ -158,6 +165,17 @@ func (rt *Router) now() time.Time { return rt.clk.Now().UTC() }
 func scopeOf(r *http.Request) (db.TenantScope, error) {
 	_, s, err := authn.Scope(r.Context())
 	return s, err
+}
+
+// principalOf resolves the caller itself, for the one handler that must record
+// WHO made a request and not only which tenant it belonged to.
+//
+// An `Idempotency-Key` is a client's private handle on its own retry, so a claim
+// is keyed by the principal as well as the org: one org member's key must never
+// be able to refuse another's request.
+func principalOf(r *http.Request) (authn.Principal, error) {
+	p, _, err := authn.Scope(r.Context())
+	return p, err
 }
 
 // webhookURL renders the absolute URL for a source's ingest path.

@@ -44,6 +44,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/config"
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	"github.com/thulasiram/oto/internal/platform/netguard"
 	"github.com/thulasiram/oto/internal/platform/ratelimit"
@@ -120,6 +121,14 @@ type Container struct {
 	// dialer of every outbound HTTP client that talks to a configured URL, so
 	// "which addresses may this deployment reach" has exactly one answer.
 	NetGuard *netguard.Guard
+
+	// Idempotency claims a client-supplied `Idempotency-Key` so a retried mutation
+	// cannot act twice (SPEC §E.1). It is a PLATFORM store rather than one
+	// domain's, because the header is a transport mechanism 28 operations across
+	// nine modules declare — `identity` and `sources` are merely the first two
+	// callers, being the two that mint credentials. It is held on the container so
+	// `retention.prune` can sweep it beside the other unpartitioned siblings.
+	Idempotency *idempotency.Repository
 
 	// LoginLimiter and LoginGate bound `POST /auth/login`: the first by rate per
 	// client address, the second by concurrent argon2id evaluations, which is what
@@ -269,6 +278,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	c.orgs = orgLister{pool: general}
 	c.enqueuer = &lateEnqueuer{}
 
+	// ---- the idempotency claim store -------------------------------------
+	//
+	// Built before every domain, because it belongs to none of them: it is the
+	// store behind the `Idempotency-Key` header, which is a property of how a
+	// request is RETRIED and not a fact about any entity. Its rows are swept by
+	// `retention.prune`.
+	c.Idempotency = idempotency.NewRepository(general)
+
 	// ---- the keyring ---------------------------------------------------
 	// A deployment with no `security.secret_key` boots WITHOUT a keyring rather
 	// than with a fabricated one. Every credential read then fails loudly at the
@@ -311,6 +328,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		return nil, err
 	}
 	tokenRepo := identityrepo.NewAPITokenRepository(general)
+	// ⭐ `createApiToken` HAD NO TRANSACTION AT ALL. It minted a credential and
+	// returned its plaintext in one unguarded commit, so there was nowhere for the
+	// idempotency claim that guards it to join. The two are one unit of work now.
+	identityTx := identityrepo.NewTxRunner(general)
 	c.Identity = identityservice.New(identityservice.Deps{
 		Orgs:        identityrepo.NewOrgRepository(general, clk),
 		Users:       identityrepo.NewUserRepository(general),
@@ -642,7 +663,8 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	c.enqueuer.set(c.Jobs)
 
-	c.buildRouters(channelRepo, credentialRepo, tokenRepo, sourceRepo, clusterRepo, sourceTx, enricherRegistry, clk)
+	c.buildRouters(channelRepo, credentialRepo, tokenRepo, sourceRepo, clusterRepo, sourceTx, identityTx,
+		enricherRegistry, clk)
 	return c, nil
 }
 
@@ -823,6 +845,7 @@ func (c *Container) buildRouters(
 	sourceRepo *sourcesrepo.SourceRepository,
 	clusterRepo *sourcesrepo.ClusterRepository,
 	sourceTx *sourcesrepo.TxRunner,
+	identityTx *identityrepo.TxRunner,
 	enricherRegistry *enrichservice.Registry,
 	clk clock.Clock,
 ) {
@@ -833,7 +856,14 @@ func (c *Container) buildRouters(
 			Cookie:  identityapi.DefaultCookieConfig(c.Config.Security.SessionCookie),
 			Limiter: c.LoginLimiter,
 			Gate:    c.LoginGate,
-			Clock:   clk,
+			// One transaction for the minted credential and the `Idempotency-Key`
+			// claim that guards it, and the store that claim is taken in. Together
+			// they are what stops a retried create — a dropped response, a proxy
+			// timeout, a double-clicked button — from handing out a second live
+			// token whose secret nobody ever receives.
+			Tx:     identityTx,
+			Claims: c.Idempotency,
+			Clock:  clk,
 		}),
 		alerts: alertsapi.NewRouter(c.Alerts, clk),
 		// The third argument is `delivery_summary` on the group card: was anybody
@@ -864,6 +894,11 @@ func (c *Container) buildRouters(
 			// used to be independent commits, and a source without its token can
 			// never receive a webhook.
 			Tx: sourceTx,
+			// `rotateSourceIngestToken` is `createApiToken`'s defect twin: it hands
+			// out a secret exactly once AND revokes the previous one, so a retry
+			// destroyed the credential the caller was still holding. The claim joins
+			// the rotation's transaction.
+			Claims: c.Idempotency,
 			// Configuration-time SSRF feedback. The DIALER is the control; this is
 			// so an operator who pastes a metadata-service URL sees a 422 naming the
 			// field rather than a probe that mysteriously returns someone else's data.

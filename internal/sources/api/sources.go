@@ -8,13 +8,87 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/netguard"
 	"github.com/thulasiram/oto/internal/platform/validate"
 	"github.com/thulasiram/oto/internal/sources/domain"
 )
+
+// The two operationIds this file claims keys under. One key must not be
+// replayable across two different operations, so the operation is part of the
+// claim's identity, and they are the contract's own operationIds spelled once so
+// a claim and the contract cannot drift.
+var (
+	opCreateSource            = idempotency.MustOperation("createSource")
+	opRotateSourceIngestToken = idempotency.MustOperation("rotateSourceIngestToken")
+)
+
+// idempotencyKey reads the caller's `Idempotency-Key` and resolves the principal
+// that sent it, reporting whether one was sent at all.
+//
+// ⛔ A KEYED REQUEST THIS DEPLOYMENT CANNOT HONOUR IS REFUSED, NOT SERVED
+// UNGUARDED. The defect being closed here was a header the contract promised and
+// the server ignored; ignoring it a second time because a collaborator is nil
+// would reproduce it exactly, and the caller would have no way to tell a
+// protected create from an unprotected one.
+//
+// ⭐⭐ THE UNIT OF WORK IS PART OF THE PRECONDITION, AND IT IS CHECKED BEFORE
+// ANYTHING IS MINTED. A claim with no transaction to join is refused by
+// `idempotency.Repository.Claim` — but that refusal arrives AFTER the mint, and
+// with no transaction there is nothing to roll the mint back: for a rotation
+// that means the old ingest token is already revoked, the new secret is already
+// lost with the failed response, and the source can no longer receive alerts at
+// all. Demanding the transaction up front costs a caller one `503`; discovering
+// it late costs a source its only credential.
+func (rt *Router) idempotencyKey(r *http.Request) (idempotency.Key, authn.Principal, bool, error) {
+	key, keyed, err := idempotency.FromHeader(r)
+	if err != nil || !keyed {
+		return idempotency.Key{}, authn.Principal{}, false, err
+	}
+	if rt.claims == nil || rt.tx == nil {
+		return idempotency.Key{}, authn.Principal{}, false, errs.Unavailable("idempotency_unavailable",
+			"this deployment cannot honour Idempotency-Key", 0)
+	}
+	p, err := principalOf(r)
+	if err != nil {
+		return idempotency.Key{}, authn.Principal{}, false, err
+	}
+	return key, p, true, nil
+}
+
+// claim takes the caller's key for op, and turns a key somebody already holds
+// into the contract's `409`.
+//
+// ⭐⭐ IT MUST BE CALLED INSIDE THE SAME TRANSACTION AS THE ACT IT GUARDS, and
+// AFTER it, so that a claim which loses the race rolls that act back with it. The
+// hash is passed in because what "the same request" means differs by operation: a
+// create is identified by its body, a rotation by the source whose credential it
+// replaces.
+func (rt *Router) claim(
+	ctx context.Context, scope db.TenantScope, p authn.Principal,
+	op idempotency.Operation, key idempotency.Key, hash idempotency.RequestHash, created uuid.UUID,
+) error {
+	res, err := rt.claims.Claim(ctx, scope, idempotency.Claim{
+		OrgID:       scope.OrgID(),
+		PrincipalID: p.UserID,
+		Operation:   op,
+		Key:         key,
+		RequestHash: hash,
+		CreatedRef:  created,
+		ClaimedAt:   rt.now(),
+	})
+	if err != nil {
+		return err
+	}
+	if !res.Fresh() {
+		return idempotency.Reuse(res)
+	}
+	return nil
+}
 
 // listSources serves GET /api/v1/sources.
 //
@@ -110,6 +184,16 @@ func (rt *Router) decorate(
 // settings screen shows as configured, whose webhook URL an operator has already
 // pasted into `webhook_config`, and which answers 401 to every alert forever.
 // Alertmanager does not retry a 4xx, so those alerts are simply gone.
+//
+// ⭐⭐ A RETRY CARRYING THE SAME `Idempotency-Key` IS REFUSED, NOT REPEATED, for
+// the same reason `createApiToken` is: this 201 hands out a plaintext ingest
+// token exactly once. This endpoint DECLARED the header and read it nowhere, and
+// was safe only by accident — `alert_sources_name_uniq (org_id, name)` happens to
+// refuse a second create under the same name, which protects nothing the moment a
+// client generates the name or an operator retries with a different one. The
+// claim is taken in the same transaction as the mint, so a key somebody already
+// holds rolls the whole create back and the caller is told the id of the source
+// its first attempt made.
 func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -133,7 +217,22 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The RAW bytes, before Bind consumes the stream: "the same body" is decided
+	// by the sha256 of what the caller actually sent, not by a re-encoding of the
+	// DTO it parsed into.
+	raw, err := httpx.ReadBody(w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
 	dto, err := httpx.Bind[CreateSourceRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	key, principal, keyed, err := rt.idempotencyKey(r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -168,6 +267,15 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 		s, p, terr := rt.tokens.IssueIngestToken(ctx, scope, created.ID)
 		if terr != nil {
 			return terr
+		}
+		if keyed {
+			// AFTER the mint, because the claim records what the call created —
+			// the SOURCE id, which is the id a caller who never received the
+			// ingest token needs in order to find it and rotate its credential.
+			if cerr := rt.claim(ctx, scope, principal, opCreateSource, key,
+				idempotency.HashRequest(raw), created.ID); cerr != nil {
+				return cerr
+			}
 		}
 		src, secret, prefix = created, s, p
 		return nil
@@ -381,6 +489,15 @@ func (rt *Router) testSource(w http.ResponseWriter, r *http.Request) {
 // rather than delayed — the precise failure ADR 0007 exists to prevent. The whole
 // rotation is now one transaction and mints before it revokes, so the failure
 // mode is "nothing changed" instead of "nothing works".
+//
+// ⭐⭐ A RETRY CARRYING THE SAME `Idempotency-Key` IS REFUSED, NOT REPEATED. This
+// is the same defect class as `createApiToken` and it is worse here: a rotation
+// does not merely mint a second secret, it REVOKES the one it minted a moment
+// ago, so an automatic retry after a dropped response destroys the credential the
+// caller may actually be holding and hands the replacement to a response that
+// never arrived. The claim runs in the rotation's own transaction, so a key
+// somebody already holds rolls the whole rotation back and the source keeps the
+// token it had.
 func (rt *Router) rotateSourceIngestToken(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -391,6 +508,12 @@ func (rt *Router) rotateSourceIngestToken(w http.ResponseWriter, r *http.Request
 	}
 	if err := requireDependency(rt.tokens != nil, "sources_token_issuer_unavailable",
 		"ingest tokens cannot be minted in this deployment"); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	key, principal, keyed, err := rt.idempotencyKey(r)
+	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
@@ -407,6 +530,23 @@ func (rt *Router) rotateSourceIngestToken(w http.ResponseWriter, r *http.Request
 		s, p, terr := rt.tokens.IssueIngestToken(ctx, scope, found.ID)
 		if terr != nil {
 			return terr
+		}
+		if keyed {
+			// The claim carries no `created_ref`: the issuer port returns a secret
+			// and a display prefix, never the row id, and there is no version of it
+			// that should return the credential itself.
+			//
+			// ⭐ THE DIGEST IS OF THE SOURCE BEING ROTATED, not of the empty body
+			// this operation declares. A bodyless request digests to a CONSTANT and
+			// `{id}` is not in the claim tuple, so one key would make "rotate source
+			// A" and "rotate source B" indistinguishable and refuse the second as a
+			// replay of a rotation that touched a different source entirely. Folded
+			// in, the two are the different requests they are, and a true retry
+			// against the same source still digests identically and still replays.
+			if cerr := rt.claim(ctx, scope, principal, opRotateSourceIngestToken, key,
+				idempotency.HashTargetedRequest(found.ID, nil), uuid.Nil); cerr != nil {
+				return cerr
+			}
 		}
 		src, secret, prefix = found, s, p
 		return nil

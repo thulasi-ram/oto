@@ -1,6 +1,8 @@
 package httpx
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,6 +40,31 @@ func Bind[T any](w http.ResponseWriter, r *http.Request) (T, error) {
 		return dto, err
 	}
 	return dto, nil
+}
+
+// ReadBody returns the RAW request body and leaves it re-readable, so the same
+// bytes can go to Bind afterwards.
+//
+// ⭐ IT EXISTS FOR THE IDEMPOTENCY CLAIM AND FOR NOTHING ELSE. "The same body"
+// is decided by the sha256 of the bytes the caller actually sent
+// (`platform/idempotency.HashRequest`), and Bind consumes the stream, so a
+// handler that needs both has to read once and hand one copy to each. Re-encoding
+// the decoded DTO instead would hash something the client never sent, and two
+// retries that differ only in field order would stop matching.
+//
+// ⛔ IT APPLIES THE SAME BOUND BIND DOES. Reading the body ahead of Bind must not
+// become a way around DefaultMaxJSONBody, so the cap is imposed here and its
+// failure is the same 413 Bind would have produced.
+func ReadBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	if r.Body == nil {
+		return nil, nil
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, DefaultMaxJSONBody))
+	if err != nil {
+		return nil, decodeError(err)
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	return raw, nil
 }
 
 // BindEmpty validates a DTO that was assembled from somewhere other than a JSON

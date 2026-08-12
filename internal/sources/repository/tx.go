@@ -26,9 +26,18 @@ func NewTxRunner(pool *pgxpool.Pool) *TxRunner { return &TxRunner{pool: pool} }
 // every repository call underneath joins the same unit of work. It nests safely.
 func (r *TxRunner) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	if r == nil || r.pool == nil {
-		// No pool means no unit of work to join. Running fn unwrapped is strictly
-		// better than failing: the caller's own error handling still applies, and
-		// this only happens in a test that wired no database.
+		// No pool means no unit of work to join, and this only happens in a test
+		// that wired no database — where fn's own writes have nothing to write to
+		// either, so running it unwrapped degrades nothing that was working.
+		//
+		// ⛔ IT IS NOT WHAT KEEPS AN `Idempotency-Key` HONEST. `Claim` refuses to
+		// run outside a transaction, but that refusal fires AFTER the mint it
+		// guards, and with no transaction there is nothing left to roll back — for
+		// a rotation that would mean the old ingest token revoked, the new secret
+		// gone with the failed response, and the source unable to receive alerts.
+		// The transport is what prevents it: `sources/api` answers a keyed request
+		// with a `503` unless both the claim store and a unit of work are wired,
+		// before anything is minted.
 		return fn(ctx)
 	}
 	return db.Tx(ctx, r.pool, fn)
