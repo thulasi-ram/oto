@@ -9,9 +9,13 @@
  *
  * Three rules every strip here obeys:
  *
- *   1. **Silent when there is nothing to say.** Each renders nothing at all on
- *      the healthy path, so the table below always starts at the same offset and
- *      nothing shifts under a cursor that is already moving.
+ *   1. **Silent when there is nothing to say.** Each renders nothing *visible*
+ *      at all on the healthy path — no border, no padding, no text — so the
+ *      table below always starts at the same offset and nothing shifts under a
+ *      cursor that is already moving. The one thing that does stay mounted is
+ *      the empty region the strip announces through, which is an unstyled node
+ *      holding nothing and is therefore zero pixels tall. It has to be there
+ *      *before* the news is; `ShellBanner` below says why.
  *   2. **Tier A, always (ADR 0012, §M.2).** These are facts about oto's own
  *      reach and oto's own notifications — not the state of an alert. Spending a
  *      `--oto-state-*` hue here would blunt exactly the scarcity that makes a
@@ -37,12 +41,21 @@ import type { Source } from "~/api/types";
 
 export interface ShellBannerProps {
   /**
+   * Whether the strip has anything to say right now.
+   *
+   * ⛔ A PROP, AND NOT A `<Show>` AROUND THIS COMPONENT AT THE CALL SITE, WHICH
+   * IS WHAT IT USED TO BE. The strip is conditional; the region it speaks
+   * through must not be. See the note on the component below.
+   */
+  readonly when: boolean;
+  /**
    * Whether a change to this strip's contents is worth one polite announcement.
    *
    * Defaults to `true` — a strip appearing is news. Pass `false` for a strip
    * whose text ticks: a live region wrapped around a countdown re-announces the
    * whole banner every time the clock moves, which is how a screen reader is
-   * taught to be ignored.
+   * taught to be ignored. `false` renders no live region at all, so that strip
+   * is read only when the operator walks onto it.
    */
   readonly announce?: boolean;
   /** Renders a Dismiss button. Omit for a strip that must last as long as its cause. */
@@ -50,22 +63,67 @@ export interface ShellBannerProps {
   readonly class?: string;
 }
 
+/**
+ * The strip's dress, worn only while it has something to say. An unstyled empty
+ * div is zero pixels tall; a *styled* empty one is a border and an offset, which
+ * is the whole reason the region below cannot simply be a permanent strip.
+ */
+const STRIP_CLASS = cx(
+  "flex items-center justify-between gap-3 border-b border-line-strong bg-raised",
+  "px-4 py-1.5 text-[12px] text-ink",
+);
+
+/**
+ * ⛔ THE STRIP IS CONDITIONAL. THE REGION IT SPEAKS THROUGH IS NOT.
+ *
+ * Assistive technology announces mutations *inside a live region that already
+ * existed*. A region that enters the DOM already holding its words is treated as
+ * initial page content, and every major screen reader frequently announces it
+ * not at all. The old shape here — `<Show>` around the whole component, with
+ * `role="status"` on the strip's own root — made the one case the strip exists
+ * for (it just appeared) the one case least likely to be spoken.
+ *
+ * So the region is mounted always and only its contents swap. It stays empty and
+ * unstyled while there is nothing to say, which costs the header no border and
+ * the table below no offset — that requirement is what rules out the obvious fix
+ * of keeping a *dressed* empty strip around. This is the pattern `ConnectionBadge`
+ * (`AppShell.tsx`) and the rejection feed's standing line already use: a
+ * permanently-mounted `aria-live="polite" aria-atomic="true"` node whose text is
+ * replaced. `role="status"` is dropped rather than moved — it means exactly those
+ * two attributes, and spelling them out is what the rest of this app does.
+ * `aria-relevant` stays off everywhere: its default already covers text arriving,
+ * and the one thing it would add — announcing on *removal* — is the strip going
+ * away, which is not news.
+ *
+ * The opposite failure is a region that is always mounted AND always full: it
+ * re-announces on every unrelated mutation until the operator learns to read past
+ * it. Two things keep this one quiet. It holds nothing whatsoever on the healthy
+ * path, so a healthy org is announced never, however often the shell re-renders.
+ * And while it is up, its contents come from query data the client keeps
+ * referentially stable across an unchanged refetch, so the minute safety-net poll
+ * mutates no text and says nothing a second time. A strip whose own words tick
+ * cannot be made quiet that way and must pass `announce={false}` — `SnoozeBanner`.
+ *
+ * One silence is deliberate: `AppShell` is remounted on every route change, so a
+ * strip that was already up comes back with its text in place and says nothing.
+ * That is right. A fact the operator has already heard is not news, and a region
+ * that re-reads itself on every nav click is one that gets turned off.
+ */
 export const ShellBanner: ParentComponent<ShellBannerProps> = (props) => (
   <div
-    role={props.announce === false ? undefined : "status"}
-    class={cx(
-      "flex items-center justify-between gap-3 border-b border-line-strong bg-raised",
-      "px-4 py-1.5 text-[12px] text-ink",
-      props.class,
-    )}
+    aria-live={props.announce === false ? undefined : "polite"}
+    aria-atomic={props.announce === false ? undefined : "true"}
+    class={props.when ? cx(STRIP_CLASS, props.class) : ""}
   >
-    <div class="min-w-0">{props.children}</div>
-    <Show when={props.onDismiss}>
-      {(dismiss) => (
-        <Button size="sm" variant="ghost" class="shrink-0" onClick={() => dismiss()()}>
-          Dismiss
-        </Button>
-      )}
+    <Show when={props.when}>
+      <div class="min-w-0">{props.children}</div>
+      <Show when={props.onDismiss}>
+        {(dismiss) => (
+          <Button size="sm" variant="ghost" class="shrink-0" onClick={() => dismiss()()}>
+            Dismiss
+          </Button>
+        )}
+      </Show>
     </Show>
   </div>
 );
@@ -132,36 +190,36 @@ export const SourceReachBanner = (): JSX.Element => {
   const plural = (): boolean => unreachable().length > 1;
 
   return (
-    <Show when={unreachable().length > 0}>
-      <ShellBanner>
-        <p>
-          oto cannot reach{" "}
-          <For each={named()}>
-            {(s, i) => (
-              <>
-                {i() > 0 ? ", " : ""}
-                <span
-                  class="font-medium"
-                  title={
-                    s.health?.last_error ??
-                    "oto's last attempt to read this source did not succeed."
-                  }
-                >
-                  {s.name}
-                </span>
-              </>
-            )}
-          </For>
-          <Show when={unnamed() > 0}> and {unnamed()} more</Show>. {plural() ? "Their" : "Its"}{" "}
-          alerts are held exactly where they are — never resolved, never expired — so a row that has
-          gone quiet may be one oto can no longer see, and this list is incomplete until{" "}
-          {plural() ? "they are" : "it is"} back.{" "}
-          <A href="/settings/sources" class="font-medium text-accent">
-            Source health
-          </A>
-        </p>
-      </ShellBanner>
-    </Show>
+    // `when` rather than a `<Show>` out here: the region has to be mounted while
+    // the source list is still in flight, so that losing sight of a source is a
+    // mutation inside it rather than the arrival of a fully-formed region.
+    <ShellBanner when={unreachable().length > 0}>
+      <p>
+        oto cannot reach{" "}
+        <For each={named()}>
+          {(s, i) => (
+            <>
+              {i() > 0 ? ", " : ""}
+              <span
+                class="font-medium"
+                title={
+                  s.health?.last_error ?? "oto's last attempt to read this source did not succeed."
+                }
+              >
+                {s.name}
+              </span>
+            </>
+          )}
+        </For>
+        <Show when={unnamed() > 0}> and {unnamed()} more</Show>. {plural() ? "Their" : "Its"} alerts
+        are held exactly where they are — never resolved, never expired — so a row that has gone
+        quiet may be one oto can no longer see, and this list is incomplete until{" "}
+        {plural() ? "they are" : "it is"} back.{" "}
+        <A href="/settings/sources" class="font-medium text-accent">
+          Source health
+        </A>
+      </p>
+    </ShellBanner>
   );
 };
 
@@ -253,46 +311,47 @@ export const SnoozeBanner = (): JSX.Element => {
     `${all().length}${partial() ? "+" : ""} alert${all().length === 1 && !partial() ? "" : "s"}`;
 
   return (
-    <Show when={all().length > 0 && unread()}>
-      {/* `announce={false}`: the rows below carry live countdowns, and a live
-          region around a ticking clock re-reads itself every ten seconds. */}
-      <ShellBanner announce={false} onDismiss={dismissAll}>
-        <p>
-          oto is holding notifications on <span class="font-medium">{countLabel()}</span>. They are
-          still firing and still whatever severity they were — only oto is quiet.
-        </p>
+    /* `announce={false}`: the rows below carry live countdowns, and a live region
+       around a ticking clock re-reads itself every ten seconds. So this strip
+       gets no `aria-live` at all — what stays mounted for it is one empty,
+       unstyled and entirely silent node, and the rows are read when the operator
+       walks onto them. */
+    <ShellBanner when={all().length > 0 && unread()} announce={false} onDismiss={dismissAll}>
+      <p>
+        oto is holding notifications on <span class="font-medium">{countLabel()}</span>. They are
+        still firing and still whatever severity they were — only oto is quiet.
+      </p>
 
-        <ul class="mt-0.5 flex flex-col">
-          <For each={shown()}>
-            {(s) => (
-              <li class="flex flex-wrap items-baseline gap-x-2">
-                <A
-                  href={`/alerts/${s.alert_id}`}
-                  class="font-medium text-ink underline decoration-line-strong underline-offset-2 hover:decoration-accent"
-                >
-                  {s.alert?.alertname ?? s.alert_key}
-                </A>
-                <Show when={s.alert?.cluster_key}>
-                  {(key) => <span class="font-mono text-[11px] text-ink-subtle">{key()}</span>}
-                </Show>
-                <span class="text-ink-muted">
-                  resumes <RelativeTime value={s.snoozed_until} label="Notifications resume" />
-                </span>
-                <span class="text-ink-subtle">{s.snoozed_by_label}</span>
-                <Show when={s.note}>
-                  {(note) => <span class="truncate text-ink-subtle">— {note()}</span>}
-                </Show>
-              </li>
-            )}
-          </For>
-        </ul>
+      <ul class="mt-0.5 flex flex-col">
+        <For each={shown()}>
+          {(s) => (
+            <li class="flex flex-wrap items-baseline gap-x-2">
+              <A
+                href={`/alerts/${s.alert_id}`}
+                class="font-medium text-ink underline decoration-line-strong underline-offset-2 hover:decoration-accent"
+              >
+                {s.alert?.alertname ?? s.alert_key}
+              </A>
+              <Show when={s.alert?.cluster_key}>
+                {(key) => <span class="font-mono text-[11px] text-ink-subtle">{key()}</span>}
+              </Show>
+              <span class="text-ink-muted">
+                resumes <RelativeTime value={s.snoozed_until} label="Notifications resume" />
+              </span>
+              <span class="text-ink-subtle">{s.snoozed_by_label}</span>
+              <Show when={s.note}>
+                {(note) => <span class="truncate text-ink-subtle">— {note()}</span>}
+              </Show>
+            </li>
+          )}
+        </For>
+      </ul>
 
-        <Show when={more() > 0 || partial()}>
-          <A href="/alerts?snoozed=true" class="font-medium text-accent">
-            {`${more()}${partial() ? "+" : ""} more — open every held alert`}
-          </A>
-        </Show>
-      </ShellBanner>
-    </Show>
+      <Show when={more() > 0 || partial()}>
+        <A href="/alerts?snoozed=true" class="font-medium text-accent">
+          {`${more()}${partial() ? "+" : ""} more — open every held alert`}
+        </A>
+      </Show>
+    </ShellBanner>
   );
 };

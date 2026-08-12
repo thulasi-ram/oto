@@ -1,5 +1,11 @@
 /**
- * The two banners that tell an operator whether a calm list is evidence of calm.
+ * The banners that tell an operator whether a calm list is evidence of calm.
+ *
+ * Two of them are queries the shell reads — a source oto cannot reach, and a
+ * quiet period oto is holding. The third, `ResyncBanner`, lives in `AppShell` and
+ * is driven by the live stream instead; it is tested here because what all three
+ * share is `ShellBanner`, and the property that matters most is a property of the
+ * strip rather than of the fact behind it.
  *
  * ⛔ THE PROPERTY UNDER TEST IS SYMMETRIC, AND ONLY ONE HALF OF IT IS OBVIOUS.
  * A banner that shows its content on the degraded path is easy. A banner that is
@@ -9,18 +15,28 @@
  * requests first — otherwise "absent" would only mean "has not loaded yet",
  * which is a test that passes for the wrong reason forever.
  *
+ * A third property sits between them and is invisible to both: whether the
+ * strip is ever actually *spoken*. A live region that arrives already holding
+ * its words is one screen readers commonly never announce, so "the text is on
+ * screen" and "the operator was told" are different claims, and only the second
+ * one is what these strips are for. It is asserted the only way jsdom can — by
+ * node identity, holding the region before the news and requiring the news to
+ * land in that same node.
+ *
  * The last describe is the one ADR 0012 exists for: neither banner may reach for
  * a Tier-B state hue. Losing sight of a source and holding a notification are
  * facts about oto, not the state of an alert, and spending a state colour on them
  * would blunt the scarcity that makes a firing row loud.
  */
 import { fireEvent, screen } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SnoozeBanner, SourceReachBanner, resetDismissedSnoozes } from "./ShellBanner";
+import { LiveProvider } from "~/api/live";
 import { qk } from "~/api/keys";
+import { ResyncBanner } from "~/components/AppShell";
 import { expectNoUndefined, flush, list, renderScreen, stubFetch, until } from "~/test/harness";
-import { snooze, source } from "~/test/fixtures";
+import { frame, snooze, source, sse } from "~/test/fixtures";
 import type { QueryClient } from "@tanstack/solid-query";
 import type { ActiveSnooze, Source } from "~/api/types";
 import type { FetchStub } from "~/test/harness";
@@ -113,17 +129,26 @@ const text = (): string => document.body.textContent ?? "";
 beforeEach(() => resetDismissedSnoozes());
 
 describe("a healthy org", () => {
-  it("renders no banner, no live region and nothing to dismiss", async () => {
+  it("renders no visible strip, nothing to dismiss, and announces nothing", async () => {
     const { stub } = mount({ sources: [source()], snoozes: [] });
     await settled(stub);
 
     expect(text()).not.toContain("cannot reach");
     expect(text()).not.toContain("holding notifications");
-    // No strip at all — not an empty one. An empty strip would still cost the
-    // header a border and the table below a few pixels of offset.
-    expect(screen.queryAllByRole("status")).toHaveLength(0);
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
     expect(document.querySelectorAll("li")).toHaveLength(0);
+
+    // ⛔ WHAT IS MOUNTED HERE, AND WHY IT IS STILL "NOTHING". The announcement
+    // region has to pre-date the news or the news is announced to no one, so it
+    // is here — holding nothing, wearing nothing. Both halves are the
+    // requirement: empty means a healthy org is never announced however often
+    // the shell re-renders, and unstyled means zero pixels, because a *dressed*
+    // empty strip would still cost the header a border and the table below an
+    // offset. That is the whole reason the strip is not simply permanent.
+    const region = document.querySelector("[aria-live]");
+    expect(region).not.toBeNull();
+    expect(region!.textContent).toBe("");
+    expect(region!.getAttribute("class") ?? "").toBe("");
   });
 
   it("says nothing for a source that is merely degraded", async () => {
@@ -137,7 +162,7 @@ describe("a healthy org", () => {
     await settled(stub);
 
     expect(text()).not.toContain("cannot reach");
-    expect(screen.queryAllByRole("status")).toHaveLength(0);
+    expect(document.querySelector("[aria-live]")!.textContent).toBe("");
   });
 });
 
@@ -159,7 +184,11 @@ describe("an unreachable source", () => {
     expect(text()).toContain("may be one oto can no longer see");
 
     // One polite announcement, and no way to make it go away while it is true.
-    expect(screen.getAllByRole("status")).toHaveLength(1);
+    // (That it is announced *at all* is the case below; here it is only that the
+    // words landed in the region rather than beside it.)
+    const regions = document.querySelectorAll("[aria-live]");
+    expect(regions).toHaveLength(1);
+    expect(regions[0]!.textContent).toContain("cannot reach");
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
 
     // The upstream error is one hover away rather than on screen.
@@ -181,8 +210,10 @@ describe("an unreachable source", () => {
 
     await until(() => expect(text()).toContain("cannot reach"));
     // Four unreachable sources, still one strip: a strip per source would stack
-    // until it pushed the alert table off screen.
-    expect(screen.getAllByRole("status")).toHaveLength(1);
+    // until it pushed the alert table off screen. One region, therefore one
+    // announcement, not four.
+    expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
+    expect(document.querySelectorAll("p")).toHaveLength(1);
 
     // Three named, the rest counted, and the reachable one never mentioned.
     expect(text()).toContain("am-eu");
@@ -193,6 +224,66 @@ describe("an unreachable source", () => {
     expect(text()).not.toContain("am-well");
     // Plural copy, because four sources are not "it".
     expect(text()).toContain("Their");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Whether the strip is ever actually spoken                                  */
+/* -------------------------------------------------------------------------- */
+
+describe("how a strip reaches a screen reader", () => {
+  it("announces through a region that was already there, not one that arrives holding the news", async () => {
+    // ⛔ THE ASSERTION IS ABOUT NODE IDENTITY, AND NOTHING ELSE WOULD CATCH THIS.
+    // Assistive technology speaks mutations inside a region that already existed;
+    // a region that enters the DOM already holding its words is commonly spoken
+    // by nothing at all. jsdom has no announcement model, so `getByRole` and
+    // `getByText` pass under either shape — what separates them is whether the
+    // node holding the sentence is the node that was mounted before it.
+    //
+    // So the region is taken here while the source list is still in flight, and
+    // it is THAT reference the sentence has to turn up in. Under the old shape —
+    // a `<Show>` around the whole strip — the reference would not exist at all,
+    // and under any future one that remounts the strip it would go stale while a
+    // fresh sibling took the words.
+    const { stub } = mount({ sources: [unreachable("am-eu", "src-1", "i/o timeout")] });
+
+    const region = document.querySelector("[aria-live]");
+    expect(region).not.toBeNull();
+    expect(region!.textContent).toBe("");
+
+    await settled(stub);
+    await until(() => expect(region!.textContent).toContain("cannot reach"));
+
+    // The same node, still in the document, and still the only one.
+    expect(region!.isConnected).toBe(true);
+    expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
+
+    // Polite and whole: read once, read complete, and never over the top of
+    // whatever the operator is already hearing. `aria-relevant` is left at its
+    // default — text arriving is already covered by it, and the strip leaving is
+    // not news worth speaking.
+    expect(region!.getAttribute("aria-live")).toBe("polite");
+    expect(region!.getAttribute("aria-atomic")).toBe("true");
+    expect(region!.hasAttribute("aria-relevant")).toBe(false);
+  });
+
+  it("goes quiet again by emptying that same region rather than dropping it", async () => {
+    // The other half. Health returns, the strip must leave the screen, and the
+    // region must NOT leave with it: the next outage needs somewhere to be
+    // announced. A region recreated per outage is the original bug on a delay.
+    const { stub, client } = mount({ sources: [unreachable("am-eu", "src-1", "i/o timeout")] });
+    const region = document.querySelector("[aria-live]")!;
+    await settled(stub);
+    await until(() => expect(region.textContent).toContain("cannot reach"));
+
+    stub.on("GET /api/v1/sources", list([source({ id: "src-1", name: "am-eu" })]));
+    await client.invalidateQueries({ queryKey: qk.settings.sources() });
+
+    await until(() => expect(region.textContent).toBe(""));
+    expect(region.isConnected).toBe(true);
+    // Empty *and* undressed, so the header goes back to one flat line.
+    expect(region.getAttribute("class") ?? "").toBe("");
+    expect(text()).not.toContain("cannot reach");
   });
 });
 
@@ -231,6 +322,12 @@ describe("active snoozes", () => {
 
     await until(() => expect(text()).toContain("holding notifications on"));
     expect(screen.queryAllByRole("status")).toHaveLength(0);
+    // Asked from inside the strip rather than by counting regions on the page:
+    // the healthy source strip keeps its own (empty) one mounted, and the claim
+    // here is about this strip's rows, not about the header's total.
+    const row = document.querySelector("li");
+    expect(row).not.toBeNull();
+    expect(row!.closest("[aria-live]")).toBeNull();
   });
 
   it("stops enumerating at five and hands the rest to the filtered list", async () => {
@@ -317,5 +414,107 @@ describe("the two-tier colour rule", () => {
       // unacked-critical dot, and neither of these strips is urgency.
       expect(cls, `a shell banner animates: \`${cls}\``).not.toMatch(/animate-|oto-pulse|oto-enter/);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The third strip, whose input is the stream itself                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Push frames into a `text/event-stream` body the stream is already reading.
+ *
+ * `ResyncBanner` has no query behind it — `useLive()` is its only input — so the
+ * only way to raise it is to be the server. The shape is the one `live.test.tsx`
+ * uses: a stubbed `fetch` that answers with a `ReadableStream` the test holds the
+ * controller for.
+ */
+async function mountResync(): Promise<(text: string) => Promise<void>> {
+  const pushes: ((text: string) => void)[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => {
+      const encoder = new TextEncoder();
+      let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      });
+      pushes.push((t) => controller?.enqueue(encoder.encode(t)));
+      return Promise.resolve({ ok: true, status: 200, body });
+    }),
+  );
+
+  renderScreen(() => (
+    <LiveProvider>
+      <ResyncBanner />
+    </LiveProvider>
+  ));
+
+  await until(() => expect(pushes.length).toBeGreaterThanOrEqual(1));
+  const push = pushes[0]!;
+  return async (t) => {
+    push(t);
+    await flush();
+  };
+}
+
+describe("a resync the server ordered", () => {
+  it("announces through a region that predates the news, because nothing else could", async () => {
+    // ⛔ THIS STRIP DEPENDS ON THE MOUNTED REGION MORE COMPLETELY THAN THE OTHERS.
+    // The other two are reachable by eye: an operator watching the source list can
+    // see it stop changing. A resync is entirely out of band — it is the client
+    // being told that everything already on screen may have been wrong — and the
+    // one sentence that says so arrives with no visible cause at all. If the
+    // region were created along with the sentence, the announcement most screen
+    // readers make is none, and the only channel this fact has is gone.
+    //
+    // The text is also static, which is what makes a live region the right tool
+    // here and the wrong one for `SnoozeBanner`: it arrives once, is read once,
+    // and does not change again while it is up.
+    const push = await mountResync();
+
+    // Taken before the server has said anything: the strip is invisible, but the
+    // node that will carry its words is already in the document and already empty.
+    const region = document.querySelector("[aria-live]");
+    expect(region).not.toBeNull();
+    expect(region!.textContent).toBe("");
+    expect(region!.getAttribute("class") ?? "").toBe("");
+
+    await push(sse(frame(1, "resync", { reason: "replay_window_exceeded" })));
+
+    // THAT node, not a sibling that arrived holding the sentence.
+    await until(() => expect(region!.textContent).toContain("could not keep this page"));
+    expect(region!.isConnected).toBe(true);
+    expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
+
+    // The reason is named rather than generalised: an operator who was away for a
+    // day and one whose buffer overflowed have different things to do next.
+    expect(region!.textContent).toContain("24-hour replay window");
+    expect(region!.textContent).toContain("has been refetched");
+
+    // Polite and whole, exactly as the source strip is.
+    expect(region!.getAttribute("aria-live")).toBe("polite");
+    expect(region!.getAttribute("aria-atomic")).toBe("true");
+    expectNoUndefined(document.body);
+  });
+
+  it("empties that same region on Dismiss rather than dropping it", async () => {
+    // The operator has read it and acknowledged it; the next resync still needs
+    // somewhere to be announced, and a region recreated per resync is the bug
+    // this whole shape exists to avoid.
+    const push = await mountResync();
+    const region = document.querySelector("[aria-live]")!;
+
+    await push(sse(frame(1, "resync", { reason: "buffer_overflow" })));
+    await until(() => expect(region.textContent).toContain("update buffer overflowed"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    await until(() => expect(region.textContent).toBe(""));
+    expect(region.isConnected).toBe(true);
+    // Empty *and* undressed, so the header goes back to one flat line.
+    expect(region.getAttribute("class") ?? "").toBe("");
   });
 });

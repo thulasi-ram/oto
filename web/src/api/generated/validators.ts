@@ -1299,16 +1299,16 @@ export const ChannelTypeDTOSchema = v.looseObject({
   "config_schema": v.record(v.string(), v.unknown()),
   "credential_kinds": v.pipe(
     v.array(v.picklist(["slack_bot_token", "slack_app_token", "slack_signing_secret", "basic", "bearer", "none"])),
-    v.maxLength(16),
+    v.maxLength(6),
   ),
   "capabilities": v.pipe(
     v.array(v.picklist(["threading", "amend", "rich_layout", "interactive", "broadcast", "dedupe_key"])),
-    v.maxLength(16),
+    v.maxLength(6),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "renderers": v.pipe(
     v.array(RendererIdSchema),
-    v.maxLength(8),
+    v.maxLength(3),
   ),
   "rate_limit_class": v.exactOptional(v.picklist(["slack", "none"])),
 });
@@ -1407,7 +1407,7 @@ export const PolicyDTOSchema = v.looseObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(32),
+    v.maxLength(18),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -2546,7 +2546,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(32),
+    v.maxLength(18),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -2585,7 +2585,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
     "reasons": v.exactOptional(v.pipe(
       v.array(NotificationReasonSchema),
       v.minLength(1),
-      v.maxLength(32),
+      v.maxLength(18),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "channel_ids": v.exactOptional(v.pipe(

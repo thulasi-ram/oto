@@ -118,21 +118,31 @@ const ConnectionBadge = (): JSX.Element => {
  * The server told us our incremental state is untrustworthy. That is not a
  * cosmetic event — everything on screen may be wrong — so it gets a persistent
  * banner rather than a toast that can be missed.
+ *
+ * Exported for `ShellBanner.test.tsx` only. It is the one strip with no query
+ * behind it — the stream itself is its input — so the only way to test it is to
+ * mount it under a `LiveProvider` and be the server.
  */
-const ResyncBanner = (): JSX.Element => {
+export const ResyncBanner = (): JSX.Element => {
   const live = useLive();
   return (
-    <Show when={live.detail().resyncReason !== null}>
-      <ShellBanner onDismiss={() => live.acknowledgeResync()}>
-        <span>
-          oto could not keep this page's live updates in order
-          {live.detail().resyncReason === "replay_window_exceeded"
-            ? " — this tab was away longer than the 24-hour replay window"
-            : " — the update buffer overflowed"}
-          . The data below has been refetched.
-        </span>
-      </ShellBanner>
-    </Show>
+    // `when` on the strip rather than a `<Show>` around it, so the polite region
+    // is mounted from the first frame and the resync is a mutation *inside* a
+    // region that already existed. A region that arrives already holding this
+    // sentence is one screen readers commonly never speak, and this is the
+    // sentence that says everything on screen may have been wrong.
+    <ShellBanner
+      when={live.detail().resyncReason !== null}
+      onDismiss={() => live.acknowledgeResync()}
+    >
+      <span>
+        oto could not keep this page's live updates in order
+        {live.detail().resyncReason === "replay_window_exceeded"
+          ? " — this tab was away longer than the 24-hour replay window"
+          : " — the update buffer overflowed"}
+        . The data below has been refetched.
+      </span>
+    </ShellBanner>
   );
 };
 
@@ -310,9 +320,20 @@ export const AppShell: ParentComponent = (props) => {
         </div>
         {/* Ordered by how much of the screen each one calls into question: the
             live stream first, then whether oto can still see every source, then
-            what oto is deliberately keeping quiet about. Each renders nothing at
-            all when it has nothing to say, so the happy path is one flat header
-            and the table below never shifts. */}
+            what oto is deliberately keeping quiet about. Each renders nothing
+            visible when it has nothing to say, so the happy path is one flat
+            header and the table below never shifts.
+
+            All three keep a node mounted while silent so the strip's arrival is
+            an update to something already there rather than a new element the
+            reader never hears about — but only two of those nodes announce.
+            ResyncBanner and SourceReachBanner keep a live REGION, because their
+            text is static: it arrives once, is read once, and does not change
+            again while it is up. SnoozeBanner keeps a SILENT node instead
+            (`announce={false}`), because its rows carry `RelativeTime`
+            countdowns, and a polite region wrapped around a ticking clock
+            re-reads the whole banner every time the clock moves. See
+            `ShellBanner.tsx` for the mounted-region argument at length. */}
         <ResyncBanner />
         <SourceReachBanner />
         <SnoozeBanner />
