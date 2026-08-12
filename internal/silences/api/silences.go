@@ -38,22 +38,39 @@ type SilenceService interface {
 // Compile-time proof that the service satisfies the port this layer declares.
 var _ SilenceService = (*service.Service)(nil)
 
+// SourceBaseURLs resolves, for each named source, a base URL oto can VOUCH FOR
+// as an Alertmanager UI root — the deep link's other half, since a silence
+// belongs to a source and a deployment has more than one.
+//
+// ⚠️ IT IS DECLARED HERE, IN PLAIN TYPES, because `silences` may not name
+// `sources/domain` (depguard, silences-must-not-reach-into-other-domains). The
+// composition root maps the Sources onto ids and strings.
+//
+// ⛔ AN ID MAY COME BACK MISSING, AND THAT IS NOT AN ERROR. The answer is not
+// "every source's base URL": a source whose UI is not an Alertmanager's has a
+// perfectly good base URL that this link's shape does not address, and the
+// composition root drops it rather than let it be guessed at. Absent means no
+// link, which is a thing this layer already knows how to render.
+//
+// It is BATCH because a page is rendered at once: one lookup per page, never one
+// per row.
+type SourceBaseURLs interface {
+	BaseURLs(ctx context.Context, s db.TenantScope, ids []uuid.UUID) (map[uuid.UUID]string, error)
+}
+
 // Router serves the Silences tag.
 type Router struct {
-	svc SilenceService
-	clk clock.Clock
-	// alertmanagerURL is the base URL of the Alertmanager UI, used to build the
-	// per-silence deep link. Empty when the deployment has not configured one, in
-	// which case the link is null rather than a guess.
-	alertmanagerURL string
+	svc     SilenceService
+	sources SourceBaseURLs
+	clk     clock.Clock
 }
 
 // NewRouter builds the silences HTTP surface.
-func NewRouter(svc SilenceService, alertmanagerURL string, clk clock.Clock) *Router {
+func NewRouter(svc SilenceService, sources SourceBaseURLs, clk clock.Clock) *Router {
 	if clk == nil {
 		clk = clock.New()
 	}
-	return &Router{svc: svc, clk: clk, alertmanagerURL: strings.TrimRight(alertmanagerURL, "/")}
+	return &Router{svc: svc, sources: sources, clk: clk}
 }
 
 // Register mounts every route this package owns onto r, already rooted at
@@ -128,9 +145,10 @@ func (rt *Router) listSilences(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+	bases := rt.baseURLs(r.Context(), scope, res.Silences)
 	out := make([]SilenceDTO, 0, len(res.Silences))
 	for _, s := range res.Silences {
-		out = append(out, rt.silenceDTO(s))
+		out = append(out, silenceDTO(s, bases))
 	}
 	httpx.List(w, r, out, httpx.PageOf(res.Cursor, q.Limit), started)
 }
@@ -162,8 +180,9 @@ func (rt *Router) getSilence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bases := rt.baseURLs(r.Context(), scope, []domain.Silence{detail.Silence})
 	dto := SilenceDetailDTO{
-		SilenceDTO:    rt.silenceDTO(detail.Silence),
+		SilenceDTO:    silenceDTO(detail.Silence, bases),
 		MatchedAlerts: make([]AlertRefDTO, 0, len(detail.Matched)),
 		MatchedCount:  int32(detail.MatchedCount),
 	}
@@ -173,8 +192,36 @@ func (rt *Router) getSilence(w http.ResponseWriter, r *http.Request) {
 	httpx.Data(w, r, http.StatusOK, dto, started)
 }
 
+// baseURLs resolves the Alertmanager root of every source on the page, once.
+//
+// A failure resolving them is NOT a failed request: the rows are what was asked
+// for and the deep link is an affordance on top of them, so the links degrade to
+// null and the page still answers.
+func (rt *Router) baseURLs(
+	ctx context.Context, scope db.TenantScope, silences []domain.Silence,
+) map[uuid.UUID]string {
+	if rt.sources == nil {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(silences))
+	seen := make(map[uuid.UUID]struct{}, len(silences))
+	for _, s := range silences {
+		id := s.SourceID()
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	bases, err := rt.sources.BaseURLs(ctx, scope, ids)
+	if err != nil {
+		return nil
+	}
+	return bases
+}
+
 // silenceDTO maps a mirrored silence onto the wire.
-func (rt *Router) silenceDTO(s domain.Silence) SilenceDTO {
+func silenceDTO(s domain.Silence, bases map[uuid.UUID]string) SilenceDTO {
 	matchers := make([]SilenceMatcherDTO, 0, len(s.Matchers()))
 	for _, m := range s.Matchers() {
 		matchers = append(matchers, SilenceMatcherDTO{
@@ -198,20 +245,29 @@ func (rt *Router) silenceDTO(s domain.Silence) SilenceDTO {
 		State:           s.State().String(),
 		SourceUpdatedAt: timePtr(s.SourceUpdatedAt()),
 		MirroredAt:      s.MirroredAt(),
-		AlertmanagerURL: rt.deepLink(s),
+		AlertmanagerURL: deepLink(s, bases),
 	}
 }
 
-// deepLink builds the Alertmanager UI link for one silence.
+// deepLink builds the Alertmanager UI link for one silence, from the base URL of
+// the source that silence was mirrored from.
 //
-// It is null when no Alertmanager base URL is configured. A guessed link is worse
-// than none: an operator who clicks it during an incident and lands on a 404 has
-// lost the one affordance v1 offers.
-func (rt *Router) deepLink(s domain.Silence) *string {
-	if rt.alertmanagerURL == "" {
+// It is null when that source resolved to nothing: no such source, no base URL,
+// a lookup that failed — or a source whose UI this URL shape does not address,
+// since `/#/silences/<id>` is Alertmanager's own console and a Grafana-backed
+// source keeps its silences somewhere else entirely. The port hands back only
+// the roots oto can vouch for, so all four arrive here as the same absence.
+//
+// A guessed link is worse than none: an operator who clicks it during an
+// incident and lands on a 404 has lost the one affordance v1 offers — and in an
+// N-source deployment, any link not derived from the silence's OWN source is
+// that guess for every source but one.
+func deepLink(s domain.Silence, bases map[uuid.UUID]string) *string {
+	base := strings.TrimRight(bases[s.SourceID()], "/")
+	if base == "" {
 		return nil
 	}
-	url := rt.alertmanagerURL + "/#/silences/" + s.SourceSilenceID()
+	url := base + "/#/silences/" + s.SourceSilenceID()
 	return &url
 }
 

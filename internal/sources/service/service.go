@@ -103,6 +103,16 @@ func (s *Service) List(ctx context.Context, scope db.TenantScope, f domain.Sourc
 	return s.repo.List(ctx, scope, f, p)
 }
 
+// ListByIDs returns the live sources named by ids, in one lookup rather than one
+// per id.
+//
+// It is the read a page-rendering caller needs: a list of rows that each name a
+// source resolves every one of them here, not row by row. An id this org does not
+// own is absent from the result, never an error.
+func (s *Service) ListByIDs(ctx context.Context, scope db.TenantScope, ids []uuid.UUID) ([]domain.Source, error) {
+	return s.repo.ListByIDs(ctx, scope, ids)
+}
+
 // Health returns the liveness projection for one source.
 //
 // Anything other than healthy BLOCKS the reaper (SPEC §B.4). Callers must read

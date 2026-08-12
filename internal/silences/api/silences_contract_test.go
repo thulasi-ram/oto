@@ -48,20 +48,39 @@ var (
 	contractSourceID  = uuid.MustParse("22222222-2222-4222-8222-222222222222")
 	contractAlertID   = uuid.MustParse("33333333-3333-4333-8333-333333333333")
 	contractClusterID = uuid.MustParse("44444444-4444-4444-8444-444444444444")
+
+	// A SECOND source, and the rows mirrored from it. A per-source link is only
+	// observable on a page whose rows do not all come from one source: with a
+	// single-source fixture, a handler that resolves every row against whichever
+	// source it happened to look up first passes every assertion.
+	contractOtherSilenceID = uuid.MustParse("55555555-5555-4555-8555-555555555555")
+	contractOtherSourceID  = uuid.MustParse("66666666-6666-4666-8666-666666666666")
+
+	// A THIRD row, deliberately from `contractSourceID` again, so the batch
+	// lookup has something to deduplicate.
+	contractRepeatSilenceID = uuid.MustParse("77777777-7777-4777-8777-777777777777")
 )
 
-const contractAlertmanagerURL = "https://alertmanager.example.com"
+const (
+	contractAlertmanagerURL      = "https://alertmanager.example.com"
+	contractOtherAlertmanagerURL = "https://alertmanager.eu.example.com"
+
+	contractSourceSilenceID = "b7f3a1c2-9d84-4e15-a0f6-3c8b2d7e1a94"
+	contractOtherSilenceUID = "c1e4b2d3-0a95-4f26-b1e7-4d9c3e8f2b05"
+	contractRepeatUID       = "d2f5c3e4-1ba6-4037-a2f8-5ead4f903c16"
+)
 
 var contractEpoch = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 
 // ------------------------------------------------------------------- doubles
 
-// fakeSilenceService owns exactly one silence, and answers 404 for every other
-// id. That is what makes the tenant probe honest: the handler cannot pass by
-// accident, because the only path to a 200 is the id this tenant owns.
+// fakeSilenceService owns exactly the silences its fixture seeded, and answers
+// 404 for every other id. That is what makes the tenant probe honest: the handler
+// cannot pass by accident, because the only path to a 200 is an id this tenant
+// owns.
 type fakeSilenceService struct {
-	silence domain.Silence
-	matched []alertdomain.Alert
+	silences []domain.Silence
+	matched  []alertdomain.Alert
 
 	// listErr and getErr force the failure branches.
 	listErr error
@@ -78,7 +97,7 @@ func (f *fakeSilenceService) List(
 	if f.listErr != nil {
 		return service.ListResult{}, f.listErr
 	}
-	return service.ListResult{Silences: []domain.Silence{f.silence}}, nil
+	return service.ListResult{Silences: f.silences}, nil
 }
 
 func (f *fakeSilenceService) Get(
@@ -88,16 +107,52 @@ func (f *fakeSilenceService) Get(
 	if f.getErr != nil {
 		return service.Detail{}, f.getErr
 	}
+	for _, s := range f.silences {
+		if s.ID() == id {
+			return service.Detail{
+				Silence:      s,
+				Matched:      f.matched,
+				MatchedCount: len(f.matched),
+			}, nil
+		}
+	}
 	// ⛔ Anything this tenant does not own is a 404, never a 403 and never
 	// somebody else's row.
-	if id != f.silence.ID() {
-		return service.Detail{}, errs.NotFound("not_found", "no such resource")
+	return service.Detail{}, errs.NotFound("not_found", "no such resource")
+}
+
+// fakeSourceBaseURLs answers ONLY about the ids it was actually asked for, out of
+// the roots its fixture declared.
+//
+// ⛔ IT MUST NOT ANSWER ABOUT ANYTHING ELSE, and an earlier version of this double
+// did: it ignored `ids` and returned the one known URL unconditionally, so a
+// handler that resolved every row against whichever source it looked up first
+// would have passed the whole suite. Honouring `ids` is what makes "null rather
+// than guessed" a real assertion — a link can only appear if the handler named
+// the silence's OWN source.
+type fakeSourceBaseURLs struct {
+	byID map[uuid.UUID]string
+	err  error
+
+	calls int
+	ids   []uuid.UUID
+}
+
+func (f *fakeSourceBaseURLs) BaseURLs(
+	_ context.Context, _ db.TenantScope, ids []uuid.UUID,
+) (map[uuid.UUID]string, error) {
+	f.calls++
+	f.ids = append(f.ids, ids...)
+	if f.err != nil {
+		return nil, f.err
 	}
-	return service.Detail{
-		Silence:      f.silence,
-		Matched:      f.matched,
-		MatchedCount: len(f.matched),
-	}, nil
+	out := make(map[uuid.UUID]string, len(ids))
+	for _, id := range ids {
+		if base, ok := f.byID[id]; ok {
+			out[id] = base
+		}
+	}
+	return out, nil
 }
 
 // ------------------------------------------------------------------ fixtures
@@ -106,6 +161,17 @@ func (f *fakeSilenceService) Get(
 // through the domain constructor, so the fixture cannot drift into a shape the
 // repository could never hand a handler.
 func contractSilence(t *testing.T) domain.Silence {
+	t.Helper()
+	return contractSilenceFrom(t, contractSilenceID, contractSourceID, contractSourceSilenceID)
+}
+
+// contractSilenceFrom is contractSilence with the identity varied, for the pages
+// that carry rows from more than one source. Everything else is held constant on
+// purpose: those tests are about which source each row's link was derived from,
+// and a second thing varying alongside it would blur the reading.
+func contractSilenceFrom(
+	t *testing.T, id, sourceID uuid.UUID, sourceSilenceID string,
+) domain.Silence {
 	t.Helper()
 
 	byNamespace, err := domain.NewMatcher("namespace", "prod", false, true)
@@ -118,10 +184,10 @@ func contractSilence(t *testing.T) domain.Silence {
 	}
 
 	s, err := domain.New(domain.Params{
-		ID:              contractSilenceID,
+		ID:              id,
 		OrgID:           apitest.OrgID,
-		SourceID:        contractSourceID,
-		SourceSilenceID: "b7f3a1c2-9d84-4e15-a0f6-3c8b2d7e1a94",
+		SourceID:        sourceID,
+		SourceSilenceID: sourceSilenceID,
 		Matchers:        []domain.Matcher{byNamespace, byName},
 		StartsAt:        contractEpoch,
 		EndsAt:          contractEpoch.Add(2 * time.Hour),
@@ -180,29 +246,81 @@ func contractMatchedAlert(t *testing.T) alertdomain.Alert {
 }
 
 type silenceFixture struct {
-	svc *fakeSilenceService
-	c   *apitest.Client
+	svc     *fakeSilenceService
+	sources *fakeSourceBaseURLs
+	c       *apitest.Client
 }
 
 func newSilenceFixture(t *testing.T) *silenceFixture {
 	t.Helper()
-	return newSilenceFixtureAt(t, contractAlertmanagerURL)
+	return newSilenceFixtureWith(t,
+		[]domain.Silence{contractSilence(t)},
+		map[uuid.UUID]string{contractSourceID: contractAlertmanagerURL})
 }
 
-// newSilenceFixtureAt builds the router with an explicit Alertmanager base URL, so
-// the "no deep link configured" case is reachable.
+// newSilenceFixtureWith builds the router over an explicit page and an explicit
+// set of resolvable Alertmanager roots, because the deep link is a claim about
+// the PAIRING of the two: which row got which root, and which row got none.
+// Both halves therefore have to be stated per test rather than assumed.
 //
 // The clock is the REAL one on purpose: `meta.elapsed_ms` is derived from
 // `time.Since(started)`, and a fake epoch would make every success body report an
 // elapsed time of several months.
-func newSilenceFixtureAt(t *testing.T, alertmanagerURL string) *silenceFixture {
+func newSilenceFixtureWith(
+	t *testing.T, page []domain.Silence, bases map[uuid.UUID]string,
+) *silenceFixture {
 	t.Helper()
 
-	svc := &fakeSilenceService{silence: contractSilence(t)}
+	svc := &fakeSilenceService{silences: page}
 	svc.matched = []alertdomain.Alert{contractMatchedAlert(t)}
+	sources := &fakeSourceBaseURLs{byID: bases}
 
-	rt := NewRouter(svc, alertmanagerURL, clock.New())
-	return &silenceFixture{svc: svc, c: apitest.New(rt)}
+	rt := NewRouter(svc, sources, clock.New())
+	return &silenceFixture{svc: svc, sources: sources, c: apitest.New(rt)}
+}
+
+// silenceRows is the list page's rows keyed by silence id, so an assertion about
+// one row does not silently depend on the order the fixture was written in.
+func silenceRows(t *testing.T, resp *apitest.Response, want int) map[uuid.UUID]map[string]any {
+	t.Helper()
+
+	rows, ok := resp.JSON(t)["data"].([]any)
+	if !ok || len(rows) != want {
+		t.Fatalf("data has %v row(s), want %d: %s", resp.JSON(t)["data"], want, resp)
+	}
+	out := make(map[uuid.UUID]map[string]any, want)
+	for _, r := range rows {
+		row, ok := r.(map[string]any)
+		if !ok {
+			t.Fatalf("a row is not an object: %s", resp)
+		}
+		raw, _ := row["id"].(string)
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			t.Fatalf("a row's id is not a uuid: %v", row["id"])
+		}
+		out[id] = row
+	}
+	if len(out) != want {
+		t.Fatalf("the page carries a duplicate silence id: %s", resp)
+	}
+	return out
+}
+
+// silenceLink is one row's `alertmanager_url`, and reports whether it is set at
+// all — the null case is a real answer here, not a missing one.
+func silenceLink(t *testing.T, row map[string]any) (string, bool) {
+	t.Helper()
+
+	raw, present := row["alertmanager_url"]
+	if !present || raw == nil {
+		return "", false
+	}
+	link, ok := raw.(string)
+	if !ok {
+		t.Fatalf("alertmanager_url = %v, want a string or null", raw)
+	}
+	return link, true
 }
 
 // ------------------------------------------------------------- happy paths
@@ -260,25 +378,216 @@ func TestGetSilenceAnswersTheDetailShapeTheContractDeclares(t *testing.T) {
 	}
 }
 
-// TestTheAlertmanagerDeepLinkIsNullRatherThanGuessedWhenNoBaseURLIsConfigured.
+// TestTheAlertmanagerDeepLinkIsBuiltFromTheSilencesOwnSource.
 //
-// The promise: `alertmanager_url` is null when the deployment configured no
-// Alertmanager base URL, and never a fabricated one.
+// The promise: `alertmanager_url` addresses the Alertmanager the silence was
+// mirrored FROM.
+//
+// What broke: the link used to be a single process-wide URL handed in at
+// construction — which in an N-source deployment sends every cluster's silences
+// to one cluster's UI — and the composition root supplied it as the empty string,
+// so the field was null in every response oto ever served.
+func TestTheAlertmanagerDeepLinkIsBuiltFromTheSilencesOwnSource(t *testing.T) {
+	t.Parallel()
+
+	f := newSilenceFixture(t)
+	resp := f.c.GET("/silences").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listSilences", http.StatusOK, resp.Body())
+
+	row := silenceRows(t, resp, 1)[contractSilenceID]
+	want := contractAlertmanagerURL + "/#/silences/" + contractSourceSilenceID
+	if got, _ := silenceLink(t, row); got != want {
+		t.Fatalf("alertmanager_url = %q, want %q", got, want)
+	}
+	if len(f.sources.ids) != 1 || f.sources.ids[0] != contractSourceID {
+		t.Fatalf("the lookup asked about %v, want just the silence's own source", f.sources.ids)
+	}
+}
+
+// TestEachSilenceOnAPageIsLinkedToItsOwnSourceAndNotItsNeighbours.
+//
+// The promise: on a page whose rows come from DIFFERENT sources, every row's
+// link is derived from the source that row names — never from another row's.
+//
+// What broke: this is the defect the per-source lookup exists to fix, and the
+// only page shape that can catch it. With every fixture row sharing one source,
+// a handler that resolved the page against a single base URL — the old
+// process-wide one, or simply the first entry it found — is indistinguishable
+// from a correct one, which is exactly how the single-URL version survived
+// review in the first place.
+func TestEachSilenceOnAPageIsLinkedToItsOwnSourceAndNotItsNeighbours(t *testing.T) {
+	t.Parallel()
+
+	f := newSilenceFixtureWith(t,
+		[]domain.Silence{
+			contractSilence(t),
+			contractSilenceFrom(t, contractOtherSilenceID, contractOtherSourceID, contractOtherSilenceUID),
+		},
+		map[uuid.UUID]string{
+			contractSourceID:      contractAlertmanagerURL,
+			contractOtherSourceID: contractOtherAlertmanagerURL,
+		})
+
+	resp := f.c.GET("/silences").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listSilences", http.StatusOK, resp.Body())
+
+	rows := silenceRows(t, resp, 2)
+	for _, want := range []struct {
+		silence uuid.UUID
+		link    string
+	}{
+		{contractSilenceID, contractAlertmanagerURL + "/#/silences/" + contractSourceSilenceID},
+		{contractOtherSilenceID, contractOtherAlertmanagerURL + "/#/silences/" + contractOtherSilenceUID},
+	} {
+		got, ok := silenceLink(t, rows[want.silence])
+		if !ok {
+			t.Fatalf("silence %s got no link at all, want %q", want.silence, want.link)
+		}
+		if got != want.link {
+			t.Fatalf("silence %s links to %q, want %q — a row sent to another "+
+				"cluster's Alertmanager is a 404 mid-incident", want.silence, got, want.link)
+		}
+	}
+}
+
+// TestOneUnresolvableSourceDoesNotCostTheOtherRowsTheirLink.
+//
+// The promise: the lookup answers about the sources it can vouch for and stays
+// silent about the rest, so a partial answer degrades ONE row to null and leaves
+// the others linked.
+//
+// What broke: the alternative failure modes are both worse than a null. Dropping
+// the whole page's links because one source is unresolvable punishes every other
+// row for it, and filling the gap from a neighbour's base URL sends an operator
+// to somebody else's Alertmanager.
+func TestOneUnresolvableSourceDoesNotCostTheOtherRowsTheirLink(t *testing.T) {
+	t.Parallel()
+
+	f := newSilenceFixtureWith(t,
+		[]domain.Silence{
+			contractSilence(t),
+			contractSilenceFrom(t, contractOtherSilenceID, contractOtherSourceID, contractOtherSilenceUID),
+		},
+		// ⛔ The second source is ABSENT, not empty: this is what a deleted source,
+		// or one whose kind this link's shape does not address, looks like from
+		// here.
+		map[uuid.UUID]string{contractSourceID: contractAlertmanagerURL})
+
+	resp := f.c.GET("/silences").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listSilences", http.StatusOK, resp.Body())
+
+	rows := silenceRows(t, resp, 2)
+	want := contractAlertmanagerURL + "/#/silences/" + contractSourceSilenceID
+	if got, _ := silenceLink(t, rows[contractSilenceID]); got != want {
+		t.Fatalf("alertmanager_url = %q, want %q; one unresolvable source must not "+
+			"cost the rows that did resolve their link", got, want)
+	}
+	if got, ok := silenceLink(t, rows[contractOtherSilenceID]); ok {
+		t.Fatalf("a source the lookup said nothing about was linked to %q anyway", got)
+	}
+}
+
+// TestThePageIsResolvedInOneLookupOfDistinctSourceIDs.
+//
+// The promise: ONE lookup per page, carrying each source id once, however many
+// rows name it.
+//
+// What broke: a link is a rendering detail, and a rendering detail that issues a
+// query per row turns every list in the product into an N+1 — the failure that
+// shows up as a slow page under exactly the load an incident produces.
+func TestThePageIsResolvedInOneLookupOfDistinctSourceIDs(t *testing.T) {
+	t.Parallel()
+
+	f := newSilenceFixtureWith(t,
+		// ⭐ Three rows, TWO sources: the repeat is what makes the deduplication
+		// observable rather than a property of a page that never repeats anything.
+		[]domain.Silence{
+			contractSilence(t),
+			contractSilenceFrom(t, contractOtherSilenceID, contractOtherSourceID, contractOtherSilenceUID),
+			contractSilenceFrom(t, contractRepeatSilenceID, contractSourceID, contractRepeatUID),
+		},
+		map[uuid.UUID]string{
+			contractSourceID:      contractAlertmanagerURL,
+			contractOtherSourceID: contractOtherAlertmanagerURL,
+		})
+
+	resp := f.c.GET("/silences").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listSilences", http.StatusOK, resp.Body())
+
+	if f.sources.calls != 1 {
+		t.Fatalf("the source lookup ran %d time(s), want 1 for the page", f.sources.calls)
+	}
+	want := []uuid.UUID{contractSourceID, contractOtherSourceID}
+	if len(f.sources.ids) != len(want) {
+		t.Fatalf("the lookup asked about %v, want each source once: %v", f.sources.ids, want)
+	}
+	for i, id := range want {
+		if f.sources.ids[i] != id {
+			t.Fatalf("the lookup asked about %v, want %v in first-seen order", f.sources.ids, want)
+		}
+	}
+	// The dedup did not cost the repeated row its link.
+	rows := silenceRows(t, resp, 3)
+	link := contractAlertmanagerURL + "/#/silences/" + contractRepeatUID
+	if got, _ := silenceLink(t, rows[contractRepeatSilenceID]); got != link {
+		t.Fatalf("the repeated source's second row linked to %q, want %q", got, link)
+	}
+}
+
+// TestTheAlertmanagerDeepLinkIsNullRatherThanGuessedWhenTheSourceResolvesToNothing.
+//
+// The promise: `alertmanager_url` is null when the silence's source carries no
+// base URL — or has been deleted, or is not an Alertmanager at all, or the lookup
+// failed — and never a fabricated one.
 //
 // What broke: a guessed link is worse than none. An operator who clicks it during
 // an incident and lands on a 404 has lost the one silence affordance v1 offers,
 // and has lost it at the worst possible moment.
-func TestTheAlertmanagerDeepLinkIsNullRatherThanGuessedWhenNoBaseURLIsConfigured(t *testing.T) {
+func TestTheAlertmanagerDeepLinkIsNullRatherThanGuessedWhenTheSourceResolvesToNothing(t *testing.T) {
 	t.Parallel()
 
-	f := newSilenceFixtureAt(t, "")
-	resp := f.c.GET("/silences").MustStatus(t, http.StatusOK)
-	// ⭐ Still a legal SilenceListResponse: `alertmanager_url` is nullable, so
-	// "no link" is expressible without breaking the schema.
-	schema.Assert(t, "listSilences", http.StatusOK, resp.Body())
+	cases := []struct {
+		name  string
+		bases map[uuid.UUID]string
+		err   error
+	}{
+		{
+			name:  "the source carries no base URL",
+			bases: map[uuid.UUID]string{contractSourceID: ""},
+		},
+		{
+			// ⛔ The kind guard, seen from this side of the port. `/#/silences/<id>`
+			// is Alertmanager's own console; a Grafana-backed source keeps its
+			// silences at `/alerting/silences`, so the composition root refuses to
+			// vouch for it and the id comes back unanswered. This layer never learns
+			// the kind — it may not name `sources/domain` — and does not need to.
+			name:  "the source is a Grafana, whose silences do not live at this path",
+			bases: map[uuid.UUID]string{},
+		},
+		{
+			name: "the lookup itself failed",
+			err:  errs.New(errs.KindInternal, "sources_unavailable", "the source registry is unavailable"),
+		},
+	}
 
-	if !strings.Contains(string(resp.Body()), `"alertmanager_url":null`) {
-		t.Fatalf("an unconfigured deployment emitted a link anyway: %s", resp)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSilenceFixtureWith(t, []domain.Silence{contractSilence(t)}, tc.bases)
+			f.sources.err = tc.err
+
+			// ⚠️ A source lookup that fails does not fail the request: the rows are
+			// what was asked for and the link is an affordance on top of them.
+			resp := f.c.GET("/silences").MustStatus(t, http.StatusOK)
+			// ⭐ Still a legal SilenceListResponse: `alertmanager_url` is nullable,
+			// so "no link" is expressible without breaking the schema.
+			schema.Assert(t, "listSilences", http.StatusOK, resp.Body())
+
+			if !strings.Contains(string(resp.Body()), `"alertmanager_url":null`) {
+				t.Fatalf("a source that resolved to nothing emitted a link anyway: %s", resp)
+			}
+		})
 	}
 }
 

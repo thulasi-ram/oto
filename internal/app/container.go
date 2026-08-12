@@ -899,7 +899,7 @@ func (c *Container) buildRouters(
 			Clock:         clk,
 			BaseURL:       c.Config.HTTP.BaseURL,
 		}),
-		silences:  silencesapi.NewRouter(c.Silences, c.alertmanagerURL(), clk),
+		silences:  silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
 		stats:     statsapi.NewRouter(c.Stats, clk),
 		drills:    drillRouter(c.Drills, clk),
 		enrichers: enrichapi.NewRouter(enricherRegistry, clk),
@@ -915,11 +915,6 @@ func (c *Container) buildRouters(
 		ingestion: c.Ingestion,
 	}
 }
-
-// alertmanagerURL is the Alertmanager UI root used for the per-silence deep
-// link. v1 has no write path into a cluster, so the link is the ONLY silence
-// affordance and an empty value renders `null` rather than a guess.
-func (c *Container) alertmanagerURL() string { return "" }
 
 // newBridge builds the LISTEN/NOTIFY bridge over the general pool.
 //

@@ -210,6 +210,48 @@ func (r *SourceRepository) List(
 	return page, cur, nil
 }
 
+const listSourcesByIDsSQL = `SELECT ` + sourceColumns + ` FROM alert_sources
+ WHERE org_id = $1 AND deleted_at IS NULL AND id = ANY($2)`
+
+// ListByIDs returns the live sources named by ids, in ONE query.
+//
+// Unlike Get it hides soft-deleted rows: a caller batching a page of rows that
+// each name a source is asking which of those sources still resolve, and there is
+// no id-shaped 404 to distinguish "deleted" from "never existed" against.
+func (r *SourceRepository) ListByIDs(
+	ctx context.Context, s db.TenantScope, ids []uuid.UUID,
+) ([]domain.Source, error) {
+	if err := requireScope(s); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	rows, err := r.db(ctx).Query(ctx, listSourcesByIDsSQL, s.OrgID(), ids)
+	if err != nil {
+		return nil, mapErr(err, "sources_not_found", "list sources by id")
+	}
+	defer rows.Close()
+
+	out := make([]domain.Source, 0, len(ids))
+	for rows.Next() {
+		var row sourceRow
+		if err := rows.Scan(row.scanDest()...); err != nil {
+			return nil, mapErr(err, "sources_not_found", "scan a source")
+		}
+		src, err := row.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, src)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "sources_not_found", "read sources by id")
+	}
+	return out, nil
+}
+
 const listDueSQL = `SELECT ` + `s.id, s.org_id, s.cluster_id, s.name::text, s.kind, s.base_url,
 	s.prometheus_url, s.auth_credential_id, s.tls_skip_verify, s.inject_labels, s.ignore_labels,
 	s.redact_labels, s.redact_annotations, s.push_enabled,

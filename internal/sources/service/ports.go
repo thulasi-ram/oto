@@ -31,6 +31,12 @@ type SourceRepository interface {
 	// codebase (SPEC §F.5.3).
 	List(ctx context.Context, s db.TenantScope, f domain.SourceFilter, p db.Keyset) ([]domain.Source, db.Cursor, error)
 
+	// ListByIDs returns the live sources named by ids, in one query. Ids that
+	// name nothing this org owns are absent from the result rather than an
+	// error: it is the batch companion to Get, for a caller holding a page of
+	// rows that each name a source.
+	ListByIDs(ctx context.Context, s db.TenantScope, ids []uuid.UUID) ([]domain.Source, error)
+
 	// ListDue returns the sources whose reconcile interval has elapsed. It is
 	// the reconciler's fan-out query and is bounded, never unbounded.
 	ListDue(ctx context.Context, s db.TenantScope, limit int) ([]domain.Source, error)
