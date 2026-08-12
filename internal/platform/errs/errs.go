@@ -39,7 +39,9 @@ const (
 	KindUpstreamSlow Kind = "upstream_timeout"       // 504
 )
 
-// Violation is one field-level failure inside a KindValidation error.
+// Violation names ONE MEMBER OF THE REQUEST that a refusal is about — usually a
+// body field on a KindValidation error, but also a query parameter on the
+// KindMalformed refusals that can name one (see WithViolations).
 //
 // Field is a JSON-name path, '/'-separated, with array indices as numeric
 // segments and map keys verbatim: matchers[0].name is reported as
@@ -135,8 +137,15 @@ func Wrap(err error, kind Kind, code, message string) *Error {
 	return &Error{Kind: kind, Code: code, Message: message, Cause: err}
 }
 
-// WithViolations returns e carrying the given field violations. It is only
-// meaningful on a KindValidation error (SPEC §L.1).
+// WithViolations returns e carrying the given field violations.
+//
+// Violations NAME A MEMBER OF THE REQUEST; they are not a property of a status
+// code (SPEC §L.1). Every KindValidation error carries them. Another Kind may
+// only when its refusal is about an identifiable member the caller can act on —
+// `unknown_parameter` and `source_id_required` (KindMalformed) name the query
+// parameter, `setting_managed_by_config` (KindConflict) names the setting. A
+// refusal that is not about a member of the request — unauthenticated,
+// forbidden, not found, precondition, and every 5xx — carries none.
 func (e *Error) WithViolations(v ...Violation) *Error {
 	e.Violations = append(e.Violations, v...)
 	return e

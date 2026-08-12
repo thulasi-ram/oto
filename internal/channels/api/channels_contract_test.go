@@ -910,40 +910,50 @@ func TestEveryTestErrorClassTheServerCanEmitSatisfiesTheContract(t *testing.T) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Divergences from the contract                                              */
+/* §E.3: the parameter nobody asked for                                       */
 /* -------------------------------------------------------------------------- */
 
-// TestBUG_UnknownQueryParameterOnAnIdAddressedChannelEndpointIsAnUndeclared400.
+// TestAnUnknownQueryParameterOnAChannelEndpointIsADeclared400.
 //
-// WHAT THE SERVER DOES. `Router.subject` runs `httpx.NewParams(r).Err()` on every
-// `{id}` endpoint, so `GET /api/v1/channels/{id}?foo=bar` answers
-// `400 unknown_parameter`. `listChannelTypes` does the same.
+// `Router.subject` runs `httpx.NewParams(r).Err()` on every `{id}` endpoint and
+// `listChannelTypes` does the same, so `?foo=bar` anywhere on this surface is
+// `400 unknown_parameter`. §E.3 is binding and deliberate: a silently ignored
+// parameter returns the wrong answer and looks right.
 //
-// WHAT THE CONTRACT SAYS. `getChannel`, `deleteChannel`, `testChannel` and
-// `listChannelTypes` declare no `400` at all — only 200/204, 401, 403, 404, 409,
-// 429, 500, 503.
-//
-// WHICH IS WRONG. THE CONTRACT. §E.3 is binding and deliberate: a silently
-// ignored parameter returns the wrong answer and looks right, so rejecting is the
-// behaviour oto wants everywhere. The fix is to add
-// `'400': $ref: '#/components/responses/BadRequest'` to those four operations,
-// not to make the handlers lenient. Until then a generated client has no branch
-// for a status the server really emits.
-func TestBUG_UnknownQueryParameterOnAnIdAddressedChannelEndpointIsAnUndeclared400(t *testing.T) {
-	t.Skip("live conformance defect: the handlers answer 400 unknown_parameter on operations " +
-		"whose contract declares no 400. Fix the contract, not the handlers.")
+// ⭐ THE POINT OF THIS TEST IS THE `schema.AssertProblem` CALL. The refusal was
+// never in doubt; what was missing until git-bug ee3ae9c was the
+// `'400': $ref BadRequest` entry, so the assertion below failed at the LOOKUP —
+// a generated client had no branch for a status these handlers really emit, and
+// `?_=<timestamp>` from a browser is all it takes to reach one.
+func TestAnUnknownQueryParameterOnAChannelEndpointIsADeclared400(t *testing.T) {
+	t.Parallel()
 
-	w := newChanWorld(t)
-	for _, tc := range []struct{ op, target string }{
-		{"listChannelTypes", "/channel-types?foo=bar"},
-		{"getChannel", "/channels/" + chanMine.String() + "?foo=bar"},
-		{"deleteChannel", "/channels/" + chanMine.String() + "?foo=bar"},
+	for _, tc := range []struct{ op, method, target string }{
+		{"listChannelTypes", http.MethodGet, "/channel-types?foo=bar"},
+		{"getChannel", http.MethodGet, "/channels/" + chanMine.String() + "?foo=bar"},
+		{"deleteChannel", http.MethodDelete, "/channels/" + chanMine.String() + "?foo=bar"},
+		{"testChannel", http.MethodPost, "/channels/" + chanMine.String() + "/test?foo=bar"},
 	} {
-		resp := w.client.GET(tc.target)
-		if resp.Code() != http.StatusBadRequest {
-			t.Fatalf("%s: status = %d, want 400", tc.op, resp.Code())
-		}
-		// This is the assertion that fails today: the contract declares no 400.
-		schema.AssertProblem(t, tc.op, http.StatusBadRequest, resp.Body())
+		t.Run(tc.op, func(t *testing.T) {
+			t.Parallel()
+			w := newChanWorld(t)
+
+			var resp *apitest.Response
+			switch tc.method {
+			case http.MethodDelete:
+				resp = w.client.DELETE(tc.target)
+			case http.MethodPost:
+				resp = w.client.POST(t, tc.target, nil)
+			default:
+				resp = w.client.GET(tc.target)
+			}
+			resp.MustStatus(t, http.StatusBadRequest)
+			schema.AssertProblem(t, tc.op, http.StatusBadRequest, resp.Body())
+
+			p := resp.MustViolate(t, "foo")
+			if p.Code != "unknown_parameter" {
+				t.Fatalf("code = %q, want unknown_parameter", p.Code)
+			}
+		})
 	}
 }

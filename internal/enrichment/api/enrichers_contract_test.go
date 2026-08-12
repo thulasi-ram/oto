@@ -270,20 +270,25 @@ func TestTheDeclaredEnricherOperationIsTheOneThisPackageServes(t *testing.T) {
 	}
 }
 
-// ⛔ TestBUG_AnUnknownQueryParameterIsRefusedWithAStatusTheContractDoesNotDeclare.
+// TestAnUnknownQueryParameterIsRefusedWithADeclared400.
 //
-// The handler is right and the CONTRACT is short. SPEC §E.3 requires an unknown
-// query parameter to be refused — a typo'd filter that is silently dropped
-// returns a plausible page of the wrong rows — and `listEnrichers` refuses one
-// with `400 unknown_parameter`, exactly as `listSilences` and every other
-// collection does. But `/api/v1/enrichers`'s `responses:` block declares only
-// 200, 401, 403, 429, 500 and 503, so the 400 this handler can produce is a status
-// no generated client is prepared for and no schema validates.
-func TestBUG_AnUnknownQueryParameterIsRefusedWithAStatusTheContractDoesNotDeclare(t *testing.T) {
-	t.Skip("BUG: GET /api/v1/enrichers answers 400 unknown_parameter for an unknown query parameter " +
-		"(enrichment/api/enrichers.go listEnrichers, via httpx.NewParams), but api/openapi/openapi.yaml " +
-		"declares no 400 for listEnrichers; the contract must declare '400': BadRequest for it, as it " +
-		"does for every other collection.")
+// SPEC §E.3 requires an unknown query parameter to be refused — a typo'd filter
+// that is silently dropped returns a plausible page of the wrong rows — and
+// `listEnrichers` refuses one with `400 unknown_parameter`, exactly as
+// `listSilences` and every other collection does.
+//
+// ⭐ THE ASSERTION THAT MATTERS IS `schema.AssertProblem`. Until git-bug ee3ae9c
+// this operation's `responses:` block declared only 200, 401, 403, 429, 500 and
+// 503, so the 400 the handler really produces was a status no generated client
+// was prepared for and no schema validated — and the call below failed at the
+// LOOKUP rather than at the validation.
+func TestAnUnknownQueryParameterIsRefusedWithADeclared400(t *testing.T) {
+	t.Parallel()
+
+	if !schema.Op(t, "listEnrichers").Declares(http.StatusBadRequest) {
+		t.Fatal("listEnrichers declares no 400, and §E.3 makes one reachable with any unknown " +
+			"query parameter")
+	}
 
 	f := newEnricherFixture(t)
 	resp := f.c.GET("/enrichers?phase=1").MustStatus(t, http.StatusBadRequest)

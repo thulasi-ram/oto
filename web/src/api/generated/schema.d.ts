@@ -2675,7 +2675,22 @@ export interface components {
             code: string;
             /** @example 01JD8Z2K7M3TQ9 */
             request_id: string;
-            /** @description Populated **only** for `validation_failed`. Never present on any other code. */
+            /**
+             * @description The members of the request the refusal is about, so a client can put the message on the
+             *     control that produced it instead of printing prose. **Always** present on
+             *     `validation_failed` (422).
+             *
+             *     It is present on another code only when that refusal can name a member of the request:
+             *     `unknown_parameter` and `source_id_required` (400) name the query parameter, and
+             *     `setting_managed_by_config` (409) names the setting this deployment owns. A 400 is a
+             *     request that never parsed, and *which* parameter was wrong is exactly the part a form
+             *     can act on — withholding it there would leave the caller with prose for the plainest
+             *     mistake there is.
+             *
+             *     It is **never** present on a refusal that is not about a member of the request at all:
+             *     401, 403, 404, 412, 413, 415, 429 and every 5xx. Its presence therefore never implies
+             *     422, and a client must branch on `code`, not on this field.
+             */
             violations?: components["schemas"]["Violation"][];
             /**
              * Format: int32
@@ -7076,6 +7091,7 @@ export interface operations {
                     "application/json": components["schemas"]["RuleHistoryResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -7702,6 +7718,7 @@ export interface operations {
                     "application/json": components["schemas"]["RuleSnapshotResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -7787,6 +7804,7 @@ export interface operations {
                     "application/json": components["schemas"]["GroupDetailResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -8308,6 +8326,7 @@ export interface operations {
                     "application/json": components["schemas"]["RuleSnapshotResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -9114,6 +9133,7 @@ export interface operations {
                     "application/json": components["schemas"]["ChannelTypeListResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
@@ -9253,6 +9273,7 @@ export interface operations {
                     "application/json": components["schemas"]["ChannelResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -9316,6 +9337,7 @@ export interface operations {
         requestBody?: never;
         responses: {
             204: components["responses"]["NoContent"];
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -9471,6 +9493,7 @@ export interface operations {
                     "application/json": components["schemas"]["ChannelTestResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -10213,6 +10236,7 @@ export interface operations {
                     "application/json": components["schemas"]["EnricherListResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
@@ -10302,6 +10326,7 @@ export interface operations {
                     "application/json": components["schemas"]["DeliveryDrillResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -10331,6 +10356,7 @@ export interface operations {
                     "application/json": components["schemas"]["DeliveryDrillResponse"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

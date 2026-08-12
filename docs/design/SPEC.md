@@ -3983,7 +3983,7 @@ type Error struct {
 	Kind       Kind
 	Code       string       // stable machine code, e.g. "alert_not_found", "occurrence_terminal"
 	Message    string       // human, safe to show; NEVER contains a secret or a raw payload
-	Violations []Violation  // populated only for KindValidation
+	Violations []Violation  // ALWAYS on KindValidation; on another Kind only when the refusal names a request member
 	Retryable  bool
 	RetryAfter time.Duration
 	Cause      error
@@ -4008,6 +4008,17 @@ type Violation struct {
   hole. The mapped error carries **the constraint name as its `Code`** (§L.9), so the 500 and its
   log line name the violated constraint; there is no `oto_check_violation_total` counter (AC-34).
 - Upstream failures NEVER become the caller's fault. A dead Alertmanager is 502, never 400.
+- **`Violations` is about NAMING A MEMBER OF THE REQUEST, not about a status code.** Every
+  `KindValidation` error carries it. Another Kind carries it *only* when the refusal is about an
+  identifiable member of the request the caller can act on: `unknown_parameter` and
+  `source_id_required` are `KindMalformed` (400) and name the query parameter,
+  `setting_managed_by_config` is `KindConflict` (409) and names the setting the deployment owns. A
+  400 is a request that never parsed, and *which* parameter was wrong is precisely the part a form
+  can highlight — the `field`-path rules of L.2.2 apply verbatim (a query parameter uses its bare
+  name). It is NEVER present on a refusal that is not about a member of the request:
+  `KindUnauthorized`, `KindForbidden`, `KindNotFound`, `KindPrecondition`, `KindTooLarge`,
+  `KindUnsupported`, `KindRateLimited` and every 5xx. **A client therefore branches on `Code`,
+  never on the presence of `violations[]`.**
 
 ### L.2 Layer 1 — Transport / API DTOs
 

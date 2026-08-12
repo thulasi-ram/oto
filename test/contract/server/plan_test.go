@@ -445,6 +445,13 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 		{
+			method: http.MethodGet, tmpl: "/api/v1/drills",
+			want: http.StatusBadRequest,
+			why: "`source_id` is `required: true` on a QUERY string, so omitting it never formed a " +
+				"valid request: that is the 400 malformed_request family, not a 422. This answered " +
+				"an undeclared 422 with no violations[] until ee3ae9c, on the plainest request there is",
+		},
+		{
 			method: http.MethodGet, tmpl: "/api/v1/drills/{id}", url: "/api/v1/drills/{{drill}}",
 			want: http.StatusOK,
 		},

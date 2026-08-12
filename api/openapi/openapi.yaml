@@ -932,6 +932,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RuleHistoryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1515,6 +1517,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RuleSnapshotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1669,6 +1673,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GroupDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2179,6 +2185,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RuleSnapshotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2795,6 +2803,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelTypeListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2892,6 +2902,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2966,6 +2978,8 @@ paths:
       responses:
         '204':
           $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3014,6 +3028,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3711,6 +3727,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EnricherListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3835,6 +3853,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DeliveryDrillResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3870,6 +3890,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DeliveryDrillResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -5875,7 +5897,21 @@ components:
           maxItems: 200
           items:
             $ref: '#/components/schemas/Violation'
-          description: Populated **only** for `validation_failed`. Never present on any other code.
+          description: |
+            The members of the request the refusal is about, so a client can put the message on the
+            control that produced it instead of printing prose. **Always** present on
+            `validation_failed` (422).
+
+            It is present on another code only when that refusal can name a member of the request:
+            `unknown_parameter` and `source_id_required` (400) name the query parameter, and
+            `setting_managed_by_config` (409) names the setting this deployment owns. A 400 is a
+            request that never parsed, and *which* parameter was wrong is exactly the part a form
+            can act on — withholding it there would leave the caller with prose for the plainest
+            mistake there is.
+
+            It is **never** present on a refusal that is not about a member of the request at all:
+            401, 403, 404, 412, 413, 415, 429 and every 5xx. Its presence therefore never implies
+            422, and a client must branch on `code`, not on this field.
         retry_after_seconds:
           type: integer
           format: int32
@@ -11600,10 +11636,11 @@ components:
     ProblemValidationFailed:
       summary: 422 — three fields failed validation
       description: |
-        The canonical validation failure. `violations[]` is present only on this code, every `field` is
-        a `/`-separated path in **JSON** names, and every `code` comes from a closed set — so the UI can
-        map each violation onto the exact form control that produced it without any per-endpoint
-        knowledge.
+        The canonical validation failure. `violations[]` is always present on this code, every `field`
+        is a `/`-separated path in **JSON** names, and every `code` comes from a closed set — so the UI
+        can map each violation onto the exact form control that produced it without any per-endpoint
+        knowledge. A few other codes carry `violations[]` too when they can name the parameter or
+        setting at fault; see the `Problem` schema.
       value:
         type: https://oto.dev/errors/validation_failed
         title: Validation failed

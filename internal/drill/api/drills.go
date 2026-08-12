@@ -130,14 +130,13 @@ func (rt *Router) listDrills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := httpx.NewParams(r, "source_id")
-	sourceID := p.UUID("source_id")
 	if err := p.Err(); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if sourceID == uuid.Nil {
-		httpx.WriteProblem(w, r, errs.Validation("source_id_required",
-			"source_id is required: a drill list is always about one source"))
+	sourceID, err := requiredSourceID(p.String("source_id", ""))
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
 		return
 	}
 	drills, results, err := rt.svc.List(r.Context(), scope, sourceID, listLimit)
@@ -180,6 +179,44 @@ func (rt *Router) disposeDrill(w http.ResponseWriter, r *http.Request) {
 
 // listLimit bounds the drill history one source reports.
 const listLimit = 20
+
+// requiredSourceID reads the one query parameter `GET /api/v1/drills` takes.
+//
+// ⛔ EVERY WAY OF GETTING IT WRONG IS A 400, NEVER A 422, and the distinction is
+// the contract's rather than this handler's taste. `source_id` is declared
+// `required: true` on a QUERY string: a request without it — or with a value that
+// is not a UUID at all — never formed a valid request against the contract, which
+// is the `malformed_request` family §L.1 gives 400 and `httpx.NewParams` already
+// answers for `unknown_parameter` two lines above. 422 is for a body that PARSED
+// and then broke a rule, and `listDeliveryDrills` declares no 422 precisely
+// because it has no body. It answered one anyway until git-bug ee3ae9c, with no
+// `violations[]`, on the plainest request there is: `GET /api/v1/drills`.
+//
+// ⭐ AND IT CARRIES `violations[]`, ON A 400, ON PURPOSE. Violations name a
+// MEMBER OF THE REQUEST; they are not a property of 422 (§L.1, and the `Problem`
+// schema's own description). The sibling refusal from the very same parsing step
+// on the very same query string — `unknown_parameter`, two lines above in
+// `listDrills` — has always named its parameter this way. A `source_id_required`
+// that named nothing would leave one of two adjacent 400s actionable and the
+// other prose, on the one screen that has a source picker to highlight.
+func requiredSourceID(raw string) (uuid.UUID, error) {
+	if raw == "" {
+		return uuid.Nil, errs.Malformed("source_id_required",
+			"source_id is required: a drill list is always about one source").
+			WithViolations(errs.Violation{
+				Field: "source_id", Code: "required", Message: "source_id is required",
+			})
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil || id == uuid.Nil {
+		return uuid.Nil, errs.Malformed("source_id_required",
+			"source_id must be a UUID naming the source whose drills to list").
+			WithViolations(errs.Violation{
+				Field: "source_id", Code: "uuid", Message: "source_id must be a UUID",
+			})
+	}
+	return id, nil
+}
 
 // subject resolves the tenant and the path id, and rejects unknown query
 // parameters.

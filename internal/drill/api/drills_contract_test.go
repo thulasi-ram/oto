@@ -558,57 +558,113 @@ func TestTheDrillOperationsDeclareTheStatusesTheseHandlersProduce(t *testing.T) 
 	}
 }
 
-// ------------------------------------------------------------ known defects
+// --------------------------------------------- the required query parameter
 
-// TestBUG_ListDeliveryDrillsRefusesAMissingSourceIDWithAnUndeclaredStatus.
+// TestListDeliveryDrillsRefusesAMissingOrUnparseableSourceIDWith400.
 //
-// WHAT THE SERVER DOES: `listDrills` (internal/drill/api/drills.go:138) answers
-// `errs.Validation("source_id_required", …)` when the required `source_id` query
-// parameter is absent, which `httpx.WriteProblem` renders as **422**. The error
-// carries no `violations[]` either.
+// ⭐ 400 AND NEVER 422, which is what git-bug ee3ae9c was about. The handler
+// answered `errs.Validation("source_id_required", …)` — a 422, carrying no
+// `violations[]` — for the plainest request there is, `GET /api/v1/drills`, while
+// `listDeliveryDrills` declares no 422 at all. A generated client had no branch
+// for it on its very first call.
 //
-// WHAT THE CONTRACT SAYS: `listDeliveryDrills` declares 200, 400, 401, 403, 429,
-// 500 and 503 — there is no 422 at all — and marks `source_id` as
-// `required: true`, whose omission RFC-wise is a malformed request. The contract
-// also states that a 422 "always carries violations[]".
+// The server was the half that was wrong. `source_id` is `required: true` on a
+// QUERY string, so a request without it never formed a valid request against the
+// contract: that is the `malformed_request` family §L.1 gives 400 and
+// `httpx.NewParams` already answers for `unknown_parameter`. 422 is for a body
+// that parsed and then broke a rule, and this operation has no body.
 //
-// WHICH IS WRONG: the server. A missing required QUERY PARAMETER is the
-// `400 malformed_request` family that `httpx.NewParams` already uses for
-// `unknown_parameter`; 422 is for a body that parsed and is semantically invalid.
-// As it stands a generated client validating against the contract fails on a
-// status the server can produce on its very first call.
-func TestBUG_ListDeliveryDrillsRefusesAMissingSourceIDWithAnUndeclaredStatus(t *testing.T) {
-	t.Skip("live conformance defect: the handler answers 422 for a missing required query " +
-		"parameter and the contract declares no 422 for listDeliveryDrills; see the doc comment")
+// A `source_id` that is present but is not a UUID is the same defect wearing a
+// different spelling, and answers the same 400 — otherwise the operation would
+// still reach an undeclared 422 through `?source_id=banana`.
+func TestListDeliveryDrillsRefusesAMissingOrUnparseableSourceIDWith400(t *testing.T) {
+	t.Parallel()
 
-	f := newDrillFixture(t)
-	resp := f.c.GET("/drills").MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listDeliveryDrills", http.StatusBadRequest, resp.Body())
-	resp.MustViolate(t, "source_id")
+	for _, tc := range []struct {
+		name, query, code string
+	}{
+		{"absent", "", "required"},
+		{"blank", "?source_id=", "required"},
+		{"not a uuid", "?source_id=banana", "uuid"},
+		{"the nil uuid", "?source_id=" + uuid.Nil.String(), "uuid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newDrillFixture(t)
+			resp := f.c.GET("/drills"+tc.query).MustStatus(t, http.StatusBadRequest)
+			schema.AssertProblem(t, "listDeliveryDrills", http.StatusBadRequest, resp.Body())
+
+			p := resp.MustViolate(t, "source_id")
+			if p.Code != "source_id_required" {
+				t.Fatalf("code = %q, want source_id_required; a client branches on the code", p.Code)
+			}
+			if got := p.Violations[0].Code; got != tc.code {
+				t.Fatalf("violations[0].code = %q, want %q", got, tc.code)
+			}
+			if f.svc.lastSourceID != uuid.Nil {
+				t.Fatal("a refused list still reached the service")
+			}
+		})
+	}
 }
 
-// TestBUG_TheIdAddressedDrillRoutesCanAnswerAnUndeclared400.
-//
-// WHAT THE SERVER DOES: `subject` (internal/drill/api/drills.go:195) runs
-// `httpx.NewParams(r).Err()`, which refuses ANY query parameter on
-// `GET /api/v1/drills/{id}` and `DELETE /api/v1/drills/{id}` with
-// `400 unknown_parameter`.
-//
-// WHAT THE CONTRACT SAYS: neither `getDeliveryDrill` nor `disposeDeliveryDrill`
-// declares a 400 at all (openapi.yaml:3689-3707, 3724-3744).
-//
-// WHICH IS WRONG: the contract. Rejecting an unknown parameter is SPEC §E.3 and
-// is right; the declaration is simply missing a `'400': $ref BadRequest`, exactly
-// as `listDeliveryDrills` and `listSilences` have. The refusal is not reachable
-// by any correct client, which is why it survived review.
-func TestBUG_TheIdAddressedDrillRoutesCanAnswerAnUndeclared400(t *testing.T) {
-	t.Skip("live conformance defect: the handler answers 400 unknown_parameter on the " +
-		"id-addressed drill routes and the contract declares no 400 for them; see the doc comment")
+// TestListDeliveryDrillsDeclaresNo422, because the fix above is only as durable
+// as the reason for it. Every refusal this operation can produce comes from a
+// query string that never parsed; a 422 reappearing here would mean the handler
+// had grown a body, or had gone back to spelling a malformed request as a
+// semantic one.
+func TestListDeliveryDrillsDeclaresNo422(t *testing.T) {
+	t.Parallel()
 
-	f := newDrillFixture(t)
-	resp := f.c.GET("/drills/"+contractDrillID.String()+"?verbose=true").
-		MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "getDeliveryDrill", http.StatusBadRequest, resp.Body())
+	op := schema.Op(t, "listDeliveryDrills")
+	if op.Declares(http.StatusUnprocessableEntity) {
+		t.Fatal("listDeliveryDrills declares a 422; this operation takes no body, and its " +
+			"only query parameter is refused as a malformed request")
+	}
+	if !op.Declares(http.StatusBadRequest) {
+		t.Fatal("listDeliveryDrills declares no 400, and 400 is how a missing, unparseable or " +
+			"unknown query parameter is refused")
+	}
+}
+
+// ------------------------------------------------- §E.3 on the {id} routes
+
+// TestAnUnknownQueryParameterOnAnIdAddressedDrillRouteIsADeclared400.
+//
+// `subject` runs `httpx.NewParams(r).Err()` with an EMPTY allow-list, so ANY
+// query parameter on `GET /api/v1/drills/{id}` or `DELETE /api/v1/drills/{id}` —
+// a cache-buster, a tracking parameter a proxy appended, a stale bookmark — is
+// `400 unknown_parameter`. That refusal is §E.3 and is right; what was missing was
+// the `'400': $ref BadRequest` entry that let a client validate it (ee3ae9c).
+func TestAnUnknownQueryParameterOnAnIdAddressedDrillRouteIsADeclared400(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ op, method, path string }{
+		{"getDeliveryDrill", http.MethodGet, "/drills/" + contractDrillID.String() + "?verbose=true"},
+		{"disposeDeliveryDrill", http.MethodDelete, "/drills/" + contractDrillID.String() + "?force=1"},
+	} {
+		t.Run(tc.op, func(t *testing.T) {
+			t.Parallel()
+
+			f := newDrillFixture(t)
+			var resp *apitest.Response
+			if tc.method == http.MethodDelete {
+				resp = f.c.DELETE(tc.path)
+			} else {
+				resp = f.c.GET(tc.path)
+			}
+			resp.MustStatus(t, http.StatusBadRequest)
+			schema.AssertProblem(t, tc.op, http.StatusBadRequest, resp.Body())
+
+			if code := resp.Problem(t).Code; code != "unknown_parameter" {
+				t.Fatalf("code = %q, want unknown_parameter", code)
+			}
+			if f.svc.disposed != 0 {
+				t.Fatal("a refused request still disposed of the drill")
+			}
+		})
+	}
 }
 
 // ------------------------------------------------------------------ helpers

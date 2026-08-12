@@ -1140,24 +1140,21 @@ func TestBUG_TheRuleChangeIsDiffedAgainstTheNewestVersionRatherThanThePreviousEp
 	}
 }
 
-// ⛔ TestBUG_AnUnknownQueryParameterIsRefusedWithAStatusTheContractNeverDeclares.
+// TestAnUnknownQueryParameterIsRefusedWithADeclared400.
 //
 // SPEC §E.3 is binding and the handlers obey it: `httpx.NewParams` refuses an
 // unknown query parameter with `400 unknown_parameter` on all three routes, which
 // is the right behaviour — a silently dropped `?limt=1` returns a plausible
 // answer to a question nobody asked.
 //
-// `api/openapi/openapi.yaml` declares no `400` for any of the three. A generated
-// client therefore has no schema for a response its server will send, and the
-// contract-driven assertion below cannot even be written: `schema.AssertProblem`
-// fails at the lookup, not at the validation.
-//
-// The divergence is in the CONTRACT here rather than in the handler, which is why
-// this is pinned instead of asserted — the fix is three `'400': $ref:
-// '#/components/responses/BadRequest'` entries, and this package may not edit the
-// contract.
-func TestBUG_AnUnknownQueryParameterIsRefusedWithAStatusTheContractNeverDeclares(t *testing.T) {
-	t.Skip("BUG: getRuleSnapshot, getOccurrenceRule and getAlertRuleHistory answer `400 unknown_parameter` for an unknown query parameter (httpx.NewParams, rules/api/handlers.go), but api/openapi/openapi.yaml declares no 400 for any of the three; the contract must declare the refusal SPEC §E.3 requires.")
+// ⭐ THE DIVERGENCE WAS IN THE CONTRACT, not in the handlers (git-bug ee3ae9c):
+// none of the three declared a `400`, so a generated client had no schema for a
+// response its own server sends, and the assertion below could not even be
+// written — `schema.AssertProblem` failed at the LOOKUP rather than at the
+// validation. `getAlertRuleHistory` is the sharpest of the three: it takes a
+// `limit`, so a client that misspells it is a client that reaches this.
+func TestAnUnknownQueryParameterIsRefusedWithADeclared400(t *testing.T) {
+	t.Parallel()
 
 	routes := []struct {
 		op   string
@@ -1170,6 +1167,13 @@ func TestBUG_AnUnknownQueryParameterIsRefusedWithAStatusTheContractNeverDeclares
 
 	for _, route := range routes {
 		t.Run(route.op, func(t *testing.T) {
+			t.Parallel()
+
+			if !schema.Op(t, route.op).Declares(http.StatusBadRequest) {
+				t.Fatalf("%s declares no 400, and §E.3 makes one reachable with any unknown "+
+					"query parameter", route.op)
+			}
+
 			f := newRuleContractFixture(t)
 			resp := f.c.GET(route.path).MustStatus(t, http.StatusBadRequest)
 			schema.AssertProblem(t, route.op, http.StatusBadRequest, resp.Body())

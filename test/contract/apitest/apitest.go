@@ -292,9 +292,13 @@ func (p Problem) HasField(field string) bool {
 	return false
 }
 
-// MustViolate asserts that the problem is a validation failure naming field
-// with a machine code — the three things §L.2.2 promises a client and the only
-// three a form can act on.
+// MustViolate asserts that the problem names field in violations[] with a
+// machine code — the three things §L.2.2 promises a client and the only three a
+// form can act on.
+//
+// It says nothing about the STATUS: violations[] name a member of the request,
+// not a status code (§L.1), so a 400 that can say which query parameter was
+// wrong carries them exactly as a 422 does. The caller asserts the status.
 func (r *Response) MustViolate(t testing.TB, field string) Problem {
 	t.Helper()
 	p := r.Problem(t)
