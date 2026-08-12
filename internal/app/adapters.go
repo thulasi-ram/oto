@@ -839,38 +839,97 @@ func (r occurrenceScopes) ScopeForOccurrence(
 	return db.NewTenantScope(orgID)
 }
 
-// orgLister enumerates every tenant, for the periodic sweeps that are global.
+// orgLister enumerates every LIVE tenant, for the periodic sweeps that are
+// global.
 //
 // The sweeps run per org because every repository method takes a TenantScope, by
-// construction. `notification/repository.ReminderRepository` already publishes
-// exactly this query for its own sweep; this is the same list for the reaper,
-// the group close and the flap score.
+// construction. `notification/repository.ReminderRepository.ListOrgIDs` asks the
+// same question of the same table for its own sweep — same `deleted_at IS NULL`
+// filter, same `ORDER BY id` — and this is that list for the reaper, the group
+// close and the flap score. It differs from that one in exactly two ways, both
+// deliberate: it hands back TenantScopes rather than bare ids, because a sweep
+// may not construct its own authorisation; and it WALKS THE TABLE IN PAGES
+// rather than reading it in one query, because this list is read on every tick
+// of every global sweep and a single unbounded scan is a query whose cost is set
+// by the customer count. That bounds the ROUND TRIP, not the result: `Scopes`
+// still returns every live tenant in one slice, so the memory is O(tenants) and
+// only the per-query work is capped.
+//
+// ⛔ A SOFT-DELETED TENANT IS NOT SWEPT, which is the whole point of the filter:
+// sweeping a departed tenant is work that produces alerts, reminders and flap
+// scores nobody will ever read. This lister was the one place in the process
+// that joined `orgs` without the filter, and the comment that used to sit here
+// claimed parity with the reminder query while the SQL below said otherwise.
 type orgLister struct {
 	pool *pgxpool.Pool
 }
 
-const listOrgIDsSQL = `SELECT id FROM orgs ORDER BY id`
+// listOrgIDsSQL reads ONE keyset page of live tenants, walking the primary key.
+//
+// `id` is the primary key and a UUIDv7, so `id > $1 ORDER BY id` is a cursor
+// that can neither skip nor repeat a tenant when one is created or soft-deleted
+// mid-walk — which, on a sweep that runs every minute, it eventually is. There
+// is no OFFSET here for the reason `db.Keyset` gives for the whole codebase.
+const listOrgIDsSQL = `SELECT id FROM orgs WHERE deleted_at IS NULL AND id > $1 ORDER BY id LIMIT $2`
+
+// orgPageSize bounds ONE query the way `sweepLimit` bounds one tick's work per
+// tenant, and is the same size for the same reason: a bound nobody reaches in
+// practice is still the bound that keeps a bad night from becoming an outage.
+const orgPageSize = 500
 
 func (l orgLister) Scopes(ctx context.Context) ([]db.TenantScope, error) {
-	rows, err := l.pool.Query(ctx, listOrgIDsSQL)
+	out := make([]db.TenantScope, 0, orgPageSize)
+	after := uuid.Nil
+	for {
+		scopes, last, read, err := l.page(ctx, after)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, scopes...)
+		// A short page is the end of the table. A full page that did not move the
+		// cursor cannot happen while the walk is strictly `id > $1`, but stopping
+		// on it costs one comparison and turns a future mistake into a truncated
+		// sweep rather than a worker that never returns.
+		if read < orgPageSize || last == after {
+			return out, nil
+		}
+		after = last
+	}
+}
+
+// page reads the live tenants after `after`, returning the scopes it could build,
+// the last id it SAW, and how many rows it read.
+//
+// The last two are reported separately from the first because an id that fails
+// NewTenantScope must still advance the cursor: a page whose only rows were
+// unusable would otherwise ask for the same page forever.
+func (l orgLister) page(
+	ctx context.Context, after uuid.UUID,
+) (scopes []db.TenantScope, last uuid.UUID, read int, err error) {
+	rows, err := l.pool.Query(ctx, listOrgIDsSQL, after, orgPageSize)
 	if err != nil {
-		return nil, err
+		return nil, after, 0, err
 	}
 	defer rows.Close()
 
-	var out []db.TenantScope
+	last = after
 	for rows.Next() {
 		var orgID uuid.UUID
 		if err := rows.Scan(&orgID); err != nil {
-			return nil, err
+			return nil, after, 0, err
 		}
-		scope, err := db.NewTenantScope(orgID)
-		if err != nil {
+		read++
+		last = orgID
+		scope, scopeErr := db.NewTenantScope(orgID)
+		if scopeErr != nil {
 			continue
 		}
-		out = append(out, scope)
+		scopes = append(scopes, scope)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, after, 0, err
+	}
+	return scopes, last, read, nil
 }
 
 // ---------------------------------------------------------------- ingestion
