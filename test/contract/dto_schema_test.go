@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,13 +17,16 @@ import (
 	"github.com/google/uuid"
 
 	alertsapi "github.com/thulasiram/oto/internal/alerts/api"
+	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
 	channelsapi "github.com/thulasiram/oto/internal/channels/api"
 	drillapi "github.com/thulasiram/oto/internal/drill/api"
+	drilldomain "github.com/thulasiram/oto/internal/drill/domain"
 	enrichmentapi "github.com/thulasiram/oto/internal/enrichment/api"
 	groupingapi "github.com/thulasiram/oto/internal/grouping/api"
 	identityapi "github.com/thulasiram/oto/internal/identity/api"
 	ingestionapi "github.com/thulasiram/oto/internal/ingestion/api"
 	notificationapi "github.com/thulasiram/oto/internal/notification/api"
+	notificationdomain "github.com/thulasiram/oto/internal/notification/domain"
 	rulesapi "github.com/thulasiram/oto/internal/rules/api"
 	silencesapi "github.com/thulasiram/oto/internal/silences/api"
 	sourcesapi "github.com/thulasiram/oto/internal/sources/api"
@@ -1266,6 +1270,251 @@ func enumOrigin(elem flat, items map[string]any) string {
 		vals = append(vals, fmt.Sprint(v))
 	}
 	return "the inline enum [" + strings.Join(vals, " ") + "]"
+}
+
+// ---------------------------------------------------------------------------
+// Gate G1, closed vocabularies — Go domain enum → OpenAPI enum.
+//
+// A closed enum in this system is written down twice: once in a `internal/*/
+// domain` package, which is where the values are BORN, and once in
+// `components.schemas`, which is where every client learns they exist. The
+// ceiling gates above hold a `maxItems` to its enum, but both numbers they
+// compare are read out of the SAME document — nothing in the tree read the
+// domain and the contract in one breath, so nothing could notice the two lists
+// drifting apart.
+//
+// The failure that opens is quiet in exactly the way that matters. Add a 37th
+// `alertdomain.EventType`, bump the two `validate:"max=36"` tags that bound
+// `?type=` so the filter still admits "everything", and every existing gate
+// stays green: `TestEnumFilterCeilingsMatchTheirEnum` compares 36 to 36 because
+// the contract did not change, `TestTheTimelineAcceptsEveryDeclaredEventType`
+// gets its 200 because `schema.Assert` validates the RESPONSE and no gate
+// validates a request's query parameters against the contract, and
+// `ev_type_ck` admits the new value because it is `type ~ '^[a-z_]+\.[a-z_]+$'`
+// — a SHAPE, not a value list. The 37th type then reaches the timeline as a
+// string no contract-generated artefact knows: `npm run generate:check` is
+// happy because the contract is unchanged, TypeScript is happy because the
+// generated union is unchanged, and the first thing that notices is a consumer
+// validating a response against the published contract — someone else's client,
+// in someone else's repository. oto's own UI does not even fail: it renders the
+// fact as a grey dot labelled "Event", which subtracts the event from the story
+// while adding it to the history.
+//
+// So this gate reads both copies and compares the VALUE SETS, not their sizes:
+// a count check would pass a rename, and would tell a reader nothing about
+// where to go. Each failure names the values, says which side has them, and
+// says what the other side must do.
+//
+// ORDER IS PART OF THE ASSERTION. The two lists are hand-maintained prose in
+// two languages, and equal-sets-in-different-orders means one of them was
+// appended to while the other was inserted into — the edit happened without the
+// other file being read, which is the same lapse the whole gate exists to
+// catch, caught one revision before it becomes a missing value.
+//
+// `null` is dropped from the contract side before comparing.
+// `NotificationSuppressedReason` is `type: [string, null]` with a `null` member
+// because absence is how "nothing suppressed this" is spelled on the wire. It is
+// not a member of the domain vocabulary, and no domain enumeration should have
+// to list it to satisfy a gate.
+// ---------------------------------------------------------------------------
+
+// domainEnum binds one `components.schemas` enum to the Go enumeration that is
+// the reason its values exist.
+type domainEnum struct {
+	// schema is the component schema name, e.g. "AlertEventType".
+	schema string
+	// origin names the Go enumeration in the form a reader can go and open,
+	// e.g. "alerts/domain.AllEventTypes()".
+	origin string
+	// values is that enumeration, in its declaration order.
+	values []string
+}
+
+// domainEnums is every closed vocabulary this repository writes down twice.
+//
+// A pair belongs here when the domain EXPOSES the whole set — a function
+// returning it, not a block of constants — and the contract names the same set
+// as an `enum`. Three of the tree's other closed sets do not qualify, and each
+// absence is a fact about the codebase rather than an exemption:
+//
+//   - `jobs.AllQueues()` has no contract counterpart at all. Queues are an
+//     internal concurrency boundary and appear nowhere on the wire, so there is
+//     no second copy to drift from.
+//   - `identity/domain.AllSettingKeys()` is spelled in the contract as PROPERTY
+//     NAMES (`OrgSettingsPatchDTO`) and as free `additionalProperties` map keys
+//     (`OrgSettingsViewDTO.origins`, `.config_keys`, `.bounds`), never as an
+//     `enum`. The property side is already held to the Go DTO by the reflection
+//     gate at the top of this file; the map-key side has nothing to be held to,
+//     and YAML mapping order does not survive parsing, so the order half of this
+//     gate could not be honestly applied to it.
+//   - `streaming/domain`'s `Kind` and `Resource` (contract `UiEventKind`,
+//     `UiEventResource`) have no exported enumeration to read. The only whole-set
+//     value in that package is the unexported `kindResource` map, which omits
+//     `resync` by design because it is a stream-level kind that names no
+//     resource. Exporting a set solely so this table could import it would be
+//     inventing a domain API for a test; the pair is genuinely uncovered and is
+//     recorded here as such.
+func domainEnums() []domainEnum {
+	eventTypes := make([]string, 0, len(alertsdomain.AllEventTypes()))
+	for _, t := range alertsdomain.AllEventTypes() {
+		eventTypes = append(eventTypes, t.String())
+	}
+	reasons := make([]string, 0, len(notificationdomain.AllReasons()))
+	for _, r := range notificationdomain.AllReasons() {
+		reasons = append(reasons, r.String())
+	}
+	suppressed := make([]string, 0, len(notificationdomain.SuppressorOrder()))
+	for _, s := range notificationdomain.SuppressorOrder() {
+		suppressed = append(suppressed, s.String())
+	}
+	stages := make([]string, 0, len(drilldomain.AllStages()))
+	for _, s := range drilldomain.AllStages() {
+		stages = append(stages, string(s))
+	}
+
+	return []domainEnum{
+		{"AlertEventType", "alerts/domain.AllEventTypes()", eventTypes},
+		{"NotificationReason", "notification/domain.AllReasons()", reasons},
+		{"NotificationSuppressedReason", "notification/domain.SuppressorOrder()", suppressed},
+		// The same vocabulary, enumerated a SECOND time in `alerts/domain` as
+		// plain strings because snooze evaluates the §B.8.2 precedence chain
+		// without importing the notification domain. Binding both copies to the
+		// one schema makes the contract the meeting point they otherwise lack.
+		{"NotificationSuppressedReason", "alerts/domain.SuppressorPrecedence()",
+			alertsdomain.SuppressorPrecedence()},
+		{"DrillStageName", "drill/domain.AllStages()", stages},
+	}
+}
+
+// TestContractEnumsMatchTheirDomainEnum holds every closed vocabulary that is
+// written down in both a domain package and the contract to being the same set
+// in the same order.
+func TestContractEnumsMatchTheirDomainEnum(t *testing.T) {
+	d := loadDoc(t)
+	pairs := domainEnums()
+	if len(pairs) == 0 {
+		t.Fatal("the domain↔contract enum table is empty, so this gate is asserting nothing")
+	}
+	var f failures
+
+	for _, p := range pairs {
+		if len(p.values) == 0 {
+			f.addf("%s: %s enumerates nothing, so this row compares an empty set to the "+
+				"contract and would pass whatever the contract said", p.schema, p.origin)
+			continue
+		}
+		node, ok := d.schema(p.schema)
+		if !ok {
+			f.addf("%s: the contract declares no `components.schemas.%s`, so %s is the only "+
+				"copy of this vocabulary and no client can name any of its %d values",
+				p.schema, p.schema, p.origin, len(p.values))
+			continue
+		}
+		fl := d.flatten(node)
+		if len(fl.enum) == 0 {
+			f.addf("%s: `components.schemas.%s` declares no `enum`, so the wire accepts any "+
+				"string where %s admits exactly %d", p.schema, p.schema, p.origin, len(p.values))
+			continue
+		}
+
+		contract := make([]string, 0, len(fl.enum))
+		malformed := false
+		for _, raw := range fl.enum {
+			if raw == nil {
+				// `null` is the nullable spelling, not a member.
+				if !fl.nullable {
+					f.addf("%s: the enum has a `null` member but the schema's `type` does not "+
+						"admit null — one of the two is a typo", p.schema)
+				}
+				continue
+			}
+			v, ok := raw.(string)
+			if !ok {
+				f.addf("%s: the enum has the non-string member `%v`, which no domain "+
+					"enumeration of strings can ever equal", p.schema, raw)
+				malformed = true
+				continue
+			}
+			contract = append(contract, v)
+		}
+		if malformed {
+			continue
+		}
+
+		inContract := map[string]bool{}
+		var duplicated []string
+		for _, v := range contract {
+			if inContract[v] {
+				duplicated = append(duplicated, v)
+			}
+			inContract[v] = true
+		}
+		if len(duplicated) > 0 {
+			f.addf("%s: the contract's enum lists %s more than once — a repeated member makes "+
+				"the enum's size disagree with its vocabulary, which is the number every "+
+				"`maxItems` in this contract is set from", p.schema, quotedList(duplicated))
+		}
+
+		inDomain := map[string]bool{}
+		for _, v := range p.values {
+			inDomain[v] = true
+		}
+
+		var missing, extra []string
+		for _, v := range p.values {
+			if !inContract[v] {
+				missing = append(missing, v)
+			}
+		}
+		for _, v := range contract {
+			if !inDomain[v] {
+				extra = append(extra, v)
+			}
+		}
+
+		if len(missing) > 0 {
+			f.addf("%s: %s declares %s, which `components.schemas.%s.enum` does not. The "+
+				"server can write %s and no contract-generated client can name it, filter for "+
+				"it, or validate a response carrying it — the value is real everywhere except "+
+				"where clients are told what is real. Add it to the contract's enum (and to "+
+				"any `maxItems` sized from it)",
+				p.schema, p.origin, quotedList(missing), p.schema, plural(missing, "it", "them"))
+		}
+		if len(extra) > 0 {
+			f.addf("%s: `components.schemas.%s.enum` declares %s, which %s does not. Clients "+
+				"are told to expect a value nothing in this repository can produce; either the "+
+				"domain enumeration lost it or the contract kept it after a rename",
+				p.schema, p.schema, quotedList(extra), p.origin)
+		}
+		if len(missing) == 0 && len(extra) == 0 && !slices.Equal(contract, p.values) {
+			f.addf("%s: the contract's enum and %s hold the same %d values in DIFFERENT "+
+				"ORDERS — contract [%s], domain [%s]. One list was appended to while the other "+
+				"was inserted into, which means one was edited without the other being read. "+
+				"That is the lapse this gate exists to catch, and it is cheaper to fix now than "+
+				"as the missing value it becomes next time",
+				p.schema, p.origin, len(contract),
+				strings.Join(contract, " "), strings.Join(p.values, " "))
+		}
+	}
+
+	f.report(t, "gate G1: a closed vocabulary and the contract enum that publishes it disagree")
+}
+
+// quotedList renders enum members for a failure message.
+func quotedList(vals []string) string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		out = append(out, "`"+v+"`")
+	}
+	return strings.Join(out, ", ")
+}
+
+// plural picks the singular or plural spelling for a list's length.
+func plural[T any](vals []T, one, many string) string {
+	if len(vals) == 1 {
+		return one
+	}
+	return many
 }
 
 // queryField relaxes required-ness for a query parameter: a query object always

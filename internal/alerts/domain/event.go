@@ -151,8 +151,22 @@ func init() {
 	}
 }
 
-// AllEventTypes returns the closed enum in declaration order. The timeline
-// renderer and the DDL CHECK are both generated from this list.
+// AllEventTypes returns the closed enum in declaration order.
+//
+// ⛔ THE DDL IS NOT A SECOND COPY OF THIS LIST, AND MUST NOT BE MISTAKEN FOR
+// ONE. `ev_type_ck` is `CHECK (type ~ '^[a-z_]+\.[a-z_]+$')` — a SHAPE, not a
+// vocabulary. It admits any `<subject>.<fact>` string, so a value added here and
+// nowhere else reaches the database, the timeline and the wire without one
+// constraint objecting.
+//
+// The one other enumeration of these values is `components.schemas.AlertEventType`
+// in `api/openapi/openapi.yaml`, which is what every generated client knows.
+// Adding a type here means adding it there in the same commit, and both
+// `?type=` ceilings — the contract's `maxItems` and the `validate:"max=N"` tags
+// on `alerts/api.TimelineQuery` and `grouping/api.TimelineQuery` — are the size
+// of this set. `TestContractEnumsMatchTheirDomainEnum` in `test/contract` is
+// what fails if the two lists drift; without it the first thing to notice is
+// somebody else's generated client refusing a value oto already writes.
 func AllEventTypes() []EventType {
 	return []EventType{
 		EventAlertCreated, EventAlertMutated, EventAlertFlappingStarted, EventAlertFlappingEnded,

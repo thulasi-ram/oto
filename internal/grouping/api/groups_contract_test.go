@@ -912,8 +912,18 @@ func TestMemberAlertRowsCarrySynthetic(t *testing.T) {
 // The bound is the size of the enum exactly — `TestEnumFilterCeilingsMatchTheirEnum`
 // holds every enum-backed ceiling in the contract to that equality, because a
 // ceiling that merely happens to sit high enough is one that drifts unnoticed.
-// This asks for the whole of `alertdomain.AllEventTypes()` by name, so the 37th
-// event type fails here rather than in a client.
+//
+// ⛔ THIS TEST DOES NOT CATCH THE 37TH EVENT TYPE, and it used to claim it did.
+// It asks for the whole of `alertdomain.AllEventTypes()` by name, but every
+// bound in that request is a GO bound: `NewEventType` parses against the same
+// domain map the new value was added to, and `max=N` is a struct tag. Nothing
+// here validates the query against the contract's parameter schema — `schema.Assert`
+// validates the RESPONSE body — so a 37th type present in the domain and absent
+// from `components.schemas.AlertEventType` still answers 200 and still passes.
+// What this test does hold is the two Go bounds against each other: the ceiling
+// on `TimelineQuery.Type` may not fall below the set the server itself emits.
+// The domain↔contract half is `TestContractEnumsMatchTheirDomainEnum` in
+// `test/contract`, and that is where a 37th type fails.
 func TestTheTimelineAcceptsEveryDeclaredEventType(t *testing.T) {
 	t.Parallel()
 
