@@ -1402,6 +1402,7 @@ func (g slackGroupActions) AcknowledgeGroup(
 		Members:      res.Members,
 		Applied:      res.Applied,
 		SkippedCodes: res.SkippedCodes,
+		Unreached:    res.Unreached,
 	}, nil
 }
 

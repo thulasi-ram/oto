@@ -9,7 +9,7 @@ import (
 )
 
 // TxRunner runs a function inside one transaction. It is the concrete half of
-// the unit-of-work port `sources/api` declares.
+// the unit-of-work port `sources/service` declares.
 //
 // ⭐ IT EXISTS BECAUSE A SOURCE AND ITS INGEST CREDENTIAL ARE ONE FACT. Creating
 // the row and minting the token were two independent commits, so a failure
@@ -35,9 +35,9 @@ func (r *TxRunner) InTx(ctx context.Context, fn func(ctx context.Context) error)
 		// guards, and with no transaction there is nothing left to roll back — for
 		// a rotation that would mean the old ingest token revoked, the new secret
 		// gone with the failed response, and the source unable to receive alerts.
-		// The transport is what prevents it: `sources/api` answers a keyed request
-		// with a `503` unless both the claim store and a unit of work are wired,
-		// before anything is minted.
+		// The write facade is what prevents it: `sources/service` answers a keyed
+		// request with a `503` unless both the claim store and a unit of work are
+		// wired, before anything is minted.
 		return fn(ctx)
 	}
 	return db.Tx(ctx, r.pool, fn)

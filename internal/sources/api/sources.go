@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
@@ -16,78 +15,34 @@ import (
 	"github.com/thulasiram/oto/internal/platform/netguard"
 	"github.com/thulasiram/oto/internal/platform/validate"
 	"github.com/thulasiram/oto/internal/sources/domain"
+	"github.com/thulasiram/oto/internal/sources/service"
 )
 
-// The two operationIds this file claims keys under. One key must not be
-// replayable across two different operations, so the operation is part of the
-// claim's identity, and they are the contract's own operationIds spelled once so
-// a claim and the contract cannot drift.
-var (
-	opCreateSource            = idempotency.MustOperation("createSource")
-	opRotateSourceIngestToken = idempotency.MustOperation("rotateSourceIngestToken")
-)
-
-// idempotencyKey reads the caller's `Idempotency-Key` and resolves the principal
-// that sent it, reporting whether one was sent at all.
+// idempotencyIntent reads the caller's `Idempotency-Key` and resolves the
+// principal that sent it, into the intent the write facade acts on.
 //
-// ⛔ A KEYED REQUEST THIS DEPLOYMENT CANNOT HONOUR IS REFUSED, NOT SERVED
-// UNGUARDED. The defect being closed here was a header the contract promised and
-// the server ignored; ignoring it a second time because a collaborator is nil
-// would reproduce it exactly, and the caller would have no way to tell a
-// protected create from an unprotected one.
+// ⭐ READING THE HEADER IS THIS LAYER'S JOB; TAKING THE CLAIM IS NOT. A claim has
+// to be taken inside the transaction of the act it guards, and that transaction
+// belongs to `sources/service` — so what crosses the seam is the caller's intent,
+// and the service decides whether this deployment can honour it (a `503`) and
+// whether somebody already holds the key (a `409`).
 //
-// ⭐⭐ THE UNIT OF WORK IS PART OF THE PRECONDITION, AND IT IS CHECKED BEFORE
-// ANYTHING IS MINTED. A claim with no transaction to join is refused by
-// `idempotency.Repository.Claim` — but that refusal arrives AFTER the mint, and
-// with no transaction there is nothing to roll the mint back: for a rotation
-// that means the old ingest token is already revoked, the new secret is already
-// lost with the failed response, and the source can no longer receive alerts at
-// all. Demanding the transaction up front costs a caller one `503`; discovering
-// it late costs a source its only credential.
-func (rt *Router) idempotencyKey(r *http.Request) (idempotency.Key, authn.Principal, bool, error) {
+// The hash is passed in because what "the same request" means differs by
+// operation: a create is identified by the RAW bytes it sent, and a rotation —
+// which has no body — by the source whose credential it replaces, which the
+// service folds in itself.
+func (rt *Router) idempotencyIntent(
+	r *http.Request, hash idempotency.RequestHash,
+) (service.Idempotency, error) {
 	key, keyed, err := idempotency.FromHeader(r)
 	if err != nil || !keyed {
-		return idempotency.Key{}, authn.Principal{}, false, err
-	}
-	if rt.claims == nil || rt.tx == nil {
-		return idempotency.Key{}, authn.Principal{}, false, errs.Unavailable("idempotency_unavailable",
-			"this deployment cannot honour Idempotency-Key", 0)
+		return service.Idempotency{}, err
 	}
 	p, err := principalOf(r)
 	if err != nil {
-		return idempotency.Key{}, authn.Principal{}, false, err
+		return service.Idempotency{}, err
 	}
-	return key, p, true, nil
-}
-
-// claim takes the caller's key for op, and turns a key somebody already holds
-// into the contract's `409`.
-//
-// ⭐⭐ IT MUST BE CALLED INSIDE THE SAME TRANSACTION AS THE ACT IT GUARDS, and
-// AFTER it, so that a claim which loses the race rolls that act back with it. The
-// hash is passed in because what "the same request" means differs by operation: a
-// create is identified by its body, a rotation by the source whose credential it
-// replaces.
-func (rt *Router) claim(
-	ctx context.Context, scope db.TenantScope, p authn.Principal,
-	op idempotency.Operation, key idempotency.Key, hash idempotency.RequestHash, created uuid.UUID,
-) error {
-	res, err := rt.claims.Claim(ctx, scope, idempotency.Claim{
-		OrgID:       scope.OrgID(),
-		PrincipalID: p.UserID,
-		Operation:   op,
-		Key:         key,
-		RequestHash: hash,
-		CreatedRef:  created,
-		ClaimedAt:   rt.now(),
-	})
-	if err != nil {
-		return err
-	}
-	if !res.Fresh() {
-		return idempotency.Reuse(res)
-	}
-	return nil
+	return service.Idempotency{Keyed: true, Key: key, Principal: p, RequestHash: hash}, nil
 }
 
 // listSources serves GET /api/v1/sources.
@@ -207,11 +162,6 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if err := requireDependency(rt.tokens != nil, "sources_token_issuer_unavailable",
-		"ingest tokens cannot be minted in this deployment"); err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
 	if err := httpx.NewParams(r).Err(); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -232,7 +182,7 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, principal, keyed, err := rt.idempotencyKey(r)
+	idem, err := rt.idempotencyIntent(r, idempotency.HashRequest(raw))
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -250,35 +200,13 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var (
-		src    domain.Source
-		secret string
-		prefix string
-	)
-	err = rt.inTx(r.Context(), func(ctx context.Context) error {
-		credentialID, cerr := rt.sealCredential(ctx, scope, dto.Credential)
-		if cerr != nil {
-			return cerr
-		}
-		created, cerr := rt.registry.Create(ctx, scope, dto.toDraft(credentialID))
-		if cerr != nil {
-			return cerr
-		}
-		s, p, terr := rt.tokens.IssueIngestToken(ctx, scope, created.ID)
-		if terr != nil {
-			return terr
-		}
-		if keyed {
-			// AFTER the mint, because the claim records what the call created —
-			// the SOURCE id, which is the id a caller who never received the
-			// ingest token needs in order to find it and rotate its credential.
-			if cerr := rt.claim(ctx, scope, principal, opCreateSource, key,
-				idempotency.HashRequest(raw), created.ID); cerr != nil {
-				return cerr
-			}
-		}
-		src, secret, prefix = created, s, p
-		return nil
+	issued, err := rt.registry.Create(r.Context(), scope, service.CreateCommand{
+		// The draft carries no credential id: sealing the secret is part of the
+		// same transaction as the insert, so the id does not exist yet and this
+		// layer must not pretend to know it.
+		Draft:       dto.toDraft(nil),
+		Credential:  dto.Credential.toInput(),
+		Idempotency: idem,
 	})
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
@@ -288,10 +216,10 @@ func (rt *Router) createSource(w http.ResponseWriter, r *http.Request) {
 	body := SourceCreatedDTO{
 		// Rendered AFTER the commit: the health and cluster joins are reads, and a
 		// read inside the writing transaction would see a world nobody else can.
-		Source:      rt.oneDTO(r.Context(), scope, src),
-		IngestToken: secret,
-		TokenPrefix: prefix,
-		WebhookURL:  rt.webhookURL(ingestPath(src.ID)),
+		Source:      rt.oneDTO(r.Context(), scope, issued.Source),
+		IngestToken: issued.Secret,
+		TokenPrefix: issued.Prefix,
+		WebhookURL:  rt.webhookURL(ingestPath(issued.Source.ID)),
 	}
 	httpx.Data(w, r, http.StatusCreated, body, started)
 }
@@ -367,28 +295,12 @@ func (rt *Router) updateSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var src domain.Source
-	err = rt.inTx(r.Context(), func(ctx context.Context) error {
-		// A supplied credential ROTATES the existing secret in place when there is
-		// one, so the source never spends a moment pointing at nothing.
-		var credential **uuid.UUID
-		if dto.Credential != nil {
-			existing, gerr := rt.sources.Get(ctx, scope, id)
-			if gerr != nil {
-				return gerr
-			}
-			newID, cerr := rt.rotateCredential(ctx, scope, existing.AuthCredentialID, dto.Credential)
-			if cerr != nil {
-				return cerr
-			}
-			credential = &newID
-		}
-		updated, uerr := rt.registry.Update(ctx, scope, id, dto.toPatch(credential))
-		if uerr != nil {
-			return uerr
-		}
-		src = updated
-		return nil
+	// The patch carries no credential id: whether a supplied secret rotates the
+	// existing row in place or seals a new one is the service's decision, made
+	// inside the same transaction as the update.
+	src, err := rt.registry.Update(r.Context(), scope, id, service.UpdateCommand{
+		Patch:      dto.toPatch(nil),
+		Credential: dto.Credential.toInput(),
 	})
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
@@ -401,19 +313,9 @@ func (rt *Router) updateSource(w http.ResponseWriter, r *http.Request) {
 //
 // It stops ingestion and reconciliation and REVOKES the ingest token, so a source
 // that has been deleted cannot still be pushed to. ALERT HISTORY IS RETAINED:
-// deleting a source must never erase the record of what it once reported.
-//
-// ⭐ THE DELETION AND THE REVOCATION COMMIT TOGETHER OR NOT AT ALL, for the same
-// reason `createSource` does: they were two independent commits, and a failure in
-// the second left a source that the settings screen shows as gone while its
-// ingest token stayed live and usable — a soft delete in name only, and a
-// credential nobody can see in order to revoke it.
-//
-// THE ORDER IS DELIBERATE. The soft delete goes first because it is the call that
-// decides the response: it answers not-found for an id that does not exist or is
-// already deleted, and running it first keeps that 404 free of any write against
-// another source's tokens. It also takes `alert_sources` before `api_tokens`,
-// which is the lock order the create path already uses.
+// deleting a source must never erase the record of what it once reported. Both
+// writes commit together or not at all — see `service.SoftDelete`, which owns
+// that and the order it happens in.
 func (rt *Router) deleteSource(w http.ResponseWriter, r *http.Request) {
 	scope, id, err := rt.subject(r)
 	if err != nil {
@@ -426,16 +328,7 @@ func (rt *Router) deleteSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = rt.inTx(r.Context(), func(ctx context.Context) error {
-		if derr := rt.registry.SoftDelete(ctx, scope, id); derr != nil {
-			return derr
-		}
-		if rt.tokens == nil {
-			return nil
-		}
-		return rt.tokens.RevokeIngestTokens(ctx, scope, id)
-	})
-	if err != nil {
+	if err := rt.registry.SoftDelete(r.Context(), scope, id); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
@@ -480,24 +373,12 @@ func (rt *Router) testSource(w http.ResponseWriter, r *http.Request) {
 // immediately. Between rotation and reconfiguration the old token is rejected
 // with `401`, which Alertmanager treats as PERMANENT, so notifications sent in
 // that window are lost — which is why the contract tells the operator to update
-// the receiver promptly and why nothing here delays the revocation to be kind.
+// the receiver promptly and why nothing delays the revocation to be kind.
 //
-// ⛔ THE ONE THING IT MUST NEVER DO IS LEAVE ZERO WORKING TOKENS. The issuer used
-// to revoke first and mint second; a mint that failed for any reason therefore
-// revoked the source's only credential and left nothing in its place, and because
-// Alertmanager never retries a 401 the alerts sent afterwards were destroyed
-// rather than delayed — the precise failure ADR 0007 exists to prevent. The whole
-// rotation is now one transaction and mints before it revokes, so the failure
-// mode is "nothing changed" instead of "nothing works".
-//
-// ⭐⭐ A RETRY CARRYING THE SAME `Idempotency-Key` IS REFUSED, NOT REPEATED. This
-// is the same defect class as `createApiToken` and it is worse here: a rotation
-// does not merely mint a second secret, it REVOKES the one it minted a moment
-// ago, so an automatic retry after a dropped response destroys the credential the
-// caller may actually be holding and hands the replacement to a response that
-// never arrived. The claim runs in the rotation's own transaction, so a key
-// somebody already holds rolls the whole rotation back and the source keeps the
-// token it had.
+// The mint-before-revoke order, the transaction around them and the
+// `Idempotency-Key` claim inside it all live in `service.RotateIngestToken`; this
+// handler resolves the subject, reads the header and renders the one response in
+// this API that carries a secret.
 func (rt *Router) rotateSourceIngestToken(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -506,61 +387,25 @@ func (rt *Router) rotateSourceIngestToken(w http.ResponseWriter, r *http.Request
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if err := requireDependency(rt.tokens != nil, "sources_token_issuer_unavailable",
-		"ingest tokens cannot be minted in this deployment"); err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-
-	key, principal, keyed, err := rt.idempotencyKey(r)
+	// No request hash: this operation declares no body, so the service digests the
+	// source it is rotating instead. See `service.Idempotency.RequestHash`.
+	idem, err := rt.idempotencyIntent(r, idempotency.RequestHash{})
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	var (
-		src            domain.Source
-		secret, prefix string
-	)
-	err = rt.inTx(r.Context(), func(ctx context.Context) error {
-		found, gerr := rt.sources.Get(ctx, scope, id)
-		if gerr != nil {
-			return gerr
-		}
-		s, p, terr := rt.tokens.IssueIngestToken(ctx, scope, found.ID)
-		if terr != nil {
-			return terr
-		}
-		if keyed {
-			// The claim carries no `created_ref`: the issuer port returns a secret
-			// and a display prefix, never the row id, and there is no version of it
-			// that should return the credential itself.
-			//
-			// ⭐ THE DIGEST IS OF THE SOURCE BEING ROTATED, not of the empty body
-			// this operation declares. A bodyless request digests to a CONSTANT and
-			// `{id}` is not in the claim tuple, so one key would make "rotate source
-			// A" and "rotate source B" indistinguishable and refuse the second as a
-			// replay of a rotation that touched a different source entirely. Folded
-			// in, the two are the different requests they are, and a true retry
-			// against the same source still digests identically and still replays.
-			if cerr := rt.claim(ctx, scope, principal, opRotateSourceIngestToken, key,
-				idempotency.HashTargetedRequest(found.ID, nil), uuid.Nil); cerr != nil {
-				return cerr
-			}
-		}
-		src, secret, prefix = found, s, p
-		return nil
-	})
+	issued, err := rt.registry.RotateIngestToken(r.Context(), scope, id, idem)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
 	httpx.Data(w, r, http.StatusOK, SourceCreatedDTO{
-		Source:      rt.oneDTO(r.Context(), scope, src),
-		IngestToken: secret,
-		TokenPrefix: prefix,
-		WebhookURL:  rt.webhookURL(ingestPath(src.ID)),
+		Source:      rt.oneDTO(r.Context(), scope, issued.Source),
+		IngestToken: issued.Secret,
+		TokenPrefix: issued.Prefix,
+		WebhookURL:  rt.webhookURL(ingestPath(issued.Source.ID)),
 	}, started)
 }
 
@@ -744,61 +589,6 @@ func (rt *Router) checkTLSSkipVerify(requested *bool) error {
 			Field: "tls_skip_verify", Code: "forbidden",
 			Message: "this is a deployment-level setting and cannot be changed per source",
 		})
-}
-
-// sealCredential stores a supplied credential and returns its id, or nil.
-//
-// ⛔ The plaintext values travel from the decoded DTO straight into the sealer
-// and are referenced nowhere else. Nothing in this file logs `dto.Credential`.
-func (rt *Router) sealCredential(
-	ctx context.Context, scope db.TenantScope, in *CredentialInputDTO,
-) (*uuid.UUID, error) {
-	if in == nil || in.Kind == "" || in.Kind == "none" {
-		return nil, nil
-	}
-	if rt.creds == nil {
-		return nil, errs.Unavailable("sources_credential_store_unavailable",
-			"credentials cannot be sealed in this deployment", 0)
-	}
-	if len(in.Values) == 0 {
-		return nil, errs.Validation("credential_empty", "a credential must carry at least one value",
-			errs.Violation{Field: "credential/values", Code: "required", Message: "at least one value is required"})
-	}
-	id, err := rt.creds.CreateCredential(ctx, scope, in.Kind, in.Values)
-	if err != nil {
-		return nil, err
-	}
-	return &id, nil
-}
-
-// rotateCredential re-seals an existing credential in place, or seals a new one
-// when the source had none.
-func (rt *Router) rotateCredential(
-	ctx context.Context, scope db.TenantScope, existing *uuid.UUID, in *CredentialInputDTO,
-) (*uuid.UUID, error) {
-	if in == nil {
-		return existing, nil
-	}
-	if in.Kind == "none" {
-		// Detaching is expressed by supplying kind `none`: the row is left in place
-		// (other things may reference it) and the source stops pointing at it.
-		return nil, nil
-	}
-	if existing == nil {
-		return rt.sealCredential(ctx, scope, in)
-	}
-	if rt.creds == nil {
-		return nil, errs.Unavailable("sources_credential_store_unavailable",
-			"credentials cannot be sealed in this deployment", 0)
-	}
-	if len(in.Values) == 0 {
-		return nil, errs.Validation("credential_empty", "a credential must carry at least one value",
-			errs.Violation{Field: "credential/values", Code: "required", Message: "at least one value is required"})
-	}
-	if err := rt.creds.RotateCredential(ctx, scope, *existing, in.Kind, in.Values); err != nil {
-		return nil, err
-	}
-	return existing, nil
 }
 
 // timeoutAware turns a blown local deadline into a `504`, while leaving a client

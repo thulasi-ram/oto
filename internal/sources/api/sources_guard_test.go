@@ -60,12 +60,11 @@ func TestCreateSourceRefusesSSRFTargets(t *testing.T) {
 			if body := rec.Body.String(); !strings.Contains(body, "base_url") {
 				t.Fatalf("the violation should name the field: %s", body)
 			}
-			// ⛔ NOTHING was written. A refused target must not leave a source row.
-			if deps.registry.created != 0 {
-				t.Fatalf("a refused source was still created (%d writes)", deps.registry.created)
-			}
-			if deps.tokens.issued != 0 {
-				t.Fatalf("a refused source still minted a token")
+			// ⛔ NOTHING was written. The refusal lands BEFORE the write facade is
+			// called at all, so a refused target cannot leave a source row and
+			// cannot mint a token, whatever the facade would otherwise have done.
+			if deps.writes.created != 0 {
+				t.Fatalf("a refused source still reached the write path (%d calls)", deps.writes.created)
 			}
 		})
 	}
@@ -93,39 +92,15 @@ func TestCreateSourceRefusesSSRFInPrometheusURL(t *testing.T) {
 	}
 }
 
-// ⭐ TestCreateSourceIsAtomic is the second half of C2.
+// TestCreateSourceReturnsTheSecretTheFacadeMinted.
 //
-// The source row and its ingest credential are ONE fact. They used to be
-// independent commits, so a failing mint left an `alert_sources` row with no
-// token: a source the settings screen shows as configured, whose webhook URL an
-// operator has already pasted into `webhook_config`, and which answers 401 to
-// every alert forever. Alertmanager never retries a 4xx, so those alerts are gone.
-func TestCreateSourceIsAtomic(t *testing.T) {
-	t.Parallel()
-
-	rt, deps := newTestRouter(t)
-	deps.tokens.err = errors.New("the identity store is having a bad day")
-
-	rec := doCreate(t, rt, map[string]any{
-		"name":       "prod-eu",
-		"cluster_id": uuid.New().String(),
-		"kind":       "alertmanager",
-		"base_url":   "https://am.example.com",
-	})
-	if rec.Code < 400 {
-		t.Fatalf("status = %d, want a failure", rec.Code)
-	}
-	if !deps.tx.rolledBack {
-		t.Fatal("the unit of work committed despite a failed token mint; the source row would be an orphan")
-	}
-	if deps.tx.committed {
-		t.Fatal("the unit of work committed a source with no ingest credential")
-	}
-}
-
-// TestCreateSourceCommitsSourceAndTokenTogether is the positive half: on the
-// happy path everything happens inside ONE unit of work.
-func TestCreateSourceCommitsSourceAndTokenTogether(t *testing.T) {
+// ⭐ WHAT THIS LAYER OWES THE CALLER is that the plaintext ingest token comes back
+// on the 201 and comes back in a shape a client can use — it is returned exactly
+// once, and a response that dropped or mangled it costs the operator the only copy
+// there will ever be. THAT THE SOURCE ROW AND THE TOKEN COMMIT TOGETHER is a
+// different promise, made where the transaction is:
+// `internal/sources/service/write_test.go`.
+func TestCreateSourceReturnsTheSecretTheFacadeMinted(t *testing.T) {
 	t.Parallel()
 
 	rt, deps := newTestRouter(t)
@@ -138,11 +113,8 @@ func TestCreateSourceCommitsSourceAndTokenTogether(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
-	if !deps.tx.committed {
-		t.Fatal("the create did not run inside a unit of work")
-	}
-	if deps.registry.created != 1 || deps.tokens.issued != 1 {
-		t.Fatalf("writes = %d source, %d token; want 1 and 1", deps.registry.created, deps.tokens.issued)
+	if deps.writes.created != 1 {
+		t.Fatalf("the write facade saw %d creates, want 1", deps.writes.created)
 	}
 
 	var body struct {
@@ -216,31 +188,29 @@ func TestPrivateTargetsAllowedWhenDeploymentOptsIn(t *testing.T) {
 	}
 }
 
-// ⭐ TestRotateTokenMintsBeforeItRevokes is the destructive-rotation regression.
+// TestRotateTokenSurfacesAFailedRotationAsAFailure.
 //
-// The issuer revoked first and minted second. A mint that failed therefore
-// revoked the source's only credential and left nothing behind it — and because
-// Alertmanager treats 401 as permanent, the alerts sent afterwards were destroyed
-// rather than delayed. A rotation must never leave a source with zero working
-// tokens.
-func TestRotateTokenMintsBeforeItRevokes(t *testing.T) {
+// The destructive half of this — that a rotation mints before it revokes, and
+// that a failed mint leaves the source's existing token alone — is asserted where
+// the transaction is (`internal/sources/service/write_test.go`). What must hold
+// HERE is that the handler does not render a 200 with an empty `ingest_token`
+// over a rotation that did not happen, which would tell an operator to go and
+// reconfigure Alertmanager with nothing.
+func TestRotateTokenSurfacesAFailedRotationAsAFailure(t *testing.T) {
 	t.Parallel()
 
 	rt, deps := newTestRouter(t)
-	deps.tokens.err = errors.New("the mint failed")
+	deps.writes.rotateErr = errors.New("the mint failed")
 
 	id := uuid.New()
 	req := httptest.NewRequest(http.MethodPost, "/sources/"+id.String()+"/rotate-token", nil)
 	rec := serve(rt, req)
 
 	if rec.Code < 400 {
-		t.Fatalf("status = %d, want a failure", rec.Code)
+		t.Fatalf("status = %d, want a failure: %s", rec.Code, rec.Body.String())
 	}
-	if deps.tokens.revoked != 0 {
-		t.Fatalf("a failed rotation revoked %d token(s); the source is now unreachable", deps.tokens.revoked)
-	}
-	if deps.tx.committed {
-		t.Fatal("a failed rotation committed")
+	if strings.Contains(rec.Body.String(), "ingest_token") {
+		t.Fatalf("a failed rotation still rendered a token field: %s", rec.Body.String())
 	}
 }
 
@@ -265,9 +235,7 @@ type routerOverrides struct {
 }
 
 type testDeps struct {
-	registry *fakeRegistry
-	tokens   *fakeTokens
-	tx       *fakeTx
+	writes *fakeWrites
 }
 
 func newTestRouter(t *testing.T) (*Router, *testDeps) {
@@ -277,12 +245,10 @@ func newTestRouter(t *testing.T) (*Router, *testDeps) {
 
 func newTestRouterWith(t *testing.T, o routerOverrides) (*Router, *testDeps) {
 	t.Helper()
-	deps := &testDeps{registry: &fakeRegistry{}, tokens: &fakeTokens{}, tx: &fakeTx{}}
+	deps := &testDeps{writes: &fakeWrites{}}
 	rt := NewRouter(Options{
 		Sources:  &fakeReader{},
-		Registry: deps.registry,
-		Tokens:   deps.tokens,
-		Tx:       deps.tx,
+		Registry: deps.writes,
 		Guard: netguard.New(netguard.Options{
 			AllowPrivate: o.allowPrivate,
 			Field:        "url",
@@ -326,94 +292,78 @@ func serve(rt *Router, req *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
-// fakeTx records whether the unit of work committed or rolled back, which is the
-// only thing the atomicity tests need to observe.
+// fakeWrites is the WRITE FACADE these tests stand in front of.
 //
-// It also MARKS THE CONTEXT it hands down, mirroring the production runner: a real
-// transaction travels in the context (`platform/db.FromContext`), so a repository
-// call that received an unmarked context is a call that ran on the pool and
-// committed on its own. `committed` alone cannot see that — it stays true when one
-// of two writes is moved back outside the closure — so the fakes below record
-// whether they joined.
-type fakeTx struct {
-	committed  bool
-	rolledBack bool
+// ⭐ IT IS ONE FAKE, AND THAT IS THE SHAPE OF THE THING NOW. The transaction, the
+// credential sealing, the ingest-token mint and the `Idempotency-Key` claim live
+// behind these methods (`sources/service`), so the questions this file can still
+// ask are the transport's own: was the write path reached at all, and with what.
+// It mints a REAL-SHAPED ingest secret so the response assertions exercise the
+// same fifteen-character prefix a client will actually receive.
+type fakeWrites struct {
+	created int
+	updated int
+	deleted int
+	rotated int
+	// The commands the handler built, so a test can assert that what the caller
+	// sent survived binding.
+	lastCreate service.CreateCommand
+	lastUpdate service.UpdateCommand
+
+	rotateErr error
 }
 
-type fakeTxKey struct{}
-
-// joinedUnitOfWork reports whether ctx is the one fakeTx handed to its closure.
-func joinedUnitOfWork(ctx context.Context) bool {
-	return ctx.Value(fakeTxKey{}) != nil
-}
-
-func (f *fakeTx) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	// Mirror `db.TxOptions`, which returns `fn(ctx)` unchanged when the context is
-	// already in a transaction (`platform/db/tx.go`). Without this, a nested
-	// `inTx` would set `committed` from the INNER call while production issued a
-	// single BEGIN, and an assertion on `committed` would pass for the wrong
-	// reason.
-	if joinedUnitOfWork(ctx) {
-		return fn(ctx)
-	}
-	if err := fn(context.WithValue(ctx, fakeTxKey{}, struct{}{})); err != nil {
-		f.rolledBack = true
-		return err
-	}
-	f.committed = true
-	return nil
-}
-
-type fakeRegistry struct{ created int }
-
-func (f *fakeRegistry) Create(_ context.Context, s db.TenantScope, in domain.SourceDraft) (domain.Source, error) {
+func (f *fakeWrites) Create(
+	_ context.Context, s db.TenantScope, cmd service.CreateCommand,
+) (service.IssuedIngest, error) {
 	f.created++
-	return domain.Source{
-		ID: uuid.New(), OrgID: s.OrgID(), ClusterID: in.ClusterID,
-		Name: in.Name, Kind: in.Kind, BaseURL: in.BaseURL,
-		PrometheusURL: in.PrometheusURL, TLSSkipVerify: in.TLSSkipVerify,
-		PushEnabled:       in.PushEnabled,
-		ReconcileInterval: in.ReconcileInterval,
-		CreatedAt:         time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	f.lastCreate = cmd
+	in := cmd.Draft
+	secret := "oto_ingest_" + "Ab3D" + strings.Repeat("k", 39)
+	return service.IssuedIngest{
+		Source: domain.Source{
+			ID: uuid.New(), OrgID: s.OrgID(), ClusterID: in.ClusterID,
+			Name: in.Name, Kind: in.Kind, BaseURL: in.BaseURL,
+			PrometheusURL: in.PrometheusURL, TLSSkipVerify: in.TLSSkipVerify,
+			PushEnabled:       in.PushEnabled,
+			ReconcileInterval: in.ReconcileInterval,
+			CreatedAt:         time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		},
+		Secret: secret,
+		Prefix: secret[:15],
 	}, nil
 }
 
-func (f *fakeRegistry) Update(_ context.Context, _ db.TenantScope, _ uuid.UUID, _ domain.SourcePatch) (domain.Source, error) {
+func (f *fakeWrites) Update(
+	_ context.Context, _ db.TenantScope, _ uuid.UUID, cmd service.UpdateCommand,
+) (domain.Source, error) {
+	f.updated++
+	f.lastUpdate = cmd
 	return domain.Source{}, nil
 }
-func (f *fakeRegistry) SoftDelete(context.Context, db.TenantScope, uuid.UUID) error { return nil }
-func (f *fakeRegistry) HealthFor(context.Context, db.TenantScope, []uuid.UUID) (map[uuid.UUID]domain.SourceHealth, error) {
-	return map[uuid.UUID]domain.SourceHealth{}, nil
-}
 
-// fakeTokens mints a REAL ingest secret, so the shape assertions in these tests
-// exercise the same derivation the production path does.
-type fakeTokens struct {
-	issued  int
-	revoked int
-	err     error
-	// revokeErr fails the revocation, which is the second half of a delete.
-	revokeErr error
-	// revokedInTx records whether the revocation joined the caller's unit of work.
-	revokedInTx bool
-}
-
-func (f *fakeTokens) IssueIngestToken(context.Context, db.TenantScope, uuid.UUID) (string, string, error) {
-	if f.err != nil {
-		return "", "", f.err
-	}
-	f.issued++
-	secret := "oto_ingest_" + "Ab3D" + strings.Repeat("k", 39)
-	return secret, secret[:15], nil
-}
-
-func (f *fakeTokens) RevokeIngestTokens(ctx context.Context, _ db.TenantScope, _ uuid.UUID) error {
-	f.revokedInTx = joinedUnitOfWork(ctx)
-	if f.revokeErr != nil {
-		return f.revokeErr
-	}
-	f.revoked++
+func (f *fakeWrites) SoftDelete(context.Context, db.TenantScope, uuid.UUID) error {
+	f.deleted++
 	return nil
+}
+
+func (f *fakeWrites) RotateIngestToken(
+	_ context.Context, _ db.TenantScope, id uuid.UUID, _ service.Idempotency,
+) (service.IssuedIngest, error) {
+	if f.rotateErr != nil {
+		return service.IssuedIngest{}, f.rotateErr
+	}
+	f.rotated++
+	secret := "oto_ingest_" + "Ab3D" + strings.Repeat("k", 39)
+	return service.IssuedIngest{
+		Source: domain.Source{ID: id, Kind: domain.KindAlertmanager},
+		Secret: secret,
+		Prefix: secret[:15],
+	}, nil
+}
+
+func (f *fakeWrites) HealthFor(context.Context, db.TenantScope, []uuid.UUID) (map[uuid.UUID]domain.SourceHealth, error) {
+	return map[uuid.UUID]domain.SourceHealth{}, nil
 }
 
 type fakeReader struct{}

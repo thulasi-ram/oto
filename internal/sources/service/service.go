@@ -39,20 +39,48 @@ type Options struct {
 	Clients ClientFactory
 	Clock   clock.Clock
 	Logger  *slog.Logger
+
+	// Sealer seals a supplied upstream credential. Nil means this deployment
+	// cannot store one, which is a declared 503 on the two endpoints that accept
+	// a `credential` and nothing at all to the rest.
+	Sealer CredentialSealer
+	// Tokens mints and revokes the per-source ingest credential. Nil means no
+	// source can be registered here, because a source that cannot receive a
+	// webhook is not a source.
+	Tokens IngestTokens
+	// Tx makes a source, its credential and its ingest token ONE commit. A nil Tx
+	// degrades to independent commits, which is what left orphan sources behind;
+	// production always wires it.
+	Tx UnitOfWork
+	// Claims is the store behind `Idempotency-Key`. Nil means this deployment
+	// cannot honour the header, which is the declared `503` rather than a rotation
+	// that silently mints a second secret.
+	Claims IdempotencyClaims
 }
 
 // Service composes the outbound clients with the source registry.
 //
-// It is the read side of the sources module: probe a source, report its health,
-// and serve the Alertmanager and Prometheus reads that the reconciler and the
-// enrichment pipeline call. There is no write path into a cluster (R3), so there
-// is no method here that mutates anything upstream.
+// It owns the sources module's aggregate END TO END: the reads (probe a source,
+// report its health, serve the Alertmanager and Prometheus calls the reconciler
+// and the enrichment pipeline make) and the writes (register, edit, retire a
+// source, and rotate its ingest credential) — including the transaction that
+// makes a source and its token one fact, and the `Idempotency-Key` claim taken
+// inside it.
+//
+// ⛔ THERE IS STILL NO WRITE PATH INTO A CLUSTER (R3). Nothing here mutates
+// anybody else's Alertmanager; `write.go` writes oto's OWN tables, which is a
+// different question and always was.
 type Service struct {
 	repo    SourceRepository
 	creds   CredentialStore
 	clients ClientFactory
 	clk     clock.Clock
 	log     *slog.Logger
+
+	sealer CredentialSealer
+	tokens IngestTokens
+	tx     UnitOfWork
+	claims IdempotencyClaims
 }
 
 // New builds the Service.
@@ -71,7 +99,10 @@ func New(o Options) (*Service, error) {
 	if lg == nil {
 		lg = slog.Default()
 	}
-	return &Service{repo: o.Repo, creds: o.Creds, clients: o.Clients, clk: clk, log: lg}, nil
+	return &Service{
+		repo: o.Repo, creds: o.Creds, clients: o.Clients, clk: clk, log: lg,
+		sealer: o.Sealer, tokens: o.Tokens, tx: o.Tx, claims: o.Claims,
+	}, nil
 }
 
 // Get returns one source.
@@ -133,6 +164,19 @@ func (s *Service) Health(ctx context.Context, scope db.TenantScope, id uuid.UUID
 		return domain.SourceHealth{}, err
 	}
 	return s.repo.GetHealth(ctx, scope, id)
+}
+
+// HealthFor resolves a page of sources' health in ONE round trip.
+//
+// It is the batch companion to Health and deliberately does NOT re-resolve each
+// source first: the caller is rendering rows it has already read, and an id this
+// org does not own is simply absent from the result. A source that has never been
+// probed is absent too, which the caller renders as `unknown` — the state that
+// blocks the reaper (§B.4).
+func (s *Service) HealthFor(
+	ctx context.Context, scope db.TenantScope, ids []uuid.UUID,
+) (map[uuid.UUID]domain.SourceHealth, error) {
+	return s.repo.HealthFor(ctx, scope, ids)
 }
 
 // Alerts reads the source's current world from GET /api/v2/alerts.

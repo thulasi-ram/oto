@@ -43,8 +43,8 @@ func TestReconcileCannotBeSwitchedOff(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "reconcile_enabled") {
 		t.Fatalf("the refusal must NAME the field so a stale runbook finds out: %s", rec.Body.String())
 	}
-	if deps.tx.committed {
-		t.Fatal("a refused patch opened and committed a unit of work")
+	if deps.writes.updated != 0 {
+		t.Fatal("a refused patch still reached the write path")
 	}
 }
 
@@ -70,8 +70,8 @@ func TestReconcileCannotBeSwitchedOffAtCreate(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "reconcile_enabled") {
 		t.Fatalf("the violation should name the field: %s", rec.Body.String())
 	}
-	if deps.registry.created != 0 {
-		t.Fatalf("a refused create still wrote %d source(s)", deps.registry.created)
+	if deps.writes.created != 0 {
+		t.Fatalf("a refused create still reached the write path %d time(s)", deps.writes.created)
 	}
 }
 

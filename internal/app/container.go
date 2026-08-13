@@ -428,6 +428,28 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Clients: clientFactory,
 		Clock:   clk,
 		Logger:  logger,
+		// ---- the write half (ticket 0869f21) ------------------------------
+		//
+		// These four used to be injected into `sources/api`, which meant the
+		// transaction boundary, the ordering of writes across three tables and the
+		// `Idempotency-Key` claim were reachable only through an HTTP request. They
+		// belong to the service that performs the operation.
+		//
+		// Sealer is the CHANNELS credential repository: one sealed-secret store
+		// serves both modules, and `sources` reaches it through a plain-typed port
+		// rather than an import.
+		Sealer: credentialRepo,
+		// Tokens mints into identity's `api_tokens`, for the same reason.
+		Tokens: ingestTokenIssuer{tokens: tokenRepo, tx: sourceTx, clk: clk},
+		// One transaction for the source row, its credential and its ingest token.
+		// They used to be independent commits, and a source without its token can
+		// never receive a webhook.
+		Tx: sourceTx,
+		// `rotateSourceIngestToken` is `createApiToken`'s defect twin: it hands out
+		// a secret exactly once AND revokes the previous one, so a retry destroyed
+		// the credential the caller was still holding. The claim joins the
+		// rotation's own transaction.
+		Claims: c.Idempotency,
 	})
 	if err != nil {
 		return nil, err
@@ -677,8 +699,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	c.enqueuer.set(c.Jobs)
 
-	c.buildRouters(channelRepo, credentialRepo, tokenRepo, sourceRepo, clusterRepo, sourceTx, identityTx,
-		enricherRegistry, clk)
+	c.buildRouters(channelRepo, credentialRepo, clusterRepo, identityTx, enricherRegistry, clk)
 	return c, nil
 }
 
@@ -852,13 +873,18 @@ func (c *Container) buildJobs(
 }
 
 // buildRouters constructs every domain's HTTP surface.
+//
+// ⭐ IT TAKES THE COLLABORATORS THE ROUTERS ACTUALLY BIND. The sources API used
+// to be handed `*SourceRepository`, `*TxRunner` and the API-token repository so
+// it could write through them; since ticket 0869f21 it binds the `sources`
+// service facade (`c.Sources`) instead, which owns the transaction and the
+// `Idempotency-Key` claim taken inside it. The parameters outlived their last
+// reader and are gone: an unused dependency in a wiring signature reads as a
+// relationship that exists.
 func (c *Container) buildRouters(
 	channelRepo *channelsrepo.ChannelRepository,
 	credentialRepo *channelsrepo.CredentialRepository,
-	tokenRepo *identityrepo.APITokenRepository,
-	sourceRepo *sourcesrepo.SourceRepository,
 	clusterRepo *sourcesrepo.ClusterRepository,
-	sourceTx *sourcesrepo.TxRunner,
 	identityTx *identityrepo.TxRunner,
 	enricherRegistry *enrichservice.Registry,
 	clk clock.Clock,
@@ -888,11 +914,13 @@ func (c *Container) buildRouters(
 			groupDeliveryRollups{svc: c.NotifyHistory}, clk),
 		rules: rulesapi.NewRouter(c.Rules, c.Alerts, clk),
 		sources: sourcesapi.NewRouter(sourcesapi.Options{
-			Sources:  c.Sources,
-			Registry: sourceRepo,
+			Sources: c.Sources,
+			// ⭐ THE WRITE FACADE, NOT THE REPOSITORY. `sources/service` owns the
+			// create/update/delete/rotate path, the transaction around it and the
+			// `Idempotency-Key` claim taken inside it, so this router binds a
+			// request, calls one method and maps the error (ticket 0869f21).
+			Registry: c.Sources,
 			Clusters: clusterRepo,
-			Creds:    credentialRepo,
-			Tokens:   ingestTokenIssuer{tokens: tokenRepo, tx: sourceTx, clk: clk},
 			// `POST /sources/{id}/reconcile` forces one pass now (§G.8). It answers
 			// 200 with `ok:false` for an upstream that is down, because "the source
 			// is unreachable" is a RESULT the operator asked for — and because the
@@ -904,15 +932,6 @@ func (c *Container) buildRouters(
 			// not be read back from anywhere but `psql`. It is the SAME
 			// `ingestion/service.Service` the webhook handler writes through.
 			Feeds: ingestFeeds{svc: c.Ingestion.Service},
-			// One transaction for the source row and its ingest credential. They
-			// used to be independent commits, and a source without its token can
-			// never receive a webhook.
-			Tx: sourceTx,
-			// `rotateSourceIngestToken` is `createApiToken`'s defect twin: it hands
-			// out a secret exactly once AND revokes the previous one, so a retry
-			// destroyed the credential the caller was still holding. The claim joins
-			// the rotation's transaction.
-			Claims: c.Idempotency,
 			// Configuration-time SSRF feedback. The DIALER is the control; this is
 			// so an operator who pastes a metadata-service URL sees a 422 naming the
 			// field rather than a probe that mysteriously returns someone else's data.

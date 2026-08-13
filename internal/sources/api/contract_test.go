@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,21 +228,39 @@ func (f *contractSources) Probe(_ context.Context, _ db.TenantScope, id uuid.UUI
 	return f.probe, nil
 }
 
-// contractRegistry is the write side, scoped the same way.
+// contractRegistry is the WRITE FACADE, scoped the same way.
+//
+// ⭐ IT IS ONE FAKE BECAUSE THE REAL THING IS ONE COLLABORATOR. The transaction,
+// the credential sealing, the ingest-token mint and the `Idempotency-Key` claim
+// all happen behind these five methods now (ticket 0869f21), so the assertions
+// this file makes are the ones a transport can make: the handler called the
+// facade exactly once, with what the caller sent, and rendered what came back.
+// That those writes commit together is asserted where they happen —
+// `internal/sources/service/write_test.go`.
 type contractRegistry struct {
 	src     domain.Source
 	health  domain.SourceHealth
 	created int
 	updated int
 	deleted int
-	// deletedInTx records whether the soft delete joined the caller's unit of work.
-	deletedInTx bool
+	rotated int
+	// issued counts the ingest secrets handed out, which is what makes "a create
+	// answers with a token" a fact about the response and not about the fixture.
+	issued int
+	// noIssuer models a deployment with no ingest-token issuer wired: the facade
+	// refuses before anything is minted, with the code the contract declares.
+	noIssuer bool
 }
 
 func (f *contractRegistry) Create(
-	_ context.Context, s db.TenantScope, in domain.SourceDraft,
-) (domain.Source, error) {
+	_ context.Context, s db.TenantScope, cmd service.CreateCommand,
+) (service.IssuedIngest, error) {
+	if f.noIssuer {
+		return service.IssuedIngest{}, errs.Unavailable(service.CodeTokenIssuerUnavailable,
+			"ingest tokens cannot be minted in this deployment", 0)
+	}
 	f.created++
+	in := cmd.Draft
 	out := f.src
 	out.OrgID = s.OrgID()
 	out.ClusterID = in.ClusterID
@@ -257,30 +275,56 @@ func (f *contractRegistry) Create(
 	out.RedactAnnotations = in.RedactAnnotations
 	out.PushEnabled = in.PushEnabled
 	out.ReconcileInterval = in.ReconcileInterval
-	return out, nil
+	secret, prefix := contractIngestSecret()
+	f.issued++
+	return service.IssuedIngest{Source: out, Secret: secret, Prefix: prefix}, nil
 }
 
 func (f *contractRegistry) Update(
-	_ context.Context, _ db.TenantScope, id uuid.UUID, p domain.SourcePatch,
+	_ context.Context, _ db.TenantScope, id uuid.UUID, cmd service.UpdateCommand,
 ) (domain.Source, error) {
 	if id != f.src.ID {
 		return domain.Source{}, notMine()
 	}
 	f.updated++
 	out := f.src
-	if p.Name != nil {
-		out.Name = *p.Name
+	if cmd.Patch.Name != nil {
+		out.Name = *cmd.Patch.Name
 	}
 	return out, nil
 }
 
-func (f *contractRegistry) SoftDelete(ctx context.Context, _ db.TenantScope, id uuid.UUID) error {
+func (f *contractRegistry) SoftDelete(_ context.Context, _ db.TenantScope, id uuid.UUID) error {
 	if id != f.src.ID {
 		return notMine()
 	}
-	f.deletedInTx = joinedUnitOfWork(ctx)
 	f.deleted++
 	return nil
+}
+
+func (f *contractRegistry) RotateIngestToken(
+	_ context.Context, _ db.TenantScope, id uuid.UUID, _ service.Idempotency,
+) (service.IssuedIngest, error) {
+	if f.noIssuer {
+		return service.IssuedIngest{}, errs.Unavailable(service.CodeTokenIssuerUnavailable,
+			"ingest tokens cannot be minted in this deployment", 0)
+	}
+	if id != f.src.ID {
+		return service.IssuedIngest{}, notMine()
+	}
+	f.rotated++
+	secret, prefix := contractIngestSecret()
+	f.issued++
+	return service.IssuedIngest{Source: f.src, Secret: secret, Prefix: prefix}, nil
+}
+
+// contractIngestSecret mints a REAL-SHAPED ingest secret, because the contract
+// bounds `token_prefix` to fifteen characters — `oto_ingest_` is eleven, not the
+// twelve a PAT's prefix is — and a fixture that ignored that would let the
+// response schema pass on a token no client could recognise.
+func contractIngestSecret() (secret, prefix string) {
+	secret = "oto_ingest_" + "Ab3D" + strings.Repeat("k", 39)
+	return secret, secret[:15]
 }
 
 func (f *contractRegistry) HealthFor(
@@ -374,8 +418,6 @@ type contractStack struct {
 	sources   *contractSources
 	registry  *contractRegistry
 	clusters  *contractClusters
-	tokens    *fakeTokens
-	tx        *fakeTx
 	reconcile *contractReconciler
 	feeds     *contractFeeds
 
@@ -392,8 +434,6 @@ func newContractStack() *contractStack {
 		sources:   &contractSources{src: src, health: health, probe: contractProbe()},
 		registry:  &contractRegistry{src: src, health: health},
 		clusters:  &contractClusters{cluster: contractCluster()},
-		tokens:    &fakeTokens{},
-		tx:        &fakeTx{},
 		reconcile: &contractReconciler{res: contractReconcile()},
 		feeds:     newContractFeeds(),
 	}
@@ -407,7 +447,6 @@ func newContractStack() *contractStack {
 func (s *contractStack) router() *Router {
 	o := Options{
 		Sources: s.sources,
-		Tx:      s.tx,
 		Clock:   clock.New(),
 		BaseURL: "https://oto.example.com",
 	}
@@ -417,9 +456,11 @@ func (s *contractStack) router() *Router {
 	if !s.dropClusters {
 		o.Clusters = s.clusters
 	}
-	if !s.dropTokens {
-		o.Tokens = s.tokens
-	}
+	// ⚠️ Dropping the ingest-token issuer no longer removes a router
+	// collaborator: the issuer belongs to the write facade, so "this deployment
+	// cannot mint" is a refusal that facade makes, and this switch models it
+	// there rather than pretending the transport still knows.
+	s.registry.noIssuer = s.dropTokens
 	if !s.dropReconcile {
 		o.Reconcile = s.reconcile
 	}
@@ -510,9 +551,9 @@ func TestCreateSourceAnswersTheShapeTheContractDeclares(t *testing.T) {
 		MustStatus(t, http.StatusCreated)
 	schema.Assert(t, "createSource", http.StatusCreated, resp.Body())
 
-	if s.registry.created != 1 || s.tokens.issued != 1 {
+	if s.registry.created != 1 || s.registry.issued != 1 {
 		t.Fatalf("writes = %d source, %d token; the source and its credential are one fact",
-			s.registry.created, s.tokens.issued)
+			s.registry.created, s.registry.issued)
 	}
 }
 
@@ -556,44 +597,13 @@ func TestDeleteSourceAnswersNoBodyAtAll(t *testing.T) {
 	resp := s.client().DELETE(sourcePath(contractSourceID, "")).MustStatus(t, http.StatusNoContent)
 	schema.AssertNoBody(t, "deleteSource", http.StatusNoContent, resp.Body())
 
-	// Deleting revokes: a source that has been deleted must not still be pushable.
-	if s.registry.deleted != 1 || s.tokens.revoked != 1 {
-		t.Fatalf("delete = %d rows, %d revocations; a soft delete that leaves a live "+
-			"ingest token is a soft delete in name only", s.registry.deleted, s.tokens.revoked)
-	}
-
-	// ⭐ AND IT REVOKES IN THE SAME BREATH. Both writes must have run on the
-	// transaction the unit of work handed down; two commits mean a failure in the
-	// second leaves a deleted source whose ingest token still authenticates.
-	if !s.tx.committed {
-		t.Fatal("the delete did not run inside a unit of work")
-	}
-	if !s.registry.deletedInTx || !s.tokens.revokedInTx {
-		t.Fatalf("joined the unit of work: soft delete = %t, revocation = %t; both writes "+
-			"must commit together or the deleted source keeps a live credential",
-			s.registry.deletedInTx, s.tokens.revokedInTx)
-	}
-}
-
-// ⭐ TestDeleteSourceRollsBackWhenRevocationFails is the negative half.
-//
-// A revocation that fails must take the soft delete down with it. The alternative
-// is the state this endpoint exists to prevent: `alert_sources.deleted_at` set,
-// the row gone from every screen, and a live `api_tokens` row still answering for
-// a source no operator can find in order to revoke it.
-func TestDeleteSourceRollsBackWhenRevocationFails(t *testing.T) {
-	t.Parallel()
-
-	s := newContractStack()
-	s.tokens.revokeErr = errors.New("the identity store is having a bad day")
-
-	resp := s.client().DELETE(sourcePath(contractSourceID, ""))
-	if resp.Code() < 400 {
-		t.Fatalf("status = %d, want a failure", resp.Code())
-	}
-	if !s.tx.rolledBack || s.tx.committed {
-		t.Fatalf("rolled back = %t, committed = %t; a failed revocation must undo the "+
-			"soft delete", s.tx.rolledBack, s.tx.committed)
+	// One call to the facade, which is the whole of this layer's part in it.
+	// THAT THE DELETE AND THE REVOCATION COMMIT TOGETHER — and that a failed
+	// revocation undoes the delete rather than leaving a retired source with a
+	// live ingest token — is asserted in
+	// `internal/sources/service/write_test.go`, where the transaction now is.
+	if s.registry.deleted != 1 {
+		t.Fatalf("delete reached the write facade %d times, want 1", s.registry.deleted)
 	}
 }
 
@@ -632,8 +642,8 @@ func TestRotateTokenAnswersTheShapeTheContractDeclares(t *testing.T) {
 		MustStatus(t, http.StatusOK)
 	schema.Assert(t, "rotateSourceIngestToken", http.StatusOK, resp.Body())
 
-	if s.tokens.issued != 1 {
-		t.Fatalf("the issuer minted %d tokens, want 1", s.tokens.issued)
+	if s.registry.rotated != 1 || s.registry.issued != 1 {
+		t.Fatalf("rotations = %d, mints = %d; want 1 and 1", s.registry.rotated, s.registry.issued)
 	}
 }
 
@@ -796,9 +806,9 @@ func TestAnotherTenantsIdIsIndistinguishableFromNothingAtAll(t *testing.T) {
 
 			// ⛔ AND NOTHING HAPPENED. A refused write that still reached the
 			// registry would be a leak the status line hides.
-			if s.registry.updated != 0 || s.registry.deleted != 0 || s.tokens.issued != 0 {
+			if s.registry.updated != 0 || s.registry.deleted != 0 || s.registry.issued != 0 {
 				t.Fatalf("a stranger's id still caused %d updates, %d deletes and %d mints",
-					s.registry.updated, s.registry.deleted, s.tokens.issued)
+					s.registry.updated, s.registry.deleted, s.registry.issued)
 			}
 		})
 	}
@@ -869,7 +879,7 @@ func TestCreatingASourceWithoutANameNamesTheField(t *testing.T) {
 	schema.AssertProblem(t, "createSource", http.StatusUnprocessableEntity, resp.Body())
 	resp.MustViolate(t, "name")
 
-	if s.registry.created != 0 || s.tokens.issued != 0 {
+	if s.registry.created != 0 || s.registry.issued != 0 {
 		t.Fatal("a refused create still wrote a source or minted a token")
 	}
 }

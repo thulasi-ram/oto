@@ -18,7 +18,7 @@ import (
 // ⚠️ IT EXISTS BECAUSE `silences` MAY NOT NAME `sources/domain` (depguard,
 // silences-must-not-reach-into-other-domains). The consumer declares the port in
 // plain types and the composition root does the mapping — the same arrangement
-// `sources/api.CredentialWriter` uses to reach the channels secret store, and for
+// `sources/service.CredentialSealer` uses to reach the channels secret store, and
 // the same reason.
 //
 // ⛔ IT IS READ-ONLY, AND SO IS EVERYTHING BEHIND IT. `sources/service` has no

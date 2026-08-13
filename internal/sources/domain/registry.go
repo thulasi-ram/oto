@@ -8,8 +8,9 @@ import (
 
 // ⚠️ WHY THE WRITE COMMANDS LIVE IN `domain` AND NOT IN `repository`.
 //
-// `internal/sources/api` declares the port it needs and `internal/sources/
-// repository` satisfies it, and neither may import the other (CONTEXT.md §5.1).
+// `internal/sources/service` declares the port it needs and `internal/sources/
+// repository` satisfies it, and neither may import the other (CONTEXT.md §5.1);
+// `internal/sources/api` names the same command types when it binds a request.
 // The command types therefore have to live in the one package both are permitted
 // to name. That is this one, and it is also where they belong: a `SourceDraft` is
 // a statement about the DOMAIN — which fields make an upstream registerable —

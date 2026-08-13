@@ -369,6 +369,23 @@ func failedBatchDTO(b BatchFailure) FailedBatchDTO {
 
 // ------------------------------------------------------------- request → domain
 
+// toInput maps the write-only credential DTO onto the service's plain-typed
+// input.
+//
+// ⭐ A NIL DTO STAYS NIL, and the difference is load-bearing on an update: an
+// absent `credential` means LEAVE THE SECRET ALONE, while `{"kind":"none"}`
+// means detach it. Collapsing the two would silently unauthenticate a source
+// that was only being renamed.
+//
+// ⛔ The values are secret material and pass straight through. Nothing here
+// copies, logs or echoes them.
+func (c *CredentialInputDTO) toInput() *service.CredentialInput {
+	if c == nil {
+		return nil
+	}
+	return &service.CredentialInput{Kind: c.Kind, Values: c.Values}
+}
+
 // toDraft maps a create request onto the domain command.
 //
 // The two defaults it applies — push and ignore labels — are the DDL's own,

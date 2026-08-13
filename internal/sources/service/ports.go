@@ -8,6 +8,7 @@ import (
 	alerts "github.com/thulasiram/oto/internal/alerts/domain"
 	alertsvc "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/sources/client/alertmanager"
 	"github.com/thulasiram/oto/internal/sources/client/prometheus"
 	"github.com/thulasiram/oto/internal/sources/domain"
@@ -21,8 +22,11 @@ import (
 
 // SourceRepository owns alert_sources and source_health.
 //
-// NOTE: this task defines the port only. There is deliberately no Postgres
-// implementation yet; the service is complete and testable against a fake.
+// ⭐ IT DECLARES THE WRITES AS WELL AS THE READS, and that is the whole of ticket
+// 0869f21. The write half used to be declared by `sources/api` and satisfied
+// straight from the repository, which put the transaction boundary, the ordering
+// of three writes across two modules' tables and the credential-rotation rule
+// inside an HTTP handler — where nothing but an HTTP request could reach them.
 type SourceRepository interface {
 	// Get returns one source, or an errs.KindNotFound.
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Source, error)
@@ -51,11 +55,97 @@ type SourceRepository interface {
 	// that is UPDATEd rather than appended to.
 	SaveHealth(ctx context.Context, s db.TenantScope, h domain.SourceHealth) error
 
+	// HealthFor resolves a page of sources' health in ONE round trip. The list
+	// renders health beside every row, and doing that per row is how a settings
+	// page with twenty upstreams becomes twenty-one queries.
+	HealthFor(ctx context.Context, s db.TenantScope, ids []uuid.UUID) (map[uuid.UUID]domain.SourceHealth, error)
+
 	// ResolveOrg returns the org that owns a source. It is the ONE method here
 	// without a TenantScope, because the `source.reconcile` and `silences.sync`
 	// payloads name a source and no org, so the org must be discovered before a
 	// scope can exist. See the implementation's comment.
 	ResolveOrg(ctx context.Context, sourceID uuid.UUID) (uuid.UUID, error)
+
+	// Create inserts one source. It is the registry's only insert, and it never
+	// mints the ingest token beside it — that is another module's table, reached
+	// through IngestTokens, and the two are made one fact by the transaction the
+	// service opens around them rather than by one repository knowing both.
+	Create(ctx context.Context, s db.TenantScope, in domain.SourceDraft) (domain.Source, error)
+
+	// Update applies a partial change and returns the row as it now stands.
+	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.SourcePatch) (domain.Source, error)
+
+	// SoftDelete stamps `deleted_at`. ALERT HISTORY IS RETAINED: deleting a
+	// source must never erase the record of what it once reported. It answers
+	// not-found for an id that does not exist or is already deleted, which is
+	// what makes it the call the delete path runs FIRST.
+	SoftDelete(ctx context.Context, s db.TenantScope, id uuid.UUID) error
+}
+
+// ------------------------------------------------------------------- writes
+//
+// The three ports below are the collaborators the WRITE PATH needs, and each one
+// reaches a table this module does not own. They are declared here, by the
+// consumer, for the same reason as everything above: `internal/app/container.go`
+// supplies the concretes and `sources` imports neither `channels` nor `identity`.
+
+// CredentialSealer seals an upstream credential into the shared secret store.
+//
+// It is expressed in PLAIN TYPES rather than in the channels module's meta struct
+// because `sources` may not import `channels` internals (depguard,
+// sources-must-not-reach-into-other-domains): the composition root supplies the
+// adapter over `channels/repository.CredentialRepository`, and this signature is
+// the whole contract.
+//
+// ⛔ The `values` map is secret material. It arrives on a write-only DTO field,
+// is handed straight here, and is never logged, echoed or retained.
+type CredentialSealer interface {
+	// CreateCredential seals a new secret and returns its id.
+	CreateCredential(ctx context.Context, s db.TenantScope, kind string, values map[string]string) (uuid.UUID, error)
+	// RotateCredential re-seals an existing secret in place, so the referencing
+	// source never spends a moment pointing at nothing.
+	RotateCredential(ctx context.Context, s db.TenantScope, id uuid.UUID, kind string, values map[string]string) error
+}
+
+// IngestTokens mints and revokes the per-source ingest token.
+//
+// The token lives in `api_tokens` with `source_id` set, which is the identity
+// module's table — hence a port rather than a query. The SECRET IS RETURNED
+// EXACTLY ONCE, from IssueIngestToken, and only its sha256 is stored; there is no
+// method that reads one back, because there is nothing to read.
+type IngestTokens interface {
+	// IssueIngestToken mints a new token for the source and revokes any that came
+	// before it, returning the plaintext secret and its display prefix.
+	IssueIngestToken(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) (secret, prefix string, err error)
+	// RevokeIngestTokens revokes every token scoped to the source. Deleting a
+	// source that could still be pushed to would be a soft delete in name only.
+	RevokeIngestTokens(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) error
+}
+
+// UnitOfWork runs fn inside ONE database transaction, satisfied by
+// `*sources/repository.TxRunner`.
+//
+// ⭐ IT IS WHAT MAKES A SOURCE AND ITS INGEST TOKEN ONE FACT. Create writes to two
+// tables owned by two modules — `alert_sources` here and `api_tokens` behind
+// IngestTokens — and before this port existed they were two independent commits.
+// A failure in the second left a source row that could never receive a webhook,
+// which is worse than no source at all: the operator has a URL to paste and it
+// answers 401 forever.
+type UnitOfWork interface {
+	InTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// IdempotencyClaims takes a client-supplied `Idempotency-Key` for one operation,
+// satisfied by `*platform/idempotency.Repository`.
+//
+// ⭐ IT GUARDS THE TWO OPERATIONS HERE THAT HAND OUT A SECRET. A retried rotation
+// minted a SECOND ingest credential — and because a rotation also revokes what
+// came before, the retry destroyed the credential the caller may still have been
+// holding from the first attempt. The claim is taken inside the operation's own
+// transaction, so a key somebody already holds rolls the whole thing back rather
+// than leaving the source with a token nobody knows.
+type IdempotencyClaims interface {
+	Claim(ctx context.Context, s db.TenantScope, c idempotency.Claim) (idempotency.Result, error)
 }
 
 // CredentialStore unseals an outbound credential.

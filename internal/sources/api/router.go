@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -34,25 +33,17 @@ const (
 // Options are the Router's dependencies. Everything is a port, so the whole
 // surface is exercisable with fakes and an httptest.Server.
 type Options struct {
-	Sources   SourceReader
+	Sources SourceReader
+	// Registry is the module's write facade. It owns the transaction, the
+	// credential and ingest-token orchestration and the `Idempotency-Key` claim;
+	// this layer supplies a bound request and renders what comes back.
 	Registry  SourceRegistry
 	Clusters  ClusterRegistry
-	Creds     CredentialWriter
-	Tokens    IngestTokenIssuer
 	Reconcile Reconciler
 	// Feeds is the ingestion module's read half: the per-source rejection feed
 	// and the failed-batch list. Nil means this deployment cannot answer "why did
 	// my alert never appear", which is a declared 503 rather than a panic.
 	Feeds IngestFeeds
-	// Tx makes a source and its ingest token one commit. A nil Tx degrades to
-	// two commits, which is what this endpoint used to do and what left orphan
-	// sources behind; production always wires it.
-	Tx UnitOfWork
-	// Claims is the store behind `Idempotency-Key`. Nil means this deployment
-	// cannot honour the header, which is the declared `503` rather than a rotation
-	// that silently mints a second secret — the header being declared and unread is
-	// the defect this exists to close.
-	Claims IdempotencyClaims
 	// Guard refuses a base or Prometheus URL that resolves somewhere oto must not
 	// dial. Nil means no configuration-time feedback — the dialer still refuses.
 	Guard AddressGuard
@@ -75,12 +66,8 @@ type Router struct {
 	sources     SourceReader
 	registry    SourceRegistry
 	clusters    ClusterRegistry
-	creds       CredentialWriter
-	tokens      IngestTokenIssuer
 	reconcile   Reconciler
 	feeds       IngestFeeds
-	tx          UnitOfWork
-	claims      IdempotencyClaims
 	guard       AddressGuard
 	allowNoTLSV bool
 	clk         clock.Clock
@@ -97,26 +84,13 @@ func NewRouter(o Options) *Router {
 		sources:     o.Sources,
 		registry:    o.Registry,
 		clusters:    o.Clusters,
-		creds:       o.Creds,
-		tokens:      o.Tokens,
 		reconcile:   o.Reconcile,
 		feeds:       o.Feeds,
-		tx:          o.Tx,
-		claims:      o.Claims,
 		guard:       o.Guard,
 		allowNoTLSV: o.AllowInsecureTLS,
 		clk:         clk,
 		baseURL:     strings.TrimRight(o.BaseURL, "/"),
 	}
-}
-
-// inTx runs fn in one transaction when a unit of work is wired, and inline
-// otherwise.
-func (rt *Router) inTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	if rt.tx == nil {
-		return fn(ctx)
-	}
-	return rt.tx.InTx(ctx, fn)
 }
 
 // Register mounts every route this package owns onto r, which `internal/app` has

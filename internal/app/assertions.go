@@ -25,6 +25,7 @@ import (
 	silencesservice "github.com/thulasiram/oto/internal/silences/service"
 	sourcesapi "github.com/thulasiram/oto/internal/sources/api"
 	sourcesrepo "github.com/thulasiram/oto/internal/sources/repository"
+	sourcesservice "github.com/thulasiram/oto/internal/sources/service"
 )
 
 // ⭐ THE PORT-DRIFT WALL.
@@ -66,7 +67,7 @@ var (
 	_ enrichservice.SubjectLoader        = subjectLoader{}
 	_ enrichworker.ScopeResolver         = occurrenceScopes{}
 	_ ingestservice.AlertObserver        = alertObserver{}
-	_ sourcesapi.IngestTokenIssuer       = ingestTokenIssuer{}
+	_ sourcesservice.IngestTokens        = ingestTokenIssuer{}
 	_ notifapi.SubjectResolver           = subjectResolver{}
 	_ notifworker.ScopeResolver          = (*notifrepo.ScopeResolver)(nil)
 	_ notifservice.CredentialUnsealer    = (*secrets.Keyring)(nil)
@@ -81,14 +82,14 @@ var (
 	_ silencesservice.AlertLister = (*alertsservice.Service)(nil)
 
 	// --- the channels registry is three different narrow views ---------------
-	_ channelsapi.ProviderRegistry  = (*channelsregistry.Registry)(nil)
-	_ channelsservice.Registry      = (*channelsregistry.Registry)(nil)
-	_ notifservice.ChannelRegistry  = (*channelsregistry.Registry)(nil)
-	_ notifapi.RendererSource       = (*channelsregistry.Registry)(nil)
-	_ channelsapi.CredentialWriter  = (*channelsrepo.CredentialRepository)(nil)
-	_ sourcesapi.CredentialWriter   = (*channelsrepo.CredentialRepository)(nil)
-	_ channelsapi.ChannelStore      = (*channelsrepo.ChannelRepository)(nil)
-	_ channelsservice.InstanceStore = (*channelsrepo.ChannelRepository)(nil)
+	_ channelsapi.ProviderRegistry    = (*channelsregistry.Registry)(nil)
+	_ channelsservice.Registry        = (*channelsregistry.Registry)(nil)
+	_ notifservice.ChannelRegistry    = (*channelsregistry.Registry)(nil)
+	_ notifapi.RendererSource         = (*channelsregistry.Registry)(nil)
+	_ channelsapi.CredentialWriter    = (*channelsrepo.CredentialRepository)(nil)
+	_ sourcesservice.CredentialSealer = (*channelsrepo.CredentialRepository)(nil)
+	_ channelsapi.ChannelStore        = (*channelsrepo.ChannelRepository)(nil)
+	_ channelsservice.InstanceStore   = (*channelsrepo.ChannelRepository)(nil)
 
 	// --- the Acknowledge button: four seams, all of them load-bearing --------
 	//
@@ -101,9 +102,16 @@ var (
 	_ channelsservice.AlertGroups        = slackGroupActions{}
 	_ channelsservice.SlackConversations = slackConversations{}
 
-	// --- sources: the write side the API declares, the read side the service is
-	_ sourcesapi.SourceRegistry  = (*sourcesrepo.SourceRepository)(nil)
-	_ sourcesapi.ClusterRegistry = (*sourcesrepo.ClusterRepository)(nil)
+	// --- sources: both halves of the module are the SERVICE ------------------
+	//
+	// ⭐ THE WRITE SIDE USED TO BE THE REPOSITORY HERE (ticket 0869f21), which is
+	// what put the transaction boundary, the three-table ordering and the
+	// credential-rotation rule inside an HTTP handler. `sources/service` owns them
+	// now, and these two lines are what would break if either half drifted.
+	_ sourcesapi.SourceReader         = (*sourcesservice.Service)(nil)
+	_ sourcesapi.SourceRegistry       = (*sourcesservice.Service)(nil)
+	_ sourcesservice.SourceRepository = (*sourcesrepo.SourceRepository)(nil)
+	_ sourcesapi.ClusterRegistry      = (*sourcesrepo.ClusterRepository)(nil)
 
 	// --- notification: the settings half and the evaluation half -------------
 	_ notifapi.PolicyStore        = (*notifrepo.ConfigRepository)(nil)
@@ -124,8 +132,8 @@ var (
 	// The header was declared on 28 operations and read by NONE of them. These two
 	// lines are what make "the credential endpoints honour it" a compile-time fact
 	// rather than a wiring the container could quietly drop again.
-	_ identityapi.IdempotencyClaims = (*idempotency.Repository)(nil)
-	_ sourcesapi.IdempotencyClaims  = (*idempotency.Repository)(nil)
-	_ identityapi.UnitOfWork        = (*identityrepo.TxRunner)(nil)
-	_ sourcesapi.UnitOfWork         = (*sourcesrepo.TxRunner)(nil)
+	_ identityapi.IdempotencyClaims    = (*idempotency.Repository)(nil)
+	_ sourcesservice.IdempotencyClaims = (*idempotency.Repository)(nil)
+	_ identityapi.UnitOfWork           = (*identityrepo.TxRunner)(nil)
+	_ sourcesservice.UnitOfWork        = (*sourcesrepo.TxRunner)(nil)
 )
