@@ -1,8 +1,9 @@
 /**
  * What every test file gets before it runs.
  *
- * Three things, and no more than three: jsdom's missing `<dialog>` behaviour,
- * a clean DOM between tests, and a `fetch` that fails loudly.
+ * Four things, and no more than four: the two APIs jsdom does not implement —
+ * `<dialog>` and `ResizeObserver` — a clean DOM between tests, and a `fetch` that
+ * fails loudly.
  *
  * ⛔ THE `fetch` DEFAULT IS THE IMPORTANT ONE. jsdom ships no `fetch` that can
  * reach anything, and a test that forgets to stub one would otherwise get an
@@ -63,6 +64,37 @@ function installDialogShim(): void {
 }
 
 installDialogShim();
+
+/* -------------------------------------------------------------------------- */
+/* jsdom does not implement ResizeObserver either                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⛔ WITHOUT THIS, EVERY SCREEN THAT SHOWS THE ALERT TABLE RENDERS NOTHING.
+ *
+ * `createVirtualiser` observes its scroll container with a `ResizeObserver` —
+ * deliberately, because the table's height changes when the filter bar wraps and
+ * a window listener would miss that. jsdom 27 still ships no such global, so the
+ * constructor call in `AlertTable`'s `ref` throws `ReferenceError` on mount, the
+ * `<Match>` arm holding the table (and its "Load … more" footer) never lands, and
+ * what is left on screen is the filter bar alone — a failure that reads as "the
+ * data never arrived" when the request in fact succeeded.
+ *
+ * The shim reports nothing rather than guessing: jsdom lays nothing out, so every
+ * element is 0 × 0 and a fabricated size would be a fabricated viewport. A
+ * viewport of 0 is exactly what the virtualiser treats as "not measured yet", so
+ * it renders every row — which is what a test wants to assert against anyway.
+ */
+function installResizeObserverShim(): void {
+  if (typeof globalThis.ResizeObserver !== "undefined") return;
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+}
+
+installResizeObserverShim();
 
 /* -------------------------------------------------------------------------- */
 /* No request goes unnoticed                                                  */

@@ -23,7 +23,7 @@ import {
   Match,
   Show,
   Switch,
-  createEffect,
+  createComputed,
   createMemo,
   createSignal,
   onCleanup,
@@ -56,6 +56,44 @@ import {
 const PAGE_SIZE = 100;
 const BUCKET_PAGE_SIZE = 100;
 
+/**
+ * Where one keyset stands, held as a single value stamped with the filters that
+ * minted it.
+ *
+ * ⭐⭐ A CURSOR CANNOT OUTLIVE THE FILTER THAT MINTED IT. §E.3 answers a cursor
+ * carried across a filter change with `400 cursor_filter_mismatch`, and
+ * resetting it from an effect is too late to prevent that: solid-query reads the
+ * query key in Solid's *pure* phase, so a request pairing the old cursor with
+ * the new filters is built and sent before any effect gets to run. The same
+ * hazard is guarded the same way in `RejectionsPanel`, where the reasons are
+ * local state and the reset rides along in the `onChange` that changes them.
+ *
+ * Here the filter set is the URL — edited by the filter bar, by a label click,
+ * by a drill-down from a bucket and by the back button, and only some of those
+ * pass through this component — so there is no single call site to reset from.
+ * The stamp does that job from the other end: a held position whose fingerprint
+ * is not the fingerprint on screen is a position in somebody else's keyset, and
+ * the memos below hand back a first page instead of it. That is a derivation,
+ * not a correction, so the doomed request is never constructed — and the stamped
+ * position is then *dropped*, because a shadowed one comes back the moment the
+ * fingerprint it was minted under is on screen again.
+ */
+interface KeysetPage<T> {
+  /** The filters (and, for buckets, the axis) this position was minted under. */
+  readonly fingerprint: string;
+  readonly cursor: string | null;
+  /** Pages already folded in. The page in flight is added by the memos below. */
+  readonly kept: readonly T[];
+  readonly pageCount: number;
+}
+
+const freshPage = <T,>(fingerprint: string): KeysetPage<T> => ({
+  fingerprint,
+  cursor: null,
+  kept: [],
+  pageCount: 1,
+});
+
 export default function AlertsRoute() {
   const navigate = useNavigate();
   // Subscribing to the router's params is what makes back/forward work; the
@@ -82,42 +120,59 @@ export default function AlertsRoute() {
 
   /* ---- keyset pagination ------------------------------------------------- */
 
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  /** Pages already folded in. The page in flight is added by the memo below. */
-  const [kept, setKept] = createSignal<readonly Alert[]>([]);
-  const [pageCount, setPageCount] = createSignal(1);
-
-  /** The bucket stream is a separate keyset: its cursor is a bucket key. */
-  const [bucketCursor, setBucketCursor] = createSignal<string | null>(null);
-  const [keptBuckets, setKeptBuckets] = createSignal<readonly AlertRollup[]>([]);
-
   // Any filter change invalidates every cursor minted under the old filters
-  // (§E.3 answers a stale one with `400 cursor_filter_mismatch`), so the stack
-  // resets. The roll-up cursor is bound to the filters **and** to `group_by`,
-  // because regrouping changes the keys themselves — so it carries the axis.
+  // (§E.3 answers a stale one with `400 cursor_filter_mismatch`). The roll-up
+  // cursor is bound to the filters **and** to `group_by`, because regrouping
+  // changes the bucket keys themselves — so its fingerprint carries the axis.
   const filterFingerprint = createMemo(() => searchFromFilters({ ...filters(), groupBy: "none" }));
-  createEffect((previous: string | undefined) => {
-    const current = filterFingerprint();
-    if (previous !== undefined && previous !== current) {
-      setCursor(null);
-      setKept([]);
-      setPageCount(1);
-      setBucketCursor(null);
-      setKeptBuckets([]);
-    }
-    return current;
+  const rollupFingerprint = createMemo(() => `${axis() ?? "none"} ${filterFingerprint()}`);
+
+  const [heldList, setHeldList] = createSignal(freshPage<Alert>(filterFingerprint()));
+  const [heldBuckets, setHeldBuckets] = createSignal(freshPage<AlertRollup>(rollupFingerprint()));
+
+  /**
+   * The page position in force, which is the held one only while it still
+   * belongs to what is on screen. @see KeysetPage — being a *derivation* rather
+   * than a reset is the whole point: it has already happened by the time
+   * solid-query reads the query key.
+   */
+  const listPage = createMemo<KeysetPage<Alert>>(() => {
+    const held = heldList();
+    const fingerprint = filterFingerprint();
+    return held.fingerprint === fingerprint ? held : freshPage<Alert>(fingerprint);
   });
 
-  createEffect((previous: RollupAxis | null | undefined) => {
-    const current = axis();
-    if (previous !== undefined && previous !== current) {
-      setBucketCursor(null);
-      setKeptBuckets([]);
-    }
-    return current;
+  const bucketPage = createMemo<KeysetPage<AlertRollup>>(() => {
+    const held = heldBuckets();
+    const fingerprint = rollupFingerprint();
+    return held.fingerprint === fingerprint ? held : freshPage<AlertRollup>(fingerprint);
   });
 
-  const compiled = createMemo(() => compileFilters(filters(), PAGE_SIZE, cursor()));
+  /**
+   * ⭐⭐ AND A POSITION THAT LOST ITS KEYSET IS DISCARDED, NOT MERELY SHADOWED.
+   *
+   * The memos above are what stops the doomed request being built. On their own
+   * they only *hide* the foreign position, and hiding is not enough, because the
+   * filter set is the URL: filter B and then Back makes the old fingerprint the
+   * fingerprint on screen again, and a hidden page-3 stack would come back with
+   * it. What returns is a minutes-old snapshot — a live `alert.upserted` frame
+   * invalidates the `["alerts"]` prefix, but only the key actually being read
+   * refetches, so ack, state and severity on those rows are frozen — and once
+   * that key has passed `gcTime` the fold below would splice them onto whatever
+   * page one is on screen. On the roll-up path that is two axes of buckets in one
+   * list, and a drill-down that writes a namespace into `alertname=`.
+   *
+   * So the derived position is written back over the held one, which leaves the
+   * signal holding only ever the keyset on screen. `createComputed` is Solid's
+   * pure-phase computation — the one place a write like this belongs, and for the
+   * same reason the reset could not be an effect. It writes the very object the
+   * memo derived, so when the two already agree the write is a no-op by reference
+   * equality and nothing downstream sees an update.
+   */
+  createComputed(() => setHeldList(listPage()));
+  createComputed(() => setHeldBuckets(bucketPage()));
+
+  const compiled = createMemo(() => compileFilters(filters(), PAGE_SIZE, listPage().cursor));
 
   const query = useQuery(() => ({
     queryKey: qk.alerts.list(compiled().query),
@@ -133,7 +188,7 @@ export default function AlertsRoute() {
   }));
 
   const rollupCompiled = createMemo(() =>
-    compileRollupFilters(filters(), axis() ?? "alertname", BUCKET_PAGE_SIZE, bucketCursor()),
+    compileRollupFilters(filters(), axis() ?? "alertname", BUCKET_PAGE_SIZE, bucketPage().cursor),
   );
 
   const rollups = useQuery(() => ({
@@ -150,18 +205,20 @@ export default function AlertsRoute() {
    * overlaps what we already hold, and appending it twice would show ghosts.
    */
   const alerts = createMemo<readonly Alert[]>(() => {
+    const held = listPage();
     const page = query.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(kept().map((a) => a.id));
-    return [...kept(), ...page.filter((a) => !seen.has(a.id))];
+    if (held.cursor === null) return page;
+    const seen = new Set(held.kept.map((a) => a.id));
+    return [...held.kept, ...page.filter((a) => !seen.has(a.id))];
   });
 
   /** The same fold for buckets, deduplicated by bucket key. */
   const buckets = createMemo<readonly AlertRollup[]>(() => {
+    const held = bucketPage();
     const page = rollups.data?.data ?? [];
-    if (bucketCursor() === null) return page;
-    const seen = new Set(keptBuckets().map((b) => b.key));
-    return [...keptBuckets(), ...page.filter((b) => !seen.has(b.key))];
+    if (held.cursor === null) return page;
+    const seen = new Set(held.kept.map((b) => b.key));
+    return [...held.kept, ...page.filter((b) => !seen.has(b.key))];
   });
 
   /* ---- what the rule said (ADR 0025) ------------------------------------- */
@@ -219,21 +276,26 @@ export default function AlertsRoute() {
     void (axis() === null ? query.refetch() : rollups.refetch());
   };
 
+  // A placeholder envelope is the PREVIOUS key's page, still on screen while the
+  // current one is in flight — so the cursor it carries was minted under the
+  // filters that key asked for. Paging off it is the same mismatch by a longer
+  // route, and the answer is the same: that page is not this keyset's page.
   const loadMore = (): void => {
     const next = query.data?.page.next_cursor;
-    if (typeof next !== "string" || next === "") return;
+    if (typeof next !== "string" || next === "" || query.isPlaceholderData) return;
     // Freeze what is on screen before asking for the next page, so the fold is
     // additive rather than a race between two in-flight responses.
-    setKept(alerts());
-    setPageCount((n) => n + 1);
-    setCursor(next);
+    const frozen = alerts();
+    const held = listPage();
+    setHeldList({ ...held, cursor: next, kept: frozen, pageCount: held.pageCount + 1 });
   };
 
   const loadMoreBuckets = (): void => {
     const next = rollups.data?.page.next_cursor;
-    if (typeof next !== "string" || next === "") return;
-    setKeptBuckets(buckets());
-    setBucketCursor(next);
+    if (typeof next !== "string" || next === "" || rollups.isPlaceholderData) return;
+    const frozen = buckets();
+    const held = bucketPage();
+    setHeldBuckets({ ...held, cursor: next, kept: frozen, pageCount: held.pageCount + 1 });
   };
 
   const onFilterLabel = (name: string, value: string): void => {
@@ -398,7 +460,8 @@ export default function AlertsRoute() {
                 hasMore={hasMore()}
                 loading={query.isFetching}
                 loaded={alerts().length}
-                pageCount={pageCount()}
+                pageCount={listPage().pageCount}
+                pageSize={PAGE_SIZE}
                 onLoadMore={loadMore}
               />
             }
@@ -433,6 +496,8 @@ function Footer(props: {
   readonly loading: boolean;
   readonly loaded: number;
   readonly pageCount: number;
+  /** How many rows one press adds — the number the button names, not a second copy of it. */
+  readonly pageSize: number;
   readonly onLoadMore: () => void;
 }) {
   return (
@@ -446,7 +511,7 @@ function Footer(props: {
         }
       >
         <Button size="sm" busy={props.loading} onClick={props.onLoadMore}>
-          Load {fmtCount(100)} more
+          Load {fmtCount(props.pageSize)} more
         </Button>
         <span class="text-[11px] text-ink-subtle">
           {fmtCount(props.loaded)} loaded across {props.pageCount} page
