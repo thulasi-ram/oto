@@ -194,6 +194,66 @@ SELECT type, occurred_at, coalesce(actor_label,'')
  ORDER BY recorded_at DESC, id DESC
  LIMIT $3`
 
+// causeEventTypes maps a Reason onto the `alert_events` type whose row IS that
+// fact — the one entry on the timeline that knows who caused it and, for a
+// comment, what they said.
+//
+// ⛔ IT IS FOUR ENTRIES AND NOT THE WHOLE REASON ENUM, and the absences are the
+// design. A reason with no entry costs NOTHING — no row, no round trip — and
+// `fired`, `repeat`, `new_alerts`, `all_resolved` and the rest are caused by the
+// world rather than by anybody, so there is no name to fetch and no sentence on
+// the card that would carry one. What is here is exactly the set the renderer
+// attributes: §E.1.1's human verbs as a card renders them (an acknowledgement,
+// its withdrawal, a comment) plus the silence, which is attributed too and whose
+// answer is that no human at oto caused it.
+//
+// ⛔ `snoozed` AND `unsnoozed` ARE DELIBERATELY ABSENT. A snooze is a fact about
+// oto's own notifications, the Slack renderer has no `snoozed` card at all, and
+// a query whose result nothing renders is a query nobody should pay for.
+var causeEventTypes = map[domain.Reason]string{
+	domain.ReasonAcked:      "occurrence.acknowledged",
+	domain.ReasonUnacked:    "occurrence.unacknowledged",
+	domain.ReasonComment:    "comment.added",
+	domain.ReasonSuppressed: "occurrence.suppressed",
+}
+
+// causeByOccurrenceSQL, causeByAlertSQL and causeByGroupSQL read the ONE event
+// that caused the fact being rendered: the newest of its type against the
+// narrowest subject the notification names.
+//
+// Three statements rather than one with an `OR`, because an `OR` across three
+// columns cannot use any of their indexes: they ride `ev_occ_idx`
+// (org_id, occurrence_id, recorded_at DESC, id DESC), `ev_alert_idx` and
+// `ev_group_idx` respectively, and each is a LIMIT 1 walk backwards from the
+// newest row.
+//
+// `payload->>'body'` is the comment's text and is NULL for the other three
+// types, which is why one set of statements serves all four: the body column is
+// simply empty for a fact that has no text.
+const causeByOccurrenceSQL = `
+SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
+       coalesce(payload->>'body','')
+  FROM alert_events
+ WHERE org_id = $1 AND occurrence_id = $2 AND type = $3
+ ORDER BY recorded_at DESC, id DESC
+ LIMIT 1`
+
+const causeByAlertSQL = `
+SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
+       coalesce(payload->>'body','')
+  FROM alert_events
+ WHERE org_id = $1 AND alert_id = $2 AND type = $3
+ ORDER BY recorded_at DESC, id DESC
+ LIMIT 1`
+
+const causeByGroupSQL = `
+SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
+       coalesce(payload->>'body','')
+  FROM alert_events
+ WHERE org_id = $1 AND group_id = $2 AND type = $3
+ ORDER BY recorded_at DESC, id DESC
+ LIMIT 1`
+
 // groupNotificationsSQL counts what oto has SAID about this group.
 //
 // "How loud was this?" is a question about oto's own behaviour, and oto is the
@@ -247,8 +307,72 @@ func (r *SnapshotRepository) Snapshot(
 		return domain.Snapshot{}, err
 	}
 	r.readTrail(ctx, s, q.GroupID, &snap)
+	r.readCause(ctx, s, q, &snap)
 	r.readNotificationCount(ctx, s, q.GroupID, &snap)
 	return snap, nil
+}
+
+// readCause loads WHO caused the fact being rendered, and what they said.
+//
+// ⭐ IT READS THE RECORD RATHER THAN CARRYING A COPY, and that is the whole
+// choice. The actor and the comment body are already written, exactly once, by
+// the module that owns the human verb — in the same transaction that enqueued
+// this notification, so they are on disk before any delivery can claim it — and
+// `alert_events.actor_label` is denormalised there precisely so a renamed or
+// deleted user never rewrites what a card said. Copying either onto the
+// notification row would be a second answer to the same question, and two
+// answers can disagree.
+//
+// ⛔ ONE ROUND TRIP, AND ONLY FOR THE REASONS SOMEBODY CAUSES. A reason with no
+// entry in `causeEventTypes` returns before touching the database, so the common
+// delivery path — fired, repeat, resolved, enriched — pays nothing at all. It is
+// not an N+1 either: a snapshot is built once per delivery (C11), and this is one
+// indexed `LIMIT 1` beside the round trips already above it.
+//
+// A failure DEGRADES to no actor, exactly like the trail: a card that cannot
+// name the acker is a small loss, and a card that never renders is an alert
+// nobody sees.
+func (r *SnapshotRepository) readCause(
+	ctx context.Context, s db.TenantScope, q domain.SnapshotQuery, snap *domain.Snapshot,
+) {
+	eventType, ok := causeEventTypes[q.Reason]
+	if !ok {
+		return
+	}
+
+	// The NARROWEST subject the notification names, and every one of these
+	// reasons names an EPISODE in production — `alerts` enqueues them from the
+	// occurrence it just moved. That matters: a group is many alerts acknowledged
+	// one at a time, so a group-scoped read would return whichever member was
+	// acted on last and put one person's name against another person's action.
+	// The group is the fallback for a preview that names nothing narrower.
+	//
+	// ⛔ IT NARROWS EXACTLY AS `readOccurrence` DOES, INCLUDING THE ALERT
+	// FALLBACK, and the two must not drift. `readOccurrence` answers "which
+	// episode is this card about" from the occurrence id and then from the alert
+	// id; this answers "who caused that card". A preview by `alert_id` — the
+	// policy-preview endpoint takes exactly one of alert/occurrence/group and any
+	// reason — would otherwise pair Ada's episode with the whole GROUP's newest
+	// acknowledgement, which is grace's, and render "Acknowledged by grace" over
+	// Ada's alert. For `comment` it would drag the sibling's WORDS across too.
+	sql, subject := causeByGroupSQL, q.GroupID
+	switch {
+	case q.OccurrenceID != nil:
+		sql, subject = causeByOccurrenceSQL, *q.OccurrenceID
+	case q.AlertID != nil:
+		sql, subject = causeByAlertSQL, *q.AlertID
+	}
+
+	var (
+		actor domain.ActorFacts
+		body  string
+	)
+	if err := r.db(ctx).QueryRow(ctx, sql, s.OrgID(), subject, eventType).
+		Scan(&actor.Kind, &actor.ID, &actor.Label, &body); err != nil {
+		return
+	}
+	snap.Actor = &actor
+	snap.Comment = body
 }
 
 // readNotificationCount records how many notifications oto has sent about this

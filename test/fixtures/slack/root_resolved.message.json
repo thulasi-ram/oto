@@ -73,7 +73,7 @@
             },
             {
               "type": "mrkdwn",
-              "text": "*Acknowledged*\n:eyes: yes — <@U0123456789>, <!date^1786125549^{time}|17:59 UTC>"
+              "text": "*Acknowledged*\n:eyes: yes — `ram@example.com`, <!date^1786125549^{time}|17:59 UTC>"
             }
           ]
         },

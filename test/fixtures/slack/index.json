@@ -35,9 +35,9 @@
       "name": "root_resolved",
       "paste_into_builder": "root_resolved.blockkit.json",
       "reason": "all_resolved",
-      "rendered_hash": "ab5b7a7ee5bdab3ea4b338037d4da936c821183047a6393051bb18e191ab8d52",
+      "rendered_hash": "11be2482973385207b2b9e28ac1e5823cf02871636685ed523b50af73f1ad25d",
       "what": "The terminal card, produced by chat.update. It is the ONLY record left in the channel, because the update that made it was silent.",
-      "wire_bytes": 3766
+      "wire_bytes": 3769
     },
     {
       "attachment_color": "#dddddd",

@@ -305,6 +305,35 @@ func unackedReminderView() *chdomain.NotificationView {
 func resolvedCardView() *chdomain.NotificationView {
 	v := ackedView()
 	v.Reason = "all_resolved"
+	// ⛔ NO ACTOR. `Actor` is the actor of the FACT THIS CARD ANNOUNCES, and
+	// nobody resolves an alert in oto — the signal stopped, which is the whole of
+	// §B.2. Inheriting the ack's actor here modelled a card production cannot
+	// produce, and it hid the very confusion this corpus exists to expose: the
+	// receipt's Acknowledged field must name the acker from the occurrence's own
+	// frozen label, which is the only attribution a terminal card still has.
+	//
+	// ⚠️ WHAT THAT COSTS THE CORPUS, STATED SO NOBODY HAS TO REDISCOVER IT. This
+	// was the only capture where an AMENDED card carried an actor of its own — the
+	// case where the announced fact's actor and the ack's actor are two different
+	// people, which is where every attribution defect in this area has lived. No
+	// capture exercises it now. The card that would is a `comment` posted on a
+	// resolved incident: the commenter is `v.Actor`, the acker is
+	// `Occurrence.AckedByLabel`, and the receipt must name the second while the
+	// balloon names the first.
+	//
+	// ⭐ THE CORPUS CAN HOST IT — it is the colour budget, not the colour rule,
+	// that is tight. `TestEachCardStateCarriesItsOwnColourForAHumanToVerify`
+	// refuses more than TWO captures per colour, and firing (root + reminder) and
+	// acknowledged (reply + update) are both full; resolved, silenced and storm
+	// each hold one, so a resolved-coloured eighth capture fits. Adding it means
+	// regenerating the checked-in captures — `go test ./test/harness -run Corpus
+	// -update-slack-goldens` — which is why it is not in this change and is named
+	// here instead. Until it lands, the property is asserted in the renderer's own
+	// tests rather than in bytes a human can paste:
+	// `TestACommentDoesNotCreditTheAcknowledgementToWhoeverSpokeLast` and
+	// `TestACommentDoesNotTurnAHumanAcknowledgementIntoAnAutomaticOne`, both in
+	// internal/channels/render/slack/attribution_test.go.
+	v.Actor = nil
 	v.Group.State = "closed"
 	v.Group.FiringCount = 0
 	v.Group.ResolvedCount = 2

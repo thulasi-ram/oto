@@ -180,10 +180,14 @@ func instancesAffected(v *domain.NotificationView) string {
 // the more useful things a receipt can tell an operator the next morning.
 func acknowledgedValue(v *domain.NotificationView) string {
 	if v.Occurrence != nil && v.Occurrence.AckedAt != nil {
-		who := actorLabel(v)
-		if who == "" && v.Occurrence.AckedByLabel != "" {
-			who = code(v.Occurrence.AckedByLabel)
-		}
+		// ⛔ `ackedBy`, NOT `actorLabel`. This field is on the TERMINAL card, which
+		// is amended by whatever fact ended the episode — and a receipt that read
+		// the announcing notification's own actor would credit the ack to whoever
+		// last commented on a resolved thread.
+		// The receipt states the ack happened — `AckedAt` is the fact — so only the
+		// NAME is wanted here; whether an unnamed ack was a machine is `by`'s
+		// question, and this field never renders that clause.
+		who, _ := ackedBy(v)
 		out := ":eyes: yes"
 		if who != "" {
 			out += " — " + who
@@ -590,13 +594,10 @@ func statusValue(v *domain.NotificationView, state CardState) string {
 
 	switch state {
 	case CardAcknowledged:
-		if who := actorLabel(v); who != "" {
-			current += " by " + who
-		}
+		who, attributed := ackedBy(v)
+		current += by(who, " automatically", attributed)
 	case CardSuppressed:
-		if who := actorLabel(v); who != "" {
-			current += " by " + who
-		}
+		current += silencedBy(v)
 		if v.Occurrence != nil && v.Occurrence.EndedAt != nil {
 			current += " until " + slackDate(*v.Occurrence.EndedAt)
 		}

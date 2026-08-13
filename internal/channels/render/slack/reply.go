@@ -83,19 +83,27 @@ func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOption
 // bar. Every branch is one of the §H.5 reply types.
 func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions) (body, extra, colour string) {
 	state := cardState(v)
-	who := actorLabel(v)
 
 	switch v.Reason {
 	case reasonAcked:
 		colour = CardAcknowledged.Colour()
-		body = ":eyes: *Acknowledged*" + by(who)
+		who, attributed := ackedBy(v)
+		body = ":eyes: *Acknowledged*" + by(who, " automatically", attributed)
 		if note := ackNote(v); note != "" {
 			body += " — _" + note + "_"
 		}
 
 	case reasonUnacked:
 		colour = CardFiring.Colour()
-		body = ":arrow_uturn_left: *Un-acknowledged*" + by(who)
+		// ⭐ THE COMMON UN-ACKNOWLEDGEMENT HAS NO HUMAN BEHIND IT. T10 drops the ack
+		// when a NEW episode opens, and `autoUnackEvent` records that with
+		// `actor_kind = 'system'` — so " automatically" is not a fallback here, it is
+		// the usual answer, and it is the difference between "somebody took this back"
+		// and "it came back and your receipt no longer applies".
+		// Here `who` and the impersonal test are the SAME fact — the un-ack's own
+		// actor — which is why this call site passes `v.Actor != nil` itself.
+		body = ":arrow_uturn_left: *Un-acknowledged*" +
+			by(actorLabel(v), " automatically", v.Actor != nil)
 		if v.Occurrence != nil && v.Occurrence.ReopenCount > 0 {
 			body += " — new occurrence opened"
 		}
@@ -150,7 +158,7 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 
 	case reasonSuppressed:
 		colour = CardSuppressed.Colour()
-		body = ":mute: *Silenced*" + by(who)
+		body = ":mute: *Silenced*" + silencedBy(v)
 		if until := suppressedUntil(v); until != "" {
 			body += " until " + until
 		}
@@ -172,7 +180,7 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 
 	case reasonComment:
 		colour = state.Colour()
-		body = ":speech_balloon: " + commentPrefix(who) + escape(oneLine(v.Comment))
+		body = commentBody(v)
 
 	case reasonUnackedReminder:
 		colour = CardFiring.Colour()
@@ -309,6 +317,26 @@ func enricherLabel(name string) string {
 	return escape(strings.ReplaceAll(strings.Join(parts, " "), "_", " "))
 }
 
+// commentBody renders what a human typed, into the thread they typed it into.
+//
+// ⛔ THE TEXT IS THE ENTIRE MESSAGE. A `comment` notification exists for one
+// reason — somebody wrote something — so a balloon with nothing after it is not
+// a degraded card, it is a person's words replaced by an emoji in front of the
+// channel they wrote them to. CONTEXT.md §6 is blunt about the stakes: human
+// comments "live nowhere else".
+//
+// If the text really did not reach the view, SAY THAT and point at the one place
+// it does exist. An operator who sees "a comment was added" opens the timeline;
+// an operator who sees a lone balloon concludes oto is broken, and is right.
+func commentBody(v *domain.NotificationView) string {
+	text := escape(oneLine(v.Comment))
+	if text == "" {
+		return ":speech_balloon: *A comment was added* — " +
+			link(v.Links.Group, "read it in oto") + "."
+	}
+	return ":speech_balloon: " + commentPrefix(actorLabel(v)) + text
+}
+
 func commentPrefix(who string) string {
 	if who == "" {
 		return ""
@@ -316,11 +344,97 @@ func commentPrefix(who string) string {
 	return who + ": "
 }
 
-func by(who string) string {
-	if who == "" {
+// by renders the attribution clause of a sentence about something that was
+// DONE — and never renders a dangling " by".
+//
+// ⛔ THE THREE CASES ARE THREE DIFFERENT FACTS AND THE CARD MUST NOT CONFLATE
+// THEM (git-bug 56a9951, where every one of these read as the third):
+//
+//	a person did it        → " by <name>", the name the timeline froze
+//	something else did it  → `impersonal`, the caller's own true phrase
+//	oto does not know      → nothing, because inventing an agent is worse
+//
+// The middle case is detected from the actor rather than guessed: a HUMAN actor
+// on `alert_events` is guaranteed both an id and a label (ev_actor_ck), so a
+// recorded actor that renders to no name is one of oto's own machines — system,
+// reconciler, ingest. `impersonal` is passed in per call site because "what else
+// did it" is a different sentence for every fact — an acknowledgement no human
+// took went `automatically` — and a call site with nothing true to say passes
+// the empty string rather than reaching for a vague one.
+//
+// ⛔ `attributed` IS ABOUT THE FACT `who` CAME FROM, AND THE CALLER IS THE ONLY
+// ONE WHO KNOWS WHICH FACT THAT IS. This used to read `v.Actor` — the actor of
+// the ANNOUNCED fact — while `who` was computed from a DIFFERENT one, which is
+// the conflation the three cases above exist to forbid: a `comment` on a
+// suppressed member of an acknowledged group made `v.Actor` the commenter and
+// the status line read "Acknowledged automatically" for an ack humans took.
+func by(who, impersonal string, attributed bool) string {
+	switch {
+	case who != "":
+		return " by " + who
+	case attributed:
+		return impersonal
+	default:
 		return ""
 	}
-	return " by " + who
+}
+
+// ackedBy names the human whose acknowledgement the card is talking about, and
+// says whether that ACKNOWLEDGEMENT has a recorded actor at all.
+//
+// ⛔ THE REASON GATE IS THE WHOLE FUNCTION. `v.Actor` is the actor of the FACT
+// BEING ANNOUNCED, not of the ack — on a `comment` card it is whoever commented
+// — so reading it unconditionally would print one person's name against another
+// person's action on any card that happens to be in the acknowledged state. The
+// ack has its own frozen attribution on the occurrence, and that is what every
+// other card reads.
+//
+// It is one function because the root card's Status field, the root card's
+// Acknowledged field and the thread reply are three renderings of ONE fact, and
+// they disagreed for as long as they each answered the question themselves.
+//
+// ⛔ THE SECOND RETURN IS THE SAME GATE, FOR THE SAME REASON. An empty name means
+// "no human is named", and only the ACK's own record can say whether that is a
+// machine or an absence — so `attributed` is true only where this function
+// actually looked at the acknowledgement: the announcing card's own actor, or the
+// occurrence's frozen label. On any other card an unnamed ack is oto not knowing,
+// and `by` must render nothing rather than claim a machine took it.
+func ackedBy(v *domain.NotificationView) (who string, attributed bool) {
+	// The card IS the acknowledgement: its own actor is the freshest answer and
+	// the only one that can carry a Slack mention rather than a display name.
+	if v.Reason == reasonAcked {
+		if name := actorLabel(v); name != "" {
+			return name, true
+		}
+	}
+	if v.Occurrence != nil && v.Occurrence.AckedByLabel != "" {
+		return code(v.Occurrence.AckedByLabel), true
+	}
+	// A recorded actor on the acknowledgement itself that renders to no name is
+	// one of oto's machines, and " automatically" is the true sentence for it.
+	return "", v.Reason == reasonAcked && v.Actor != nil
+}
+
+// silencedBy attributes a silence, and it ALWAYS attributes it.
+//
+// ⛔ "upstream" IS THE TRUE ANSWER, NOT A HEDGE, and it is why this one does not
+// go through `by`. oto has no write path into the cluster and v1 will not grow
+// one (R3, H-3), and only the reconciler can move an occurrence into
+// `suppressed` — so a silence was ALWAYS created in somebody else's UI, whether
+// or not oto recorded who. Saying nothing would leave a reader to assume oto
+// went quiet by itself, which is the one thing §B.6 will not have a card imply.
+//
+// Unlike an ack, a silence has no frozen attribution anywhere in the read model
+// — `alert_occurrences` keeps the suppression's REASON, never its author — so
+// the announcing notification is the only card that can name a person at all,
+// and every later amend of the same root honestly says `upstream`.
+func silencedBy(v *domain.NotificationView) string {
+	if v.Reason == reasonSuppressed {
+		if who := actorLabel(v); who != "" {
+			return " by " + who
+		}
+	}
+	return " upstream"
 }
 
 func ackNote(v *domain.NotificationView) string {

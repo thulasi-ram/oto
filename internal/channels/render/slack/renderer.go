@@ -245,6 +245,13 @@ func instanceDetail(a domain.AlertView) string {
 
 // actorLabel renders who did it. Slack member ids become real mentions; anything
 // else is escaped, because an actor label is upstream-supplied text.
+//
+// ⛔ IT RETURNS "" FOR A MACHINE, AND "" IS NOT "NOBODY". oto's own agents —
+// system, reconciler, ingest — are recorded on the timeline with a kind and no
+// label at all (only a human actor is guaranteed an id and a label), so an empty
+// answer here with `v.Actor` set means "something other than a person did this".
+// Callers must never paste this straight after " by": see `by` in reply.go,
+// which is the only place allowed to turn this into a clause.
 func actorLabel(v *domain.NotificationView) string {
 	if v.Actor == nil {
 		return ""

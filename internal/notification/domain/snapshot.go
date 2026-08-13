@@ -30,6 +30,16 @@ type SnapshotQuery struct {
 	// instances inline and then says "and N more"; fetching more than it can show
 	// is work nobody sees.
 	MaxAlerts int
+	// Reason is the fact about to be RENDERED, and it is the only thing that can
+	// name the timeline entry which caused it: `acked` means
+	// `occurrence.acknowledged`, `comment` means `comment.added`. Without it a
+	// read model can fill in the world but not the actor, because "who did this"
+	// is a question about ONE event and the subject ids alone do not say which.
+	//
+	// EMPTY IS A REAL ANSWER: it means the caller is not rendering — the
+	// evaluation path reads a snapshot to decide whether to send at all — and a
+	// reader that is not rendering must not pay for the lookup.
+	Reason Reason
 }
 
 // OrgFacts identifies the tenant.
@@ -248,7 +258,19 @@ type EnrichmentFacts struct {
 // ActorFacts is who caused the fact being communicated. ACTOR, NEVER SUBJECT: a
 // person appears on a notification as metadata about an action, never as its
 // topic.
+//
+// It is read from the ONE event that IS the fact, never assembled from a user
+// row: `alert_events.actor_label` is frozen at write time precisely so that a
+// renamed or deleted user does not rewrite what a card said (§D.4). So there is
+// no id to resolve here and no directory lookup on the delivery path — the name
+// was already decided, by the module that owns the verb, at the instant the
+// human acted.
 type ActorFacts struct {
+	// Kind is `alert_events.actor_kind`: system | ingest | reconciler | reaper |
+	// enricher | notifier | user | slack. The last two are the human ones, and
+	// only they are guaranteed an id AND a label (ev_actor_ck) — so an actor with
+	// no label is one of oto's own machines, which is a DIFFERENT answer from no
+	// actor at all.
 	Kind  string
 	ID    string
 	Label string
