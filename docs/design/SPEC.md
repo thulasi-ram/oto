@@ -1432,20 +1432,33 @@ CREATE TABLE notification_policies (
   enabled       BOOLEAN     NOT NULL DEFAULT true,
   matchers      JSONB       NOT NULL DEFAULT '[]'::jsonb,
                 -- [{"name":"severity","op":"=","value":"critical"}, …]  op ∈ = != =~ !~
-  reasons       TEXT[]      NOT NULL,              -- subset of §H.6 Reason values
+  reasons       TEXT[]      NOT NULL,              -- a SET drawn from §H.6 Reason values
   channel_ids   UUID[]      NOT NULL,
   throttle      JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- {"max":N,"window_s":S} per subject
   unacked_reminder_after_s INT,                    -- NULL = no reminder; else unacked-for seconds.
                                                    -- SCALAR. ONE STAGE, FOREVER. Never an array (§G.9.1).
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- NO `DEFAULT now()` on either: 00034 dropped it here (00032/00033 did the same
+  -- for `channels`, `orgs` and `channel_credentials`) because the writer owns time
+  -- (CONTEXT.md §6, internal/platform/clock). A default on a column the repository
+  -- always supplies is not a safety net: it lets a future writer omit the column,
+  -- succeed, and plant a row whose timestamp came from the DATABASE's clock — which
+  -- on this table fails later, on somebody else's UPDATE, against policies_time_ck.
+  created_at    TIMESTAMPTZ NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL,
   deleted_at    TIMESTAMPTZ,
   CONSTRAINT policies_name_uniq UNIQUE (org_id, name),
   CONSTRAINT policies_name_ck     CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
   CONSTRAINT policies_prio_ck     CHECK (priority BETWEEN 0 AND 10000),
   CONSTRAINT policies_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
-  CONSTRAINT policies_reasons_ck  CHECK (array_length(reasons, 1) BETWEEN 1 AND 32
-                                         AND array_position(reasons, NULL) IS NULL),
+  -- 00046: a SET, and bounded by the enum rather than by a round number. 18 is the
+  -- size of the §H.6 Reason enum, so it is the most a set drawn from it can hold,
+  -- and it is the same number the DTO tag and domain.MaxPolicyReasons carry.
+  -- `oto_array_is_set` is the uniqueness half: the contract publishes uniqueItems
+  -- on the RESPONSE, so a duplicate reaching this column comes back on a read as a
+  -- row the generated frontend client refuses.
+  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 18
+                                         AND array_position(reasons, NULL) IS NULL
+                                         AND oto_array_is_set(reasons)),
   CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
                                          AND array_position(channel_ids, NULL) IS NULL),
   CONSTRAINT policies_throttle_ck CHECK (jsonb_typeof(throttle) = 'object'),

@@ -223,6 +223,20 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 //
 // WHAT EACH DOWN HAS TO PUT BACK, newest first:
 //
+//   - ⭐ 00046 TIGHTENED `policies_reasons_ck` — `reasons` became a set of 1..18
+//     rather than a bag of 1..32 — so its Down is a RELAXATION, and a relaxation
+//     is the Down most likely to be believed rather than run: it cannot fail, and
+//     nothing about it is visible at the exit code. Both directions are exercised
+//     with a real row instead. A duplicate is refused at the top of the stack, is
+//     ACCEPTED once the Down has run, and is FOLDED to its distinct values by the
+//     Up on the way back — which is the only place in this suite the migration's
+//     backfill meets a row that actually violates the constraint it is about to
+//     add. A Down that dropped the constraint without restoring the loose one, or
+//     an Up that added the constraint without folding first, would both be green
+//     on a constraint-text assertion and neither would survive here. The helper
+//     function the CHECK calls (`oto_array_is_set`, which exists because Postgres
+//     forbids a subquery in a CHECK) goes with it and comes back with it.
+//
 //   - ⭐ 00045 added `alert_labels` and `alert_label_names`, the projection the
 //     two label typeaheads now read instead of scanning the tenant's `alerts`
 //     per keystroke, so its Down is two DROP TABLEs and the property that flips
@@ -339,8 +353,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 45 {
-		t.Fatalf("latest migration is %d, want 45 — this test pins the number so that a "+
+	if latest != 46 {
+		t.Fatalf("latest migration is %d, want 46 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -585,6 +599,35 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		return def
 	}
 
+	// 00046's constraint, read as rendered SQL for the reason `batchModeCheck` is:
+	// the constraint NAME is the runtime contract, and what matters is that the
+	// same name carries a different predicate. The set rule is the part worth
+	// naming — a `policies_reasons_ck` that still counted elements and scanned for
+	// NULLs would be the pre-00046 constraint under the post-00046 name.
+	policyReasonsCheck := func() string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			  WHERE conname = 'policies_reasons_ck'
+			    AND conrelid = 'notification_policies'::regclass`).Scan(&def); err != nil {
+			t.Fatalf("introspect policies_reasons_ck: %v", err)
+		}
+		return def
+	}
+	// The function that CHECK calls. It is counted separately because it is
+	// dropped and created by the same migration and a Down that restored the loose
+	// constraint while leaving the function behind would be green everywhere else.
+	arrayIsSetFunctions := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_proc WHERE proname = 'oto_array_is_set'`).Scan(&n); err != nil {
+			t.Fatalf("introspect oto_array_is_set: %v", err)
+		}
+		return n
+	}
+
 	// 00045's two tables, counted together because they are one migration and
 	// therefore roll back together. `pg_tables` rather than `pg_class` so a name
 	// that came back as something other than a table would not count.
@@ -597,6 +640,45 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			t.Fatalf("introspect the label projection tables: %v", err)
 		}
 		return n
+	}
+
+	// ⭐ 00046's constraint, and the only assertion in this file that is about a
+	// value the schema must REFUSE. `reasons` is a set in the contract
+	// (`uniqueItems: true` on `PolicyDTO`, which is a RESPONSE) and was a set in
+	// exactly one of CONTEXT.md §5b's three places until 00046 — so a duplicate
+	// reaching this column comes back on a read as a row oto serves and the
+	// frontend validator it generated then refuses.
+	//
+	// The org and the policy seeded here outlive the whole rollback: the same row
+	// is written duplicated once the Down has relaxed the constraint, and read back
+	// folded after the way up.
+	policyScope, _, _ := seedSource(t, env)
+	insertPolicy := func(policyID uuid.UUID, name string, reasons []string) error {
+		_, err := env.pool.Exec(env.ctx,
+			// `created_at`/`updated_at` are NAMED: 00034 removed this table's
+			// DEFAULT now() along with twelve others'.
+			`INSERT INTO notification_policies (id, org_id, name, reasons, channel_ids,
+			     created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], $6, $6)`,
+			policyID, policyScope.OrgID(), name, reasons, id.New(), time.Now().UTC())
+		return err
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck does not carry the set rule at the top of the stack: %s — "+
+			"00046 exists to put it there, and while it is absent the `unique` tag on the "+
+			"request DTOs is the ONLY place uniqueness is written: any writer that does not "+
+			"pass through httpx.Bind can store a value the response contract calls impossible",
+			def)
+	}
+	if n := arrayIsSetFunctions(); n != 1 {
+		t.Fatalf("%d oto_array_is_set functions exist at the top of the stack, want 1 — the "+
+			"CHECK calls it, because Postgres forbids a subquery in a CHECK and every direct "+
+			"spelling of set-ness is an aggregate over unnest", n)
+	}
+	if err := insertPolicy(id.New(), "bag-at-the-top", []string{"fired", "acked", "fired"}); err == nil {
+		t.Fatal("a policy listing `fired` twice was STORED at the top of the stack; " +
+			"policies_reasons_ck is the backstop for a rule the repository deliberately does " +
+			"not re-prove, and a backstop that accepts the value is not one")
 	}
 
 	// ⭐ 00045's projection, asserted at the top of the stack because "the Down
@@ -790,6 +872,41 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		if err := migrate.Down(env.ctx, dsn); err != nil {
 			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
 		}
+	}
+
+	// ⭐ 00046 down: `reasons` goes back to being a bag of 1..32, and the helper
+	// function goes with it.
+	//
+	// A relaxation CANNOT FAIL, which is precisely why reading the constraint text
+	// is not enough here: a Down that dropped `policies_reasons_ck` and forgot to
+	// re-add the loose one would leave the column with no length bound and no NULL
+	// scan at all, and would pass a "does not contain oto_array_is_set" check
+	// comfortably. So the row the tight constraint refuses is WRITTEN instead, and
+	// it is deliberately left in the table: the way back up has to fold it.
+	down(46)
+	if def := policyReasonsCheck(); strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck still carries the set rule after 00046's Down: %s — the "+
+			"release this rolls back to has no such function, so the next dump would restore "+
+			"a constraint calling something that does not exist", def)
+	} else if !strings.Contains(def, "array_length") {
+		t.Fatalf("policies_reasons_ck is not the constraint 00011 shipped after 00046's Down: "+
+			"%s — a Down that drops a CHECK without restoring the previous predicate leaves "+
+			"the column with NO bound, which is looser than either release ever intended", def)
+	}
+	if n := arrayIsSetFunctions(); n != 0 {
+		t.Fatalf("%d oto_array_is_set functions survived 00046's Down, want 0 — a rolled-back "+
+			"deployment would carry a function nothing calls", n)
+	}
+	// The row that proves the relaxation is real, and the row 00046's backfill has
+	// to meet on the way back up. `acked` sits between the two `fired`s so that the
+	// fold has to keep FIRST-occurrence order rather than sorting or keeping the
+	// last: an operator who wrote this list should recognise it afterwards.
+	foldedPolicy := id.New()
+	if err := insertPolicy(foldedPolicy, "bag-after-the-down",
+		[]string{"fired", "acked", "fired"}); err != nil {
+		t.Fatalf("a duplicate reason was still refused after 00046's Down: %v — the Down is "+
+			"supposed to restore the schema of a release whose only gate is the `unique` DTO "+
+			"tag, and a rolled-back binary writing through any other path must not 23514", err)
 	}
 
 	// ⭐ 00045 down: both projection tables go, and they have to go WITH ROWS IN
@@ -1295,6 +1412,35 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if buckets() != 0 {
 		t.Fatal("rate_limit_buckets survived the way back up")
 	}
+	// ⭐ 00046 comes back AND FOLDS THE ROW IT MEETS. This is the only place in the
+	// suite where its backfill runs against a policy that actually violates the
+	// constraint about to be added, and it is the half that decides whether the
+	// migration is deployable at all: tightening a CHECK on a live table FAILS if
+	// any stored row is already illegal, so an Up that added the constraint without
+	// folding first would abort here — on a database whose only offending row was
+	// written by the release it is upgrading from.
+	if def := policyReasonsCheck(); !strings.Contains(def, "oto_array_is_set") {
+		t.Fatalf("policies_reasons_ck did not re-tighten on the way up: %s — the rest of the "+
+			"suite runs against this schema, and `reasons` is a set in the contract", def)
+	}
+	if n := arrayIsSetFunctions(); n != 1 {
+		t.Fatalf("%d oto_array_is_set functions came back on the way up, want 1", n)
+	}
+	var foldedReasons []string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT reasons FROM notification_policies WHERE id = $1`, foldedPolicy).Scan(&foldedReasons); err != nil {
+		t.Fatalf("the policy written under the relaxed constraint did not survive the round "+
+			"trip: %v — the fold rewrites rows and must not delete the ones it cannot keep "+
+			"verbatim; a policy that vanished is a tenant silently stopping being notified", err)
+	}
+	if strings.Join(foldedReasons, ",") != "fired,acked" {
+		t.Fatalf("the duplicated policy reads %v after the way back up, want [fired acked] — "+
+			"the fold keeps each reason ONCE and in FIRST-occurrence order, because the column "+
+			"is read back verbatim into PolicyDTO.reasons and neither order is more correct "+
+			"than the other; sorting it would rearrange an operator's list under them",
+			foldedReasons)
+	}
+
 	// ⭐ 00045 comes back AND REFILLS ITSELF. Its Up is a CREATE plus a backfill,
 	// so the way up is the only place the backfill runs against a database that
 	// already has alerts in it — the alert seeded above for the Down is still

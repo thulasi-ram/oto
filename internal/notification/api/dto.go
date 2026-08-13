@@ -265,7 +265,11 @@ type CreatePolicyRequest struct {
 	// Reasons is validated against the domain's closed vocabulary rather than an
 	// `oneof` tag, because migration 00018 narrowed it and a duplicated list here
 	// would be the second copy that drifts.
-	Reasons []string `json:"reasons" validate:"required,min=1,max=32,unique"`
+	//
+	// `max` is 18, not 32: `unique` over an 18-value enum makes a 19th element
+	// unreachable, and since 00046 the column agrees — it refuses a duplicate too,
+	// so 32 stopped being a number any row could reach.
+	Reasons []string `json:"reasons" validate:"required,min=1,max=18,unique"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID  `json:"channel_ids" validate:"required,min=1,max=16,unique"`
 	Throttle   *ThrottleDTO `json:"throttle,omitempty"`
@@ -282,7 +286,7 @@ type UpdatePolicyRequest struct {
 	Enabled  *bool   `json:"enabled,omitempty"`
 
 	Matchers   *[]MatcherDTO `json:"matchers,omitempty"    validate:"omitempty,max=32,dive"`
-	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=32,unique"`
+	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=18,unique"`
 	ChannelIDs *[]uuid.UUID  `json:"channel_ids,omitempty" validate:"omitempty,min=1,max=16,unique"`
 
 	// Throttle and UnackedReminderAfterSeconds are nullable in the contract: an
