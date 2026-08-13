@@ -68,6 +68,7 @@ just test             go test -race ./...   (integration tests need Docker)
 just lint             golangci-lint, including the layering rules
 just lint-vocabulary  SCOPE-BOUNDARY AC-49: the banned on-call vocabulary
 just generate-check   gate G3: the checked-in TS client matches openapi.yaml
+just helm-check       render the Helm chart and prove its guard rails still fire
 just ci               everything the GitHub workflow runs, in the same order
 just status           which migrations have been applied
 just reset            destroy the dev volume and start clean
@@ -146,12 +147,24 @@ not have. What CI runs today, and therefore what will stop a bad change:
 | G3: openapi.yaml → TS client is not stale | `ui` job, `npm run generate:check` (`just generate-check`) | **enforced** |
 | G4: OpenAPI → generated valibot validators | `ui` job, `npm run gen:validators:check` (`just validators-check`) | **enforced** — `web/src/api/generated/validators.ts` is generated and checked in. The three remaining hand-written valibot schemas are FORM schemas, and each `v.pipe`s into the generated `*RequestSchema` as its final gate, which is what §L.8.1 asks for |
 | AC-49 vocabulary + forbidden columns | `vocabulary` job, `go run ./tools/lintvocab` | **enforced**, with known debt listed in `tools/lintvocab/baseline.txt` |
+| Helm chart renders, and its guard rails still fire | `helm` job, `bash deploy/helm/check.sh` (`just helm-check`) | **enforced** — `helm lint`, then `helm template` over defaults, over the three templates the defaults switch off (`ingress`, `hpa`, `job-bootstrap`), over `existingSecret` (which must render NO Secret) and over Slack in `http` mode, with every rendered manifest validated as Kubernetes by `kubeconform` at both ends of Chart.yaml's `kubeVersion` range. Each of the **eight** `fail` guard rails in `_helpers.tpl` is fed the input it exists to reject and must fail with its own sentence. ⚠️ `helm lint` alone is not the gate: it exits 0 on this chart at its own defaults, which `helm template` refuses to render |
 | `TestValidatorMatchesDDL` (§L.8) | `internal/platform/validate/ddl_test.go` | **enforced** — every canonical regex is compared byte-for-byte with its DDL `CHECK` |
 
 Each of the four drift gates has been demonstrated to FAIL against a deliberately planted drift —
 a Go DTO field absent from the contract for G1, a handler returning the wrong shape for G2, a
 hand-edited generated file for G3 and G4 — before being called done. A gate that has never failed
 is a gate nobody knows works.
+
+The chart gate was held to the same standard, against eight planted defects: a `Service` given
+`apiVersion: v1beta9`, a `Deployment` with its `selector` removed, a mis-nested `{{- if }}` in
+`hpa.yaml` (a template the defaults never render), one `fail` guard deleted, one inverted, a
+`.Values` path renamed out from under two more, and the `{{- if not .Values.existingSecret }}` on
+the migration hook's Secret inverted. All eight fail the gate; the chart at HEAD passes.
+The first two are the ones that motivate `kubeconform` — `helm template` renders both and exits 0,
+because it checks that the output is YAML, not that it is Kubernetes. The last is why the render
+assertions count `kind:` documents rather than `# Source:` markers: `job-migrate.yaml` emits two
+objects behind different conditions, so its filename is present under every value of
+`existingSecret` and cannot say which of the two rendered.
 
 The layering rules are mechanically enforced by `depguard` in `.golangci.yml`: `api` cannot import
 `repository`, `repository` cannot import `api`, `domain` packages import no I/O at all, and no

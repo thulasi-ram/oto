@@ -300,6 +300,24 @@ lint-vocabulary:
 lint-reachability:
     go run ./tools/lintreach
 
+# The chart gate: `helm lint`, then `helm template` across the value
+# combinations that matter, then `kubeconform` over every rendered manifest.
+#
+# deploy/helm/oto/ is the artifact a customer touches FIRST and was the only
+# contract in this repository with no gate at all — 1,131 lines of templates and
+# eight `fail` guard rails, asserted by review only. Each of the eight is now
+# fed the input it exists to reject and must fail with its own sentence: a guard
+# whose `.Values` path was renamed out from under it stops firing silently,
+# which is the tools/lintreach defect class one layer out.
+#
+# Needs `helm` and `kubeconform`; `just setup` installs both, pinned to the
+# versions CI installs. Neither is optional — a check that skips when its checker
+# is absent reports success, which is worse than no check — so check.sh exits
+# non-zero and names `just setup` rather than passing.
+[group('check')]
+helm-check:
+    bash deploy/helm/check.sh
+
 # Everything CI runs, in the order CI runs it. Keep this list and
 # .github/workflows/ci.yml in step -- a contributor's green must be CI's green.
 #
@@ -308,15 +326,52 @@ lint-reachability:
 # a contract failure buried behind a full `go test -race ./...` is a contract
 # failure found ten minutes late.
 [group('check')]
-ci: lint lint-vocabulary lint-reachability dto-check server-check generate-check validators-check test ui-build ui-test
+ci: lint lint-vocabulary lint-reachability helm-check dto-check server-check generate-check validators-check test ui-build ui-test
 
 # Install the toolchain this repo expects.
 [group('check')]
 setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gobin="$(go env GOPATH)/bin"
+    mkdir -p "$gobin"
+
     go mod download
-    cd {{web_dir}} && npm install
+    (cd {{web_dir}} && npm install)
+
     # Tested by absolute path, not `command -v`: a wrapper on PATH answers for a
     # binary that is not there, which is how the tree ran without a layering
     # gate at all. See the note in `just lint`.
-    @test -x "$(go env GOPATH)/bin/golangci-lint" || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-    @echo "✓ ready — now run: just up"
+    test -x "$gobin/golangci-lint" || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+    # `just helm-check` renders the chart and validates the manifests as
+    # Kubernetes, and `just ci` runs it. kubeconform is a Go binary, so it
+    # installs the way golangci-lint does.
+    test -x "$gobin/kubeconform" || go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
+
+    # ⭐ helm IS INSTALLED HERE, NOT WARNED ABOUT. `just ci` depends on
+    # `just helm-check`, so a tool this recipe could only print a sentence about
+    # is a fresh checkout whose first `just ci` fails — which reads as a broken
+    # repository rather than as a missing dependency. It is not a Go binary, but
+    # it does not need to be: the release archive is one static executable, it
+    # lands in the same GOPATH/bin as the other two, and so this needs neither
+    # sudo nor Homebrew and is the same three lines on macOS and Linux.
+    #
+    # ⚠️ PINNED TO THE VERSION .github/workflows/ci.yml INSTALLS. A contributor's
+    # green must be CI's green, and helm is a tool where that is not pedantry:
+    # helm 4 changed what `helm lint` does with a template `fail` (it logs and
+    # exits 0), which is the whole reason deploy/helm/check.sh asserts through
+    # `helm template` instead. check.sh looks in GOPATH/bin before PATH, so this
+    # copy is the one the gate runs even where a package manager left another.
+    helm_version=v4.1.1
+    if [ ! -x "$gobin/helm" ]; then
+      os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+      arch="$(uname -m)"
+      case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+      echo "→ helm $helm_version → $gobin/helm"
+      curl -fsSL "https://get.helm.sh/helm-${helm_version}-${os}-${arch}.tar.gz" \
+        | tar -xzO "${os}-${arch}/helm" > "$gobin/helm"
+      chmod +x "$gobin/helm"
+    fi
+
+    echo "✓ ready — now run: just up"

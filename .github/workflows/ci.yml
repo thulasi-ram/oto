@@ -191,6 +191,47 @@ jobs:
       # tools/lintvocab/baseline.txt and can only shrink.
       - run: go run ./tools/lintvocab
 
+  # The chart gate. deploy/helm/oto is 1,131 lines of templates over a 570-line
+  # values.yaml, and until this job existed NOTHING executed any of it: `helm
+  # lint`, `helm template` and `helm package` appeared in no file in the tree, so
+  # the correctness of the artifact a customer touches first was asserted by
+  # review alone while every other contract here had a gate.
+  #
+  # ⭐ IT BELONGS HERE AND NOT IN release.yml. A chart defect found when a tag is
+  # pushed is found after the commit is immutable and after review said yes;
+  # release.yml also installs no helm and deliberately runs no checks, because
+  # the commit it builds has already been through this workflow. Per-PR is the
+  # only place this answer is worth anything.
+  #
+  # The matrix lives in deploy/helm/check.sh rather than in this file, so that
+  # `just helm-check` and this job cannot be two different gates (README.md).
+  helm:
+    name: chart / lint + render + kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠️ INSTALLED EXPLICITLY AND PINNED. Neither tool is on ubuntu-latest,
+      # and an unpinned one is a gate whose meaning changes without a commit —
+      # helm 4 already changed what `helm lint` does with a template `fail`
+      # (it logs and exits 0), which is precisely why check.sh asserts through
+      # `helm template` instead. v4.1.1 is the version the gate was written and
+      # verified against.
+      - name: install helm and kubeconform
+        run: |
+          HELM_VERSION=v4.1.1
+          KUBECONFORM_VERSION=v0.7.0
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp linux-amd64/helm
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+          helm version
+          kubeconform -v
+
+      - run: bash deploy/helm/check.sh
+
   reachability:
     name: scope / reachability
     runs-on: ubuntu-latest
