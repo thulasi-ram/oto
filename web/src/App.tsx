@@ -74,6 +74,19 @@ const Root: Component<{ readonly children?: JSX.Element }> = (props) => {
  *
  * `RequireSession` renders none of it until `/me` has answered, so no screen can
  * fire the request that would 401 and paint a skeleton forever.
+ *
+ * ⛔ IT IS A LAYOUT ROUTE'S COMPONENT, AND NEVER A WRAPPER A SCREEN PUTS AROUND
+ * ITSELF. `props.children` here is the router's outlet, so navigating between the
+ * five screens below swaps only the outlet and leaves this subtree standing.
+ * Every route used to build its own `<Authenticated>` — five sibling route
+ * components, five independent constructions of the same tree — and Solid does
+ * not reconcile across siblings, so each nav click DISPOSED the shell and built a
+ * fresh one. Two things were lost with it. `LiveProvider` constructs its
+ * `AlertStream` per instance and `close()`s it on cleanup, so every click aborted
+ * one `/api/v1/stream` request and opened another, re-entering `reconnecting` —
+ * the word **Stale** in the header — until the replay caught up. And any state
+ * the shell held reset, which is why `SnoozeBanner`'s read set had to be module
+ * state to survive a navigation it should never have been exposed to.
  */
 const Authenticated: Component<{ readonly children?: JSX.Element }> = (props) => (
   <RequireSession>
@@ -83,37 +96,50 @@ const Authenticated: Component<{ readonly children?: JSX.Element }> = (props) =>
   </RequireSession>
 );
 
+const NotFound: Component = () => (
+  <div class="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
+    <p class="text-[14px] font-medium text-ink">That page does not exist.</p>
+    <p class="text-[12px] text-ink-muted">
+      The link may be from an older version of oto, or mistyped.
+    </p>
+  </div>
+);
+
+/**
+ * The route table, as one value.
+ *
+ * Exported because the claim the layout route makes — that the shell survives a
+ * navigation — is a claim about THIS tree and cannot be checked against a copy of
+ * it declared in a test file. `App.test.tsx` mounts exactly these definitions
+ * under a `MemoryRouter` with its own query client, which is the only way an
+ * assertion about the shell's identity across a nav click is about the app.
+ *
+ * The three routes outside the layout are outside it on purpose: `/login` is the
+ * door, `/` only redirects (opening a stream for a path nobody stays on would be
+ * the remount bug in miniature), and `*` is a sentence, not a screen.
+ */
+export const routes = (): JSX.Element => (
+  <>
+    <Route path="/login" component={LoginRoute} />
+    {/* Two entries read `/` and they do not compete: this one is a LEAF, so it
+        matches `/` and nothing else, while the layout below carries children and
+        is therefore matched partially — it contributes no branch of its own and
+        only ever prefixes the five paths inside it. */}
+    <Route path="/" component={() => <Navigate href="/alerts" />} />
+    <Route path="/" component={Authenticated}>
+      <Route path="/alerts" component={AlertsRoute} />
+      <Route path="/alerts/:id" component={AlertDetailRoute} />
+      <Route path="/groups" component={GroupsRoute} />
+      <Route path="/groups/:id" component={GroupDetailRoute} />
+      <Route path="/settings/:section" component={SettingsRoute} />
+    </Route>
+    <Route path="*" component={NotFound} />
+  </>
+);
+
 const App: Component = () => (
   <QueryClientProvider client={queryClient}>
-    <Router root={Root}>
-      <Route path="/login" component={LoginRoute} />
-      <Route path="/" component={() => <Navigate href="/alerts" />} />
-      <Route path="/alerts" component={() => <Authenticated>{<AlertsRoute />}</Authenticated>} />
-      <Route
-        path="/alerts/:id"
-        component={() => <Authenticated>{<AlertDetailRoute />}</Authenticated>}
-      />
-      <Route path="/groups" component={() => <Authenticated>{<GroupsRoute />}</Authenticated>} />
-      <Route
-        path="/groups/:id"
-        component={() => <Authenticated>{<GroupDetailRoute />}</Authenticated>}
-      />
-      <Route
-        path="/settings/:section"
-        component={() => <Authenticated>{<SettingsRoute />}</Authenticated>}
-      />
-      <Route
-        path="*"
-        component={() => (
-          <div class="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-            <p class="text-[14px] font-medium text-ink">That page does not exist.</p>
-            <p class="text-[12px] text-ink-muted">
-              The link may be from an older version of oto, or mistyped.
-            </p>
-          </div>
-        )}
-      />
-    </Router>
+    <Router root={Root}>{routes()}</Router>
   </QueryClientProvider>
 );
 

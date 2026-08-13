@@ -29,9 +29,9 @@
  * would blunt the scarcity that makes a firing row loud.
  */
 import { fireEvent, screen } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { SnoozeBanner, SourceReachBanner, resetDismissedSnoozes } from "./ShellBanner";
+import { SnoozeBanner, SourceReachBanner } from "./ShellBanner";
 import { LiveProvider } from "~/api/live";
 import { qk } from "~/api/keys";
 import { ResyncBanner } from "~/components/AppShell";
@@ -158,9 +158,11 @@ const text = (): string => document.body.textContent ?? "";
 /* The healthy path says nothing at all                                       */
 /* -------------------------------------------------------------------------- */
 
-// The read set outlives the mount on purpose (AppShell is remounted per route),
-// so it must be cleared between cases or one Dismiss silences the next test.
-beforeEach(() => resetDismissedSnoozes());
+// Nothing to reset between cases. The read set is `SnoozeBanner`'s own signal
+// now that the shell is a layout route rather than a per-route wrapper, so it
+// dies with the mount and one case's Dismiss cannot silence the next one's strip.
+// It used to be module state with an exported reset hook, and both existed only
+// because `AppShell` was rebuilt on every navigation.
 
 describe("a healthy org", () => {
   it("renders no visible strip, nothing to dismiss, and announces nothing", async () => {

@@ -105,10 +105,13 @@ const STRIP_CLASS = cx(
  * mutates no text and says nothing a second time. A strip whose own words tick
  * cannot be made quiet that way and must pass `announce={false}` — `SnoozeBanner`.
  *
- * One silence is deliberate: `AppShell` is remounted on every route change, so a
- * strip that was already up comes back with its text in place and says nothing.
- * That is right. A fact the operator has already heard is not news, and a region
- * that re-reads itself on every nav click is one that gets turned off.
+ * One silence is structural rather than argued for: `AppShell` is a layout route,
+ * so a navigation swaps the outlet under it and never touches this region at all.
+ * A strip that was already up is still the same node holding the same text, and a
+ * fact the operator has already heard is not news. It was worth arguing for while
+ * the shell was rebuilt per route — a region recreated on every nav click either
+ * re-reads itself until it is ignored, or is never spoken at all — and the layout
+ * route is what stopped that being a question.
  */
 export const ShellBanner: ParentComponent<ShellBannerProps> = (props) => (
   <div
@@ -321,37 +324,6 @@ const SNOOZE_ROWS_MAX = 5;
 const SNOOZE_FETCH_LIMIT = 50;
 
 /**
- * Which holds the operator has already read — and why this lives OUTSIDE the
- * component.
- *
- * Dismissal remembers WHICH snoozes were read, not a signature of the set. A
- * signature (the sorted ids joined) looked equivalent and is not: the server drops
- * a snooze from this list the moment it expires, so in any org holding more than
- * one, the first expiry changes the signature and re-opens the strip over a
- * strictly SMALLER set the operator already read. Attrition is not news.
- *
- * ⚠ It is module state because `AppShell` IS REMOUNTED ON EVERY ROUTE CHANGE —
- * `App.tsx` gives each route its own `<Authenticated>` wrapper instead of nesting
- * the screens under one layout route, so component state here would reset on the
- * first nav click and re-open the strip over the identical holds. Component state
- * would pass its own regression test and still break for the operator. Fixing the
- * remount is tracked separately; until then this deliberately outlives the mount.
- *
- * Cross-principal leakage is not a concern: snooze ids are server UUIDs, so
- * another org's holds are never in this set and can never be silenced by it.
- */
-const [dismissedSnoozes, setDismissedSnoozes] = createSignal<ReadonlySet<string>>(new Set());
-
-/**
- * Clears the read set. Only a test needs this: because the state deliberately
- * outlives the mount, one case's Dismiss click would otherwise silence the next
- * case's strip.
- */
-export const resetDismissedSnoozes = (): void => {
-  setDismissedSnoozes(new Set<string>());
-};
-
-/**
  * The counterweight that makes snoozing safe (§B.8.6).
  *
  * A snooze is not a state and not a suppression: the alert is still firing and
@@ -365,6 +337,28 @@ export const resetDismissedSnoozes = (): void => {
  * takes. A hold ending is not news and must not re-open the strip.
  */
 export const SnoozeBanner = (): JSX.Element => {
+  /**
+   * Which holds the operator has already read.
+   *
+   * Dismissal remembers WHICH snoozes were read, not a signature of the set. A
+   * signature (the sorted ids joined) looked equivalent and is not: the server
+   * drops a snooze from this list the moment it expires, so in any org holding
+   * more than one, the first expiry changes the signature and re-opens the strip
+   * over a strictly SMALLER set the operator already read. Attrition is not news.
+   *
+   * ⛔ IT IS COMPONENT STATE, AND IT ONLY GETS TO BE BECAUSE THE SHELL IS A
+   * LAYOUT ROUTE. This signal lived at module scope for exactly as long as
+   * `App.tsx` gave each route its own `<Authenticated>` wrapper: `AppShell` was
+   * rebuilt on every nav click, so a component signal would have reset and
+   * re-opened the strip over the identical holds — passing its own regression
+   * test and still breaking for the operator. The shell now mounts once for the
+   * authenticated area (`App.test.tsx` holds that), so the read set lives exactly
+   * as long as the strip it belongs to, and needs no test-only reset hook to stop
+   * one case silencing the next. If this ever has to move back out here, the
+   * remount is the bug, not the scope.
+   */
+  const [dismissedSnoozes, setDismissedSnoozes] = createSignal<ReadonlySet<string>>(new Set());
+
   const snoozes = useQuery(() => ({
     queryKey: qk.alerts.activeSnoozes(),
     queryFn: ({ signal }: { signal: AbortSignal }) =>

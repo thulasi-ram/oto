@@ -243,6 +243,17 @@ const SignOut: Component = () => {
   const session = useSession();
   const navigate = useNavigate();
   const [busy, setBusy] = createSignal(false);
+
+  // ⛔ THIS DOES NOT CLEAR ON NAVIGATION, AND MUST NOT. The shell is a layout
+  // route now, so this signal follows the operator from screen to screen — which
+  // looks like stale state and is not. It reports a standing FACT, not the
+  // outcome of a gesture: the session is still live. Only two things can make it
+  // false, and both take the whole shell with them — a sign-out that succeeds
+  // (which leaves for /login) or a session that expires (which `RequireSession`
+  // bounces). Clearing it on a nav click would delete the one sentence telling
+  // the operator not to walk away from this machine, in response to a gesture
+  // that did nothing about it. A retry clears it below, at the point it is
+  // actually being re-answered.
   const [failed, setFailed] = createSignal(false);
 
   const go = async (): Promise<void> => {
