@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -127,6 +128,15 @@ type GroupAckResult struct {
 	// thing that can tell "somebody already acked this" from "it resolved while
 	// you were reading it".
 	SkippedCodes map[string]int
+	// Unreached is how many currently-joined members the fan-out never offered
+	// the verb to, because a group ack is bounded and a storm can be larger than
+	// the bound.
+	//
+	// ⭐ IT IS HERE SO THE BUTTON CANNOT LOOK LIKE IT WORKED. That is this
+	// surface's whole standard — see applyUnacknowledge — and an ack that
+	// silently covered a tenth of a five-thousand-alert group would fail it more
+	// quietly than the bug that standard was written for.
+	Unreached int
 }
 
 // SlackNotice sends a message only the person who pressed the button can see.
@@ -406,21 +416,41 @@ func (s *InteractionService) applyAcknowledge(
 		return err
 	}
 
+	// ⭐ NOTHING IS POSTED FROM HERE. The acknowledgement enqueued a
+	// `notify.evaluate` inside its own transaction, and the card is updated by the
+	// dispatch path — which is what keeps thread ordering, delivery idempotency and
+	// the per-channel rate limit in force (§G.5, §G.7, §H.9). A `chat.update`
+	// issued from this worker would bypass all three and race the very
+	// notification it duplicates.
 	if res.Applied > 0 {
-		// ⭐ NOTHING IS POSTED FROM HERE. The acknowledgement enqueued a
-		// `notify.evaluate` inside its own transaction, and the card is updated
-		// by the dispatch path — which is what keeps thread ordering, delivery
-		// idempotency and the per-channel rate limit in force (§G.5, §G.7, §H.9).
-		// A `chat.update` issued from this worker would bypass all three and race
-		// the very notification it duplicates.
 		logger.Info("channels: acknowledged from Slack",
-			slog.Int("members", res.Members), slog.Int("applied", res.Applied))
-		return nil
+			slog.Int("members", res.Members), slog.Int("applied", res.Applied),
+			slog.Int("unreached", res.Unreached))
+	} else {
+		logger.Info("channels: a Slack acknowledgement applied to nothing",
+			slog.Int("members", res.Members), slog.Any("skipped", res.SkippedCodes),
+			slog.Int("unreached", res.Unreached))
 	}
 
-	logger.Info("channels: a Slack acknowledgement applied to nothing",
-		slog.Int("members", res.Members), slog.Any("skipped", res.SkippedCodes))
-	s.tell(ctx, args, nothingAppliedText(res))
+	// ⛔ REACH IS ANSWERED FIRST, AND IT IS ANSWERED HOWEVER MANY THE PRESS
+	// APPLIED TO. This used to be nested inside `Applied > 0`, which made the
+	// warning unreachable in the exact case it was written for: a group above
+	// domain.FanOutLimit whose oldest 500 members are ALREADY acknowledged applies
+	// nothing, and fell through to "Already acknowledged" while thousands of its
+	// alerts behind the ceiling were not. That is the failure this whole surface's
+	// standard is against — see applyUnacknowledge — told from the other side: not
+	// a button that pretends it worked, but one that pretends there is nothing
+	// left to do. An unreached member is an unacknowledged alert whatever the
+	// members in front of it answered.
+	switch {
+	case res.Unreached > 0:
+		// The card will show what was acked and would otherwise read as the whole
+		// group. Only the person who pressed is told, because this is about their
+		// press and not a fact about the alerts.
+		s.tell(ctx, args, partialAckText(res))
+	case res.Applied == 0:
+		s.tell(ctx, args, nothingAppliedText(res))
+	}
 	return nil
 }
 
@@ -438,11 +468,45 @@ func (s *InteractionService) applyUnacknowledge(ctx context.Context, args jobs.S
 	return nil
 }
 
+// partialAckText says that the press did not cover the group.
+//
+// ⛔ IT PROMISES NOTHING IT CANNOT DO. It does not say "press again": a second
+// press walks the same members in the same order, finds them acknowledged and
+// applies nothing, so telling somebody to press again during a storm would be
+// worse than saying nothing at all. It reports the size of what is left and
+// stops there.
+//
+// ⚠️ IT ALSO ANSWERS THE PRESS THAT APPLIED TO NOTHING. That is the case the
+// ceiling actually produces after the first press: the oldest 500 members are
+// already acknowledged, so the second press concludes on 500 refusals and never
+// sees the thousands behind them. "Acknowledged 0 alerts" would be a strange
+// sentence, so it is not said — but the count of what is still outstanding is,
+// because that is the only number the person pressing needs.
+func partialAckText(res GroupAckResult) string {
+	if res.Applied == 0 {
+		return fmt.Sprintf(
+			"The alerts this acknowledgement reached were already acknowledged or have resolved. "+
+				"This group is larger than one acknowledgement covers: %d of its alerts were "+
+				"not reached and are still unacknowledged.",
+			res.Unreached)
+	}
+	return fmt.Sprintf(
+		"Acknowledged %d alerts. This group is larger than one acknowledgement covers: "+
+			"%d of its alerts were not reached and are still unacknowledged.",
+		res.Applied, res.Unreached)
+}
+
 // nothingAppliedText says WHICH kind of nothing happened.
 //
 // "Already acknowledged" and "it resolved while you were reading it" are
 // different afternoons, and a button that answers both with the same shrug is
 // only marginally better than one that says nothing at all.
+//
+// ⚠️ EVERY SENTENCE HERE IS ABOUT THE WHOLE GROUP, so it is only reached when
+// the fan-out reached the whole group. An incomplete one is answered by
+// partialAckText instead: "already acknowledged" said of the 500 members a
+// bounded press concluded on is not a statement about the 4 500 behind them, and
+// said to somebody in a storm it is the exact opposite of one.
 func nothingAppliedText(res GroupAckResult) string {
 	switch {
 	case res.Members == 0:

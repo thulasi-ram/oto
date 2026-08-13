@@ -49,11 +49,16 @@ type GroupRepository interface {
 type MemberRepository interface {
 	Join(ctx context.Context, s db.TenantScope, groupID, occurrenceID, alertID uuid.UUID, at time.Time) (bool, error)
 	Leave(ctx context.Context, s db.TenantScope, groupID, occurrenceID uuid.UUID, at time.Time) (bool, error)
-	// ListCurrentMembers is the ONLY read of a generation's current members, and
-	// it is bounded. There was an unbounded `CurrentMembers` beside it until the
-	// detail page's twenty-row preview stopped fetching a storm to render twenty
-	// of it; a port that offers both is a port whose next caller picks the wrong
-	// one.
+	// ListCurrentMembers is the READ PATH's view of a generation's current
+	// members, and it is bounded. There was an unbounded `CurrentMembers` beside
+	// it until the detail page's twenty-row preview stopped fetching a storm to
+	// render twenty of it; a port that offers both is a port whose next caller
+	// picks the wrong one.
+	//
+	// ⚠️ It is not the only read of current members — `CurrentMemberAlerts` below
+	// is the WRITE path's, and this comment used to claim otherwise while an
+	// unbounded sibling sat three lines under it. Both are bounded now, which is
+	// what makes the claim safe to make about the port as a whole.
 	ListCurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset) ([]domain.Member, db.Cursor, error)
 	AllMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]domain.Member, error)
 	// MembersAt takes the INSTANT, because the alternative is AllMembers plus a
@@ -67,7 +72,15 @@ type MemberRepository interface {
 	// because whether a snooze is active is a question about the clock and a
 	// stored count would be stale after every expiry.
 	SnoozeRollup(ctx context.Context, s db.TenantScope, groupIDs []uuid.UUID, now time.Time) (map[uuid.UUID]domain.SnoozeRollup, error)
-	CurrentMemberAlerts(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]repository.MemberAlert, error)
+	// CurrentMemberAlerts is the FAN-OUT's candidate read, and `limit` is not
+	// optional decoration: one member is one write transaction, so the number of
+	// rows this returns is the number of transactions the caller is about to
+	// open. It is bounded in SQL rather than sliced afterwards.
+	CurrentMemberAlerts(ctx context.Context, s db.TenantScope, groupID uuid.UUID, limit int) ([]repository.MemberAlert, error)
+	// CountCurrentMembers lets a fan-out that stopped at its ceiling say how many
+	// members it did not reach. It is asked only when the candidate read came
+	// back full.
+	CountCurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (int, error)
 }
 
 // TxRunner runs a unit of work inside ONE transaction.

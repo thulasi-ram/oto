@@ -248,7 +248,9 @@ func (s *Service) StateVersion(
 
 // FanOutResult is the audit of a group-level human verb.
 type FanOutResult struct {
-	// Members is how many currently-joined members the verb was applied to.
+	// Members is how many currently-joined members the verb reached a CONCLUSION
+	// on — it is exactly `Applied + Skipped()`. Since domain.FanOutLimit it is not
+	// necessarily how many the generation has; Unreached carries the difference.
 	Members int
 	// Applied is how many accepted it. A member whose episode has already ended
 	// cannot be acknowledged, and that is a normal outcome, not a failure of the
@@ -265,6 +267,15 @@ type FanOutResult struct {
 	// Slack Acknowledge button, in particular — is back to being a button that
 	// silently does nothing.
 	SkippedCodes map[string]int
+	// Unreached is how many currently-joined members the verb was NOT offered to,
+	// because the call stopped at domain.FanOutLimit or because it failed partway.
+	//
+	// ⭐ IT IS WHAT MAKES A CEILING HONEST. A bounded fan-out that reported only
+	// what it did would be a button that acked 500 of 5 000 alerts and looked
+	// exactly like a button that acked all of them. Zero means the fan-out saw
+	// every member of the generation — there is nothing outstanding — and that is
+	// the ONLY reading of "this group has been acked" that is true.
+	Unreached int
 }
 
 // Skipped is the total number of members that refused the verb.
@@ -311,6 +322,21 @@ type CommentResult struct {
 //
 // A group with no currently-joined member is a `412`: there is no signal to
 // annotate, and the timeline is a record of facts about signals.
+//
+// ⚠️ IT IS NOT RETRY-SAFE, AND IT IS THE ONE GROUP VERB THAT IS NOT. Ack, snooze
+// and unsnooze are idempotent in the domain — a second pass meets `already_acked`
+// and refuses — but a comment is an APPEND, and `alerts/service.Comment` mints
+// its §C.8 dedupe key from the wall clock, so a second pass writes a second
+// annotation on every member it already annotated. That matters most exactly
+// where it is least visible: a fan-out that fails partway returns its partial
+// account WITH the error, which is precisely what a caller retries on, and the
+// members in front of the failure are annotated again.
+//
+// The mechanism that fixes this is the caller's `Idempotency-Key` on
+// `commentOnAlertGroup` — open ticket a6cc834 — not a content-hashed dedupe key,
+// which would collapse two people who typed the same sentence into one fact.
+// `TestFanOutRetryOfACommentDuplicatesIt` pins the behaviour as it stands so the
+// gap is a recorded one rather than a surprise.
 func (s *Service) Comment(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
 	actorKind, actorID, actorLabel, body string,
@@ -330,7 +356,9 @@ func (s *Service) Comment(
 		return nil
 	})
 	if err != nil {
-		return CommentResult{}, err
+		// The audit rides out with the error: a comment that annotated 200
+		// timelines before the database went away still annotated them.
+		return CommentResult{FanOut: res}, err
 	}
 	if !got {
 		return CommentResult{}, errs.Precondition("no_group_members",
@@ -366,13 +394,43 @@ func (s *Service) Unsnooze(
 }
 
 // fanOut applies one member action across a generation's currently-joined
-// members.
+// members, AT MOST domain.FanOutLimit of them per call.
 //
 // A member that refuses the verb — an episode that has already ended cannot be
 // acknowledged, an alert that is not snoozed cannot be unsnoozed — is SKIPPED and
 // counted, never allowed to fail the whole request. Refusing the other 39 members
 // because one had already resolved would make the group button unusable in exactly
 // the situation it exists for.
+//
+// ⭐ IT IS ONE WRITE TRANSACTION PER MEMBER AND IT ALWAYS WILL BE. `apply` is a
+// verb on ONE signal (§E.1.1) — there is no group-level ack row, no group-level
+// snooze and no group-level comment to write instead — so the only question a
+// fan-out gets to answer is HOW MANY of those transactions one press may open.
+// The answer is domain.FanOutLimit, for the reasons argued there, and it is
+// applied as the SQL LIMIT of the candidate read: a fan-out that read the whole
+// membership and then used 500 of it has already paid the cost of the storm.
+//
+// ⛔ IT IS NOT ATOMIC, AND WRAPPING IT IN ONE TRANSACTION WOULD BE WORSE. Five
+// hundred members' worth of rows locked for the length of the slowest one, to buy
+// an all-or-nothing that nobody asked for: an ack that half-lands is 250 signals
+// with a true receipt on them, and rolling that back would be discarding facts.
+// What the caller is owed is not atomicity but an ACCOUNT, which is what
+// FanOutResult is.
+//
+// ⚠️ THE ACCOUNT SURVIVES THE ERROR. A hard failure partway returns the partial
+// result ALONGSIDE the error rather than a zero value: the members already
+// applied are committed and are not coming back, and a result that forgot them
+// would be the only record of them lost. Everything the call did not conclude on
+// — the member that failed, the ones behind it, and anything past the ceiling —
+// is counted in Unreached, so no member is silently dropped in either direction.
+//
+// ⛔ RE-RUNNING IT IS SAFE FOR THREE OF THE FOUR VERBS AND NOT FOR THE FOURTH.
+// Ack, snooze and unsnooze are compare-and-set on the episode and refuse a second
+// pass by code (`already_acked` and friends), so a retry finishes the job without
+// disturbing what committed. A COMMENT IS AN APPEND and has no such refusal: see
+// Comment, and ticket a6cc834 for the `Idempotency-Key` that would give it one.
+// Since the account rides out with the error, a caller that retries on error is
+// the normal way to reach that second annotation.
 func (s *Service) fanOut(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
 	apply func(ctx context.Context, alertID uuid.UUID) error,
@@ -380,14 +438,29 @@ func (s *Service) fanOut(
 	if s.actions == nil {
 		return FanOutResult{}, errs.Internal("member_actions_missing", errMissingDep("MemberActions"))
 	}
-	members, err := s.members.CurrentMemberAlerts(ctx, scope, groupID)
+	members, err := s.members.CurrentMemberAlerts(ctx, scope, groupID, domain.FanOutLimit)
 	if err != nil {
 		return FanOutResult{}, err
 	}
 
-	res := FanOutResult{Members: len(members)}
+	// Only a FULL candidate read can have anything behind it, so the ordinary
+	// group of forty never asks this question and never pays for the count.
+	beyond := 0
+	if len(members) >= domain.FanOutLimit {
+		total, err := s.members.CountCurrentMembers(ctx, scope, groupID)
+		if err != nil {
+			return FanOutResult{}, err
+		}
+		if total > len(members) {
+			beyond = total - len(members)
+		}
+	}
+
+	var res FanOutResult
 	seen := make(map[uuid.UUID]struct{}, len(members))
-	for _, m := range members {
+	for i, m := range members {
+		// One alert can be in the generation through more than one episode; the
+		// verb is about the SIGNAL, so it is applied once.
 		if _, dup := seen[m.AlertID]; dup {
 			continue
 		}
@@ -406,11 +479,26 @@ func (s *Service) fanOut(
 					res.SkippedCodes = map[string]int{}
 				}
 				res.SkippedCodes[code]++
+				res.Members++
 				continue
 			}
-			return FanOutResult{}, err
+			// This member and every member behind it, plus whatever the ceiling
+			// already cut off. The ones in front are committed and are reported.
+			res.Unreached = beyond + len(members) - i
+			return res, err
 		}
 		res.Applied++
+		res.Members++
+	}
+
+	res.Unreached = beyond
+	if beyond > 0 {
+		// A truncated fan-out is a normal, bounded outcome and never an error —
+		// but it is one an operator must be able to find afterwards, because the
+		// group is not finished and nothing else is going to say so.
+		s.log.WarnContext(ctx, "grouping: group fan-out stopped at the member ceiling",
+			"org_id", scope.OrgID(), "group_id", groupID,
+			"limit", domain.FanOutLimit, "reached", res.Members, "unreached", res.Unreached)
 	}
 	return res, nil
 }

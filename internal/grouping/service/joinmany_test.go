@@ -377,9 +377,15 @@ func (f *fakeMembers) SnoozeRollup(
 }
 
 func (f *fakeMembers) CurrentMemberAlerts(
-	context.Context, db.TenantScope, uuid.UUID,
+	context.Context, db.TenantScope, uuid.UUID, int,
 ) ([]repository.MemberAlert, error) {
 	return nil, nil
+}
+
+func (f *fakeMembers) CountCurrentMembers(
+	context.Context, db.TenantScope, uuid.UUID,
+) (int, error) {
+	return 0, nil
 }
 
 // fakeEvents counts the append-only timeline by event type.

@@ -300,10 +300,10 @@ func (r *CredentialRepository) Delete(ctx context.Context, s db.TenantScope, cre
 
 // The two methods below are the PLAIN-TYPED face of Create and Rotate.
 //
-// They exist because `sources/api` and `channels/api` both need to seal a
+// They exist because `sources/service` and `channels/api` both need to seal a
 // credential, and neither may name `CredentialMeta`: `api` must not import
-// `repository` (CONTEXT.md §5.1), and `sources` must not import `channels`
-// internals at all (depguard). Expressing the port in `uuid.UUID` and
+// `repository` (CONTEXT.md §5.1), a service declares its own ports (§5.3), and
+// `sources` must not import `channels` internals at all (depguard). Expressing the port in `uuid.UUID` and
 // `map[string]string` lets ONE concrete satisfy both consumer-declared ports
 // with no adapter anywhere — which is the difference between a composition root
 // that wires and a composition root that translates.

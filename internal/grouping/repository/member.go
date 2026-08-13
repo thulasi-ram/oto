@@ -378,11 +378,37 @@ func (r *MemberRepository) ListCurrentMembers(
 	return page, nextCursor(last.JoinedAt(), last.OccurrenceID(), p.Cursor.Hash, hasMore), nil
 }
 
+// memberAlertsSQL is the fan-out's candidate read, and it is BOUNDED.
+//
+// ⭐ THE `LIMIT` IS THE POINT. It carried no limit until the group verbs were
+// given a ceiling: every ack, comment, snooze and unsnooze of a generation
+// materialised the WHOLE membership and then opened one write transaction per
+// row of it, so a storm's group button was ~5 000 sequential commits inside one
+// request. The bound now arrives as SQL, where it also stops the scan, rather
+// than as a slice in the service — a service that reads everything and keeps the
+// first 500 has still paid for the storm.
+//
+// It orders OLDEST JOIN FIRST, unlike `listCurrentMembersSQL`, and that is a
+// different question rather than an inconsistency: a preview shows what arrived
+// most recently, a fan-out applies to the members that have been waiting
+// longest. The order is also what makes a truncated fan-out reproducible —
+// pressing the button twice reaches the same 500 members, not a reshuffle.
+//
+// NOTE (planner): gm_current_idx is `(org_id, group_id, joined_at DESC,
+// occurrence_id DESC) WHERE left_at IS NULL`. It carries the two equalities and
+// the partial predicate, and Postgres reads a DESC index backwards for an ASC
+// order, so the LIMIT stops the scan here too.
 const memberAlertsSQL = `
 SELECT m.alert_id, m.occurrence_id
   FROM alert_group_members m
  WHERE m.org_id = $1 AND m.group_id = $2 AND m.left_at IS NULL
- ORDER BY m.joined_at ASC`
+ ORDER BY m.joined_at ASC
+ LIMIT $3`
+
+const countCurrentMembersSQL = `
+SELECT count(*)
+  FROM alert_group_members
+ WHERE org_id = $1 AND group_id = $2 AND left_at IS NULL`
 
 // MemberAlert pairs a currently-joined alert with the episode that joined.
 type MemberAlert struct {
@@ -390,18 +416,28 @@ type MemberAlert struct {
 	OccurrenceID uuid.UUID
 }
 
-// CurrentMemberAlerts lists the CURRENTLY-JOINED members of a generation.
+// CurrentMemberAlerts lists at most `limit` CURRENTLY-JOINED members of a
+// generation, oldest join first.
 //
 // It is what the §B.8.3 group snooze fans out over: one snooze per currently
 // joined member alert. Alerts that join later are NOT snoozed — a snooze is never
 // predictive.
+//
+// ⚠️ `limit` IS NOT A PAGE SIZE and is deliberately not run through
+// `clampLimit`: the §E.1 page bounds cap at 200 because that is what an API
+// response should carry, and this is a WRITE ceiling with an argument of its own
+// (domain.FanOutLimit). A non-positive limit means the caller did not choose, and
+// gets that ceiling rather than an unbounded read.
 func (r *MemberRepository) CurrentMemberAlerts(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID, limit int,
 ) ([]MemberAlert, error) {
 	if err := requireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, memberAlertsSQL, s.OrgID(), groupID)
+	if limit <= 0 {
+		limit = domain.FanOutLimit
+	}
+	rows, err := r.db(ctx).Query(ctx, memberAlertsSQL, s.OrgID(), groupID, limit)
 	if err != nil {
 		return nil, mapErr(err, "list member alerts")
 	}
@@ -419,6 +455,28 @@ func (r *MemberRepository) CurrentMemberAlerts(
 		return nil, mapErr(err, "read member alerts")
 	}
 	return out, nil
+}
+
+// CountCurrentMembers is how many members a generation currently has.
+//
+// ⭐ It exists so that a fan-out stopped by its ceiling can say HOW MANY members
+// it did not reach, rather than only that there were more. "500 of 5 000" and
+// "500, and some others" are different sentences to the person who pressed the
+// button, and only the first one lets them judge whether the group is done.
+//
+// It is one indexed aggregate on gm_current_idx, and the fan-out only asks when
+// its candidate read came back full — a group of forty never pays for it.
+func (r *MemberRepository) CountCurrentMembers(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+) (int, error) {
+	if err := requireScope(s); err != nil {
+		return 0, err
+	}
+	var n int64
+	if err := r.db(ctx).QueryRow(ctx, countCurrentMembersSQL, s.OrgID(), groupID).Scan(&n); err != nil {
+		return 0, mapErr(err, "count current members")
+	}
+	return int(n), nil
 }
 
 const snoozeRollupSQL = `

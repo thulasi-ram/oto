@@ -102,7 +102,23 @@ func (rt *Router) ackAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if res.Applied == 0 {
+	// ⚠️ THE GATE ASKS ABOUT OPEN MEMBERS, BECAUSE THAT IS WHAT THE 412 SAYS. The
+	// contract's precondition is "a group with no open members at all", so the
+	// only evidence that settles it is the REFUSAL CODE: `no_open_occurrence` is a
+	// member whose episode has ended, and it is the one refusal that means there
+	// was nothing to acknowledge. `already_acked` is the opposite — that member is
+	// open, somebody simply got there first — and answering it with
+	// `no_open_occurrence` would be oto naming the wrong nothing.
+	//
+	// ⛔ IT IS DELIBERATELY NOT `Complete()`. Gating on reach made a 5 000-member
+	// group whose episodes have ALL ended answer 200 with group detail, which is a
+	// documented 412 quietly dropped. Reach is a different question and it is not
+	// this one: `Unreached` counts current members beyond domain.FanOutLimit, not
+	// open ones. The case that gating was reaching for — a storm whose oldest 500
+	// members are already acked and whose remaining thousands are not — is already
+	// excluded here by its `already_acked` refusals, and is excluded whether or
+	// not the fan-out hit its ceiling.
+	if res.Applied == 0 && res.SkippedCodes["no_open_occurrence"] == res.Skipped() {
 		httpx.WriteProblem(w, r, errs.Precondition("no_open_occurrence",
 			"this group has no open member occurrence to acknowledge"))
 		return

@@ -688,6 +688,68 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 	}
 }
 
+// TestAnIncompleteFanOutIsSaidToBeIncomplete, HOWEVER MANY IT APPLIED TO.
+//
+// ⛔ THE CASE THE WARNING EXISTS FOR IS THE ONE IT USED TO MISS. The partial
+// notice was gated inside `Applied > 0`, and the shape a bounded fan-out actually
+// produces after one press is the opposite: a group above `domain.FanOutLimit`
+// whose oldest 500 members are ALREADY acknowledged concludes on 500 refusals,
+// applies nothing, and has thousands of unacknowledged alerts behind the ceiling.
+// That fell through to "Already acknowledged. An acknowledgement records that
+// somebody has seen this" — told to somebody in a storm, about 4 500 alerts
+// nobody has seen. Reach is answered first now, and `Applied` only chooses the
+// sentence.
+func TestAnIncompleteFanOutIsSaidToBeIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		result   GroupAckResult
+		wantSaid []string
+	}{
+		{
+			name: "it applied to nothing because the members it reached were already acked",
+			result: GroupAckResult{
+				Members: 500, Applied: 0, Unreached: 4500,
+				SkippedCodes: map[string]int{"already_acked": 500},
+			},
+			wantSaid: []string{"4500 of its alerts were not reached", "still unacknowledged"},
+		},
+		{
+			name: "it applied to everything it reached and the ceiling cut the rest",
+			result: GroupAckResult{
+				Members: 500, Applied: 500, Unreached: 4500,
+			},
+			wantSaid: []string{"Acknowledged 500 alerts", "4500 of its alerts were not reached"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			notice := &fakeNotice{}
+			groups := &fakeGroups{
+				live:   map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
+				result: tc.result,
+			}
+			s := newService(t, alphaConversations(), &fakeActors{}, groups, nil, notice)
+
+			if err := s.Apply(context.Background(), ackArgs()); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			got := notice.only()
+			if got == "" {
+				t.Fatalf("the user was told nothing (%d messages); a fan-out that covered "+
+					"a tenth of the group must say so", len(notice.sent))
+			}
+			for _, want := range tc.wantSaid {
+				if !strings.Contains(got, want) {
+					t.Fatalf("the user was told %q, which does not contain %q", got, want)
+				}
+			}
+			if strings.Contains(got, "Already acknowledged.") {
+				t.Fatalf("the user was told %q: 'already acknowledged' is a statement about "+
+					"the whole group, and this press did not see the whole group", got)
+			}
+		})
+	}
+}
+
 // TestNothingOtoSaysImpliesOwnership.
 //
 // ⛔ SCOPE-BOUNDARY §5.1, ASSERTED ON THE COPY. An acknowledgement is a fact
@@ -701,6 +763,9 @@ func TestNothingOtoSaysImpliesOwnership(t *testing.T) {
 		nothingAppliedText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"already_acked": 2}}),
 		nothingAppliedText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"no_open_occurrence": 2}}),
 		nothingAppliedText(GroupAckResult{Members: 4, SkippedCodes: map[string]int{"already_acked": 1, "no_open_occurrence": 3}}),
+		partialAckText(GroupAckResult{Members: 500, Applied: 500, Unreached: 4500}),
+		partialAckText(GroupAckResult{Members: 500, Applied: 0, Unreached: 4500,
+			SkippedCodes: map[string]int{"already_acked": 500}}),
 	}
 
 	// Collect the ephemeral copy the two remaining paths emit, too.

@@ -222,8 +222,21 @@ func (s *Service) Comment(
 			Actor:   actor,
 			Summary: commentSummary(actor.Label(), body),
 			Payload: map[string]any{"body": body},
-			// Two comments a second apart are two facts; the key exists so a
-			// retried request is one.
+			// ⚠️ THIS KEY DOES NOT MAKE A COMMENT RETRY-SAFE, AND NOTHING HERE
+			// DOES. It is minted from the WALL CLOCK, so a retry — a redelivered
+			// job, a re-pressed button, a group fan-out replayed after a partial
+			// failure — arrives with a different `now` and therefore a different
+			// key, and `alert_event_keys` sees no repeat. A retried comment
+			// appends a SECOND annotation. The key's only real effect is to give
+			// the append a §C.8 claim of its own so that two comments minted
+			// inside the same nanosecond cannot collide.
+			//
+			// ⛔ IT IS DELIBERATELY NOT A HASH OF THE BODY. Two people who type
+			// "restarted it" ten minutes apart wrote two facts, and a content key
+			// would silently discard the second — losing a human's words is worse
+			// than keeping one too many. Retry safety belongs to the caller's
+			// `Idempotency-Key`, which is what open ticket a6cc834 is for; until
+			// it lands, a retried comment is a duplicated comment.
 			DedupeKey: "comment:" + alert.ID().String() + ":" + now.Format(time.RFC3339Nano),
 		}
 		if hasOpen {
