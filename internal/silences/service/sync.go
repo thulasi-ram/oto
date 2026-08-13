@@ -37,7 +37,7 @@ const MaxMirroredSilences = 5_000
 // `sources/domain.GettableSilence` — `silences` may not import another domain's
 // internals (depguard, silences-must-not-reach-into-other-domains), and the
 // composition root supplies the adapter. That is the same shape
-// `sources/api.CredentialWriter` uses for the same reason, and the signature IS
+// `sources/service.CredentialSealer` uses for the same reason, and the signature IS
 // the whole contract.
 //
 // It carries no `json` tags and is not a DTO: it never crosses the wire.

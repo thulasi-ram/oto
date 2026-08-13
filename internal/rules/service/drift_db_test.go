@@ -201,13 +201,6 @@ func TestTheSameAlertFiresTwiceAcrossARuleEdit(t *testing.T) {
 	assert.True(t, diff.ForChanged)
 	assert.Equal(t, -240.0, diff.ForDelta)
 
-	// The question the alert card asks: has the rule changed since THIS fired?
-	since, ok, err := r.svc.DiffSince(r.h.Ctx, r.scope, key, before.Snapshot.Fingerprint)
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, before.Snapshot.Fingerprint, since.From.Fingerprint)
-	assert.Equal(t, after.Snapshot.Fingerprint, since.To.Fingerprint)
-
 	// And the paginated read the list endpoint uses, newest first.
 	page, err := r.svc.ListSnapshots(r.h.Ctx, r.scope, key, db.Keyset{Limit: 10})
 	require.NoError(t, err)
@@ -807,10 +800,6 @@ func TestTheRuleKeySurvivesPrometheusBecomingReachable(t *testing.T) {
 	assert.Equal(t, 2, r.rowCount(t), "three fires, two captures")
 
 	// And the alert card says nothing, because there is nothing to say.
-	_, ok, err := r.svc.DiffSince(r.h.Ctx, r.scope, viaAPI.Snapshot.Key, viaGenerator.Snapshot.Fingerprint)
-	require.NoError(t, err)
-	assert.False(t, ok,
-		"'this rule has changed since it fired' must not be shown for a rule that has not changed")
 	assert.NotContains(t, r.events.types(), service.EventDefinitionChanged,
 		"three fires, two recovery paths, zero edits, zero 'the rule changed' replies")
 
@@ -831,13 +820,12 @@ func TestTheRuleKeySurvivesPrometheusBecomingReachable(t *testing.T) {
 	require.True(t, found)
 	assert.Equal(t, viaAPI.Snapshot.Fingerprint, ev.Payload["previous_fingerprint"])
 
-	// The alert card's question, asked from the capture the FIRST fire was bound
-	// to: across a change of recovery path AND an edit, the edit is what carries
-	// the claim, and `OriginChanged` is on the diff so the reader knows the `for:`
-	// difference is oto learning rather than somebody editing.
-	since, ok, err := r.svc.DiffSince(r.h.Ctx, r.scope, viaAPI.Snapshot.Key, viaGenerator.Snapshot.Fingerprint)
-	require.NoError(t, err)
-	require.True(t, ok)
+	// The same question the rule tab asks, asked of the two captures the fires
+	// were bound to: across a change of recovery path AND an edit, the edit is
+	// what carries the claim, and `OriginChanged` is on the diff so the reader
+	// knows the `for:` difference is oto learning rather than somebody editing.
+	since := domain.Compare(viaGenerator.Snapshot, edited.Snapshot)
+	assert.True(t, domain.Drifted(viaGenerator.Snapshot, edited.Snapshot))
 	assert.Equal(t, viaGenerator.Snapshot.Fingerprint, since.From.Fingerprint)
 	assert.Equal(t, edited.Snapshot.Fingerprint, since.To.Fingerprint)
 	assert.True(t, since.ExprChanged)

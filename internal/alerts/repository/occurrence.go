@@ -270,6 +270,34 @@ func (r *OccurrenceRepository) GetLatestByAlert(
 		s.OrgID(), alertID)
 }
 
+// PreviousWithRuleSnapshot reads the newest episode of an Alert BEFORE beforeSeq
+// that has a rule snapshot bound to it — the episode "has the rule changed since
+// last time?" is answered against.
+//
+// ⭐ THE ORDER IS `seq`, NOT `started_at`. seq is the episode ordinal the state
+// machine mints and occ_seq_uniq makes unique per alert, so "the one before this
+// one" is a fact about the row rather than a comparison of two timestamps that a
+// backfill or a clock skew could tie. It rides occ_alert_idx
+// (org_id, alert_id, seq DESC) and reads exactly one row.
+//
+// ⛔ EPISODES WITH NO SNAPSHOT ARE STEPPED OVER, NOT STOPPED AT. An occurrence
+// that predates rule capture, or one whose capture never ran, holds no rule to
+// compare — stopping there would report "nothing changed" for the one question
+// this read exists to answer. It is the same choice `rules` makes with
+// `LatestDefinition`, taken one table over.
+func (r *OccurrenceRepository) PreviousWithRuleSnapshot(
+	ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int,
+) (domain.Occurrence, bool, error) {
+	return r.optional(ctx, s,
+		`SELECT `+occurrenceColumns+`
+		   FROM alert_occurrences
+		  WHERE org_id = $1 AND alert_id = $2 AND seq < $3
+		    AND rule_snapshot_id IS NOT NULL
+		  ORDER BY seq DESC
+		  LIMIT 1`,
+		s.OrgID(), alertID, beforeSeq)
+}
+
 func (r *OccurrenceRepository) optional(
 	ctx context.Context, s db.TenantScope, sql string, args ...any,
 ) (domain.Occurrence, bool, error) {

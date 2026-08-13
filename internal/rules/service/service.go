@@ -548,35 +548,6 @@ func (s *Service) DiffVersions(ctx context.Context, scope db.TenantScope, key do
 	return d, nil
 }
 
-// DiffSince compares the version an occurrence was bound to against the newest
-// one, which is what the alert card needs to say "this rule has changed since
-// this alert last fired".
-//
-// The bool is false when there is nothing to compare: no history, the bound
-// fingerprint is the newest one, or the difference is not an EDIT.
-//
-// ⛔ THE NEWEST VERSION IS THE NEWEST DEFINITION, and the difference has to
-// satisfy domain.Drifted before it is offered as a change. The alert card renders
-// this as "the rule has changed since this alert fired", which is a sentence
-// about a person editing a rule; an outage that stored an empty capture after the
-// alert fired, or a fire that recovered through a different path, is neither, and
-// rendering it as one turns the one panel the product exists for into noise.
-func (s *Service) DiffSince(ctx context.Context, scope db.TenantScope, key domain.Key, boundFingerprint string) (domain.Diff, bool, error) {
-	h, err := s.History(ctx, scope, key)
-	if err != nil {
-		return domain.Diff{}, false, err
-	}
-	bound, ok := h.ByFingerprint(boundFingerprint)
-	if !ok {
-		return domain.Diff{}, false, nil
-	}
-	latest, ok := h.LatestDefinition()
-	if !ok || latest.Number == bound.Number || !domain.Drifted(bound.Snapshot, latest.Snapshot) {
-		return domain.Diff{}, false, nil
-	}
-	return domain.Compare(bound.Snapshot, latest.Snapshot), true, nil
-}
-
 // DiffSnapshots compares two snapshots by id, oldest capture first.
 func (s *Service) DiffSnapshots(ctx context.Context, scope db.TenantScope, a, b uuid.UUID) (domain.Diff, error) {
 	first, err := s.repo.Get(ctx, scope, a)

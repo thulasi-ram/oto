@@ -66,6 +66,12 @@ type OccurrenceRepository interface {
 	GetOpenByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Occurrence, bool, error)
 	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Occurrence, error)
 	GetLatestByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Occurrence, bool, error)
+	// PreviousWithRuleSnapshot is "the last time this alert fired with a rule oto
+	// could see": the newest episode before beforeSeq that carries a rule
+	// snapshot. It is what rule drift between two episodes is measured from, and
+	// it cannot be assembled from the reads above — GetLatestByAlert answers about
+	// the CURRENT episode and ListByAlert pages by started_at.
+	PreviousWithRuleSnapshot(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (domain.Occurrence, bool, error)
 	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) ([]domain.Occurrence, db.Cursor, error)
 	Observe(ctx context.Context, s db.TenantScope, id uuid.UUID, o domain.Observation) error
 	Transition(ctx context.Context, s db.TenantScope, id uuid.UUID, t domain.Transition) error

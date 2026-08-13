@@ -270,6 +270,31 @@ func (s *Service) GetOccurrence(
 	return s.occurrences.GetByID(ctx, scope, occurrenceID)
 }
 
+// PreviousOccurrenceWithRule resolves the episode that fired BEFORE the given
+// one and had a rule snapshot bound to it.
+//
+// ⭐ IT EXISTS SO THAT DRIFT CAN BE MEASURED BETWEEN TWO EPISODES. "What changed
+// about this rule since the last time this alert fired" is a question about two
+// FIRES, and the only reads this service had — the current episode and the
+// newest captured version of the rule — answer neither half of it. Comparing an
+// episode against the newest version upstream answers a different question, and
+// answers it `null` in the case that matters: an alert that fired under a text
+// somebody had just edited is an alert whose bound snapshot IS the newest one.
+//
+// The episode is addressed by `seq`, the ordinal the state machine mints, and an
+// episode with no snapshot is stepped over rather than stopped at — see
+// `repository.PreviousWithRuleSnapshot`, which is where both choices are argued.
+func (s *Service) PreviousOccurrenceWithRule(
+	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, beforeSeq int,
+) (domain.Occurrence, bool, error) {
+	// The first episode of an alert has no predecessor, and asking the database
+	// to prove that on every rule panel read is a query with a known answer.
+	if beforeSeq <= 1 {
+		return domain.Occurrence{}, false, nil
+	}
+	return s.occurrences.PreviousWithRuleSnapshot(ctx, scope, alertID, beforeSeq)
+}
+
 // TimelineResult is one page of the append-only timeline.
 type TimelineResult struct {
 	Events []domain.Event

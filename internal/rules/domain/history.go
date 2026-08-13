@@ -2,19 +2,20 @@ package domain
 
 import "sort"
 
-// Version is one entry of a rule's edit history: a snapshot plus the ordinal
-// that makes it addressable as "v3 of KubePodCrashLooping".
+// Version is one entry of a rule's edit history: a snapshot at the position
+// it holds within History.Versions, oldest first.
 //
-// The ordinal is DERIVED, never stored. rule_snapshots is deduplicated by
-// content, so the rows for one rule key already are its distinct texts in
-// capture order; numbering them at read time means the number can never drift
-// out of step with the rows, and a rule reverted to an earlier text reuses the
-// earlier row rather than minting a fake new version.
+// A version's ordinal — "v3 of KubePodCrashLooping" — is DERIVED from that
+// position and never stored on the Version itself: rule_snapshots is
+// deduplicated by content, so the rows for one rule key already are its
+// distinct texts in capture order, and a stored ordinal is exactly the kind of
+// denormalisation that can drift out of step with the rows it numbers. At
+// answers "what is version N" by indexing History.Versions; nothing needs the
+// reverse question answered by a field.
 type Version struct {
-	// Number is 1-based, oldest first.
-	Number   int
 	Snapshot Snapshot
-	// SupersededBy is the Number of the next version, or 0 for the newest.
+	// SupersededBy is the 1-based position of the next version, or 0 for the
+	// newest.
 	SupersededBy int
 }
 
@@ -130,7 +131,7 @@ func NewHistory(key Key, snaps []Snapshot) History {
 
 	versions := make([]Version, 0, len(ordered))
 	for i, s := range ordered {
-		v := Version{Number: i + 1, Snapshot: s}
+		v := Version{Snapshot: s}
 		if i+1 < len(ordered) {
 			v.SupersededBy = i + 2
 		}

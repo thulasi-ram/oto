@@ -31,15 +31,12 @@ func TestNewHistoryNumbersOldestFirst(t *testing.T) {
 	require.Equal(t, 3, h.Len())
 	assert.Equal(t, validKey(), h.Key)
 
-	assert.Equal(t, 1, h.Versions[0].Number)
 	assert.Equal(t, "a > 1", h.Versions[0].Snapshot.Expr)
 	assert.Equal(t, 2, h.Versions[0].SupersededBy)
 
-	assert.Equal(t, 2, h.Versions[1].Number)
 	assert.Equal(t, "a > 2", h.Versions[1].Snapshot.Expr)
 	assert.Equal(t, 3, h.Versions[1].SupersededBy)
 
-	assert.Equal(t, 3, h.Versions[2].Number)
 	assert.Equal(t, "a > 3", h.Versions[2].Snapshot.Expr)
 	assert.Equal(t, 0, h.Versions[2].SupersededBy, "the newest version is superseded by nothing")
 }
@@ -107,7 +104,6 @@ func TestHistoryLatest(t *testing.T) {
 
 	v, ok := h.Latest()
 	require.True(t, ok)
-	assert.Equal(t, 2, v.Number)
 	assert.Equal(t, "a > 2", v.Snapshot.Expr)
 }
 
@@ -140,7 +136,6 @@ func TestHistoryAt(t *testing.T) {
 			v, ok := h.At(tc.number)
 			assert.Equal(t, tc.ok, ok)
 			if tc.ok {
-				assert.Equal(t, tc.number, v.Number)
 				assert.Equal(t, tc.expr, v.Snapshot.Expr)
 			} else {
 				assert.Equal(t, domain.Version{}, v)
@@ -160,11 +155,11 @@ func TestHistoryByFingerprint(t *testing.T) {
 
 	v, ok := h.ByFingerprint(s1.Fingerprint)
 	require.True(t, ok)
-	assert.Equal(t, 1, v.Number)
+	assert.Equal(t, s1.Fingerprint, v.Snapshot.Fingerprint)
 
 	v, ok = h.ByFingerprint(s2.Fingerprint)
 	require.True(t, ok)
-	assert.Equal(t, 2, v.Number)
+	assert.Equal(t, s2.Fingerprint, v.Snapshot.Fingerprint)
 
 	_, ok = h.ByFingerprint("deadbeef")
 	assert.False(t, ok)
@@ -252,9 +247,10 @@ func TestHistoryDiffVersions(t *testing.T) {
 	})
 }
 
-// TestVersionNumberingSurvivesDeduplication: rule_snapshots is deduplicated by
-// content, so the rows for one key already are its distinct texts. Numbering
-// them at read time is what keeps the number in step with the rows.
+// TestVersionNumberingIsContiguous: rule_snapshots is deduplicated by content,
+// so the rows for one key already are its distinct texts, and At addresses
+// them by their 1-based position in History.Versions. SupersededBy points at
+// that same position for every version but the newest.
 func TestVersionNumberingIsContiguous(t *testing.T) {
 	t.Parallel()
 
@@ -266,13 +262,13 @@ func TestVersionNumberingIsContiguous(t *testing.T) {
 
 	require.Equal(t, 10, h.Len())
 	for i, v := range h.Versions {
-		assert.Equal(t, i+1, v.Number)
-		if i+1 < h.Len() {
-			assert.Equal(t, i+2, v.SupersededBy)
+		number := i + 1
+		if number < h.Len() {
+			assert.Equal(t, number+1, v.SupersededBy)
 		} else {
 			assert.Equal(t, 0, v.SupersededBy)
 		}
-		got, ok := h.At(v.Number)
+		got, ok := h.At(number)
 		require.True(t, ok)
 		assert.Equal(t, v, got)
 	}
@@ -298,13 +294,12 @@ func TestHistoryLatestDefinitionStepsOverAnOutage(t *testing.T) {
 
 	newest, ok := h.Latest()
 	require.True(t, ok)
-	assert.Equal(t, 3, newest.Number)
+	assert.Equal(t, outage.Fingerprint, newest.Snapshot.Fingerprint)
 	assert.False(t, newest.Snapshot.Available())
 
 	def, ok := h.LatestDefinition()
 	require.True(t, ok)
-	assert.Equal(t, 2, def.Number, "the newest capture that actually holds a rule")
-	assert.Equal(t, real2.Fingerprint, def.Snapshot.Fingerprint)
+	assert.Equal(t, real2.Fingerprint, def.Snapshot.Fingerprint, "the newest capture that actually holds a rule")
 
 	// ⛔ And therefore the alert card does not claim an edit against an empty
 	// expression: the occurrence bound to the newest real text has not drifted,

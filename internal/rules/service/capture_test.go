@@ -550,17 +550,6 @@ func TestCaptureDetectsDriftAcrossARuleEdit(t *testing.T) {
 	assert.True(t, diff.ForChanged)
 	assert.Equal(t, -240.0, diff.ForDelta, "`for` went from 300s to 60s")
 
-	// And the same question asked the way the alert card asks it.
-	since, ok, err := r.svc.DiffSince(ctx, r.scope, after.Snapshot.Key, before.Snapshot.Fingerprint)
-	require.NoError(t, err)
-	require.True(t, ok, "there is something to say: the rule has changed since that fire")
-	assert.Equal(t, before.Snapshot.Fingerprint, since.From.Fingerprint)
-	assert.Equal(t, after.Snapshot.Fingerprint, since.To.Fingerprint)
-
-	// Nothing to say when the bound fingerprint IS the newest.
-	_, ok, err = r.svc.DiffSince(ctx, r.scope, after.Snapshot.Key, after.Snapshot.Fingerprint)
-	require.NoError(t, err)
-	assert.False(t, ok)
 }
 
 // TestCaptureNarratesDrift: SPEC §D.4.1 gives drift its own timeline type, and

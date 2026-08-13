@@ -30,7 +30,6 @@ type RuleService interface {
 	// is the paginated list. They are different questions — see ListSnapshots.
 	History(ctx context.Context, s db.TenantScope, key domain.Key) (domain.History, error)
 	ListSnapshots(ctx context.Context, s db.TenantScope, key domain.Key, p db.Keyset) (service.SnapshotPage, error)
-	DiffSince(ctx context.Context, s db.TenantScope, key domain.Key, boundFingerprint string) (domain.Diff, bool, error)
 }
 
 // AlertReader is the cross-domain port that resolves an alert or an occurrence to
@@ -41,6 +40,17 @@ type RuleService interface {
 type AlertReader interface {
 	Get(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (alerts.AlertDetail, error)
 	GetOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (alertdomain.Occurrence, error)
+	// PreviousOccurrenceWithRule is the episode BEFORE this one that had a rule
+	// bound to it — the OLDER side of `RuleHistoryDTO.change`.
+	//
+	// ⛔ IT IS THE READ THIS PORT WAS MISSING. With only the current and latest
+	// episodes reachable, the only diff this package could compute was "this
+	// episode's text against the newest text upstream" — which names this
+	// episode's own row as `previous_*` and goes null exactly when a rule was
+	// edited and then fired. An episode's predecessor is a fact about
+	// `alert_occurrences`, so it is asked for here rather than guessed from the
+	// snapshot history, which is per RULE KEY and knows nothing about episodes.
+	PreviousOccurrenceWithRule(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (alertdomain.Occurrence, bool, error)
 }
 
 // Compile-time proof that the services satisfy the ports this layer declares.

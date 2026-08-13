@@ -90,10 +90,6 @@ func (f *fakeRules) ListSnapshots(context.Context, db.TenantScope, domain.Key, d
 	return service.SnapshotPage{}, nil
 }
 
-func (f *fakeRules) DiffSince(context.Context, db.TenantScope, domain.Key, string) (domain.Diff, bool, error) {
-	return domain.Diff{}, false, nil
-}
-
 // fakeAlerts satisfies the cross-domain port. The batch endpoint must never
 // touch it — it takes snapshot ids, not alert ids — so every method fails loudly
 // if it is reached.
@@ -107,6 +103,13 @@ func (f fakeAlerts) Get(context.Context, db.TenantScope, uuid.UUID) (alerts.Aler
 func (f fakeAlerts) GetOccurrence(context.Context, db.TenantScope, uuid.UUID) (alertdomain.Occurrence, error) {
 	f.t.Fatal("the snapshot batch read reached into alerts; it takes snapshot ids and nothing else")
 	return alertdomain.Occurrence{}, nil
+}
+
+func (f fakeAlerts) PreviousOccurrenceWithRule(
+	context.Context, db.TenantScope, uuid.UUID, int,
+) (alertdomain.Occurrence, bool, error) {
+	f.t.Fatal("the snapshot batch read reached into alerts; it takes snapshot ids and nothing else")
+	return alertdomain.Occurrence{}, false, nil
 }
 
 /* -------------------------------------------------------------------------- */

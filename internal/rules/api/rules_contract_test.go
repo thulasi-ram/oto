@@ -71,11 +71,19 @@ var (
 	ruleContractClusterID = uuid.MustParse("0198f3c2-2222-7222-8222-222222222222")
 	ruleContractGroupID   = uuid.MustParse("0198f3c2-3333-7333-8333-333333333333")
 
-	// The three episodes: one bound to a real capture, one bound to an
-	// `unavailable` capture, one bound to nothing at all.
-	ruleContractOccurrenceID      = uuid.MustParse("0198f3c3-1111-7111-8111-111111111111")
-	ruleContractBlindOccurrenceID = uuid.MustParse("0198f3c3-2222-7222-8222-222222222222")
-	ruleContractBareOccurrenceID  = uuid.MustParse("0198f3c3-3333-7333-8333-333333333333")
+	// The four episodes of the alert under test, oldest first: one bound to
+	// nothing at all (seq 1), one bound to an `unavailable` capture (seq 2), the
+	// PREVIOUS episode bound to the old text (seq 3), and the episode under test
+	// (seq 4).
+	//
+	// ⭐ THE PREDECESSOR IS PART OF THE FIXTURE BECAUSE IT IS PART OF THE ANSWER.
+	// `change` is the diff between what the previous episode fired under and what
+	// this one fired under, so a world with one episode in it cannot tell a
+	// correct diff from a diff against the newest text upstream.
+	ruleContractOccurrenceID         = uuid.MustParse("0198f3c3-1111-7111-8111-111111111111")
+	ruleContractBlindOccurrenceID    = uuid.MustParse("0198f3c3-2222-7222-8222-222222222222")
+	ruleContractBareOccurrenceID     = uuid.MustParse("0198f3c3-3333-7333-8333-333333333333")
+	ruleContractPreviousOccurrenceID = uuid.MustParse("0198f3c3-4444-7444-8444-444444444444")
 )
 
 const (
@@ -224,7 +232,7 @@ func ruleContractAlertFrom(t *testing.T, generatorURL string) alertdomain.Alert 
 		FirstSeenAt:         ruleContractEpoch,
 		LastSeenAt:          ruleContractEpoch.Add(5 * time.Minute),
 		LastStateChangeAt:   ruleContractEpoch,
-		TotalOccurrences:    3,
+		TotalOccurrences:    4,
 	})
 	if err != nil {
 		t.Fatalf("build the alert: %v", err)
@@ -279,7 +287,6 @@ type stubRuleReads struct {
 	getCalls     int
 	getIDs       []uuid.UUID
 	historyCalls int
-	diffCalls    int
 	getErr       error
 }
 
@@ -336,28 +343,6 @@ func (s *stubRuleReads) ListSnapshots(
 	return service.SnapshotPage{}, nil
 }
 
-// DiffSince mirrors `service.Service.DiffSince` exactly: locate the bound
-// version by content address, and compare it with the newest one. A double that
-// invented its own answer here would be testing the double.
-func (s *stubRuleReads) DiffSince(
-	ctx context.Context, scope db.TenantScope, key domain.Key, boundFingerprint string,
-) (domain.Diff, bool, error) {
-	s.diffCalls++
-	h, err := s.History(ctx, scope, key)
-	if err != nil {
-		return domain.Diff{}, false, err
-	}
-	bound, ok := h.ByFingerprint(boundFingerprint)
-	if !ok {
-		return domain.Diff{}, false, nil
-	}
-	latest, ok := h.Latest()
-	if !ok || latest.Number == bound.Number {
-		return domain.Diff{}, false, nil
-	}
-	return domain.Compare(bound.Snapshot, latest.Snapshot), true, nil
-}
-
 // stubAlertReads is the cross-domain port. It owns one alert and a handful of
 // episodes and, like the repository behind it, 404s everything else.
 type stubAlertReads struct {
@@ -366,6 +351,7 @@ type stubAlertReads struct {
 
 	alertCalls int
 	occCalls   int
+	prevCalls  int
 }
 
 func (s *stubAlertReads) Get(
@@ -389,6 +375,34 @@ func (s *stubAlertReads) GetOccurrence(
 	return occ, nil
 }
 
+// PreviousOccurrenceWithRule mirrors `repository.PreviousWithRuleSnapshot`
+// predicate for predicate — same alert, `seq` strictly lower, a rule snapshot
+// bound, highest `seq` wins — because the whole point of the read is WHICH
+// episode it picks. A double that returned "the one the test meant" would prove
+// the handler asked a question, not that the answer is the predecessor.
+func (s *stubAlertReads) PreviousOccurrenceWithRule(
+	_ context.Context, _ db.TenantScope, alertID uuid.UUID, beforeSeq int,
+) (alertdomain.Occurrence, bool, error) {
+	s.prevCalls++
+
+	var (
+		best  alertdomain.Occurrence
+		found bool
+	)
+	for _, occ := range s.occs {
+		if occ.AlertID() != alertID || occ.Seq() >= beforeSeq {
+			continue
+		}
+		if occ.RuleSnapshotID() == uuid.Nil {
+			continue
+		}
+		if !found || occ.Seq() > best.Seq() {
+			best, found = occ, true
+		}
+	}
+	return best, found, nil
+}
+
 /* -------------------------------------------------------------------------- */
 /* Harness                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -405,12 +419,15 @@ type ruleContractFixture struct {
 
 // newRuleContractFixture builds the world every test here reads from:
 //
-//	the rule was captured at the epoch, the episode under test fired under THAT
-//	text, and three days later somebody doubled the threshold.
+//	the rule was captured at the epoch, the previous episode AND the episode
+//	under test both fired under THAT text, and three days later — after both
+//	fires — somebody doubled the threshold.
 //
 // So the alert's current occurrence is bound to the OLDER of two versions, which
 // is the only arrangement in which "the rule as it was when this fired" and "the
-// rule as it is now" can be told apart at all.
+// rule as it is now" can be told apart at all. `change` is null in this world and
+// SHOULD be: nothing moved between the two fires, and the later edit is a fact
+// `versions` carries, not a drift either episode experienced.
 //
 // The clock is the REAL one on purpose: `meta.elapsed_ms` is derived from
 // `time.Since(started)` and a fake epoch would make every success body report an
@@ -457,7 +474,7 @@ func newRuleContractFixtureFor(
 		},
 	}
 
-	current := ruleContractOccurrence(t, ruleContractOccurrenceID, 3, boundSnapshot)
+	current := ruleContractOccurrence(t, ruleContractOccurrenceID, 4, boundSnapshot)
 	reader := &stubAlertReads{
 		detail: alerts.AlertDetail{
 			Alert:             ruleContractAlertFrom(t, generatorURL),
@@ -466,6 +483,10 @@ func newRuleContractFixtureFor(
 		},
 		occs: map[uuid.UUID]alertdomain.Occurrence{
 			ruleContractOccurrenceID: current,
+			// The episode BEFORE the one under test. It fired under the old
+			// text, which is the text `change` must measure from.
+			ruleContractPreviousOccurrenceID: ruleContractOccurrence(
+				t, ruleContractPreviousOccurrenceID, 3, ruleContractOldSnapshotID),
 			ruleContractBlindOccurrenceID: ruleContractOccurrence(
 				t, ruleContractBlindOccurrenceID, 2, ruleContractBlindSnapshotID),
 			ruleContractBareOccurrenceID: ruleContractOccurrence(
@@ -681,11 +702,13 @@ func TestGetAlertRuleHistoryAnswersTheHistoryShapeTheContractDeclares(t *testing
 		t.Fatalf("rule_key = %v, want the (source, file, group, name) identity of the bound snapshot", key)
 	}
 
-	// The definition did move between the two captures, so a diff is on offer.
-	// WHICH two snapshots it compares is pinned separately, in
-	// TestBUG_TheRuleChangeIsDiffedAgainstTheNewestVersionRatherThanThePreviousEpisode.
-	if data["change"] == nil {
-		t.Fatalf("change is null although the rule text changed between versions: %s", resp)
+	// ⭐ `change` IS NULL, AND THAT IS THE ANSWER. Both episodes fired under the
+	// old text; the newer version was captured after both of them. `change` is
+	// the diff between two FIRES, so an edit neither fire experienced is not one
+	// — it is in `versions`, where the operator can see it dated.
+	if raw, present := data["change"]; !present || raw != nil {
+		t.Fatalf("change = %v, want null — the rule did not move between the two episodes, "+
+			"it moved after both of them: %s", raw, resp)
 	}
 	if f.rules.historyCalls == 0 {
 		t.Fatal("the history was never read")
@@ -766,8 +789,9 @@ func TestAnAlertWhoseGeneratorURLCarriesNoExpressionIsNotAValidationFailure(t *t
 		t.Fatalf("the rule store was asked for the history of an unaddressable key %d time(s); "+
 			"that read is the 422 this test exists to prevent", f.rules.historyCalls)
 	}
-	if f.rules.diffCalls != 0 {
-		t.Fatalf("a diff was computed %d time(s) against a snapshot that does not exist", f.rules.diffCalls)
+	if f.reader.prevCalls != 0 {
+		t.Fatalf("the previous episode was looked up %d time(s) for an episode with no snapshot of "+
+			"its own; there is nothing for its predecessor to be compared against", f.reader.prevCalls)
 	}
 
 	data, ok := resp.JSON(t)["data"].(map[string]any)
@@ -1085,39 +1109,37 @@ func TestTheDeclaredRuleReadOperationsAreTheOnesThisPackageServes(t *testing.T) 
 }
 
 /* -------------------------------------------------------------------------- */
-/* Divergences, pinned rather than papered over                               */
+/* The diff is between two fires                                              */
 /* -------------------------------------------------------------------------- */
 
-// ⛔ TestBUG_TheRuleChangeIsDiffedAgainstTheNewestVersionRatherThanThePreviousEpisode.
+// ⭐⭐ TestTheRuleChangeIsDiffedAgainstThePreviousEpisodeAndNotTheNewestVersion.
 //
 // The contract defines `RuleChangeDTO` as "a structured diff between the rule
 // snapshot bound to this occurrence and the one bound to the PREVIOUS occurrence
 // of the same RuleKey", and `RuleHistoryDTO.change` as "the diff against the
 // previous occurrence's snapshot, when the definition changed". `dto.go` repeats
-// that definition word for word.
+// that definition word for word, and now so does the handler.
 //
-// The handler computes something else: `DiffSince(bound.Fingerprint)`, which is
-// `Compare(this episode's snapshot, the NEWEST version in the history)`. Two
-// consequences, both wrong on the wire:
+// It used to compute a `DiffSince(bound.Fingerprint)` — `Compare(this episode's
+// snapshot, the NEWEST version in the history)`, a service method deleted once
+// this handler stopped calling it — which was wrong on the wire twice over:
 //
 //   - `previous_snapshot_id`, `previous_fingerprint`, `previous_captured_at` and
-//     `previous_expr` describe THIS episode's own snapshot — the same row the
-//     response already returned as `current` — and `new_expr` is a text this
+//     `previous_expr` described THIS episode's own snapshot, the same row the
+//     response already returned as `current`, and `new_expr` was a text this
 //     episode never fired under;
-//   - in the case the contract is actually about (the rule was edited BEFORE
-//     this episode fired, so the bound snapshot is the newest one), `DiffSince`
-//     finds `latest.Number == bound.Number` and returns changed=false, so
-//     `change` is null exactly when the contract says it should be populated.
+//   - in the case the panel exists for — the rule was edited BEFORE this episode
+//     fired, so the bound snapshot IS the newest one — the two sides of the
+//     compare were identical and `change` came back null exactly when an
+//     operator asking "did somebody change this before it fired?" needed it
+//     populated.
 //
-// That second case is what this test drives. It is skipped rather than inverted
-// because the fix belongs in production code, and it is not a one-liner: the
-// `AlertReader` port this package declares exposes only `CurrentOccurrence` and
-// `LatestOccurrence`, so the previous occurrence's snapshot is not reachable from
-// here at all. Either the port grows a way to ask for it, or the contract is
-// amended to describe drift-since-this-episode — but the two must be made to
-// agree, and today they do not.
-func TestBUG_TheRuleChangeIsDiffedAgainstTheNewestVersionRatherThanThePreviousEpisode(t *testing.T) {
-	t.Skip("BUG: getAlertRuleHistory builds `change` from DiffSince(bound.Fingerprint) = Compare(this episode's snapshot, the newest version upstream) (rules/api/handlers.go getAlertRuleHistory); the contract's RuleChangeDTO is the diff between the PREVIOUS occurrence's snapshot and this one, so `previous_*` names this episode's own row and an episode that fired under the newest text reports `change: null` instead of the edit that preceded it. The AlertReader port cannot reach the previous occurrence, so the fix is a port change, not a handler tweak.")
+// That second case is what this test drives, which is why it is the arrangement
+// worth spending a fixture on: this episode fired under the new text and the one
+// before it under the old, so the ONLY diff a correct implementation can produce
+// is (old → new), and the old implementation produced nothing at all.
+func TestTheRuleChangeIsDiffedAgainstThePreviousEpisodeAndNotTheNewestVersion(t *testing.T) {
+	t.Parallel()
 
 	// This episode fired under the NEW text; the previous episode fired under the
 	// old one. The contract wants change = (old -> new).
@@ -1135,8 +1157,84 @@ func TestBUG_TheRuleChangeIsDiffedAgainstTheNewestVersionRatherThanThePreviousEp
 		t.Fatalf("previous_snapshot_id = %v, want the PREVIOUS episode's snapshot %s",
 			got, ruleContractOldSnapshotID)
 	}
+	if got := change["previous_expr"]; got != ruleContractOldExpr {
+		t.Fatalf("previous_expr = %v, want the text the previous episode fired under", got)
+	}
 	if got := change["new_expr"]; got != ruleContractNewExpr {
 		t.Fatalf("new_expr = %v, want the text this episode fired under", got)
+	}
+	if got := change["expr_changed"]; got != true {
+		t.Fatalf("expr_changed = %v, want true — the threshold moved between the two fires", got)
+	}
+
+	// ⛔ The predecessor is the episode's, not the snapshot list's. The blind
+	// episode (seq 2) and the episode with nothing bound (seq 1) are both older
+	// than the one this diff came from; picking either would have produced a
+	// different `previous_snapshot_id` or none at all.
+	if f.reader.prevCalls != 1 {
+		t.Fatalf("the previous episode was asked for %d time(s), want exactly 1", f.reader.prevCalls)
+	}
+}
+
+// TestTheFirstEpisodeOfAnAlertHasNoRuleChangeToShow.
+//
+// The promise: an alert firing for the first time reports `change: null` rather
+// than a diff of its own snapshot against itself. There is no previous fire, so
+// there is nothing that changed BETWEEN fires.
+//
+// What broke when it did not hold: `previous_*` naming the row the response
+// already returned as `current`, which reads as "this rule changed" on the panel
+// whose only job is to say whether it did.
+func TestTheFirstEpisodeOfAnAlertHasNoRuleChangeToShow(t *testing.T) {
+	t.Parallel()
+
+	f := newRuleContractFixtureBoundTo(t, ruleContractNewSnapshotID)
+	// The alert's whole history is this one episode, and it is seq 1.
+	only := ruleContractOccurrence(t, ruleContractOccurrenceID, 1, ruleContractNewSnapshotID)
+	f.reader.detail.CurrentOccurrence = &only
+	f.reader.detail.LatestOccurrence = &only
+	f.reader.occs = map[uuid.UUID]alertdomain.Occurrence{ruleContractOccurrenceID: only}
+
+	resp := f.c.GET(alertRulePath(ruleContractAlertID.String())).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getAlertRuleHistory", http.StatusOK, resp.Body())
+
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if raw, present := data["change"]; !present || raw != nil {
+		t.Fatalf("change = %v, want null — a first fire has no previous fire to differ from: %s",
+			raw, resp)
+	}
+	// `current` is still answered: "what the rule said when this fired" does not
+	// depend on there having been a previous fire.
+	if current, ok := data["current"].(map[string]any); !ok ||
+		current["id"] != ruleContractNewSnapshotID.String() {
+		t.Fatalf("current = %v, want the snapshot this episode fired under", data["current"])
+	}
+}
+
+// TestAnEpisodeWhosePredecessorWentBlindReportsNoChange.
+//
+// The promise: when the previous episode's capture recovered NOTHING — a stored
+// `unavailable` row — the panel says nothing changed rather than reporting the
+// whole rule as new. `domain.Drifted` is the gate and it is the same gate the
+// capture path uses: "oto went blind for an hour" is not somebody editing a rule.
+//
+// What broke when it did not hold: every alert in a source whose Prometheus was
+// briefly unreachable claims its rule was rewritten, against an empty expression.
+func TestAnEpisodeWhosePredecessorWentBlindReportsNoChange(t *testing.T) {
+	t.Parallel()
+
+	f := newRuleContractFixtureBoundTo(t, ruleContractNewSnapshotID)
+	// Drop the episode that fired under the old text, leaving the blind capture
+	// (seq 2) as the newest predecessor that has anything bound at all.
+	delete(f.reader.occs, ruleContractPreviousOccurrenceID)
+
+	resp := f.c.GET(alertRulePath(ruleContractAlertID.String())).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getAlertRuleHistory", http.StatusOK, resp.Body())
+
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if raw, present := data["change"]; !present || raw != nil {
+		t.Fatalf("change = %v, want null — the previous episode's capture recovered nothing, "+
+			"and an outage is not an edit: %s", raw, resp)
 	}
 }
 
