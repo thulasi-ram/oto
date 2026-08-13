@@ -37,17 +37,36 @@ image:
   # The oto image. One image runs every mode; the subcommand chooses which
   # (`oto api`, `oto worker`, `oto migrate`, `oto bootstrap`).
   #
-  # ⚠️ NO IMAGE IS PUBLISHED YET. The repository has a Dockerfile and no release
-  # workflow, so until one exists you build and push this yourself:
-  #     docker build -t <your-registry>/oto:<tag> .
-  repository: ghcr.io/thulasiram/oto
+  # ⭐ PUBLISHED BY .github/workflows/release.yml, ON EVERY `v*.*.*` TAG. The
+  # namespace is the GitHub repository's own owner (`thulasi-ram`), because that
+  # is the only namespace the workflow's built-in GITHUB_TOKEN is allowed to
+  # push a package to. This used to read `ghcr.io/thulasiram/oto` — an owner
+  # this repository is not under, so no workflow could ever have written there.
+  #
+  # Each release publishes `X.Y.Z` (this is the one appVersion resolves to),
+  # `vX.Y.Z`, the moving `X.Y`, and `sha-<commit>`. THERE IS NO `latest` — see
+  # the note on `tag` below; asking you to pin and then shipping a floating tag
+  # would be a contradiction. `linux/amd64` and `linux/arm64` are both in the
+  # manifest.
+  repository: ghcr.io/thulasi-ram/oto
   # Defaults to the chart's appVersion when empty. Pin it in production: a
   # floating tag makes "which build is this" unanswerable, which is the question
-  # GET /api/v1/version exists to answer.
+  # GET /api/v1/version exists to answer — and the answer is stamped into the
+  # published image, so `oto version` inside the pod names the exact commit.
   tag: ""
+  # Safe with the immutable `X.Y.Z` default: that tag never moves, so a cached
+  # layer is never a stale one. Set `Always` only if you pin the moving `X.Y`.
   pullPolicy: IfNotPresent
 
 # Names of pre-created image pull secrets, e.g. [{name: ghcr-creds}].
+#
+# ⚠️ A GHCR PACKAGE IS PRIVATE UNTIL SOMEBODY MAKES IT PUBLIC, and no workflow
+# can do that for you — it is a package setting on GitHub. If pulls fail with
+# `denied`/`unauthorized` rather than `manifest unknown`, the package is still
+# private: either flip it to public once, or create a docker-registry Secret
+# holding a read:packages token and name it here. It is projected into all four
+# pod specs this chart renders (api, worker, the migrate hook, the bootstrap
+# hook), so naming it once here is enough.
 imagePullSecrets: []
 
 # -----------------------------------------------------------------------------

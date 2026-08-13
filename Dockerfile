@@ -9,7 +9,16 @@
 
 ARG GO_VERSION=1.26
 
-FROM golang:${GO_VERSION}-alpine AS build
+# ⭐ THE BUILD STAGE STAYS ON THE BUILDER'S ARCHITECTURE AND CROSS-COMPILES.
+# `--platform=$BUILDPLATFORM` pins this stage to the machine doing the building;
+# `GOARCH=$TARGETARCH` below aims the output at the machine that will run it. The
+# release workflow builds linux/amd64 and linux/arm64 from one amd64 runner, and
+# without these two lines buildx would emulate the Go compiler under QEMU once
+# per architecture to produce the same bytes.
+#
+# This is only correct BECAUSE CGO IS OFF (see below): a cgo build would need a
+# cross toolchain and this would be a lie.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
 
 # Dependencies first, so a source-only change does not re-download the module
@@ -23,6 +32,11 @@ ARG VERSION=dev
 ARG COMMIT=""
 ARG BUILD_DATE=""
 
+# Set by buildkit, one value per requested platform. Empty on a legacy (non
+# buildkit) build, which is harmless: the go command treats an empty GOARCH as
+# unset and builds for the host.
+ARG TARGETARCH
+
 # ⭐ CGO OFF AND `timetzdata` EMBEDDED. The runtime layer is distroless/static:
 # it has ca-certificates (oto dials Slack, Prometheus and Alertmanager over TLS)
 # and no libc and no zoneinfo, so the timezone database is compiled in rather
@@ -32,7 +46,7 @@ ARG BUILD_DATE=""
 # The three linker stamps are what GET /api/v1/version answers with. An image
 # built without them says "dev", which makes "which build is this" unanswerable
 # during an incident.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
       -trimpath \
       -tags timetzdata \
       -ldflags "-s -w \

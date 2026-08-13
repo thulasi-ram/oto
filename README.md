@@ -100,9 +100,13 @@ deploy/helm/oto/  the Helm chart of SPEC acceptance criterion 31. API and worker
                   in which every key maps onto an environment variable
                   `internal/platform/config` actually reads. Postgres is EXTERNAL
                   and there is no subchart — ADR 0014, SPEC R7.
-                  ⚠️ NO IMAGE IS PUBLISHED. There is a `Dockerfile` at the
-                  repository root and no release workflow, so `image.repository`
-                  points at a registry you build and push to yourself.
+                  The image `image.repository` points at is built and pushed by
+                  `.github/workflows/release.yml` on every `v*.*.*` tag:
+                  `ghcr.io/thulasi-ram/oto`, linux/amd64 + linux/arm64, tagged
+                  `X.Y.Z` (what `appVersion` resolves to), `vX.Y.Z`, `X.Y` and
+                  `sha-<commit>`. No `latest` — the chart tells you to pin.
+                  ⚠️ No release has been tagged yet, so nothing is at that path
+                  until the first `v0.1.0` is pushed.
 docs/runbooks/    one page per `oto_*` metric the binary registers: what it
                   counts, what a sustained value means, what to check and what to
                   do. The `runbook_url` on every rule in

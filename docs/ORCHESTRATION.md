@@ -117,10 +117,40 @@ being declared done, which is the standard the depguard rules were held to.
   Secret with `existingSecret` support, `oto migrate` as a pre-install/pre-upgrade
   hook (the subcommand, so River's own migrator runs after goose) and an optional
   `oto bootstrap` post-install hook. Postgres stays external per ADR 0014.
-  **The criterion is still not fully met: no oto container image is published.**
-  There is now a `Dockerfile` at the repository root, but no release workflow
-  builds or pushes it, so `helm install` works only against a registry the
-  operator populates themselves. That is the remaining gap on AC-31.
+  ~~**The criterion is still not fully met: no oto container image is
+  published.**~~ **Closed.** `.github/workflows/release.yml` builds the
+  root `Dockerfile` on every `v[0-9]+.[0-9]+.[0-9]+*` tag and pushes
+  `ghcr.io/thulasi-ram/oto` (linux/amd64 + linux/arm64) tagged `X.Y.Z` — the tag
+  `appVersion` resolves to — plus `vX.Y.Z`, `X.Y` and `sha-<commit>`, with the
+  three linker stamps passed so `GET /api/v1/version` answers with a version and
+  not `dev`. No `latest` is published while the chart is prerelease and tells
+  operators to pin. ⚠️ The chart's default `image.repository` named the owner
+  `thulasiram`, and the repository is `github.com/thulasi-ram/oto` — GHCR
+  accepts the built-in `GITHUB_TOKEN` only for a package under the repository's
+  OWN owner, so that path was one no workflow could ever have written to. It was
+  corrected to `ghcr.io/thulasi-ram/oto` in the same change, and the workflow
+  derives its path from `github.repository` rather than repeating a string that
+  can drift. ~~The same `thulasiram` spelling survives in the Go module path
+  and in `Chart.yaml`'s `home`/`sources` links; those are cosmetic where the
+  image path was fatal, and which handle is canonical is the owner's call, not
+  this change's.~~ **Wrong, twice over.** `Chart.yaml`'s `home`, `sources` and
+  `maintainers[0].url` were not cosmetic: the release workflow makes the chart
+  page reachable, and Artifacthub renders `sources` as its "go to source"
+  button — a reader following either lands on a 404. They now read
+  `github.com/thulasi-ram/oto`. All 23 `runbook_url` values in
+  `deploy/prometheus/oto-rules.yaml` carried the same misspelling and are fixed
+  too — an on-call engineer clicking through from a firing alert would have hit
+  the same 404. What survives, correctly, is the Go module path itself
+  (`go.mod` and every import) plus everything that quotes it verbatim
+  (`.golangci.yml`'s `depguard` rules, `tools/lintreach/baseline.txt`,
+  `CONTEXT.md`, and the module-path line and import sample in
+  `docs/design/SPEC.md`) — renaming that is a large, invasive change out of
+  scope here, and `deploy/helm/oto/values.yaml`'s comment, which quotes the old
+  broken `ghcr.io/thulasiram/oto` deliberately, as history of the mistake
+  already fixed there. What remains is operational, not missing code: **no
+  `v*` tag has been pushed yet**, and a GHCR package is private until somebody
+  makes it public (or `imagePullSecrets` is set, which the chart already
+  projects into all four pod specs).
 - `deploy/prometheus/` is no longer empty: `prometheus.yml` plus `oto-rules.yaml`
   (the path SPEC §H.8 names) are wired into `docker-compose.yml` and `just infra`,
   and every rule's `runbook_url` points at a page in `docs/runbooks/`, which now

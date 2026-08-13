@@ -17,9 +17,9 @@ appVersion: "0.1.0"
 # networking.k8s.io/v1 Ingress with ingressClassName (1.19+) and pathType.
 kubeVersion: ">=1.23.0-0"
 
-home: https://github.com/thulasiram/oto
+home: https://github.com/thulasi-ram/oto
 sources:
-  - https://github.com/thulasiram/oto
+  - https://github.com/thulasi-ram/oto
 
 keywords:
   - alerting
@@ -30,7 +30,7 @@ keywords:
 
 maintainers:
   - name: oto maintainers
-    url: https://github.com/thulasiram/oto
+    url: https://github.com/thulasi-ram/oto
 
 annotations:
   # ⛔ THERE IS NO POSTGRES SUBCHART, AND THERE WILL NOT BE ONE. ADR 0014 makes
