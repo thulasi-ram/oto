@@ -385,8 +385,8 @@ func (f *fakeMembers) CurrentMemberAlerts(
 // fakeEvents counts the append-only timeline by event type.
 type fakeEvents struct{ byType map[string]int }
 
-func (f *fakeEvents) AppendGroupEvent(
-	_ context.Context, _ db.TenantScope, in alerts.GroupEventRequest,
+func (f *fakeEvents) AppendTimelineEvent(
+	_ context.Context, _ db.TenantScope, in alerts.TimelineEventRequest,
 ) error {
 	f.byType[in.Type]++
 	return nil

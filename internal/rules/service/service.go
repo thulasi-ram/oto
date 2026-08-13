@@ -216,7 +216,17 @@ func (s *Service) Capture(ctx context.Context, scope db.TenantScope, req Capture
 		out.Drifted = domain.Drifted(previous, stored)
 	}
 
-	s.narrate(ctx, scope, req, out)
+	// The diff is computed HERE and not in narrate, because `previous` is the
+	// only thing in this method the Capture does not carry out with it: the
+	// timeline entry AC-16 asks for is "`rule.definition_changed` with a diff",
+	// and re-reading the predecessor later to build one would be a second answer
+	// to a question this transaction already answered.
+	var drift domain.Diff
+	if out.Drifted {
+		drift = domain.Compare(previous, stored)
+	}
+
+	s.narrate(ctx, scope, req, out, drift)
 	return out, nil
 }
 
@@ -254,7 +264,9 @@ func (s *Service) lookupRule(ctx context.Context, scope db.TenantScope, req Capt
 // narrate appends the timeline events for one capture. It never fails the
 // capture: a timeline is a record of what happened, and failing the thing that
 // happened because it could not be written down is backwards.
-func (s *Service) narrate(ctx context.Context, scope db.TenantScope, req CaptureRequest, c Capture) {
+func (s *Service) narrate(
+	ctx context.Context, scope db.TenantScope, req CaptureRequest, c Capture, drift domain.Diff,
+) {
 	if s.events == nil {
 		return
 	}
@@ -306,16 +318,77 @@ func (s *Service) narrate(ctx context.Context, scope db.TenantScope, req Capture
 		base, dedupeKey("rule_captured", req.OccurrenceID, c.Snapshot.Fingerprint))
 
 	if c.Drifted {
-		drift := make(map[string]any, len(base)+2)
+		diff := driftPayload(drift)
+		payload := make(map[string]any, len(base)+len(diff)+2)
 		for k, v := range base {
-			drift[k] = v
+			payload[k] = v
 		}
-		drift["previous_fingerprint"] = c.PreviousFingerprint
-		drift["fingerprint"] = c.Snapshot.Fingerprint
+		payload["fingerprint"] = c.Snapshot.Fingerprint
+		for k, v := range diff {
+			payload[k] = v
+		}
+		// Written LAST because it is the one fact the caller is guaranteed: an
+		// origin change makes `Compare` decline to fill most of the rest in, and
+		// nothing in the diff may quietly overwrite the predecessor's address.
+		payload["previous_fingerprint"] = c.PreviousFingerprint
 		emit(EventDefinitionChanged,
 			fmt.Sprintf("rule %q changed since the previous fire", c.Snapshot.Key.Name),
-			drift, dedupeKey("rule_changed", req.OccurrenceID, c.Snapshot.Fingerprint))
+			payload, dedupeKey("rule_changed", req.OccurrenceID, c.Snapshot.Fingerprint))
 	}
+}
+
+// driftPayload renders the structured diff that AC-16 requires on
+// `rule.definition_changed`.
+//
+// ⭐ IT IS `RuleChangeDTO`-SHAPED ON PURPOSE, key for key, because the contract
+// says so in as many words: "`rule.definition_changed` carries a `RuleChangeDTO`-
+// shaped diff" (api/openapi/openapi.yaml, AlertEventDTO.payload). A client that
+// can render the drift panel can then render the timeline entry with the same
+// code.
+//
+// ⛔ `expr_diff` IS NOT DUPLICATED HERE, and that is the one deliberate omission.
+// The verdict union is `rules/api`'s to build — narrowing on `verdict` is the
+// only door to a threshold narrative, per the RuleExprDiffDTO contract — and a
+// second, hand-rolled encoding of it inside a payload map is exactly how the two
+// would come to disagree. What travels is the raw evidence: the two expressions,
+// the two durations, and the label and annotation changes.
+func driftPayload(d domain.Diff) map[string]any {
+	if !d.Changed {
+		return nil
+	}
+	out := map[string]any{
+		"previous_snapshot_id": d.From.ID,
+		"previous_captured_at": d.From.CapturedAt.UTC(),
+		"expr_changed":         d.ExprChanged,
+		"for_changed":          d.ForChanged,
+	}
+	if d.ExprChanged {
+		out["previous_expr"] = d.From.Expr
+		out["new_expr"] = d.To.Expr
+	}
+	if d.ForChanged {
+		out["previous_for_seconds"] = d.From.ForSeconds
+		out["new_for_seconds"] = d.To.ForSeconds
+	}
+	if len(d.Labels) > 0 {
+		out["label_diff"] = mapChangePayload(d.Labels)
+	}
+	if len(d.Annotations) > 0 {
+		out["annotation_diff"] = mapChangePayload(d.Annotations)
+	}
+	return out
+}
+
+// mapChangePayload encodes label and annotation moves as `name → [old, new]`,
+// the same encoding the contract uses: an empty string on one side means the
+// entry was absent there, which is how an addition and a removal are expressed
+// without a third shape.
+func mapChangePayload(cs []domain.MapChange) map[string]any {
+	out := make(map[string]any, len(cs))
+	for _, c := range cs {
+		out[c.Name] = []string{c.Old, c.New}
+	}
+	return out
 }
 
 func dedupeKey(prefix string, occurrenceID uuid.UUID, fingerprint string) string {

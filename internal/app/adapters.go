@@ -144,6 +144,125 @@ func recoveryOf(m rulematch.Match) rulesdomain.Recovery {
 	}
 }
 
+// ---------------------------------------------------------------- timeline
+
+// timelineRecorder is BOTH `rules/service.EventRecorder` AND
+// `enrichment/service.EventRecorder`, over the one seam that owns `alert_events`.
+//
+// ⭐ WHY IT IS ONE TYPE AND NOT TWO. The two ports differ only in the name of
+// their method and the name of their struct; both describe the same act, which is
+// "append one closed-enum fact about this occurrence to the timeline". Two
+// adapters would be two places for the actor, the dedupe key and the subject rules
+// to drift apart in. So the translation lives once and the two methods are the
+// two doors onto it.
+//
+// ⛔ NEITHER MODULE MAY IMPORT `alerts` FOR THIS. CONTEXT.md §4 draws no
+// `enrichment ──► alerts` edge at all, and the `rules ──► alerts` edge it does
+// draw is `rules/api` resolving the subject it narrates — not a licence for
+// `rules/service` to open somebody else's table. Both therefore declare a port and
+// this file, the composition root, satisfies it. `test/arch/arch_test.go` is what
+// notices if that is ever "simplified" into an import.
+//
+// ⚠️ LATE-BOUND. `c.Rules` is built before `c.Alerts` — rules depends on nothing
+// and the alerts service is the heart everything else is wired around — so the
+// holder is injected empty and filled the moment the alerts service exists. A nil
+// service answers nil: an un-narrated capture is the documented degradation, and
+// it is strictly better than a boot ordering that decides whether rules can be
+// constructed at all.
+//
+// ⛔ THE ACTOR IS `enricher`, WHICH IS NOT A GUESS. Both of these facts are
+// produced inside an enrichment pass — `rule.*` by the `prom.rule` enricher
+// calling `rules/service.Capture`, `enrichment.*` by the pipeline that ran it —
+// and §D.4.1's actor vocabulary spells that `enricher`. It is also what the
+// published example in `api/openapi/openapi.yaml` shows on a `rule.*` row.
+type timelineRecorder struct {
+	svc *alertsservice.Service
+}
+
+// ⭐ THE TWO LINES THAT WERE MISSING. Both ports were declared, documented and
+// called, and NOTHING in the tree implemented either — so five of the thirty-six
+// §D.4.1 types had no writer at all and the `s.events == nil` guard in each
+// narrator was unconditional in a shipped binary. Stated as assertions because a
+// port satisfied only by a field assignment in container.go is a port that can be
+// unsatisfied again by deleting one.
+var (
+	_ rulesservice.EventRecorder  = (*timelineRecorder)(nil)
+	_ enrichservice.EventRecorder = (*timelineRecorder)(nil)
+)
+
+// The actor identities the timeline shows for these two writers. They are
+// denormalised onto every row (`actor_label` is immutable by design), so they are
+// named once here rather than spelled at each call.
+const (
+	timelineActorRules      = "rules"
+	timelineActorRulesLabel = "Rule snapshot"
+	timelineActorEnrich     = "enrichment"
+	timelineActorEnrichLbl  = "Enrichment"
+)
+
+// RecordRuleEvent appends one of the three `rule.*` facts (§D.4.1, T12).
+//
+// SnapshotID travels in the PAYLOAD and not in a column: `alert_events` has no
+// snapshot column, and the occurrence's binding to its snapshot is
+// `alert_occurrences.rule_snapshot_id`, written by the enricher. What the timeline
+// carries is which snapshot the sentence is about.
+func (r *timelineRecorder) RecordRuleEvent(
+	ctx context.Context, s db.TenantScope, ev rulesservice.RuleEvent,
+) error {
+	if r.svc == nil {
+		return nil
+	}
+	payload := ev.Payload
+	if ev.SnapshotID != uuid.Nil {
+		payload = withKey(payload, "snapshot_id", ev.SnapshotID.String())
+	}
+	return r.svc.AppendTimelineEvent(ctx, s, alertsservice.TimelineEventRequest{
+		Type:         ev.Type,
+		AlertID:      ev.AlertID,
+		OccurrenceID: ev.OccurrenceID,
+		Summary:      ev.Summary,
+		Payload:      payload,
+		DedupeKey:    ev.DedupeKey,
+		ActorKind:    alertsdomain.ActorEnricher.String(),
+		ActorID:      timelineActorRules,
+		ActorLabel:   timelineActorRulesLabel,
+	})
+}
+
+// RecordEnrichmentEvent appends `enrichment.completed` or `enrichment.failed`
+// (§D.4.1, T11). One event per PHASE, never one per enricher — the coalescing is
+// the pipeline's and this must not undo it.
+func (r *timelineRecorder) RecordEnrichmentEvent(
+	ctx context.Context, s db.TenantScope, ev enrichservice.EnrichmentEvent,
+) error {
+	if r.svc == nil {
+		return nil
+	}
+	return r.svc.AppendTimelineEvent(ctx, s, alertsservice.TimelineEventRequest{
+		Type:         ev.Type,
+		AlertID:      ev.AlertID,
+		OccurrenceID: ev.OccurrenceID,
+		Summary:      ev.Summary,
+		Payload:      ev.Payload,
+		DedupeKey:    ev.DedupeKey,
+		ActorKind:    alertsdomain.ActorEnricher.String(),
+		ActorID:      timelineActorEnrich,
+		ActorLabel:   timelineActorEnrichLbl,
+	})
+}
+
+// withKey returns the payload with one more entry, without mutating the caller's
+// map. The caller keeps its own copy — a recorder that edited it would be editing
+// the map the emitting service still holds.
+func withKey(in map[string]any, key string, value any) map[string]any {
+	out := make(map[string]any, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	out[key] = value
+	return out
+}
+
 // ---------------------------------------------------------------- notification
 
 // notificationReader is `alerts/service.NotificationReader` over

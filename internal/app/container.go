@@ -434,9 +434,18 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 
 	// ---- rules: content-addressed snapshots, plus the lookup adapter -----
+	//
+	// `Events` is LATE-BOUND for the same reason `grouping`'s ports are: the alert
+	// timeline belongs to a service built further down this function, and rules is
+	// built first because it depends on nothing. The holder is filled the moment
+	// `c.Alerts` exists; until then it answers nil, which is the port's documented
+	// "captured but not narrated" degradation and is what the unit tests run
+	// against anyway.
+	timeline := &timelineRecorder{}
 	c.Rules, err = rulesservice.New(rulesservice.Options{
 		Repo:   rulesrepo.NewSnapshotRepository(general),
 		Lookup: ruleLookup{sources: c.Sources},
+		Events: timeline,
 		Clock:  clk,
 		Logger: logger,
 	})
@@ -484,6 +493,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The timeline exists now, so the two narrators that were built before it can
+	// reach it. Every `rule.*` and `enrichment.*` row in `alert_events` is written
+	// through this one line (§D.4.1, T11 and T12).
+	timeline.svc = c.Alerts
 
 	// ---- grouping: durable generations, membership, storm damping --------
 	c.Grouping, err = groupingservice.New(groupingservice.Deps{
@@ -526,6 +539,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 			occSrc:   &occurrenceSourceReader{resolver: occurrenceRepo},
 		},
 		Notifier: enrichservice.NewQueueNotifier(c.enqueuer),
+		Events:   timeline,
 		Enqueuer: c.enqueuer,
 		Clock:    clk,
 		Logger:   logger,

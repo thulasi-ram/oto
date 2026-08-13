@@ -82,7 +82,7 @@ type TxRunner interface {
 // enum live. A second writer would mean a second idempotency mechanism, and two
 // idempotency mechanisms are none.
 type EventAppender interface {
-	AppendGroupEvent(ctx context.Context, s db.TenantScope, in alerts.GroupEventRequest) error
+	AppendTimelineEvent(ctx context.Context, s db.TenantScope, in alerts.TimelineEventRequest) error
 }
 
 // TimelineReader reads the merged group timeline — §D.12(b), the signature view.

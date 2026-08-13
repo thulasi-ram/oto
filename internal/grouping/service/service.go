@@ -223,7 +223,7 @@ func (s *Service) Resolve(
 			return err
 		}
 
-		if err := s.appendGroupEvent(ctx, scope, alerts.GroupEventRequest{
+		if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
 			Type:    alerts.GroupEventOpened,
 			GroupID: g.ID(),
 			Summary: "Alert group opened: " + g.Title(),
@@ -338,7 +338,7 @@ func (s *Service) JoinMany(
 				continue
 			}
 			out.Joined++
-			if err := s.appendGroupEvent(ctx, scope, alerts.GroupEventRequest{
+			if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
 				Type:         alerts.GroupEventMemberJoined,
 				GroupID:      groupID,
 				AlertID:      m.AlertID,
@@ -390,7 +390,7 @@ func (s *Service) Leave(
 			return err
 		}
 		if left {
-			if err := s.appendGroupEvent(ctx, scope, alerts.GroupEventRequest{
+			if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
 				Type:         alerts.GroupEventMemberLeft,
 				GroupID:      groupID,
 				AlertID:      alertID,
@@ -535,7 +535,7 @@ func (s *Service) evaluateStorm(
 		typ = alerts.GroupEventStormStarted
 		summary = "Storm mode: collapsing this group to one message"
 	}
-	if err := s.appendGroupEvent(ctx, scope, alerts.GroupEventRequest{
+	if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
 		Type:    typ,
 		GroupID: next.ID(),
 		Summary: summary,
@@ -617,7 +617,7 @@ func (s *Service) CloseIdle(ctx context.Context, scope db.TenantScope, limit int
 			if err := s.groups.Close(ctx, scope, closed, fresh.StateVersion()); err != nil {
 				return err
 			}
-			if err := s.appendGroupEvent(ctx, scope, alerts.GroupEventRequest{
+			if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
 				Type:    alerts.GroupEventClosed,
 				GroupID: closed.ID(),
 				Summary: "Alert group closed: " + closed.Title(),
@@ -648,12 +648,12 @@ func (s *Service) CloseIdle(ctx context.Context, scope db.TenantScope, limit int
 // ------------------------------------------------------------------ helpers
 
 func (s *Service) appendGroupEvent(
-	ctx context.Context, scope db.TenantScope, in alerts.GroupEventRequest,
+	ctx context.Context, scope db.TenantScope, in alerts.TimelineEventRequest,
 ) error {
 	if s.events == nil {
 		return nil
 	}
-	return s.events.AppendGroupEvent(ctx, scope, in)
+	return s.events.AppendTimelineEvent(ctx, scope, in)
 }
 
 func (s *Service) publish(ctx context.Context, scope db.TenantScope, g domain.Group) error {
