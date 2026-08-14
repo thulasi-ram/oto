@@ -43,6 +43,17 @@ const (
 	// CodeSourceUnavailable means the source's configuration could not be read.
 	// Retryable: without `redact_labels` oto must not persist the payload.
 	CodeSourceUnavailable = "ingest_source_unavailable"
+	// CodeReplayNotReplayable is `oto replay` pointed at a batch that already
+	// reached the product (`processed`) or is on its way (`pending`).
+	CodeReplayNotReplayable = "ingest_replay_not_replayable"
+	// CodeReplayRefused is a replay that could not even be attempted — no batch
+	// named, or no way to check whether it is safe.
+	//
+	// ⛔ IT IS NOT THE SUPERSESSION REFUSAL. That one is a ReplayResult with a list
+	// in it, because the operator has to read the list.
+	CodeReplayRefused = "ingest_replay_refused"
+	// CodeReplayFailed is a replay that could not complete. Nothing was changed.
+	CodeReplayFailed = "ingest_replay_failed"
 )
 
 // Options are the Service's dependencies. Everything is a port or a pool, so the
@@ -61,6 +72,13 @@ type Options struct {
 	Alerts     AlertObserver
 	Enqueuer   db.Enqueuer
 
+	// AlertStates is the read side of the alerts module, used by ONE caller:
+	// Service.Replay, to ask whether the alerts a stored batch would touch have
+	// moved on without it. Nil is legal for the same reason Alerts is — the
+	// module can be assembled before `alerts` exists — and it makes `Replay`
+	// refuse rather than run ungated.
+	AlertStates AlertStateReader
+
 	Clock   clock.Clock
 	Logger  *slog.Logger
 	Metrics *Metrics
@@ -74,13 +92,14 @@ type Options struct {
 // ProcessBatch does everything expensive, asynchronously, where a failure costs a
 // retry instead of a lost alert.
 type Service struct {
-	pool       *pgxpool.Pool
-	batches    BatchRepository
-	dedup      DedupRepository
-	rejections RejectionRepository
-	sources    SourceConfigs
-	alerts     AlertObserver
-	enqueuer   db.Enqueuer
+	pool        *pgxpool.Pool
+	batches     BatchRepository
+	dedup       DedupRepository
+	rejections  RejectionRepository
+	sources     SourceConfigs
+	alerts      AlertObserver
+	alertStates AlertStateReader
+	enqueuer    db.Enqueuer
 
 	clk     clock.Clock
 	log     *slog.Logger
@@ -118,16 +137,17 @@ func New(o Options) (*Service, error) {
 	}
 
 	return &Service{
-		pool:       o.Pool,
-		batches:    o.Batches,
-		dedup:      o.Dedup,
-		rejections: o.Rejections,
-		sources:    o.Sources,
-		alerts:     o.Alerts,
-		enqueuer:   o.Enqueuer,
-		clk:        clk,
-		log:        lg,
-		metrics:    m,
+		pool:        o.Pool,
+		batches:     o.Batches,
+		dedup:       o.Dedup,
+		rejections:  o.Rejections,
+		sources:     o.Sources,
+		alerts:      o.Alerts,
+		alertStates: o.AlertStates,
+		enqueuer:    o.Enqueuer,
+		clk:         clk,
+		log:         lg,
+		metrics:     m,
 	}, nil
 }
 

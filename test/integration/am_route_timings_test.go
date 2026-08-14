@@ -353,8 +353,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 46 {
-		t.Fatalf("latest migration is %d, want 46 — this test pins the number so that a "+
+	if latest != 47 {
+		t.Fatalf("latest migration is %d, want 47 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -663,6 +663,41 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			policyID, policyScope.OrgID(), name, reasons, id.New(), time.Now().UTC())
 		return err
 	}
+	// 00047's natural key, read as rendered SQL for the same reason the two
+	// constraints above are: the NAME is the runtime contract — `insertRejectionsSQL`
+	// names it in its ON CONFLICT — so a constraint of that name over different
+	// columns would be the pre-00047 shape wearing the post-00047 label. Empty
+	// means absent, which is what the Down is supposed to produce.
+	rejectionNaturalUniq := func() string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT COALESCE((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			                   WHERE conname = 'ingest_rejections_natural_uniq'
+			                     AND conrelid = 'ingest_rejections'::regclass), '')`).
+			Scan(&def); err != nil {
+			t.Fatalf("introspect ingest_rejections_natural_uniq: %v", err)
+		}
+		return def
+	}
+	// A rejection written straight at the table, because what is being proved is a
+	// CONSTRAINT and not a code path: the repository's writer carries its own ON
+	// CONFLICT, which would absorb precisely the collision this needs to observe.
+	// `received_at` is the partition key, so it is passed rather than defaulted.
+	insertRejection := func(batchID uuid.UUID, ordinal *int, at time.Time) error {
+		_, err := env.pool.Exec(env.ctx,
+			`INSERT INTO ingest_rejections (id, org_id, source_id, batch_id, received_at,
+			     ordinal, reason, raw)
+			 VALUES ($1, $2, $3, $4, $5, $6, 'missing_alertname', '{}'::jsonb)`,
+			id.New(), policyScope.OrgID(), id.New(), batchID, at, ordinal)
+		return err
+	}
+	if def := rejectionNaturalUniq(); !strings.Contains(def, "ordinal") {
+		t.Fatalf("ingest_rejections_natural_uniq does not carry `ordinal` at the top of the "+
+			"stack: %q — 00047 exists to put it there, and without it `oto replay` re-inserts "+
+			"a batch's rejections instead of conflicting with them, which triples the feed an "+
+			"operator reads to decide whether their alert was dropped", def)
+	}
 	if def := policyReasonsCheck(); !strings.Contains(def, "oto_array_is_set") {
 		t.Fatalf("policies_reasons_ck does not carry the set rule at the top of the stack: %s — "+
 			"00046 exists to put it there, and while it is absent the `unique` tag on the "+
@@ -871,6 +906,68 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 		if err := migrate.Down(env.ctx, dsn); err != nil {
 			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
+		}
+	}
+
+	// ⭐ 00047 down: the natural key goes, and `ordinal` goes with it because
+	// nothing else reads it.
+	//
+	// DROPPING A UNIQUE CONSTRAINT CANNOT FAIL, which is why introspection alone is
+	// not the assertion here — a Down that dropped the column but left the
+	// constraint, or dropped neither and returned nil, would satisfy any
+	// shape-shaped check that only looked at one of the two. So the pair that the
+	// constraint refuses is WRITTEN twice after the rollback: the release this
+	// rolls back to has no idempotence, and a rolled-back binary re-running a
+	// batch has to be able to append its rejections a second time rather than
+	// 23505 at an operator mid-incident.
+	rejectionAt := time.Now().UTC()
+	rejectionBatch := id.New()
+	zeroth := 0
+	if err := insertRejection(rejectionBatch, &zeroth, rejectionAt); err != nil {
+		t.Fatalf("seeding a rejection before 00047's Down: %v", err)
+	}
+	if err := insertRejection(rejectionBatch, &zeroth, rejectionAt); err == nil {
+		t.Fatalf("a second rejection at the same (batch, ordinal, reason) was accepted while "+
+			"00047 is applied — the natural key is the whole mechanism behind `oto replay` not "+
+			"duplicating the feed, and a constraint that admits the duplicate is not enforcing it")
+	}
+	down(47)
+	if def := rejectionNaturalUniq(); def != "" {
+		t.Fatalf("ingest_rejections_natural_uniq survived 00047's Down: %s — the release this "+
+			"rolls back to has no `ordinal` column, so a surviving constraint would reference "+
+			"a column the next dump cannot restore", def)
+	}
+	var ordinalSurvives int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM information_schema.columns
+		  WHERE table_name::text = 'ingest_rejections' AND column_name::text = 'ordinal'`).
+		Scan(&ordinalSurvives); err != nil {
+		t.Fatalf("introspect ingest_rejections.ordinal: %v", err)
+	}
+	if ordinalSurvives != 0 {
+		t.Fatalf("ingest_rejections.ordinal survived 00047's Down — the Down drops the "+
+			"constraint and the column together, and a half-run Down leaves a column no "+
+			"writer in the rolled-back release populates")
+	}
+	// The duplicate the constraint used to refuse, now accepted twice: the proof
+	// that the rollback restored the earlier release's behaviour and not merely
+	// its schema.
+	// Written without naming `ordinal`, because after the Down there is no such
+	// column — which is the pre-00047 writer's statement exactly, and the reason
+	// this is spelled out rather than reusing the helper above it.
+	insertRolledBackRejection := func() error {
+		_, err := env.pool.Exec(env.ctx,
+			`INSERT INTO ingest_rejections (id, org_id, source_id, batch_id, received_at,
+			     reason, raw)
+			 VALUES ($1, $2, $3, $4, $5, 'missing_alertname', '{}'::jsonb)`,
+			id.New(), policyScope.OrgID(), id.New(), rejectionBatch, rejectionAt)
+		return err
+	}
+	for i := range 2 {
+		if err := insertRolledBackRejection(); err != nil {
+			t.Fatalf("rejection %d was refused after 00047's Down: %v — the release this rolls "+
+				"back to double-counts a replayed batch by design, and a rolled-back binary "+
+				"must not 23505 on the write that produces the duplicate", i, err)
 		}
 	}
 

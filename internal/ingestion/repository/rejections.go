@@ -33,11 +33,35 @@ func (r *RejectionRepository) db(ctx context.Context) db.Querier { return db.Fro
 // A 10 000-alert batch with a broken exporter behind it can reject thousands of
 // elements, and thousands of individual INSERTs on the ingest pool would turn a
 // recording mechanism into the outage it exists to document.
+//
+// ⭐ ON CONFLICT IS WHAT MAKES THIS TABLE REPLAY-SAFE. §G.5 promises that
+// re-running a batch produces no second observation, and until 00047 the promise
+// stopped at the observations: `ingest_rejections` had no uniqueness of any kind
+// and minted a fresh id per row per attempt, so a batch with forty rejections
+// replayed twice showed a hundred and twenty in the per-source feed — and the
+// §G.6 retry budget could do it without a replay, because these rows are written
+// outside the observation transactions on purpose and a retried chunk rewrites
+// them.
+//
+// ⛔ THE ARBITER IS THE NATURAL KEY, NEVER THE PRIMARY KEY. `id` stays a uuidv7
+// because `List` keysets on `(received_at, id)` and every rejection of one batch
+// shares that `received_at` to the microsecond — the id is the only thing making
+// that order total, and it works solely because a uuidv7 is time-ordered by
+// minting. Deriving the id from the row's content was tried and it silently broke
+// the paging. The dedupe identity therefore lives in its own constraint,
+// `ingest_rejections_natural_uniq (received_at, batch_id, ordinal, reason)`, and
+// the two concerns stop fighting over one column.
+//
+// `ordinal` is the row's position in this call, which is its position in the
+// stored payload; a NULL `batch_id` never conflicts, which is correct, because
+// those rows describe a body that never became a batch and can never be replayed.
 const insertRejectionsSQL = `
-INSERT INTO ingest_rejections (id, org_id, source_id, batch_id, received_at, reason, detail, raw)
-SELECT i, $2, sid, bid, ts, rsn, nullif(dt,''), rw
-  FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::timestamptz[], $6::text[], $7::text[], $8::jsonb[])
-    AS t(i, sid, bid, ts, rsn, dt, rw)`
+INSERT INTO ingest_rejections (id, org_id, source_id, batch_id, received_at, reason, detail, raw, ordinal)
+SELECT i, $2, sid, bid, ts, rsn, nullif(dt,''), rw, ord
+  FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::timestamptz[], $6::text[], $7::text[], $8::jsonb[],
+              $9::int[])
+    AS t(i, sid, bid, ts, rsn, dt, rw, ord)
+ON CONFLICT (received_at, batch_id, ordinal, reason) DO NOTHING`
 
 // Record writes one rejection.
 func (r *RejectionRepository) Record(ctx context.Context, s db.TenantScope, in domain.Rejection) error {
@@ -45,6 +69,12 @@ func (r *RejectionRepository) Record(ctx context.Context, s db.TenantScope, in d
 }
 
 // RecordBatch writes many rejections in one round trip.
+//
+// ⭐ THE SLICE POSITION IS PART OF THE ROW. `ordinal` is `i` and nothing cleverer:
+// the caller built this slice by walking the stored payload in order, so the same
+// bytes normalised again produce the same rejection at the same index, which is
+// what lets `ingest_rejections_natural_uniq` recognise a replayed row as one it
+// already has. It is a WRITE-SIDE identity and no read projects it.
 func (r *RejectionRepository) RecordBatch(ctx context.Context, s db.TenantScope, in []domain.Rejection) error {
 	if len(in) == 0 {
 		return nil
@@ -57,6 +87,7 @@ func (r *RejectionRepository) RecordBatch(ctx context.Context, s db.TenantScope,
 	reasons := make([]string, len(in))
 	details := make([]string, len(in))
 	raws := make([][]byte, len(in))
+	ordinals := make([]int32, len(in))
 
 	for i, rj := range in {
 		if !rj.Reason.Valid() {
@@ -67,6 +98,7 @@ func (r *RejectionRepository) RecordBatch(ctx context.Context, s db.TenantScope,
 				"%q is not a member of the rejection reason enum", rj.Reason)
 		}
 		ids[i] = rj.ID
+		ordinals[i] = int32(i)
 		sources[i] = rj.SourceID
 		batches[i] = rj.BatchID
 		times[i] = rj.ReceivedAt
@@ -81,7 +113,7 @@ func (r *RejectionRepository) RecordBatch(ctx context.Context, s db.TenantScope,
 	}
 
 	if _, err := r.db(ctx).Exec(ctx, insertRejectionsSQL,
-		ids, s.OrgID(), sources, batches, times, reasons, details, raws,
+		ids, s.OrgID(), sources, batches, times, reasons, details, raws, ordinals,
 	); err != nil {
 		return mapErr(err, "record ingest rejections")
 	}
@@ -165,7 +197,18 @@ SELECT` + rejectionColumns + `
 // It rides `ingest_rejections_source_idx (org_id, source_id, received_at DESC)`:
 // the predicate is the index's first two columns, the sort is its third, and the
 // `id DESC` tiebreak is free because ids are uuidv7 and therefore already in
-// received_at order. `reason` is a filter applied over that index range rather
+// received_at order.
+//
+// ⛔ THAT LAST SENTENCE IS AN INVARIANT, NOT AN OBSERVATION, and it is load-bearing
+// for the keyset. Every rejection of one batch carries that batch's `received_at`
+// to the microsecond, so within a batch the sort key is CONSTANT and `id` is the
+// only thing making the order total. A uuidv7 id gives that order for free and in
+// the same direction as `received_at`. An id derived from the row's content —
+// which was tried, to make replay idempotent — is a hash with no ordering at all,
+// and the paging immediately began to skip and repeat rows. Replay-safety belongs
+// in `ingest_rejections_natural_uniq`, where it costs this nothing; the primary
+// key must stay minted and time-ordered. `reason` is a filter applied over that
+// index range rather
 // than a fourth index column — the enum has fifteen members over a table
 // retained for fourteen days, so narrowing further would buy nothing worth a
 // migration.

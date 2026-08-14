@@ -83,8 +83,29 @@ func (s Status) String() string { return string(s) }
 // chunk that already committed produces no second observation.
 //
 // `processed` and `failed` are the two genuinely terminal states, and those are
-// the ones the "no longer pending" rule is about.
+// the ones the "no longer pending" rule is about. Terminal to the JOB, that is —
+// see Replayable for the one door out of `failed`, which an operator opens and
+// the queue cannot.
 func (s Status) Resumable() bool { return s == StatusPending || s == StatusPartial }
+
+// Replayable reports whether an OPERATOR may re-enqueue this batch.
+//
+// ⭐ IT IS A DIFFERENT QUESTION FROM Resumable AND IT HAS TO BE. Resumable asks
+// "may the job queue do more work on this row", and the answer for `failed` is no
+// forever: a redelivered job that resumed a batch someone gave up on would undo
+// the giving up. Replayable asks "may a human, after shipping a parser fix, say
+// do it again" — and `failed` is exactly the state that question exists for. The
+// batch's alerts are on disk and not in the product, and the payload that broke
+// is still there.
+//
+// ⛔ `processed` IS NOT HERE. A processed batch already reached the product, so
+// replaying it buys nothing and risks the T7/T8 double-write for free.
+//
+// It is the same pair Troubled returns, and that is not a coincidence to be
+// deduplicated away: the failed-batch feed lists the batches whose alerts are
+// stranded, and those are precisely the batches worth replaying. The two would
+// diverge the moment either question changed, and merging them would hide that.
+func (s Status) Replayable() bool { return s == StatusFailed || s == StatusPartial }
 
 // Troubled reports whether this status is one an operator has to look at.
 //

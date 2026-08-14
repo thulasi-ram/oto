@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
 	alertsapi "github.com/thulasiram/oto/internal/alerts/api"
+	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
 	alertsrepo "github.com/thulasiram/oto/internal/alerts/repository"
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
 	channelsapi "github.com/thulasiram/oto/internal/channels/api"
@@ -36,6 +38,7 @@ import (
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
 	"github.com/thulasiram/oto/internal/ingestion"
+	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -612,9 +615,16 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Enqueuer: c.enqueuer,
 		Config:   o.Config.Ingest,
 		Alerts:   observer,
-		Clock:    clk,
-		Logger:   logger,
-		Registry: reg,
+		// The READ side of the same boundary, for `oto replay` alone. It is built
+		// over the two alerts repositories on the GENERAL pool — the pool they were
+		// constructed on — because the supersession check is a human at a terminal
+		// asking a question, and spending an ingest connection on it would put an
+		// operator's recovery command in the way of the webhook path it is trying
+		// to recover.
+		AlertStates: alertStates{alerts: alertRepo, occurrences: occurrenceRepo},
+		Clock:       clk,
+		Logger:      logger,
+		Registry:    reg,
 	})
 	if err != nil {
 		return nil, err
@@ -1118,6 +1128,107 @@ func bridgeMetrics(m *streamingservice.Metrics) streamingservice.BridgeMetrics {
 		Fetched:         func(n int) { m.Fetched.Add(float64(n)) },
 		PollRecovered:   func(n int) { m.PollRecovered.Add(float64(n)) },
 		FetchErrors:     m.FetchErrors.Inc,
+	}
+}
+
+// alertStates is `ingestion/service.AlertStateReader`: the READ half of the
+// ingestion↔alerts boundary, and the only thing `oto replay` needs from the
+// alerts module.
+//
+// ⭐ IT LIVES HERE, WITH alertObserver, FOR THE SAME REASON. `ingestion` may not
+// import `alerts/repository`, and the one `alerts/domain` type it may name is
+// `Observation` (§C.1, CONTEXT.md §5.2b). So the composition root translates: two
+// existing reads in, one flat ingestion-owned struct out. No new SQL — the
+// batched shapes were already there for the T2 material-change probe and for
+// §G.4's "a 200-alert payload must not become 200 round trips".
+//
+// ⛔ IT ANSWERS ONLY WHAT THE REFUSAL NEEDS, and the temptation to widen it
+// should be refused. A replay asks one question — has this alert moved since the
+// batch was received — and every extra field handed across this boundary is a
+// field the ingest path can start branching on.
+type alertStates struct {
+	alerts      *alertsrepo.AlertRepository
+	occurrences *alertsrepo.OccurrenceRepository
+}
+
+func (a alertStates) StatesByAlertKey(
+	ctx context.Context, s db.TenantScope, alertKeys []string,
+) (map[string]ingestionservice.AlertState, error) {
+	out := make(map[string]ingestionservice.AlertState, len(alertKeys))
+	if len(alertKeys) == 0 {
+		return out, nil
+	}
+
+	found, err := a.alerts.GetByAlertKeys(ctx, s, alertKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]uuid.UUID, 0, len(found))
+	byID := make(map[uuid.UUID]alertsdomain.Alert, len(found))
+	for _, al := range found {
+		ids = append(ids, al.ID())
+		byID[al.ID()] = al
+	}
+	latest, err := a.occurrences.LatestByAlerts(ctx, s, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, key := range alertKeys {
+		al, ok := found[key]
+		if !ok {
+			// An alert this batch names that oto has never seen. Nothing can have
+			// overtaken it, so it is reported as absent rather than omitted — the
+			// caller's denominator is the batch, not the database.
+			out[key] = ingestionservice.AlertState{Key: key}
+			continue
+		}
+
+		st := ingestionservice.AlertState{
+			Key:      key,
+			Exists:   true,
+			Identity: alertIdentity(al),
+		}
+		occ, ok := latest[al.ID()]
+		if !ok {
+			// An alert row with no episode yet. There is no timeline to duplicate.
+			out[key] = st
+			continue
+		}
+
+		st.State = occ.State().String()
+		st.Terminal = occ.State().IsTerminal()
+		st.SourceUpdatedAt = occ.SourceUpdatedAt()
+		// ⛔ THE LATER OF THE TWO, AND `ended_at` IS WHY. Reaper expiry closes an
+		// occurrence without any upstream saying so and never touches
+		// `source_updated_at`, so reporting only the latter would print "last moved"
+		// as the day the alert last fired for an episode that closed a week later.
+		st.MovedAt = occ.SourceUpdatedAt()
+		if occ.EndedAt().After(st.MovedAt) {
+			st.MovedAt = occ.EndedAt()
+		}
+		out[key] = st
+	}
+	return out, nil
+}
+
+// alertIdentity renders an alert the way an operator recognises it — the name
+// plus the one label that says WHICH one — for the refusal message and nothing
+// else.
+//
+// It is `service` before `namespace` because that is the order the alert list
+// shows them in, and it degrades to the bare alertname rather than to an empty
+// brace pair: an alert carrying neither is still identified by its key on the
+// same line.
+func alertIdentity(a alertsdomain.Alert) string {
+	switch {
+	case a.Service() != "":
+		return a.AlertName() + "{service=" + a.Service() + "}"
+	case a.Namespace() != "":
+		return a.AlertName() + "{namespace=" + a.Namespace() + "}"
+	default:
+		return a.AlertName()
 	}
 }
 

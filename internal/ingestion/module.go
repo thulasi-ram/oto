@@ -33,6 +33,13 @@ type Deps struct {
 	// retry until an observer exists. Nothing is lost; processing is deferred.
 	Alerts service.AlertObserver
 
+	// AlertStates is the READ side of the same boundary, and it has exactly one
+	// caller: `oto replay`, which must know whether the alerts a stored batch
+	// touches have moved on before it re-enqueues the batch. Nil makes a replay
+	// REFUSE — never run ungated — which is the right behaviour for a module
+	// assembled without the alerts module behind it.
+	AlertStates service.AlertStateReader
+
 	// Sources supplies per-source redaction, injection and cluster identity. Nil
 	// falls back to reading `alert_sources` directly; see repository.SourceConfigRepository
 	// for the layering note and the intended replacement.
@@ -95,16 +102,17 @@ func New(d Deps) (*Module, error) {
 	}
 
 	svc, err := service.New(service.Options{
-		Pool:       ingest,
-		Batches:    repository.NewBatchRepository(ingest),
-		Dedup:      repository.NewDedupRepository(ingest),
-		Rejections: repository.NewRejectionRepository(ingest),
-		Sources:    sources,
-		Alerts:     d.Alerts,
-		Enqueuer:   d.Enqueuer,
-		Clock:      clk,
-		Logger:     logger,
-		Metrics:    metrics,
+		Pool:        ingest,
+		Batches:     repository.NewBatchRepository(ingest),
+		Dedup:       repository.NewDedupRepository(ingest),
+		Rejections:  repository.NewRejectionRepository(ingest),
+		Sources:     sources,
+		Alerts:      d.Alerts,
+		AlertStates: d.AlertStates,
+		Enqueuer:    d.Enqueuer,
+		Clock:       clk,
+		Logger:      logger,
+		Metrics:     metrics,
 	})
 	if err != nil {
 		return nil, err

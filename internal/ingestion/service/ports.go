@@ -36,6 +36,29 @@ type BatchRepository interface {
 	MarkProcessed(ctx context.Context, s db.TenantScope, id uuid.UUID, receivedAt time.Time,
 		status domain.Status, at time.Time, failure string) error
 
+	// Reopen is the ONE legal exit from `failed`, and it is a COMPARE-AND-SET:
+	// it moves a batch back to `pending` only if it is still in one of `from`.
+	// MarkProcessed refuses `pending` outright and must keep refusing it — the
+	// queue must never walk a batch backwards — so the un-fail lives here, where
+	// the caller is an operator and the guard is a WHERE clause rather than a
+	// comment.
+	//
+	// It reports Conflict when the row moved under it, which is the whole reason
+	// it is not a read followed by a write.
+	Reopen(ctx context.Context, s db.TenantScope, id uuid.UUID, receivedAt time.Time,
+		from []domain.Status) error
+
+	// ⚠️ Locate is the SECOND method here without a TenantScope, for the same
+	// structural reason as ResolveOrg and one more: an operator replaying a batch
+	// after a parser fix has a batch id off a dashboard and nothing else. They do
+	// not know the org — that is precisely why the replay is a subcommand and not
+	// a route (see Service.Replay) — and they do not know `received_at`, which is
+	// the partition key every other read here demands.
+	//
+	// It returns the org and the partition key so the caller can build a scope and
+	// then address the row properly. Everything after it is scoped.
+	Locate(ctx context.Context, batchID uuid.UUID) (uuid.UUID, time.Time, error)
+
 	// ListFailed is the failed-batch feed, newest first, keyset-paginated. It is
 	// the only READ here that is not addressed by primary key, and it exists so
 	// that a batch which was accepted and never processed is visible in the
@@ -123,4 +146,53 @@ type SourceConfigs interface {
 // import and therefore the one type both modules may name.
 type AlertObserver interface {
 	ObserveBatch(ctx context.Context, s db.TenantScope, obs []alerts.Observation) (int, error)
+}
+
+// AlertState is what a replay needs to know about ONE alert key before it is
+// allowed to re-enqueue the batch that touches it. It is a READ model owned by
+// ingestion, deliberately not `alerts/domain.Occurrence`.
+//
+// ⛔ THE NARROWNESS IS THE POINT. `alerts/domain.Observation` is the single
+// sanctioned cross-domain `domain` import (§C.1, CONTEXT.md §5.2b), and it stays
+// single: ingestion asks the supersession question in its own words and the
+// composition root translates. Handing this port an Occurrence would make every
+// field of the alerts aggregate reachable from the ingest path, and the next
+// person would use one.
+type AlertState struct {
+	// Key is the §C.2 alert_key the observation computed. Present even when the
+	// alert has never been seen — see Exists.
+	Key string
+	// Exists is false when this alert key has no row yet. A replay cannot overtake
+	// an alert that does not exist, so those keys are simply not at risk.
+	Exists bool
+	// Identity is the alert rendered for a human, e.g. `HighErrorRate{service=checkout}`.
+	// It is for the refusal message and nothing branches on it.
+	Identity string
+	// State is the latest occurrence's state, rendered. "" when there is no
+	// occurrence yet.
+	State string
+	// Terminal is that state's IsTerminal — `resolved` or `expired`.
+	Terminal bool
+	// SourceUpdatedAt is the latest occurrence's `source_updated_at`: the receipt
+	// of the BATCH that last moved it. Comparing it to the replayed batch's own
+	// `received_at` is how "a later batch overtook this one" is asked.
+	SourceUpdatedAt time.Time
+	// MovedAt is the most recent instant the occurrence is known to have moved.
+	//
+	// ⛔ IT IS NOT SourceUpdatedAt, and the difference is the whole of the second
+	// refusal limb: the reaper expires an occurrence without any upstream saying
+	// so, and expiry NEVER touches `source_updated_at`. An expired occurrence can
+	// therefore look untouched on the timestamp axis while being very much closed.
+	MovedAt time.Time
+}
+
+// AlertStateReader answers the ONE question a replay has to ask: has anything
+// happened to these alerts since the batch was received.
+//
+// It is a READ port and it has no write. `internal/app` implements it over
+// `alerts/repository`'s GetByAlertKeys and LatestByAlerts — two round trips for
+// a whole batch, no new SQL — on the GENERAL pool, because a refusal check run
+// by a human at a terminal has no business spending an ingest connection.
+type AlertStateReader interface {
+	StatesByAlertKey(ctx context.Context, s db.TenantScope, alertKeys []string) (map[string]AlertState, error)
 }

@@ -182,6 +182,97 @@ func (r *BatchRepository) MarkProcessed(
 	return nil
 }
 
+const reopenBatchSQL = `
+UPDATE ingest_batches
+   SET status = 'pending', processed_at = NULL, error = NULL
+ WHERE org_id = $1 AND id = $2 AND received_at = $3
+   AND status = ANY($4::text[])`
+
+// Reopen is the ONE legal exit from `failed` (§G.4), and it is a COMPARE-AND-SET.
+//
+// ⭐ THE `status = ANY($4)` IS THE WHOLE MECHANISM, not a belt on a read the
+// caller already did. Between the operator's decision and this statement the
+// batch can be moved by anything with the row: a redelivered job finishing a
+// `partial`, a second operator running the same command, the retention sweep. A
+// SELECT-then-UPDATE would let two replays both win and enqueue the batch twice.
+// Here the second one affects no rows and is told so.
+//
+// It clears `processed_at` and `error` because ingest_batches_proc_ck ties
+// `pending` to the absence of a timestamp — a batch cannot be pending and have
+// stopped — and because leaving the old failure on a row that is about to run
+// again would describe an attempt that is no longer the current one.
+//
+// ⛔ IT IS NOT MarkProcessed WITH A DIFFERENT ARGUMENT. That method refuses
+// `pending` on purpose and must keep refusing it: the queue must never walk a
+// batch backwards, and the only actor allowed to is a human who has just shipped
+// a fix. Two callers, two guarantees, two methods.
+func (r *BatchRepository) Reopen(
+	ctx context.Context, s db.TenantScope, batchID uuid.UUID, receivedAt time.Time,
+	from []domain.Status,
+) error {
+	if err := requireScope(s); err != nil {
+		return err
+	}
+	if len(from) == 0 {
+		// An unconditional reopen is a compare-and-set with nothing to compare, and
+		// it would happily resurrect a `processed` batch.
+		return errs.New(errs.KindInternal, "ingest_reopen_unguarded",
+			"a reopen must name the states it is allowed to move out of")
+	}
+
+	allowed := make([]string, 0, len(from))
+	for _, st := range from {
+		if !st.Replayable() {
+			return errs.Newf(errs.KindInternal, "ingest_batches_state_ck",
+				"%q is not a status a batch may be replayed out of", st)
+		}
+		allowed = append(allowed, st.String())
+	}
+
+	tag, err := r.db(ctx).Exec(ctx, reopenBatchSQL, s.OrgID(), batchID, receivedAt, allowed)
+	if err != nil {
+		return mapErr(err, "reopen ingest batch")
+	}
+	if tag.RowsAffected() == 0 {
+		// Either there is no such batch or it is no longer in a state a replay may
+		// take it out of. Both mean the same thing to the caller — the replay did
+		// not happen — and the caller has already read the row, so "it moved" is the
+		// honest reading and the actionable one.
+		return errs.Conflict("ingest_batch_moved",
+			"the batch is no longer in a state a replay may reopen; nothing was changed")
+	}
+	return nil
+}
+
+const locateBatchSQL = `SELECT org_id, received_at FROM ingest_batches WHERE id = $1`
+
+// Locate finds a batch's org and partition key from its id alone.
+//
+// ⚠️ IT IS THE SECOND SCOPELESS METHOD HERE and the second UNPARTITIONED read,
+// and both need saying out loud. `ingest_batches` is daily-ranged on
+// `received_at`, so a query that names only `id` opens every retained partition —
+// exactly what the doc comment on Get says never to do.
+//
+// It is justified by the caller and by nothing else: `oto replay` is a one-shot
+// operator command holding a batch id copied off a dashboard. It knows no org
+// (that is why the replay is a subcommand and not a tenant route — a batch id
+// carries no scope) and no `received_at`. One scan of ~22 index-only partitions,
+// once, by a human, is the price of not asking that human for the partition key
+// of a table they have never heard of. Nothing on the hot path may call this.
+//
+// It returns TWO columns of ONE row addressed by primary key prefix, and every
+// call the replay makes afterwards is scoped by what it returns.
+func (r *BatchRepository) Locate(ctx context.Context, batchID uuid.UUID) (uuid.UUID, time.Time, error) {
+	var (
+		orgID      uuid.UUID
+		receivedAt time.Time
+	)
+	if err := r.db(ctx).QueryRow(ctx, locateBatchSQL, batchID).Scan(&orgID, &receivedAt); err != nil {
+		return uuid.Nil, time.Time{}, mapErr(err, "locate the batch")
+	}
+	return orgID, receivedAt, nil
+}
+
 const resolveOrgSQL = `SELECT org_id FROM ingest_batches WHERE id = $1 AND received_at = $2`
 
 // ResolveOrg returns the org that owns a batch.
