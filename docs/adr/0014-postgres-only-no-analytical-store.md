@@ -43,6 +43,14 @@ Revisit when any of these is observed, and not before:
 - a rollup job overrunning its own interval,
 - a single org exceeding roughly 10M events per month.
 
+**"Observed" is doing real work in that sentence, and today nothing observes it.** No metric oto
+exports answers the first or the third, and the second is only half emitted. These three are also the
+reopen condition for the *other* decision derived from this one — that the never-reaped tables in
+[0024](0024-retention-defaults-and-cold-storage.md) stay unpartitioned, because on each of them the
+constraint a partition key would have to join is the product invariant itself. What is measured, what
+is not, and the `notification_deliveries` design that is ready for the day a trigger does fire, are in
+[0024 Amendment 3](0024-retention-defaults-and-cold-storage.md#amendment-3--the-never-reaped-list-is-not-a-partitioning-backlog-and-the-blocker-is-uniqueness).
+
 ## Consequences
 
 - One dependency. `helm install` plus a Postgres URL remains the whole deployment story, which the red

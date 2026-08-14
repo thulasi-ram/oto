@@ -43,6 +43,11 @@ Plus three small side tables pruned by row: `ingest_dedup` (10 min), `sessions` 
 (⚠️ `alert_event_keys` is now pruned by row — see
 [Amendment 1](#amendment-1--the-alert_event_keys-pruner-exists-and-the-horizon-is-a-floor)).
 
+This list is not a backlog of tables waiting to be partitioned. Partitioning them was evaluated and
+**declined**, because on each one the constraint a partition key would have to join is the product
+invariant itself — see
+[Amendment 3](#amendment-3--the-never-reaped-list-is-not-a-partitioning-backlog-and-the-blocker-is-uniqueness).
+
 ### 2. What survives each boundary — the reconstructibility answer
 
 Line up that second list against `README.md`'s own sentence. The promise is that for every alert that
@@ -359,3 +364,103 @@ nobody asked for. `TestTheSettingsCeilingOnlyEverWidens` pins the raise-never-as
 two reads are ports (`app.retentionTenants`, `app.retentionSettings`) for exactly this reason: a pool
 and a service cannot be asked to fail, and a rule about failures that no test can reach is a comment —
 which is what these two were.
+
+## Amendment 3 — the never-reaped list is not a partitioning backlog, and the blocker is uniqueness
+
+The §1 list gets read as a backlog. It is not one. Partitioning the high-growth tables the way the
+event tables are partitioned was evaluated end to end, and the answer is **no for eight of them, and
+for most of them not ever.**
+
+**The blocker is not volume and not query shape. It is that Postgres requires a unique index on a
+partitioned table to include every partition key column, and on these eight the uniqueness constraint
+*is* the product invariant.** SPEC §C14 hit this once and solved it once: *"Idempotency moves to two
+small **unpartitioned** side tables: `alert_event_keys` and `ingest_dedup`."* The comment above
+`alert_event_keys` (`00007_alerts.sql:286`) makes the argument in one line, about `alert_events`:
+*"because it would have to include `recorded_at`, and the whole point is to suppress a SECOND write at
+a DIFFERENT time."*
+
+Do not take that on trust — two statements against an empty Postgres 11 or later settle it. Declaring
+`UNIQUE (org_id, alert_key)` on a table `PARTITION BY RANGE (first_seen_at)` gives
+`ERROR: unique constraint on partitioned table must include all partitioning columns`. Add
+`first_seen_at` to the tuple and it succeeds — and so does the partial form, where a
+`UNIQUE INDEX (alert_id, started_at) WHERE ended_at IS NULL` partitioned on `started_at` is accepted
+without complaint and then holds two rows with `ended_at IS NULL` for one `alert_id`, one either side
+of a boundary. **There is no third option:** the only DDL that compiles converts a GLOBAL guarantee
+into a PER-PARTITION one, which makes this a schema decision and not a tuning one.
+
+Nine constraints across the eight tables break this way. Each row is the whole argument for that table:
+
+| Table | The constraint a partition key would have to join | What a date buys the bug |
+|---|---|---|
+| `alerts` | `alerts_key_uniq UNIQUE (org_id, alert_key)` (`00007_alerts.sql:54`) | The dedup identity itself. `00007_alerts.sql:101`: *"Dedup is enforced by alerts_key_uniq, NEVER by a read-then-write check."* An alert re-seen after its partition rolls becomes a second Alert with `first_seen_at` reset. |
+| `alert_occurrences` | `occ_one_open_idx UNIQUE (alert_id) WHERE ended_at IS NULL` (`00007_alerts.sql:187`) | Exactly two open episodes, one per side. Its own comment: *"An Occurrence is a CONTIGUOUS episode; two open at once is definitionally a bug."* |
+| `alert_occurrences` | `occ_seq_uniq UNIQUE (alert_id, seq)` (`00007_alerts.sql:155`) | Two episodes both claiming `seq = 4`. |
+| `notifications` | `notifications_idem_uniq UNIQUE (org_id, idempotency_key)` (`00011_notification.sql:219`) | The §C.7 intent identity. An at-least-once `notify.evaluate` retried across a boundary mints a second intent and fans out a second Slack post. |
+| `notification_deliveries` | `deliveries_fanout_uniq UNIQUE (notification_id, channel_id, mode)` (`00024_delivery_mode_uniq.sql:26`) | A duplicate Slack message for the same fact on the same channel in the same mode. |
+| `channel_threads` | `threads_subject_uniq UNIQUE (channel_id, subject_kind, subject_id)` (`00011_notification.sql:168`) | One generation owns two threads, against ADR 0005. |
+| `rule_snapshots` | `rule_snapshots_content_uniq UNIQUE (org_id, source_id, rule_name, rule_group, rule_file, rule_fingerprint)` (`00040_rule_snapshots_per_key_uniq.sql:57`) | Content addressing, destroyed. §C.6 drift is *"the newest snapshot differs from the one bound to the previous occurrence"*, so every boundary manufactures false drift. |
+| `alert_groups` | `groups_key_gen_uniq UNIQUE (org_id, group_key, generation)` (`00008_grouping.sql:47`) | The widest blast radius of the set: three inbound FKs (`alert_group_members.group_id`, `alert_occurrences.group_id`, `notifications.group_id`). |
+| `alert_group_members` | `PRIMARY KEY (group_id, occurrence_id)` (`00008_grouping.sql:100`) | Weakens "one membership row per (group, occurrence)" to gain `joined_at`, and buys nothing. |
+
+**Relocating an invariant would still buy nothing, because none of these tables' hot queries carry a
+lower time bound.** `alerts_list_idx (org_id, state, last_seen_at DESC, id DESC)`
+(`00007_alerts.sql:74`) serves the §D.12(a) keyset with no floor at all, so partitioning `alerts`
+prunes zero partitions and turns that index into an all-partition merge append. Only
+`del_dead_idx (org_id, created_at DESC) WHERE status = 'dead'` (`00011_notification.sql:313`) has
+`org_id` as its sole equality, and so is the only index in the set a range bound could prune.
+
+**What is NOT declined: `notification_deliveries`** — it has that one prunable index and, *inferred
+from its growth shape rather than measured*, the highest growth rate of the eight. The intuitive growth
+model is wrong: it grows **per fan-out target, per (notification × channel × mode), never per delivery
+attempt.** `attempts` is incremented in place (`deliveries.go:288`) and capped at 32 by
+`deliveries_attempts_ck`; retry and requeue UPDATE the same row, and since `00024` each mode carries
+its own, so one fact is 2 rows — not 32. A table retried hard for a week does not grow at all.
+
+The design, so the day a trigger fires is an execution: `deliveries_fanout_uniq` moves off the parent
+into a small unpartitioned `delivery_keys` keyed `(notification_id, channel_id, mode)`, the §C14
+pattern again. `notifications` can only follow, never lead — its FK child moves in the same migration,
+and the FK needs the partition key denormalised onto it. Grain **monthly on `created_at`**, proposed
+and not measured. Price the fifth parent first: `oto_partitions_manage` is four literal
+`IF to_regclass(…)` blocks (`00005_partitions.sql:174-211`, re-emitted whole by
+`00036_retention_defaults.sql:40-89`), and a new parameter is a Postgres *overload* rather than a
+replacement, so it drags in the 3-arg `DROP`, `managePartitionsSQL` (`internal/app/workers.go:314`),
+`Container.managePartitions` (`:333`), `am_route_timings_test.go:507`'s `pronargs = 3`, and
+`test/harness/postgres.go:271`'s zero-argument call.
+
+**The set is eight; §1's list is twelve.** `alert_event_keys` is no longer unreaped (Amendment 1) and
+`silences` mirrors Alertmanager's own set. `alert_quality_daily` is the case that proves the rule: its
+`PRIMARY KEY (org_id, day, cluster_key, alertname)` (`00014_ops.sql:44`) **already carries the date**,
+so it is the one table here that could be partitioned without weakening anything — the blocker really
+is uniqueness, not membership of this list; it stays whole because it is bounded by org × day ×
+distinct alertname and is ADR 0014's own answer to analytical scale. `enrichments` is the fourth and
+the honest gap: unpartitioned, unreaped, growing with the occurrences it annotates, and carrying
+`enrichments_subject_uniq UNIQUE (subject_kind, subject_id, enricher)` (`00010_enrichment.sql:29`),
+which breaks exactly as the nine above do. It was not in the investigated set; its absence from it is
+not a different answer.
+
+**The reopen condition, written down and NOT instrumented.** The trigger is ADR 0014's, unchanged and
+numeric, and it is restated here as a named threshold so it survives being read out of context:
+
+1. **alert-list p95 above 200 ms with a warm cache**,
+2. **a rollup job overrunning its own interval**,
+3. **a single org exceeding roughly 10M events per month.**
+
+**Written down is all they are, and this amendment deliberately leaves them that way.** Every metric oto
+exports is a counter, a queue gauge, or a *write-path* histogram — `oto_ingest_duration_seconds`,
+`oto_ingest_process_duration_seconds`, `oto_job_duration_seconds`, `oto_thread_head_wait_seconds`,
+`oto_clock_skew_seconds`. **There is no read-path or HTTP handler latency metric of any kind, and
+nothing anywhere carries a warm/cold cache dimension**, so trigger 1 is unmeasured.
+`oto_ingest_alerts_total` is an unlabelled counter of *alerts accepted for processing* — neither
+`alert_events` rows nor per-org — so trigger 3 is unmeasured. Trigger 2 is the near miss:
+`oto_job_duration_seconds{kind="stats.rollup"}` emits the duration, but the interval it must be
+compared against is a schedule, not a series, so nothing evaluates the condition. That gap is stated
+rather than closed on purpose: a threshold with a fabricated dashboard behind it is worse than a
+threshold with none. **There is no alert on these numbers, no panel, and nothing that will page.**
+Reopening starts by building the measurement for whichever trigger you believe has fired — the number
+you bring is the first new evidence since ADR 0014 was written, so say where it came from.
+
+**What pins this.** Nothing does, and that is right for a decision that changes no code: a test
+asserting eight tables are unpartitioned would pin an accident rather than a choice. What is checkable
+is the evidence — the nine constraints above at the file and line given, the four `IF to_regclass`
+blocks in `00005_partitions.sql:174-211`, and SPEC §C14. Drop or relocate any one of them and the row
+naming it here is what stops being true.
