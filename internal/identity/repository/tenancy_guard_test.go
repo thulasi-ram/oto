@@ -96,6 +96,15 @@ var notARequestResolver = map[string]string{
 
 	"notification/repository.listOrgsSQL": "the tenant enumerator for the unacked-reminder sweep. It is not a " +
 		"resolver — nothing outside chooses its input — and it already carries `WHERE deleted_at IS NULL`",
+	"app.liveOrgSQL": "job-payload scope for the per-tenant periodics (`occurrence.reap`, `group.close`, " +
+		"`flap.score`, `retention.prune`'s drill sweep, `stats.rollup`). It is the same category as the " +
+		"five above — the org comes from a ROW, not from a credential — with the twist that the row IS " +
+		"the org, because a periodic sweep has no subject to derive one from. That is exactly why it " +
+		"exists rather than the handler casting the payload's org id into a scope: a job payload is " +
+		"data, so the table decides. It carries `deleted_at IS NULL` inline rather than as a join " +
+		"because there is nothing to join it TO, and a departed tenant therefore resolves to no row and " +
+		"gets no sweep — the same answer `listOrgIDsSQL` gives on the enqueue side",
+
 	"app.listOrgIDsSQL": "the tenant enumerator for the reaper, the group close and the flap score. Not a " +
 		"resolver for the same reason listOrgsSQL is not, and it now agrees with it: it carries " +
 		"`WHERE deleted_at IS NULL`, so a departed tenant is not swept. It reads one keyset PAGE " +

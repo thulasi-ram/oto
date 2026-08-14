@@ -4974,30 +4974,38 @@ a distance, unmistakable at a glance, and legible for everyone.
 ```
 
 **Measured contrast ratios (light).** Computed with the WCAG 2.x relative-luminance formula.
-CI asserts each of these (M.7).
+CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real gate now (§M.7).
+
+> ⚠️ **Thirteen of the thirty-nine ratios in this table and in §M.5 were wrong, and were corrected
+> when that gate was written.** They disagreed with the formula named above by up to 0.68:
+> `--oto-state-expired-solid` on `--oto-bg` was published as 4.3:1 and is 5.0:1; `--oto-text` on
+> `--oto-bg` (dark) was published as 16.4:1 and is 15.6:1. Every one of them still cleared its
+> requirement, which is why the error survived — a number that changes no decision is a number
+> nobody re-derives. The table is no longer hand-measured: the test recomputes each row from the
+> hex the row quotes, and asserts that hex is what `tokens.css` declares for that token.
 
 | Foreground | Background | Ratio | Requirement | Pass |
 |---|---|---|---|---|
 | `--oto-text` `#1E1B2E` | `--oto-surface` `#FFFFFF` | **16.8:1** | 4.5 | ✅ |
 | `--oto-text` `#1E1B2E` | `--oto-bg` `#FBFAFF` | **16.2:1** | 4.5 | ✅ |
-| `--oto-text` `#1E1B2E` | `--oto-surface-raised` `#F5F3FD` | **15.8:1** | 4.5 | ✅ |
+| `--oto-text` `#1E1B2E` | `--oto-surface-raised` `#F5F3FD` | **15.3:1** | 4.5 | ✅ |
 | `--oto-text-muted` `#5A5473` | `#FFFFFF` | **7.1:1** | 4.5 | ✅ |
 | `--oto-text-muted` `#5A5473` | `#F5F3FD` | **6.5:1** | 4.5 | ✅ |
 | `--oto-text-subtle` `#78718F` | `#FFFFFF` | **4.6:1** | 4.5 | ✅ |
 | `--oto-accent` `#5B54D6` | `#FFFFFF` | **5.7:1** | 4.5 (link text) | ✅ |
 | `--oto-text-inverse` `#FFFFFF` | `--oto-accent` `#5B54D6` | **5.7:1** | 4.5 (button label) | ✅ |
 | `--oto-state-firing-text` `#8C1D18` | `--oto-state-firing-fill` `#FFEBEA` | **8.0:1** | 4.5 | ✅ |
-| `--oto-state-firing-solid` `#D7332B` | `--oto-bg` `#FBFAFF` | **4.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-firing-solid` `#D7332B` | `--oto-bg` `#FBFAFF` | **4.6:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#7A4A00` | `--oto-state-acked-fill` `#FFF4E0` | **6.9:1** | 4.5 | ✅ |
-| `--oto-state-acked-solid` `#C97A00` | `--oto-bg` `#FBFAFF` | **3.3:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-acked-solid` `#C97A00` | `--oto-bg` `#FBFAFF` | **3.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-suppressed-text` `#4A4560` | `--oto-state-suppressed-fill` `#F1F0F6` | **8.0:1** | 4.5 | ✅ |
-| `--oto-state-suppressed-solid` `#6E6786` | `--oto-bg` `#FBFAFF` | **5.5:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-suppressed-solid` `#6E6786` | `--oto-bg` `#FBFAFF` | **5.1:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-resolved-text` `#12592F` | `--oto-state-resolved-fill` `#E7F5EC` | **7.5:1** | 4.5 | ✅ |
-| `--oto-state-resolved-solid` `#17794A` | `--oto-bg` `#FBFAFF` | **5.3:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-resolved-solid` `#17794A` | `--oto-bg` `#FBFAFF` | **5.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-expired-text` `#57493A` | `--oto-state-expired-fill` `#F4F1EC` | **7.7:1** | 4.5 | ✅ |
-| `--oto-state-expired-solid` `#7D6A54` | `--oto-bg` `#FBFAFF` | **4.3:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-expired-solid` `#7D6A54` | `--oto-bg` `#FBFAFF` | **5.0:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-info-text` `#0B4A9B` | `--oto-state-info-fill` `#E9F1FE` | **7.5:1** | 4.5 | ✅ |
-| `--oto-state-info-solid` `#1A6FD4` | `--oto-bg` `#FBFAFF` | **4.8:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-info-solid` `#1A6FD4` | `--oto-bg` `#FBFAFF` | **4.7:1** | 3.0 (non-text) | ✅ |
 | `--oto-border-strong` `#C9C4E4` | `--oto-surface` `#FFFFFF` | **1.7:1** | — (decorative hairline only) | n/a |
 
 > `--oto-border` and `--oto-border-strong` are **decorative** and are never the sole carrier of
@@ -5063,28 +5071,29 @@ CI asserts each of these (M.7).
 }
 ```
 
-**Measured contrast ratios (dark).**
+**Measured contrast ratios (dark).** Same formula, same gate, and the same correction: see the
+note under §M.4's table.
 
 | Foreground | Background | Ratio | Requirement | Pass |
 |---|---|---|---|---|
 | `--oto-text` `#EDEBF7` | `--oto-surface` `#1B1A26` | **14.6:1** | 4.5 | ✅ |
-| `--oto-text` `#EDEBF7` | `--oto-bg` `#14131C` | **16.4:1** | 4.5 | ✅ |
+| `--oto-text` `#EDEBF7` | `--oto-bg` `#14131C` | **15.6:1** | 4.5 | ✅ |
 | `--oto-text-muted` `#B4AECB` | `#1B1A26` | **8.1:1** | 4.5 | ✅ |
 | `--oto-text-subtle` `#8B84A6` | `#1B1A26` | **4.9:1** | 4.5 | ✅ |
 | `--oto-accent` `#A6A0FF` | `#1B1A26` | **7.4:1** | 4.5 | ✅ |
-| `--oto-text-inverse` `#14131C` | `--oto-accent` `#A6A0FF` | **7.9:1** | 4.5 (button label) | ✅ |
+| `--oto-text-inverse` `#14131C` | `--oto-accent` `#A6A0FF` | **8.0:1** | 4.5 (button label) | ✅ |
 | `--oto-state-firing-text` `#FFB4AE` | `--oto-state-firing-fill` `#331A19` | **9.5:1** | 4.5 | ✅ |
 | `--oto-state-firing-solid` `#FF6B60` | `--oto-bg` `#14131C` | **6.6:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#FFD08A` | `--oto-state-acked-fill` `#33260F` | **10.3:1** | 4.5 | ✅ |
-| `--oto-state-acked-solid` `#F0A93C` | `--oto-bg` `#14131C` | **8.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-acked-solid` `#F0A93C` | `--oto-bg` `#14131C` | **9.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-suppressed-text` `#C0BAD4` | `--oto-state-suppressed-fill` `#242231` | **8.3:1** | 4.5 | ✅ |
-| `--oto-state-suppressed-solid` `#837CA0` | `--oto-bg` `#14131C` | **4.6:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-suppressed-solid` `#837CA0` | `--oto-bg` `#14131C` | **4.7:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-resolved-text` `#96E0B4` | `--oto-state-resolved-fill` `#102E1E` | **9.5:1** | 4.5 | ✅ |
 | `--oto-state-resolved-solid` `#35A96C` | `--oto-bg` `#14131C` | **6.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-expired-text` `#D6C7B0` | `--oto-state-expired-fill` `#2B2620` | **9.0:1** | 4.5 | ✅ |
-| `--oto-state-expired-solid` `#9A8869` | `--oto-bg` `#14131C` | **5.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-expired-solid` `#9A8869` | `--oto-bg` `#14131C` | **5.4:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-info-text` `#A8CDFF` | `--oto-state-info-fill` `#142A44` | **8.9:1** | 4.5 | ✅ |
-| `--oto-state-info-solid` `#5B9CF0` | `--oto-bg` `#14131C` | **6.9:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-info-solid` `#5B9CF0` | `--oto-bg` `#14131C` | **6.5:1** | 3.0 (non-text) | ✅ |
 
 ### M.6 The Slack palette is a SEPARATE, UNCHANGED system
 
@@ -5107,30 +5116,41 @@ Why they must stay separate:
    aesthetic would be trading correctness for coherence — the wrong trade in this product.
 
 A renderer MUST NOT read a `--oto-*` token. A stylesheet MUST NOT reference an `#a30200`-family
-hex. **Neither prohibition is enforced yet.** `TestSlackPaletteUnchanged` does not exist, and no
-lint rule forbids Slack hex literals in `web/` — `web/src/design/tokens.css:12` states that rule as
-a comment, which is not a rule. See §M.7 and git-bug `c49baaa`.
+hex. **Both prohibitions are enforced**, and neither was until git-bug `c49baaa`:
+
+- `TestSlackPaletteUnchanged` (`internal/channels/render/slack/palette_test.go`) pins each of the
+  six card colours — and its emoji — to §H.2's table, read off this page rather than restated in
+  the test, and fails on a hex in `palette.go` that §H.2 does not sanction.
+- `test/design/boundary_test.go` walks `web/src` for the six §H.2 literals and `internal/channels/
+  render` for a `--oto-*` string. `web/src/design/tokens.css` stated the first of those as a
+  comment for as long as it existed, which is not a rule.
 
 ### M.7 Enforcement
 
-> **Two of these eight rows are gates. The other six are intentions, and are marked as such.**
-> **RUNS** means the named test exists and `.github/workflows/ci.yml` invokes it. **UNWRITTEN**
-> means it does not exist in this tree, under that name or any other, and nothing equivalent runs
-> in its place except where the row says so. This distinction is in the table because it was not,
-> and a reader who greps for `contrast.test.ts`, finds the §M.7 row and stops looking is the exact
-> harm the marking prevents. Closing the gap — writing the tests, or deleting the rows and
-> scheduling the work through §N — is git-bug `c49baaa`. Until it closes, an UNWRITTEN row states
-> what this document intends to be true, not what CI will catch.
+> **Seven of these eight rows are gates. The eighth is an intention, and is marked as such.**
+> **RUNS** means the named test exists and `.github/workflows/ci.yml` invokes it — the `go-test`
+> job (`go test -race ./...`) or the `ui` job (`npm run test`), both of which pick these up by
+> pattern, so no row here depends on somebody having remembered to add a step. **UNWRITTEN** means
+> it does not exist in this tree, under that name or any other, and nothing equivalent runs in its
+> place except where the row says so.
+>
+> This column exists because a reader who greps for `contrast.test.ts`, finds the §M.7 row and
+> stops looking is the exact harm a table of names causes when the names are aspirations. Six of
+> these rows were aspirations until git-bug `c49baaa`; five are now written, and the sixth — the
+> `prefers-reduced-motion` snapshot — was **retired rather than written**, because the structural
+> assertion in `index.css.test.ts` proves strictly more than a snapshot could and needs no browser.
+> Its clause moved into that row. What is left is one row that genuinely needs a browser, and it
+> may not sit here indefinitely: either a Playwright job lands or the row leaves through §N.
 
 | Test | Status | Asserts |
 |---|---|---|
-| `web/src/design/contrast.test.ts` | **UNWRITTEN.** `web/src/design/` holds `.gitkeep`, `theme.ts` and `tokens.css`, and nothing else | every pair in M.4 and M.5 computes to the stated ratio ±0.05 and meets its requirement |
-| `web/src/design/tokens.test.ts` | **UNWRITTEN.** Same directory | light and dark define exactly the same token names; no token is defined in one theme only |
-| `TestNoStateHueInChrome` (lint) | **UNWRITTEN.** No such rule in `.golangci.yml`, and the two first-party linters under `tools/` — `lintvocab` and `lintreach` — check neither stylesheets nor tokens | no component stylesheet uses a `--oto-state-*` token outside a state badge, row-status or timeline-marker component |
-| `TestSlackPaletteUnchanged` (Go) | **UNWRITTEN** under that name. The hexes are pinned *incidentally* and *partially*: `TestTheSlackCardCorpusMatchesItsCheckedInCaptures` (`test/harness`) byte-compares the rendered corpus against `test/fixtures/slack/*.message.json`, which carry five of the six literals — `expired` has no capture — and `TestEachCardStateCarriesItsOwnColourForAHumanToVerify` asserts only that the six are distinct, never what they are | the six §H.2 hex values are byte-identical to the constants in `internal/channels/render/slack/palette.go` |
-| Playwright `a11y.spec.ts` | **UNWRITTEN.** `web/e2e/` holds one 0-byte `.gitkeep`; neither `playwright` nor `axe` appears in `web/package.json`, which declares no e2e script for a spec to run in and no CI job that would invoke one | axe-core reports zero contrast violations on the alert list, alert detail and timeline, in **both** themes |
-| `prefers-reduced-motion` snapshot | **UNWRITTEN.** The clause it would check is nevertheless enforced, structurally and more strongly, by the row below: a rendered snapshot proves one tree at one moment, the sweep assertion proves the guard reaches every animation including the ones not yet written | **no** animation runs when the media query is set — the unacked-critical pulse (U4) and every U9 animation alike |
-| `web/src/index.css.test.ts` | **RUNS.** `npm run test` in the `ui` job | every first-party utility is declared with `@utility` (so variants of it compile), and the reduced-motion guard suppresses motion by sweeping `*` rather than by naming class names — which is why it cannot fall behind the next animation added |
+| `web/src/design/contrast.test.ts` | **RUNS.** `npm run test`, `ui` job | every pair in §M.4 and §M.5 computes to the stated ratio ±0.05 and meets its requirement; the hex each row quotes is the one `tokens.css` declares for that token, in that theme; and every row that looks like a measurement parsed as one. ⚠️ It found **thirteen** of the thirty-nine published ratios wrong when it was written (see the note under §M.4's table) |
+| `web/src/design/tokens.test.ts` | **RUNS.** Same job | light and dark define exactly the same token names — no token is defined in one theme only, where it would resolve to nothing rather than to a fallback — and every token's value is byte-identical to the CSS block §M.4/§M.5 quote |
+| `TestNoStateHueInChrome` (`test/design`) | **RUNS.** `go test -race ./...`, `go-test` job | no file under `web/src` uses a Tier-B state colour outside a state badge, row-status or timeline-marker component. The banned set is read out of `index.css`'s `@theme` block (every `--color-*` fed by an `--oto-state-*` token), so a new state colour is watched from the moment it exists; the permitted files are an explicit list with a reason per entry, and an entry that stops matching fails too |
+| `TestSlackPaletteUnchanged` (`internal/channels/render/slack`) | **RUNS.** Same job | the six §H.2 hex values *and* their emoji are byte-identical to what `palette.go` returns, read off §H.2 rather than restated — a fixture copied out of the code would agree with any edit made to the code. Also fails on a hex in `palette.go` that §H.2 does not sanction. ⚠️ The golden corpus is NOT this gate: it carries five of the six literals (`expired` has no capture) and asserts only that the six are distinct, so a coordinated edit to `palette.go` and the captures passes it |
+| `TestNoSlackHexAppearsInTheWebTree`, `TestNoOtoTokenReachesTheSlackRenderer` (`test/design`) | **RUNS.** Same job | §M.6's two prohibitions, which were stated for months and enforced by nothing: no §H.2 literal anywhere under `web/src`, and no `--oto-*` string in `internal/channels/render`. The second reads string literals rather than source text, so the comments that explain the rule do not trip it |
+| Playwright `a11y.spec.ts` | **UNWRITTEN.** `web/e2e/` holds one 0-byte `.gitkeep`; neither `playwright` nor `axe` appears in `web/package.json`, which declares no e2e script for a spec to run in and no CI job that would invoke one. ⚠️ This is the **only** row here that cannot be done in-process: it needs a browser, a served build and a CI job, which is why it did not land with the other five | axe-core reports zero contrast violations on the alert list, alert detail and timeline, in **both** themes. Its residual scope is now narrower than it was: `contrast.test.ts` proves every pair the SPEC tabulates, so what is left is the pairs the SPEC does *not* tabulate — two verified tokens composed into an unverified pair by a component, which only rendered DOM can see |
+| `web/src/index.css.test.ts` | **RUNS.** `npm run test`, `ui` job | every first-party utility is declared with `@utility` (so variants of it compile); the reduced-motion guard suppresses motion by sweeping `*` rather than by naming class names, so it cannot fall behind the next animation added; the guard sits in `@layer base`, which is what lets it beat an important-flagged utility, and nothing else in that layer carries `!important` on a motion property; and no animation is driven from JavaScript or an inline style, where the media query cannot reach it. **This is the row that carries U4/U9's reduced-motion clause** — a snapshot would have proved one tree at one moment, this proves the guard reaches every animation including the ones not yet written |
 | `web/src/components/ui/Chime.test.tsx` | **RUNS.** Same job | the fūrin's swing fires on the header mark's first mount in a document, at most once per document, never on a connection transition (neither a reload holding a resume point nor a quiet install's endless reconnects can change whether it fires), and carries the `motion-safe:` guard |
 ---
 

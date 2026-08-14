@@ -341,7 +341,8 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 - **The Slack palette (§H.2, Grafana OnCall hexes) is a SEPARATE, UNCHANGED system — do not
   harmonise it.** Different substrate, different contrast contract, and those values are the
   best-tested alert palette that exists. A renderer must not read a `--oto-*` token; a stylesheet
-  must not contain a Slack hex.
+  must not contain a Slack hex. **Both halves are gates** — `test/design/boundary_test.go`, plus
+  `TestSlackPaletteUnchanged`, which pins the six hexes to §H.2 itself rather than to `palette.go`.
 
 ## 6. Conventions
 

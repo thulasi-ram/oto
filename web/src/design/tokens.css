@@ -7,9 +7,15 @@
  *   Tier B — state only. Saturated colour on screen means exactly one thing:
  *            "this is the state of an alert". Scarcity is what makes it loud.
  *
- * Do not add a token here without a measured contrast pair in §M.4/§M.5.
- * The Slack palette (§H.2) is a SEPARATE system and must never appear here
- * (§M.6): no `#a30200`-family literal may exist anywhere under web/.
+ * Do not add a token here without a measured contrast pair in §M.4/§M.5 —
+ * `contrast.test.ts` recomputes every one of them and fails on a pair the SPEC
+ * does not tabulate.
+ *
+ * The Slack palette (§H.2) is a SEPARATE system and must never appear anywhere
+ * under web/ (§M.6). That sentence used to be the whole enforcement, and quoted
+ * one of the six hexes as an example; both are now the job of
+ * `test/design/boundary_test.go`, which reads the six values out of §H.2 and
+ * fails on any of them appearing here.
  * ------------------------------------------------------------------------- */
 
 :root,

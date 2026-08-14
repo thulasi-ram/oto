@@ -149,11 +149,21 @@ not have. What CI runs today, and therefore what will stop a bad change:
 | AC-49 vocabulary + forbidden columns | `vocabulary` job, `go run ./tools/lintvocab` | **enforced**, with known debt listed in `tools/lintvocab/baseline.txt` |
 | Helm chart renders, and its guard rails still fire | `helm` job, `bash deploy/helm/check.sh` (`just helm-check`) | **enforced** — `helm lint`, then `helm template` over defaults, over the three templates the defaults switch off (`ingress`, `hpa`, `job-bootstrap`), over `existingSecret` (which must render NO Secret) and over Slack in `http` mode, with every rendered manifest validated as Kubernetes by `kubeconform` at both ends of Chart.yaml's `kubeVersion` range. Each of the **eight** `fail` guard rails in `_helpers.tpl` is fed the input it exists to reject and must fail with its own sentence. ⚠️ `helm lint` alone is not the gate: it exits 0 on this chart at its own defaults, which `helm template` refuses to render |
 | `TestValidatorMatchesDDL` (§L.8) | `internal/platform/validate/ddl_test.go` | **enforced** — every canonical regex is compared byte-for-byte with its DDL `CHECK` |
+| Design tokens and measured contrast (§M.4–§M.7, AC-45) | `web/src/design/contrast.test.ts` and `tokens.test.ts`, `ui` job | **enforced** — every pair §M.4/§M.5 tabulate is recomputed from the hex the row quotes, that hex is checked against `tokens.css`, and both themes must declare the same token names. ⚠️ It found **13 of the 39 published ratios wrong** on the day it was written; they were corrected in the same commit |
+| Tier-B colour scarcity, and the Slack/UI boundary (§M.2, §M.6, AC-47, AC-48) | `test/design/`, `internal/channels/render/slack/palette_test.go`, `go-test` job | **enforced** — no state hue outside a state badge, a row status or a timeline marker (with the permitted files listed and reasoned, and a stale entry failing too); the six §H.2 hexes pinned to the SPEC rather than to the code; no §H.2 literal under `web/src`; no `--oto-*` string in a renderer |
+| Reduced motion (U4, U9, AC-47) | `web/src/index.css.test.ts`, `ui` job | **enforced structurally** — the guard sweeps `*` rather than naming classes, sits in the layer that lets it beat an important-flagged utility, and no motion is driven from JavaScript or an inline style where CSS cannot reach it. This replaced the Playwright snapshot §M.7 used to name: it proves more, and needs no browser |
+| axe-core contrast over the rendered DOM, both themes (AC-45) | — | **NOT enforced.** The one UNWRITTEN row of SPEC §M.7. `web/e2e/` holds a `.gitkeep`; there is no Playwright, no axe and no CI job to run one. `contrast.test.ts` covers the pairs the SPEC tabulates, which is not the same as the pairs the product composes |
 
 Each of the four drift gates has been demonstrated to FAIL against a deliberately planted drift —
 a Go DTO field absent from the contract for G1, a handler returning the wrong shape for G2, a
 hand-edited generated file for G3 and G4 — before being called done. A gate that has never failed
 is a gate nobody knows works.
+
+⚠️ **The four §M design gates have not yet been through that demonstration.** They are new with
+git-bug `c49baaa`, and each carries an internal guard against reading nothing (an empty token set,
+an unparsed table row, an exception that no longer matches) — but a guard is not a planted
+violation. Until somebody has moved a hue, dropped a token from one theme and put a state colour in
+a chrome component and watched all three go red, this paragraph does not cover them.
 
 The chart gate was held to the same standard, against eight planted defects: a `Service` given
 `apiVersion: v1beta9`, a `Deployment` with its `selector` removed, a mis-nested `{{- if }}` in

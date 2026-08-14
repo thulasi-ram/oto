@@ -205,4 +205,83 @@ describe("reduced motion", () => {
     expect(body ?? "").toMatch(/animation-iteration-count:\s*1\s*!important/);
     expect(body ?? "").toMatch(/transition-duration:\s*0?\.01ms\s*!important/);
   });
+
+  // ⭐⭐ THE TWO ASSERTIONS BELOW ARE WHY §M.7 NO LONGER NAMES A PLAYWRIGHT
+  // SNAPSHOT FOR THIS. A snapshot proves one tree, in one theme, at one moment;
+  // the sweep above proves the guard reaches every animation that EXISTS. What it
+  // does not prove is that the guard still WINS, and the sweep has exactly two
+  // ways to be beaten — neither of them visible in a screenshot of a page where
+  // nobody has used one yet:
+  //
+  //   1. Losing the cascade. `*` has specificity 0, so within one layer any class
+  //      rule with an equally important motion declaration beats it. What saves
+  //      it is the layer: `!important` REVERSES layer order, so from `base` it
+  //      also overrides an important-flagged utility (`animate-spin!`) sitting in
+  //      `utilities`. That placement is load-bearing and looks like tidying.
+  //   2. Never entering the cascade at all. `el.animate(…)` and an inline
+  //      `style` run whatever the media query says.
+  //
+  // Both are text, and both are checkable here — at no cost, and years before a
+  // browser test would have been pointed at the page that has one.
+  it("keeps the guard in the layer that lets it beat an important utility", () => {
+    const reduce = /@media\s*\(prefers-reduced-motion:\s*reduce\)/;
+
+    // `@layer base` is opened more than once in this file, so every one of them
+    // has to be looked at; exactly one may hold the guard.
+    const bases: string[] = [];
+    for (const at of CSS.matchAll(/@layer\s+base\b/g)) {
+      if (at.index === undefined) continue;
+      const body = atRuleBody(CSS.slice(at.index), /@layer\s+base\b/);
+      if (body !== null) bases.push(body);
+    }
+    const holding = bases.filter((body) => reduce.test(body));
+    expect(
+      holding,
+      "the reduced-motion guard is not inside an `@layer base` block. In `utilities` — or in no " +
+        "layer at all — an important declaration LOSES to an important one in an earlier layer, " +
+        "so `animate-spin!` written into markup would outlive `prefers-reduced-motion: reduce`.",
+    ).toHaveLength(1);
+
+    // Inside `base` the layer trick buys nothing: same layer, so specificity
+    // decides, and every selector in the product beats `*`.
+    //
+    // ⛔ EVERY `@layer base` BLOCK, NOT THE ONE HOLDING THE GUARD. This scan used to
+    // read `holding[0]`, and `index.css` opens `base` twice — the guard lives in the
+    // second one. A cascade does not care which block a declaration was written in:
+    // both are the same layer, so an `!important` animation in the FIRST beat the
+    // sweep exactly as one written next to it would, and this assertion never looked
+    // at it. The `@layer base` a violation would most plausibly be added to was the
+    // one the check skipped.
+    const guard = atRuleBody(CSS, reduce) ?? "";
+    const offenders = bases.flatMap((body) =>
+      [...body.replace(guard, "").matchAll(/(?:animation|transition)[a-z-]*\s*:[^;{}]*!important/g)].map((m) =>
+        m[0].trim(),
+      ),
+    );
+    expect(
+      offenders,
+      "these motion declarations carry `!important` inside `@layer base`, alongside the guard and " +
+        "with a real selector in front of them. Same layer, same importance — specificity decides, " +
+        "and the sweep's `*` loses every time.",
+    ).toEqual([]);
+  });
+
+  it("drives no animation from JavaScript, where the media query cannot reach it", () => {
+    const escapes: string[] = [];
+    for (const file of sourceFiles()) {
+      const text = readFileSync(file, "utf8");
+      for (const m of text.matchAll(
+        /\.animate\s*\(|\bstyle\s*\.\s*(?:animation|transition)\b|style=\{\{[^}]*\b(?:animation|transition)\s*:/g,
+      )) {
+        escapes.push(`${path.relative(SRC, file)}: ${m[0].trim()}`);
+      }
+    }
+    expect(
+      escapes,
+      "motion set from script, or inline, is invisible to the `prefers-reduced-motion` guard in " +
+        "`index.css` — the sweep can only reach declarations the cascade owns. Move it to a " +
+        "`@utility`, or read `prefersReducedMotion()` (`~/design/theme`) at the call site and " +
+        "say here which one this is.",
+    ).toEqual([]);
+  });
 });
