@@ -152,7 +152,7 @@ Rules you must not get wrong:
 | `streaming` | CORE | `ui_events`, LISTEN/NOTIFY bridge, SSE hub with resume. |
 | `silences` | PERIPHERAL | Read-only mirror of AM silences. **No write path.** |
 | `stats` | PERIPHERAL | Alert-hygiene accounting. **Never per-person.** |
-| `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches six of them — `alerts`, `grouping`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_occurrences`, `alert_events`, `alert_groups`, `alert_group_members`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Nothing enforces those. |
+| `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches six of them — `alerts`, `grouping`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_occurrences`, `alert_events`, `alert_groups`, `alert_group_members`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Those thirteen, plus its own `delivery_drills`, are DECLARED in `test/arch/sqltables_test.go` with their owner and how far the drill may go against each. The reads stay SQL on purpose — a port satisfied by the owning module's service would have the drill ask the code under test whether the code under test worked. |
 | `app` | WIRING | The composition root. Constructs every concrete, satisfies every port, registers the workers and routes. THE one place allowed to know every module, and deliberately outside every cross-domain rule. Not a domain. |
 | `correlation` (was `incidents`), `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz`, extra channel providers, anything AI | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. |
 | `incidents`, `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
@@ -216,8 +216,21 @@ producer never names the consumer, so there is nothing to enforce at all:
 **4. Table names in SQL — no Go edge whatsoever.** `drill` reads six other modules' tables by
 name (see its row above); `notification/repository/snapshot.go` joins `alert_sources` to learn a
 source's kind so it can decide whether an Alertmanager silence URL is one oto can vouch for.
-These are invisible to the compiler, to depguard and to the arch test alike. A rename breaks them
-at runtime.
+No compiler, no depguard rule and no import graph can see either one — `test/arch/arch_test.go`
+says so itself: *"COMPILE-TIME EDGES ONLY."*
+
+`test/arch/sqltables_test.go` is the gate that reads the SQL instead, and it covers **`drill`
+only**. Every table `internal/drill/**` names is declared there with its owning module and its
+permitted access: a fourteenth table fails CI the way a new import does, a declared table nothing
+names any more fails as stale, a SELECT that grows into a DELETE fails even though the table was
+already declared, and a table its owner renames fails on the OWNER's side rather than at runtime on
+the drill path. It also holds `dispose.go`'s two stated invariants — every DELETE scoped by an id
+and not merely by `org_id` and a predicate, and `AND synthetic` still on `alerts` and
+`alert_groups` — which were argued in a comment on a file nothing in the build system knew was
+special.
+
+⚠️ `notification`'s `alert_sources` join and `stats`' ten borrowed tables are **not** declared
+anywhere. For those a rename still breaks at runtime, and gating them means writing their claims.
 
 ⛔ `notification ──► silences` used to be drawn and is **not a relationship**: `notification`
 neither imports `silences`, nor declares a port onto it, nor enqueues to it. The silence links it
@@ -236,9 +249,13 @@ edges point the other way — `silences ──► alerts` (import) and `silences
   an edge points. The only directional depguard rule is `dependency-direction-alerts-and-ingestion`
   — `alerts` and `ingestion` may not import `notification` or `channels` (SPEC §I.1).
   `platform-must-not-import-domains` keeps `platform` out of the graph entirely.
-- **Both skip `_test.go`.** Test files do cross module lines on purpose.
-- **Mechanisms 2, 3 and 4 are enforced by nothing.** That is the price of the decoupling, and it
-  is the reason they are listed rather than drawn as arrows.
+- **`test/arch/sqltables_test.go` is the only gate on TABLE OWNERSHIP**, and only over `drill`.
+  It reads string literals, not imports, so it is the one check in this repo that can see a
+  module reaching across a boundary without an edge to reach it with.
+- **All three skip `_test.go`.** Test files do cross module lines on purpose, and a fixture that
+  seeds another module's table to set a test up is not the module reaching across a boundary.
+- **Mechanisms 2 and 3 are enforced by nothing, and mechanism 4 only for `drill`.** That is the
+  price of the decoupling, and it is the reason they are listed rather than drawn as arrows.
 
 ---
 
@@ -338,6 +355,13 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 
 - Colour is never the only channel — every state carries ≥2 of {colour, icon, text label}.
 - Severity → **icon**. State → **colour**. Dark mode is the default. No flashing, ever.
+- **Colour is not the only axis with a vocabulary any more (§M.8, ADR 0029).** Type is six steps —
+  `text-micro` 10 / `text-meta` 11 / `text-body` 12 / `text-item` 13 / `text-title` 14 / `text-page`
+  18 — and radius is three: `rounded-chip` 3 (inline things), `rounded-control` 4 (things you
+  operate), `rounded-surface` 6 (things that hold controls). Both were read off 342 existing
+  bracket literals rather than drawn, which is why they are that short. **A size written at a call
+  site is a violation, not a shortcut** — bracket, Tailwind's own `text-sm`/`rounded-md` ladder, or
+  a raw declaration in a stylesheet alike; `web/src/design/scales.test.ts` is the gate.
 - **The Slack palette (§H.2, Grafana OnCall hexes) is a SEPARATE, UNCHANGED system — do not
   harmonise it.** Different substrate, different contrast contract, and those values are the
   best-tested alert palette that exists. A renderer must not read a `--oto-*` token; a stylesheet

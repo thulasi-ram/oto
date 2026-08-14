@@ -25,4 +25,12 @@
 // is a report over their artefacts, and everything it WRITES goes through a port
 // some other module's service satisfies (§F.5 rule 4). It writes exactly one
 // table of its own, `delivery_drills`.
+//
+// ⛔ THOSE READS ARE DECLARED, and the declaration is the gate. Because this package
+// imports no other module, depguard and `test/arch/arch_test.go` are blind to it by
+// construction — they read the import graph and there is nothing in it to read.
+// `test/arch/sqltables_test.go` reads the SQL instead: every table named under
+// `internal/drill/**` is listed there with its owner and how far this module may go
+// against it, so a new table name fails CI the way a new import would. Adding one is
+// an architectural change, and the reason goes in the claim.
 package drill

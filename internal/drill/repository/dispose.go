@@ -32,6 +32,13 @@ const eventWindow = 5 * time.Minute
 // migration away from deleting by the wrong boolean, and the blast radius of
 // getting this wrong is a customer's entire alert history.
 //
+// ⭐ BOTH RULES ABOVE ARE NOW ASSERTED, not merely argued. `test/arch/sqltables_test.go`
+// declares every table this module names in SQL with its owning module and its
+// permitted access, and it fails the build if a DELETE here loses its id scope, if
+// `AND synthetic` disappears from the two riskiest statements, or if disposal reaches
+// a table nobody declared. This comment used to be the only thing standing between a
+// tidy-looking edit and a customer's alert history.
+//
 // What is NOT deleted, and why:
 //
 //   - `ingest_batches` / `ingest_rejections` — the raw tables already have a
