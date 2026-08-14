@@ -661,6 +661,22 @@ Zero rows affected ⇒ the event already exists ⇒ skip the `alert_events` inse
 **Conventions.**
 - Primary keys are UUIDv7 generated in Go (`platform/id.New()`). Never `gen_random_uuid()` — we need time-ordered index locality.
 - All timestamps are `TIMESTAMPTZ`. There are no naive timestamps anywhere.
+- **Writers own time; timestamp columns carry no `DEFAULT now()`.** The repository names every
+  timestamp from the injected Go clock (CONTEXT.md §6, `internal/platform/clock`), so all of a row's
+  instants come from one clock instead of splitting between the pod and Postgres. A default on a
+  column the repository always supplies is not a safety net: it lets a future writer omit the column,
+  succeed, and plant a row stamped from the database's clock, which surfaces later as somebody
+  else's `<table>_time_ck` failure. Advancing `updated_at` monotonically —
+  `GREATEST(updated_at, $n)` — is likewise a **writer obligation**, not something the schema can
+  enforce; without it a lagging pod pushes `updated_at` back past `created_at` and trips that CHECK.
+  **Named exceptions**, which keep the default and must:
+  `alerts.created_at/updated_at`, `alert_occurrences.created_at/updated_at`,
+  `alert_groups.created_at/updated_at`, `alert_event_keys.created_at`, `alert_snoozes.created_at`,
+  `ui_events.at`. On each of these a live writer omits the column today, so dropping the default
+  would break a production path immediately rather than protect a future one; the alerts family is
+  internally consistent on the database's clock, which is the property that matters, and moving it
+  is a separate change that has to move the INSERTs and the UPDATEs together
+  (`db/migrations/00034_app_clock_remaining.sql`).
 - Enums are `TEXT` + `CHECK`. No Postgres `ENUM` types (migration friction).
 - Every composite index starts with `org_id`.
 - Migrations are goose `.sql` files under `db/migrations/`, embedded via `embed.FS`.
@@ -707,8 +723,9 @@ CREATE TABLE orgs (
     --       flap_threshold(5), flap_window_s(7200), flap_digest_interval_s(900),  -- ADR 0026
     --       storm_threshold(25), storm_window_s(60), storm_cooldown_s(600),
     --       raw_retention_days(30), event_retention_months(13)   -- ADR 0024
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `app.Bootstrap` and `OrgRepository.UpdateSettings` stamp them.
+  created_at   TIMESTAMPTZ NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL,
   deleted_at   TIMESTAMPTZ,
   CONSTRAINT orgs_slug_ck     CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,62}$'),
   CONSTRAINT orgs_name_ck     CHECK (length(btrim(name)) BETWEEN 1 AND 200),
@@ -722,8 +739,9 @@ CREATE TABLE users (
   email          CITEXT      NOT NULL,
   display_name   TEXT        NOT NULL,
   password_hash  TEXT,                            -- argon2id; NULL disables password login
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `app.Bootstrap`, the only writer, stamps both.
+  created_at     TIMESTAMPTZ NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL,
   disabled_at    TIMESTAMPTZ,
   CONSTRAINT users_email_uniq UNIQUE (org_id, email),
   CONSTRAINT users_email_ck   CHECK (email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' AND length(email) <= 254),
@@ -744,7 +762,8 @@ CREATE TABLE api_tokens (
   source_id    UUID,                               -- REQUIRED for kind='ingest'; FK added in 00003
   last_used_at TIMESTAMPTZ,
   expires_at   TIMESTAMPTZ,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `APITokenRepository.Insert` stamps it.
+  created_at   TIMESTAMPTZ NOT NULL,
   revoked_at   TIMESTAMPTZ,
   CONSTRAINT api_tokens_ingest_scope CHECK (kind <> 'ingest' OR source_id IS NOT NULL),
   CONSTRAINT api_tokens_pat_user     CHECK (kind <> 'pat'    OR user_id  IS NOT NULL),
@@ -763,7 +782,8 @@ CREATE TABLE sessions (
   user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash  BYTEA       NOT NULL,
   user_agent  TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SessionRepository.Insert` stamps it.
+  created_at  TIMESTAMPTZ NOT NULL,
   expires_at  TIMESTAMPTZ NOT NULL,
   revoked_at  TIMESTAMPTZ,
   CONSTRAINT sessions_hash_ck   CHECK (octet_length(token_hash) = 32),
@@ -781,7 +801,8 @@ CREATE TABLE slack_identities (
   slack_handle TEXT,
   user_id      UUID        REFERENCES users(id) ON DELETE SET NULL,  -- NULL = unlinked
   linked_at    TIMESTAMPTZ,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SlackIdentityRepository.Upsert` stamps it.
+  created_at   TIMESTAMPTZ NOT NULL,
   CONSTRAINT slack_identities_uniq UNIQUE (org_id, team_id, slack_user_id),
   CONSTRAINT slack_identities_team_ck CHECK (team_id ~ '^T[A-Z0-9]{2,}$'),
   CONSTRAINT slack_identities_user_ck CHECK (slack_user_id ~ '^[UW][A-Z0-9]{2,}$'),
@@ -799,8 +820,9 @@ CREATE TABLE clusters (
   org_id       UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   cluster_key  TEXT        NOT NULL,               -- participates in alert identity (C.2)
   display_name TEXT        NOT NULL,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `ClusterRepository.Create`/`UpdateDisplayName` stamp them.
+  created_at   TIMESTAMPTZ NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL,
   deleted_at   TIMESTAMPTZ,
   CONSTRAINT clusters_key_uniq UNIQUE (org_id, cluster_key),
   CONSTRAINT clusters_key_ck   CHECK (cluster_key ~ '^[a-z0-9][a-z0-9._-]{0,62}$'),
@@ -827,8 +849,9 @@ CREATE TABLE alert_sources (
   -- reconciler runs for every source (ADR 0006 + its second amendment). The
   -- interval below is the whole of the reconciliation tuning surface.
   reconcile_interval_s INT       NOT NULL DEFAULT 30 CHECK (reconcile_interval_s >= 10),
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SourceRepository.Create`/`Update`/`SoftDelete` stamp them.
+  created_at         TIMESTAMPTZ NOT NULL,
+  updated_at         TIMESTAMPTZ NOT NULL,
   deleted_at         TIMESTAMPTZ,
   CONSTRAINT alert_sources_name_uniq UNIQUE (org_id, name),
   CONSTRAINT alert_sources_name_ck    CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
@@ -863,7 +886,8 @@ CREATE TABLE source_health (
   clock_skew_ms         BIGINT      NOT NULL DEFAULT 0,   -- observed_at - source_ts, EWMA
   divergence_count      INT         NOT NULL DEFAULT 0,   -- reconciler disagreements last run
   warnings              JSONB       NOT NULL DEFAULT '[]'::jsonb,
-  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SourceRepository.SaveHealth`/`TouchPush` stamp it.
+  updated_at            TIMESTAMPTZ NOT NULL,
   CONSTRAINT source_health_fail_ck  CHECK (consecutive_failures >= 0),
   CONSTRAINT source_health_div_ck   CHECK (divergence_count >= 0),
   CONSTRAINT source_health_warn_ck  CHECK (jsonb_typeof(warnings) = 'array'),
@@ -943,7 +967,9 @@ CREATE TABLE ingest_dedup (
   source_id  UUID        NOT NULL,
   dedup_key  TEXT        NOT NULL,
   batch_id   UUID        NOT NULL,
-  seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `DedupRepository.Claim` stamps it, from the same
+  -- clock `DedupRepository.Prune` computes its cutoff from.
+  seen_at    TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (source_id, dedup_key),
   CONSTRAINT ingest_dedup_key_ck CHECK (dedup_key ~ '^[0-9a-f]{64}$')
 );
@@ -1375,7 +1401,9 @@ CREATE TABLE channel_credentials (
                                                    -- slack_signing_secret | basic | bearer | none
   sealed      BYTEA       NOT NULL,                -- AES-256-GCM, key from platform/secrets keyring
   key_version INT         NOT NULL DEFAULT 1,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `CredentialRepository.Create` stamps it, and `Rotate`
+  -- advances `rotated_at` from the same clock, GREATEST(created_at, rotated_at, $n).
+  created_at  TIMESTAMPTZ NOT NULL,
   rotated_at  TIMESTAMPTZ,
   CONSTRAINT channel_credentials_kind_ck CHECK (kind IN
     ('slack_bot_token','slack_app_token','slack_signing_secret','basic','bearer','none')),
@@ -1405,8 +1433,16 @@ CREATE TABLE channels (
                                 CHECK (health_status IN ('healthy','degraded','auth_failed','config_invalid','unknown')),
   health_error      TEXT,
   health_checked_at TIMESTAMPTZ,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions). 00032 dropped it here first, and this table is why
+  -- the rule exists. `created_at` came from the database's clock while every writer of
+  -- `updated_at` stamped it from the Go process's, so on an app server running behind
+  -- Postgres the first health write on a freshly created channel produced an `updated_at`
+  -- earlier than `created_at` and failed `channels_time_ck` — surfacing as
+  -- `internal_error/channels_time_ck` on the first delivery with nothing actually wrong.
+  -- `ChannelRepository.Create` now stamps both from the injected Go clock, and `Update`
+  -- and `SetHealth` advance `updated_at` monotonically, GREATEST(updated_at, $n).
+  created_at        TIMESTAMPTZ NOT NULL,
+  updated_at        TIMESTAMPTZ NOT NULL,
   deleted_at        TIMESTAMPTZ,
   CONSTRAINT channels_name_uniq UNIQUE (org_id, name),
   CONSTRAINT channels_name_ck   CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
@@ -1437,12 +1473,8 @@ CREATE TABLE notification_policies (
   throttle      JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- {"max":N,"window_s":S} per subject
   unacked_reminder_after_s INT,                    -- NULL = no reminder; else unacked-for seconds.
                                                    -- SCALAR. ONE STAGE, FOREVER. Never an array (§G.9.1).
-  -- NO `DEFAULT now()` on either: 00034 dropped it here (00032/00033 did the same
-  -- for `channels`, `orgs` and `channel_credentials`) because the writer owns time
-  -- (CONTEXT.md §6, internal/platform/clock). A default on a column the repository
-  -- always supplies is not a safety net: it lets a future writer omit the column,
-  -- succeed, and plant a row whose timestamp came from the DATABASE's clock — which
-  -- on this table fails later, on somebody else's UPDATE, against policies_time_ck.
+  -- no DEFAULT now() (§D conventions); `ConfigRepository.CreatePolicy`/`UpdatePolicy`/
+  -- `SoftDeletePolicy` stamp them.
   created_at    TIMESTAMPTZ NOT NULL,
   updated_at    TIMESTAMPTZ NOT NULL,
   deleted_at    TIMESTAMPTZ,
@@ -1485,8 +1517,10 @@ CREATE TABLE channel_threads (
   dead_reason              TEXT,                   -- channel_not_found | is_archived | message_not_found |
                                                    -- not_in_channel | token_revoked | account_inactive |
                                                    -- edit_window_closed | cannot_reply_to_message
-  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `ThreadRepository.Ensure` stamps both, and every
+  -- later writer advances `updated_at` monotonically, GREATEST(updated_at, $n).
+  created_at               TIMESTAMPTZ NOT NULL,
+  updated_at               TIMESTAMPTZ NOT NULL,
   CONSTRAINT threads_subject_uniq UNIQUE (channel_id, subject_kind, subject_id),
   CONSTRAINT threads_seq_ck    CHECK (next_seq >= 1 AND last_sent_seq >= 0 AND last_sent_seq < next_seq),
   CONSTRAINT threads_reply_ck  CHECK (reply_count >= 0),
@@ -1519,8 +1553,9 @@ CREATE TABLE notifications (
   suppressed_reason TEXT,                          -- no_policy | throttled | storm | flapping | snoozed |
                                                    -- verbosity | channel_disabled | duplicate_render
                                                    -- precedence order is fixed: see B.8.2
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `NotificationRepository.Insert` and `SetStatus` stamp them.
+  created_at      TIMESTAMPTZ NOT NULL,
+  updated_at      TIMESTAMPTZ NOT NULL,
   CONSTRAINT notifications_idem_uniq UNIQUE (org_id, idempotency_key),
   CONSTRAINT notifications_reason_ck CHECK (reason IN
     ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
@@ -1562,8 +1597,10 @@ CREATE TABLE notification_deliveries (
                                   ('retryable','rate_limited','permanent','config_invalid','auth_expired')),
   ambiguous           BOOLEAN     NOT NULL DEFAULT false,   -- §G.5
   sent_at             TIMESTAMPTZ,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `DeliveryRepository.Create` stamps them. `updated_at` is
+  -- also the claim lease the dispatcher reads, so the monotonic advance matters twice here.
+  created_at          TIMESTAMPTZ NOT NULL,
+  updated_at          TIMESTAMPTZ NOT NULL,
   CONSTRAINT deliveries_fanout_uniq UNIQUE (notification_id, channel_id),
   CONSTRAINT deliveries_attempts_ck CHECK (attempts >= 0 AND attempts <= 32),
   CONSTRAINT deliveries_seq_ck      CHECK (thread_seq IS NULL OR thread_seq >= 1),
@@ -1655,7 +1692,8 @@ CREATE TABLE silences (
   annotations   JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- AM >= 0.32.0
   state         TEXT        NOT NULL CHECK (state IN ('active','pending','expired')),
   source_updated_at TIMESTAMPTZ,
-  mirrored_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SilenceRepository.UpsertBatch` stamps it.
+  mirrored_at   TIMESTAMPTZ NOT NULL,
   CONSTRAINT silences_source_uniq UNIQUE (source_id, source_silence_id),
   CONSTRAINT silences_srcid_ck    CHECK (length(btrim(source_silence_id)) BETWEEN 1 AND 128),
   CONSTRAINT silences_match_ck    CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) >= 1),
