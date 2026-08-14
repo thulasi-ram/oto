@@ -10,6 +10,7 @@ import (
 
 	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
 	enrichworker "github.com/thulasiram/oto/internal/enrichment/worker"
+	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/jobs"
@@ -362,27 +363,15 @@ func (c *Container) managePartitions(ctx context.Context, _ *jobs.Job[jobs.Parti
 // exact and bounded at the same time, which is an aggregate in SQL rather than a
 // fan-out.
 //
-// ⚠️ TWO THINGS ARE KNOWN WRONG HERE AND ARE DELIBERATELY NOT FIXED IN THE SAME
-// CHANGE AS THE FAN-OUT, because they are about what gets DROPPED and deserve
-// their own test matrix rather than a ride along a scheduling change:
-//
-//   - THE FAILURE PATH BELOW CONTRADICTS THE ⛔ ABOVE IT. "Every failure widens
-//     the window" is what the comment promises, but an unreadable tenant list
-//     returns the CONFIG FLOOR, and the floor is NARROWER than a fold that had
-//     seen an org configured to 365 days. A settings read that times out can
-//     therefore drop a tenant's data early — the exact outcome the paragraph
-//     exists to forbid. The safe answer is the settings CEILING
-//     (`domain.Bounds(KeyRawRetention).Max`), which costs disk and destroys
-//     nothing.
-//   - THE OBVIOUS BOUNDED REPLACEMENT — one `max()` over `orgs.settings` — IS
-//     WRONG AS WRITTEN, and this note exists so the next author does not find that
-//     out afterwards. `identity.Service` overlays the deployment's Declarative
-//     onto EVERY org read and RECOMPUTES the effective settings from it
-//     (`Org.WithDeclarative`), and the declarative value BEATS the org's own. An
-//     aggregate over the raw JSONB column skips that overlay, so on an install
-//     where configuration forces a retention key it computes a maximum over
-//     numbers nobody is using. The reduce has to be evaluated where the overlay
-//     is applied — inside `identity` — not in a query this package writes.
+// ⚠️ THE OBVIOUS BOUNDED REPLACEMENT — one `max()` over `orgs.settings` — IS
+// WRONG AS WRITTEN, and this note exists so the next author does not find that
+// out afterwards. `identity.Service` overlays the deployment's Declarative onto
+// EVERY org read and RECOMPUTES the effective settings from it
+// (`Org.WithDeclarative`), and the declarative value BEATS the org's own. An
+// aggregate over the raw JSONB column skips that overlay, so on an install where
+// configuration forces a retention key it computes a maximum over numbers nobody
+// is using. The reduce has to be evaluated where the overlay is applied — inside
+// `identity` — not in a query this package writes.
 //
 // ⛔ EVERY FAILURE WIDENS THE WINDOW RATHER THAN NARROWING IT. An unreadable org
 // row, an org list that errors, a settings lookup that times out — none of them
@@ -398,21 +387,57 @@ func (c *Container) effectiveRetention(ctx context.Context) (rawDays, eventMonth
 	rawDays = int(c.Config.Retention.RawPayloads.Hours() / 24)
 	eventMonths = int(c.Config.Retention.Events.Hours() / 24 / 30)
 
+	// No identity service is not a broken read: this process serves no tenant
+	// settings at all, so there is no wider window it could have missed.
 	if c.Identity == nil {
 		return rawDays, eventMonths
 	}
-	scopes, err := c.orgs.Scopes(ctx)
+	return foldRetention(ctx, c.Logger, c.orgs, c.Identity, rawDays, eventMonths)
+}
+
+// foldRetention is the reduce itself, lifted out of the container so that the
+// two reads it makes arrive as the `retentionTenants` and `retentionSettings`
+// ports (`ports.go`) rather than as a pool and a service — which is what makes a
+// FAILING read something a test can arrange.
+//
+// ⛔ BOTH OF ITS FAILURE PATHS WIDEN TO THE SETTINGS CEILING, AND THAT IS THE
+// WHOLE OF THIS FUNCTION'S CORRECTNESS. Each one used to leave the fold NARROWER
+// than the truth in exactly the case that costs data:
+//
+//   - AN UNREADABLE TENANT LIST returned the CONFIG FLOOR — 30 days as shipped —
+//     because the per-org loop never ran. An org configured to the 365-day bound
+//     lost 335 days of raw payloads to one settings read that timed out.
+//   - AN UNREADABLE ORG ROW `continue`d and kept whatever maximum the fold had
+//     already accumulated, which is the right answer for every org EXCEPT the one
+//     asking for the longest window — the only org whose absence changes a
+//     maximum. There is no second pass and no per-org retry: the tick drops on the
+//     number this returns.
+//
+// Both now widen instead, and the direction is the guarantee: `oto_partitions_manage`
+// DROPS PARTITIONS, cold-storage export is scoped rather than built (ADR 0024),
+// so a window that came back too narrow deletes rows nothing can bring back,
+// while one that came back too wide costs an hour of disk and the next tick drops
+// them anyway.
+func foldRetention(
+	ctx context.Context,
+	log *slog.Logger,
+	tenants retentionTenants,
+	settings retentionSettings,
+	rawDays, eventMonths int,
+) (int, int) {
+	scopes, err := tenants.Scopes(ctx)
 	if err != nil {
-		c.Logger.ErrorContext(ctx, "partitions.manage: could not list tenants, keeping the configured window",
+		log.ErrorContext(ctx, "partitions.manage: could not list tenants, widening to the settings ceiling",
 			slog.String("error", err.Error()))
-		return rawDays, eventMonths
+		return widenToSettingsCeiling(rawDays, eventMonths)
 	}
 	for _, scope := range scopes {
-		org, err := c.Identity.GetOrg(ctx, scope)
+		org, err := settings.GetOrg(ctx, scope)
 		if err != nil {
-			c.Logger.ErrorContext(ctx, "partitions.manage: could not read one tenant's retention, keeping the wider window",
+			log.ErrorContext(ctx, "partitions.manage: could not read one tenant's retention, widening to the settings ceiling",
 				slog.String("org_id", scope.OrgID().String()),
 				slog.String("error", err.Error()))
+			rawDays, eventMonths = widenToSettingsCeiling(rawDays, eventMonths)
 			continue
 		}
 		// Settings are already the effective, clamped values (Org.Settings), so
@@ -423,6 +448,31 @@ func (c *Container) effectiveRetention(ctx context.Context) (rawDays, eventMonth
 		if m := int(org.Settings.EventRetention.Hours() / 24 / 30); m > eventMonths {
 			eventMonths = m
 		}
+	}
+	return rawDays, eventMonths
+}
+
+// widenToSettingsCeiling raises a fold to the widest window POLICY lets any org
+// ask for: the upper bound of the two `orgs.settings` retention keys
+// (`identity/domain.settingBounds`).
+//
+// ⭐ IT IS THE ONLY HONEST FALLBACK FOR A READ THAT FAILED, because it is the one
+// number reachable WITHOUT the read that cannot be narrower than the answer the
+// read would have given. `UpdateOrgSettings` clamps every org to these bounds, so
+// no org can be asking for more than this — a fold that jumps here has lost
+// precision and nothing else.
+//
+// ⛔ IT WIDENS, IT NEVER ASSIGNS. A bound this table does not carry, or a
+// deployment whose own `OTO_RETENTION_*` is already past it, must leave the window
+// exactly where it was: taking the ceiling unconditionally would let a missing
+// bound (`ok == false`, so `Max` is zero) hand `oto_partitions_manage` a retention
+// of zero days, which is every partition, dropped.
+func widenToSettingsCeiling(rawDays, eventMonths int) (int, int) {
+	if b, ok := identitydomain.Bounds(identitydomain.KeyRawRetention); ok && b.Max > rawDays {
+		rawDays = b.Max
+	}
+	if b, ok := identitydomain.Bounds(identitydomain.KeyEventRetention); ok && b.Max > eventMonths {
+		eventMonths = b.Max
 	}
 	return rawDays, eventMonths
 }

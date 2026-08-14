@@ -235,14 +235,18 @@ The decision is deliberately cheap to reverse, in ascending order of cost:
 
 - **The numbers** are two Go constants (`identity/domain.DefaultRawRetention`,
   `DefaultEventRetention`) and one config default. Changing them changes nothing else.
-- **"Longest wins"** is one function, `Container.effectiveRetention`. Deleting it restores the
-  previous behaviour exactly.
+- **"Longest wins"** is three functions in `internal/app`: `Container.effectiveRetention` (the entry
+  point, and the config floor it seeds the fold with), `foldRetention` (the reduce over every tenant's
+  settings) and `widenToSettingsCeiling` (where a failed read lands — see
+  [Amendment 2](#amendment-2--longest-wins-is-three-functions-and-the-fallbacks-widen-for-real)).
+  Deleting the three together restores the previous behaviour exactly.
 - **Cold storage** is scoped and unbuilt, so ruling it out costs deleting a section of this ADR and
   amending the buyer answer to say the product does not have one and will not.
 
 What is *not* cheap to reverse is the direction: any decision that shortens a retention window and
 ships deletes data that cannot come back. Widening is free; narrowing is not. That asymmetry is why
-every fallback in the code widens.
+every fallback in the code widens. *(It did not, when this was written — see
+[Amendment 2](#amendment-2--longest-wins-is-three-functions-and-the-fallbacks-widen-for-real).)*
 
 ## Alternatives rejected
 
@@ -322,3 +326,36 @@ cheap, not to make the first drain fast.
 **What it does not change.** `alert_event_keys` leaves this ADR's "never reaped" list at §2 and joins
 the row-pruned side tables. Nothing about the event partitions, the raw partitions or the export
 scope moves.
+
+## Amendment 2 — "longest wins" is three functions, and the fallbacks widen for real
+
+"How to overturn this" named `Container.effectiveRetention` as the one function. The reduce now sits
+beside it as `foldRetention`, with `widenToSettingsCeiling` as its fallback; the container method is
+still the only entry point and still seeds the fold with `Config.Retention`, so deleting the three
+together restores the previous behaviour exactly.
+
+**The split exists because this ADR's closing claim — "every fallback in the code widens" — was not
+true when it was written.** Two reads stand between the fold and its answer, and both of them
+NARROWED on failure. An unreadable tenant list returned the config floor, 30 days as shipped, because
+the per-org loop never ran: one `Scopes()` timeout dropped 335 days of raw payloads belonging to an
+org configured at the 365-day bound. An unreadable org row was worse-hidden — it `continue`d with the
+maximum it had, which is the correct answer for every tenant except the only one whose absence can
+change a maximum, the one asking for the longest window, and it logged "keeping the wider window"
+while doing it. Both narrowed a drop this ADR records as irreversible: `oto_partitions_manage` issues
+`DROP PARTITION`, there is no soft delete, and cold-storage export is still scoped rather than built.
+
+Both now widen to the **settings ceiling** — `Bounds(KeyRawRetention).Max` and
+`Bounds(KeyEventRetention).Max`, the 365 days and 120 months of `identity/domain.settingBounds`. It is
+the one number reachable *without* the read that cannot be narrower than the answer the read would
+have given, because `UpdateOrgSettings` clamps every org to those same bounds. It raises rather than
+assigns, so a deployment whose own `OTO_RETENTION_*` already exceeds a per-org bound keeps its wider
+window, and a bound the table stops carrying leaves the window untouched instead of handing the
+dropper a zero. The cost of the fallback is one hour of disk: the next tick reads the settings again.
+
+`TestEveryFailureInTheRetentionFoldWidensTheWindow` pins both failure paths against the widest
+configured org, and pins the all-readable case to an exact answer — an inequality alone is satisfied
+by a fold that widens to the ceiling on every tick, which is ten years of `alert_events` partitions
+nobody asked for. `TestTheSettingsCeilingOnlyEverWidens` pins the raise-never-assign direction. The
+two reads are ports (`app.retentionTenants`, `app.retentionSettings`) for exactly this reason: a pool
+and a service cannot be asked to fail, and a rule about failures that no test can reach is a comment —
+which is what these two were.

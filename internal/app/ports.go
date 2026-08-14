@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
+	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -101,6 +102,28 @@ func dispatchUnsealer(k *secrets.Keyring) notifservice.CredentialUnsealer {
 		return nil
 	}
 	return k
+}
+
+// retentionTenants and retentionSettings are the two reads `foldRetention`
+// makes: the tenant list, and one tenant's effective settings.
+//
+// ⛔ THEY ARE PORTS BECAUSE IT IS THEIR FAILURES THAT HAVE TO BE PINNED, not
+// because anything here needs a second implementation. The concretes are
+// `orgLister` — a keyset walk over Postgres — and `identity.Service`, and neither
+// can be asked to return an error from a test. `effectiveRetention`'s rule is
+// that EVERY failure widens the window, retention is the one setting pair whose
+// wrong value is unrecoverable, and a rule about failures that no test can reach
+// is a comment: both paths were in fact narrowing when this was written.
+//
+// `GetOrg` is taken rather than the raw `orgs.settings` column deliberately —
+// `identity.Service` overlays the deployment's Declarative onto every org read,
+// so the effective retention exists only on the far side of that method.
+type retentionTenants interface {
+	Scopes(ctx context.Context) ([]db.TenantScope, error)
+}
+
+type retentionSettings interface {
+	GetOrg(ctx context.Context, scope db.TenantScope) (identitydomain.Org, error)
 }
 
 // ⭐ THE PORT-DRIFT ASSERTIONS.
