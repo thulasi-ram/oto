@@ -20,15 +20,15 @@ import (
 // lookup that authorises one tenant's job — and a fake pool would agree with
 // whatever the query happened to say.
 //
-// ⚠️ NOTHING HERE WRITES A TIMELINE EVENT, WHICH IS WHY NOTHING HERE NEEDS A
-// DERIVED `now()`. `alert_events` is partitioned around the DATABASE's clock with
-// no default partition, and `harness.Epoch` has drifted out of that window, so an
-// append stamped at the harness clock fails a nameless 23514 — see ticket
-// 6547228, `internal/grouping/service/fanout_test.go`'s `partitionedNow()` and
-// `internal/app/timeline_events_db_test.go`. The fan-out itself touches `orgs`
-// and the queue and nothing else, so it stays clear of that trap; a test that
-// grows into driving a real per-tenant sweep will not, and must adopt one of
-// those two helpers rather than rediscovering this a fourth time.
+// ⚠️ NOTHING HERE WRITES A TIMELINE EVENT, AND NOTHING HERE NEEDS A DERIVED
+// `now()` ANY MORE. `alert_events` is partitioned with no default partition and
+// the partition manager builds its window around the DATABASE's clock, so an
+// append stamped at the harness clock used to fail a nameless 23514 and five
+// tests each derived a `now` of their own to dodge it. `test/harness`'s
+// `epochPartitionsSQL` now builds the same window around `harness.Epoch` at
+// template bootstrap (git-bug 6547228), so a test that grows into driving a real
+// per-tenant sweep can write at `h.Now()` like everything else — the answer is
+// there, not in a sixth local helper.
 
 // TestTheFanOutReachesEveryTenantAcrossContinuations is the property the ceiling
 // exists to preserve, and the one a naive bound destroys.

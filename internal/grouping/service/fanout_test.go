@@ -16,7 +16,6 @@ import (
 	alertsvc "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
 	"github.com/thulasiram/oto/internal/grouping/repository"
-	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/test/harness"
@@ -65,13 +64,6 @@ func newFanOutWorld(t *testing.T) *fanOutWorld {
 	t.Helper()
 
 	h := harness.New(t)
-	// ⚠️ THE CLOCK IS REPLACED BEFORE ANYTHING IS SEEDED, and `partitionedNow`
-	// below says why. Every builder reads `h.Now()` at call time and every
-	// repository here is handed `h.Clock`, so this one line moves the whole world
-	// — seed rows, receipts and timeline appends — onto an instant that
-	// `alert_events` has a partition for.
-	h.Clock = clock.NewFake(partitionedNow())
-
 	org := h.Org()
 	cluster := h.Cluster(org)
 	source := h.Source(org, cluster)
@@ -194,28 +186,14 @@ func (w *fanOutWorld) eventsOfType(t *testing.T, typ kernel.EventType) int {
 	return n
 }
 
-// partitionedNow is an instant `alert_events` has a partition for.
-//
-// ⚠️ NOT harness.Epoch, AND THE REASON IS THE PARTITION MANAGER. The harness
-// bootstraps partitions with `SELECT oto_partitions_manage()`, which creates
-// `alert_events` months around the DATABASE's `now()` — the current month plus
-// three ahead — while `harness.Epoch` is a fixed instant that drifts further
-// into the past every month. `alert_events` has no default partition ON PURPOSE:
-// a row outside every range must fail loudly rather than pile up in a bucket
-// nobody can drop. So an append stamped at Epoch fails with SQLSTATE 23514 "no
-// partition of relation alert_events found for row" — a check_violation carrying
-// NO constraint name, which `platform/db` maps to the generic `sqlstate_23514`
-// and which therefore looks nothing like the named CHECK it is not.
-//
-// Any fan-out test whose members reach the REAL alerts service needs this,
-// because that is the path that writes the timeline. The ceiling test does not,
-// only because `recordingActions` never touches the database.
-//
-// The sibling database tests handle the same trap the same way:
-// `app/timeline_events_db_test.go` derives its `now` from the wall clock for
-// exactly this reason, and `alerts/service`'s race tests pin a recent one.
-// Derived rather than hard-coded, so it cannot go stale.
-func partitionedNow() time.Time { return time.Now().UTC() }
+// ⚠️ THIS WORLD RUNS ON h.Clock, WHICH IS harness.Epoch, and that is now safe to
+// say. It used to replace the harness clock with one derived from the wall clock,
+// because `alert_events` is partitioned with NO default partition and the
+// partition manager built its months around the database's `now()` — so a
+// timeline append stamped at Epoch matched no range and failed with SQLSTATE
+// 23514, "no partition of relation alert_events found for row". The harness
+// template now builds a window around Epoch too (git-bug 6547228), so the fan-out
+// tests seed, ack and append at the same instant every other harness test uses.
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))

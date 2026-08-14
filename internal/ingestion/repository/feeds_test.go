@@ -28,23 +28,19 @@ import (
 // source the operator is looking at, it is complete across page boundaries, and
 // it NAMES THE ALERT rather than just counting a reason.
 //
-// ⚠️ WHY `received_at` IS NOT `h.Now()`. Both tables are PARTITION BY RANGE on
-// `received_at` with daily partitions and NO default partition, and the harness
-// template runs `oto_partitions_manage()` at REAL wall-clock time — today plus
-// the next seven days. The harness FakeClock is pinned at a fixed Epoch that is
-// nowhere near today, so a row written at `h.Now()` has no partition to go in and
-// fails with 23514 before any of this is exercised. `harness_test.go` seeds
-// `alert_events` with `now()` for exactly this reason. Every timestamp here
-// therefore hangs off today's noon UTC, which is always inside today's partition
-// whatever hour the suite runs at, and every offset is minutes so nothing
-// straddles midnight.
+// ⚠️ WHY EVERY `received_at` HANGS OFF ONE INSTANT. Both tables are PARTITION BY
+// RANGE on `received_at` with daily partitions and NO default partition, so a row
+// outside every range fails with a 23514 before any of this is exercised. That
+// instant used to be today's noon, derived from the wall clock, because the
+// harness template built its partitions around the database's `now()` while the
+// harness FakeClock is pinned at a fixed Epoch nowhere near today. The template
+// now builds a window around Epoch too (git-bug 6547228), so these rows sit where
+// the rest of the suite's do — and every offset below is still minutes, so
+// nothing straddles midnight.
 
-// feedDay is noon UTC today: an instant guaranteed to be inside a partition that
-// exists, with a full twelve hours of headroom on either side.
-func feedDay() time.Time {
-	n := time.Now().UTC()
-	return time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, time.UTC)
-}
+// feedDay is Epoch, which is noon UTC: an instant inside a partition that exists,
+// with a full twelve hours of headroom on either side.
+func feedDay() time.Time { return harness.Epoch }
 
 // alertRaw renders the `raw` column exactly the way the write path does: a
 // marshalled `decode.Alert`, whose `labels` key is what the feed lifts out.

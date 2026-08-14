@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/thulasiram/oto/internal/alerts/domain"
+	"github.com/thulasiram/oto/test/harness"
 )
 
 // These drive ONE observation at a time through `observeOne` — the per-observation
@@ -16,18 +17,15 @@ import (
 // `alerts/domain`'s decide_test.go; what is pinned here is the other half: what
 // the verdict WRITES, and in particular that the two rows which open an episode
 // go through one function and can no longer disagree.
-
-// partitionedNow is an instant `alert_events` has a partition for.
 //
-// ⚠️ NOT harness.Epoch. The harness bootstraps partitions with
-// `oto_partitions_manage()`, which creates `alert_events` months around the
-// DATABASE's `now()`, while `harness.Epoch` is a fixed instant drifting further
-// into the past every month. `alert_events` has NO default partition on purpose,
-// so an append stamped at Epoch fails with SQLSTATE 23514 "no partition of
-// relation alert_events found for row". `grouping/service`'s fanout_test.go
-// carries the same guard for the same reason. Derived, never hard-coded, so it
-// cannot go stale.
-func partitionedNow() time.Time { return time.Now().UTC() }
+// ⚠️ THEY OBSERVE AT harness.Epoch, like everything else on the harness. They
+// used to observe at a `partitionedNow()` derived from the wall clock, because
+// `alert_events` has NO default partition on purpose and the manager built its
+// months around the DATABASE's `now()`, so an append stamped at Epoch failed with
+// SQLSTATE 23514 "no partition of relation alert_events found for row". The
+// harness template builds a window around Epoch too now (git-bug 6547228), so the
+// helper is gone from here and from `grouping/service`'s fanout_test.go, which
+// carried a copy of it.
 
 // observeOnce runs ONE observation through the seam, with no batch around it.
 //
@@ -79,7 +77,7 @@ func notifyReasons(acc *observeAccum) []string {
 // side: one episode, one enrichment, one `fired`, and NO unack — there was no
 // acknowledgement to drop.
 func TestObserveOne_T1_OpensTheFirstEpisode(t *testing.T) {
-	now := partitionedNow()
+	now := harness.Epoch
 	f := newFixture(t, now)
 	group := f.h.Group(f.org, f.h.Source(f.org, f.cluster), f.cluster)
 	opt := ObserveOptions{GroupID: &group.ID}
@@ -123,7 +121,7 @@ func TestObserveOne_T1_OpensTheFirstEpisode(t *testing.T) {
 // — so the notifying half is the correct one, and it now happens in `applyOpen`,
 // which is the ONLY place either row can be applied from.
 func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
-	now := partitionedNow()
+	now := harness.Epoch
 	f := newFixture(t, now)
 	group := f.h.Group(f.org, f.h.Source(f.org, f.cluster), f.cluster)
 	opt := ObserveOptions{GroupID: &group.ID}
@@ -211,7 +209,7 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 // a `resolved` for an Alert oto has never seen firing resolves nothing, and
 // inventing an episode to close would be fabricating history.
 func TestObserveOne_NoLegalRowRecordsTheOutcomeAndNothingElse(t *testing.T) {
-	now := partitionedNow()
+	now := harness.Epoch
 	f := newFixture(t, now)
 
 	acc := f.observeOnce(f.observation(domain.ObservedByIngest, "resolved",

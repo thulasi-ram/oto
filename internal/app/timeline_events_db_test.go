@@ -78,16 +78,12 @@ func newTimelineRig(t *testing.T) *timelineRig {
 
 	r := &timelineRig{
 		h: h,
-		// ⚠️ NOT harness.Epoch, AND THE REASON IS THE PARTITION MANAGER. The
-		// harness bootstraps partitions with `SELECT oto_partitions_manage()`,
-		// which creates `alert_events` months around the DATABASE's `now()` —
-		// current month plus three ahead — while `harness.Epoch` is a fixed instant
-		// that drifts further into the past every month. `alert_events` has no
-		// default partition on purpose, so an append stamped at Epoch fails with
-		// "no partition of relation" the moment real time leaves that month. The
-		// sibling database tests in `alerts/service` pin their own `now` for the
-		// same reason; this one derives it so it cannot go stale.
-		clk:      clock.NewFake(time.Now().UTC()),
+		// The harness clock, which is Epoch. It used to be a fake pinned at the
+		// wall clock instead, because `alert_events` had no partition covering
+		// Epoch and an append there failed with a bare 23514; the harness template
+		// now gives Epoch its own partitions (git-bug 6547228), so the rig can use
+		// the one clock every other harness test uses.
+		clk:      h.Clock,
 		scope:    org.Scope,
 		sourceID: source.ID,
 		alertID:  alert.ID,
