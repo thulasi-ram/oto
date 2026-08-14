@@ -14,11 +14,21 @@ import (
 
 // This file is the seam the modules that do not own `alert_events` call across.
 //
-// ⭐ WHAT IT IS FOR. `alert_events` has exactly ONE writer, and it is in this
-// module: the C.8 idempotency claim and the closed EventType enum both live here,
-// and a second appender would be the duplication §C.9 exists to forbid. `grouping`
-// therefore records its `group.*` facts through this seam, and so do `rules` and
-// `enrichment` for their `rule.*` and `enrichment.*` ones.
+// ⭐ WHAT IT IS FOR. It is the ONE appender that goes through `domain.NewEvent`,
+// and therefore the one place every §D.4 invariant is proved before a row exists.
+// The C.8 idempotency claim and the closed EventType enum both live in this
+// module. `grouping` records its `group.*` facts through this seam, and so do
+// `rules` and `enrichment` for their `rule.*` and `enrichment.*` ones.
+//
+// ⛔ IT IS NOT THE ONLY WRITER OF `alert_events`, AND SAYING SO WAS A LIE THIS
+// COMMENT TOLD FOR LONGER THAN IT SHOULD HAVE. `notification/repository/events.go`
+// inserts its own `notification.*` and `delivery.*` rows — it is a second appender,
+// with its own copy of the C.8 key claim, that never calls `NewEvent`. The
+// duplication §C.9 forbids is therefore REAL and still open; what this seam can
+// still guarantee, and now does by its signature, is that no caller may name a
+// type the closed enum does not contain. Routing that second writer through here
+// would need a `notification ──► alerts` module edge that CONTEXT.md §4 does not
+// draw, which is a separate decision and a separate change.
 //
 // ⚠️ THE THREE CALLERS DO NOT ARRIVE THE SAME WAY, and the difference is CONTEXT.md
 // §4 rather than taste. `grouping ──► alerts` is a declared module edge, so grouping
@@ -35,18 +45,30 @@ import (
 // the wrapper is gone. Re-exporting a kernel function through a service is how a
 // pure identity function acquires a fake dependency on a database.
 //
-// Every signature here is deliberately built from primitives, uuid.UUID and
-// db.TenantScope, so the caller needs no type from the alerts kernel.
+// ⚠️ THE SIGNATURES ARE PRIMITIVES EXCEPT WHERE THE KERNEL IS THE POINT. Actors,
+// times and ids travel as `string`, `time.Time`, `uuid.UUID` and `db.TenantScope`
+// so a caller needs no alerts type to describe WHO or WHEN. The event TYPE is the
+// deliberate exception: it is `domain.EventType`, and that is the whole property
+// this seam exists to give. An earlier version of this comment claimed the caller
+// "needs no type from the alerts kernel" — it was never true (`grouping/service`
+// has always imported the kernel for `NewLabels` and `ComputeGroupKey`), and RULE K
+// (§5.2b, `.golangci.yml`) grants every domain that import uniformly, so pretending
+// otherwise bought nothing and cost the compile-time check below.
 
-// TimelineEventRequest is one entry for the append-only timeline, described in
-// primitives.
+// TimelineEventRequest is one entry for the append-only timeline.
 //
 // The type is the CLOSED §D.4.1 set — `group.*` from grouping, `rule.*` from rules,
-// `enrichment.*` from enrichment. Anything else is rejected by the kernel's
-// EventType enum, because inventing a type produces a timeline row the renderer
-// shows as nothing.
+// `enrichment.*` from enrichment.
+//
+// ⭐ IT IS `domain.EventType` AND NOT A `string`, AND THAT IS THE DIFFERENCE
+// BETWEEN A CLOSED ENUM AND AN OPEN ONE WITH EXTRA STEPS. As a string, a typo in a
+// caller was a runtime KindValidation error from `NewEventType` — found when the
+// fact it was recording had already happened, on the timeline that is the product.
+// As the kernel's value object, whose only field is unexported and whose only
+// parser is `NewEventType`, it is a compile error, and the six `group.*` constants
+// this file used to re-export as bare strings have nowhere left to be re-added.
 type TimelineEventRequest struct {
-	Type    string
+	Type    domain.EventType
 	GroupID uuid.UUID
 	// AlertID and OccurrenceID name the alert or episode the fact is about; a
 	// membership event names the member. At least one of the three subjects is
@@ -73,10 +95,10 @@ type TimelineEventRequest struct {
 // It exists so that no other module opens `alert_events` itself. One writer, one
 // idempotency mechanism, one place where an event's shape is proved.
 func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope, in TimelineEventRequest) error {
-	typ, err := domain.NewEventType(in.Type)
-	if err != nil {
-		return err
-	}
+	// No parse of in.Type: it arrives already proved. `domain.EventType` cannot be
+	// constructed outside the kernel except through `NewEventType`, so the only
+	// value that can reach here without being one of the closed 36 is the zero
+	// value, which `NewEvent` rejects as "event type is required".
 	kindName := in.ActorKind
 	if kindName == "" {
 		kindName = domain.ActorSystem.String()
@@ -106,7 +128,7 @@ func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope,
 		AlertID:      in.AlertID,
 		OccurrenceID: in.OccurrenceID,
 		GroupID:      in.GroupID,
-		Type:         typ,
+		Type:         in.Type,
 		At:           at,
 		Actor:        actor,
 		Summary:      in.Summary,
@@ -204,19 +226,12 @@ func humanActor(kindName, actorID, label string) (domain.Actor, error) {
 	return domain.NewActor(kind, actorID, label)
 }
 
-// The `group.*` timeline types, re-exported as plain strings so that `grouping`
-// can name the fact it is recording without importing the kernel.
-const (
-	// GroupEventOpened records a new AlertGroup generation.
-	GroupEventOpened = "group.opened"
-	// GroupEventClosed records a generation closing after group_close_delay.
-	GroupEventClosed = "group.closed"
-	// GroupEventMemberJoined records an occurrence joining a generation.
-	GroupEventMemberJoined = "group.member_joined"
-	// GroupEventMemberLeft records an occurrence leaving a generation.
-	GroupEventMemberLeft = "group.member_left"
-	// GroupEventStormStarted records a generation entering storm mode.
-	GroupEventStormStarted = "group.storm_started"
-	// GroupEventStormEnded records storm mode ending after storm_cooldown.
-	GroupEventStormEnded = "group.storm_ended"
-)
+// ⛔ THE SIX `group.*` STRING CONSTANTS THAT USED TO BE HERE ARE GONE, AND MUST NOT
+// COME BACK. They were a second spelling of `domain.EventGroupOpened` and its five
+// siblings, re-exported "so that `grouping` can name the fact it is recording
+// without importing the kernel" — a reason that was never load-bearing, because
+// RULE K grants `grouping` that import and `grouping/service` had already taken it.
+// What the copies actually bought was a `Type string` field, and with it a class of
+// typo the compiler could not see. `grouping` now names
+// `alerts/domain.EventGroup*` directly. `test/arch/eventtype_test.go` is what
+// notices if a package re-declares one.

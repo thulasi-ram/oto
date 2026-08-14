@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/enrichment/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -34,13 +35,21 @@ const (
 	CodeNoOccurrence = "enrichment_no_occurrence"
 )
 
-// The alert timeline types this service appends (SPEC §D.4.1, transition T11).
-const (
-	// EventCompleted records that a phase produced results.
-	EventCompleted = "enrichment.completed"
-	// EventFailed records that a phase produced none.
-	EventFailed = "enrichment.failed"
-)
+// ⛔ THE TWO `enrichment.*` STRING CONSTANTS THAT USED TO BE HERE ARE GONE.
+//
+// `EventCompleted = "enrichment.completed"` and `EventFailed = "enrichment.failed"`
+// were a second Go spelling of `alerts/domain.EventEnrichmentCompleted` and
+// `EventEnrichmentFailed` — which left the "closed" enum closed over only one of
+// the two ways to say each value. This package names the kernel's values directly
+// now, and no local alias replaces them: `EventType` is a struct, so an alias could
+// only be a MUTABLE package var.
+//
+// ⚠️ THIS IS NOT AN `enrichment ──► alerts` EDGE — CONTEXT.md §4 draws none, and
+// this change does not add one. RULE K (§5.2b, `.golangci.yml`, and `exemptReason`
+// in `test/arch/arch_test.go`) grants every domain `internal/alerts/domain`
+// uniformly. The append is still the `EventRecorder` port this package declares and
+// `internal/app/adapters.go` satisfies. A value object crossed; a dependency did
+// not.
 
 // Options are the Service's dependencies. Everything is a port, so the whole
 // pipeline runs against fakes with no Postgres, no Prometheus and no clock.
@@ -692,10 +701,10 @@ func (s *Service) narrate(ctx context.Context, scope db.TenantScope, loaded Load
 		}
 	}
 
-	typ := EventCompleted
+	typ := kernel.EventEnrichmentCompleted
 	summary := fmt.Sprintf("%s enrichment: %d of %d enrichers produced context", phase, ok, len(results))
 	if ok == 0 && failed > 0 {
-		typ = EventFailed
+		typ = kernel.EventEnrichmentFailed
 		summary = fmt.Sprintf("%s enrichment: no context could be produced (%d failed)", phase, failed)
 	}
 

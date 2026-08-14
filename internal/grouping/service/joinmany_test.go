@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	alerts "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
 	"github.com/thulasiram/oto/internal/grouping/repository"
@@ -52,7 +53,7 @@ func TestJoinManyRollsUpOncePerGroupNotOncePerAlert(t *testing.T) {
 	if got := h.members.joins; got != batch {
 		t.Errorf("members.Join calls = %d, want %d", got, batch)
 	}
-	if got := h.events.byType[alerts.GroupEventMemberJoined]; got != batch {
+	if got := h.events.byType[kernel.EventGroupMemberJoined]; got != batch {
 		t.Errorf("group.member_joined events = %d, want %d", got, batch)
 	}
 
@@ -114,7 +115,7 @@ func TestJoinManyAnnouncesOneStormPerBatch(t *testing.T) {
 	if got := h.groups.setStorms; got != 1 {
 		t.Errorf("SetStorm writes = %d, want 1", got)
 	}
-	if got := h.events.byType[alerts.GroupEventStormStarted]; got != 1 {
+	if got := h.events.byType[kernel.EventGroupStormStarted]; got != 1 {
 		t.Errorf("group.storm_started events = %d, want exactly 1", got)
 	}
 	// One `notify.evaluate` job is what keeps the §H.6 latch on
@@ -208,7 +209,7 @@ func newJoinHarness(t *testing.T) *joinHarness {
 		groupID:  g.ID(),
 		groups:   &fakeGroups{group: g},
 		members:  &fakeMembers{},
-		events:   &fakeEvents{byType: map[string]int{}},
+		events:   &fakeEvents{byType: map[kernel.EventType]int{}},
 		stream:   &fakeStream{},
 		settings: &fakeSettings{policy: domain.DefaultStormPolicy()},
 		enqueuer: &fakeEnqueuer{},
@@ -389,7 +390,7 @@ func (f *fakeMembers) CountCurrentMembers(
 }
 
 // fakeEvents counts the append-only timeline by event type.
-type fakeEvents struct{ byType map[string]int }
+type fakeEvents struct{ byType map[kernel.EventType]int }
 
 func (f *fakeEvents) AppendTimelineEvent(
 	_ context.Context, _ db.TenantScope, in alerts.TimelineEventRequest,

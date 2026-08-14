@@ -56,6 +56,18 @@ import (
 //
 // A fourth CTE added later joins `alerts` and excludes them too, or the report
 // is wrong in a way nobody will notice until a customer disputes an invoice.
+//
+// ⛔ THE SIX EVENT TYPES IN `flaps` ARE A COPY OF THE KERNEL'S ENUM, IN SQL, AND
+// THEY CANNOT BE ANYTHING ELSE. `alerts/domain.EventType` closes the value
+// everywhere it is a Go value; it cannot reach a predicate that is planned with
+// the statement rather than bound with the parameters, and this one has to be a
+// predicate — it is what lets the day's partition pruning do the work. The failure
+// that copy invites is the quiet kind and it is permanent here: a value renamed in
+// SPEC §D.4.1 and not renamed in this list makes `flap_transitions` count fewer
+// transitions than happened, the upsert overwrites the day with that number, and
+// the hygiene report reads calm. `test/arch.TestEventTypeSQLNamesLiveValues` reads
+// inside this literal — this package is registered in `eventTypeSQLSites` — and
+// fails when a value in it is no longer a member.
 const rollupDaySQL = `
 WITH bounds AS (
   SELECT $2::date                                             AS day,

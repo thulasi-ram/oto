@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -30,16 +31,22 @@ const (
 	CodeUnknownVersion = "rules_unknown_version"
 )
 
-// The alert timeline types this service appends (SPEC §D.4.1). They are a
-// CLOSED enum; implementers must not invent more.
-const (
-	// EventSnapshotCaptured records that a rule definition was stored.
-	EventSnapshotCaptured = "rule.snapshot_captured"
-	// EventDefinitionChanged records drift: the rule is not what it was.
-	EventDefinitionChanged = "rule.definition_changed"
-	// EventLookupFailed records that the rule could not be recovered at all.
-	EventLookupFailed = "rule.lookup_failed"
-)
+// ⛔ THE THREE `rule.*` STRING CONSTANTS THAT USED TO BE HERE ARE GONE.
+//
+// They were `EventSnapshotCaptured = "rule.snapshot_captured"` and its two
+// siblings: a second Go spelling of `alerts/domain.EventRuleSnapshotCaptured`,
+// which made the "closed" enum closed over only one of the two ways to say the
+// same value. This package now names the kernel's values directly —
+// `kernel.EventRuleSnapshotCaptured`, `kernel.EventRuleDefinitionChanged`,
+// `kernel.EventRuleLookupFailed` — and there is no local alias to re-add, because
+// `EventType` is a struct and an alias could only be a MUTABLE package var.
+//
+// ⚠️ NAMING THE KERNEL IS NOT A MODULE EDGE, AND THIS IS NOT `rules ──► alerts`.
+// RULE K (§5.2b, `.golangci.yml`, and `exemptReason` in `test/arch/arch_test.go`)
+// grants every domain `internal/alerts/domain` uniformly. The WRITE is untouched:
+// it is still the `EventRecorder` port this package declares and
+// `internal/app/adapters.go` satisfies, so `rules/service` still never opens
+// somebody else's table. A value object crossed; a dependency did not.
 
 // DefaultHistoryLimit bounds a history read. A rule with more than this many
 // distinct texts is pathological, and an unbounded query on a hot path is worse
@@ -279,7 +286,7 @@ func (s *Service) narrate(
 		snapID = id
 	}
 
-	emit := func(typ, summary string, payload map[string]any, dedupe string) {
+	emit := func(typ kernel.EventType, summary string, payload map[string]any, dedupe string) {
 		if err := s.events.RecordRuleEvent(ctx, scope, RuleEvent{
 			Type:         typ,
 			AlertID:      req.AlertID,
@@ -306,13 +313,13 @@ func (s *Service) narrate(
 	}
 
 	if !c.Recovered() {
-		emit(EventLookupFailed,
+		emit(kernel.EventRuleLookupFailed,
 			fmt.Sprintf("rule %q could not be recovered", c.Snapshot.Key.Name),
 			base, dedupeKey("rule_lookup_failed", req.OccurrenceID, c.Snapshot.Fingerprint))
 		return
 	}
 
-	emit(EventSnapshotCaptured,
+	emit(kernel.EventRuleSnapshotCaptured,
 		fmt.Sprintf("captured rule %q (%s, %s match)",
 			c.Snapshot.Key.Name, c.Snapshot.Origin, c.Snapshot.Confidence),
 		base, dedupeKey("rule_captured", req.OccurrenceID, c.Snapshot.Fingerprint))
@@ -331,7 +338,7 @@ func (s *Service) narrate(
 		// origin change makes `Compare` decline to fill most of the rest in, and
 		// nothing in the diff may quietly overwrite the predecessor's address.
 		payload["previous_fingerprint"] = c.PreviousFingerprint
-		emit(EventDefinitionChanged,
+		emit(kernel.EventRuleDefinitionChanged,
 			fmt.Sprintf("rule %q changed since the previous fire", c.Snapshot.Key.Name),
 			payload, dedupeKey("rule_changed", req.OccurrenceID, c.Snapshot.Fingerprint))
 	}

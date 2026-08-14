@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/enrichment/domain"
 	"github.com/thulasiram/oto/internal/enrichment/service"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -891,19 +892,19 @@ func TestTheTimelineSaysWhetherAnythingWasLearned(t *testing.T) {
 	tests := []struct {
 		name      string
 		enrichers []domain.Enricher
-		wantType  string
+		wantType  kernel.EventType
 	}{
 		{
 			name:      "something was learned",
 			enrichers: []domain.Enricher{&stubEnricher{name: "test.alpha"}},
-			wantType:  service.EventCompleted,
+			wantType:  kernel.EventEnrichmentCompleted,
 		},
 		{
 			name: "nothing could be produced",
 			enrichers: []domain.Enricher{
 				&stubEnricher{name: "test.alpha", fn: failing("down")},
 			},
-			wantType: service.EventFailed,
+			wantType: kernel.EventEnrichmentFailed,
 		},
 	}
 

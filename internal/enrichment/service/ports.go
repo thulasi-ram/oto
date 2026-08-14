@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/enrichment/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
 )
@@ -146,9 +147,17 @@ type EventRecorder interface {
 
 // EnrichmentEvent is one timeline entry about an enrichment run.
 type EnrichmentEvent struct {
-	// Type is enrichment.completed or enrichment.failed. The enum in SPEC
-	// §D.4.1 is CLOSED; implementers must not invent types.
-	Type         string
+	// Type is enrichment.completed or enrichment.failed (SPEC §D.4.1).
+	//
+	// ⭐ IT IS THE KERNEL'S CLOSED ENUM AND NOT A `string`, WHICH IS WHY THIS
+	// COMMENT NO LONGER HAS TO SAY "implementers must not invent types". They
+	// cannot: `EventType`'s only field is unexported and `NewEventType` is its
+	// only parser, so an invented type is a compile error here rather than a
+	// runtime KindValidation error three hops away inside `alerts/service`.
+	// RULE K (§5.2b) grants this package the import; the WRITE is still the port
+	// above, so this remains a value crossing and not an `enrichment ──► alerts`
+	// module edge.
+	Type         kernel.EventType
 	AlertID      uuid.UUID
 	OccurrenceID uuid.UUID
 	// Summary is the pre-rendered one-liner for the timeline, 1..500 bytes.

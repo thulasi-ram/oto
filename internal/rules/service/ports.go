@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/rules/domain"
 )
@@ -135,9 +136,16 @@ type EventRecorder interface {
 
 // RuleEvent is one timeline entry about a rule capture.
 type RuleEvent struct {
-	// Type is one of the three rule.* types in SPEC §D.4.1. Implementers MUST
-	// NOT invent types.
-	Type string
+	// Type is one of the three rule.* types in SPEC §D.4.1.
+	//
+	// ⭐ IT IS THE KERNEL'S CLOSED ENUM AND NOT A `string`, WHICH IS WHY THE
+	// COMMENT NO LONGER HAS TO SAY "implementers MUST NOT invent types". They
+	// cannot: `EventType`'s only field is unexported and `NewEventType` is its only
+	// parser, so an invented type is a compile error here rather than a runtime
+	// KindValidation error three hops away in `alerts/service`. RULE K (§5.2b)
+	// grants this package the import; the WRITE is still the port below, so this
+	// remains a value crossing and not a `rules ──► alerts` module edge.
+	Type kernel.EventType
 	// AlertID and OccurrenceID scope the event; at least one is required.
 	AlertID      uuid.UUID
 	OccurrenceID uuid.UUID

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -192,17 +193,25 @@ func actorViewKind(kind string) string {
 // trailKinds maps `alert_events.type` onto the renderer's small closed
 // vocabulary. A type with no entry is DROPPED, never printed raw: the trail is
 // read by a human at 03:00 and `occurrence.unsuppressed` is not a sentence.
-var trailKinds = map[string]string{
-	"occurrence.opened":         "fired",
-	"occurrence.reopened":       "refired",
-	"occurrence.acknowledged":   "acked",
-	"occurrence.unacknowledged": "unacked",
-	"occurrence.suppressed":     "suppressed",
-	"occurrence.unsuppressed":   "unsuppressed",
-	"occurrence.resolved":       "resolved",
-	"occurrence.expired":        "expired",
-	"group.storm_started":       "storm",
-	"group.storm_ended":         "storm_ended",
+//
+// ⭐ IT IS KEYED BY THE KERNEL'S `EventType`, NOT BY TEN STRING LITERALS. Keyed by
+// string, this map was the quietest of the re-declaration sites and the one with
+// the worst failure mode: a mistyped key does not fail, it simply never matches,
+// and the entry it was meant to render vanishes from every card with nothing
+// anywhere reporting a problem. `EventType` is comparable — one unexported string
+// field — so it is a map key like any other, and now a key that is not one of the
+// closed 36 does not compile.
+var trailKinds = map[kernel.EventType]string{
+	kernel.EventOccurrenceOpened:         "fired",
+	kernel.EventOccurrenceReopened:       "refired",
+	kernel.EventOccurrenceAcknowledged:   "acked",
+	kernel.EventOccurrenceUnacknowledged: "unacked",
+	kernel.EventOccurrenceSuppressed:     "suppressed",
+	kernel.EventOccurrenceUnsuppressed:   "unsuppressed",
+	kernel.EventOccurrenceResolved:       "resolved",
+	kernel.EventOccurrenceExpired:        "expired",
+	kernel.EventGroupStormStarted:        "storm",
+	kernel.EventGroupStormEnded:          "storm_ended",
 	// `group.opened` and `group.closed` are oto's OWN bookkeeping about a
 	// generation, not things that happened to the signal. They are deliberately
 	// absent: a trail that says "oto opened a group" answers a question nobody
@@ -218,7 +227,16 @@ var trailKinds = map[string]string{
 func trail(snap domain.Snapshot) []TrailEntry {
 	out := make([]TrailEntry, 0, len(snap.Trail))
 	for _, f := range snap.Trail {
-		kind, ok := trailKinds[f.Type]
+		// `TransitionFact.Type` is still a `string` because it is read straight off
+		// `alert_events.type` by the repository, and a row written by a future
+		// version of oto must not be able to make a card fail to render. Parsing
+		// here keeps the DROP behaviour identical for an unknown value — the
+		// renderer's whole rule — while the map above stays closed over the enum.
+		typ, err := kernel.NewEventType(f.Type)
+		if err != nil {
+			continue
+		}
+		kind, ok := trailKinds[typ]
 		if !ok {
 			continue
 		}

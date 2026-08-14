@@ -224,7 +224,7 @@ func (s *Service) Resolve(
 		}
 
 		if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
-			Type:    alerts.GroupEventOpened,
+			Type:    kernel.EventGroupOpened,
 			GroupID: g.ID(),
 			Summary: "Alert group opened: " + g.Title(),
 			Payload: map[string]any{
@@ -339,7 +339,7 @@ func (s *Service) JoinMany(
 			}
 			out.Joined++
 			if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
-				Type:         alerts.GroupEventMemberJoined,
+				Type:         kernel.EventGroupMemberJoined,
 				GroupID:      groupID,
 				AlertID:      m.AlertID,
 				OccurrenceID: m.OccurrenceID,
@@ -391,7 +391,7 @@ func (s *Service) Leave(
 		}
 		if left {
 			if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
-				Type:         alerts.GroupEventMemberLeft,
+				Type:         kernel.EventGroupMemberLeft,
 				GroupID:      groupID,
 				AlertID:      alertID,
 				OccurrenceID: occurrenceID,
@@ -528,11 +528,11 @@ func (s *Service) evaluateStorm(
 		return stormOutcome{}, err
 	}
 
-	typ := alerts.GroupEventStormEnded
+	typ := kernel.EventGroupStormEnded
 	summary := "Storm mode ended: per-alert replies resume"
 	reason := notifyReasonStorm
 	if decision.Action == domain.StormStart {
-		typ = alerts.GroupEventStormStarted
+		typ = kernel.EventGroupStormStarted
 		summary = "Storm mode: collapsing this group to one message"
 	}
 	if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
@@ -545,7 +545,11 @@ func (s *Service) evaluateStorm(
 			"window_s":        int64(decision.Window.Seconds()),
 			"state_version":   next.StateVersion(),
 		},
-		DedupeKey:  "group:" + next.ID().String() + ":storm:" + typ + ":" + strconv.Itoa(next.StateVersion()),
+		// `.String()` because the §C.8 key is a `TEXT` column, and the type is now
+		// a value object rather than the raw string it used to concatenate. The key
+		// bytes are unchanged, which matters: a different key would unclaim every
+		// storm transition already recorded.
+		DedupeKey:  "group:" + next.ID().String() + ":storm:" + typ.String() + ":" + strconv.Itoa(next.StateVersion()),
 		OccurredAt: at,
 	}); err != nil {
 		return stormOutcome{}, err
@@ -618,7 +622,7 @@ func (s *Service) CloseIdle(ctx context.Context, scope db.TenantScope, limit int
 				return err
 			}
 			if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
-				Type:    alerts.GroupEventClosed,
+				Type:    kernel.EventGroupClosed,
 				GroupID: closed.ID(),
 				Summary: "Alert group closed: " + closed.Title(),
 				Payload: map[string]any{

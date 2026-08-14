@@ -467,6 +467,19 @@ func collectEvents(rows pgx.Rows, capacity int) ([]domain.Event, error) {
 	return out, nil
 }
 
+// stateChangeCountsSQL counts the six lifecycle transitions the flap score is an
+// EWMA of.
+//
+// ⛔ THE SIX VALUES ARE A COPY OF THE KERNEL'S ENUM, IN SQL, AND THEY CANNOT BE
+// ANYTHING ELSE. `NewEventType` guards every value that enters this table from Go;
+// nothing guards a value written into a PREDICATE, because the list is planned
+// with the statement (`ev_type_idx` is `(org_id, type, recorded_at DESC)`, so this
+// is six index ranges) rather than bound with the parameters. Rename one in SPEC
+// §D.4.1 without touching this line and `flap.score` computes an EWMA over five
+// transition types, reports a calmer alert than the truth, and nothing anywhere
+// errors. This package is registered in `test/arch`'s `eventTypeSQLSites`, and
+// `TestEventTypeSQLNamesLiveValues` reads inside this literal and fails when a
+// value in it has left the enum.
 const stateChangeCountsSQL = `
 SELECT alert_id, count(*)
   FROM alert_events

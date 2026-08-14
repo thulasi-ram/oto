@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/id"
 	"github.com/thulasiram/oto/internal/rules/domain"
@@ -605,7 +606,7 @@ func TestAnOutageBetweenTwoFiresIsNotARuleEdit(t *testing.T) {
 		"nobody edited the rule; Prometheus was unreachable for an hour and then was not")
 
 	// The assertion the operator actually sees.
-	assert.NotContains(t, r.events.types(), service.EventDefinitionChanged,
+	assert.NotContains(t, r.events.types(), kernel.EventRuleDefinitionChanged,
 		"a `rule.definition_changed` here is a reply in the Slack thread that says the rule "+
 			"changed when it did not, with an empty expr as the evidence")
 }
@@ -649,7 +650,7 @@ func TestAnOutageOnTheGeneratorURLPathIsNotARuleEditEither(t *testing.T) {
 	assert.Equal(t, first.Snapshot.ID, back.Snapshot.ID)
 	assert.False(t, back.Drifted, "the alert carried the same g0.expr all three times")
 	assert.Equal(t, first.Snapshot.Fingerprint, back.PreviousFingerprint)
-	assert.NotContains(t, r.events.types(), service.EventDefinitionChanged)
+	assert.NotContains(t, r.events.types(), kernel.EventRuleDefinitionChanged)
 }
 
 // TestARuleEditedDuringAnOutageIsReportedWhenPrometheusComesBack is the other
@@ -686,7 +687,7 @@ func TestARuleEditedDuringAnOutageIsReportedWhenPrometheusComesBack(t *testing.T
 	assert.Equal(t, before.Snapshot.Fingerprint, after.PreviousFingerprint,
 		"drift is measured against the last definition oto held, not against the gap")
 
-	ev, ok := r.events.find(service.EventDefinitionChanged)
+	ev, ok := r.events.find(kernel.EventRuleDefinitionChanged)
 	require.True(t, ok, "the operator has to be told")
 	assert.Equal(t, before.Snapshot.Fingerprint, ev.Payload["previous_fingerprint"])
 	assert.Equal(t, after.Snapshot.Fingerprint, ev.Payload["fingerprint"])
@@ -800,7 +801,7 @@ func TestTheRuleKeySurvivesPrometheusBecomingReachable(t *testing.T) {
 	assert.Equal(t, 2, r.rowCount(t), "three fires, two captures")
 
 	// And the alert card says nothing, because there is nothing to say.
-	assert.NotContains(t, r.events.types(), service.EventDefinitionChanged,
+	assert.NotContains(t, r.events.types(), kernel.EventRuleDefinitionChanged,
 		"three fires, two recovery paths, zero edits, zero 'the rule changed' replies")
 
 	// ⭐ FIRE 4: THE EDIT THE PROMOTION MUST NOT HIDE. Somebody rewrote the
@@ -816,7 +817,7 @@ func TestTheRuleKeySurvivesPrometheusBecomingReachable(t *testing.T) {
 		"measured against the newest capture that held a definition, which is fire 2's")
 	assert.Equal(t, 3, r.rowCount(t))
 
-	ev, found := r.events.find(service.EventDefinitionChanged)
+	ev, found := r.events.find(kernel.EventRuleDefinitionChanged)
 	require.True(t, found)
 	assert.Equal(t, viaAPI.Snapshot.Fingerprint, ev.Payload["previous_fingerprint"])
 

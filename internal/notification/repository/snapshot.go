@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -183,6 +184,17 @@ const MaxTrailEntries = 12
 // Ordered by `recorded_at` — oto's clock, which is the causal order — and
 // DISPLAYED by `occurred_at`, which is upstream's. Conflating the two is how a
 // skewed cluster gets a trail that reads backwards.
+//
+// ⛔ THE TWELVE VALUES BELOW ARE A COPY OF THE KERNEL'S ENUM, IN SQL, AND THEY
+// CANNOT BE ANYTHING ELSE. They are part of a predicate Postgres plans — the walk
+// is `ev_group_idx` plus this filter — not of the parameter list, so there is no
+// `EventType` to bind here the way `readCause` binds one. What that costs is
+// exactly the hazard `causeEventTypes` below describes: rename a value in SPEC
+// §D.4.1, miss this line, and the trail silently goes empty, because a read that
+// returns no rows is indistinguishable from a group that never changed state.
+// `test/arch.TestEventTypeSQLNamesLiveValues` is the thing that notices — this
+// package is registered in `eventTypeSQLSites`, and the gate reads INSIDE this
+// literal and fails if any value in it has left the enum.
 const groupTrailSQL = `
 SELECT type, occurred_at, coalesce(actor_label,'')
   FROM alert_events
@@ -210,11 +222,24 @@ SELECT type, occurred_at, coalesce(actor_label,'')
 // ⛔ `snoozed` AND `unsnoozed` ARE DELIBERATELY ABSENT. A snooze is a fact about
 // oto's own notifications, the Slack renderer has no `snoozed` card at all, and
 // a query whose result nothing renders is a query nobody should pay for.
-var causeEventTypes = map[domain.Reason]string{
-	domain.ReasonAcked:      "occurrence.acknowledged",
-	domain.ReasonUnacked:    "occurrence.unacknowledged",
-	domain.ReasonComment:    "comment.added",
-	domain.ReasonSuppressed: "occurrence.suppressed",
+// ⚠️ THE VALUES ARE THE KERNEL'S ENUM, NOT FOUR MORE STRING LITERALS. They used to
+// be spelled out here, and a typo in one produced a query that silently matched
+// nothing — worse than a bad write, because a read that returns no rows looks
+// exactly like a fact that never happened. Here that hazard is GONE rather than
+// gated: the value is bound as a parameter, so `.String()` happens at the bind in
+// readCause and a value that has left the enum is a compile error.
+//
+// ⚠️ IT IS NOT TRUE OF THIS WHOLE FILE, AND AN EARLIER VERSION OF THIS COMMENT
+// IMPLIED IT WAS. `groupTrailSQL`, forty lines up, still spells twelve of these
+// values out — it must, because they sit in a predicate rather than a parameter —
+// so `occurrence.acknowledged` IS still written in Go in this package. What
+// changed is that the copy is now registered and checked: see that statement's own
+// comment and `test/arch.TestEventTypeSQLNamesLiveValues`.
+var causeEventTypes = map[domain.Reason]kernel.EventType{
+	domain.ReasonAcked:      kernel.EventOccurrenceAcknowledged,
+	domain.ReasonUnacked:    kernel.EventOccurrenceUnacknowledged,
+	domain.ReasonComment:    kernel.EventCommentAdded,
+	domain.ReasonSuppressed: kernel.EventOccurrenceSuppressed,
 }
 
 // causeByOccurrenceSQL, causeByAlertSQL and causeByGroupSQL read the ONE event
@@ -367,7 +392,7 @@ func (r *SnapshotRepository) readCause(
 		actor domain.ActorFacts
 		body  string
 	)
-	if err := r.db(ctx).QueryRow(ctx, sql, s.OrgID(), subject, eventType).
+	if err := r.db(ctx).QueryRow(ctx, sql, s.OrgID(), subject, eventType.String()).
 		Scan(&actor.Kind, &actor.ID, &actor.Label, &body); err != nil {
 		return
 	}

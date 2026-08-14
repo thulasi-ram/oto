@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -262,10 +263,10 @@ func (e *eventLog) RecordRuleEvent(_ context.Context, _ db.TenantScope, ev servi
 	return e.err
 }
 
-func (e *eventLog) types() []string {
+func (e *eventLog) types() []kernel.EventType {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	out := make([]string, 0, len(e.events))
+	out := make([]kernel.EventType, 0, len(e.events))
 	for _, ev := range e.events {
 		out = append(out, ev.Type)
 	}
@@ -278,7 +279,7 @@ func (e *eventLog) all() []service.RuleEvent {
 	return append([]service.RuleEvent(nil), e.events...)
 }
 
-func (e *eventLog) find(typ string) (service.RuleEvent, bool) {
+func (e *eventLog) find(typ kernel.EventType) (service.RuleEvent, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, ev := range e.events {
@@ -453,7 +454,7 @@ func TestCaptureStoresWhatTheRuleSaid(t *testing.T) {
 	// the alert is the thing that fired.
 	assert.Equal(t, "HighErrorRate", r.lookup.last.Labels["alertname"])
 
-	assert.Equal(t, []string{service.EventSnapshotCaptured}, r.events.types(),
+	assert.Equal(t, []kernel.EventType{kernel.EventRuleSnapshotCaptured}, r.events.types(),
 		"a first capture is captured, not changed")
 }
 
@@ -568,13 +569,13 @@ func TestCaptureNarratesDrift(t *testing.T) {
 	r.clk.Advance(time.Hour)
 	second := r.capture(t, id.New(), id.New())
 
-	assert.Equal(t, []string{
-		service.EventSnapshotCaptured,
-		service.EventSnapshotCaptured,
-		service.EventDefinitionChanged,
+	assert.Equal(t, []kernel.EventType{
+		kernel.EventRuleSnapshotCaptured,
+		kernel.EventRuleSnapshotCaptured,
+		kernel.EventRuleDefinitionChanged,
 	}, r.events.types(), "drift is narrated IN ADDITION to the capture, not instead of it")
 
-	ev, ok := r.events.find(service.EventDefinitionChanged)
+	ev, ok := r.events.find(kernel.EventRuleDefinitionChanged)
 	require.True(t, ok)
 	assert.Equal(t, first.Snapshot.Fingerprint, ev.Payload["previous_fingerprint"])
 	assert.Equal(t, second.Snapshot.Fingerprint, ev.Payload["fingerprint"])
@@ -710,7 +711,7 @@ func TestTwoRulesWithIdenticalContentKeepTheirOwnRows(t *testing.T) {
 	require.Len(t, all, 2)
 	assert.Equal(t, "AlertA", all[0].Payload["rule_name"])
 	assert.Equal(t, "AlertB", all[1].Payload["rule_name"])
-	assert.Equal(t, service.EventLookupFailed, all[1].Type)
+	assert.Equal(t, kernel.EventRuleLookupFailed, all[1].Type)
 	assert.Contains(t, all[1].Summary, "AlertB",
 		`the "could not be recovered" line must name the rule that could not be recovered`)
 }
@@ -815,9 +816,9 @@ func TestCaptureCarriesTheMatchConfidenceItWasGiven(t *testing.T) {
 				assert.Contains(t, c.Warnings, note)
 			}
 
-			ev, ok := r.events.find(service.EventSnapshotCaptured)
+			ev, ok := r.events.find(kernel.EventRuleSnapshotCaptured)
 			if !tc.available {
-				ev, ok = r.events.find(service.EventLookupFailed)
+				ev, ok = r.events.find(kernel.EventRuleLookupFailed)
 			}
 			require.True(t, ok)
 			assert.Equal(t, string(tc.confidence), ev.Payload["confidence"],
@@ -877,7 +878,7 @@ func TestCaptureDegradesRatherThanFailing(t *testing.T) {
 			require.NoError(t, c.Snapshot.Validate())
 			assert.Contains(t, c.Warnings, tc.note)
 
-			assert.Equal(t, []string{service.EventLookupFailed}, r.events.types(),
+			assert.Equal(t, []kernel.EventType{kernel.EventRuleLookupFailed}, r.events.types(),
 				"the operator learns that oto tried; an empty panel would not say that")
 		})
 	}

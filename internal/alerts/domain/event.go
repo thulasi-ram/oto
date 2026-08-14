@@ -198,6 +198,32 @@ func NewEventType(s string) (EventType, error) {
 // String renders the event type.
 func (t EventType) String() string { return t.s }
 
+// MarshalText renders the event type as the string it IS, for every encoder that
+// is not `fmt`.
+//
+// ⛔ WITHOUT THIS, A LOG LINE SAYS `"type":{}`. `EventType`'s only field is
+// unexported, and `String()` does not help outside `fmt`: `fmt` consults
+// `Stringer`, `encoding/json` does not. So the production JSON handler — which
+// hands an `any` attribute to `encoding/json` — encoded a struct with no exported
+// fields and emitted an empty object. `rules/service`'s "could not record rule
+// event" warning stopped naming WHICH fact was lost the day this became a struct,
+// and nothing failed: a blanked log line is invisible to the compiler, to the
+// linters and to every test in the tree.
+//
+// ⚠️ IT IS `MarshalText` AND NOT `MarshalJSON`, ONCE, FOR ALL FOUR CALLERS.
+// `slog`'s TextHandler asks for `encoding.TextMarshaler` directly; its JSONHandler
+// goes through `encoding/json`, which asks for `json.Marshaler` and then for this;
+// `json.Marshal` on any DTO carrying the value does the same and renders it as a
+// JSON string. A `MarshalJSON` would have to re-quote and re-escape by hand what
+// `encoding/json` already does correctly from these bytes.
+//
+// ⚠️ THERE IS DELIBERATELY NO `UnmarshalText`. Rendering a closed value is safe;
+// PARSING one is `NewEventType`'s job and must stay there, because a decoder that
+// could mint an `EventType` from arbitrary wire bytes is the closed set opened
+// again — this time from outside the process. Nothing in the tree decodes one: the
+// wire and the row are `string` and are parsed at the boundary.
+func (t EventType) MarshalText() ([]byte, error) { return []byte(t.s), nil }
+
 // IsZero reports whether the event type is unset.
 func (t EventType) IsZero() bool { return t.s == "" }
 
