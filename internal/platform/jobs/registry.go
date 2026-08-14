@@ -165,6 +165,14 @@ func orStub[T river.JobArgs](fn Handler[T], kind string) Handler[T] {
 // Timeouts are per-kind rather than global because the shapes differ by two
 // orders of magnitude: a delivery that has not answered in 30 s is hung, whereas
 // a partition sweep legitimately takes minutes.
+//
+// ⭐ FOR THE PER-TENANT PERIODICS THE TIMEOUT IS NOW PER TENANT, and that is the
+// whole of what 05e6fb1 bought. `occurrence.reap`'s two minutes used to be two
+// minutes for EVERY tenant put together, so the number below meant something
+// different on every install and got quietly tighter with each customer. It now
+// bounds one tenant's sweep, which is a quantity somebody can reason about, and
+// the fan-out tick that expands into those jobs does a page read and one batch
+// insert well inside the same budget. See jobs.TenantFanOut.
 func RegisterAll(r *Registry, h Handlers) error {
 	regs := []func() error{
 		func() error {
@@ -247,6 +255,15 @@ func RegisterAll(r *Registry, h Handlers) error {
 // belongs to the `sources` service, which enqueues them through db.Enqueuer.
 // Their args already carry a matching uniqueness window, so a slow reconcile
 // cannot stack up behind itself however often the fan-out runs.
+//
+// ⭐ THE PER-TENANT PERIODICS ARE STILL HERE, AND THE ZERO ARGS BELOW ARE WHY.
+// `occurrence.reap`, `group.close`, `flap.score`, `retention.prune` and
+// `stats.rollup` are all fanned out per tenant now (jobs.TenantFanOut), but their
+// SCHEDULE still needs no list: an args struct with a nil OrgID IS the fan-out
+// tick, and expanding it into one job per tenant happens in the handler, where
+// the tenant list can be read. That is the difference from the per-source pair —
+// a source job cannot even be constructed without knowing a source id, whereas
+// these can, so the schedule stays declarative and in one place.
 //
 // clk is used only to derive the schedule's notion of now, so a test can drive it.
 func AddDefaultPeriodic(r *Registry, clk clock.Clock) {

@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
@@ -34,6 +36,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/id"
+	"github.com/thulasiram/oto/internal/platform/jobs"
 	rulesdomain "github.com/thulasiram/oto/internal/rules/domain"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
 	sourcesapi "github.com/thulasiram/oto/internal/sources/api"
@@ -994,7 +997,17 @@ const listOrgIDsSQL = `SELECT id FROM orgs WHERE deleted_at IS NULL AND id > $1 
 // orgPageSize bounds ONE query the way `sweepLimit` bounds one tick's work per
 // tenant, and is the same size for the same reason: a bound nobody reaches in
 // practice is still the bound that keeps a bad night from becoming an outage.
-const orgPageSize = 500
+//
+// ⛔ IT IS `jobs.TenantFanOutLimit` AND NOT A SECOND 500, BECAUSE TWO 500s CAN
+// DIVERGE AND ONE CANNOT. `FanOutTenants` asks for `TenantFanOutLimit` ids and
+// queues a continuation only when the page comes back FULL. While this was its own
+// literal, raising the fan-out's ceiling above it — a one-line edit in another
+// package, with nothing pointing here — made every page come back short, so no
+// continuation was ever queued and every tenant past the smaller number was never
+// swept again. That is the permanent starvation `TenantFanOutLimit`'s own ⛔
+// comment promises is impossible, reachable without either comment being wrong on
+// its own. Now the fan-out's ceiling and the page that serves it are ONE number.
+const orgPageSize = jobs.TenantFanOutLimit
 
 func (l orgLister) Scopes(ctx context.Context) ([]db.TenantScope, error) {
 	out := make([]db.TenantScope, 0, orgPageSize)
@@ -1049,6 +1062,86 @@ func (l orgLister) page(
 		return nil, after, 0, err
 	}
 	return scopes, last, read, nil
+}
+
+// ScopePage is `jobs.TenantPager`: ONE page of the same walk, handed to the
+// per-tenant fan-out rather than accumulated.
+//
+// ⭐ IT RETURNS BARE IDS AND `Scopes` RETURNS SCOPES, AND THE DIFFERENCE IS THE
+// POINT. `Scopes` hands out authorisation because its caller is about to do the
+// work; this hands out something to put in a job PAYLOAD, and a payload is data.
+// The scope for that work is produced later, by `LiveScope`, against the table —
+// so an org id that is forged, stale, or simply departed between the tick and the
+// pass cannot become an authorisation. It is also why there is no `NewTenantScope`
+// filter here: an id that cannot become a scope must still advance the cursor,
+// and the only place that can be decided is where the scope is actually needed.
+//
+// ⛔ A LIMIT IT CANNOT SERVE IS AN ERROR, NEVER A QUIETLY SMALLER PAGE. The caller
+// reads a short page as "the end of the tenant table" — that is the whole contract
+// of `TenantPager`, and it is what decides whether a continuation is queued. A
+// pager that clamped the limit down would answer "there are no more tenants" to a
+// caller asking about tenants that exist, and the tenants past the clamp would
+// never be swept again. So an over-large limit says so, loudly, in the one place
+// that can tell the difference.
+func (l orgLister) ScopePage(ctx context.Context, after uuid.UUID, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 {
+		limit = orgPageSize
+	}
+	if limit > orgPageSize {
+		return nil, errs.Newf(errs.KindInternal, "org_page_too_large",
+			"a tenant page of %d was asked for and this lister serves at most %d; "+
+				"a short page means the end of the table, so it must not mean a clamp",
+			limit, orgPageSize)
+	}
+	rows, err := l.pool.Query(ctx, listOrgIDsSQL, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]uuid.UUID, 0, limit)
+	for rows.Next() {
+		var orgID uuid.UUID
+		if err := rows.Scan(&orgID); err != nil {
+			return nil, err
+		}
+		out = append(out, orgID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// liveOrgSQL asks the ONE question a per-tenant job payload may not answer for
+// itself: is this org real, and is it still here.
+const liveOrgSQL = `SELECT id FROM orgs WHERE id = $1 AND deleted_at IS NULL`
+
+// LiveScope is `jobs.TenantScoper`: the org id a job payload NAMES, resolved into
+// the scope the table AUTHORISES.
+//
+// ⛔ THE FILTER IS THE SAME `deleted_at IS NULL` THE LISTER USES, and it is here
+// as well as there because the two are separated by a queue. be3d314 stopped the
+// sweeps visiting departed tenants by fixing the list; a per-tenant job that
+// trusted its payload would have put them straight back, since a tenant can leave
+// in the seconds between the fan-out reading the table and the pass running. A
+// departed tenant resolves to NotFound, which `jobs.ForTenant` reads as "nothing
+// to do and nothing to retry".
+//
+// ⚠️ ONLY "NO SUCH ROW" IS NotFound. Every other failure — a dead connection, a
+// cancelled context — is returned AS IS, so the job retries. Collapsing them all
+// into NotFound would turn a database blip into "this tenant no longer exists"
+// and skip its sweep without a word, which is the silent-stop this whole file is
+// careful about.
+func (l orgLister) LiveScope(ctx context.Context, orgID uuid.UUID) (db.TenantScope, error) {
+	var found uuid.UUID
+	switch err := l.pool.QueryRow(ctx, liveOrgSQL, orgID).Scan(&found); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return db.TenantScope{}, errs.NotFound("org_not_found", "no such org, or it has been deleted")
+	case err != nil:
+		return db.TenantScope{}, err
+	}
+	return db.NewTenantScope(found)
 }
 
 // ---------------------------------------------------------------- ingestion

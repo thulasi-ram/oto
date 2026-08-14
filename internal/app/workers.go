@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 
 	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
@@ -77,6 +78,16 @@ func (c *Container) handlers() jobs.Handlers {
 		// The periodic lifecycle and maintenance sweeps. Each is a per-tenant
 		// fan-out because every repository method takes a TenantScope by
 		// construction; the fan-out itself is the only thing that belongs here.
+		//
+		// ⭐ "FAN-OUT" IS LITERAL SINCE 05e6fb1. Four of these six carry
+		// `jobs.TenantFanOut`, so a tick ENQUEUES one job per tenant rather than
+		// looping the tenants inside its own execution. The two exceptions are
+		// exceptions on their own merits and not by omission: `cache.expire` is a
+		// bounded eviction over a table with no tenant to loop over, and
+		// `partitions.manage` is global because a partition is a property of the
+		// TABLE rather than of a row — and the window it drops at is a REDUCE over
+		// every tenant rather than a map. See effectiveRetention for why that one
+		// cannot take this shape and what should happen to it instead.
 		OccurrenceReap:   c.reapOccurrences,
 		GroupClose:       c.closeGroups,
 		FlapScore:        c.scoreFlaps,
@@ -111,7 +122,7 @@ func (c *Container) handlers() jobs.Handlers {
 
 		// stats.rollup (ADR 0014) — what keeps the hygiene report off a scan of
 		// the event stream, and therefore what makes Postgres-only viable.
-		StatsRollup: statsworker.StatsRollup(c.Stats, c.orgs, c.Clock, c.Logger),
+		StatsRollup: statsworker.StatsRollup(c.Stats, c.orgs, c.enqueuer, c.Clock, c.Logger),
 	}
 
 	// notification fills its own three fields (notify.evaluate, deliver.dispatch,
@@ -161,23 +172,42 @@ const sweepLimit = 500
 // KEY is a sub-second statement on the maintenance queue.
 const keySweepLimit = 20_000
 
-// forEachOrg runs fn for every tenant, logging and CONTINUING on failure.
+// perTenantSweep runs whichever of the two shapes this execution is.
 //
-// One org's broken data must not stop the others being swept. The tick repeats
-// within a minute or two anyway, which makes "carry on" strictly better than
-// "abort": aborting converts one tenant's problem into every tenant's silence.
-func (c *Container) forEachOrg(ctx context.Context, what string, fn func(context.Context, db.TenantScope) error) error {
-	scopes, err := c.orgs.Scopes(ctx)
+// ⭐ IT REPLACED `forEachOrg`, AND THE THING IT DELETED IS THE POINT. That helper
+// ran fn for every tenant inside ONE execution, logging and carrying on past a
+// failure — which was the right call while there was one execution to lose, and
+// is the wrong shape entirely now: it spent one fixed timeout on a variable
+// number of tenants, so the budget an operator had sized for the work was
+// silently being spent on the customer count instead.
+//
+// ⭐ THE QUEUE NOW PROVIDES WHAT `forEachOrg`'s log line PROVIDED, and provides it
+// better. "One org's broken data must not stop the others" used to mean
+// swallowing the error and writing a line nobody alerts on; it now means the
+// tenants are SEPARATE JOBS, so a tenant that fails fails alone, retries on its
+// own periodic budget, and lands in the dead-letter table with its own kind and
+// payload when it keeps failing. Nothing is swallowed and nothing else stops.
+//
+// ⚠️ The fan-out shape returns its error rather than logging it. A tick that
+// could not read the tenant list or could not reach the queue has swept NOBODY,
+// which is a job failure in the ordinary sense and deserves the retry.
+func (c *Container) perTenantSweep(
+	ctx context.Context,
+	kind string,
+	fo jobs.TenantFanOut,
+	build func(jobs.TenantFanOut) db.JobArgs,
+	sweep func(context.Context, db.TenantScope) error,
+) error {
+	if !fo.IsFanOut() {
+		return jobs.ForTenant(ctx, kind, c.orgs, fo.OrgID, sweep)
+	}
+	out, err := jobs.FanOutTenants(ctx, kind, c.enqueuer, c.orgs, c.Logger, fo.After, build)
 	if err != nil {
 		return err
 	}
-	for _, scope := range scopes {
-		if err := fn(ctx, scope); err != nil {
-			c.Logger.ErrorContext(ctx, "sweep failed for one tenant",
-				slog.String("sweep", what),
-				slog.String("org_id", scope.OrgID().String()),
-				slog.String("error", err.Error()))
-		}
+	if out.Enqueued > 0 {
+		c.Logger.DebugContext(ctx, "periodic fan-out",
+			slog.String("kind", kind), slog.Int("enqueued", out.Enqueued))
 	}
 	return nil
 }
@@ -192,72 +222,82 @@ func (c *Container) forEachOrg(ctx context.Context, what string, fn func(context
 // there is no indefinite snooze — and it needs a clock somebody reads; there is
 // no separate job kind for it, so it belongs on the one sweep that already runs
 // every minute over the same tenants.
-func (c *Container) reapOccurrences(ctx context.Context, _ *jobs.Job[jobs.OccurrenceReapArgs]) error {
-	return c.forEachOrg(ctx, "occurrence.reap", func(ctx context.Context, scope db.TenantScope) error {
-		res, err := c.Alerts.Reap(ctx, scope, sweepLimit)
-		if err != nil {
-			return err
-		}
-		if res.Expired > 0 || res.Held > 0 {
-			c.Logger.InfoContext(ctx, "occurrence.reap",
-				slog.String("org_id", scope.OrgID().String()),
-				slog.Int("considered", res.Considered),
-				slog.Int("expired", res.Expired),
-				// Held is the §B.4 `source_degraded_holds` counter and is a
-				// FEATURE, not noise: it is how an operator learns that oto is
-				// deliberately saying nothing about a source it cannot see.
-				slog.Int("held", res.Held))
-		}
+func (c *Container) reapOccurrences(ctx context.Context, job *jobs.Job[jobs.OccurrenceReapArgs]) error {
+	return c.perTenantSweep(ctx, jobs.KindOccurrenceReap, job.Args.TenantFanOut,
+		func(f jobs.TenantFanOut) db.JobArgs { return jobs.OccurrenceReapArgs{TenantFanOut: f} },
+		c.reapOneTenant)
+}
 
-		snoozes, err := c.Alerts.ExpireSnoozes(ctx, scope, sweepLimit)
-		if err != nil {
-			return err
-		}
-		if snoozes.Expired > 0 {
-			c.Logger.InfoContext(ctx, "snooze.expire",
-				slog.String("org_id", scope.OrgID().String()),
-				slog.Int("expired", snoozes.Expired))
-		}
-		return nil
-	})
+// reapOneTenant is `occurrence.reap` for exactly one org — the whole of a job
+// execution and the whole of its two-minute budget.
+func (c *Container) reapOneTenant(ctx context.Context, scope db.TenantScope) error {
+	res, err := c.Alerts.Reap(ctx, scope, sweepLimit)
+	if err != nil {
+		return err
+	}
+	if res.Expired > 0 || res.Held > 0 {
+		c.Logger.InfoContext(ctx, "occurrence.reap",
+			slog.String("org_id", scope.OrgID().String()),
+			slog.Int("considered", res.Considered),
+			slog.Int("expired", res.Expired),
+			// Held is the §B.4 `source_degraded_holds` counter and is a FEATURE,
+			// not noise: it is how an operator learns that oto is deliberately
+			// saying nothing about a source it cannot see.
+			slog.Int("held", res.Held))
+	}
+
+	snoozes, err := c.Alerts.ExpireSnoozes(ctx, scope, sweepLimit)
+	if err != nil {
+		return err
+	}
+	if snoozes.Expired > 0 {
+		c.Logger.InfoContext(ctx, "snooze.expire",
+			slog.String("org_id", scope.OrgID().String()),
+			slog.Int("expired", snoozes.Expired))
+	}
+	return nil
 }
 
 // closeGroups is `group.close` (§G.3): close generations whose members have all
 // ended, and freeze their threads.
-func (c *Container) closeGroups(ctx context.Context, _ *jobs.Job[jobs.GroupCloseArgs]) error {
-	return c.forEachOrg(ctx, "group.close", func(ctx context.Context, scope db.TenantScope) error {
-		res, err := c.Grouping.CloseIdle(ctx, scope, sweepLimit)
-		if err != nil {
-			return err
-		}
-		if res.Closed > 0 {
-			c.Logger.InfoContext(ctx, "group.close",
-				slog.String("org_id", scope.OrgID().String()),
-				slog.Int("closed", res.Closed), slog.Int("held", res.Held))
-		}
-		return nil
-	})
+func (c *Container) closeGroups(ctx context.Context, job *jobs.Job[jobs.GroupCloseArgs]) error {
+	return c.perTenantSweep(ctx, jobs.KindGroupClose, job.Args.TenantFanOut,
+		func(f jobs.TenantFanOut) db.JobArgs { return jobs.GroupCloseArgs{TenantFanOut: f} },
+		func(ctx context.Context, scope db.TenantScope) error {
+			res, err := c.Grouping.CloseIdle(ctx, scope, sweepLimit)
+			if err != nil {
+				return err
+			}
+			if res.Closed > 0 {
+				c.Logger.InfoContext(ctx, "group.close",
+					slog.String("org_id", scope.OrgID().String()),
+					slog.Int("closed", res.Closed), slog.Int("held", res.Held))
+			}
+			return nil
+		})
 }
 
 // scoreFlaps is `flap.score` (§B.6).
 //
 // Flapping is a VISIBLE state, never silent suppression: this marks alerts, it
 // does not mute them.
-func (c *Container) scoreFlaps(ctx context.Context, _ *jobs.Job[jobs.FlapScoreArgs]) error {
-	return c.forEachOrg(ctx, "flap.score", func(ctx context.Context, scope db.TenantScope) error {
-		res, err := c.Alerts.ScoreFlaps(ctx, scope, sweepLimit)
-		if err != nil {
-			return err
-		}
-		if res.FlappingStarted > 0 || res.FlappingEnded > 0 {
-			c.Logger.InfoContext(ctx, "flap.score",
-				slog.String("org_id", scope.OrgID().String()),
-				slog.Int("scored", res.Scored),
-				slog.Int("started", res.FlappingStarted),
-				slog.Int("ended", res.FlappingEnded))
-		}
-		return nil
-	})
+func (c *Container) scoreFlaps(ctx context.Context, job *jobs.Job[jobs.FlapScoreArgs]) error {
+	return c.perTenantSweep(ctx, jobs.KindFlapScore, job.Args.TenantFanOut,
+		func(f jobs.TenantFanOut) db.JobArgs { return jobs.FlapScoreArgs{TenantFanOut: f} },
+		func(ctx context.Context, scope db.TenantScope) error {
+			res, err := c.Alerts.ScoreFlaps(ctx, scope, sweepLimit)
+			if err != nil {
+				return err
+			}
+			if res.FlappingStarted > 0 || res.FlappingEnded > 0 {
+				c.Logger.InfoContext(ctx, "flap.score",
+					slog.String("org_id", scope.OrgID().String()),
+					slog.Int("scored", res.Scored),
+					slog.Int("started", res.FlappingStarted),
+					slog.Int("ended", res.FlappingEnded))
+			}
+			return nil
+		})
 }
 
 // managePartitionsSQL is the §D.11 maintenance entry point, which the schema
@@ -301,6 +341,48 @@ func (c *Container) managePartitions(ctx context.Context, _ *jobs.Job[jobs.Parti
 
 // effectiveRetention is the widest window any tenant has asked for, floored at
 // the deployment's own configured retention.
+//
+// ⛔⛔ IT IS THE ONE SWEEP HERE THAT STILL WALKS EVERY TENANT INSIDE ONE
+// EXECUTION, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT (05e6fb1). Every
+// other periodic in this file became one job per tenant. This one cannot, because
+// it is not a MAP — it is a REDUCE. There is no per-tenant unit of work to
+// enqueue: the fold produces ONE pair of numbers that drive ONE
+// `oto_partitions_manage` call, and a partition holds every tenant's rows, so
+// there is nothing for a per-tenant job to do with a per-tenant answer. Forcing
+// it into the same shape would mean N jobs writing partial maxima somewhere and
+// an N+1'th deciding they had all landed — inventing a distributed accumulator to
+// replace a `for` loop over a settings column.
+//
+// ⛔ AND IT MUST NOT BE BOUNDED THE WAY THE OTHERS ARE. A truncated MAP is a
+// deferral; a truncated REDUCE is a WRONG ANSWER. Stopping this walk at a ceiling
+// would return a maximum computed over some of the tenants, and a maximum that
+// missed the tenant with the longest window drops that tenant's partitions early.
+// Retention is the only setting pair in oto whose wrong value is unrecoverable.
+// So it stays a whole-population read until it is replaced by something that is
+// exact and bounded at the same time, which is an aggregate in SQL rather than a
+// fan-out.
+//
+// ⚠️ TWO THINGS ARE KNOWN WRONG HERE AND ARE DELIBERATELY NOT FIXED IN THE SAME
+// CHANGE AS THE FAN-OUT, because they are about what gets DROPPED and deserve
+// their own test matrix rather than a ride along a scheduling change:
+//
+//   - THE FAILURE PATH BELOW CONTRADICTS THE ⛔ ABOVE IT. "Every failure widens
+//     the window" is what the comment promises, but an unreadable tenant list
+//     returns the CONFIG FLOOR, and the floor is NARROWER than a fold that had
+//     seen an org configured to 365 days. A settings read that times out can
+//     therefore drop a tenant's data early — the exact outcome the paragraph
+//     exists to forbid. The safe answer is the settings CEILING
+//     (`domain.Bounds(KeyRawRetention).Max`), which costs disk and destroys
+//     nothing.
+//   - THE OBVIOUS BOUNDED REPLACEMENT — one `max()` over `orgs.settings` — IS
+//     WRONG AS WRITTEN, and this note exists so the next author does not find that
+//     out afterwards. `identity.Service` overlays the deployment's Declarative
+//     onto EVERY org read and RECOMPUTES the effective settings from it
+//     (`Org.WithDeclarative`), and the declarative value BEATS the org's own. An
+//     aggregate over the raw JSONB column skips that overlay, so on an install
+//     where configuration forces a retention key it computes a maximum over
+//     numbers nobody is using. The reduce has to be evaluated where the overlay
+//     is applied — inside `identity` — not in a query this package writes.
 //
 // ⛔ EVERY FAILURE WIDENS THE WINDOW RATHER THAN NARROWING IT. An unreadable org
 // row, an org list that errors, a settings lookup that times out — none of them
@@ -413,7 +495,62 @@ func dedupeKeyHorizonOf(rawDays int) time.Duration {
 // The partitioned tables are handled by `partitions.manage`. What is left is the
 // deliberately UNPARTITIONED idempotency siblings and the session table — small
 // precisely because this runs.
-func (c *Container) pruneRetention(ctx context.Context, _ *jobs.Job[jobs.RetentionPruneArgs]) error {
+//
+// ⭐⭐ ITS TWO SHAPES DO DIFFERENT WORK, WHICH IS THE ONLY HONEST SPLIT OF THIS
+// BODY (05e6fb1). The job interleaved three GLOBAL prunes with a PER-ORG drill
+// sweep, and neither half is the other's shape: `ingest_dedup`,
+// `idempotency_claims` and `alert_event_keys` are globally-unique tables that
+// exist precisely because they cannot be partitioned or scoped, so "one job per
+// tenant" has nothing to say about them, while the drill sweep is per-org like
+// every other sweep in this file. So the FAN-OUT shape keeps the global prunes —
+// they are genuinely one execution's worth of work, bounded by `keySweepLimit`
+// and `sweepLimit` rather than by tenant count — and hands only the drill sweep
+// to the per-tenant fan-out. The alternative the ticket also allowed, a second
+// job kind for the drills, would have bought a new queue, a new retry policy and
+// a new metric to express "the same hourly sweep, still".
+//
+// ⛔ THE GLOBAL PRUNES RUN ON THE TICK ALONE — NOT ON A TENANT'S JOB, AND NOT ON
+// A CONTINUATION. Running them per tenant would be the same global DELETE
+// executed N times an hour: convergent, so not a correctness bug, and a pure
+// waste that grows with the customer count, which is the defect this whole change
+// is about. Running them again on each CONTINUATION would be the same waste
+// wearing a cursor — and `dedupeKeyHorizon` below folds every tenant's settings,
+// so a continuation that redid it would re-pay the most expensive read in the job
+// once per page of the tenant table.
+func (c *Container) pruneRetention(ctx context.Context, job *jobs.Job[jobs.RetentionPruneArgs]) error {
+	switch {
+	case !job.Args.IsFanOut():
+		return jobs.ForTenant(ctx, jobs.KindRetentionPrune, c.orgs, job.Args.OrgID, c.sweepTenantDrills)
+	case job.Args.After == uuid.Nil:
+		if err := c.pruneGlobal(ctx); err != nil {
+			return err
+		}
+	}
+
+	// ⛔ THE DRILL FAN-OUT IS AFTER THE GLOBAL PRUNES AND ITS FAILURE IS RETURNED.
+	// After, because those prunes guard webhook replay and must not be skipped by
+	// a tenant-list problem — the old body made the same call by swallowing every
+	// drill error for the same reason. Returned, because there is nothing left
+	// after it to protect: the prunes are committed, and a fan-out that could not
+	// reach the queue swept no tenant at all, which is worth a retry rather than a
+	// log line.
+	out, err := jobs.FanOutTenants(ctx, jobs.KindRetentionPrune, c.enqueuer, c.orgs, c.Logger,
+		job.Args.After, func(f jobs.TenantFanOut) db.JobArgs {
+			return jobs.RetentionPruneArgs{TenantFanOut: f}
+		})
+	if err != nil {
+		return err
+	}
+	if out.Enqueued > 0 {
+		c.Logger.DebugContext(ctx, "periodic fan-out",
+			slog.String("kind", jobs.KindRetentionPrune), slog.Int("enqueued", out.Enqueued))
+	}
+	return nil
+}
+
+// pruneGlobal is the half of `retention.prune` that has no tenant: the
+// deliberately unpartitioned idempotency siblings and the session table.
+func (c *Container) pruneGlobal(ctx context.Context) error {
 	// `ingest_dedup` guards webhook replay and must stay globally unique, which
 	// is exactly why it cannot live in a partition and must be pruned by hand.
 	dedup, err := c.Ingestion.Service.PruneDedup(ctx)
@@ -444,18 +581,16 @@ func (c *Container) pruneRetention(ctx context.Context, _ *jobs.Job[jobs.Retenti
 	if err != nil {
 		return err
 	}
-	finalised, disposed := c.sweepDrills(ctx)
-	if dedup > 0 || claims > 0 || eventKeys > 0 || sessions > 0 || finalised > 0 || disposed > 0 {
+	if dedup > 0 || claims > 0 || eventKeys > 0 || sessions > 0 {
 		c.Logger.InfoContext(ctx, "retention.prune",
 			slog.Int64("ingest_dedup", dedup), slog.Int64("idempotency_claims", claims),
-			slog.Int64("alert_event_keys", eventKeys), slog.Int64("sessions", sessions),
-			slog.Int("drills_finalised", finalised), slog.Int("drills_disposed", disposed))
+			slog.Int64("alert_event_keys", eventKeys), slog.Int64("sessions", sessions))
 	}
 	return nil
 }
 
-// sweepDrills settles abandoned delivery drills and deletes the synthetic signal
-// rows of drills that settled long enough ago.
+// sweepTenantDrills settles one tenant's abandoned delivery drills and deletes
+// the synthetic signal rows of the drills that settled long enough ago.
 //
 // ⭐⭐ IT BELONGS HERE, IN `retention.prune`, AND NOT IN `partitions.manage`.
 // ADR 0024 divides retention in two: partitions dropped wholesale, and a short
@@ -467,31 +602,43 @@ func (c *Container) pruneRetention(ctx context.Context, _ *jobs.Job[jobs.Retenti
 // is dropped here and no row recording something a cluster actually did is
 // touched.
 //
-// ⛔ A FAILURE FOR ONE TENANT MUST NOT STOP THE OTHERS, and none of it may fail
-// the job: `retention.prune` also prunes `ingest_dedup`, which guards webhook
-// replay, and letting a drill cleanup error block that would trade a cosmetic
-// problem for a correctness one.
-func (c *Container) sweepDrills(ctx context.Context) (finalised, disposed int) {
+// ⛔ A FAILURE FOR ONE TENANT MUST NOT STOP THE OTHERS, and it no longer needs a
+// swallowed error to achieve that. This used to be a loop over every tenant
+// inside the same execution as the global prunes, so a drill error had to be
+// logged and stepped over: letting it fail the job would have blocked
+// `ingest_dedup`'s prune, which guards webhook replay, trading a cosmetic problem
+// for a correctness one. Now each tenant is its OWN job, arriving after the
+// global prunes have already committed, so the error can simply be RETURNED — the
+// tenant retries on the periodic budget, nobody else is affected, and a tenant
+// that keeps failing shows up in the dead-letter table instead of in a log line
+// nobody reads.
+//
+// ⚠️ A DEPARTED TENANT'S DRILL ROWS ARE STILL NEVER SWEPT, AND THAT IS STILL AN
+// ACCEPTED GAP (be3d314, 05e6fb1). The tenant list filters `deleted_at IS NULL`
+// and `LiveScope` applies the same filter on the way in, so a soft-deleted org
+// gets no drill sweep from either end. Its open drills are never finalised and
+// `Dispose` — by its own comment "the ONLY function in oto that deletes a signal
+// row" — never runs for them, so the alert, group, occurrence, thread and
+// notification rows a drill MANUFACTURED persist indefinitely: ADR 0024 lists
+// every one of those tables as never reaped by anything at any setting, and the
+// one exception, `alert_events`, is dropped by `partitions.manage` on its own
+// schedule. Nothing else will reach them. This is recorded as a known consequence
+// rather than fixed here, because the fix is a decision about what a departing
+// tenant's manufactured rows are FOR, not a scheduling change.
+func (c *Container) sweepTenantDrills(ctx context.Context, scope db.TenantScope) error {
 	if c.Drills == nil {
-		return 0, 0
+		return nil
 	}
-	scopes, err := c.orgs.Scopes(ctx)
+	finalised, disposed, err := c.Drills.Sweep(ctx, scope, sweepLimit)
 	if err != nil {
-		c.Logger.ErrorContext(ctx, "retention.prune: could not list tenants for the drill sweep",
-			slog.String("error", err.Error()))
-		return 0, 0
+		return err
 	}
-	for _, scope := range scopes {
-		f, d, serr := c.Drills.Sweep(ctx, scope, sweepLimit)
-		if serr != nil {
-			c.Logger.ErrorContext(ctx, "retention.prune: the drill sweep failed for one tenant",
-				slog.String("org_id", scope.OrgID().String()), slog.String("error", serr.Error()))
-			continue
-		}
-		finalised += f
-		disposed += d
+	if finalised > 0 || disposed > 0 {
+		c.Logger.InfoContext(ctx, "retention.prune: drill sweep",
+			slog.String("org_id", scope.OrgID().String()),
+			slog.Int("drills_finalised", finalised), slog.Int("drills_disposed", disposed))
 	}
-	return finalised, disposed
+	return nil
 }
 
 // expireCache is `cache.expire`: evict stale `enrichment_cache` entries.

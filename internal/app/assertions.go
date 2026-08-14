@@ -20,12 +20,14 @@ import (
 	notifworker "github.com/thulasiram/oto/internal/notification/worker"
 	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
+	"github.com/thulasiram/oto/internal/platform/jobs"
 	"github.com/thulasiram/oto/internal/platform/secrets"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
 	silencesservice "github.com/thulasiram/oto/internal/silences/service"
 	sourcesapi "github.com/thulasiram/oto/internal/sources/api"
 	sourcesrepo "github.com/thulasiram/oto/internal/sources/repository"
 	sourcesservice "github.com/thulasiram/oto/internal/sources/service"
+	statsworker "github.com/thulasiram/oto/internal/stats/worker"
 )
 
 // ⭐ THE PORT-DRIFT WALL.
@@ -112,6 +114,17 @@ var (
 	_ sourcesapi.SourceRegistry       = (*sourcesservice.Service)(nil)
 	_ sourcesservice.SourceRepository = (*sourcesrepo.SourceRepository)(nil)
 	_ sourcesapi.ClusterRegistry      = (*sourcesrepo.ClusterRepository)(nil)
+
+	// --- the tenant list every per-tenant periodic fans out over -------------
+	//
+	// ⛔ THE TWO HALVES MUST STAY TOGETHER OR THE SWEEPS GO QUIET. `ScopePage`
+	// feeds the fan-out and `LiveScope` is what refuses to build a scope from a
+	// job payload alone; a drift on either is a periodic that enqueues nothing, or
+	// one that sweeps a tenant the list deliberately skips. Neither shows up as a
+	// compile error at the call site, because both travel as interfaces.
+	_ jobs.Tenants                = orgLister{}
+	_ statsworker.TenantLister    = orgLister{}
+	_ sourcesservice.TenantLister = orgLister{}
 
 	// --- notification: the settings half and the evaluation half -------------
 	_ notifapi.PolicyStore        = (*notifrepo.ConfigRepository)(nil)
