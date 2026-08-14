@@ -167,12 +167,17 @@ func orStub[T river.JobArgs](fn Handler[T], kind string) Handler[T] {
 // a partition sweep legitimately takes minutes.
 //
 // ⭐ FOR THE PER-TENANT PERIODICS THE TIMEOUT IS NOW PER TENANT, and that is the
-// whole of what 05e6fb1 bought. `occurrence.reap`'s two minutes used to be two
+// whole of what 2d699d6 bought. `occurrence.reap`'s two minutes used to be two
 // minutes for EVERY tenant put together, so the number below meant something
 // different on every install and got quietly tighter with each customer. It now
 // bounds one tenant's sweep, which is a quantity somebody can reason about, and
 // the fan-out tick that expands into those jobs does a page read and one batch
 // insert well inside the same budget. See jobs.TenantFanOut.
+//
+// `source.reconcile`'s sixty seconds is now the same kind of number, across all
+// three of its shapes: it bounds one tenant page plus one batch insert, or one
+// tenant's `ListDue` and the enqueues that follow it, or one source's pass — and no
+// longer the whole customer base's worth of the middle one.
 func RegisterAll(r *Registry, h Handlers) error {
 	regs := []func() error{
 		func() error {
@@ -254,7 +259,10 @@ func RegisterAll(r *Registry, h Handlers) error {
 // here: their payload names a source, so the fan-out needs the source list and
 // belongs to the `sources` service, which enqueues them through db.Enqueuer.
 // Their args already carry a matching uniqueness window, so a slow reconcile
-// cannot stack up behind itself however often the fan-out runs.
+// cannot stack up behind itself however often the fan-out runs. `source.reconcile`
+// is per-tenant as well as per-source now, and that changes nothing here for the
+// same reason as below: its schedule is still an args struct with a nil source id
+// AND a nil org id, and both expansions happen in the handler.
 //
 // ⭐ THE PER-TENANT PERIODICS ARE STILL HERE, AND THE ZERO ARGS BELOW ARE WHY.
 // `occurrence.reap`, `group.close`, `flap.score`, `retention.prune` and

@@ -306,16 +306,39 @@ func (SlackInteractionArgs) InsertOpts() river.InsertOpts {
 // source (SPEC §G.8). It is the ONLY producer of `suppressed`, and its
 // divergence count is the canary for every correctness bug in the system.
 //
-// Queue: reconcile · Priority: normal · Retry: retryable (12) · Payload v1
+// Queue: reconcile · Priority: normal · Retry: retryable (12) on the per-source
+// shape, periodic (3) on the two fan-out shapes · Payload v1
 //
 // IDEMPOTENCY KEY: (SourceID, tick). The reconciler is a pure read-and-observe
 // pass whose Observations feed the same state machine as ingestion, and that
 // state machine is idempotent by `alert_event_keys UNIQUE (org_id, dedupe_key)`
 // (SPEC §C.8). Running it twice therefore costs two HTTP calls and changes
 // nothing. Tick uniqueness is enforced by River over (kind, args, period) so a
-// slow run does not stack up behind itself.
+// slow run does not stack up behind itself, and TenantFanOut is what makes that
+// per-tenant: each org's fan-out gets its own thirty-second slot instead of every
+// org sharing the tick's one.
+//
+// ⭐ THE PAYLOAD NOW HAS THREE SHAPES, NOT TWO, AND THE THIRD IS THE ONE THIS KIND
+// LENT EVERYBODY ELSE. `TenantFanOut` was modelled on this args struct's own
+// no-source-id-means-expand-me trick; the kind that invented it was the last one
+// still walking every tenant inside a single execution, so it now carries the
+// embeddable it inspired:
+//
+//   - No source id, no org id → THE FAN-OUT TICK. Page the tenants, enqueue one
+//     of these per tenant, and — at the ceiling — one continuation.
+//   - No source id, an org id → ONE TENANT'S source fan-out: `ListDue` bounded by
+//     `FanOutLimit`, and the reconcile/silences pair per due source.
+//   - A source id → ONE PASS against that source. Both TenantFanOut fields are
+//     ZERO on it — not nil; they are `uuid.UUID` values and always present on the
+//     wire — because the source id already names the tenant by way of
+//     `alert_sources`.
+//
+// ⚠️ A SOURCE ID AND AN ORG ID TOGETHER ARE NOT A SHAPE. Nothing enqueues one and
+// the handler reads the source id first, so such a payload is one pass and the org
+// id is ignored — never authority, exactly as TenantFanOut says.
 type SourceReconcileArgs struct {
 	Payload
+	TenantFanOut
 	SourceID uuid.UUID `json:"source_id"`
 }
 
@@ -323,9 +346,37 @@ type SourceReconcileArgs struct {
 func (SourceReconcileArgs) Kind() string { return KindSourceReconcile }
 
 // InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
-func (SourceReconcileArgs) InsertOpts() river.InsertOpts {
+//
+// ⭐⭐ THE RETRY BUDGET IS PER SHAPE, AND ONLY THE PER-SOURCE PASS KEEPS THE
+// RETRYABLE ONE. `periodicOpts` already hands back `MaxAttemptsPeriodic`, so the
+// fan-out tick, a continuation and one tenant's pass all fall to three attempts;
+// the override below applies to the shape that names a SOURCE and to nothing else.
+//
+// ⛔ THE ARITHMETIC IS WHY, AND IT IS ABOUT ROWS RATHER THAN TASTE. At thirteen
+// attempts the backoff sum is roughly 1710 s — about 28.5 minutes — while the tick
+// that created the row runs again every 30 s and creates another. A tenant whose
+// `ListDue` is persistently failing therefore accumulates on the order of 57
+// retryable rows at once, against about 0.2 at three attempts. The sharpest case
+// is the CONTINUATION: a retried one replays a cursor that may be 28 minutes
+// stale, re-walking a page of the tenant table that has already been walked, and
+// `ByPeriod` will not dedupe it because its `After` makes it a distinct unique key.
+//
+// ⚠️ AND THE SURFACE THAT CAN EVEN REACH A RETRY IS NARROW, which is what makes
+// three enough. An unreachable upstream is not a job failure — `Reconcile` records
+// it in `source_health` and returns nil — and a tenant that departed between the
+// tick and its pass returns nil through `jobs.ForTenant`. What is left is a
+// `ListDue` or an `EnqueueMany` that faulted, i.e. the database or the queue, and a
+// tick thirty seconds behind is a better answer to that than thirteen attempts.
+//
+// ⛔ IT MUST NOT BECOME A BLANKET `MaxAttemptsPeriodic`. The per-source pass is the
+// MANDATORY reconciler (ADR 0006) and the only producer of `suppressed`; cutting
+// its budget to three would give up on a source over a blip that the retryable
+// ladder is sized to ride out.
+func (a SourceReconcileArgs) InsertOpts() river.InsertOpts {
 	o := periodicOpts(QueueReconcile, PriorityNormal, 30*time.Second)
-	o.MaxAttempts = MaxAttemptsRetryable
+	if a.SourceID != uuid.Nil {
+		o.MaxAttempts = MaxAttemptsRetryable
+	}
 	return o
 }
 

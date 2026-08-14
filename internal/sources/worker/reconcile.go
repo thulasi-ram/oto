@@ -16,7 +16,7 @@ import (
 // `*sources/service.Reconciler`.
 type Reconciler interface {
 	Reconcile(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) (domain.ReconcileResult, error)
-	FanOut(ctx context.Context) (int, error)
+	FanOut(ctx context.Context, fo jobs.TenantFanOut) (int, error)
 }
 
 // OrgResolver answers "which tenant owns this source".
@@ -31,13 +31,29 @@ type OrgResolver interface {
 
 // SourceReconcile is `source.reconcile` (SPEC §G.3, §G.8) — MANDATORY (ADR 0006).
 //
-// ⭐ THE PAYLOAD HAS TWO SHAPES, ON PURPOSE.
+// ⭐ THE PAYLOAD HAS THREE SHAPES, ON PURPOSE.
 //
-//   - No source id → this is the periodic FAN-OUT tick. It enumerates the tenants
-//     and enqueues one pass per due source. The periodic schedule in
+//   - No source id and no org id → this is the periodic FAN-OUT tick. It pages the
+//     tenants and enqueues one of these per tenant, plus a continuation when it
+//     stopped at `jobs.TenantFanOutLimit`. The periodic schedule in
 //     `platform/jobs` cannot carry a source list, and putting the list in the
 //     scheduler would mean restarting the process to pick up a new Alertmanager.
+//   - No source id but an org id → ONE TENANT'S fan-out: its due sources, and one
+//     pass plus one silences sync enqueued for each.
 //   - A source id → this is ONE PASS against that source.
+//
+// ⭐ THE FIRST TWO USED TO BE ONE SHAPE, AND SPLITTING THEM FINISHES WHAT 2d699d6
+// STARTED — that commit converted five periodics and named this kind as the one it
+// left. The tick walked every tenant inside this one execution, under this kind's
+// single sixty-second timeout; now the walk is bounded, the remainder rides a
+// continuation, and each tenant's fan-out is a job with a budget of its own.
+//
+// ⛔ THE SOURCE ID IS READ FIRST, AND THE ORDER OF THAT `if` IS LOAD-BEARING.
+// Reading the tenant half first would make every per-source pass look like a
+// fan-out tick and re-enqueue the whole tenant list — a job that multiplies itself
+// by the customer count, every thirty seconds, while doing none of the reconciling
+// it was queued for. `TestASourceIDDispatchesThePassAndNotTheFanOut` is what holds
+// the order in place, because nothing about swapping the branches fails to compile.
 //
 // ⛔ AN UNREACHABLE SOURCE IS NOT A JOB FAILURE. `Reconcile` returns a result with
 // `ok: false` and has already recorded the failure in `source_health`, where three
@@ -51,8 +67,10 @@ func SourceReconcile(rec Reconciler, orgs OrgResolver, log *slog.Logger) jobs.Ha
 		log = slog.Default()
 	}
 	return func(ctx context.Context, job *jobs.Job[jobs.SourceReconcileArgs]) error {
+		// The source id is read FIRST, so a payload that somehow carried both is one
+		// pass and the org id in it is ignored. A payload is data, never authority.
 		if job.Args.SourceID == uuid.Nil {
-			n, err := rec.FanOut(ctx)
+			n, err := rec.FanOut(ctx, job.Args.TenantFanOut)
 			if err != nil {
 				return err
 			}

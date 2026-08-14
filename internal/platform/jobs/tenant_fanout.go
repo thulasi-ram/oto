@@ -33,11 +33,14 @@ import (
 // insert) and each tenant's real work gets a WHOLE execution timeout of its own,
 // instead of a share of one.
 //
-// ⚠️ IT IS NOT A COPY OF `Reconciler.FanOut`, WHICH IS NOT A PRECEDENT FOR THIS.
-// That fan-out loops `Scopes()` synchronously and what it enqueues is keyed on a
-// SOURCE id; the tenant loop it does inside one execution is the very thing this
-// file exists to stop doing. It is the precedent for the two-shape PAYLOAD and
-// for nothing else.
+// ⚠️ IT WAS NEVER A COPY OF `Reconciler.FanOut` — IT IS THE OTHER WAY ROUND NOW.
+// That fan-out is the precedent for the two-shape PAYLOAD and was the precedent
+// for nothing else: it looped `Scopes()` synchronously inside one execution, which
+// is the very thing this file exists to stop doing. It has since been converted
+// onto this one, and is the only caller here whose per-tenant job is itself a
+// fan-out — one tenant's due sources, bounded by `sources/service.FanOutLimit`,
+// enqueuing work keyed on a SOURCE id. That inner level is its own and is not
+// modelled here; what it borrows is the tenant walk above it.
 
 // TenantFanOut is the two-shape payload every per-tenant periodic carries. Embed
 // it beside Payload in the args struct.

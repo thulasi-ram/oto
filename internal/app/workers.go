@@ -37,7 +37,11 @@ const reconcileFanOutInterval = 30 * time.Second
 // `source.reconcile` and `silences.sync` name a SOURCE, so the schedule needs the
 // source list, and the source list lives in a tenant-scoped table that only a
 // service can read. So the periodic here carries an EMPTY payload — the fan-out
-// tick — and the handler expands it into one job per due source.
+// tick — and the handler expands it, now in TWO steps: one job per tenant
+// (`jobs.TenantFanOut`, bounded and resumable), and inside each of those, one job
+// per due source. The empty payload is the tick because a nil org id means the
+// tenant walk and a nil source id means the source walk, so the schedule stays a
+// zero value here and stays declarative.
 //
 // `silences.sync` gets no periodic of its own. It is enqueued by the same
 // fan-out, and its args carry a 60-second uniqueness window, so being offered
@@ -80,7 +84,7 @@ func (c *Container) handlers() jobs.Handlers {
 		// fan-out because every repository method takes a TenantScope by
 		// construction; the fan-out itself is the only thing that belongs here.
 		//
-		// ⭐ "FAN-OUT" IS LITERAL SINCE 05e6fb1. Four of these six carry
+		// ⭐ "FAN-OUT" IS LITERAL SINCE 2d699d6. Four of these six carry
 		// `jobs.TenantFanOut`, so a tick ENQUEUES one job per tenant rather than
 		// looping the tenants inside its own execution. The two exceptions are
 		// exceptions on their own merits and not by omission: `cache.expire` is a
@@ -344,7 +348,7 @@ func (c *Container) managePartitions(ctx context.Context, _ *jobs.Job[jobs.Parti
 // the deployment's own configured retention.
 //
 // ⛔⛔ IT IS THE ONE SWEEP HERE THAT STILL WALKS EVERY TENANT INSIDE ONE
-// EXECUTION, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT (05e6fb1). Every
+// EXECUTION, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT (2d699d6). Every
 // other periodic in this file became one job per tenant. This one cannot, because
 // it is not a MAP — it is a REDUCE. There is no per-tenant unit of work to
 // enqueue: the fold produces ONE pair of numbers that drive ONE
@@ -547,7 +551,7 @@ func dedupeKeyHorizonOf(rawDays int) time.Duration {
 // precisely because this runs.
 //
 // ⭐⭐ ITS TWO SHAPES DO DIFFERENT WORK, WHICH IS THE ONLY HONEST SPLIT OF THIS
-// BODY (05e6fb1). The job interleaved three GLOBAL prunes with a PER-ORG drill
+// BODY (2d699d6). The job interleaved three GLOBAL prunes with a PER-ORG drill
 // sweep, and neither half is the other's shape: `ingest_dedup`,
 // `idempotency_claims` and `alert_event_keys` are globally-unique tables that
 // exist precisely because they cannot be partitioned or scoped, so "one job per
@@ -664,7 +668,7 @@ func (c *Container) pruneGlobal(ctx context.Context) error {
 // nobody reads.
 //
 // ⚠️ A DEPARTED TENANT'S DRILL ROWS ARE STILL NEVER SWEPT, AND THAT IS STILL AN
-// ACCEPTED GAP (be3d314, 05e6fb1). The tenant list filters `deleted_at IS NULL`
+// ACCEPTED GAP (be3d314, 2d699d6). The tenant list filters `deleted_at IS NULL`
 // and `LiveScope` applies the same filter on the way in, so a soft-deleted org
 // gets no drill sweep from either end. Its open drills are never finalised and
 // `Dispose` — by its own comment "the ONLY function in oto that deletes a signal

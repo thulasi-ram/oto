@@ -39,7 +39,7 @@ type TenantLister interface {
 // at-least-once queue, and which is what makes a per-tenant job safe to
 // re-deliver, to retry, and to overlap with the next tick's copy of itself.
 //
-// ⭐ THE PAYLOAD HAS TWO SHAPES, exactly as `source.reconcile`'s does (05e6fb1).
+// ⭐ THE PAYLOAD HAS TWO SHAPES, exactly as `source.reconcile`'s does (2d699d6).
 // No org id is the FAN-OUT tick: it enqueues one rollup per tenant and does no
 // rolling up itself. An org id is ONE TENANT'S rollup, with the whole of the
 // kind's five-minute execution budget to do it in. It used to loop every tenant

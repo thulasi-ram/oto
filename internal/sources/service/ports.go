@@ -9,6 +9,7 @@ import (
 	alertsvc "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
+	"github.com/thulasiram/oto/internal/platform/jobs"
 	"github.com/thulasiram/oto/internal/sources/client/alertmanager"
 	"github.com/thulasiram/oto/internal/sources/client/prometheus"
 	"github.com/thulasiram/oto/internal/sources/domain"
@@ -230,12 +231,18 @@ type ClusterReader interface {
 	Get(ctx context.Context, s db.TenantScope, clusterID uuid.UUID) (domain.Cluster, error)
 }
 
-// TenantLister enumerates every tenant for the periodic fan-out.
+// TenantLister is the tenant list in the two halves a fan-out needs: a bounded
+// page of ids to enqueue for, and the lookup that turns the id a payload names
+// into the scope the table authorises.
 //
 // The fan-out needs it because every repository method takes a db.TenantScope by
 // construction, and the periodic tick has no request to derive one from.
+//
+// ⛔ IT IS NOT `Scopes()` ANY MORE, AND THAT IS THE WHOLE OF THE CONVERSION. The
+// unbounded whole-list read is what let one tick's cost grow with the customer
+// count; a page plus a cursor is what bounds it. See jobs.TenantFanOut.
 type TenantLister interface {
-	Scopes(ctx context.Context) ([]db.TenantScope, error)
+	jobs.Tenants
 }
 
 // ClientFactory builds the outbound clients for one Source.

@@ -15,7 +15,7 @@ import (
 )
 
 // These tests are about the fan-out that replaced the tenant loop inside every
-// periodic sweep (05e6fb1). They run against a real Postgres because the two
+// periodic sweep (2d699d6). They run against a real Postgres because the two
 // things that can go wrong live in SQL — the page that drives the fan-out and the
 // lookup that authorises one tenant's job — and a fake pool would agree with
 // whatever the query happened to say.
@@ -104,21 +104,39 @@ func TestTheFanOutReachesEveryTenantAcrossContinuations(t *testing.T) {
 // separately because the failure it guards is silent in the opposite direction: a
 // chain that never ends enqueues a job per tick forever against a tenant list
 // that has already been exhausted.
+//
+// It runs both a SWEEP kind and `source.reconcile`, whose per-tenant job is itself
+// a fan-out over that tenant's due sources: the two travel the same walk, over the
+// same real tenant table, and the kind that is not a sweep is the one that would
+// otherwise never be driven against it.
 func TestAShortPageQueuesNoContinuation(t *testing.T) {
 	t.Parallel()
 
-	h := harness.New(t)
-	org := h.Org()
+	for _, tc := range []struct {
+		kind  string
+		build func(jobs.TenantFanOut) db.JobArgs
+	}{
+		{jobs.KindGroupClose, func(f jobs.TenantFanOut) db.JobArgs { return jobs.GroupCloseArgs{TenantFanOut: f} }},
+		{jobs.KindSourceReconcile, func(f jobs.TenantFanOut) db.JobArgs {
+			return jobs.SourceReconcileArgs{TenantFanOut: f}
+		}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
 
-	enq := &recordingEnqueuer{}
-	out, err := jobs.FanOutTenants(h.Ctx, jobs.KindGroupClose, enq, orgLister{pool: h.Pool}, nil, uuid.Nil,
-		func(f jobs.TenantFanOut) db.JobArgs { return jobs.GroupCloseArgs{TenantFanOut: f} })
-	require.NoError(t, err)
+			h := harness.New(t)
+			org := h.Org()
 
-	require.False(t, out.Deferred, "a page well under the ceiling reported itself truncated")
-	orgs, cont := enq.split(t)
-	require.Empty(t, cont, "an untruncated fan-out queued a continuation")
-	require.Contains(t, orgs, org.ID, "the tenant that exists was not enqueued")
+			enq := &recordingEnqueuer{}
+			out, err := jobs.FanOutTenants(h.Ctx, tc.kind, enq, orgLister{pool: h.Pool}, nil, uuid.Nil, tc.build)
+			require.NoError(t, err)
+
+			require.False(t, out.Deferred, "a page well under the ceiling reported itself truncated")
+			orgs, cont := enq.split(t)
+			require.Empty(t, cont, "an untruncated fan-out queued a continuation")
+			require.Contains(t, orgs, org.ID, "the tenant that exists was not enqueued")
+		})
+	}
 }
 
 // TestAPerTenantJobResolvesItsTenantAgainstTheTable is the authorisation half,
@@ -242,9 +260,17 @@ func (e *recordingEnqueuer) split(t *testing.T) (orgIDs, continuations []uuid.UU
 }
 
 // tenantFanOutOf reads the embedded payload half back out of an args struct.
+//
+// ⚠️ `source.reconcile` IS IN HERE AND IS THE ONE ENTRY THAT IS NOT A SWEEP. Its
+// per-tenant job is itself a fan-out — one tenant's due sources — so the half it
+// carries means the same thing to this walk as everybody else's, and leaving it
+// out would have quietly excluded the kind that lent the others this shape from
+// the only test that runs the walk against a real tenant table.
 func tenantFanOutOf(args db.JobArgs) (jobs.TenantFanOut, bool) {
 	switch a := args.(type) {
 	case jobs.OccurrenceReapArgs:
+		return a.TenantFanOut, true
+	case jobs.SourceReconcileArgs:
 		return a.TenantFanOut, true
 	case jobs.GroupCloseArgs:
 		return a.TenantFanOut, true
