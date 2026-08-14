@@ -51,7 +51,6 @@ noread:github.com/thulasiram/oto/internal/alerts/domain.Observation.BatchID	fiel
 noread:github.com/thulasiram/oto/internal/alerts/domain.Transition.Clamped	field is never read in production — the value goes nowhere (internal/alerts/domain/contracts.go:311)
 noread:github.com/thulasiram/oto/internal/alerts/domain.Transition.DetectedBy	field is never read in production — the value goes nowhere (internal/alerts/domain/contracts.go:307)
 noread:github.com/thulasiram/oto/internal/alerts/domain.Transition.Kind	field is never read in production — the value goes nowhere (internal/alerts/domain/contracts.go:289)
-noread:github.com/thulasiram/oto/internal/alerts/domain.transitionRule.opensNewOccurrence	field is never read in production — the value goes nowhere (internal/alerts/domain/lifecycle.go:126)
 noread:github.com/thulasiram/oto/internal/alerts/service.AlertDetail.SnoozedNow	field is never read in production — the value goes nowhere (internal/alerts/service/read.go:207)
 noread:github.com/thulasiram/oto/internal/alerts/service.ObserveOutcome.AlertCreated	field is never read in production — the value goes nowhere (internal/alerts/service/lifecycle.go:55)
 noread:github.com/thulasiram/oto/internal/alerts/service.ObserveOutcome.AlertKey	field is never read in production — the value goes nowhere (internal/alerts/service/lifecycle.go:44)
@@ -285,3 +284,4 @@ nowrite:github.com/thulasiram/oto/internal/streaming/service.HubConfig.BufferSiz
 nowrite:github.com/thulasiram/oto/internal/streaming/service.HubConfig.CoalesceWindow	field is never written in production — nothing populates it (internal/streaming/service/hub.go:113)
 spec-only:externalURL	openapi.yaml declares this property; no Go json tag produces it
 spec-only:notification	openapi.yaml declares this property; no Go json tag produces it
+noread:github.com/thulasiram/oto/internal/alerts/domain.TransitionResult.OpensNewOccurrence	field is never read in production — read by 4 test site(s) and nothing else. It is the surface the Decide/Apply agreement pin compares (decide_test.go): production now routes T7 off transitionRule.opensNewOccurrence, so Apply's echo of it is read only where the two are proven to still agree. Deleting it would remove the guarantee that stopped them diverging (internal/alerts/domain/lifecycle.go:346)

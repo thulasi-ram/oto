@@ -43,6 +43,12 @@ type fixture struct {
 
 	occurrences *repository.OccurrenceRepository
 
+	// h, org and cluster are kept so a test can seed the rows a §C.4 group needs
+	// without standing up a second harness over the same database.
+	h       *harness.H
+	org     harness.Org
+	cluster harness.Cluster
+
 	orgID      uuid.UUID
 	clusterID  uuid.UUID
 	clusterKey domain.ClusterKey
@@ -68,6 +74,9 @@ func newFixture(t *testing.T, now time.Time) *fixture {
 		scope:       org.Scope,
 		clk:         clk,
 		occurrences: repository.NewOccurrenceRepository(h.Pool),
+		h:           h,
+		org:         org,
+		cluster:     cluster,
 		orgID:       org.ID,
 		clusterID:   cluster.ID,
 		clusterKey:  cluster.Key,
