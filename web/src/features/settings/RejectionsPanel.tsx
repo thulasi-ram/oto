@@ -116,18 +116,18 @@ export const RejectionsPanel: Component<{ readonly sourceID: string }> = (props)
   const panelID = createUniqueId();
 
   return (
-    <div class="mt-1.5 rounded-[4px] border border-line bg-sunken px-2 py-1.5">
+    <div class="mt-1.5 rounded-control border border-line bg-sunken px-2 py-1.5">
       <div class="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          class="text-[11px] font-medium text-ink underline decoration-line-strong underline-offset-2"
+          class="text-meta font-medium text-ink underline decoration-line-strong underline-offset-2"
           onClick={() => setOpen(!open())}
           aria-expanded={open()}
           aria-controls={panelID}
         >
           Why an alert never appeared
         </button>
-        <span class="text-[11px] text-ink-subtle">
+        <span class="text-meta text-ink-subtle">
           Everything oto refused from this source, with the reason and the label set it refused,
           and every batch that stopped before its alerts were read. Nothing is dropped silently —
           so an empty feed here is an answer, not a gap.
@@ -217,7 +217,7 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
     // nothing rather than narrating over it, and stays mounted for the recovery.
     if (feed.isError) return { text: "", tone: "" };
     if (feed.isPending && rows().length === 0) {
-      return { text: "Loading…", tone: "mt-1.5 text-[11px] text-ink-subtle" };
+      return { text: "Loading…", tone: "mt-1.5 text-meta text-ink-subtle" };
     }
     // Two different facts, never conflated (see `ui/states`): a filter that
     // matched nothing is not the same as a source that has never had anything
@@ -225,25 +225,25 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
     if (rows().length === 0 && view().reasons.length > 0) {
       return {
         text: "No refusal from this source matches those reasons.",
-        tone: "mt-1.5 text-[11px] font-medium leading-snug text-ink",
+        tone: "mt-1.5 text-meta font-medium leading-snug text-ink",
       };
     }
     if (rows().length === 0) {
       return {
         text: "oto has never refused anything from this source.",
-        tone: "mt-1.5 text-[11px] font-medium leading-snug text-ink",
+        tone: "mt-1.5 text-meta font-medium leading-snug text-ink",
       };
     }
     const more = feed.data?.page.has_more === true ? "+" : "";
     return {
       text: `${fmtCount(rows().length)}${more} refused, newest first.`,
-      tone: "mt-1.5 text-[11px] text-ink-muted",
+      tone: "mt-1.5 text-meta text-ink-muted",
     };
   });
 
   return (
     <section class="mt-2">
-      <h3 class="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+      <h3 class="text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
         Refused alerts
       </h3>
 
@@ -274,7 +274,7 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
         <Match when={feed.isPending && rows().length === 0}>{null}</Match>
 
         <Match when={rows().length === 0 && view().reasons.length > 0}>
-          <p class="mt-0.5 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-0.5 text-meta leading-snug text-ink-subtle">
             The filter is doing something — that is not the same as nothing having been refused.
           </p>
           <Button class="mt-1" size="sm" variant="ghost" onClick={() => setView(EMPTY_FEED_VIEW)}>
@@ -283,7 +283,7 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
         </Match>
 
         <Match when={rows().length === 0}>
-          <p class="mt-0.5 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-0.5 text-meta leading-snug text-ink-subtle">
             That is an answer rather than an absence: every alert oto turns away is recorded here
             with its reason, so a missing alert was not turned away at the door. Look further down
             the chain — run the delivery drill above, or check the batches below for one that never
@@ -317,7 +317,7 @@ const RejectionRow: Component<{ readonly rejection: Rejection }> = (props) => {
 
   return (
     <li class="border-t border-line py-1 first:border-t-0">
-      <div class="flex flex-wrap items-baseline gap-1.5 text-[11px] leading-snug">
+      <div class="flex flex-wrap items-baseline gap-1.5 text-meta leading-snug">
         <span class="font-semibold text-ink">{REASON_LABEL[r().reason] ?? r().reason}</span>
         <span class="text-ink-subtle">
           <RelativeTime value={r().received_at} label="Refused" /> ago
@@ -330,7 +330,7 @@ const RejectionRow: Component<{ readonly rejection: Rejection }> = (props) => {
           horizontal scrollbar. Wrapped mid-token, as every arbitrary server
           string on this app is. */}
       <Show when={r().detail}>
-        <p class="mt-0.5 min-w-0 break-words border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink-muted">
+        <p class="mt-0.5 min-w-0 break-words border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink-muted">
           {r().detail}
         </p>
       </Show>
@@ -370,7 +370,7 @@ const LabelSet: Component<{ readonly labels: Readonly<Record<string, string>> }>
     <Show
       when={entries().length > 0}
       fallback={
-        <p class="mt-0.5 text-[11px] text-ink-subtle">
+        <p class="mt-0.5 text-meta text-ink-subtle">
           This refusal names no alert, so there is no label set to show.
         </p>
       }
@@ -388,7 +388,7 @@ const LabelSet: Component<{ readonly labels: Readonly<Record<string, string>> }>
         <Show when={hidden() > 0}>
           <button
             type="button"
-            class="text-[11px] text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
+            class="text-meta text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
             aria-expanded={expanded()}
             onClick={() => setExpanded(true)}
           >
@@ -398,7 +398,7 @@ const LabelSet: Component<{ readonly labels: Readonly<Record<string, string>> }>
         <Show when={expanded() && entries().length > LABELS_SHOWN}>
           <button
             type="button"
-            class="text-[11px] text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
+            class="text-meta text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
             aria-expanded={expanded()}
             onClick={() => setExpanded(false)}
           >
@@ -407,7 +407,7 @@ const LabelSet: Component<{ readonly labels: Readonly<Record<string, string>> }>
         </Show>
         <button
           type="button"
-          class="text-[11px] text-ink-subtle hover:text-ink hover:underline"
+          class="text-meta text-ink-subtle hover:text-ink hover:underline"
           title="Copy as an Alertmanager matcher set"
           onClick={() => void navigator.clipboard?.writeText(formatLabels(props.labels))}
         >
@@ -460,24 +460,24 @@ const FailedBatches: Component<{ readonly sourceID: string }> = (props) => {
   const standing = createMemo<Standing>(() => {
     if (batches.isError) return { text: "", tone: "" };
     if (batches.isPending && rows().length === 0) {
-      return { text: "Loading…", tone: "mt-1 text-[11px] text-ink-subtle" };
+      return { text: "Loading…", tone: "mt-1 text-meta text-ink-subtle" };
     }
     if (rows().length === 0) {
       return {
         text: "Every batch from this source finished.",
-        tone: "mt-1 text-[11px] font-medium leading-snug text-ink",
+        tone: "mt-1 text-meta font-medium leading-snug text-ink",
       };
     }
     const more = batches.data?.page.has_more === true ? "+" : "";
     return {
       text: `${fmtCount(rows().length)}${more} never finished, newest first.`,
-      tone: "mt-1 text-[11px] text-ink-muted",
+      tone: "mt-1 text-meta text-ink-muted",
     };
   });
 
   return (
     <section class="mt-2 border-t border-line pt-2">
-      <h3 class="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+      <h3 class="text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
         Batches that stopped
       </h3>
 
@@ -493,7 +493,7 @@ const FailedBatches: Component<{ readonly sourceID: string }> = (props) => {
         <Match when={batches.isPending && rows().length === 0}>{null}</Match>
 
         <Match when={rows().length === 0}>
-          <p class="mt-0.5 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-0.5 text-meta leading-snug text-ink-subtle">
             Nothing arrived and then stalled, so a missing alert was not lost between the webhook
             and the pipeline. It was either never sent, or it was read and refused — and the feed
             above is the other half of that answer.
@@ -526,7 +526,7 @@ const BatchRow: Component<{ readonly batch: FailedBatch }> = (props) => {
 
   return (
     <li class="border-t border-line py-1 first:border-t-0">
-      <div class="flex flex-wrap items-baseline gap-1.5 text-[11px] leading-snug">
+      <div class="flex flex-wrap items-baseline gap-1.5 text-meta leading-snug">
         <span class="font-semibold text-ink">{BATCH_LABEL[b().status] ?? b().status}</span>
         <Chip>{b().mode}</Chip>
         <span class="text-ink-subtle">
@@ -548,7 +548,7 @@ const BatchRow: Component<{ readonly batch: FailedBatch }> = (props) => {
       <Show
         when={b().error}
         fallback={
-          <p class="mt-0.5 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-0.5 text-meta leading-snug text-ink-subtle">
             No error was recorded, which is what a batch that stopped by dying looks like — the
             process handling it did not survive to write one.
           </p>
@@ -556,7 +556,7 @@ const BatchRow: Component<{ readonly batch: FailedBatch }> = (props) => {
       >
         {/* Whatever the pipeline wrote, wrapped mid-token: an arbitrary server
             string is not allowed to widen the settings column. */}
-        <p class="mt-0.5 min-w-0 break-words border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink">
+        <p class="mt-0.5 min-w-0 break-words border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
           {b().error}
         </p>
       </Show>

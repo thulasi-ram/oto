@@ -104,7 +104,7 @@ export const Dialog: Component<DialogProps> = (props) => {
       aria-labelledby={titleId}
       aria-describedby={props.description ? descId : undefined}
       class={cx(
-        "m-auto w-[calc(100vw-2rem)] rounded-[8px] border border-line bg-surface p-0 text-ink",
+        "m-auto w-[calc(100vw-2rem)] rounded-surface border border-line bg-surface p-0 text-ink",
         "shadow-[0_16px_48px_-12px_rgb(0_0_0_/_0.35)] backdrop:bg-black/40",
         "open:oto-enter",
         WIDTH[props.width ?? "md"],
@@ -112,11 +112,11 @@ export const Dialog: Component<DialogProps> = (props) => {
     >
       <div class="flex items-start justify-between gap-4 border-b border-line px-4 py-3">
         <div class="min-w-0">
-          <h2 id={titleId} class="text-[14px] font-semibold text-ink">
+          <h2 id={titleId} class="text-title font-semibold text-ink">
             {props.title}
           </h2>
           <Show when={props.description}>
-            <p id={descId} class="mt-0.5 text-[12px] leading-snug text-ink-muted">
+            <p id={descId} class="mt-0.5 text-body leading-snug text-ink-muted">
               {props.description}
             </p>
           </Show>
@@ -152,7 +152,7 @@ export const Dialog: Component<DialogProps> = (props) => {
 
 /** Body text inside a dialog, at the reading measure the rest of the app uses. */
 export const DialogBody: ParentComponent<{ readonly class?: string }> = (props) => (
-  <div class={cx("flex flex-col gap-3 text-[13px] leading-relaxed text-ink", props.class)}>
+  <div class={cx("flex flex-col gap-3 text-item leading-relaxed text-ink", props.class)}>
     {props.children}
   </div>
 );

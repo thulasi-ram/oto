@@ -87,7 +87,7 @@ const ConnectionBadge = (): JSX.Element => {
           announcing once, and never worth interrupting for. */}
       <span
         class={cx(
-          "inline-flex items-center gap-1.5 rounded-[4px] border px-1.5 py-0.5 text-[11px]",
+          "inline-flex items-center gap-1.5 rounded-control border px-1.5 py-0.5 text-meta",
           live.state() === "live"
             ? "border-line bg-surface text-ink-muted"
             : "border-line-strong bg-raised font-medium text-ink",
@@ -215,7 +215,7 @@ const Nav = (): JSX.Element => {
           href={item.href}
           aria-current={active(item.prefix) ? "page" : undefined}
           class={cx(
-            "rounded-[4px] px-2 py-1 text-[13px] transition-colors duration-100",
+            "rounded-control px-2 py-1 text-item transition-colors duration-100",
             active(item.prefix)
               ? "bg-accent-fill font-medium text-ink"
               : "text-ink-muted hover:bg-raised hover:text-ink",
@@ -277,7 +277,7 @@ const SignOut: Component = () => {
   return (
     <>
       <Show when={failed()}>
-        <span role="alert" class="text-[11px] font-medium text-ink">
+        <span role="alert" class="text-meta font-medium text-ink">
           Still signed in — sign-out failed. Try again.
         </span>
       </Show>
@@ -286,7 +286,7 @@ const SignOut: Component = () => {
         onClick={() => void go()}
         disabled={busy()}
         title={session.me()?.user?.email ?? undefined}
-        class="rounded-[4px] px-1.5 py-1 text-[11px] font-medium text-ink-muted transition-colors duration-100 hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
+        class="rounded-control px-1.5 py-1 text-meta font-medium text-ink-muted transition-colors duration-100 hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
       >
         Sign out
       </button>
@@ -309,7 +309,7 @@ export const AppShell: ParentComponent = (props) => {
       {/* Keyboard users get out of the header in one tab, always. */}
       <a
         href="#main"
-        class="sr-only-focusable absolute left-2 top-2 z-50 rounded-[4px] border border-line-strong bg-surface px-3 py-1.5 text-[13px] font-medium text-ink"
+        class="sr-only-focusable absolute left-2 top-2 z-50 rounded-control border border-line-strong bg-surface px-3 py-1.5 text-item font-medium text-ink"
       >
         Skip to content
       </a>
@@ -319,7 +319,7 @@ export const AppShell: ParentComponent = (props) => {
           <A href="/alerts" class="flex shrink-0 items-center gap-1.5" aria-label="oto — home">
             {/* The chime — 音. The only piece of brand art in the chrome. */}
             <Chime size="mark" class="text-accent" />
-            <span class="font-mono text-[15px] font-bold tracking-tight text-ink">oto</span>
+            <span class="font-mono text-title font-bold tracking-tight text-ink">oto</span>
           </A>
           <Nav />
           <div class="flex-1" />
@@ -354,7 +354,7 @@ export const AppShell: ParentComponent = (props) => {
         {props.children}
       </main>
 
-      <footer class="shrink-0 border-t border-line px-4 py-1.5 text-[10px] text-ink-subtle">
+      <footer class="shrink-0 border-t border-line px-4 py-1.5 text-micro text-ink-subtle">
         oto · alert history for Prometheus · {year()} — oto records what your cluster reported.{" "}
         {/* vocab:allow — the footer states the scope boundary to the operator; it denies the concept it names. */}
         It does not page anyone and it does not know who is on call.

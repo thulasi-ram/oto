@@ -14,6 +14,27 @@
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
+  /* ---- Type scale (§M.8) --------------------------------------------
+     `text-micro` … `text-page`. These are the ONLY font sizes in the product:
+     `scales.test.ts` rejects a `text-[Npx]` bracket and rejects Tailwind's own
+     `text-sm`/`text-base` ladder too, because a second vocabulary for the same
+     axis is the thing this block exists to end. */
+  --text-micro: var(--oto-type-micro);
+  --text-meta: var(--oto-type-meta);
+  --text-body: var(--oto-type-body);
+  --text-item: var(--oto-type-item);
+  --text-title: var(--oto-type-title);
+  --text-page: var(--oto-type-page);
+
+  /* ---- Radius scale (§M.8) ------------------------------------------
+     `rounded-chip` / `rounded-control` / `rounded-surface`, composing with the
+     side variants (`rounded-t-surface`) exactly as a built-in would.
+     `rounded-full` and `rounded-none` are shapes rather than steps and stay
+     available; every other named radius is rejected. */
+  --radius-chip: var(--oto-radius-chip);
+  --radius-control: var(--oto-radius-control);
+  --radius-surface: var(--oto-radius-surface);
+
   /* ---- Tier A ------------------------------------------------------- */
   --color-bg: var(--oto-bg);
   --color-surface: var(--oto-surface);
@@ -88,11 +109,16 @@
     font-family: var(--font-sans);
   }
 
-  /* U7: focus is ALWAYS visible, 2 px ring at 2 px offset, never `outline:none`. */
+  /* U7: focus is ALWAYS visible, 2 px ring at 2 px offset, never `outline:none`.
+     The radius is the CONTROL step (§M.8), because what takes focus is a control:
+     a button, an input, a nav item, a link. This line used to read `3px`, which
+     agreed with the chip step by coincidence and with the buttons it actually
+     draws around by nothing at all — a third hand-written instance of a decision
+     the scale now owns. */
   :focus-visible {
     outline: 2px solid var(--oto-focus);
     outline-offset: 2px;
-    border-radius: 3px;
+    border-radius: var(--oto-radius-control);
   }
 
   ::selection {

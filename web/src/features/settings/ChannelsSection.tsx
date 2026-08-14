@@ -131,7 +131,7 @@ export const ChannelsSection: Component = () => {
             <For each={types.data ?? []}>
               {(t) => (
                 <li class="flex flex-wrap items-center gap-1.5 py-1">
-                  <span class="text-[13px] font-medium text-ink">{t.display_name}</span>
+                  <span class="text-item font-medium text-ink">{t.display_name}</span>
                   <For each={t.capabilities}>{(cap) => <Chip>{cap}</Chip>}</For>
                 </li>
               )}
@@ -170,11 +170,11 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
   return (
     <li class="border-b border-line px-3 py-2.5 last:border-b-0">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[13px] font-medium text-ink">{c().name}</span>
+        <span class="text-item font-medium text-ink">{c().name}</span>
         <Chip>{c().type}</Chip>
         <span
           class={cx(
-            "rounded-[3px] border px-1.5 text-[11px] leading-5",
+            "rounded-chip border px-1.5 text-meta leading-5",
             c().health_status === "healthy"
               ? "border-line bg-surface text-ink-muted"
               : "border-line-strong bg-raised font-medium text-ink",
@@ -211,7 +211,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
 
       {/* Credentials are write-only: oto shows the kind and the rotation date,
           never a masked value it would have to invent. */}
-      <div class="mt-1 flex flex-wrap items-center gap-x-3 text-[11px] text-ink-subtle">
+      <div class="mt-1 flex flex-wrap items-center gap-x-3 text-meta text-ink-subtle">
         <Show when={c().credential_kind}>
           {(kind) => <span>credential: {kind()}</span>}
         </Show>
@@ -233,7 +233,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
 
       <Show when={c().health_error}>
         {(err) => (
-          <p class="mt-1 border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink">
+          <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
             {err()}
           </p>
         )}
@@ -243,7 +243,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
         {(result) => (
           <p
             class={cx(
-              "mt-1 rounded-[4px] border px-2 py-1 text-[11px] leading-snug",
+              "mt-1 rounded-control border px-2 py-1 text-meta leading-snug",
               result().ok
                 ? "border-line bg-sunken text-ink-muted"
                 : "border-line-strong bg-raised font-medium text-ink",
@@ -440,13 +440,13 @@ const ChannelDialog: Component<{
         <Show
           when={descriptor()}
           fallback={
-            <p class="text-[12px] text-ink-muted">
+            <p class="text-body text-ink-muted">
               oto has not published a schema for this provider, so there is nothing to configure.
             </p>
           }
         >
-          <fieldset class="rounded-[4px] border border-line p-3">
-            <legend class="px-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+          <fieldset class="rounded-control border border-line p-3">
+            <legend class="px-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
               Provider configuration
             </legend>
             <SchemaForm
@@ -506,7 +506,7 @@ const ChannelDialog: Component<{
           label={
             <span>
               Enabled
-              <span class="ml-1.5 text-[11px] text-ink-subtle">
+              <span class="ml-1.5 text-meta text-ink-subtle">
                 a disabled channel is skipped, and the skip is recorded with a reason rather than
                 dropped
               </span>

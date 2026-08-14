@@ -369,7 +369,7 @@ export default function AlertsRoute() {
         onChange={setFilters}
         onReset={() => setFilters(DEFAULT_FILTERS)}
         status={
-          <span class="text-[12px] tabular-nums text-ink-muted" aria-live="polite">
+          <span class="text-body tabular-nums text-ink-muted" aria-live="polite">
             {status()}
           </span>
         }
@@ -472,7 +472,7 @@ export default function AlertsRoute() {
       {/* Rejected matchers are explained at the bottom too, where the empty
           state points, so the reason is never off-screen from its effect. */}
       <Show when={rejected().length > 0}>
-        <ul class="border-t border-line bg-raised px-3 py-2 text-[11px] leading-snug text-ink">
+        <ul class="border-t border-line bg-raised px-3 py-2 text-meta leading-snug text-ink">
           <For each={rejected()}>
             {(r) => (
               <li>
@@ -505,7 +505,7 @@ function Footer(props: {
       <Show
         when={props.hasMore}
         fallback={
-          <span class="text-[11px] text-ink-subtle">
+          <span class="text-meta text-ink-subtle">
             That is all {fmtCount(props.loaded)} of them.
           </span>
         }
@@ -513,7 +513,7 @@ function Footer(props: {
         <Button size="sm" busy={props.loading} onClick={props.onLoadMore}>
           Load {fmtCount(props.pageSize)} more
         </Button>
-        <span class="text-[11px] text-ink-subtle">
+        <span class="text-meta text-ink-subtle">
           {fmtCount(props.loaded)} loaded across {props.pageCount} page
           {props.pageCount === 1 ? "" : "s"}
         </span>

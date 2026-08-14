@@ -66,7 +66,7 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
     <PanelHeader>
       <PanelTitle>Firing episodes</PanelTitle>
       <Show when={props.occurrences.length > 0}>
-        <span class="text-[11px] text-ink-subtle">{props.occurrences.length} shown</span>
+        <span class="text-meta text-ink-subtle">{props.occurrences.length} shown</span>
       </Show>
     </PanelHeader>
 
@@ -97,22 +97,22 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
 
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span class="font-mono text-[12px] font-medium text-ink">#{occ.seq}</span>
+                    <span class="font-mono text-body font-medium text-ink">#{occ.seq}</span>
                     <StateChip state={occ.state} size="sm" />
                     <Show when={occ.ack_state === "acked"}>
                       <span
-                        class="text-[11px] text-ink-muted"
+                        class="text-meta text-ink-muted"
                         title="A receipt on the signal. It was still firing when this was recorded."
                       >
                         seen by {occ.acked_by_label ?? "someone"}
                       </span>
                     </Show>
-                    <span class="ml-auto text-[11px] text-ink-subtle" title={absoluteTime(occ.started_at)}>
+                    <span class="ml-auto text-meta text-ink-subtle" title={absoluteTime(occ.started_at)}>
                       <RelativeTime value={occ.started_at} label="Started" /> ago
                     </span>
                   </div>
 
-                  <div class="mt-0.5 flex flex-wrap items-center gap-x-3 text-[11px] text-ink-muted">
+                  <div class="mt-0.5 flex flex-wrap items-center gap-x-3 text-meta text-ink-muted">
                     <span title="How long this episode was firing. oto times the signal, not anyone's response.">
                       fired for {duration(occ.duration_seconds)}
                       {occ.ended_at === null || occ.ended_at === undefined ? " so far" : ""}
@@ -154,7 +154,7 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
 
                   <Show when={occ.ack_note}>
                     {(note) => (
-                      <p class="mt-1 border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink-muted">
+                      <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink-muted">
                         {note()}
                       </p>
                     )}

@@ -162,7 +162,7 @@ export default function AlertDetailRoute() {
 
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-2">
-                    <h1 class="min-w-0 truncate text-[18px] font-semibold tracking-tight text-ink">
+                    <h1 class="min-w-0 truncate text-page font-semibold tracking-tight text-ink">
                       {data().alertname}
                     </h1>
                     <SeverityMark severity={data().severity} withLabel />
@@ -184,7 +184,7 @@ export default function AlertDetailRoute() {
                     <SnoozeChip snooze={data().snooze ?? null} />
                   </div>
 
-                  <p class="mt-0.5 text-[12px] text-ink-muted">
+                  <p class="mt-0.5 text-body text-ink-muted">
                     {STATE_MEANING[data().state]}
                     <Show when={data().snooze}>
                       {" "}
@@ -193,7 +193,7 @@ export default function AlertDetailRoute() {
                     </Show>
                   </p>
 
-                  <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-ink-muted">
+                  <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-ink-muted">
                     <span>
                       <span class="text-ink-subtle">cluster</span>{" "}
                       <span class="font-mono">{data().cluster_key}</span>
@@ -252,7 +252,7 @@ export default function AlertDetailRoute() {
                       href={url()}
                       target="_blank"
                       rel="noreferrer noopener"
-                      class="text-[12px] text-accent hover:underline"
+                      class="text-body text-accent hover:underline"
                     >
                       Open the query in Prometheus ↗
                     </a>
@@ -262,7 +262,7 @@ export default function AlertDetailRoute() {
                   {(group) => (
                     <A
                       href={`/groups/${group().id}`}
-                      class="text-[12px] text-accent hover:underline"
+                      class="text-body text-accent hover:underline"
                       title="The Alertmanager notification group this episode joined"
                     >
                       In group: {group().title} ↗
@@ -284,7 +284,7 @@ export default function AlertDetailRoute() {
               <Panel class="flex min-h-0 flex-col xl:overflow-hidden">
                 <PanelHeader>
                   <PanelTitle>Timeline</PanelTitle>
-                  <span class="text-[11px] text-ink-subtle">
+                  <span class="text-meta text-ink-subtle">
                     displayed in the upstream's time · ordered by oto's
                   </span>
                 </PanelHeader>
@@ -396,7 +396,7 @@ function LabelsPanel(props: {
         <PanelTitle>Labels and annotations</PanelTitle>
         <button
           type="button"
-          class="text-[11px] text-ink-subtle hover:text-ink hover:underline"
+          class="text-meta text-ink-subtle hover:text-ink hover:underline"
           onClick={() => void navigator.clipboard?.writeText(formatLabels(props.labels))}
           title="Copy as an Alertmanager matcher set"
         >
@@ -407,13 +407,13 @@ function LabelsPanel(props: {
       <div class="p-3">
         <Show
           when={labelEntries().length > 0}
-          fallback={<p class="text-[12px] text-ink-subtle">This alert carries no labels.</p>}
+          fallback={<p class="text-body text-ink-subtle">This alert carries no labels.</p>}
         >
           <dl class="space-y-0.5">
             <For each={labelEntries()}>
               {([k, val]) => (
                 <DataRow term={k}>
-                  <span class="break-all font-mono text-[12px]">{val}</span>
+                  <span class="break-all font-mono text-body">{val}</span>
                 </DataRow>
               )}
             </For>
@@ -422,15 +422,15 @@ function LabelsPanel(props: {
 
         <Show when={annotationEntries().length > 0}>
           <div class="mt-3 border-t border-line pt-3">
-            <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+            <p class="mb-1.5 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
               Annotations
             </p>
             <dl class="space-y-1.5">
               <For each={annotationEntries()}>
                 {([k, val]) => (
                   <div>
-                    <dt class="text-[11px] text-ink-subtle">{k}</dt>
-                    <dd class="whitespace-pre-wrap break-words text-[12px] leading-snug text-ink">
+                    <dt class="text-meta text-ink-subtle">{k}</dt>
+                    <dd class="whitespace-pre-wrap break-words text-body leading-snug text-ink">
                       {val}
                     </dd>
                   </div>

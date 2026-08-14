@@ -298,13 +298,13 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
         </Show>
 
         <fieldset class="min-w-0">
-          <legend class="mb-1.5 text-[12px] font-medium text-ink-muted">For how long</legend>
+          <legend class="mb-1.5 text-body font-medium text-ink-muted">For how long</legend>
           <div class="flex flex-wrap gap-1">
             <For each={SNOOZE_PRESETS}>
               {(preset) => (
                 <label
                   class={cx(
-                    "inline-flex cursor-pointer items-center rounded-[4px] border px-2 py-1 text-[12px]",
+                    "inline-flex cursor-pointer items-center rounded-control border px-2 py-1 text-body",
                     mode() === "duration" && seconds() === preset.seconds
                       ? "border-accent-border bg-accent-fill font-medium text-ink"
                       : "border-line bg-surface text-ink-muted hover:bg-raised",
@@ -396,7 +396,7 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
           )}
         </Field>
 
-        <p class="text-[11px] leading-snug text-ink-subtle">
+        <p class="text-meta leading-snug text-ink-subtle">
           {props.subject === "group"
             ? "Every member stays firing, stays whatever severity it was, and stays in the default alert list. A member that cannot be snoozed is skipped rather than failing the request."
             : "A snoozed alert is still firing and is still rendered as firing."}{" "}

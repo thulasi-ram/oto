@@ -107,17 +107,17 @@ export const DrillPanel: Component<{ readonly sourceID: string }> = (props) => {
   const current = (): DeliveryDrill | undefined => drill.data ?? start.data ?? undefined;
 
   return (
-    <div class="mt-1.5 rounded-[4px] border border-line bg-sunken px-2 py-1.5">
+    <div class="mt-1.5 rounded-control border border-line bg-sunken px-2 py-1.5">
       <div class="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          class="text-[11px] font-medium text-ink underline decoration-line-strong underline-offset-2"
+          class="text-meta font-medium text-ink underline decoration-line-strong underline-offset-2"
           onClick={() => setOpen(!open())}
           aria-expanded={open()}
         >
           Delivery drill
         </button>
-        <span class="text-[11px] text-ink-subtle">
+        <span class="text-meta text-ink-subtle">
           Pushes one synthetic alert through the real pipeline — ingestion, grouping, the policy
           match, the thread, the delivery record — and names the stage that fails.
         </span>
@@ -126,7 +126,7 @@ export const DrillPanel: Component<{ readonly sourceID: string }> = (props) => {
       <Show when={open()}>
         <div class="mt-1.5 flex flex-wrap items-end gap-2">
           <label class="flex flex-col gap-0.5">
-            <span class="text-[11px] text-ink-subtle">
+            <span class="text-meta text-ink-subtle">
               severity to fire at (policies usually match on it)
             </span>
             <Input
@@ -187,7 +187,7 @@ const DrillResult: Component<{ readonly drill: DeliveryDrill }> = (props) => {
 
   return (
     <div class="mt-1.5">
-      <p class="text-[11px] font-medium leading-snug text-ink">{headline()}</p>
+      <p class="text-meta font-medium leading-snug text-ink">{headline()}</p>
 
       <ol class="mt-1.5 flex flex-col gap-0.5">
         <For each={d().stages}>{(stage) => <StageRow stage={stage} />}</For>
@@ -197,7 +197,7 @@ const DrillResult: Component<{ readonly drill: DeliveryDrill }> = (props) => {
         <ul class="mt-1.5 flex flex-col gap-0.5">
           <For each={d().destinations}>
             {(dest) => (
-              <li class="flex flex-wrap items-center gap-1.5 text-[11px] text-ink-muted">
+              <li class="flex flex-wrap items-center gap-1.5 text-meta text-ink-muted">
                 <Chip>{dest.channel_name}</Chip>
                 <span>{dest.status}</span>
                 <span class="text-ink-subtle">{dest.mode}</span>
@@ -218,7 +218,7 @@ const DrillResult: Component<{ readonly drill: DeliveryDrill }> = (props) => {
         </ul>
       </Show>
 
-      <p class="mt-1.5 text-[11px] leading-snug text-ink-subtle">
+      <p class="mt-1.5 text-meta leading-snug text-ink-subtle">
         Started by {d().started_by_label}, <RelativeTime value={d().started_at} label="Started" />{" "}
         ago.{" "}
         <Show
@@ -243,7 +243,7 @@ const StageRow: Component<{ readonly stage: DrillStage }> = (props) => {
     Object.entries(st().facts ?? {}) as [string, string][];
 
   return (
-    <li class="flex items-start gap-1.5 text-[11px] leading-snug">
+    <li class="flex items-start gap-1.5 text-meta leading-snug">
       <span
         aria-hidden="true"
         class={cx(

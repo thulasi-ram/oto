@@ -98,8 +98,8 @@ const Authenticated: Component<{ readonly children?: JSX.Element }> = (props) =>
 
 const NotFound: Component = () => (
   <div class="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-    <p class="text-[14px] font-medium text-ink">That page does not exist.</p>
-    <p class="text-[12px] text-ink-muted">
+    <p class="text-title font-medium text-ink">That page does not exist.</p>
+    <p class="text-body text-ink-muted">
       The link may be from an older version of oto, or mistyped.
     </p>
   </div>

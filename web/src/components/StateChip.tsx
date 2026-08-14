@@ -76,8 +76,8 @@ export interface StateChipProps {
 export const StateChip: Component<StateChipProps> = (props) => (
   <span
     class={cx(
-      "inline-flex shrink-0 items-center gap-1 rounded-[3px] border font-medium",
-      props.size === "sm" ? "px-1 py-px text-[11px] leading-4" : "px-1.5 py-0.5 text-[12px]",
+      "inline-flex shrink-0 items-center gap-1 rounded-chip border font-medium",
+      props.size === "sm" ? "px-1 py-px text-meta leading-4" : "px-1.5 py-0.5 text-body",
       STATE_STYLE[props.state],
       props.class,
     )}
@@ -112,8 +112,8 @@ export const AckChip: Component<{ readonly ackState: AckState; readonly class?: 
   props.ackState === "acked" ? (
     <span
       class={cx(
-        "inline-flex shrink-0 items-center gap-1 rounded-[3px] border px-1 py-px",
-        "text-[11px] font-medium leading-4",
+        "inline-flex shrink-0 items-center gap-1 rounded-chip border px-1 py-px",
+        "text-meta font-medium leading-4",
         "border-acked-border bg-acked-fill text-acked-text",
         props.class,
       )}
@@ -184,7 +184,7 @@ export const SeverityMark: Component<SeverityMarkProps> = (props) => {
   return (
     <span
       class={cx(
-        "inline-flex shrink-0 items-center gap-1 text-[12px]",
+        "inline-flex shrink-0 items-center gap-1 text-body",
         known() ? SEVERITY_COLOUR[known() as KnownSeverity] : "text-ink-subtle",
         props.class,
       )}
@@ -220,8 +220,8 @@ export const SeverityMark: Component<SeverityMarkProps> = (props) => {
 export const FlappingChip: Component<{ readonly class?: string }> = (props) => (
   <span
     class={cx(
-      "inline-flex shrink-0 items-center gap-1 rounded-[3px] border border-info-border",
-      "bg-info-fill px-1 py-px text-[11px] font-medium leading-4 text-info-text",
+      "inline-flex shrink-0 items-center gap-1 rounded-chip border border-info-border",
+      "bg-info-fill px-1 py-px text-meta font-medium leading-4 text-info-text",
       props.class,
     )}
     title="oto has damped this as flapping. Notifications become update-only with a periodic digest — nothing is dropped."
@@ -235,8 +235,8 @@ export const FlappingChip: Component<{ readonly class?: string }> = (props) => (
 export const StormChip: Component<{ readonly class?: string }> = (props) => (
   <span
     class={cx(
-      "inline-flex shrink-0 items-center gap-1 rounded-[3px] border border-info-border",
-      "bg-info-fill px-1 py-px text-[11px] font-medium leading-4 text-info-text",
+      "inline-flex shrink-0 items-center gap-1 rounded-chip border border-info-border",
+      "bg-info-fill px-1 py-px text-meta font-medium leading-4 text-info-text",
       props.class,
     )}
     title="More alerts joined this group at once than the storm threshold. oto posts one message with a count instead of one per alert."

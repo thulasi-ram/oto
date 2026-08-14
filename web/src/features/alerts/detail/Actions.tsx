@@ -217,7 +217,7 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
           failure. `role="alert"` is the same idiom the other 17 refusal sites
           use (AppShell's sign-out failure, `ErrorBanner`, `Field`). */}
       <Show when={unsnooze.error !== null}>
-        <span role="alert" class="text-[11px] leading-snug text-ink">
+        <span role="alert" class="text-meta leading-snug text-ink">
           {unsnooze.error instanceof ApiError && unsnooze.error.status === 412
             ? "This alert is not snoozed — it woke before the request landed."
             : (unsnooze.error as Error | null)?.message}

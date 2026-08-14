@@ -28,8 +28,8 @@ export const SnoozeChip: Component<SnoozeChipProps> = (props) => (
     {(s) => (
       <span
         class={cx(
-          "inline-flex shrink-0 items-center gap-1 rounded-[3px] border border-line-strong",
-          "bg-sunken px-1 py-px text-[11px] font-medium leading-4 text-ink",
+          "inline-flex shrink-0 items-center gap-1 rounded-chip border border-line-strong",
+          "bg-sunken px-1 py-px text-meta font-medium leading-4 text-ink",
           props.class,
         )}
         title={`oto is not notifying about this alert until it wakes. Asked for by ${s().snoozed_by_label}${s().note ? ` — "${s().note}"` : ""}. The alert itself is unchanged: still firing, still whatever severity it was.`}
@@ -53,8 +53,8 @@ export const SnoozeChip: Component<SnoozeChipProps> = (props) => (
 export const SnoozeChipUnknownUntil: Component<{ readonly class?: string }> = (props) => (
   <span
     class={cx(
-      "inline-flex shrink-0 items-center gap-1 rounded-[3px] border border-line-strong",
-      "bg-sunken px-1 py-px text-[11px] font-medium leading-4 text-ink",
+      "inline-flex shrink-0 items-center gap-1 rounded-chip border border-line-strong",
+      "bg-sunken px-1 py-px text-meta font-medium leading-4 text-ink",
       props.class,
     )}
     title="This list is filtered to alerts whose notifications oto is currently holding. Open the alert to see who asked, why, and when it wakes. It is still firing."

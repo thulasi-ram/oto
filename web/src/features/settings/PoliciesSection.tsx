@@ -291,7 +291,7 @@ const PolicyRow: Component<{
   return (
     <li class={cx("border-b border-line px-3 py-2.5 last:border-b-0", p().enabled ? "" : "opacity-60")}>
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[13px] font-medium text-ink">{p().name}</span>
+        <span class="text-item font-medium text-ink">{p().name}</span>
         <Chip title="Lower is evaluated first.">priority {p().priority}</Chip>
         <Show when={!p().enabled}>
           <Chip>disabled</Chip>
@@ -306,7 +306,7 @@ const PolicyRow: Component<{
         </div>
       </div>
 
-      <div class="mt-1 flex flex-col gap-1 text-[11px] text-ink-muted">
+      <div class="mt-1 flex flex-col gap-1 text-meta text-ink-muted">
         <p>
           <span class="text-ink-subtle">when</span>{" "}
           <code class="font-mono text-ink">
@@ -551,7 +551,7 @@ const PolicyDialog: Component<{
         </div>
 
         <div>
-          <label for="pol-matchers" class="mb-1 block text-[12px] font-medium text-ink-muted">
+          <label for="pol-matchers" class="mb-1 block text-body font-medium text-ink-muted">
             Matchers
           </label>
           <MatcherInput
@@ -563,7 +563,7 @@ const PolicyDialog: Component<{
             }}
             onCommit={() => undefined}
           />
-          <p class="mt-1 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-1 text-meta leading-snug text-ink-subtle">
             All matchers must match. An empty list matches everything, and at most {MATCHERS_MAX} may
             be given. Unlike the alert-list filter, a policy accepts{" "}
             <code class="font-mono">=~</code> and <code class="font-mono">!~</code> — the server
@@ -571,7 +571,7 @@ const PolicyDialog: Component<{
           </p>
           <Show when={localError("matchers") ?? violations().get("matchers")}>
             {(msg) => (
-              <p class="mt-1 text-[11px] font-medium text-ink" role="alert">
+              <p class="mt-1 text-meta font-medium text-ink" role="alert">
                 {msg()}
               </p>
             )}
@@ -579,11 +579,11 @@ const PolicyDialog: Component<{
         </div>
 
         <fieldset>
-          <legend class="mb-1 text-[12px] font-medium text-ink-muted">Tell these channels</legend>
+          <legend class="mb-1 text-body font-medium text-ink-muted">Tell these channels</legend>
           <Show
             when={props.channels.length > 0}
             fallback={
-              <p class="text-[12px] text-ink-muted">
+              <p class="text-body text-ink-muted">
                 There are no channels yet, so this policy would have nowhere to send.
               </p>
             }
@@ -606,7 +606,7 @@ const PolicyDialog: Component<{
                     label={
                       <span>
                         {c.name}
-                        <span class="ml-1.5 text-[11px] text-ink-subtle">
+                        <span class="ml-1.5 text-meta text-ink-subtle">
                           {c.type} · {c.verbosity}
                           {c.enabled ? "" : " · disabled"}
                         </span>
@@ -619,7 +619,7 @@ const PolicyDialog: Component<{
           </Show>
           <Show when={localError("channel_ids") ?? violations().get("channel_ids")}>
             {(msg) => (
-              <p class="mt-1 text-[11px] font-medium text-ink" role="alert">
+              <p class="mt-1 text-meta font-medium text-ink" role="alert">
                 {msg()}
               </p>
             )}
@@ -639,7 +639,7 @@ const PolicyDialog: Component<{
           />
           <Show when={localError("reasons") ?? violations().get("reasons")}>
             {(msg) => (
-              <p class="mt-1 text-[11px] font-medium text-ink" role="alert">
+              <p class="mt-1 text-meta font-medium text-ink" role="alert">
                 {msg()}
               </p>
             )}
@@ -758,19 +758,19 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
   }));
 
   return (
-    <fieldset class="rounded-[4px] border border-line bg-raised p-3">
-      <legend class="px-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+    <fieldset class="rounded-control border border-line bg-raised p-3">
+      <legend class="px-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
         Dry run
       </legend>
 
-      <p class="mb-2 text-[11px] leading-snug text-ink-muted">
+      <p class="mb-2 text-meta leading-snug text-ink-muted">
         Runs the real policy matcher and the real renderer against a real alert, including this
         unsaved draft, and <span class="font-medium text-ink">sends nothing</span>.
       </p>
 
       <div class="flex flex-wrap items-end gap-2">
         <div class="min-w-[14rem] flex-1">
-          <label for="preview-alert" class="mb-1 block text-[12px] font-medium text-ink-muted">
+          <label for="preview-alert" class="mb-1 block text-body font-medium text-ink-muted">
             Against this alert
           </label>
           <Select
@@ -787,7 +787,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
         </div>
 
         <div class="w-52">
-          <label for="preview-reason" class="mb-1 block text-[12px] font-medium text-ink-muted">
+          <label for="preview-reason" class="mb-1 block text-body font-medium text-ink-muted">
             Simulating
           </label>
           <Select
@@ -819,7 +819,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
             <Show
               when={result().matched}
               fallback={
-                <p class="rounded-[4px] border border-line-strong border-l-[3px] border-l-ink bg-surface px-2 py-1.5 text-[12px] font-medium leading-snug text-ink">
+                <p class="rounded-control border border-line-strong border-l-[3px] border-l-ink bg-surface px-2 py-1.5 text-body font-medium leading-snug text-ink">
                   Nothing would be sent. No enabled policy — including this draft — matches this
                   alert for that fact, so it would go unreported.
                 </p>
@@ -830,17 +830,17 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
                   {(r) => (
                     <li
                       class={cx(
-                        "rounded-[4px] border px-2 py-1.5",
+                        "rounded-control border px-2 py-1.5",
                         r.would_send
                           ? "border-line bg-surface"
                           : "border-line-strong bg-sunken",
                       )}
                     >
-                      <div class="flex flex-wrap items-center gap-2 text-[12px]">
+                      <div class="flex flex-wrap items-center gap-2 text-body">
                         <span class="font-medium text-ink">{r.channel_name}</span>
                         <Chip>{r.channel_type}</Chip>
                         <Chip title="How the message would be placed in the thread.">{r.mode}</Chip>
-                        <span class="ml-auto text-[11px] text-ink-subtle">
+                        <span class="ml-auto text-meta text-ink-subtle">
                           via {r.policy_name}
                         </span>
                       </div>
@@ -848,7 +848,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
                       <Show
                         when={r.would_send}
                         fallback={
-                          <p class="mt-1 text-[11px] leading-snug text-ink-muted">
+                          <p class="mt-1 text-meta leading-snug text-ink-muted">
                             Would not send — {describeSuppression(r.suppressed_reason)}. It would
                             still be recorded with that reason.
                           </p>
@@ -856,7 +856,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
                       >
                         <Show when={r.rendered_fallback}>
                           {(text) => (
-                            <p class="mt-1 border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink">
+                            <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
                               {text()}
                             </p>
                           )}
@@ -871,7 +871,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
             <Show when={(result().warnings ?? []).length > 0}>
               <ul class="mt-2 space-y-0.5">
                 <For each={result().warnings ?? []}>
-                  {(w) => <li class="text-[11px] leading-snug text-ink-muted">{w}</li>}
+                  {(w) => <li class="text-meta leading-snug text-ink-muted">{w}</li>}
                 </For>
               </ul>
             </Show>

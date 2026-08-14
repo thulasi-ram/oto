@@ -132,7 +132,7 @@ const TimelineRow: Component<{
     <>
       <Show when={newDay()}>
         <li class="flex items-center gap-2 pb-1 pt-3 first:pt-0" aria-hidden="true">
-          <span class="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-subtle">
+          <span class="text-meta font-semibold uppercase tracking-[0.06em] text-ink-subtle">
             {calendarDay(props.event.occurred_at)}
           </span>
           <span class="h-px flex-1 bg-line" />
@@ -153,13 +153,13 @@ const TimelineRow: Component<{
           <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <ClockTime value={props.event.occurred_at} class="shrink-0 text-ink-subtle" />
 
-            <span class="shrink-0 text-[12px] font-medium text-ink">{kind().label}</span>
+            <span class="shrink-0 text-body font-medium text-ink">{kind().label}</span>
 
             {/* Attribution. A human is named plainly; a machine is named as the
                 machine it is, so the two are never confusable. */}
             <span
               class={cx(
-                "shrink-0 text-[11px]",
+                "shrink-0 text-meta",
                 isHuman(props.event.actor_kind) ? "font-medium text-ink-muted" : "text-ink-subtle",
               )}
               title={`Recorded by the ${props.event.actor_kind} actor`}
@@ -174,17 +174,17 @@ const TimelineRow: Component<{
               recordedAt={props.event.recorded_at}
             />
 
-            <span class="ml-auto shrink-0 text-[11px] text-ink-subtle">
+            <span class="ml-auto shrink-0 text-meta text-ink-subtle">
               <RelativeTime value={props.event.occurred_at} label="Occurred" />
             </span>
           </div>
 
           {/* The server's pre-rendered one-liner. Rendered verbatim, which is
               what lets an older UI display a newer event type correctly. */}
-          <p class="mt-0.5 text-[13px] leading-snug text-ink">{props.event.summary}</p>
+          <p class="mt-0.5 text-item leading-snug text-ink">{props.event.summary}</p>
 
           <Show when={kind().note}>
-            <p class="mt-0.5 text-[11px] leading-snug text-ink-subtle">{kind().note}</p>
+            <p class="mt-0.5 text-meta leading-snug text-ink-subtle">{kind().note}</p>
           </Show>
 
           {/* A rule change is the one payload that gets a first-class rendering,
@@ -198,7 +198,7 @@ const TimelineRow: Component<{
             <div class="mt-1">
               <button
                 type="button"
-                class="text-[11px] text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
+                class="text-meta text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
                 aria-expanded={open()}
                 onClick={() => setOpen(!open())}
               >
@@ -222,14 +222,14 @@ const TimelineRow: Component<{
  * event payloads are — reads as English instead of as a code block.
  */
 const PayloadTable: Component<{ readonly payload: Record<string, unknown> }> = (props) => (
-  <dl class="mt-1 grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-x-3 gap-y-0.5 rounded-[4px] border border-line bg-sunken px-2 py-1.5">
+  <dl class="mt-1 grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-x-3 gap-y-0.5 rounded-control border border-line bg-sunken px-2 py-1.5">
     <For each={Object.entries(props.payload)}>
       {([key, value]) => (
         <>
-          <dt class="truncate font-mono text-[11px] text-ink-subtle" title={key}>
+          <dt class="truncate font-mono text-meta text-ink-subtle" title={key}>
             {key}
           </dt>
-          <dd class="min-w-0 break-words font-mono text-[11px] text-ink">
+          <dd class="min-w-0 break-words font-mono text-meta text-ink">
             {typeof value === "string" || typeof value === "number" || typeof value === "boolean"
               ? String(value)
               : JSON.stringify(value)}

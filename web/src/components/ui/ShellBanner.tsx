@@ -71,7 +71,7 @@ export interface ShellBannerProps {
  */
 const STRIP_CLASS = cx(
   "flex items-center justify-between gap-3 border-b border-line-strong bg-raised",
-  "px-4 py-1.5 text-[12px] text-ink",
+  "px-4 py-1.5 text-body text-ink",
 );
 
 /**
@@ -404,7 +404,7 @@ export const SnoozeBanner = (): JSX.Element => {
                 {s.alert?.alertname ?? s.alert_key}
               </A>
               <Show when={s.alert?.cluster_key}>
-                {(key) => <span class="font-mono text-[11px] text-ink-subtle">{key()}</span>}
+                {(key) => <span class="font-mono text-meta text-ink-subtle">{key()}</span>}
               </Show>
               <span class="text-ink-muted">
                 resumes <RelativeTime value={s.snoozed_until} label="Notifications resume" />

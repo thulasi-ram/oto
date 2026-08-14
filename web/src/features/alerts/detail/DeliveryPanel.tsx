@@ -110,7 +110,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
             <Stat label="failed" value={s().failed} emphasis={s().failed > 0} />
             <Stat label="gave up" value={s().dead} emphasis={s().dead > 0} />
             <Show when={s().last_sent_at}>
-              <span class="ml-auto text-[11px] text-ink-subtle">
+              <span class="ml-auto text-meta text-ink-subtle">
                 last sent <RelativeTime value={s().last_sent_at} label="Last sent" /> ago
               </span>
             </Show>
@@ -119,7 +119,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
           {/* The headline case. Stated as a sentence, because a number alone
               does not communicate "nobody knows about this". */}
           <Show when={s().dead > 0}>
-            <p class="mt-2 rounded-[4px] border border-line-strong border-l-[3px] border-l-ink bg-sunken px-2 py-1.5 text-[12px] font-medium leading-snug text-ink">
+            <p class="mt-2 rounded-control border border-line-strong border-l-[3px] border-l-ink bg-sunken px-2 py-1.5 text-body font-medium leading-snug text-ink">
               {s().dead} {s().dead === 1 ? "delivery" : "deliveries"} gave up permanently. Nobody was
               told through {s().dead === 1 ? "that channel" : "those channels"}.
               {s().last_error_class ? ` Last error class: ${s().last_error_class}.` : ""}
@@ -127,7 +127,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
           </Show>
 
           <Show when={s().total === 0}>
-            <p class="mt-2 text-[12px] leading-snug text-ink-muted">
+            <p class="mt-2 text-body leading-snug text-ink-muted">
               No notification was even attempted for this alert. That usually means no policy
               matched it — which is worth knowing, because it is indistinguishable from silence.
             </p>
@@ -155,7 +155,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
             {(n) => (
               <li class="border-b border-line px-3 py-2 last:border-b-0">
                 <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span class="text-[12px] font-medium text-ink">
+                  <span class="text-body font-medium text-ink">
                     {REASON_LABEL[n.reason] ?? n.reason}
                   </span>
                   <Chip title={`Notification status: ${n.status}`}>{n.status}</Chip>
@@ -172,7 +172,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
                   >
                     policy {n.policy_id ? shortId(n.policy_id) : "deleted"}
                   </Chip>
-                  <span class="ml-auto text-[11px] text-ink-subtle">
+                  <span class="ml-auto text-meta text-ink-subtle">
                     <RelativeTime value={n.created_at} label="Created" /> ago
                   </span>
                 </div>
@@ -182,7 +182,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
                     which is not the same as "never changed", so it is rendered
                     as an em dash rather than silently repeating the creation
                     time and making the two indistinguishable. */}
-                <p class="mt-0.5 text-[11px] text-ink-subtle">
+                <p class="mt-0.5 text-meta text-ink-subtle">
                   last moved{" "}
                   <Show
                     when={n.updated_at}
@@ -198,7 +198,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
 
                 <Show when={n.suppressed_reason}>
                   {(reason) => (
-                    <p class="mt-0.5 text-[11px] leading-snug text-ink-muted">
+                    <p class="mt-0.5 text-meta leading-snug text-ink-muted">
                       Not sent — {describeSuppression(reason())}. Recorded rather than dropped, so
                       the audit trail is complete.
                     </p>
@@ -244,8 +244,8 @@ const Stat: Component<{
 }> = (props) => (
   <span
     class={cx(
-      "inline-flex items-center gap-1 rounded-[3px] border px-1.5 leading-5 tabular-nums",
-      props.small === true ? "text-[10px]" : "text-[11px]",
+      "inline-flex items-center gap-1 rounded-chip border px-1.5 leading-5 tabular-nums",
+      props.small === true ? "text-micro" : "text-meta",
       props.emphasis === true
         ? "border-line-strong bg-raised font-semibold text-ink"
         : "border-line bg-surface text-ink-muted",

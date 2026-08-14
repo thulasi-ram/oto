@@ -127,7 +127,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
           <ul class="mt-1 space-y-0.5">
             <For each={parsed().errors}>
               {(err) => (
-                <li class="flex items-start gap-1.5 text-[11px] leading-snug text-ink">
+                <li class="flex items-start gap-1.5 text-meta leading-snug text-ink">
                   <MarkGlyph />
                   <span>
                     <span class="text-ink-subtle">at {err.at}:</span> {err.message}
@@ -142,7 +142,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
           <ul class="mt-1 space-y-1">
             <For each={compiled().rejected}>
               {(r) => (
-                <li class="flex items-start gap-1.5 text-[11px] leading-snug text-ink">
+                <li class="flex items-start gap-1.5 text-meta leading-snug text-ink">
                   <MarkGlyph />
                   <span>
                     <code class="font-mono text-ink">
@@ -159,7 +159,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
         </Show>
 
         <Show when={!hasProblem() && parsed().matchers.length > 0 && focused()}>
-          <p class="mt-1 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-1 text-meta leading-snug text-ink-subtle">
             {describe(parsed().matchers)} · press Enter to apply
           </p>
         </Show>
@@ -168,7 +168,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
           <ul class="mt-1 space-y-0.5">
             <For each={MATCHER_EXAMPLES}>
               {(ex) => (
-                <li class="flex flex-wrap items-baseline gap-x-2 text-[11px] leading-snug">
+                <li class="flex flex-wrap items-baseline gap-x-2 text-meta leading-snug">
                   <code
                     class={cx(
                       "font-mono",

@@ -250,12 +250,12 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
   return (
     <li class="border-b border-line px-3 py-2.5 last:border-b-0">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[13px] font-medium text-ink">{s().name}</span>
+        <span class="text-item font-medium text-ink">{s().name}</span>
         <Chip>{s().kind}</Chip>
         <Show when={s().cluster_key}>{(key) => <Chip mono>{key()}</Chip>}</Show>
         <span
           class={cx(
-            "rounded-[3px] border px-1.5 text-[11px] leading-5",
+            "rounded-chip border px-1.5 text-meta leading-5",
             s().health?.status === "healthy"
               ? "border-line bg-surface text-ink-muted"
               : "border-line-strong bg-raised font-medium text-ink",
@@ -266,7 +266,7 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
         </span>
         <Show when={s().health?.last_reconcile_at}>
           {(at) => (
-            <span class="text-[11px] text-ink-subtle">
+            <span class="text-meta text-ink-subtle">
               reconciled <RelativeTime value={at()} label="Last reconcile" /> ago
             </span>
           )}
@@ -279,7 +279,7 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
           a silenced alert as firing and then let the reaper end it.
         */}
         <span
-          class="text-[11px] text-ink-subtle"
+          class="text-meta text-ink-subtle"
           title="How often oto polls this Alertmanager's API v2. Every source is polled — it is the only way oto can see a silence, so it cannot be turned off."
         >
           every {s().reconcile_interval_seconds}s
@@ -292,16 +292,16 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
           <Checkbox
             checked={s().push_enabled}
             onChange={(next) => toggle.mutate(next)}
-            label={<span class="text-[11px]">accept webhooks</span>}
+            label={<span class="text-meta">accept webhooks</span>}
           />
         </div>
       </div>
 
-      <p class="mt-0.5 break-all font-mono text-[11px] text-ink-subtle">{s().base_url}</p>
+      <p class="mt-0.5 break-all font-mono text-meta text-ink-subtle">{s().base_url}</p>
 
       <Show when={s().health?.last_error}>
         {(err) => (
-          <p class="mt-1 border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink">
+          <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
             {err()}
           </p>
         )}
@@ -311,7 +311,7 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
         {(result) => (
           <p
             class={cx(
-              "mt-1 rounded-[4px] border px-2 py-1 text-[11px] leading-snug",
+              "mt-1 rounded-control border px-2 py-1 text-meta leading-snug",
               result().ok
                 ? "border-line bg-sunken text-ink-muted"
                 : "border-line-strong bg-raised font-medium text-ink",
@@ -377,7 +377,7 @@ const ClustersPanel: Component = () => {
     <Panel>
       <PanelHeader>
         <PanelTitle>Clusters</PanelTitle>
-        <span class="text-[11px] text-ink-subtle">
+        <span class="text-meta text-ink-subtle">
           a cluster is an identity and failure domain, not a label
         </span>
       </PanelHeader>
@@ -387,12 +387,12 @@ const ClustersPanel: Component = () => {
           <For each={clusters.data?.data ?? []}>
             {(c) => (
               <li class="flex items-center gap-2 border-b border-line px-3 py-2 last:border-b-0">
-                <span class="text-[13px] text-ink">{c.display_name}</span>
+                <span class="text-item text-ink">{c.display_name}</span>
                 <Chip mono title="Immutable — it participates in every alert key in this cluster.">
                   {c.cluster_key}
                 </Chip>
                 <Show when={c.source_count !== undefined}>
-                  <span class="ml-auto text-[11px] text-ink-subtle">
+                  <span class="ml-auto text-meta text-ink-subtle">
                     {c.source_count} source{c.source_count === 1 ? "" : "s"}
                   </span>
                 </Show>
@@ -594,8 +594,8 @@ const TokenDialog: Component<{
       <Show when={props.created}>
         {(created) => (
           <>
-            <div class="rounded-[4px] border border-line-strong bg-sunken px-2 py-2">
-              <code class="block break-all font-mono text-[12px] text-ink">
+            <div class="rounded-control border border-line-strong bg-sunken px-2 py-2">
+              <code class="block break-all font-mono text-body text-ink">
                 {created().ingest_token}
               </code>
             </div>
@@ -605,7 +605,7 @@ const TokenDialog: Component<{
             >
               Copy token
             </Button>
-            <p class="text-[12px] leading-relaxed text-ink-muted">
+            <p class="text-body leading-relaxed text-ink-muted">
               Point your Alertmanager's webhook receiver at oto's ingest URL for this source and send
               this token as its bearer credential.
             </p>

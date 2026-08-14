@@ -87,10 +87,10 @@ const LoginRoute: Component = () => {
         aria-labelledby="login-heading"
       >
         <div class="flex flex-col gap-1">
-          <h1 id="login-heading" class="text-[15px] font-semibold text-ink">
+          <h1 id="login-heading" class="text-title font-semibold text-ink">
             Sign in to oto
           </h1>
-          <p class="text-[12px] text-ink-muted">Use the account created at setup.</p>
+          <p class="text-body text-ink-muted">Use the account created at setup.</p>
         </div>
 
         <Field id="login-email" label="Email" required>
@@ -124,7 +124,7 @@ const LoginRoute: Component = () => {
         {/* role=alert so the failure is announced, not just painted. */}
         <Show when={error()}>
           {(msg) => (
-            <p class="text-[12px] font-medium leading-snug text-ink" role="alert">
+            <p class="text-body font-medium leading-snug text-ink" role="alert">
               <span
                 aria-hidden="true"
                 class="mr-1 inline-block size-1.5 rounded-full bg-accent align-middle"

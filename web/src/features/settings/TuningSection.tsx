@@ -586,7 +586,7 @@ export const TuningSection: Component = () => {
                     <For each={managedViolations(save.error)}>
                       {(v) => (
                         <span class="text-ink">
-                          <code class="font-mono text-[11px]">{v.field}</code> — {v.message}
+                          <code class="font-mono text-meta">{v.field}</code> — {v.message}
                         </span>
                       )}
                     </For>
@@ -635,7 +635,7 @@ export const TuningSection: Component = () => {
                   <Panel>
                     <PanelHeader class="flex-col items-start gap-0.5">
                       <PanelTitle>{group.title}</PanelTitle>
-                      <p class="text-[11px] leading-snug text-ink-muted">{group.blurb}</p>
+                      <p class="text-meta leading-snug text-ink-muted">{group.blurb}</p>
                     </PanelHeader>
                     <ul>
                       <For each={keys()}>{(key) => <KnobRow knob={KNOBS[key]} ctl={ctl} />}</For>
@@ -655,8 +655,8 @@ export const TuningSection: Component = () => {
             }
           >
             <Panel class="px-3 py-8 text-center">
-              <p class="text-[13px] font-medium text-ink">This org has changed nothing.</p>
-              <p class="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-ink-muted">
+              <p class="text-item font-medium text-ink">This org has changed nothing.</p>
+              <p class="mx-auto mt-1 max-w-md text-body leading-relaxed text-ink-muted">
                 Every value in force is oto's shipped default, and each will follow that default if
                 oto moves it. That is a legitimate state, not an empty one.
               </p>
@@ -737,7 +737,7 @@ const ProvenanceBadge: Component<{ readonly provenance: TimingProvenance }> = (p
   return (
     <span
       class={cx(
-        "inline-flex shrink-0 items-center gap-1 rounded-[3px] border px-1.5 py-px text-[11px] leading-4",
+        "inline-flex shrink-0 items-center gap-1 rounded-chip border px-1.5 py-px text-meta leading-4",
         copy().tone,
       )}
       title={copy().title}
@@ -753,13 +753,13 @@ const TimingCell: Component<{ readonly field: AmFieldCopy; readonly am: AmRef }>
   return (
     <div class="flex min-w-0 flex-col gap-1">
       <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <code class="font-mono text-[11px] text-ink-muted">{props.field.label}</code>
-        <span class="text-[13px] font-medium text-ink tabular-nums">
+        <code class="font-mono text-meta text-ink-muted">{props.field.label}</code>
+        <span class="text-item font-medium text-ink tabular-nums">
           {timing().provenance === "unknown" ? "—" : duration(timing().seconds)}
         </span>
         <ProvenanceBadge provenance={timing().provenance} />
       </div>
-      <p class="text-[11px] leading-snug text-ink-subtle">{props.field.why}</p>
+      <p class="text-meta leading-snug text-ink-subtle">{props.field.why}</p>
     </div>
   );
 };
@@ -788,7 +788,7 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
   const own = (t: InheritedTiming): boolean => t.from_depth === props.ownDepth;
   const cell = (label: string, t: InheritedTiming): JSX.Element => (
     <span class="whitespace-nowrap">
-      <code class="font-mono text-[10px] text-ink-subtle">{label}</code>{" "}
+      <code class="font-mono text-micro text-ink-subtle">{label}</code>{" "}
       <span class={cx("tabular-nums", own(t) ? "font-medium text-ink" : "text-ink-muted")}>
         {routeDuration(t)}
       </span>
@@ -818,21 +818,21 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
       <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <Show
           when={props.route.path.length > 1}
-          fallback={<span class="text-[11px] font-medium text-ink">the top-level route</span>}
+          fallback={<span class="text-meta font-medium text-ink">the top-level route</span>}
         >
-          <code class="font-mono text-[11px] text-ink">{routeLabel(props.route)}</code>
+          <code class="font-mono text-meta text-ink">{routeLabel(props.route)}</code>
         </Show>
-        <span class="text-[11px] text-ink-muted">
+        <span class="text-meta text-ink-muted">
           &rarr; <span class="font-medium text-ink">{props.route.receiver}</span>
         </span>
         <Show when={props.route.reaches_oto}>
-          <span class="rounded-[3px] border border-accent-border bg-accent-fill px-1 text-[10px] leading-4 text-ink">
+          <span class="rounded-chip border border-accent-border bg-accent-fill px-1 text-micro leading-4 text-ink">
             reaches oto
           </span>
         </Show>
         <Show when={props.route.path.at(-1)?.continue === true}>
           <span
-            class="rounded-[3px] border border-line-strong px-1 text-[10px] leading-4 text-ink-muted"
+            class="rounded-chip border border-line-strong px-1 text-micro leading-4 text-ink-muted"
             title="continue: true — evaluation does not stop here, so later sibling routes are still considered. This is why more than one route can reach the same receiver."
           >
             continue
@@ -840,7 +840,7 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
         </Show>
         <Show when={usesDeprecatedMatchers(props.route)}>
           <span
-            class="rounded-[3px] border border-line-strong px-1 text-[10px] leading-4 text-ink-muted"
+            class="rounded-chip border border-line-strong px-1 text-micro leading-4 text-ink-muted"
             title="Written with the deprecated match / match_re keys. Still routing, still read by oto; shown here in the current matchers spelling."
           >
             match/match_re
@@ -848,23 +848,23 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
         </Show>
         <Show when={props.route.group_by_all}>
           <span
-            class="rounded-[3px] border border-line-strong px-1 text-[10px] leading-4 text-ink-muted"
+            class="rounded-chip border border-line-strong px-1 text-micro leading-4 text-ink-muted"
             title="group_by: ['...'] groups by every label, so no group ever accumulates a second member and storm collapse is unreachable at any threshold. That fix is in alertmanager.yml, not on this screen."
           >
             group_by: ...
           </span>
         </Show>
       </div>
-      <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
+      <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-meta">
         {cell("group_wait", props.route.group_wait)}
         {cell("group_interval", props.route.group_interval)}
         {cell("repeat_interval", props.route.repeat_interval)}
       </div>
       <Show when={props.route.unreachable}>
-        <p class="text-[10px] leading-snug text-ink-muted">
+        <p class="text-micro leading-snug text-ink-muted">
           <span class="font-medium text-ink">Unreachable. </span>
           An earlier sibling route states no matchers and no{" "}
-          <code class="font-mono text-[10px]">continue</code>, so it takes everything before
+          <code class="font-mono text-micro">continue</code>, so it takes everything before
           evaluation gets this far. Nothing can ever match here.
         </p>
       </Show>
@@ -888,13 +888,13 @@ const RouteList: Component<{
           </Button>
         }
       >
-        <ul class="rounded-[4px] border border-line">
+        <ul class="rounded-control border border-line">
           <For each={props.am.routes}>
             {(r) => <RouteRow route={r} ownDepth={r.path.length - 1} />}
           </For>
         </ul>
         <Show when={props.am.routesDropped > 0}>
-          <p class="mt-1 text-[10px] leading-snug text-ink-muted">
+          <p class="mt-1 text-micro leading-snug text-ink-muted">
             {props.am.routesDropped} more route{props.am.routesDropped === 1 ? "" : "s"} exist and
             were not read: this configuration is past the size oto resolves, so the list above is
             not the whole tree.
@@ -930,7 +930,7 @@ const RouteOrigin: Component<{ readonly am: AmRef }> = (props) => {
     RECEIVER_BASIS_COPY[props.am.receiverBasis];
 
   return (
-    <div class="mt-2 rounded-[4px] border border-line px-2 py-1.5 text-[11px] leading-snug text-ink-muted">
+    <div class="mt-2 rounded-control border border-line px-2 py-1.5 text-meta leading-snug text-ink-muted">
       <Switch>
         {/* The answer. One route reaches oto, or several that agree. */}
         <Match when={props.am.route === "oto_receiver"}>
@@ -948,7 +948,7 @@ const RouteOrigin: Component<{ readonly am: AmRef }> = (props) => {
                 </>
               }
             >
-              <code class="font-mono text-[11px] text-ink">{routeLabel(reaching()[0]!)}</code>{" "}
+              <code class="font-mono text-meta text-ink">{routeLabel(reaching()[0]!)}</code>{" "}
               delivers to <span class="font-medium text-ink">{props.am.receiver}</span>, and the
               three numbers above are that route&apos;s — everything it inherits from its parents
               included.
@@ -1000,7 +1000,7 @@ const RouteOrigin: Component<{ readonly am: AmRef }> = (props) => {
               <For each={props.am.webhookReceivers}>
                 {(name, i) => (
                   <>
-                    <code class="font-mono text-[11px]">{name}</code>
+                    <code class="font-mono text-meta">{name}</code>
                     {i() < props.am.webhookReceivers.length - 1 ? ", " : ""}
                   </>
                 )}
@@ -1043,14 +1043,14 @@ const SourceTimings: Component<{
   <li class={cx("border-b border-line px-3 py-3 last:border-b-0", props.isBasis && "bg-accent-fill/40")}>
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[13px] font-medium text-ink">{props.am.sourceName}</span>
+        <span class="text-item font-medium text-ink">{props.am.sourceName}</span>
         <Show when={props.isBasis}>
-          <span class="rounded-[3px] border border-accent-border bg-accent-fill px-1.5 py-px text-[11px] font-semibold leading-4 text-ink">
+          <span class="rounded-chip border border-accent-border bg-accent-fill px-1.5 py-px text-meta font-semibold leading-4 text-ink">
             guidance below uses this source
           </span>
         </Show>
       </div>
-      <div class="flex items-center gap-2 text-[11px] text-ink-subtle">
+      <div class="flex items-center gap-2 text-meta text-ink-subtle">
         <Show
           when={props.am.observedAt !== null}
           fallback={<span>never read</span>}
@@ -1074,7 +1074,7 @@ const SourceTimings: Component<{
     <RouteOrigin am={props.am} />
 
     <Show when={props.am.defaultsFromVersion !== null}>
-      <p class="mt-2 text-[11px] leading-snug text-ink-subtle">
+      <p class="mt-2 text-meta leading-snug text-ink-subtle">
         Defaulted values are Alertmanager{" "}
         <span class="font-mono">{props.am.defaultsFromVersion}</span>&apos;s documented 30s / 5m / 4h.
         <Show when={!props.am.defaultsVerified}>
@@ -1100,7 +1100,7 @@ const AlertmanagerPanel: Component<{
   <Panel>
     <PanelHeader class="flex-col items-start gap-0.5">
       <PanelTitle>Your Alertmanager</PanelTitle>
-      <p class="text-[11px] leading-snug text-ink-muted">
+      <p class="text-meta leading-snug text-ink-muted">
         Read from each source&apos;s own running configuration on the status call oto already makes.
         Every duration below this panel is a multiple of these, not an absolute time.
       </p>
@@ -1122,16 +1122,16 @@ const AlertmanagerPanel: Component<{
 
       <Match when={props.sources.length === 0}>
         <div class="px-3 py-6 text-center">
-          <p class="text-[13px] font-medium text-ink">No source has been read yet.</p>
-          <p class="mx-auto mt-1 max-w-lg text-[12px] leading-relaxed text-ink-muted">
+          <p class="text-item font-medium text-ink">No source has been read yet.</p>
+          <p class="mx-auto mt-1 max-w-lg text-body leading-relaxed text-ink-muted">
             Every duration on this screen is a multiple of an Alertmanager&apos;s{" "}
-            <code class="font-mono text-[11px]">group_wait</code>,{" "}
-            <code class="font-mono text-[11px]">group_interval</code> and{" "}
-            <code class="font-mono text-[11px]">repeat_interval</code>. Add a source under Sources
+            <code class="font-mono text-meta">group_wait</code>,{" "}
+            <code class="font-mono text-meta">group_interval</code> and{" "}
+            <code class="font-mono text-meta">repeat_interval</code>. Add a source under Sources
             and clusters, and oto reads all three off its published configuration — the guidance
             below turns on by itself. It is deliberately not something you can type in here: a
             number entered by hand is unshared, unchecked, and wrong the moment somebody edits{" "}
-            <code class="font-mono text-[11px]">alertmanager.yml</code>.
+            <code class="font-mono text-meta">alertmanager.yml</code>.
           </p>
         </div>
       </Match>
@@ -1152,7 +1152,7 @@ const AlertmanagerPanel: Component<{
     </Switch>
 
     <div class="border-t border-line bg-raised px-3 py-2">
-      <p class="text-[11px] leading-snug text-ink-subtle">
+      <p class="text-meta leading-snug text-ink-subtle">
         oto does not read your rule files, so every verdict that depends on a rule&apos;s{" "}
         <code class="font-mono text-ink-muted">for:</code> assumes{" "}
         {duration(ASSUMED_RULE_FOR_S)} and says so where it is used. And one thing no number
@@ -1178,8 +1178,8 @@ const OriginSummary: Component<{
   readonly onlyOverrides: boolean;
   readonly setOnlyOverrides: (next: boolean) => void;
 }> = (props) => (
-  <div class="flex flex-wrap items-center justify-between gap-3 rounded-[6px] border border-line bg-raised px-3 py-2">
-    <p class="text-[12px] leading-snug text-ink">
+  <div class="flex flex-wrap items-center justify-between gap-3 rounded-surface border border-line bg-raised px-3 py-2">
+    <p class="text-body leading-snug text-ink">
       <span class="font-medium">
         {props.overrides} of {props.total}
       </span>{" "}
@@ -1205,7 +1205,7 @@ const OriginSummary: Component<{
     <Checkbox
       checked={props.onlyOverrides}
       onChange={props.setOnlyOverrides}
-      label={<span class="text-[12px]">Show only what this org has changed</span>}
+      label={<span class="text-body">Show only what this org has changed</span>}
     />
   </div>
 );
@@ -1282,7 +1282,7 @@ const OriginBadge: Component<{
   return (
     <span
       class={cx(
-        "inline-flex shrink-0 items-center gap-1 rounded-[3px] border px-1.5 py-px text-[11px] leading-4",
+        "inline-flex shrink-0 items-center gap-1 rounded-chip border px-1.5 py-px text-meta leading-4",
         copy().tone,
       )}
       title={copy().title}
@@ -1290,7 +1290,7 @@ const OriginBadge: Component<{
       <span aria-hidden="true" class={cx("size-1.5 rounded-full", copy().dot)} />
       {copy().label}
       <Show when={props.origin === "config" && props.configKey !== null}>
-        <code class="font-mono text-[10px] text-ink-muted">{props.configKey}</code>
+        <code class="font-mono text-micro text-ink-muted">{props.configKey}</code>
       </Show>
     </span>
   );
@@ -1305,7 +1305,7 @@ const Note: Component<{ readonly kind: "warn" | "quiet"; readonly children: JSX.
   // reading as urgent.
   <p
     class={cx(
-      "rounded-[4px] border px-2 py-1 text-[11px] leading-snug",
+      "rounded-control border px-2 py-1 text-meta leading-snug",
       props.kind === "warn"
         ? "border-line-strong bg-raised font-medium text-ink"
         : "border-line bg-sunken text-ink-muted",
@@ -1408,7 +1408,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
         {/* ---- control column ---- */}
         <div class="flex min-w-0 flex-col gap-2">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-[13px] font-medium text-ink">{props.knob.label}</span>
+            <span class="text-item font-medium text-ink">{props.knob.label}</span>
             <OriginBadge origin={ctl().origin(key())} configKey={ctl().configKey(key())} />
           </div>
 
@@ -1420,7 +1420,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
                 disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                 onChange={(next) => ctl().setText(key(), next ? "true" : "false")}
                 label={
-                  <span class="text-[12px]">
+                  <span class="text-body">
                     {ctl().text(key()) === "true"
                       ? "On — the resolve is broadcast into the channel"
                       : "Off — the resolve stays in the thread"}
@@ -1492,7 +1492,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
                       value={ctl().text(key())}
                       onInput={(e) => ctl().setText(key(), e.currentTarget.value)}
                     />
-                    <span class="shrink-0 text-[11px] text-ink-subtle">
+                    <span class="shrink-0 text-meta text-ink-subtle">
                       {unitSuffix(props.knob)}
                     </span>
                   </div>
@@ -1502,7 +1502,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
           </Switch>
 
           <Show when={numeric() && Number.isFinite(ctl().num(key()))}>
-            <p class="text-[11px] text-ink-subtle">
+            <p class="text-meta text-ink-subtle">
               in force: {readValue(props.knob.kind, ctl().num(key()))}
               <Show when={b()}>
                 {(bound) => (
@@ -1581,22 +1581,22 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
 
         {/* ---- explanation column ---- */}
         <div class="flex min-w-0 flex-col gap-2">
-          <p class="text-[12px] leading-relaxed text-ink-muted">{props.knob.what}</p>
+          <p class="text-body leading-relaxed text-ink-muted">{props.knob.what}</p>
 
           <dl class="flex flex-col gap-1.5">
             <For each={props.knob.risks}>
               {(risk) => (
                 <div class="grid grid-cols-[minmax(0,5.5rem)_minmax(0,1fr)] gap-x-2">
-                  <dt class="text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-subtle">
+                  <dt class="text-meta font-semibold uppercase tracking-[0.04em] text-ink-subtle">
                     {risk.label}
                   </dt>
-                  <dd class="text-[12px] leading-relaxed text-ink">{risk.text}</dd>
+                  <dd class="text-body leading-relaxed text-ink">{risk.text}</dd>
                 </div>
               )}
             </For>
           </dl>
 
-          <p class="border-l-2 border-line-strong pl-2 text-[12px] leading-relaxed text-ink-muted">
+          <p class="border-l-2 border-line-strong pl-2 text-body leading-relaxed text-ink-muted">
             <span class="font-medium text-ink">Against your Alertmanager. </span>
             {props.knob.amRule}
           </p>
@@ -1696,11 +1696,11 @@ const MentionListField: Component<{
         <ul class="flex flex-wrap gap-1">
           <For each={list()}>
             {(item) => (
-              <li class="inline-flex items-center gap-1 rounded-[3px] border border-line bg-raised px-1 py-px font-mono text-[11px] text-ink-muted">
+              <li class="inline-flex items-center gap-1 rounded-chip border border-line bg-raised px-1 py-px font-mono text-meta text-ink-muted">
                 {item}
                 <button
                   type="button"
-                  class="rounded-[2px] px-0.5 text-ink-subtle hover:text-ink"
+                  class="rounded-chip px-0.5 text-ink-subtle hover:text-ink"
                   aria-label={`Remove ${item}`}
                   disabled={props.disabled}
                   onClick={() => emit(list().filter((x) => x !== item))}
@@ -1738,7 +1738,7 @@ const MentionListField: Component<{
         )}
       </Field>
 
-      <p class="text-[11px] text-ink-subtle" aria-live="polite">
+      <p class="text-meta text-ink-subtle" aria-live="polite">
         {list().length} of {MENTION_LIST_MAX} used
         {full() ? " — the cap the server enforces" : ""}.
       </p>
@@ -1765,7 +1765,7 @@ const SaveBar: Component<{
       class="fixed inset-x-0 bottom-0 z-40 border-t border-line-strong bg-raised motion-safe:oto-enter"
     >
       <div class="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-3 px-4 py-2.5">
-        <p class="text-[12px] text-ink" aria-live="polite">
+        <p class="text-body text-ink" aria-live="polite">
           <span class="font-medium">
             {props.dirty} unsaved change{props.dirty === 1 ? "" : "s"}
           </span>

@@ -64,7 +64,7 @@ export const ClockTime: Component<{ readonly value: string; readonly class?: str
   <time
     datetime={props.value}
     title={absoluteTime(props.value)}
-    class={cx("font-mono text-[11px] tabular-nums", props.class)}
+    class={cx("font-mono text-meta tabular-nums", props.class)}
   >
     {clockTime(props.value)}
   </time>
@@ -104,8 +104,8 @@ export const ClockSkewBadge: Component<{
   return (
     <span
       class={cx(
-        "inline-flex shrink-0 items-center gap-1 rounded-[3px] border border-line-strong",
-        "bg-sunken px-1 py-px font-mono text-[10px] leading-4 text-ink-muted",
+        "inline-flex shrink-0 items-center gap-1 rounded-chip border border-line-strong",
+        "bg-sunken px-1 py-px font-mono text-micro leading-4 text-ink-muted",
         props.class,
       )}
       title={`${describeSkew(props.occurredAt, props.recordedAt)}. oto displays the upstream time and orders by its own, so the timeline stays in the right order regardless.`}

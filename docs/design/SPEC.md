@@ -4894,6 +4894,7 @@ a distance, unmistakable at a glance, and legible for everyone.
 | U7 | Focus is always visible: `--oto-focus` ring, 2 px, 2 px offset, ≥ 3:1 against both the control and its background. Never `outline: none`. |
 | U8 | Severity (`critical`/`warning`/`info`) is carried by the **icon**; state (`firing`/`acked`/`suppressed`/`resolved`/`expired`) is carried by the **colour**. This is the same split as the Slack card, and it is the only thing the two systems share. |
 | U9 | **Non-urgency motion comes in exactly two kinds** (ADR 0028). **(a) One-shot:** triggered by a discrete event (a mount, an open, a commit), ≤ 200 ms, animating `opacity` and `transform` only, never looping — and a *purely decorative* one-shot (brand motion, carrying no fact) fires **at most once per document**. **(b) Indeterminate-activity:** a loop is permitted only while something is genuinely pending (loading, connecting, in flight), must stop when the pending thing does, and is limited to an opacity cycle of period ≥ 1 s or a uniform rotation. Both kinds: no luminance oscillation beyond U4's prohibition, never the sole carrier of a state fact (U1), and **absent under `prefers-reduced-motion: reduce`**. **No animation announces a connection-state change.** A (b) loop may run *while* the connection is pending, beside the label that says so; nothing may mark the transition itself. Connection health is a labelled Tier-A fact, and a silent channel for it violates U1. **A colour transition is not motion, and is therefore neither kind.** A control settling from one Tier-A token to another on hover, focus or `aria-current` displaces nothing and repeats nothing; U9 binds it only with bounds — colour properties alone (`transition-colors`: never `all`, never a length, never a layout property), **≤ 150 ms**, and **between Tier-A tokens only**, because U5 already reserves saturated hue for state. That is the feedback U7 and Tier A already require, written in CSS rather than in two class names, and the reduced-motion sweep flattens it regardless. |
+| U10 | **Every font size and every corner radius comes from the §M.8 scales** (ADR 0029). `text-micro`…`text-page` and `rounded-chip`/`-control`/`-surface` are the whole vocabulary for those two axes: no bracket at a call site (`text-[13px]`, `rounded-[4px]`), no use of Tailwind's own `text-sm`/`rounded-md` ladder beside them, no raw `font-size`/`border-radius` in a stylesheet. A value that is genuinely not on a scale is an amendment (§N), not a bracket — the scales were derived from 342 hand-written literals precisely because nothing could tell a deliberate size from a typo, and the reason they are only six and three steps is that they were read off the product rather than drawn for it. `rounded-full`/`rounded-none` are shapes, not steps, and stay available. |
 
 > **U9 does not qualify U4.** U4's *"No flashing, no blinking, ever"* stays absolute and keeps its
 > single urgency animation. U9 governs a different class of motion: the button spinner, the skeleton
@@ -5127,7 +5128,7 @@ hex. **Both prohibitions are enforced**, and neither was until git-bug `c49baaa`
 
 ### M.7 Enforcement
 
-> **Seven of these eight rows are gates. The eighth is an intention, and is marked as such.**
+> **Eight of these nine rows are gates. The ninth is an intention, and is marked as such.**
 > **RUNS** means the named test exists and `.github/workflows/ci.yml` invokes it — the `go-test`
 > job (`go test -race ./...`) or the `ui` job (`npm run test`), both of which pick these up by
 > pattern, so no row here depends on somebody having remembered to add a step. **UNWRITTEN** means
@@ -5152,6 +5153,72 @@ hex. **Both prohibitions are enforced**, and neither was until git-bug `c49baaa`
 | Playwright `a11y.spec.ts` | **UNWRITTEN.** `web/e2e/` holds one 0-byte `.gitkeep`; neither `playwright` nor `axe` appears in `web/package.json`, which declares no e2e script for a spec to run in and no CI job that would invoke one. ⚠️ This is the **only** row here that cannot be done in-process: it needs a browser, a served build and a CI job, which is why it did not land with the other five | axe-core reports zero contrast violations on the alert list, alert detail and timeline, in **both** themes. Its residual scope is now narrower than it was: `contrast.test.ts` proves every pair the SPEC tabulates, so what is left is the pairs the SPEC does *not* tabulate — two verified tokens composed into an unverified pair by a component, which only rendered DOM can see |
 | `web/src/index.css.test.ts` | **RUNS.** `npm run test`, `ui` job | every first-party utility is declared with `@utility` (so variants of it compile); the reduced-motion guard suppresses motion by sweeping `*` rather than by naming class names, so it cannot fall behind the next animation added; the guard sits in `@layer base`, which is what lets it beat an important-flagged utility, and nothing else in that layer carries `!important` on a motion property; and no animation is driven from JavaScript or an inline style, where the media query cannot reach it. **This is the row that carries U4/U9's reduced-motion clause** — a snapshot would have proved one tree at one moment, this proves the guard reaches every animation including the ones not yet written |
 | `web/src/components/ui/Chime.test.tsx` | **RUNS.** Same job | the fūrin's swing fires on the header mark's first mount in a document, at most once per document, never on a connection transition (neither a reload holding a resume point nor a quiet install's endless reconnects can change whether it fires), and carries the `motion-safe:` guard |
+| `web/src/design/scales.test.ts` | **RUNS.** Same job | U10 and §M.8: no font size and no corner radius is written at a call site — not as a bracket (`text-[13px]`, `rounded-[4px]`, `[font-size:13px]`), not through Tailwind's own ladder (`text-sm`, `rounded-md`, bare `rounded`), and not as a raw `font-size`/`border-radius` declaration in a stylesheet. It also asserts §M.8's CSS block declares the same steps, with the same values, as `tokens.css` — the parity §M.4/§M.5 get from `tokens.test.ts` — and that every step the scale declares has a call site — a scale may not grow ahead of the product. The steps are read out of `index.css`, so a new one is permitted the moment it is declared, and comments are stripped before scanning so the prose that names the banned forms does not trip it |
+
+### M.8 Type and radius scales (ADR 0029)
+
+§M.4–§M.7 legislate one axis. Until ADR 0029 the other two had no vocabulary at all: no `--text-*`
+and no `--radius-*` existed, so every component invented a px literal in a bracket, and **342** of
+them accumulated — 285 `text-[Npx]` across 32 files and 57 `rounded-[Npx]` at the time the ticket
+was filed, 309 and 59 by the time it was implemented, which is the growth rate an unenforced axis
+has.
+
+**The scales below were derived from that census, not designed.** Both are the histogram with the
+one- and two-occurrence values folded into a neighbour:
+
+| Axis | In use before | Steps after | Folded away |
+|---|---|---|---|
+| font size | 10 px ×20, 11 px ×183, 12 px ×75, 13 px ×23, 14 px ×4, 15 px ×2, 18 px ×2 | six | `15px` → `title`. The wordmark and the login heading were the only two, and neither is a size the other 307 knew about |
+| radius | 2 px ×1, 3 px ×26, 4 px ×28, 6 px ×3, 8 px ×1 | three | `2px` → `chip` (one icon button inside a chip); `8px` → `surface` (the dialog, the only one of its size — a modal and a panel are the same kind of corner) |
+
+The 3 px/4 px split, which looked like one tier written two ways, is two: **3 px is on inline things
+that sit inside a line of text** (badges, chips, code spans, skeleton bars) and **4 px is on things
+you operate or that hold something** (buttons, inputs, wells, nav items, bordered boxes). Every one
+of the 54 call sites was on the correct side of that line already; what was missing was the name.
+
+```css
+:root {
+  /* Type. Four of the six steps are below 14 px, because the operational
+     surfaces are tables and chips (U6). */
+  --oto-type-micro: 10px;
+  --oto-type-meta: 11px;
+  --oto-type-body: 12px;
+  --oto-type-item: 13px;
+  --oto-type-title: 14px;
+  --oto-type-page: 18px;
+
+  /* Radius. The tier is chosen by what the corner belongs to, not by how big
+     it looks. */
+  --oto-radius-chip: 3px;
+  --oto-radius-control: 4px;
+  --oto-radius-surface: 6px;
+}
+```
+
+| Utility | Step | What it is for |
+|---|---|---|
+| `text-micro` | 10 px | mono config keys, footnotes, secondary badge text |
+| `text-meta` | 11 px | the dense default — table cells, chips, inline labels |
+| `text-body` | 12 px | prose — help text, descriptions, form labels |
+| `text-item` | 13 px | a named thing or a control — row titles, nav, tabs, buttons |
+| `text-title` | 14 px | dialog and section titles |
+| `text-page` | 18 px | the page heading, and nothing else |
+| `rounded-chip` | 3 px | inline — badges, chips, code spans, skeletons |
+| `rounded-control` | 4 px | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
+| `rounded-surface` | 6 px | panels and dialogs — anything that holds controls |
+
+`rounded-full` and `rounded-none` remain available and are not steps: they are shapes, and a status
+dot is a circle at any radius the scale could name.
+
+> **These are NOT theme tokens, and are deliberately outside every `[data-theme]` block.** A palette
+> is a property of the theme; a type step is not, and asking dark mode for its own 11 px would be
+> asking the wrong question. `tokens.test.ts` reads only the theme-prefixed rules, so nothing here
+> is required to have a dark counterpart — the same arrangement `--oto-row-h` has had since U6.
+>
+> **§M.3 U2's contrast tiers are unaffected.** U2 sets its 3:1 boundary at *"≥ 24 px / ≥ 19 px-bold"*
+> and every step above is below both, so all text in this product is body text for contrast
+> purposes and owes 4.5:1 — which is what §M.4/§M.5 already measure. The scale does not create an
+> exemption and must not be read as one.
 ---
 
 ## N. Amendment procedure

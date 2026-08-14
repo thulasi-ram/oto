@@ -127,7 +127,7 @@ export default function GroupsRoute() {
           onChange={(next) => setParam("state", next.length > 0 ? next.join(",") : null)}
         />
 
-        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+        <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Ack</span>
           <Select
             value={ack() ?? ""}
@@ -140,7 +140,7 @@ export default function GroupsRoute() {
           </Select>
         </label>
 
-        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+        <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Storm</span>
           <Select
             value={storm() === null ? "" : String(storm())}
@@ -152,7 +152,7 @@ export default function GroupsRoute() {
           </Select>
         </label>
 
-        <span class="ml-auto text-[12px] tabular-nums text-ink-muted" aria-live="polite">
+        <span class="ml-auto text-body tabular-nums text-ink-muted" aria-live="polite">
           {fmtCount(all().length)}
           {groups.data?.page.has_more === true ? "+" : ""} groups
         </span>
@@ -215,7 +215,7 @@ const GroupRow = (props: { readonly group: Group }) => {
 
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="min-w-0 truncate text-[13px] font-medium text-ink">{g().title}</span>
+            <span class="min-w-0 truncate text-item font-medium text-ink">{g().title}</span>
             <Show when={g().generation > 1}>
               <Chip title="A new generation opens when a closed group re-opens. One generation owns exactly one chat thread.">
                 gen {g().generation}
@@ -229,7 +229,7 @@ const GroupRow = (props: { readonly group: Group }) => {
             </Show>
           </div>
 
-          <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-muted">
+          <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-ink-muted">
             <span class="tabular-nums">
               {fmtCount(g().total_count)} member{g().total_count === 1 ? "" : "s"}
             </span>
@@ -269,7 +269,7 @@ const GroupRow = (props: { readonly group: Group }) => {
           </div>
         </div>
 
-        <span class="shrink-0 text-right text-[11px] text-ink-subtle">
+        <span class="shrink-0 text-right text-meta text-ink-subtle">
           <RelativeTime value={g().last_activity_at} label="Last activity" />
         </span>
       </A>

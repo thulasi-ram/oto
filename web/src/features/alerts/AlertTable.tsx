@@ -185,7 +185,7 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
       aria-labelledby={captionId}
       onKeyDown={onKeyDown}
     >
-      <table class="w-full border-collapse text-[13px]">
+      <table class="w-full border-collapse text-item">
         <caption id={captionId} class="sr-only-focusable">
           Alerts, newest activity first. Use j and k or the arrow keys to move between rows, Enter
           to open one.
@@ -201,7 +201,7 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
                   scope="col"
                   class={cx(
                     "border-b border-line px-2 py-1.5 text-left align-middle",
-                    "text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted",
+                    "text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted",
                     col.class,
                   )}
                 >
@@ -326,7 +326,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
             {props.alert.alertname}
           </A>
           <Show when={props.alert.namespace ?? props.alert.service}>
-            <span class="shrink-0 truncate font-mono text-[11px] text-ink-subtle">
+            <span class="shrink-0 truncate font-mono text-meta text-ink-subtle">
               {props.alert.namespace}
               {props.alert.namespace && props.alert.service ? "/" : ""}
               {props.alert.service}
@@ -334,7 +334,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
           </Show>
           <Show when={summary()}>
             {(text) => (
-              <span class="min-w-0 truncate text-[12px] text-ink-muted" title={text()}>
+              <span class="min-w-0 truncate text-body text-ink-muted" title={text()}>
                 {truncate(text(), 120)}
               </span>
             )}
@@ -343,7 +343,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
             {([k, v]) => (
               <button
                 type="button"
-                class="hidden shrink-0 rounded-[3px] border border-line bg-raised px-1 font-mono text-[10px] leading-4 text-ink-subtle hover:border-accent-border hover:text-ink group-hover:inline-flex"
+                class="hidden shrink-0 rounded-chip border border-line bg-raised px-1 font-mono text-micro leading-4 text-ink-subtle hover:border-accent-border hover:text-ink group-hover:inline-flex"
                 title={`Filter by ${k}="${v}"`}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -493,7 +493,7 @@ const RuleCell: Component<RuleCellProps> = (props) => {
       <Match when={props.snapshot}>
         {(snapshot) => (
           <code
-            class="block truncate font-mono text-[11px] leading-4 text-ink-muted"
+            class="block truncate font-mono text-meta leading-4 text-ink-muted"
             title={tooltip(snapshot())}
           >
             {truncate(snapshot().expr, 64)}
