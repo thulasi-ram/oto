@@ -8,9 +8,11 @@ import (
 
 	"github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/alerts/service"
+	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/validate"
 )
 
@@ -110,6 +112,41 @@ func (rt *Router) action(r *http.Request) (db.TenantScope, domain.Actor, uuid.UU
 		return db.TenantScope{}, domain.Actor{}, uuid.Nil, err
 	}
 	return scope, actor, id, nil
+}
+
+// idempotencyIntent reads the caller's `Idempotency-Key` and resolves the
+// principal that sent it, into the intent the verb acts on.
+//
+// ⭐ READING THE HEADER IS THIS LAYER'S JOB; TAKING THE CLAIM IS NOT. A claim has
+// to be taken inside the transaction of the act it guards, and that transaction
+// belongs to `alerts/service` — so what crosses the seam is the caller's intent,
+// and the service decides whether this deployment can honour it (a `503`), whether
+// somebody already holds the key for a different body (a `409`), and whether this
+// call is a replay of one it already served.
+//
+// ⛔ THE SUBJECT IS FOLDED INTO THE HASH. Both verbs are addressed by `{id}` and
+// the alert is not part of the claim tuple, so a client that mints one key per
+// gesture — which oto's own frontend does — and snoozes alert A then alert B under
+// one key would be told "that request already succeeded" about a request it never
+// made. `HashTargetedRequest` makes the two the different requests they are.
+func idempotencyIntent(
+	r *http.Request, op idempotency.Operation, subject uuid.UUID, body []byte,
+) (service.Idempotency, error) {
+	key, keyed, err := idempotency.FromHeader(r)
+	if err != nil || !keyed {
+		return service.Idempotency{}, err
+	}
+	p, _, err := authn.Scope(r.Context())
+	if err != nil {
+		return service.Idempotency{}, err
+	}
+	return service.Idempotency{
+		Keyed:       true,
+		Key:         key,
+		Operation:   op,
+		Principal:   p,
+		RequestHash: idempotency.HashTargetedRequest(subject, body),
+	}, nil
 }
 
 // resolveAlert reads an alert by UUID, falling back to the §C.2 alert_key.

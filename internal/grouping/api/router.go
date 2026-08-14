@@ -20,6 +20,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
 
 // GroupService is the port this layer declares for itself, satisfied by
@@ -30,13 +31,13 @@ type GroupService interface {
 	Members(ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset) (service.MemberResult, error)
 	Timeline(ctx context.Context, s db.TenantScope, groupID uuid.UUID, w db.TimeWindow, p db.Keyset) (alerts.TimelineResult, error)
 	Acknowledge(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, note string) (service.FanOutResult, error)
-	Comment(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, body string) (service.CommentResult, error)
+	Comment(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, body string, idem alerts.Idempotency) (service.CommentResult, error)
 
 	// ⛔ The group snooze is a FAN-OUT OF THE SAME PRIMITIVE, never a new one:
 	// one snooze per CURRENTLY-JOINED member alert. Alerts that join later are
 	// NOT snoozed — a snooze is never predictive, and a group-level mute would
 	// silence alerts nobody has ever seen (§B.8.3).
-	Snooze(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string) (service.FanOutResult, error)
+	Snooze(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string, idem alerts.Idempotency) (service.FanOutResult, error)
 	Unsnooze(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, note string) (service.FanOutResult, error)
 }
 
@@ -265,6 +266,37 @@ func actorOf(ctx context.Context) (kind, id, label string, err error) {
 		return "", "", "", errs.Forbidden("forbidden", "this action requires a human actor")
 	}
 	return ak.String(), p.ActorID(), p.ActorLabel(), nil
+}
+
+// idempotencyIntent reads the caller's `Idempotency-Key` into the intent the
+// fan-out claims under.
+//
+// ⭐ READING THE HEADER IS THIS LAYER'S JOB; TAKING THE CLAIM IS NOT. A claim has
+// to be taken inside the transaction of the act it guards, and a fan-out's only
+// transactions are its members' — so the intent crosses the seam and
+// `grouping/service` decides which member records it.
+//
+// ⛔ THE GROUP IS FOLDED INTO THE HASH. `{id}` is not part of the claim tuple, and
+// a client that mints one key per gesture would otherwise find its snooze of group
+// B refused as a replay of its snooze of group A.
+func idempotencyIntent(
+	r *http.Request, op idempotency.Operation, groupID uuid.UUID, body []byte,
+) (alerts.Idempotency, error) {
+	key, keyed, err := idempotency.FromHeader(r)
+	if err != nil || !keyed {
+		return alerts.Idempotency{}, err
+	}
+	p, _, err := authn.Scope(r.Context())
+	if err != nil {
+		return alerts.Idempotency{}, err
+	}
+	return alerts.Idempotency{
+		Keyed:       true,
+		Key:         key,
+		Operation:   op,
+		Principal:   p,
+		RequestHash: idempotency.HashTargetedRequest(groupID, body),
+	}, nil
 }
 
 // ⛔ THERE IS NO POST-FILTER IN THIS PACKAGE, and there must never be one again.

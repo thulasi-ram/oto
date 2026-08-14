@@ -56,6 +56,9 @@ type Options struct {
 	// cannot honour the header, which is the declared `503` rather than a rotation
 	// that silently mints a second secret.
 	Claims IdempotencyClaims
+	// Clusters registers an identity/failure domain. Nil is a declared `503` on
+	// `createCluster` and nothing at all to the rest.
+	Clusters ClusterWriter
 }
 
 // Service composes the outbound clients with the source registry.
@@ -77,10 +80,11 @@ type Service struct {
 	clk     clock.Clock
 	log     *slog.Logger
 
-	sealer CredentialSealer
-	tokens IngestTokens
-	tx     UnitOfWork
-	claims IdempotencyClaims
+	sealer   CredentialSealer
+	tokens   IngestTokens
+	tx       UnitOfWork
+	claims   IdempotencyClaims
+	clusters ClusterWriter
 }
 
 // New builds the Service.
@@ -102,6 +106,7 @@ func New(o Options) (*Service, error) {
 	return &Service{
 		repo: o.Repo, creds: o.Creds, clients: o.Clients, clk: clk, log: lg,
 		sealer: o.Sealer, tokens: o.Tokens, tx: o.Tx, claims: o.Claims,
+		clusters: o.Clusters,
 	}, nil
 }
 

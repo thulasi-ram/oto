@@ -13,7 +13,7 @@ import (
 
 	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	alertsrepo "github.com/thulasiram/oto/internal/alerts/repository"
-	alertsvc "github.com/thulasiram/oto/internal/alerts/service"
+	alerts "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
 	"github.com/thulasiram/oto/internal/grouping/repository"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -50,7 +50,7 @@ type fanOutWorld struct {
 	// alerts is the actual alerts service, wired to the same database. The fan-out
 	// is only interesting when the member verb is the real one: `already_acked`
 	// has to come from the domain, not from a fake that agreed to say it.
-	alerts *alertsvc.Service
+	alerts *alerts.Service
 
 	actorID    string
 	actorLabel string
@@ -70,7 +70,7 @@ func newFanOutWorld(t *testing.T) *fanOutWorld {
 	group := h.Group(org, source, cluster)
 	user := h.User(org)
 
-	alerts, err := alertsvc.New(alertsvc.Deps{
+	alerts, err := alerts.New(alerts.Deps{
 		Alerts:      alertsrepo.NewAlertRepository(h.Pool, h.Clock),
 		Occurrences: alertsrepo.NewOccurrenceRepository(h.Pool),
 		Events:      alertsrepo.NewEventRepository(h.Pool, h.Clock),
@@ -142,7 +142,7 @@ func (w *fanOutWorld) ack(t *testing.T, svc *Service) (FanOutResult, error) {
 func (w *fanOutWorld) comment(t *testing.T, svc *Service, body string) (CommentResult, error) {
 	t.Helper()
 	return svc.Comment(w.h.Ctx, w.org.Scope, w.group.ID,
-		"user", w.actorID, w.actorLabel, body)
+		"user", w.actorID, w.actorLabel, body, alerts.Idempotency{})
 }
 
 // ackedOccurrences is how many of the generation's episodes carry a receipt.
@@ -216,15 +216,16 @@ func (a *recordingActions) AcknowledgeAs(
 }
 
 func (a *recordingActions) CommentAs(
-	_ context.Context, _ db.TenantScope, _ uuid.UUID, _, _, _, _ string,
-) (kernel.Event, error) {
-	return kernel.Event{}, nil
+	_ context.Context, _ db.TenantScope, _ uuid.UUID, _, _, _, _ string, _ alerts.Idempotency,
+) (kernel.Event, bool, error) {
+	return kernel.Event{}, false, nil
 }
 
 func (a *recordingActions) SnoozeAs(
 	_ context.Context, _ db.TenantScope, _ uuid.UUID, _, _, _ string, _ time.Time, _ string,
-) error {
-	return nil
+	_ alerts.Idempotency,
+) (bool, error) {
+	return false, nil
 }
 
 func (a *recordingActions) UnsnoozeAs(
@@ -255,16 +256,16 @@ func (a *failingActions) AcknowledgeAs(
 
 func (a *failingActions) CommentAs(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
-	actorKind, actorID, actorLabel, body string,
-) (kernel.Event, error) {
-	return a.inner.CommentAs(ctx, s, alertID, actorKind, actorID, actorLabel, body)
+	actorKind, actorID, actorLabel, body string, idem alerts.Idempotency,
+) (kernel.Event, bool, error) {
+	return a.inner.CommentAs(ctx, s, alertID, actorKind, actorID, actorLabel, body, idem)
 }
 
 func (a *failingActions) SnoozeAs(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
-	actorKind, actorID, actorLabel string, until time.Time, note string,
-) error {
-	return a.inner.SnoozeAs(ctx, s, alertID, actorKind, actorID, actorLabel, until, note)
+	actorKind, actorID, actorLabel string, until time.Time, note string, idem alerts.Idempotency,
+) (bool, error) {
+	return a.inner.SnoozeAs(ctx, s, alertID, actorKind, actorID, actorLabel, until, note, idem)
 }
 
 func (a *failingActions) UnsnoozeAs(

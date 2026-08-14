@@ -164,8 +164,16 @@ VALUES ($1, $2, $3, $4, $5, $5)
 RETURNING id`
 
 // Create adds an identity/failure domain.
+//
+// ⭐ THE ID IS SUPPLIED BY THE CALLER AND NO LONGER MINTED HERE. `sources/service`
+// records that id in the `Idempotency-Key` claim it takes in this same
+// transaction, and a claim can only name a row whose id existed BEFORE the insert
+// — otherwise the retry it is meant to replay hits `clusters_key_uniq` first and
+// is answered with a name conflict, which is the defect ticket a6cc834 describes.
+// A zero id still mints one, so a caller with no claim to record needs to know
+// nothing about this.
 func (r *ClusterRepository) Create(
-	ctx context.Context, s db.TenantScope, key, displayName string,
+	ctx context.Context, s db.TenantScope, clusterID uuid.UUID, key, displayName string,
 ) (domain.Cluster, error) {
 	if err := requireScope(s); err != nil {
 		return domain.Cluster{}, err
@@ -174,10 +182,13 @@ func (r *ClusterRepository) Create(
 		return domain.Cluster{}, errs.Internal("cluster_incomplete",
 			errsMissing("a cluster needs a key and a display name"))
 	}
+	if clusterID == uuid.Nil {
+		clusterID = id.New()
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, insertClusterSQL,
-		id.New(), s.OrgID(), key, displayName, r.clock.Now().UTC()).Scan(&stored)
+		clusterID, s.OrgID(), key, displayName, r.clock.Now().UTC()).Scan(&stored)
 	if err != nil {
 		return domain.Cluster{}, mapErr(err, "cluster_not_found", "create a cluster")
 	}

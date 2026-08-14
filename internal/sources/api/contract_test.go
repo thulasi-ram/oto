@@ -370,6 +370,16 @@ func (f *contractClusters) Create(
 	return out, nil
 }
 
+// CreateCluster is the write facade's half: `createCluster` goes through the
+// service now, so the claim can join the transaction. The fake answers on the
+// same rule as `Create` and counts the same way, because the wire shape this
+// file is about did not change with the collaborator behind it.
+func (f *contractClusters) CreateCluster(
+	ctx context.Context, s db.TenantScope, key, displayName string, _ service.Idempotency,
+) (domain.Cluster, error) {
+	return f.Create(ctx, s, key, displayName)
+}
+
 func (f *contractClusters) UpdateDisplayName(
 	_ context.Context, _ db.TenantScope, id uuid.UUID, displayName string,
 ) (domain.Cluster, error) {
@@ -455,6 +465,7 @@ func (s *contractStack) router() *Router {
 	}
 	if !s.dropClusters {
 		o.Clusters = s.clusters
+		o.ClusterWrites = s.clusters
 	}
 	// ⚠️ Dropping the ingest-token issuer no longer removes a router
 	// collaborator: the issuer belongs to the write facade, so "this deployment

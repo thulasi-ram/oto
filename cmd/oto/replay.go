@@ -124,12 +124,23 @@ func refusalReport(res service.ReplayResult) string {
 
 	fmt.Fprintf(&b, "  received %s, %s: %q\n",
 		res.ReceivedAt.UTC().Format(time.RFC3339), res.Status, res.Failure)
-	fmt.Fprintf(&b, "  %d of %d alerts moved after this batch was received:\n",
+	fmt.Fprintf(&b, "  %d of %d alerts would be written twice by a replay:\n",
 		len(res.Superseded), res.AlertsTouched)
 
+	// ⭐ THE LIMB IS NAMED PER ROW, because the two are not the same news and an
+	// operator deciding about `--force` is deciding about the worse one. An
+	// overtaken alert has a later batch's answer already stored; a closed one
+	// refires, mints a new occurrence id past the dedupe keys, and pages somebody
+	// for an incident that ended. A single "moved after this batch" line for both
+	// would describe only the first and hide the second.
 	for _, s := range res.Superseded {
-		fmt.Fprintf(&b, "    %s  %s  %s, last moved %s\n",
-			shortKey(s.AlertKey), s.Identity, s.State, s.MovedAt.UTC().Format("2006-01-02T15:04Z"))
+		reason := "overtaken"
+		if s.Limb == service.LimbClosed {
+			reason = "closed, would refire"
+		}
+		fmt.Fprintf(&b, "    %s  %s  %s, last moved %s (%s)\n",
+			shortKey(s.AlertKey), s.Identity, s.State,
+			s.MovedAt.UTC().Format("2006-01-02T15:04Z"), reason)
 	}
 
 	b.WriteString("  Replaying would reopen occurrences that closed after this batch, and page for them.\n")

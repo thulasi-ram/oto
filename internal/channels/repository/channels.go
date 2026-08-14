@@ -280,7 +280,13 @@ func (r *ChannelRepository) Create(
 	verbosity := in.Verbosity.Normalise()
 
 	now := r.clock.Now().UTC()
-	newID := id.New()
+	// A supplied id is the caller naming the row before it exists, which is what
+	// lets `channels/service` record it in an `Idempotency-Key` claim taken in
+	// this same transaction. Zero still mints one.
+	newID := in.ID
+	if newID == uuid.Nil {
+		newID = id.New()
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, insertChannelSQL,

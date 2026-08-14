@@ -45,10 +45,14 @@ var _ ProviderRegistry = (*registry.Registry)(nil)
 // make the schema check harder to find. This layer therefore declares the narrow
 // store port it needs and the composition root injects the repository. `api`
 // still does not IMPORT `repository`, so depguard's rule holds.
+//
+// ⛔ AND `Create` IS NO LONGER ON IT. The note above held right up to the moment
+// one of these writes had to commit beside something else: an `Idempotency-Key`
+// claim refuses to run outside the caller's transaction, so a handler wired
+// straight to the repository had nowhere to take one. See ChannelWriter.
 type ChannelStore interface {
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Instance, error)
 	List(ctx context.Context, s db.TenantScope, includeDeleted bool, p db.Keyset) ([]domain.Instance, db.Cursor, error)
-	Create(ctx context.Context, s db.TenantScope, in domain.NewInstance) (domain.Instance, error)
 	Update(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.InstancePatch) (domain.Instance, error)
 	SoftDelete(ctx context.Context, s db.TenantScope, id uuid.UUID) error
 	// ReferencingPolicies names the live policies routing to this channel. A
@@ -68,14 +72,27 @@ type CredentialWriter interface {
 	RotateCredential(ctx context.Context, s db.TenantScope, id uuid.UUID, kind string, values map[string]string) error
 }
 
-// ChannelTester sends one synthetic alert card, satisfied by
-// `*channels/service.Tester`.
-type ChannelTester interface {
-	Test(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.TestResult, error)
+// ChannelWriter owns the two operations whose side effect is worth claiming, and
+// is satisfied by `*channels/service.Writer`.
+//
+// ⭐⭐ BOTH TAKE THE CALLER'S `Idempotency-Key` INTENT AND NEITHER TAKES THE CLAIM
+// HERE. A claim has to be taken inside the transaction of the act it guards, and
+// that transaction belongs to the service — so what crosses this seam is the
+// intent, and the service decides whether this deployment can honour it (a
+// `503`), whether the key is held for a different body (a `409`), and whether the
+// call is a replay.
+//
+// ⛔ `TestChannel` IS THE SHARPEST OPERATION IN THE WHOLE CONTRACT. Its side
+// effect is a message a real person reads in a real room, and nothing can undo
+// one. It called through to the tester unconditionally on every request while the
+// contract's header promised the opposite (ticket a6cc834).
+type ChannelWriter interface {
+	CreateChannel(ctx context.Context, s db.TenantScope, in domain.NewInstance, idem service.Idempotency) (domain.Instance, error)
+	TestChannel(ctx context.Context, s db.TenantScope, id uuid.UUID, idem service.Idempotency) (domain.TestResult, error)
 }
 
-// Compile-time proof that the tester satisfies the port this layer declares.
-var _ ChannelTester = (*service.Tester)(nil)
+// Compile-time proof that the writer satisfies the port this layer declares.
+var _ ChannelWriter = (*service.Writer)(nil)
 
 // SlackInteractions receives an already-verified Slack block-action payload.
 //

@@ -159,9 +159,6 @@ type AlertObserver interface {
 // field of the alerts aggregate reachable from the ingest path, and the next
 // person would use one.
 type AlertState struct {
-	// Key is the §C.2 alert_key the observation computed. Present even when the
-	// alert has never been seen — see Exists.
-	Key string
 	// Exists is false when this alert key has no row yet. A replay cannot overtake
 	// an alert that does not exist, so those keys are simply not at risk.
 	Exists bool

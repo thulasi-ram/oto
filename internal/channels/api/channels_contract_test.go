@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
+	"github.com/thulasiram/oto/internal/channels/service"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -294,6 +296,7 @@ type chanWorld struct {
 	store    *chanStore
 	creds    *chanCreds
 	tester   *chanTester
+	writer   *service.Writer
 	client   *apitest.Client
 }
 
@@ -325,11 +328,23 @@ func newChanWorld(t *testing.T) *chanWorld {
 			result: domain.TestResult{OK: true, ProviderConversationID: "C7F2X9QLM", ProviderMessageID: "1723023262.114300", CheckedAt: chanNow},
 		},
 	}
+	// The REAL write facade over the fake store and the fake tester: the claim
+	// path is the thing under test on two of these operations, and a fake writer
+	// would prove nothing about it. With no claim store wired, an UNKEYED request
+	// behaves exactly as it always did and a KEYED one is the declared `503`.
+	writer, err := service.NewWriter(service.WriterOptions{
+		Store:  w.store,
+		Tester: w.tester,
+		Clock:  clock.NewFake(chanNow),
+	})
+	require.NoError(t, err)
+	w.writer = writer
+
 	rt := NewRouter(Options{
 		Registry: w.registry,
 		Channels: w.store,
 		Creds:    w.creds,
-		Tester:   w.tester,
+		Writes:   w.writer,
 		Clock:    clock.NewFake(chanNow),
 	})
 	w.client = apitest.New(rt)

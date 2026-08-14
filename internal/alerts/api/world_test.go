@@ -92,6 +92,7 @@ type fakeAlertsService struct {
 	lastActor       domain.Actor
 	lastSnoozeUntil time.Time
 	lastCommentBody string
+	lastIdempotency service.Idempotency
 	lastAckNote     string
 	lastListQuery   service.ListQuery
 	lastRollupQuery service.RollupQuery
@@ -305,28 +306,29 @@ func (f *fakeAlertsService) Unacknowledge(
 
 func (f *fakeAlertsService) Comment(
 	_ context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, body string,
-) (domain.Event, error) {
+	idem service.Idempotency,
+) (domain.Event, bool, error) {
 	f.note("Comment", s)
-	f.lastActor, f.lastCommentBody = actor, body
+	f.lastActor, f.lastCommentBody, f.lastIdempotency = actor, body, idem
 	if err := f.ownsAlert(alertID); err != nil {
-		return domain.Event{}, err
+		return domain.Event{}, false, err
 	}
-	return f.commentEvent, nil
+	return f.commentEvent, false, nil
 }
 
 func (f *fakeAlertsService) Snooze(
 	_ context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor,
-	until time.Time, _ string,
-) (domain.Snooze, error) {
+	until time.Time, _ string, idem service.Idempotency,
+) (domain.Snooze, bool, error) {
 	f.note("Snooze", s)
-	f.lastActor, f.lastSnoozeUntil = actor, until
+	f.lastActor, f.lastSnoozeUntil, f.lastIdempotency = actor, until, idem
 	if err := f.ownsAlert(alertID); err != nil {
-		return domain.Snooze{}, err
+		return domain.Snooze{}, false, err
 	}
 	if f.failVerb != nil {
-		return domain.Snooze{}, f.failVerb
+		return domain.Snooze{}, false, f.failVerb
 	}
-	return f.snoozeRow, nil
+	return f.snoozeRow, false, nil
 }
 
 func (f *fakeAlertsService) Unsnooze(

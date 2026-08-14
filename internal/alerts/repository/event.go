@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -446,6 +447,56 @@ func (r *EventRepository) listBy(
 	}
 	last := page[len(page)-1]
 	return page, nextCursor(last.RecordedAt(), last.ID(), p.Cursor.Hash, hasMore), nil
+}
+
+// getByDedupeKeySQL resolves the entry a §C.8 key already claimed.
+//
+// ⭐⭐ THE JOIN IS WHAT MAKES A KEYED COMMENT REPLAYABLE, and it is the reason
+// `alert_event_keys.event_id` was worth a column when nothing read it. The key
+// table is UNPARTITIONED and holds the id of the row that won the key, so a
+// retry can be answered with the annotation the first attempt actually appended
+// rather than with a second one.
+//
+// ⛔ `recorded_at` IS STILL BOUNDED, from the key row's own `created_at`. Reading
+// `alert_events` by id alone would scan thirteen months of partitions on a path
+// that runs on every retried comment; the two timestamps are written in the same
+// transaction, so a minute either side is generous by three orders of magnitude
+// and still lands the query on exactly one partition.
+var getByDedupeKeySQL = `
+SELECT ` + eventColumns + `
+  FROM alert_events e
+  JOIN alert_event_keys k
+    ON k.org_id = e.org_id AND k.event_id = e.id
+ WHERE k.org_id = $1 AND k.dedupe_key = $2
+   AND e.recorded_at >= k.created_at - interval '1 minute'
+   AND e.recorded_at <  k.created_at + interval '1 minute'`
+
+// GetByDedupeKey reads the event a §C.8 key belongs to.
+//
+// `false` means no key row, which is not an error: it is what a caller asking
+// "was this already appended" is entitled to be told.
+func (r *EventRepository) GetByDedupeKey(
+	ctx context.Context, s db.TenantScope, key string,
+) (domain.Event, bool, error) {
+	if err := requireScope(s); err != nil {
+		return domain.Event{}, false, err
+	}
+	if key == "" {
+		return domain.Event{}, false, nil
+	}
+	var row eventRow
+	err := r.db(ctx).QueryRow(ctx, getByDedupeKeySQL, s.OrgID(), key).Scan(row.scanDest()...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Event{}, false, nil
+	}
+	if err != nil {
+		return domain.Event{}, false, mapErr(err, "read alert event by dedupe key")
+	}
+	e, err := row.toDomain()
+	if err != nil {
+		return domain.Event{}, false, err
+	}
+	return e, true, nil
 }
 
 func collectEvents(rows pgx.Rows, capacity int) ([]domain.Event, error) {

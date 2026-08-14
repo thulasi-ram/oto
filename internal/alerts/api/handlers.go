@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/alerts/domain"
+	"github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
@@ -475,10 +476,26 @@ func (rt *Router) unackAlert(w http.ResponseWriter, r *http.Request) {
 // A comment is an event like any other: it cannot be edited or deleted, because
 // the timeline IS the record. 201 with the appended event is therefore the whole
 // response.
+//
+// ⭐⭐ A RETRY CARRYING THE SAME `Idempotency-Key` IS REPLAYED, NOT REPEATED, and
+// the `201` it gets back names the SAME event id as the first attempt. This
+// endpoint declared the header and read it nowhere; nothing else protected it,
+// because a comment has no state machine to refuse a repeat and its §C.8 dedupe
+// key was minted from the wall clock. A dropped response to a comment — during
+// exactly the network conditions the header exists for — used to leave two
+// identical annotations on the timeline that IS the record.
 func (rt *Router) commentOnAlert(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
 	scope, actor, id, err := rt.action(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	// The RAW bytes, before Bind consumes the stream: "the same body" is decided
+	// by the sha256 of what the caller actually sent, not by a re-encoding of the
+	// DTO it parsed into.
+	raw, err := httpx.ReadBody(w, r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -488,12 +505,20 @@ func (rt *Router) commentOnAlert(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-
-	ev, err := rt.svc.Comment(r.Context(), scope, id, actor, body.Body)
+	idem, err := idempotencyIntent(r, service.OpCommentOnAlert, id, raw)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+
+	ev, _, err := rt.svc.Comment(r.Context(), scope, id, actor, body.Body, idem)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	// A replay answers `201` with the ORIGINAL event and not a `200`: the contract
+	// promises "the original result rather than acting twice", and a caller that
+	// could not tell the two apart is a caller whose retry logic works.
 	httpx.Data(w, r, http.StatusCreated, eventDTO(ev), started)
 }
 
@@ -512,10 +537,22 @@ func (rt *Router) commentOnAlert(w http.ResponseWriter, r *http.Request) {
 //
 // The response is the alert detail, so the caller sees the snooze in force
 // alongside the state it did not change.
+//
+// ⭐⭐ A RETRY CARRYING THE SAME `Idempotency-Key` REPLAYS THE SNOOZE IT ALREADY
+// GRANTED. Unguarded, a retry ended the caller's own snooze as `superseded`,
+// inserted a replacement, and enqueued a second "snoozed" notification — one user
+// click, two rows and two outbound messages. `until` is resolved BEFORE the
+// intent because a relative `duration` would otherwise digest differently on
+// every attempt; the hash is over the bytes the caller sent, which do not move.
 func (rt *Router) snoozeAlert(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
 	scope, actor, id, err := rt.action(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	raw, err := httpx.ReadBody(w, r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -530,8 +567,13 @@ func (rt *Router) snoozeAlert(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+	idem, err := idempotencyIntent(r, service.OpSnoozeAlert, id, raw)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 
-	if _, err := rt.svc.Snooze(r.Context(), scope, id, actor, until, body.Note); err != nil {
+	if _, _, err := rt.svc.Snooze(r.Context(), scope, id, actor, until, body.Note, idem); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}

@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/id"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/sources/domain"
 )
@@ -32,6 +34,7 @@ import (
 var (
 	opCreateSource            = idempotency.MustOperation("createSource")
 	opRotateSourceIngestToken = idempotency.MustOperation("rotateSourceIngestToken")
+	opCreateCluster           = idempotency.MustOperation("createCluster")
 )
 
 // The codes the write path mints. Each is a DEPLOYMENT fact — a collaborator this
@@ -316,6 +319,104 @@ func (s *Service) RotateIngestToken(
 	}
 	return out, nil
 }
+
+// ------------------------------------------------------------------ clusters
+
+// CodeClustersUnavailable means no cluster registry is wired, so no
+// identity/failure domain can be registered here.
+const CodeClustersUnavailable = "clusters_unavailable"
+
+// CreateCluster registers an identity/failure domain.
+//
+// ⛔ `cluster_key` participates in ALERT IDENTITY (§C.2) and cannot be changed
+// afterwards: the same label set in two clusters is two different alerts, which
+// is correct because they have different blast radii. Choosing it is therefore a
+// decision, and this is the only path that lets anybody make it.
+//
+// ⭐⭐ IT IS HERE, AND NOT IN A HANDLER, BECAUSE THE TRANSACTION BOUNDARY IS NOT
+// AN HTTP CONCERN. `createCluster` went api → repository directly, so the
+// `Idempotency-Key` claim had nowhere to be taken that was inside the insert's
+// transaction. This is the same move `createSource` made and for the same reason.
+//
+// ⭐⭐ A RETRY CARRYING THE SAME KEY IS REPLAYED, NOT REFUSED, AND THAT IS THE
+// DIFFERENCE BETWEEN THIS AND `Create` ABOVE. A source's `201` hands out a
+// plaintext ingest token that genuinely cannot be produced twice, so a held key
+// there is a `409` naming what already exists. A cluster's `201` carries no
+// secret, so the honest answer to a retry is the cluster the first attempt made —
+// which is what the header's own description promised all along. Before this,
+// `clusters_key_uniq` answered a same-body retry with a duplicate-key `409` that
+// named nothing, so a client that lost its response could not even learn the id
+// of what it had already created.
+//
+// ⭐ THE CLAIM IS TAKEN BEFORE THE INSERT, which is why the id is minted here. A
+// claim taken afterwards would never be reached: the retry's INSERT hits
+// `clusters_key_uniq` first and fails with the very conflict the claim exists to
+// replace.
+func (s *Service) CreateCluster(
+	ctx context.Context, scope db.TenantScope, key, displayName string, idem Idempotency,
+) (domain.Cluster, error) {
+	if s.clusters == nil {
+		return domain.Cluster{}, errs.Unavailable(CodeClustersUnavailable,
+			"the cluster registry is not configured in this deployment", 0)
+	}
+	if err := s.requireClaims(idem); err != nil {
+		return domain.Cluster{}, err
+	}
+
+	var (
+		out      domain.Cluster
+		replayOf uuid.UUID
+	)
+	clusterID := id.New()
+	err := s.inTx(ctx, func(ctx context.Context) error {
+		if idem.Keyed {
+			res, err := s.claims.Claim(ctx, scope, idempotency.Claim{
+				OrgID:       scope.OrgID(),
+				PrincipalID: idem.Principal.UserID,
+				Operation:   opCreateCluster,
+				Key:         idem.Key,
+				RequestHash: idem.RequestHash,
+				CreatedRef:  clusterID,
+				ClaimedAt:   s.clk.Now().UTC(),
+			})
+			if err != nil {
+				return err
+			}
+			if res.Outcome == idempotency.Conflicted {
+				// One key, two different bodies. That is not a retry, it is a second
+				// request wearing the first one's name, and the contract has always
+				// said so with a `409`.
+				return idempotency.Reuse(res)
+			}
+			if !res.Fresh() {
+				if res.Existing.CreatedRef == uuid.Nil {
+					return idempotency.Reuse(res)
+				}
+				replayOf = res.Existing.CreatedRef
+				return errReplayCluster
+			}
+		}
+		created, err := s.clusters.Create(ctx, scope, clusterID, key, displayName)
+		if err != nil {
+			return err
+		}
+		out = created
+		return nil
+	})
+	if errors.Is(err, errReplayCluster) {
+		// Read OUTSIDE the rolled-back transaction, so what comes back is the row
+		// the first attempt committed and nothing this one attempted.
+		return s.clusters.Get(ctx, scope, replayOf)
+	}
+	if err != nil {
+		return domain.Cluster{}, err
+	}
+	return out, nil
+}
+
+// errReplayCluster carries a replayed claim out of its own transaction so the
+// insert beside it rolls back. It never reaches a caller.
+var errReplayCluster = errors.New("this idempotency key already registered a cluster")
 
 // ------------------------------------------------------------------- helpers
 

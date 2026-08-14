@@ -123,7 +123,6 @@ noread:github.com/thulasiram/oto/internal/ingestion/domain.Batch.AlertCount	fiel
 noread:github.com/thulasiram/oto/internal/ingestion/domain.Batch.BodyBytes	field is never read in production — the value goes nowhere (internal/ingestion/domain/batch.go:97)
 noread:github.com/thulasiram/oto/internal/ingestion/domain.Batch.Checksum	field is never read in production — the value goes nowhere (internal/ingestion/domain/batch.go:100)
 noread:github.com/thulasiram/oto/internal/ingestion/domain.Batch.DedupKey	field is never read in production — the value goes nowhere (internal/ingestion/domain/batch.go:103)
-noread:github.com/thulasiram/oto/internal/ingestion/domain.Batch.Error	field is never read in production — the value goes nowhere (internal/ingestion/domain/batch.go:132)
 noread:github.com/thulasiram/oto/internal/ingestion/domain.Batch.GroupKey	field is never read in production — the value goes nowhere (internal/ingestion/domain/batch.go:110)
 noread:github.com/thulasiram/oto/internal/ingestion/domain.Batch.NotificationReason	field is never read in production — the value goes nowhere (internal/ingestion/domain/batch.go:115)
 noread:github.com/thulasiram/oto/internal/ingestion/domain.Batch.ProcessedAt	field is never read in production — the value goes nowhere (internal/ingestion/domain/batch.go:131)

@@ -37,9 +37,15 @@ type Options struct {
 	// Registry is the module's write facade. It owns the transaction, the
 	// credential and ingest-token orchestration and the `Idempotency-Key` claim;
 	// this layer supplies a bound request and renders what comes back.
-	Registry  SourceRegistry
-	Clusters  ClusterRegistry
-	Reconcile Reconciler
+	Registry SourceRegistry
+	Clusters ClusterRegistry
+	// ClusterWrites registers a cluster. It is a DIFFERENT collaborator from
+	// Clusters — the service rather than the repository — because the
+	// `Idempotency-Key` claim has to join the insert's transaction, and the
+	// transaction boundary is not an HTTP concern. Nil is a declared `503` on
+	// `createCluster` and nothing at all to the cluster reads.
+	ClusterWrites ClusterCreator
+	Reconcile     Reconciler
 	// Feeds is the ingestion module's read half: the per-source rejection feed
 	// and the failed-batch list. Nil means this deployment cannot answer "why did
 	// my alert never appear", which is a declared 503 rather than a panic.
@@ -66,6 +72,7 @@ type Router struct {
 	sources     SourceReader
 	registry    SourceRegistry
 	clusters    ClusterRegistry
+	clusterW    ClusterCreator
 	reconcile   Reconciler
 	feeds       IngestFeeds
 	guard       AddressGuard
@@ -84,6 +91,7 @@ func NewRouter(o Options) *Router {
 		sources:     o.Sources,
 		registry:    o.Registry,
 		clusters:    o.Clusters,
+		clusterW:    o.ClusterWrites,
 		reconcile:   o.Reconcile,
 		feeds:       o.Feeds,
 		guard:       o.Guard,

@@ -157,8 +157,12 @@ func (f *notifPolicies) GetPolicy(
 	return p, nil
 }
 
+// CreatePolicy carries the claim now: `createNotificationPolicy` goes through
+// the writer so the `Idempotency-Key` joins the insert's transaction. The fake
+// ignores the key — what it is here to answer is the wire shape — and the
+// claim's own behaviour is pinned where the writer lives.
 func (f *notifPolicies) CreatePolicy(
-	_ context.Context, s db.TenantScope, in domain.PolicyDraft,
+	_ context.Context, s db.TenantScope, in domain.PolicyDraft, _ service.Idempotency,
 ) (domain.Policy, error) {
 	f.created = append(f.created, in)
 	p := materialise(s, in)
@@ -460,6 +464,7 @@ func newNotifWorld(t *testing.T) *notifWorld {
 
 	rt := NewRouter(Options{
 		Policies:      w.policies,
+		PolicyWrites:  w.policies,
 		Audit:         w.audit,
 		Notifications: w.reader,
 		Deliveries:    w.deliveries,

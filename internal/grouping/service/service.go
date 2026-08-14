@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strconv"
 	"time"
@@ -101,6 +102,17 @@ func New(d Deps) (*Service, error) {
 func errMissingDep(name string) error {
 	return errs.New(errs.KindInternal, "missing_dependency", "grouping service requires "+name)
 }
+
+// errFanOutSettled stops a fan-out because the caller's `Idempotency-Key` was
+// already claimed: the gesture landed on a previous request, and every member
+// behind this one was dealt with then.
+//
+// ⛔ IT IS NOT AN ERROR THE CALLER EVER SEES. `fanOut` recognises it, returns the
+// partial account with a nil error, and the handler answers exactly as it would
+// have on the first attempt. A sentinel is used rather than a second return value
+// on `apply` because the only thing `apply` may otherwise say is "this member
+// refused", and a replay is a statement about the WHOLE gesture.
+var errFanOutSettled = errors.New("the caller's idempotency key was already claimed")
 
 // Now is the service's clock reading, in UTC.
 func (s *Service) Now() time.Time { return s.clock.Now().UTC() }

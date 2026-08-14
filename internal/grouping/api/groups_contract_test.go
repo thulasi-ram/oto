@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	alertdomain "github.com/thulasiram/oto/internal/alerts/domain"
-	alertsvc "github.com/thulasiram/oto/internal/alerts/service"
+	alerts "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
 	gsvc "github.com/thulasiram/oto/internal/grouping/service"
 	"github.com/thulasiram/oto/internal/platform/clock"
@@ -318,11 +318,11 @@ func (f *fakeGroupService) Members(
 
 func (f *fakeGroupService) Timeline(
 	_ context.Context, _ db.TenantScope, id uuid.UUID, _ db.TimeWindow, _ db.Keyset,
-) (alertsvc.TimelineResult, error) {
+) (alerts.TimelineResult, error) {
 	if err := f.own(id); err != nil {
-		return alertsvc.TimelineResult{}, err
+		return alerts.TimelineResult{}, err
 	}
-	return alertsvc.TimelineResult{Events: f.events}, nil
+	return alerts.TimelineResult{Events: f.events}, nil
 }
 
 func (f *fakeGroupService) Acknowledge(
@@ -335,7 +335,7 @@ func (f *fakeGroupService) Acknowledge(
 }
 
 func (f *fakeGroupService) Comment(
-	_ context.Context, _ db.TenantScope, id uuid.UUID, _, _, _, _ string,
+	_ context.Context, _ db.TenantScope, id uuid.UUID, _, _, _, _ string, _ alerts.Idempotency,
 ) (gsvc.CommentResult, error) {
 	if err := f.own(id); err != nil {
 		return gsvc.CommentResult{}, err
@@ -348,6 +348,7 @@ func (f *fakeGroupService) Comment(
 
 func (f *fakeGroupService) Snooze(
 	_ context.Context, _ db.TenantScope, id uuid.UUID, _, _, _ string, _ time.Time, _ string,
+	_ alerts.Idempotency,
 ) (gsvc.FanOutResult, error) {
 	if err := f.own(id); err != nil {
 		return gsvc.FanOutResult{}, err
@@ -366,15 +367,15 @@ func (f *fakeGroupService) Unsnooze(
 
 // fakeAlertReader is the cross-domain port that turns a member id into an Alert.
 type fakeAlertReader struct {
-	alerts map[uuid.UUID]alertsvc.AlertDetail
+	alerts map[uuid.UUID]alerts.AlertDetail
 }
 
 func (f *fakeAlertReader) Get(
 	_ context.Context, _ db.TenantScope, alertID uuid.UUID,
-) (alertsvc.AlertDetail, error) {
+) (alerts.AlertDetail, error) {
 	d, ok := f.alerts[alertID]
 	if !ok {
-		return alertsvc.AlertDetail{}, fxNotFound()
+		return alerts.AlertDetail{}, fxNotFound()
 	}
 	return d, nil
 }
@@ -431,7 +432,7 @@ func newGroupRouter(t *testing.T) (*Router, *fakeGroupService) {
 		snoozeMembers: 2,
 	}
 
-	reader := &fakeAlertReader{alerts: map[uuid.UUID]alertsvc.AlertDetail{
+	reader := &fakeAlertReader{alerts: map[uuid.UUID]alerts.AlertDetail{
 		fxAlertID: {
 			Alert:      alertA,
 			Snooze:     fxSnooze(t, fxAlertID, "ak_9d3k1m7q4v0b2n8s5t6u1c3e7g"),

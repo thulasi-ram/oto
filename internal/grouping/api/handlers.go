@@ -150,7 +150,19 @@ func (rt *Router) commentOnAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+	// The RAW bytes, before Bind consumes the stream: "the same body" is decided
+	// by the sha256 of what the caller actually sent.
+	raw, err := httpx.ReadBody(w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	body, err := httpx.Bind[CommentRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	idem, err := idempotencyIntent(r, alerts.OpCommentOnAlertGroup, id, raw)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -159,8 +171,9 @@ func (rt *Router) commentOnAlertGroup(w http.ResponseWriter, r *http.Request) {
 	// The service returns the event it appended. Re-reading the timeline to find
 	// it — which this handler used to do — is a second query that can legitimately
 	// hand back somebody else's comment, appended a millisecond later, as if it
-	// were the caller's own.
-	res, err := rt.svc.Comment(r.Context(), scope, id, kind, actorID, label, body.Body)
+	// were the caller's own. A KEYED retry returns the event the FIRST attempt
+	// appended, and annotates nobody a second time.
+	res, err := rt.svc.Comment(r.Context(), scope, id, kind, actorID, label, body.Body, idem)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -191,6 +204,11 @@ func (rt *Router) snoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+	raw, err := httpx.ReadBody(w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	body, err := httpx.Bind[SnoozeRequest](w, r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
@@ -201,13 +219,21 @@ func (rt *Router) snoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-
-	res, err := rt.svc.Snooze(r.Context(), scope, id, kind, actorID, label, until, body.Note)
+	idem, err := idempotencyIntent(r, alerts.OpSnoozeAlertGroup, id, raw)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if res.Members == 0 {
+
+	res, err := rt.svc.Snooze(r.Context(), scope, id, kind, actorID, label, until, body.Note, idem)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	// ⛔ `Replayed` IS CHECKED FIRST. A replayed fan-out applied nothing by
+	// definition, and reading that as "this group has no members" would answer a
+	// perfectly successful retry with a `412` naming a condition that never held.
+	if res.Members == 0 && !res.Replayed {
 		httpx.WriteProblem(w, r, errs.Precondition("no_group_members",
 			"this group has no currently-joined member alert to snooze"))
 		return

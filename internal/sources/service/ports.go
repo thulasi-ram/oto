@@ -231,6 +231,26 @@ type ClusterReader interface {
 	Get(ctx context.Context, s db.TenantScope, clusterID uuid.UUID) (domain.Cluster, error)
 }
 
+// ClusterWriter registers an identity/failure domain, satisfied by the same
+// `*sources/repository.ClusterRepository`.
+//
+// ⭐⭐ IT IS A PORT OF THE SERVICE AND NOT OF `sources/api`, FOR THE REASON THE
+// WHOLE OF `write.go` EXISTS. `createCluster` used to go handler → repository
+// directly, so the only place an `Idempotency-Key` claim could join the insert's
+// transaction was inside an HTTP request — and the transaction boundary is not an
+// HTTP concern. Routed through here, the insert and the claim are one unit of
+// work, and a job or a CLI could register a cluster without re-deriving either.
+//
+// ⛔ There is still NO METHOD THAT CHANGES `cluster_key`. It participates in alert
+// identity (§C.2), so changing it would re-key every alert in the cluster.
+//
+// It takes the id because the claim has to name the row before the row exists:
+// see ClusterRepository.Create.
+type ClusterWriter interface {
+	Create(ctx context.Context, s db.TenantScope, clusterID uuid.UUID, key, displayName string) (domain.Cluster, error)
+	Get(ctx context.Context, s db.TenantScope, clusterID uuid.UUID) (domain.Cluster, error)
+}
+
 // TenantLister is the tenant list in the two halves a fan-out needs: a bounded
 // page of ids to enqueue for, and the lookup that turns the id a payload names
 // into the scope the table authorises.

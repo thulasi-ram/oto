@@ -107,6 +107,11 @@ type EventRepository interface {
 	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
 	ListByOccurrence(ctx context.Context, s db.TenantScope, occID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
 	ListByGroup(ctx context.Context, s db.TenantScope, groupID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
+	// GetByDedupeKey resolves the entry a C.8 key already belongs to, so that a
+	// retried KEYED comment can be answered with the annotation its first attempt
+	// appended instead of a second one. `false` means the key has never been
+	// claimed, which is an answer and not an error.
+	GetByDedupeKey(ctx context.Context, s db.TenantScope, key string) (domain.Event, bool, error)
 	// PruneDedupeKeys ages out `alert_event_keys` and takes no TenantScope: it is
 	// the maintenance sweep `retention.prune` runs across every tenant, and it is
 	// reachable from no request. `batch` bounds one tick.

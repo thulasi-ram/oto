@@ -172,13 +172,14 @@ type Container struct {
 	StreamHub       *streamingservice.Hub
 	StreamBridge    *streamingservice.Bridge
 	ChannelRegistry *channelsregistry.Registry
-	ChannelTester   *channelsservice.Tester
+	ChannelWrites   *channelsservice.Writer
 	// SlackInteractions consumes verified Slack block actions (§H.8). It is
 	// reachable from TWO places on purpose — the HTTP endpoint enqueues through
 	// it, the `slack.interaction` worker applies through it — which is what keeps
 	// the three-second rule and the work on opposite sides of one type.
 	SlackInteractions *channelsservice.InteractionService
 
+	PolicyWrites    *notifservice.PolicyWriter
 	Notify          *notifservice.NotificationService
 	Dispatch        *notifservice.DispatchService
 	Policies        *notifservice.PolicyService
@@ -395,7 +396,22 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.ChannelTester = tester
+
+	// `createChannel` and `testChannel` move behind the service so an
+	// `Idempotency-Key` claim can join the transaction of the act it guards. The
+	// tester is handed over rather than kept beside it: a retried `testChannel`
+	// that took its claim outside the send would still make the second real send
+	// the claim exists to prevent.
+	c.ChannelWrites, err = channelsservice.NewWriter(channelsservice.WriterOptions{
+		Store:  channelRepo,
+		Tester: tester,
+		Tx:     channelsrepo.NewTxRunner(general),
+		Claims: c.Idempotency,
+		Clock:  clk,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	// ---- the SSRF guard --------------------------------------------------
 	//
@@ -453,6 +469,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// the credential the caller was still holding. The claim joins the
 		// rotation's own transaction.
 		Claims: c.Idempotency,
+		// `createCluster` is the last write that went API→repository directly, so
+		// there was no transaction for its claim to join. The registry comes here
+		// for that; `sources/api` keeps the same repository for the reads.
+		Clusters: clusterRepo,
 	})
 	if err != nil {
 		return nil, err
@@ -512,8 +532,13 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		GroupVersions: groupVersionsPort,
 		Enrichments:   enrichmentReader{repo: enrichmentRepo},
 		Notifications: notificationsPort,
-		Clock:         clk,
-		Logger:        logger,
+		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
+		// transaction as the write, on the store every other guarded operation
+		// claims in. A comment is the one action a retry duplicates VISIBLY —
+		// the same sentence twice on an incident timeline.
+		Claims: c.Idempotency,
+		Clock:  clk,
+		Logger: logger,
 	})
 	if err != nil {
 		return nil, err
@@ -740,6 +765,17 @@ func (c *Container) buildNotification(
 	if c.Policies, err = notifservice.NewPolicyService(policyRepo, channelRepo); err != nil {
 		return err
 	}
+	// `createPolicy` moves behind the service for the claim, on the SAME unit of
+	// work the dispatch path uses: the claim and the insert commit together or
+	// neither does.
+	if c.PolicyWrites, err = notifservice.NewPolicyWriter(notifservice.PolicyWriterOptions{
+		Store:  c.notifConfigRepo,
+		Tx:     txRunner,
+		Claims: c.Idempotency,
+		Clock:  clk,
+	}); err != nil {
+		return err
+	}
 
 	// The snapshot is read AT CLAIM TIME, always (§C11). A cached one would make
 	// a card describe a world the alert has already left.
@@ -931,6 +967,11 @@ func (c *Container) buildRouters(
 			// request, calls one method and maps the error (ticket 0869f21).
 			Registry: c.Sources,
 			Clusters: clusterRepo,
+			// `createCluster` went API→repository directly, so there was no
+			// transaction for an `Idempotency-Key` claim to join. It goes through the
+			// same service as every other write now; the repository above stays for
+			// the reads.
+			ClusterWrites: c.Sources,
 			// `POST /sources/{id}/reconcile` forces one pass now (§G.8). It answers
 			// 200 with `ok:false` for an upstream that is down, because "the source
 			// is unreachable" is a RESULT the operator asked for — and because the
@@ -954,7 +995,7 @@ func (c *Container) buildRouters(
 			Registry: c.ChannelRegistry,
 			Channels: channelRepo,
 			Creds:    credentialRepo,
-			Tester:   c.ChannelTester,
+			Writes:   c.ChannelWrites,
 			// ⭐ THE ACKNOWLEDGE BUTTON, WIRED. It was `nil` here for the whole of
 			// the product's life, and the comment that stood in its place claimed
 			// the endpoint "answers 503"; it did not — it verified the HMAC and
@@ -970,7 +1011,12 @@ func (c *Container) buildRouters(
 			Clock:         clk,
 		}),
 		notifs: notifapi.NewRouter(notifapi.Options{
-			Policies:      c.notifConfigRepo,
+			Policies: c.notifConfigRepo,
+			// The service, not the repository: `createPolicy` takes its
+			// `Idempotency-Key` claim inside the same transaction as the insert, so
+			// a retry is answered with the original policy instead of a `409` from
+			// `policies_name_uniq` that names nothing.
+			PolicyWrites:  c.PolicyWrites,
 			Audit:         c.notifConfigRepo,
 			Notifications: notifrepo.NewNotificationRepository(c.Pools.General),
 			Deliveries:    notifrepo.NewDeliveryRepository(c.Pools.General),
@@ -1181,12 +1227,11 @@ func (a alertStates) StatesByAlertKey(
 			// An alert this batch names that oto has never seen. Nothing can have
 			// overtaken it, so it is reported as absent rather than omitted — the
 			// caller's denominator is the batch, not the database.
-			out[key] = ingestionservice.AlertState{Key: key}
+			out[key] = ingestionservice.AlertState{}
 			continue
 		}
 
 		st := ingestionservice.AlertState{
-			Key:      key,
 			Exists:   true,
 			Identity: alertIdentity(al),
 		}

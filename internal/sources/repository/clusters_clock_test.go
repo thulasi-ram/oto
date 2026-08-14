@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
 
@@ -48,7 +49,7 @@ func TestClusterTimestampsComeFromTheApplicationClock(t *testing.T) {
 	org := h.Org()
 	repo := repository.NewClusterRepository(h.Pool, h.Clock)
 
-	cl, err := repo.Create(h.Ctx, org.Scope, "prod", "Production")
+	cl, err := repo.Create(h.Ctx, org.Scope, uuid.Nil, "prod", "Production")
 	require.NoError(t, err)
 
 	// The row did not take the database's clock. The harness FakeClock is pinned
@@ -68,7 +69,7 @@ func TestClusterRenameSurvivesAPodBehindTheOneThatCreatedIt(t *testing.T) {
 	org := h.Org()
 
 	creator := repository.NewClusterRepository(h.Pool, h.Clock)
-	cl, err := creator.Create(h.Ctx, org.Scope, "prod", "Production")
+	cl, err := creator.Create(h.Ctx, org.Scope, uuid.Nil, "prod", "Production")
 	require.NoError(t, err)
 
 	// A second pod, two seconds behind the first, serves the rename.

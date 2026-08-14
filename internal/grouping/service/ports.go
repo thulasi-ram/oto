@@ -116,8 +116,14 @@ type MemberActions interface {
 	// endpoint answers `201` with the event it wrote, and reading it back off the
 	// timeline afterwards — which is what the handler used to do — is a second
 	// query that can return a different row than the one just appended.
-	CommentAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, body string) (kernel.Event, error)
-	SnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string) error
+	//
+	// ⭐ THE SECOND BOOL IS "THIS WAS A REPLAY". The caller's `Idempotency-Key`
+	// travels with the intent and is claimed inside the MEMBER'S OWN transaction —
+	// which is the only transaction a fan-out has, since it is deliberately one per
+	// member (see fanOut). A replay means the whole gesture already landed, and the
+	// fan-out must stop rather than annotate the remaining members a second time.
+	CommentAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, body string, idem alerts.Idempotency) (kernel.Event, bool, error)
+	SnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string, idem alerts.Idempotency) (bool, error)
 	UnsnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, note string) error
 }
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -276,6 +277,14 @@ type FanOutResult struct {
 	// every member of the generation — there is nothing outstanding — and that is
 	// the ONLY reading of "this group has been acked" that is true.
 	Unreached int
+	// Replayed reports that the caller's `Idempotency-Key` was already claimed, so
+	// this fan-out did NOTHING and the gesture landed on an earlier request.
+	//
+	// ⭐ IT IS NOT THE SAME FACT AS `Applied == 0`, and a handler that read it as
+	// one would answer `412 no_group_members` to a retry of a snooze that worked
+	// perfectly — telling a client its second attempt found an empty group, which
+	// is the opposite of what happened.
+	Replayed bool
 }
 
 // Skipped is the total number of members that refused the verb.
@@ -323,35 +332,53 @@ type CommentResult struct {
 // A group with no currently-joined member is a `412`: there is no signal to
 // annotate, and the timeline is a record of facts about signals.
 //
-// ⚠️ IT IS NOT RETRY-SAFE, AND IT IS THE ONE GROUP VERB THAT IS NOT. Ack, snooze
-// and unsnooze are idempotent in the domain — a second pass meets `already_acked`
-// and refuses — but a comment is an APPEND, and `alerts/service.Comment` mints
-// its §C.8 dedupe key from the wall clock, so a second pass writes a second
-// annotation on every member it already annotated. That matters most exactly
-// where it is least visible: a fan-out that fails partway returns its partial
-// account WITH the error, which is precisely what a caller retries on, and the
-// members in front of the failure are annotated again.
+// ⚠️ IT IS RETRY-SAFE ONLY WHEN THE CALLER SENDS A KEY, AND IT IS THE ONE GROUP
+// VERB THAT NEEDS ONE. Ack and unsnooze are idempotent in the domain — a second
+// pass meets `already_acked` and refuses — but a comment is an APPEND and has no
+// such refusal, so an UNKEYED second pass still writes a second annotation on
+// every member it already annotated. That matters most exactly where it is least
+// visible: a fan-out that fails partway returns its partial account WITH the
+// error, which is precisely what a caller retries on.
 //
-// The mechanism that fixes this is the caller's `Idempotency-Key` on
-// `commentOnAlertGroup` — open ticket a6cc834 — not a content-hashed dedupe key,
-// which would collapse two people who typed the same sentence into one fact.
-// `TestFanOutRetryOfACommentDuplicatesIt` pins the behaviour as it stands so the
-// gap is a recorded one rather than a surprise.
+// ⭐⭐ THE KEY IS CLAIMED ON THE FIRST MEMBER THAT ACTUALLY RUNS, inside that
+// member's own transaction, and a replay stops the fan-out where it stands. There
+// is no group-level transaction to claim in and there must not be one (see
+// fanOut), so "the gesture" is represented by the first annotation it wrote —
+// which is also the event the `201` carries, so a replay can hand back exactly
+// the body the first attempt got. It is claimed under `snoozeAlertGroup` /
+// `commentOnAlertGroup` rather than the single-alert operationIds: one press
+// meaning "annotate these forty" is not the same request as one meaning "annotate
+// this one", and a client minting one key per gesture must be able to do both.
+//
+// ⛔ A GESTURE THAT FAILED PARTWAY IS NOT RESUMED BY A RETRY, and that is the
+// deliberate trade. The claim from member one is committed, so a retry replays
+// instead of finishing members five through forty. The alternative — leaving the
+// retry unguarded so it can finish — is the duplicate annotation on members one
+// through four, every time, which is the defect this closes.
 func (s *Service) Comment(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
-	actorKind, actorID, actorLabel, body string,
+	actorKind, actorID, actorLabel, body string, idem alerts.Idempotency,
 ) (CommentResult, error) {
 	var (
-		first kernel.Event
-		got   bool
+		first   kernel.Event
+		got     bool
+		claimed bool
 	)
 	res, err := s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
-		ev, err := s.actions.CommentAs(ctx, scope, alertID, actorKind, actorID, actorLabel, body)
+		member := memberIntent(idem, claimed)
+		ev, replayed, err := s.actions.CommentAs(ctx, scope, alertID,
+			actorKind, actorID, actorLabel, body, member)
 		if err != nil {
 			return err
 		}
+		if member.Keyed {
+			claimed = true
+		}
 		if !got {
 			first, got = ev, true
+		}
+		if replayed {
+			return errFanOutSettled
 		}
 		return nil
 	})
@@ -373,13 +400,48 @@ func (s *Service) Comment(
 // Alerts that join the group LATER are NOT snoozed: a snooze is never predictive,
 // and a group-level mute would silence alerts nobody has ever seen. That is the
 // difference between a quiet button and a blindfold.
+//
+// ⭐⭐ A KEYED RETRY REPLAYS INSTEAD OF SUPERSEDING. `alerts/service.Snooze` never
+// asked "have I already granted this", so an unguarded second pass ended each
+// member's own snooze as `superseded`, inserted a replacement, and sent a second
+// "snoozed" notification — once per member. See Comment for where the key is
+// claimed and why the fan-out stops on a replay.
 func (s *Service) Snooze(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
 	actorKind, actorID, actorLabel string, until time.Time, note string,
+	idem alerts.Idempotency,
 ) (FanOutResult, error) {
+	claimed := false
 	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
-		return s.actions.SnoozeAs(ctx, scope, alertID, actorKind, actorID, actorLabel, until, note)
+		member := memberIntent(idem, claimed)
+		replayed, err := s.actions.SnoozeAs(ctx, scope, alertID,
+			actorKind, actorID, actorLabel, until, note, member)
+		if err != nil {
+			return err
+		}
+		if member.Keyed {
+			claimed = true
+		}
+		if replayed {
+			return errFanOutSettled
+		}
+		return nil
 	})
+}
+
+// memberIntent hands the caller's key to the member that is about to run, and
+// nothing to the members after it.
+//
+// ⛔ ONE KEY IS ONE CLAIM ROW. `idempotency_claims_pk` is
+// (org, principal, operation, key), so a fan-out that offered the same key to
+// forty members would have member two conflict with member one's claim and answer
+// `409` — refusing thirty-nine live signals because the first one succeeded. The
+// key names the GESTURE; the first member that commits is where it is recorded.
+func memberIntent(idem alerts.Idempotency, claimed bool) alerts.Idempotency {
+	if !idem.Keyed || claimed {
+		return alerts.Idempotency{}
+	}
+	return idem
 }
 
 // Unsnooze serves `POST /api/v1/alert-groups/{id}/unsnooze`: end the snooze on
@@ -424,13 +486,14 @@ func (s *Service) Unsnooze(
 // — the member that failed, the ones behind it, and anything past the ceiling —
 // is counted in Unreached, so no member is silently dropped in either direction.
 //
-// ⛔ RE-RUNNING IT IS SAFE FOR THREE OF THE FOUR VERBS AND NOT FOR THE FOURTH.
-// Ack, snooze and unsnooze are compare-and-set on the episode and refuse a second
-// pass by code (`already_acked` and friends), so a retry finishes the job without
-// disturbing what committed. A COMMENT IS AN APPEND and has no such refusal: see
-// Comment, and ticket a6cc834 for the `Idempotency-Key` that would give it one.
-// Since the account rides out with the error, a caller that retries on error is
-// the normal way to reach that second annotation.
+// ⛔ RE-RUNNING IT UNKEYED IS SAFE FOR TWO OF THE FOUR VERBS AND NOT FOR THE
+// OTHER TWO. Ack and unsnooze are compare-and-set on the episode and refuse a
+// second pass by code (`already_acked` and friends), so a retry finishes the job
+// without disturbing what committed. A COMMENT IS AN APPEND and a SNOOZE
+// supersedes its own incumbent; neither has such a refusal, and since the account
+// rides out with the error, a caller that retries on error is the normal way to
+// reach that second annotation. What stops it is the caller's `Idempotency-Key`,
+// claimed on the first member that runs — see Comment.
 func (s *Service) fanOut(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
 	apply func(ctx context.Context, alertID uuid.UUID) error,
@@ -467,6 +530,16 @@ func (s *Service) fanOut(
 		seen[m.AlertID] = struct{}{}
 
 		if err := apply(ctx, m.AlertID); err != nil {
+			if errors.Is(err, errFanOutSettled) {
+				// ⭐ THE CALLER'S KEY WAS ALREADY CLAIMED, so this whole gesture
+				// landed once already and the members behind this one were annotated
+				// or quietened by the FIRST attempt. Stopping is the point: carrying
+				// on is precisely the duplication the key was sent to prevent. The
+				// account says so honestly — nothing applied, the rest unreached.
+				res.Unreached = beyond + len(members) - i
+				res.Replayed = true
+				return res, nil
+			}
 			if errs.IsKind(err, errs.KindPrecondition) || errs.IsKind(err, errs.KindNotFound) {
 				// The refusal is recorded rather than merely tolerated: the CODE
 				// is the only thing that can tell a human "somebody already acked

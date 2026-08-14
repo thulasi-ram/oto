@@ -170,6 +170,15 @@ func (i Instance) ToChannelConfig() ChannelConfig {
 // timestamps, health — and a create that accepted those would let a caller
 // assert them.
 type NewInstance struct {
+	// ID lets the caller NAME the row before it exists. It is zero for every
+	// caller that does not care, and the repository mints one.
+	//
+	// ⭐ IT EXISTS FOR THE `Idempotency-Key` CLAIM, which has to record the id of
+	// what a create made in the SAME transaction as the insert — and therefore
+	// before the insert, because a retry that inserted first would hit
+	// `channels_name_uniq` and be answered with a name conflict rather than with
+	// the channel the caller already created (ticket a6cc834).
+	ID     uuid.UUID
 	Type   Type
 	Name   string
 	Config json.RawMessage

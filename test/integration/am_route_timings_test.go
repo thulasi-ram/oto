@@ -927,8 +927,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		t.Fatalf("seeding a rejection before 00047's Down: %v", err)
 	}
 	if err := insertRejection(rejectionBatch, &zeroth, rejectionAt); err == nil {
-		t.Fatalf("a second rejection at the same (batch, ordinal, reason) was accepted while "+
-			"00047 is applied — the natural key is the whole mechanism behind `oto replay` not "+
+		t.Fatalf("a second rejection at the same (batch, ordinal, reason) was accepted while " +
+			"00047 is applied — the natural key is the whole mechanism behind `oto replay` not " +
 			"duplicating the feed, and a constraint that admits the duplicate is not enforcing it")
 	}
 	down(47)
@@ -945,8 +945,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		t.Fatalf("introspect ingest_rejections.ordinal: %v", err)
 	}
 	if ordinalSurvives != 0 {
-		t.Fatalf("ingest_rejections.ordinal survived 00047's Down — the Down drops the "+
-			"constraint and the column together, and a half-run Down leaves a column no "+
+		t.Fatalf("ingest_rejections.ordinal survived 00047's Down — the Down drops the " +
+			"constraint and the column together, and a half-run Down leaves a column no " +
 			"writer in the rolled-back release populates")
 	}
 	// The duplicate the constraint used to refuse, now accepted twice: the proof

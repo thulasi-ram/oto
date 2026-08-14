@@ -42,6 +42,12 @@ type Deps struct {
 	EventCounts   EventCounter
 	SnoozeHistory SnoozeHistoryReader
 
+	// Claims is the `Idempotency-Key` claim store (§E.1). It is optional in the
+	// same sense the rest of this block is — oto runs without it — but a KEYED
+	// request arriving at a deployment that lacks it is REFUSED with a `503`
+	// rather than served unguarded. See requireClaims.
+	Claims Claims
+
 	// Optional cross-module ports.
 	Enqueuer      db.Enqueuer
 	Stream        StreamAppender
@@ -79,6 +85,7 @@ type Service struct {
 	snoozeHist  SnoozeHistoryReader
 
 	tx            TxRunner
+	claims        Claims
 	enqueuer      db.Enqueuer
 	stream        StreamAppender
 	health        SourceHealth
@@ -128,6 +135,7 @@ func New(d Deps) (*Service, error) {
 		snoozes:       d.Snoozes,
 		snoozeHist:    d.SnoozeHistory,
 		tx:            d.Tx,
+		claims:        d.Claims,
 		enqueuer:      d.Enqueuer,
 		stream:        d.Stream,
 		health:        d.Health,

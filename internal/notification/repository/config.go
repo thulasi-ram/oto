@@ -208,9 +208,17 @@ func (r *ConfigRepository) CreatePolicy(
 		reasons = append(reasons, string(k))
 	}
 
+	// A supplied id is the caller naming the row before it exists, which is what
+	// lets `notification/service` record it in an `Idempotency-Key` claim taken in
+	// this same transaction. Zero still mints one.
+	newID := in.ID
+	if newID == uuid.Nil {
+		newID = id.New()
+	}
+
 	var stored uuid.UUID
 	err = r.db(ctx).QueryRow(ctx, insertPolicySQL,
-		id.New(), s.OrgID(), in.Name, priority, enabled, matchers, reasons,
+		newID, s.OrgID(), in.Name, priority, enabled, matchers, reasons,
 		in.ChannelIDs, throttle, secondsPtr(in.UnackedReminderAfter), r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {

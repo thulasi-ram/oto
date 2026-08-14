@@ -12,6 +12,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
 
 // listChannelTypes serves GET /api/v1/channel-types.
@@ -126,7 +127,20 @@ func (rt *Router) createChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The RAW bytes, before Bind consumes the stream: "the same body" is decided
+	// by the sha256 of what the caller actually sent, not by a re-encoding of the
+	// DTO it parsed into.
+	raw, err := httpx.ReadBody(w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	dto, err := httpx.Bind[CreateChannelRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	idem, err := idempotencyIntent(r, idempotency.HashRequest(raw))
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -160,8 +174,13 @@ func (rt *Router) createChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inst, err := rt.channels.Create(r.Context(), scope,
-		dto.toNewInstance(credentialID, rt.capabilitiesOf(kind)))
+	// ⚠️ THE CREDENTIAL IS STILL SEALED IN ITS OWN COMMIT, above. Folding it into
+	// the create's transaction is the same correction `createSource` made and is a
+	// separate change; what it would buy is an orphaned `channel_credentials` row
+	// on a failed create, which is invisible and harmless. What the claim below
+	// buys is a channel that is not created twice, which is neither.
+	inst, err := rt.writes.CreateChannel(r.Context(), scope,
+		dto.toNewInstance(credentialID, rt.capabilitiesOf(kind)), idem)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -326,6 +345,20 @@ func (rt *Router) deleteChannel(w http.ResponseWriter, r *http.Request) {
 // A `200` with `ok: false` means the test RAN and the provider rejected it. That
 // is the useful answer, and turning it into a 502 would throw away `error_class`
 // — the field that distinguishes "Slack is flaky" from "your token was revoked".
+//
+// ⭐⭐ A RETRY CARRYING THE SAME `Idempotency-Key` DOES NOT SEND A SECOND CARD.
+// This was the sharpest unfixed operation in ticket a6cc834: it called the tester
+// unconditionally on every request, with no dedup of any kind, so every retry —
+// deliberate, or one a client library made on its own after a dropped response —
+// put a second real alert card into a customer's own Slack workspace or webhook.
+// The UI did not send a key either, so the endpoint was unprotected at both ends.
+//
+// ⛔ THE SUBJECT IS THE HASH. This request has no body, so `HashRequest(nil)` is a
+// CONSTANT and every test would digest identically; a client that mints one key
+// per gesture and tested channel A then channel B under it would be told its
+// second test was a replay of the first. `HashTargetedRequest` makes the two the
+// different requests they are — and an honest retry against the same channel
+// still digests identically and still replays.
 func (rt *Router) testChannel(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -334,8 +367,13 @@ func (rt *Router) testChannel(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if err := requireDependency(rt.tester != nil, "channels_tester_unavailable",
+	if err := requireDependency(rt.writes != nil, "channels_tester_unavailable",
 		"channel testing is not configured in this deployment"); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	idem, err := idempotencyIntent(r, idempotency.HashTargetedRequest(id, nil))
+	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
@@ -343,7 +381,7 @@ func (rt *Router) testChannel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), TestTimeout)
 	defer cancel()
 
-	res, err := rt.tester.Test(ctx, scope, id)
+	res, err := rt.writes.TestChannel(ctx, scope, id, idem)
 	if err != nil {
 		httpx.WriteProblem(w, r, timeoutAware(ctx, r, err, "channel_test_timeout",
 			"the destination did not answer within the test budget"))
@@ -356,6 +394,10 @@ func (rt *Router) testChannel(w http.ResponseWriter, r *http.Request) {
 
 func (rt *Router) requireWriteDeps() error {
 	if err := requireDependency(rt.channels != nil, "channels_store_unavailable",
+		"the channel store is not configured in this deployment"); err != nil {
+		return err
+	}
+	if err := requireDependency(rt.writes != nil, "channels_store_unavailable",
 		"the channel store is not configured in this deployment"); err != nil {
 		return err
 	}

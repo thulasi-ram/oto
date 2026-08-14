@@ -168,16 +168,22 @@ func (s *Service) AcknowledgeAs(
 // which is a FAN-OUT OF THE SAME PRIMITIVE and not a new one: one snooze per
 // CURRENTLY-JOINED member alert. Alerts that join the group later are NOT
 // snoozed — a snooze is never predictive (§B.8.3).
+//
+// ⭐ THE INTENT TRAVELS WITH IT, and the second result says whether the claim
+// REPLAYED. A fan-out that ignored that answer would carry on to members two
+// through forty and grant each of them the second snooze the claim just refused
+// on member one — which is the duplication the key was sent to prevent, moved
+// one member to the right.
 func (s *Service) SnoozeAs(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
-	actorKind, actorID, actorLabel string, until time.Time, note string,
-) error {
+	actorKind, actorID, actorLabel string, until time.Time, note string, idem Idempotency,
+) (bool, error) {
 	actor, err := humanActor(actorKind, actorID, actorLabel)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.Snooze(ctx, scope, alertID, actor, until, note)
-	return err
+	_, replayed, err := s.Snooze(ctx, scope, alertID, actor, until, note, idem)
+	return replayed, err
 }
 
 // UnsnoozeAs is Unsnooze with the actor described in primitives.
@@ -200,15 +206,18 @@ func (s *Service) UnsnoozeAs(
 // answers `201` with the event it wrote, and the only place that fact is known
 // for certain is here, at the write: re-reading the timeline afterwards is a
 // second query that can return a different row.
+//
+// ⭐ THE INTENT TRAVELS WITH IT, and the third result says whether the claim
+// REPLAYED — see SnoozeAs for why a fan-out has to stop when it does.
 func (s *Service) CommentAs(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
-	actorKind, actorID, actorLabel, body string,
-) (domain.Event, error) {
+	actorKind, actorID, actorLabel, body string, idem Idempotency,
+) (domain.Event, bool, error) {
 	actor, err := humanActor(actorKind, actorID, actorLabel)
 	if err != nil {
-		return domain.Event{}, err
+		return domain.Event{}, false, err
 	}
-	return s.Comment(ctx, scope, alertID, actor, body)
+	return s.Comment(ctx, scope, alertID, actor, body, idem)
 }
 
 func humanActor(kindName, actorID, label string) (domain.Actor, error) {

@@ -88,8 +88,14 @@ var notARequestResolver = map[string]string{
 	"notification/repository.orgFactsSQL": "the org's display facts for a card, by `id = $1` from a " +
 		"scope the caller already holds. Same shape as selectOrgSQL: a consumer, not a producer",
 
-	"app.orgOfOccurrenceSQL":                   "job-payload scope for `enrich.run`: the org comes from the occurrence the job names (§G.3)",
-	"ingestion/repository.resolveOrgSQL":       "job-payload scope for `ingest.process_batch`: the org comes from the batch row",
+	"app.orgOfOccurrenceSQL":             "job-payload scope for `enrich.run`: the org comes from the occurrence the job names (§G.3)",
+	"ingestion/repository.resolveOrgSQL": "job-payload scope for `ingest.process_batch`: the org comes from the batch row",
+	"ingestion/repository.locateBatchSQL": "operator scope for `oto replay`: the org comes from the batch row, the " +
+		"same category as `resolveOrgSQL` above with a different caller. An operator running the CLI has " +
+		"a batch id and nothing else — the batch's partition key is not knowable without reading it — so " +
+		"the row is what supplies both the org and the `received_at` every subsequent read is scoped by. " +
+		"It is not a request resolver: there is no inbound credential to turn into a tenancy, and the " +
+		"caller already holds the database",
 	"notification/repository.orgOfGroupSQL":    "job-payload scope for the notification workers: the org comes from the group row",
 	"notification/repository.orgOfDeliverySQL": "job-payload scope for the delivery workers: the org comes from the delivery row",
 	"sources/repository.resolveSourceOrgSQL":   "job-payload scope for the source workers: the org comes from the source row",

@@ -68,19 +68,38 @@ type SourceRegistry interface {
 // interface discovered at boot.
 var _ SourceRegistry = (*service.Service)(nil)
 
-// ClusterRegistry serves the cluster half of the Sources tag, satisfied by
+// ClusterRegistry serves the READ half of the cluster surface plus the one edit
+// that touches no identity, satisfied by
 // `*sources/repository.ClusterRepository`.
 //
 // ⛔ There is no method that changes `cluster_key`. It participates in alert
 // identity, so changing it would re-key every alert in the cluster.
+//
+// ⛔ AND THERE IS NO LONGER A `Create` ON IT. See ClusterCreator.
 type ClusterRegistry interface {
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Cluster, error)
 	List(ctx context.Context, s db.TenantScope, includeDeleted bool, p db.Keyset) ([]domain.Cluster, db.Cursor, error)
-	Create(ctx context.Context, s db.TenantScope, key, displayName string) (domain.Cluster, error)
 	UpdateDisplayName(ctx context.Context, s db.TenantScope, id uuid.UUID, displayName string) (domain.Cluster, error)
 	// ClusterKeysFor resolves a page of sources' cluster keys in one round trip.
 	ClusterKeysFor(ctx context.Context, s db.TenantScope, ids []uuid.UUID) (map[uuid.UUID]string, error)
 }
+
+// ClusterCreator registers an identity/failure domain, satisfied by
+// `*sources/service.Service`.
+//
+// ⭐⭐ IT IS A SEPARATE PORT FROM ClusterRegistry BECAUSE IT IS SATISFIED BY A
+// DIFFERENT LAYER, and that is the same correction `createSource` made. An
+// `Idempotency-Key` claim has to join the insert's own transaction, so a handler
+// wired straight to the repository had nowhere to take one — which is why
+// `createCluster` answered a same-body retry with a `clusters_key_uniq` conflict
+// naming nothing, rather than with the cluster the caller had already made. The
+// intent crosses the seam; the transaction stays on the far side of it.
+type ClusterCreator interface {
+	CreateCluster(ctx context.Context, s db.TenantScope, key, displayName string, idem service.Idempotency) (domain.Cluster, error)
+}
+
+// Compile-time proof that the service satisfies the port this layer declares.
+var _ ClusterCreator = (*service.Service)(nil)
 
 // ⛔ THE CREDENTIAL STORE, THE INGEST-TOKEN ISSUER, THE UNIT OF WORK AND THE
 // `Idempotency-Key` CLAIM STORE ARE NO LONGER PORTS OF THIS LAYER. They are
