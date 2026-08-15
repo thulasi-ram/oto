@@ -39,6 +39,7 @@ import { Button, Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/com
 import { ApiError } from "~/api/client";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
+import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
 
@@ -59,13 +60,23 @@ export default function GroupDetailRoute() {
 
   const [categories, setCategories] = createSignal<readonly EventCategory[]>([]);
   const [order, setOrder] = createSignal<"asc" | "desc">("desc");
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  const [events, setEvents] = createSignal<readonly AlertEvent[]>([]);
+
+  // Any change of direction or event-kind filter invalidates every cursor
+  // minted under the old one (§E.3), so both are the fingerprint — see
+  // `createKeysetFeed` for why the reset must be a pure-phase derivation. The
+  // annotation cuts the type-inference loop the closure creates: the feed
+  // reads the query's envelope, and the query's key carries the feed's cursor.
+  const feed: KeysetFeed<AlertEvent> = createKeysetFeed({
+    envelope: () => timeline.data,
+    isPlaceholder: () => timeline.isPlaceholderData,
+    keyOf: (e) => e.id,
+    fingerprint: () => `${order()}|${[...categories()].sort().join(",")}`,
+  });
 
   const timelineQuery = createMemo<TimelineQuery>(() => {
     const q: Record<string, unknown> = { limit: 100, order: order() };
     if (categories().length > 0) q["type"] = [...typesForCategories(categories())];
-    if (cursor() !== null) q["cursor"] = cursor();
+    if (feed.cursor() !== null) q["cursor"] = feed.cursor();
     return q as TimelineQuery;
   });
 
@@ -73,14 +84,8 @@ export default function GroupDetailRoute() {
     queryKey: qk.groups.timeline(params.id, timelineQuery()),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       getAlertGroupTimeline(params.id, timelineQuery(), { signal }),
+    placeholderData: keepPrevious,
   }));
-
-  const folded = createMemo<readonly AlertEvent[]>(() => {
-    const page = timeline.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(events().map((e) => e.id));
-    return [...events(), ...page.filter((e) => !seen.has(e.id))];
-  });
 
   /**
    * Acking a group is a **fan-out of the same primitive**, not a new one: one
@@ -229,7 +234,7 @@ export default function GroupDetailRoute() {
                   <PanelTitle>Group timeline</PanelTitle>
                 </PanelHeader>
                 <Switch>
-                  <Match when={timeline.isPending && folded().length === 0}>
+                  <Match when={timeline.isPending && feed.rows().length === 0}>
                     <LoadingLine />
                   </Match>
                   <Match when={timeline.isError}>
@@ -237,18 +242,14 @@ export default function GroupDetailRoute() {
                   </Match>
                   <Match when={true}>
                     <Timeline
-                      events={folded()}
+                      events={feed.rows()}
                       categories={categories()}
                       onCategoriesChange={setCategories}
                       order={order()}
                       onOrderChange={setOrder}
-                      hasMore={timeline.data?.page.has_more ?? false}
+                      hasMore={feed.hasMore()}
                       loading={timeline.isFetching}
-                      onLoadMore={() => {
-                        setEvents(folded());
-                        const next = timeline.data?.page.next_cursor;
-                        if (typeof next === "string" && next !== "") setCursor(next);
-                      }}
+                      onLoadMore={feed.loadMore}
                     />
                   </Match>
                 </Switch>

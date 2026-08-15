@@ -10,7 +10,7 @@
  * renders its own error inside its own box, at its own size, so the page never
  * reflows around a failure.
  */
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { A, useParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
@@ -39,6 +39,7 @@ import { Elapsed, RelativeTime } from "~/components/Time";
 import { Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
 import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
 import { absoluteTime, count as fmtCount, formatLabels } from "~/lib/format";
+import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { AlertActions } from "~/features/alerts/detail/Actions";
 import { DeliveryPanel } from "~/features/alerts/detail/DeliveryPanel";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
@@ -62,15 +63,25 @@ export default function AlertDetailRoute() {
 
   const [categories, setCategories] = createSignal<readonly EventCategory[]>([]);
   const [order, setOrder] = createSignal<"asc" | "desc">("desc");
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  const [events, setEvents] = createSignal<readonly AlertEvent[]>([]);
+
+  // Any change of direction or event-kind filter invalidates every cursor
+  // minted under the old one (§E.3), so both are the fingerprint — see
+  // `createKeysetFeed` for why the reset must be a pure-phase derivation. The
+  // annotation cuts the type-inference loop the closure creates: the feed
+  // reads the query's envelope, and the query's key carries the feed's cursor.
+  const feed: KeysetFeed<AlertEvent> = createKeysetFeed({
+    envelope: () => timeline.data,
+    isPlaceholder: () => timeline.isPlaceholderData,
+    keyOf: (e) => e.id,
+    fingerprint: () => `${order()}|${[...categories()].sort().join(",")}`,
+  });
 
   const timelineQuery = createMemo<TimelineQuery>(() => {
     const q: Record<string, unknown> = { limit: TIMELINE_PAGE, order: order() };
     // An empty category selection means "everything", which the contract
     // expresses by omitting `type` rather than by listing all 34 of them.
     if (categories().length > 0) q["type"] = [...typesForCategories(categories())];
-    if (cursor() !== null) q["cursor"] = cursor();
+    if (feed.cursor() !== null) q["cursor"] = feed.cursor();
     return q as TimelineQuery;
   });
 
@@ -78,33 +89,8 @@ export default function AlertDetailRoute() {
     queryKey: qk.alerts.events(params.id, timelineQuery()),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       listAlertEvents(params.id, timelineQuery(), { signal }),
+    placeholderData: keepPrevious,
   }));
-
-  // Any change of direction or event-kind filter invalidates every cursor
-  // minted under the old one, so the fold resets. Doing it in an effect rather
-  // than inside the memo keeps the memo pure and the reset observable.
-  const timelineFingerprint = createMemo(() => `${order()}|${[...categories()].sort().join(",")}`);
-  createEffect((previous: string | undefined) => {
-    const current = timelineFingerprint();
-    if (previous !== undefined && previous !== current) {
-      setCursor(null);
-      setEvents([]);
-    }
-    return current;
-  });
-
-  const foldedEvents = createMemo<readonly AlertEvent[]>(() => {
-    const page = timeline.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(events().map((e) => e.id));
-    return [...events(), ...page.filter((e) => !seen.has(e.id))];
-  });
-
-  const loadMoreEvents = (): void => {
-    setEvents(foldedEvents());
-    const next = timeline.data?.page.next_cursor;
-    if (typeof next === "string" && next !== "") setCursor(next);
-  };
 
   /* ---- supporting panels ------------------------------------------------- */
 
@@ -289,7 +275,7 @@ export default function AlertDetailRoute() {
                   </span>
                 </PanelHeader>
                 <Switch>
-                  <Match when={timeline.isPending && foldedEvents().length === 0}>
+                  <Match when={timeline.isPending && feed.rows().length === 0}>
                     <LoadingLine label="Reading the timeline…" />
                   </Match>
                   <Match when={timeline.isError}>
@@ -297,14 +283,14 @@ export default function AlertDetailRoute() {
                   </Match>
                   <Match when={true}>
                     <Timeline
-                      events={foldedEvents()}
+                      events={feed.rows()}
                       categories={categories()}
                       onCategoriesChange={setCategories}
                       order={order()}
                       onOrderChange={setOrder}
-                      hasMore={timeline.data?.page.has_more ?? false}
+                      hasMore={feed.hasMore()}
                       loading={timeline.isFetching}
-                      onLoadMore={loadMoreEvents}
+                      onLoadMore={feed.loadMore}
                     />
                   </Match>
                 </Switch>

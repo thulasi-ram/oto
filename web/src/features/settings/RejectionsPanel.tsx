@@ -34,7 +34,6 @@ import { qk } from "~/api/keys";
 import type {
   FailedBatch,
   FailedBatchStatus,
-  ListEnvelope,
   Rejection,
   RejectionListQuery,
   RejectionReason,
@@ -43,6 +42,7 @@ import { RelativeTime } from "~/components/Time";
 import { Button, Chip, ToggleGroup } from "~/components/ui/primitives";
 import { ErrorState } from "~/components/ui/states";
 import { count as fmtCount, formatLabels, truncate } from "~/lib/format";
+import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 
 /**
  * Each reason, in the words an operator would use.
@@ -110,6 +110,19 @@ interface Standing {
   readonly tone: string;
 }
 
+/** The one "Load more" both halves share, named for the page size it adds. */
+const LoadMore: Component<{
+  readonly hasMore: boolean;
+  readonly busy: boolean;
+  readonly onLoadMore: () => void;
+}> = (props) => (
+  <Show when={props.hasMore}>
+    <Button class="mt-1" size="sm" variant="ghost" busy={props.busy} onClick={props.onLoadMore}>
+      Load {PAGE_SIZE} more
+    </Button>
+  </Show>
+);
+
 export const RejectionsPanel: Component<{ readonly sourceID: string }> = (props) => {
   const [open, setOpen] = createSignal(false);
   /** Named by the toggle, so the disclosure has somewhere to send a reader. */
@@ -150,35 +163,28 @@ export const RejectionsPanel: Component<{ readonly sourceID: string }> = (props)
 /* Refused alerts                                                             */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Everything the feed is asking for, held as one value.
- *
- * ⭐⭐ A CURSOR CANNOT OUTLIVE THE FILTER THAT MINTED IT. §E.3 answers a cursor
- * carried across a filter change with `400 cursor_filter_mismatch`, and resetting
- * it from an effect is too late to prevent that: solid-query reads the query key
- * in Solid's *pure* phase, so a request pairing the old cursor with the new
- * reasons is built and sent before any effect gets to run. Keeping the three
- * together makes a filter change and its reset one synchronous update, so the
- * doomed request is never constructed rather than merely corrected afterwards.
- */
-interface FeedView {
-  readonly reasons: readonly RejectionReason[];
-  readonly cursor: string | null;
-  /** Pages already folded in. The page in flight is added by the memo below. */
-  readonly kept: readonly Rejection[];
-}
-
-const EMPTY_FEED_VIEW: FeedView = { reasons: [], cursor: null, kept: [] };
-
 const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
-  const [view, setView] = createSignal<FeedView>(EMPTY_FEED_VIEW);
+  const [reasons, setReasons] = createSignal<readonly RejectionReason[]>([]);
+
+  // The reasons are the feed's whole filter axis, so they are its fingerprint:
+  // changing them discards the cursor and the kept pages in the same pure-phase
+  // read, and no request is ever built carrying the last filter's cursor
+  // (§E.3) — see `createKeysetFeed`. The annotation cuts the type-inference
+  // loop the closure creates: the feed reads the query's envelope, and the
+  // query's key carries the feed's cursor.
+  const rejections: KeysetFeed<Rejection> = createKeysetFeed({
+    envelope: () => feed.data,
+    isPlaceholder: () => feed.isPlaceholderData,
+    keyOf: (r) => r.id,
+    fingerprint: () => reasons().join(","),
+  });
 
   const query = createMemo<RejectionListQuery>(() => {
-    const v = view();
+    const cursor = rejections.cursor();
     return {
       limit: PAGE_SIZE,
-      ...(v.reasons.length > 0 ? { reason: [...v.reasons] } : {}),
-      ...(v.cursor !== null ? { cursor: v.cursor } : {}),
+      ...(reasons().length > 0 ? { reason: [...reasons()] } : {}),
+      ...(cursor !== null ? { cursor } : {}),
     };
   });
 
@@ -186,30 +192,10 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
     queryKey: qk.settings.rejections(props.sourceID, query()),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       listSourceRejections(props.sourceID, query(), { signal }),
-    // The cursor is part of the key, so every page is a *cold* key. Without a
-    // placeholder `data` is `undefined` for the whole in-flight page, which
-    // unmounts the "load more" button under the click that pressed it and drops
-    // focus to `<body>`. Keep the page we have on screen until the next arrives.
-    placeholderData: (prev: ListEnvelope<Rejection> | undefined) => prev,
+    placeholderData: keepPrevious,
   }));
 
-  /** Deduplicated by id: a refetch of page one legitimately overlaps what we hold. */
-  const rows = createMemo<readonly Rejection[]>(() => {
-    const v = view();
-    const page = feed.data?.data ?? [];
-    if (v.cursor === null) return page;
-    const seen = new Set(v.kept.map((r) => r.id));
-    return [...v.kept, ...page.filter((r) => !seen.has(r.id))];
-  });
-
-  const loadMore = (): void => {
-    const next = feed.data?.page.next_cursor;
-    if (typeof next !== "string" || next === "") return;
-    // Freeze what is on screen before asking for more, so the fold is additive
-    // rather than a race between two in-flight responses.
-    const frozen = rows();
-    setView((v) => ({ ...v, cursor: next, kept: frozen }));
-  };
+  const rows = rejections.rows;
 
   /** @see Standing — mounted before there is anything to say, and never remounted. */
   const standing = createMemo<Standing>(() => {
@@ -222,7 +208,7 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
     // Two different facts, never conflated (see `ui/states`): a filter that
     // matched nothing is not the same as a source that has never had anything
     // refused, and only the second one is the answer this panel exists to give.
-    if (rows().length === 0 && view().reasons.length > 0) {
+    if (rows().length === 0 && reasons().length > 0) {
       return {
         text: "No refusal from this source matches those reasons.",
         tone: "mt-1.5 text-meta font-medium leading-snug text-ink",
@@ -234,7 +220,7 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
         tone: "mt-1.5 text-meta font-medium leading-snug text-ink",
       };
     }
-    const more = feed.data?.page.has_more === true ? "+" : "";
+    const more = rejections.hasMore() ? "+" : "";
     return {
       text: `${fmtCount(rows().length)}${more} refused, newest first.`,
       tone: "mt-1.5 text-meta text-ink-muted",
@@ -255,10 +241,8 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
             value: r,
             label: REASON_LABEL[r],
           }))}
-          selected={view().reasons}
-          // The reset rides along in the same update, so no request is ever
-          // built carrying last filter's cursor. @see FeedView.
-          onChange={(next) => setView({ reasons: next, cursor: null, kept: [] })}
+          selected={reasons()}
+          onChange={setReasons}
         />
       </div>
 
@@ -273,11 +257,11 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
 
         <Match when={feed.isPending && rows().length === 0}>{null}</Match>
 
-        <Match when={rows().length === 0 && view().reasons.length > 0}>
+        <Match when={rows().length === 0 && reasons().length > 0}>
           <p class="mt-0.5 text-meta leading-snug text-ink-subtle">
             The filter is doing something — that is not the same as nothing having been refused.
           </p>
-          <Button class="mt-1" size="sm" variant="ghost" onClick={() => setView(EMPTY_FEED_VIEW)}>
+          <Button class="mt-1" size="sm" variant="ghost" onClick={() => setReasons([])}>
             Clear reasons
           </Button>
         </Match>
@@ -295,17 +279,7 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
           <ol class="mt-1">
             <For each={rows()}>{(r) => <RejectionRow rejection={r} />}</For>
           </ol>
-          <Show when={feed.data?.page.has_more === true}>
-            <Button
-              class="mt-1"
-              size="sm"
-              variant="ghost"
-              busy={feed.isFetching}
-              onClick={loadMore}
-            >
-              Load {PAGE_SIZE} more
-            </Button>
-          </Show>
+          <LoadMore hasMore={rejections.hasMore()} busy={feed.isFetching} onLoadMore={rejections.loadMore} />
         </Match>
       </Switch>
     </section>
@@ -423,38 +397,29 @@ const LabelSet: Component<{ readonly labels: Readonly<Record<string, string>> }>
 /* -------------------------------------------------------------------------- */
 
 const FailedBatches: Component<{ readonly sourceID: string }> = (props) => {
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  const [kept, setKept] = createSignal<readonly FailedBatch[]>([]);
-
-  const query = createMemo(() => ({
-    limit: PAGE_SIZE,
-    ...(cursor() !== null ? { cursor: cursor() as string } : {}),
-  }));
-
   // No status filter: the contract's default is both, and both are the same
-  // finding here — alerts that are on disk and were never read.
+  // finding here — alerts that are on disk and were never read. With no filter
+  // axis at all, nothing can invalidate a cursor, so the feed has no
+  // fingerprint.
+  const stopped: KeysetFeed<FailedBatch> = createKeysetFeed({
+    envelope: () => batches.data,
+    isPlaceholder: () => batches.isPlaceholderData,
+    keyOf: (b) => b.id,
+  });
+
+  const query = createMemo(() => {
+    const cursor = stopped.cursor();
+    return { limit: PAGE_SIZE, ...(cursor !== null ? { cursor } : {}) };
+  });
+
   const batches = useQuery(() => ({
     queryKey: qk.settings.failedBatches(props.sourceID, query()),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       listSourceFailedBatches(props.sourceID, query(), { signal }),
-    // Paging is a cold key here too; the list stays on screen and the button
-    // survives the click that pressed it. @see the same note on the feed above.
-    placeholderData: (prev: ListEnvelope<FailedBatch> | undefined) => prev,
+    placeholderData: keepPrevious,
   }));
 
-  const rows = createMemo<readonly FailedBatch[]>(() => {
-    const page = batches.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(kept().map((b) => b.id));
-    return [...kept(), ...page.filter((b) => !seen.has(b.id))];
-  });
-
-  const loadMore = (): void => {
-    const next = batches.data?.page.next_cursor;
-    if (typeof next !== "string" || next === "") return;
-    setKept(rows());
-    setCursor(next);
-  };
+  const rows = stopped.rows;
 
   /** @see Standing — one region, mounted from the first render, words swap. */
   const standing = createMemo<Standing>(() => {
@@ -468,7 +433,7 @@ const FailedBatches: Component<{ readonly sourceID: string }> = (props) => {
         tone: "mt-1 text-meta font-medium leading-snug text-ink",
       };
     }
-    const more = batches.data?.page.has_more === true ? "+" : "";
+    const more = stopped.hasMore() ? "+" : "";
     return {
       text: `${fmtCount(rows().length)}${more} never finished, newest first.`,
       tone: "mt-1 text-meta text-ink-muted",
@@ -504,17 +469,7 @@ const FailedBatches: Component<{ readonly sourceID: string }> = (props) => {
           <ol class="mt-1">
             <For each={rows()}>{(b) => <BatchRow batch={b} />}</For>
           </ol>
-          <Show when={batches.data?.page.has_more === true}>
-            <Button
-              class="mt-1"
-              size="sm"
-              variant="ghost"
-              busy={batches.isFetching}
-              onClick={loadMore}
-            >
-              Load {PAGE_SIZE} more
-            </Button>
-          </Show>
+          <LoadMore hasMore={stopped.hasMore()} busy={batches.isFetching} onLoadMore={stopped.loadMore} />
         </Match>
       </Switch>
     </section>

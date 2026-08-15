@@ -561,6 +561,13 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
  * now keyset-paginated over `(captured_at, id)` for real, so on hitting the cap
  * this keeps reading rather than presenting a truncated list as if it were
  * complete.
+ *
+ * Deliberately not `createKeysetFeed`: this machine differs in kind, not in
+ * spelling. Page one is the embedded `versions` array from a *different*
+ * endpoint, the first "load more" press starts the snapshot keyset from the top
+ * rather than advancing a cursor, `hasMore` before that press is a claim about
+ * the embedded cap rather than about any envelope — and the RuleKey never
+ * changes under the panel, so there is no filter axis to fingerprint.
  */
 const VersionHistory: Component<{
   readonly versions: readonly RuleSnapshot[];

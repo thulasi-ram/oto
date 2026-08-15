@@ -14,7 +14,7 @@
  * thread. Conflating them would suggest oto invents groupings, and it does not:
  * grouping is Alertmanager's decision, mirrored.
  */
-import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createMemo } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
@@ -27,6 +27,7 @@ import { SeverityMark, StormChip } from "~/components/StateChip";
 import { Button, Chip, Input, Select, ToggleGroup, cx } from "~/components/ui/primitives";
 import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
 import { count as fmtCount } from "~/lib/format";
+import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 
 const PAGE_SIZE = 50;
 
@@ -70,8 +71,22 @@ export default function GroupsRoute() {
     navigate(`/groups${s === "" ? "" : `?${s}`}`, { scroll: false });
   };
 
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  const [rows, setRows] = createSignal<readonly Group[]>([]);
+  // A cursor is minted under the whole filter set — state, search, storm and
+  // ack, all of them URL params — and §E.3 answers one carried across a filter
+  // change with `400 cursor_filter_mismatch`. The fingerprint is those four,
+  // so any of them changing discards the held pages (see `createKeysetFeed`).
+  const fingerprint = createMemo(
+    () => `${states().join(",")}|${search()}|${String(storm())}|${String(ack())}`,
+  );
+
+  // The annotation cuts the type-inference loop the closure creates: the feed
+  // reads the query's envelope, and the query's key carries the feed's cursor.
+  const feed: KeysetFeed<Group> = createKeysetFeed({
+    envelope: () => groups.data,
+    isPlaceholder: () => groups.isPlaceholderData,
+    keyOf: (g) => g.id,
+    fingerprint,
+  });
 
   const query = createMemo<GroupListQuery>(() => {
     const q: Record<string, unknown> = { limit: PAGE_SIZE, sort: "-last_activity_at" };
@@ -79,27 +94,17 @@ export default function GroupsRoute() {
     if (search() !== "") q["q"] = search();
     if (storm() !== null) q["storm"] = storm();
     if (ack() !== null) q["ack"] = ack();
-    if (cursor() !== null) q["cursor"] = cursor();
+    if (feed.cursor() !== null) q["cursor"] = feed.cursor();
     return q as GroupListQuery;
   });
 
   const groups = useQuery(() => ({
     queryKey: qk.groups.list(query()),
     queryFn: ({ signal }: { signal: AbortSignal }) => listAlertGroups(query(), { signal }),
+    placeholderData: keepPrevious,
   }));
 
-  const all = createMemo<readonly Group[]>(() => {
-    const page = groups.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(rows().map((g) => g.id));
-    return [...rows(), ...page.filter((g) => !seen.has(g.id))];
-  });
-
-  const loadMore = (): void => {
-    setRows(all());
-    const next = groups.data?.page.next_cursor;
-    if (typeof next === "string" && next !== "") setCursor(next);
-  };
+  const all = feed.rows;
 
   return (
     <div class="flex min-h-0 flex-1 flex-col">
@@ -154,7 +159,7 @@ export default function GroupsRoute() {
 
         <span class="ml-auto text-body tabular-nums text-ink-muted" aria-live="polite">
           {fmtCount(all().length)}
-          {groups.data?.page.has_more === true ? "+" : ""} groups
+          {feed.hasMore() ? "+" : ""} groups
         </span>
       </div>
 
@@ -177,9 +182,9 @@ export default function GroupsRoute() {
               <For each={all()}>{(group) => <GroupRow group={group} />}</For>
             </ul>
 
-            <Show when={groups.data?.page.has_more === true}>
+            <Show when={feed.hasMore()}>
               <div class="border-t border-line px-3 py-2 text-center">
-                <Button size="sm" busy={groups.isFetching} onClick={loadMore}>
+                <Button size="sm" busy={groups.isFetching} onClick={feed.loadMore}>
                   Load more
                 </Button>
               </div>
