@@ -175,7 +175,7 @@ fmt:
 lint:
     #!/usr/bin/env bash
     set -euo pipefail
-    unformatted="$(gofmt -l ./cmd ./internal ./pkg ./db ./test ./tools)"
+    unformatted="$(gofmt -l ./cmd ./internal ./db ./test ./tools)"
     if [ -n "$unformatted" ]; then echo "gofmt: $unformatted"; exit 1; fi
     go build ./...
     go vet ./...

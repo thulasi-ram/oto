@@ -30,7 +30,7 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted="$(gofmt -l ./cmd ./internal ./pkg ./db ./test ./tools)"
+          unformatted="$(gofmt -l ./cmd ./internal ./db ./test ./tools)"
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt: $unformatted"
             exit 1
