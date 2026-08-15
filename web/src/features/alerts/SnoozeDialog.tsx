@@ -32,6 +32,7 @@ import { Dialog, DialogBody } from "~/components/ui/Dialog";
 import { Button, Field, Input, Textarea, cx } from "~/components/ui/primitives";
 import { ErrorBanner } from "~/components/ui/states";
 import { absoluteTime, duration as fmtDuration, idempotencyKey } from "~/lib/format";
+import { createFieldError } from "~/lib/validation";
 
 /* -------------------------------------------------------------------------- */
 /* §B.8's bounds and presets, mirrored exactly                                */
@@ -101,10 +102,6 @@ const UntilSchema = v.pipe(
   v.check((s) => secondsUntil(s) >= SNOOZE_MIN_SECONDS, "The shortest snooze is 5 minutes from now."),
   v.check((s) => secondsUntil(s) <= SNOOZE_MAX_SECONDS, TOO_LONG),
 );
-
-function firstIssue(result: v.SafeParseResult<v.GenericSchema>): string | undefined {
-  return result.success ? undefined : result.issues[0]?.message;
-}
 
 /** The whole dialog, as one value, so the final gate sees the real request. */
 export interface SnoozeForm {
@@ -192,15 +189,9 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
   const [note, setNote] = createSignal("");
   const [touched, setTouched] = createSignal(false);
 
-  const durationError = createMemo(() =>
-    mode() === "duration" && touched() ? firstIssue(v.safeParse(DurationSchema, seconds())) : undefined,
-  );
-  const untilError = createMemo(() =>
-    mode() === "until" && touched() ? firstIssue(v.safeParse(UntilSchema, until())) : undefined,
-  );
-  const noteError = createMemo(() =>
-    touched() ? firstIssue(v.safeParse(NoteSchema, note())) : undefined,
-  );
+  const durationError = createFieldError(DurationSchema, seconds, () => mode() === "duration" && touched());
+  const untilError = createFieldError(UntilSchema, until, () => mode() === "until" && touched());
+  const noteError = createFieldError(NoteSchema, note, touched);
 
   const form = (): SnoozeForm => ({
     mode: mode(),

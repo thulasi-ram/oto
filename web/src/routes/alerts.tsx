@@ -212,13 +212,12 @@ export default function AlertsRoute() {
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
 
-      if (e.key === "/") {
+      // `/` and `f` both land on `#alert-q` now that the search box and the
+      // matcher box are one merged control — `f` used to target a second
+      // `#alert-matchers` field that no longer exists.
+      if (e.key === "/" || e.key === "f") {
         e.preventDefault();
         document.getElementById("alert-q")?.focus();
-      }
-      if (e.key === "f") {
-        e.preventDefault();
-        document.getElementById("alert-matchers")?.focus();
       }
     };
     document.addEventListener("keydown", onKey);
@@ -253,6 +252,9 @@ export default function AlertsRoute() {
         filters={filters()}
         onChange={setFilters}
         onReset={() => setFilters(DEFAULT_FILTERS)}
+        totalCountLabel={
+          axis() === null ? `${fmtCount(alerts().length)}${hasMore() ? "+" : ""}` : undefined
+        }
         status={
           <span class="text-body tabular-nums text-ink-muted" aria-live="polite">
             {status()}

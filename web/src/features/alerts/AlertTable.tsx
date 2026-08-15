@@ -343,7 +343,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
             {([k, v]) => (
               <button
                 type="button"
-                class="hidden shrink-0 rounded-chip border border-line bg-raised px-1 font-mono text-micro leading-4 text-ink-subtle hover:border-accent-border hover:text-ink group-hover:inline-flex"
+                class="hidden shrink-0 rounded-chip border border-line bg-raised px-1 font-mono text-micro leading-4 text-ink-subtle hover:border-accent-border hover:text-ink group-hover:inline-flex group-focus-within:inline-flex"
                 title={`Filter by ${k}="${v}"`}
                 onClick={(e) => {
                   e.stopPropagation();

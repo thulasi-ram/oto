@@ -20,6 +20,7 @@ import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 
 import type { AlertEvent } from "~/api/types";
 import { ClockSkewBadge, ClockTime, RelativeTime } from "~/components/Time";
+import { FilterRow } from "~/components/ui/FilterRow";
 import { Button, ToggleGroup, cx } from "~/components/ui/primitives";
 import { EmptyState } from "~/components/ui/states";
 import { calendarDay, differentDay } from "~/lib/format";
@@ -47,7 +48,7 @@ export interface TimelineProps {
 
 export const Timeline: Component<TimelineProps> = (props) => (
   <div class="flex min-h-0 flex-col">
-    <div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-raised px-3 py-2">
+    <FilterRow tone="raised">
       <ToggleGroup<EventCategory>
         legend="Event kinds"
         options={ALL_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABEL[c] }))}
@@ -69,7 +70,7 @@ export const Timeline: Component<TimelineProps> = (props) => (
           {props.order === "desc" ? "Newest first" : "Oldest first"}
         </Button>
       </div>
-    </div>
+    </FilterRow>
 
     <Show
       when={props.events.length > 0}

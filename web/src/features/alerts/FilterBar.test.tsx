@@ -129,7 +129,7 @@ describe("clusters", () => {
   });
 });
 
-describe("the matcher box", () => {
+describe("the merged search box", () => {
   it("names the metacharacters that would force a scan instead of just refusing", () => {
     stubReferenceData();
     mount({ matcherText: 'pod=~"api-.*"' });
@@ -147,17 +147,122 @@ describe("the matcher box", () => {
     expect(screen.getByText(/not a valid label name/)).toBeTruthy();
   });
 
-  it("commits on Enter rather than on every keystroke", () => {
+  it("renders a committed matcher as a removable chip", () => {
+    stubReferenceData();
+    mount({ matcherText: '{namespace="payments"}' });
+    expect(screen.getByText('namespace="payments"')).toBeTruthy();
+    expect(screen.getByRole("button", { name: 'Remove namespace="payments"' })).toBeTruthy();
+  });
+
+  it("commits a typed matcher into a chip on Space rather than on every keystroke", () => {
     stubReferenceData();
     const { onChange } = mount();
-    const input = screen.getByLabelText("Label matchers, Alertmanager syntax");
+    const input = screen.getByLabelText("Search alerts, or type a label matcher");
 
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: 'namespace="payments"' } });
     expect(onChange).not.toHaveBeenCalled();
 
+    fireEvent.keyDown(input, { key: " " });
+    expect(onChange.mock.calls[0]?.[0]?.matcherText).toBe('{namespace="payments"}');
+  });
+
+  it("commits a typed matcher into a chip on Enter, same as Space", () => {
+    stubReferenceData();
+    const { onChange } = mount();
+    const input = screen.getByLabelText("Search alerts, or type a label matcher");
+
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: 'namespace="payments"' } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(onChange.mock.calls[0]?.[0]?.matcherText).toBe('namespace="payments"');
+    expect(onChange.mock.calls[0]?.[0]?.matcherText).toBe('{namespace="payments"}');
+  });
+
+  it("clicking a chip removes it and puts its exact text back into the box for editing", () => {
+    stubReferenceData();
+    const { onChange } = mount({ matcherText: '{namespace="payments"}' });
+
+    fireEvent.click(screen.getByText('namespace="payments"'));
+    expect(onChange.mock.calls[0]?.[0]?.matcherText).toBe("");
+
+    const input = screen.getByLabelText("Search alerts, or type a label matcher") as HTMLInputElement;
+    expect(input.value).toBe('namespace="payments"');
+  });
+
+  it("removes the last chip on Backspace when the box is empty", () => {
+    stubReferenceData();
+    const { onChange } = mount({ matcherText: '{namespace="payments"}' });
+    const input = screen.getByLabelText("Search alerts, or type a label matcher");
+
+    fireEvent.keyDown(input, { key: "Backspace" });
+    expect(onChange.mock.calls[0]?.[0]?.matcherText).toBe("");
+  });
+
+  it("treats anything else typed and submitted via Enter as free-text search", () => {
+    stubReferenceData();
+    const { onChange } = mount();
+    const input = screen.getByLabelText("Search alerts, or type a label matcher");
+
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "high error rate" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onChange.mock.calls[0]?.[0]?.q).toBe("high error rate");
+    expect(onChange.mock.calls[0]?.[0]?.matcherText).toBe("");
+  });
+});
+
+describe("grouping, as tabs", () => {
+  it("offers one tab per axis the contract rolls up on, plus 'All'", () => {
+    stubReferenceData();
+    mount();
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      "All",
+      "By alert name",
+      "By namespace",
+      "By fingerprint",
+    ]);
+  });
+
+  it("marks exactly the current axis selected, and only it reachable by Tab", () => {
+    stubReferenceData();
+    mount({ groupBy: "namespace" });
+    const tabs = screen.getAllByRole("tab");
+
+    const byNamespace = tabs.find((t) => t.textContent === "By namespace")!;
+    expect(byNamespace).toHaveAttribute("aria-selected", "true");
+    expect(byNamespace).toHaveAttribute("tabindex", "0");
+
+    for (const t of tabs) {
+      if (t !== byNamespace) {
+        expect(t).toHaveAttribute("aria-selected", "false");
+        expect(t).toHaveAttribute("tabindex", "-1");
+      }
+    }
+  });
+
+  it("activates a tab on click", () => {
+    stubReferenceData();
+    const { onChange } = mount();
+    fireEvent.click(screen.getByRole("tab", { name: "By alert name" }));
+    expect(onChange.mock.calls[0]?.[0]?.groupBy).toBe("alertname");
+  });
+
+  it("moves focus on the arrow keys without activating — activation is Enter/Space only", () => {
+    stubReferenceData();
+    const { onChange } = mount();
+    const all = screen.getByRole("tab", { name: "All" });
+    const byAlertName = screen.getByRole("tab", { name: "By alert name" });
+
+    all.focus();
+    fireEvent.keyDown(all, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(byAlertName);
+    // Moving focus must not itself fire the rollup request the axis change would.
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(byAlertName, { key: "Enter" });
+    expect(onChange.mock.calls[0]?.[0]?.groupBy).toBe("alertname");
   });
 });
 

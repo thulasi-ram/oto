@@ -18,7 +18,7 @@
  * request; the server's `violations[]` is authoritative and is mapped back onto
  * the exact control that failed, JSON Pointer and all.
  */
-import { For, Show, createMemo, createSignal, type Component } from "solid-js";
+import { For, Show, createSignal, type Component } from "solid-js";
 import { useMutation, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
@@ -36,6 +36,7 @@ import { Dialog, DialogBody } from "~/components/ui/Dialog";
 import { Button, Field, Textarea } from "~/components/ui/primitives";
 import { ErrorBanner } from "~/components/ui/states";
 import { idempotencyKey } from "~/lib/format";
+import { createFieldError } from "~/lib/validation";
 import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 
 /* -------------------------------------------------------------------------- */
@@ -108,10 +109,6 @@ const CommentFormSchema = v.pipe(
   v.transform((form): v.InferInput<typeof CommentRequestSchema> => ({ body: form.body })),
   CommentRequestSchema, // the generated schema is the final gate
 );
-
-function firstIssue(result: v.SafeParseResult<v.GenericSchema>): string | undefined {
-  return result.success ? undefined : result.issues[0]?.message;
-}
 
 /* -------------------------------------------------------------------------- */
 /* The action bar                                                             */
@@ -224,6 +221,9 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         </span>
       </Show>
 
+      {/* Three Dialogs mounted side by side: each must stay unconditionally
+          mounted, per Dialog.tsx's `titleId`/`descId` comment — a fourth one
+          added here inherits that same rule. */}
       <AckDialog
         alert={props.alert}
         open={ackOpen()}
@@ -256,9 +256,7 @@ const AckDialog: Component<{
   const [note, setNote] = createSignal("");
   const [touched, setTouched] = createSignal(false);
 
-  const localError = createMemo(() =>
-    touched() ? firstIssue(v.safeParse(NoteSchema, note())) : undefined,
-  );
+  const localError = createFieldError(NoteSchema, note, touched);
 
   /** Ack and unack are two endpoints and therefore two generated gates. */
   const formSchema = (): typeof AckFormSchema | typeof UnackFormSchema =>
@@ -368,9 +366,7 @@ const CommentDialog: Component<{
   const [body, setBody] = createSignal("");
   const [touched, setTouched] = createSignal(false);
 
-  const localError = createMemo(() =>
-    touched() ? firstIssue(v.safeParse(CommentSchema, body())) : undefined,
-  );
+  const localError = createFieldError(CommentSchema, body, touched);
 
   const mutation = useMutation(() => ({
     mutationFn: (text: string) => commentOnAlert(props.alert.id, text, idempotencyKey()),

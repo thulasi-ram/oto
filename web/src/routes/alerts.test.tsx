@@ -160,7 +160,7 @@ describe("changing the grouping while a bucket page is loaded", () => {
 
     // A bucket cursor is a bucket key, so regrouping invalidates it twice over:
     // the keys it orders do not exist under the new axis.
-    fireEvent.change(screen.getByLabelText("Grouping"), { target: { value: "namespace" } });
+    fireEvent.click(screen.getByRole("tab", { name: "By namespace" }));
 
     await until(() => {
       expect(

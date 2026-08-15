@@ -13,30 +13,15 @@
  * ride in the header so they reach every route, not just the settings screen
  * nobody is on when it matters.
  */
-import { A, useLocation, useNavigate } from "@solidjs/router";
-import {
-  Show,
-  createMemo,
-  createSignal,
-  type Component,
-  type JSX,
-  type ParentComponent,
-} from "solid-js";
+import { A, useLocation } from "@solidjs/router";
+import { Show, createMemo, type JSX, type ParentComponent } from "solid-js";
 
 import { describeConnection, useLive } from "~/api/live";
-import { useSession } from "~/api/session";
 import { Countdown } from "~/components/Time";
 import { Chime } from "~/components/ui/Chime";
 import { Button, cx } from "~/components/ui/primitives";
 import { ShellBanner, SnoozeBanner, SourceReachBanner } from "~/components/ui/ShellBanner";
-import {
-  density,
-  setDensity,
-  setTheme,
-  theme,
-  themePreference,
-  type ThemePreference,
-} from "~/design/theme";
+import { UserMenu } from "~/components/UserMenu";
 
 /* -------------------------------------------------------------------------- */
 /* Connection                                                                 */
@@ -147,47 +132,6 @@ export const ResyncBanner = (): JSX.Element => {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Preferences                                                                */
-/* -------------------------------------------------------------------------- */
-
-const THEME_ORDER: readonly ThemePreference[] = ["system", "light", "dark"];
-
-const ThemeToggle = (): JSX.Element => {
-  const next = (): ThemePreference =>
-    THEME_ORDER[(THEME_ORDER.indexOf(themePreference()) + 1) % THEME_ORDER.length] ?? "system";
-
-  return (
-    <Button
-      size="sm"
-      variant="ghost"
-      onClick={() => setTheme(next())}
-      title={`Theme: ${themePreference()} (currently ${theme()}). Click for ${next()}.`}
-      aria-label={`Theme: ${themePreference()}, currently rendering ${theme()}. Switch to ${next()}.`}
-    >
-      <Show when={theme() === "dark"} fallback={<SunGlyph />}>
-        <MoonGlyph />
-      </Show>
-      <span class="capitalize">{themePreference()}</span>
-    </Button>
-  );
-};
-
-const DensityToggle = (): JSX.Element => (
-  <Button
-    size="sm"
-    variant="ghost"
-    onClick={() => setDensity(density() === "compact" ? "comfortable" : "compact")}
-    title={`Row density: ${density()}`}
-    aria-label={`Row density: ${density()}. Switch to ${
-      density() === "compact" ? "comfortable" : "compact"
-    }.`}
-  >
-    <DensityGlyph compact={density() === "compact"} />
-    <span class="capitalize">{density()}</span>
-  </Button>
-);
-
-/* -------------------------------------------------------------------------- */
 /* Navigation                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -201,7 +145,7 @@ interface NavItem {
 const NAV: readonly NavItem[] = [
   { href: "/alerts", label: "Alerts", prefix: "/alerts" },
   { href: "/groups", label: "Groups", prefix: "/groups" },
-  { href: "/settings/sources", label: "Settings", prefix: "/settings" },
+  { href: "/settings/sources", label: "Admin Settings", prefix: "/settings" },
 ];
 
 const Nav = (): JSX.Element => {
@@ -231,68 +175,6 @@ const Nav = (): JSX.Element => {
 /* -------------------------------------------------------------------------- */
 /* The shell                                                                  */
 /* -------------------------------------------------------------------------- */
-
-/**
- * Sign out, labelled with who is signed in.
- *
- * The principal is already in hand — `/me` answered before this shell mounted —
- * so naming it costs nothing and answers "which account am I in?" without a
- * settings trip. The button does not confirm: a sign-out is one click to undo.
- */
-const SignOut: Component = () => {
-  const session = useSession();
-  const navigate = useNavigate();
-  const [busy, setBusy] = createSignal(false);
-
-  // ⛔ THIS DOES NOT CLEAR ON NAVIGATION, AND MUST NOT. The shell is a layout
-  // route now, so this signal follows the operator from screen to screen — which
-  // looks like stale state and is not. It reports a standing FACT, not the
-  // outcome of a gesture: the session is still live. Only two things can make it
-  // false, and both take the whole shell with them — a sign-out that succeeds
-  // (which leaves for /login) or a session that expires (which `RequireSession`
-  // bounces). Clearing it on a nav click would delete the one sentence telling
-  // the operator not to walk away from this machine, in response to a gesture
-  // that did nothing about it. A retry clears it below, at the point it is
-  // actually being re-answered.
-  const [failed, setFailed] = createSignal(false);
-
-  const go = async (): Promise<void> => {
-    setBusy(true);
-    setFailed(false);
-    try {
-      await session.signOut();
-      navigate("/login", { replace: true });
-    } catch {
-      // ⛔ STILL SIGNED IN, AND THE UI MUST SAY SO. The revoke and the cookie
-      // clear are one response, so a failure means the session is live. Bouncing
-      // to /login here would be the dangerous lie: the operator walks away and
-      // the next person's refresh resolves the surviving cookie straight back
-      // into this account.
-      setFailed(true);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <Show when={failed()}>
-        <span role="alert" class="text-meta font-medium text-ink">
-          Still signed in — sign-out failed. Try again.
-        </span>
-      </Show>
-      <button
-        type="button"
-        onClick={() => void go()}
-        disabled={busy()}
-        title={session.me()?.user?.email ?? undefined}
-        class="rounded-control px-1.5 py-1 text-meta font-medium text-ink-muted transition-colors duration-100 hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
-      >
-        Sign out
-      </button>
-    </>
-  );
-};
 
 export const AppShell: ParentComponent = (props) => {
   // Read once per render pass so the header does not thrash on every frame.
@@ -325,9 +207,7 @@ export const AppShell: ParentComponent = (props) => {
           <div class="flex-1" />
           <ConnectionBadge />
           <div class="h-4 w-px bg-line" aria-hidden="true" />
-          <DensityToggle />
-          <ThemeToggle />
-          <SignOut />
+          <UserMenu />
         </div>
         {/* Ordered by how much of the screen each one calls into question: the
             live stream first, then whether oto can still see every source, then
@@ -362,52 +242,3 @@ export const AppShell: ParentComponent = (props) => {
     </div>
   );
 };
-
-/* -------------------------------------------------------------------------- */
-/* Glyphs                                                                     */
-/* -------------------------------------------------------------------------- */
-
-/* The chime lives in `~/components/ui/Chime` — one component, two sizes, and a
-   per-size stroke that is optical compensation rather than an inconsistency. */
-
-const SunGlyph = (): JSX.Element => (
-  <svg viewBox="0 0 14 14" class="size-3.5" aria-hidden="true">
-    <circle cx="7" cy="7" r="2.6" fill="none" stroke="currentColor" stroke-width="1.3" />
-    <path
-      d="M7 1.2v1.6M7 11.2v1.6M1.2 7h1.6M11.2 7h1.6M3 3l1.1 1.1M9.9 9.9 11 11M11 3 9.9 4.1M4.1 9.9 3 11"
-      stroke="currentColor"
-      stroke-width="1.3"
-      stroke-linecap="round"
-    />
-  </svg>
-);
-
-const MoonGlyph = (): JSX.Element => (
-  <svg viewBox="0 0 14 14" class="size-3.5" aria-hidden="true">
-    <path
-      d="M11.4 8.6A5 5 0 0 1 5.4 2.6a5 5 0 1 0 6 6Z"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.3"
-      stroke-linejoin="round"
-    />
-  </svg>
-);
-
-const DensityGlyph = (props: { readonly compact: boolean }): JSX.Element => (
-  <svg viewBox="0 0 14 14" class="size-3.5" aria-hidden="true">
-    <Show
-      when={props.compact}
-      fallback={
-        <path d="M2 4h10M2 7h10M2 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-      }
-    >
-      <path
-        d="M2 3h10M2 5.5h10M2 8h10M2 10.5h10"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linecap="round"
-      />
-    </Show>
-  </svg>
-);

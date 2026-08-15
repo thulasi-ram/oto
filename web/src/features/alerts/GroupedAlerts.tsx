@@ -120,6 +120,20 @@ export const GroupedAlerts: Component<GroupedAlertsProps> = (props) => (
   </div>
 );
 
+/**
+ * The bucket row's grid, so a chip that only sometimes renders — unacked,
+ * flapping, snoozed — can never shift "Last seen" sideways depending on which
+ * of its neighbours happened to show up on *this* bucket. Every track but the
+ * name column is a fixed width, sized generously for its worst realistic
+ * content, the same discipline `AlertTable`'s `COLUMNS` applies with real
+ * `<col>` widths — this is the div-soup equivalent, one grid per row rather
+ * than shared table columns, so the widths below are the single source both
+ * row renderings (linked and unlinked) must share to stay aligned with
+ * each other.
+ */
+const BUCKET_ROW_GRID =
+  "grid grid-cols-[3px_0.75rem_minmax(0,1fr)_7rem_6rem_8rem_17rem_3.5rem] items-center gap-3";
+
 const BucketRow: Component<{
   readonly bucket: AlertRollup;
   readonly by: RollupAxis;
@@ -154,12 +168,12 @@ const BucketRow: Component<{
           because "we stopped hearing about this" is the open question. */}
       <span
         aria-hidden="true"
-        class={cx("h-5 w-[3px] shrink-0 rounded-full", STATE_BAR[b().state])}
+        class={cx("h-5 w-[3px] rounded-full", STATE_BAR[b().state])}
       />
 
       <SeverityMark severity={topSeverity(b())} />
 
-      <span class="min-w-0 flex-1">
+      <span class="min-w-0">
         <span class="block truncate font-medium text-ink" title={b().key}>
           {label()}
         </span>
@@ -170,15 +184,15 @@ const BucketRow: Component<{
         </Show>
       </span>
 
-      <StateChip state={b().state} size="sm" />
+      <StateChip state={b().state} size="sm" class="justify-self-start" />
 
-      <span class="shrink-0 text-meta tabular-nums text-ink-muted">
+      <span class="justify-self-start text-meta tabular-nums text-ink-muted">
         {fmtCount(b().total_count)} total
       </span>
 
       {/* Per-state counts. `resolved` and `expired` stay separate — they are
           different facts and merging them would lose the interesting one. */}
-      <span class="flex shrink-0 items-center gap-1.5 text-meta tabular-nums text-ink-muted">
+      <span class="flex items-center justify-self-start gap-1.5 text-meta tabular-nums text-ink-muted">
         <For each={counts()}>
           {(c) => (
             <span
@@ -193,36 +207,42 @@ const BucketRow: Component<{
         </For>
       </span>
 
-      <Show when={b().unacked_count > 0}>
-        <span
-          class="shrink-0 rounded-chip border border-line-strong bg-raised px-1 text-meta leading-4 text-ink"
-          title="Nobody has recorded seeing these yet."
-        >
-          {b().unacked_count} unseen
-        </span>
-      </Show>
+      {/* The three chips below are each conditional on their own count, but
+          together they still occupy exactly one grid cell: the reserved
+          column is the same width whether none, one, or all three render, so
+          it alone absorbs that variability and nothing after it has to. */}
+      <div class="flex items-center justify-self-start gap-3">
+        <Show when={b().unacked_count > 0}>
+          <span
+            class="shrink-0 rounded-chip border border-line-strong bg-raised px-1 text-meta leading-4 text-ink"
+            title="Nobody has recorded seeing these yet."
+          >
+            {b().unacked_count} unseen
+          </span>
+        </Show>
 
-      <Show when={b().flapping_count > 0}>
-        <span
-          class="shrink-0 rounded-chip border border-line bg-surface px-1 text-meta leading-4 text-ink-muted"
-          title="Members oto has damped as flapping. A visible state, never a silent drop."
-        >
-          {b().flapping_count} flapping
-        </span>
-      </Show>
+        <Show when={b().flapping_count > 0}>
+          <span
+            class="shrink-0 rounded-chip border border-line bg-surface px-1 text-meta leading-4 text-ink-muted"
+            title="Members oto has damped as flapping. A visible state, never a silent drop."
+          >
+            {b().flapping_count} flapping
+          </span>
+        </Show>
 
-      {/* Snoozed members are counted, never dimmed: they are still firing and
-          still whatever severity they were. */}
-      <Show when={b().snoozed_count > 0}>
-        <span
-          class="shrink-0 rounded-chip border border-line bg-surface px-1 text-meta leading-4 text-ink-muted"
-          title="Members whose notifications oto is holding. They are still firing and still counted as such."
-        >
-          {b().snoozed_count} snoozed
-        </span>
-      </Show>
+        {/* Snoozed members are counted, never dimmed: they are still firing and
+            still whatever severity they were. */}
+        <Show when={b().snoozed_count > 0}>
+          <span
+            class="shrink-0 rounded-chip border border-line bg-surface px-1 text-meta leading-4 text-ink-muted"
+            title="Members whose notifications oto is holding. They are still firing and still counted as such."
+          >
+            {b().snoozed_count} snoozed
+          </span>
+        </Show>
+      </div>
 
-      <span class="w-14 shrink-0 text-right text-meta text-ink-subtle">
+      <span class="text-right text-meta text-ink-subtle">
         <RelativeTime value={b().last_seen_at} label="Newest activity" />
       </span>
     </>
@@ -233,7 +253,7 @@ const BucketRow: Component<{
       <Show
         when={props.onDrillDown}
         fallback={
-          <div class="flex items-center gap-3 px-3 py-2">
+          <div class={cx(BUCKET_ROW_GRID, "px-3 py-2")}>
             <Body />
           </div>
         }
@@ -241,7 +261,7 @@ const BucketRow: Component<{
         {(drill) => (
           <button
             type="button"
-            class="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-raised"
+            class={cx(BUCKET_ROW_GRID, "w-full px-3 py-2 text-left hover:bg-raised")}
             title={`Open the ${b().total_count} alert${b().total_count === 1 ? "" : "s"} in this bucket, keeping every other filter`}
             onClick={() => drill()(b().key)}
           >

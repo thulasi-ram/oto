@@ -24,6 +24,7 @@ import { qk } from "~/api/keys";
 import type { Group, GroupListQuery, GroupState } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { SeverityMark, StormChip } from "~/components/StateChip";
+import { FilterRow } from "~/components/ui/FilterRow";
 import { Button, Chip, Input, Select, ToggleGroup, cx } from "~/components/ui/primitives";
 import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
 import { count as fmtCount } from "~/lib/format";
@@ -108,7 +109,7 @@ export default function GroupsRoute() {
 
   return (
     <div class="flex min-h-0 flex-1 flex-col">
-      <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-surface px-3 py-2">
+      <FilterRow class="shrink-0">
         <div class="min-w-[14rem] flex-[1_1_16rem]">
           <label for="group-q" class="sr-only-focusable">
             Search group titles and labels
@@ -161,7 +162,7 @@ export default function GroupsRoute() {
           {fmtCount(all().length)}
           {feed.hasMore() ? "+" : ""} groups
         </span>
-      </div>
+      </FilterRow>
 
       <Switch>
         <Match when={groups.isError}>
