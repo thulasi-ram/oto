@@ -624,11 +624,6 @@ func (f *identityFixture) signedIn(method, target string, raw []byte) *apitest.R
 	return f.c.Do(f.request(method, target, raw, true))
 }
 
-// anonymous sends the same request with no credential at all.
-func (f *identityFixture) anonymous(method, target string) *apitest.Response {
-	return f.c.Anonymous().Do(f.request(method, target, nil, false))
-}
-
 func (f *identityFixture) request(method, target string, raw []byte, withCookie bool) *http.Request {
 	var body io.Reader
 	if raw != nil {
@@ -941,58 +936,37 @@ func TestRevokeApiTokenAnswers204WithNoBody(t *testing.T) {
 func TestAnApiTokenOutsideTheCallersTenantIsANotFound(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name string
-		path string
-		// reached says whether the id was well-formed enough to be looked up at all.
-		reached bool
-	}{
-		{
-			name:    "an id owned by another org",
-			path:    "/api-tokens/" + apitest.StrangerID.String(),
-			reached: true,
-		},
-		{
-			name: "an id that is not a uuid at all",
-			path: "/api-tokens/banana",
-		},
-		{
-			name: "the nil uuid",
-			path: "/api-tokens/00000000-0000-0000-0000-000000000000",
-		},
+	routes := []apitest.Route{
+		{Name: "an id owned by another org", Op: "revokeApiToken",
+			Method: http.MethodDelete, Path: "/api-tokens/" + apitest.StrangerID.String()},
+		{Name: "an id that is not a uuid at all", Op: "revokeApiToken",
+			Method: http.MethodDelete, Path: "/api-tokens/banana"},
+		{Name: "the nil uuid", Op: "revokeApiToken",
+			Method: http.MethodDelete, Path: "/api-tokens/00000000-0000-0000-0000-000000000000"},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := newIdentityFixture(t)
-			resp := f.signedIn(http.MethodDelete, tc.path, nil).MustStatus(t, http.StatusNotFound)
-			schema.AssertProblem(t, "revokeApiToken", http.StatusNotFound, resp.Body())
-
+	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newIdentityFixture(t)
+		check := func(t *testing.T, r apitest.Route, resp *apitest.Response) {
 			if code := resp.Problem(t).Code; code != "not_found" {
 				t.Fatalf("code = %q, want not_found", code)
 			}
-			if ct := resp.Header("Content-Type"); !strings.Contains(ct, "problem+json") {
-				t.Fatalf("Content-Type = %q, want application/problem+json", ct)
+			// ⚠️ The refusal says nothing about the other tenant's credential.
+			if strings.Contains(string(resp.Body()), contractTokenID.String()) {
+				t.Fatalf("the 404 names %s: %s", contractTokenID, resp)
 			}
-			// ⚠️ The refusal says nothing about the other tenant.
-			body := string(resp.Body())
-			for _, leak := range []string{apitest.OtherOrgID.String(), contractTokenID.String()} {
-				if strings.Contains(body, leak) {
-					t.Fatalf("the 404 names %s: %s", leak, resp)
-				}
-			}
-
+			// Only a well-formed id is looked up at all; the malformed spellings
+			// are refused before the service is asked.
 			want := 0
-			if tc.reached {
+			if strings.Contains(r.Path, apitest.StrangerID.String()) {
 				want = 1
 			}
 			if got := f.svc.counts().revoke; got != want {
 				t.Fatalf("the service saw %d revoke call(s), want %d", got, want)
 			}
-		})
-	}
+		}
+		return f.c.WithCookie(contractCookieName, contractCookieValue), check
+	}, routes)
 }
 
 // TestUpdateOrgSettingsRefusesAResetNamingAKeyThatDoesNotExist.
@@ -1076,39 +1050,27 @@ func TestCreateApiTokenRefusesANameThatIsOnlyWhitespace(t *testing.T) {
 func TestAnUnauthenticatedCallerGetsTheContractsProblemOnEveryIdentityRoute(t *testing.T) {
 	t.Parallel()
 
-	routes := []struct {
-		op     string
-		method string
-		path   string
-	}{
-		{"getCurrentPrincipal", http.MethodGet, "/me"},
-		{"getOrgSettings", http.MethodGet, "/org/settings"},
-		{"updateOrgSettings", http.MethodPatch, "/org/settings"},
-		{"logout", http.MethodPost, "/auth/logout"},
-		{"listApiTokens", http.MethodGet, "/api-tokens"},
-		{"createApiToken", http.MethodPost, "/api-tokens"},
-		{"revokeApiToken", http.MethodDelete, "/api-tokens/" + contractTokenID.String()},
+	routes := []apitest.Route{
+		{Op: "getCurrentPrincipal", Method: http.MethodGet, Path: "/me"},
+		{Op: "getOrgSettings", Method: http.MethodGet, Path: "/org/settings"},
+		{Op: "updateOrgSettings", Method: http.MethodPatch, Path: "/org/settings"},
+		{Op: "logout", Method: http.MethodPost, Path: "/auth/logout"},
+		{Op: "listApiTokens", Method: http.MethodGet, Path: "/api-tokens"},
+		{Op: "createApiToken", Method: http.MethodPost, Path: "/api-tokens"},
+		{Op: "revokeApiToken", Method: http.MethodDelete, Path: "/api-tokens/" + contractTokenID.String()},
 	}
 
-	for _, route := range routes {
-		t.Run(route.op, func(t *testing.T) {
-			t.Parallel()
-
-			f := newIdentityFixture(t)
-			resp := f.anonymous(route.method, route.path).MustStatus(t, http.StatusUnauthorized)
-			schema.AssertProblem(t, route.op, http.StatusUnauthorized, resp.Body())
-
-			if code := resp.Problem(t).Code; code != "unauthenticated" {
-				t.Fatalf("code = %q, want unauthenticated", code)
-			}
+	apitest.AssertUnauthenticated(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newIdentityFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, resp *apitest.Response) {
 			if h := resp.Header("Set-Cookie"); h != "" {
 				t.Fatalf("a refused request was handed a cookie: %q", h)
 			}
 			if got := f.svc.counts(); got != (identityCalls{}) {
 				t.Fatalf("an unauthenticated request reached the service: %+v", got)
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 // contractIdempotencyKey is the key every case below spends. It is the

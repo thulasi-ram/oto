@@ -25,7 +25,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -342,44 +341,25 @@ func TestDisposingADrillKeepsTheReceiptAndAnswers200(t *testing.T) {
 func TestADrillOutsideTheCallersTenantIsANotFound(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name   string
-		op     string
-		method string
-		path   string
-	}{
-		{"poll another org's drill", "getDeliveryDrill", http.MethodGet,
-			"/drills/" + apitest.StrangerID.String()},
-		{"dispose another org's drill", "disposeDeliveryDrill", http.MethodDelete,
-			"/drills/" + apitest.StrangerID.String()},
-		{"poll an id that is not a uuid", "getDeliveryDrill", http.MethodGet,
-			"/drills/banana"},
-		{"dispose an id that is not a uuid", "disposeDeliveryDrill", http.MethodDelete,
-			"/drills/banana"},
+	routes := []apitest.Route{
+		{Name: "poll another org's drill", Op: "getDeliveryDrill",
+			Method: http.MethodGet, Path: "/drills/" + apitest.StrangerID.String()},
+		{Name: "dispose another org's drill", Op: "disposeDeliveryDrill",
+			Method: http.MethodDelete, Path: "/drills/" + apitest.StrangerID.String()},
+		{Name: "poll an id that is not a uuid", Op: "getDeliveryDrill",
+			Method: http.MethodGet, Path: "/drills/banana"},
+		{Name: "dispose an id that is not a uuid", Op: "disposeDeliveryDrill",
+			Method: http.MethodDelete, Path: "/drills/banana"},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := newDrillFixture(t)
-			var resp *apitest.Response
-			if tc.method == http.MethodGet {
-				resp = f.c.GET(tc.path)
-			} else {
-				resp = f.c.DELETE(tc.path)
-			}
-			resp.MustStatus(t, http.StatusNotFound)
-			schema.AssertProblem(t, tc.op, http.StatusNotFound, resp.Body())
-
+	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newDrillFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
 			if f.svc.disposed != 0 {
 				t.Fatal("a cross-tenant request still deleted rows")
 			}
-			if strings.Contains(string(resp.Body()), apitest.OtherOrgID.String()) {
-				t.Fatalf("the 404 names the owning org: %s", resp)
-			}
-		})
-	}
+		}
+	}, routes)
 }
 
 // TestStartingADrillWithoutASourceNamesTheField.
@@ -473,59 +453,35 @@ func TestDisposingAnUnsettledDrillIsRefusedWith412(t *testing.T) {
 func TestAnUnknownQueryParameterOnTheDrillHistoryIsRefused(t *testing.T) {
 	t.Parallel()
 
-	f := newDrillFixture(t)
-	resp := f.c.GET("/drills?source="+contractSourceID.String()).
-		MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listDeliveryDrills", http.StatusBadRequest, resp.Body())
-
-	p := resp.MustViolate(t, "source")
-	if p.Code != "unknown_parameter" {
-		t.Fatalf("code = %q, want unknown_parameter", p.Code)
-	}
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newDrillFixture(t).c, nil
+	}, []apitest.Route{
+		{Op: "listDeliveryDrills", Method: http.MethodGet,
+			Path: "/drills?source=" + contractSourceID.String()},
+	})
 }
 
 // TestAnUnauthenticatedCallerGetsTheSame401OnEveryDrillRoute.
 func TestAnUnauthenticatedCallerGetsTheSame401OnEveryDrillRoute(t *testing.T) {
 	t.Parallel()
 
-	routes := []struct {
-		op     string
-		method string
-		path   string
-	}{
-		{"startDeliveryDrill", http.MethodPost, "/drills"},
-		{"listDeliveryDrills", http.MethodGet, "/drills?source_id=" + contractSourceID.String()},
-		{"getDeliveryDrill", http.MethodGet, "/drills/" + contractDrillID.String()},
-		{"disposeDeliveryDrill", http.MethodDelete, "/drills/" + contractDrillID.String()},
+	routes := []apitest.Route{
+		{Op: "startDeliveryDrill", Method: http.MethodPost, Path: "/drills",
+			Body: `{"source_id":"` + contractSourceID.String() + `"}`},
+		{Op: "listDeliveryDrills", Method: http.MethodGet,
+			Path: "/drills?source_id=" + contractSourceID.String()},
+		{Op: "getDeliveryDrill", Method: http.MethodGet, Path: "/drills/" + contractDrillID.String()},
+		{Op: "disposeDeliveryDrill", Method: http.MethodDelete, Path: "/drills/" + contractDrillID.String()},
 	}
 
-	for _, route := range routes {
-		t.Run(route.op, func(t *testing.T) {
-			t.Parallel()
-
-			f := newDrillFixture(t)
-			anon := f.c.Anonymous()
-
-			var resp *apitest.Response
-			switch route.method {
-			case http.MethodPost:
-				resp = anon.POST(t, route.path, map[string]any{"source_id": contractSourceID.String()})
-			case http.MethodDelete:
-				resp = anon.DELETE(route.path)
-			default:
-				resp = anon.GET(route.path)
-			}
-			resp.MustStatus(t, http.StatusUnauthorized)
-			schema.AssertProblem(t, route.op, http.StatusUnauthorized, resp.Body())
-
-			if code := resp.Problem(t).Code; code != "unauthenticated" {
-				t.Fatalf("code = %q, want unauthenticated", code)
-			}
+	apitest.AssertUnauthenticated(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newDrillFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
 			if f.svc.started != 0 || f.svc.disposed != 0 {
 				t.Fatal("an unauthenticated request reached the service")
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 // --------------------------------------------------------- declared surface
@@ -640,31 +596,19 @@ func TestListDeliveryDrillsDeclaresNo422(t *testing.T) {
 func TestAnUnknownQueryParameterOnAnIdAddressedDrillRouteIsADeclared400(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct{ op, method, path string }{
-		{"getDeliveryDrill", http.MethodGet, "/drills/" + contractDrillID.String() + "?verbose=true"},
-		{"disposeDeliveryDrill", http.MethodDelete, "/drills/" + contractDrillID.String() + "?force=1"},
-	} {
-		t.Run(tc.op, func(t *testing.T) {
-			t.Parallel()
-
-			f := newDrillFixture(t)
-			var resp *apitest.Response
-			if tc.method == http.MethodDelete {
-				resp = f.c.DELETE(tc.path)
-			} else {
-				resp = f.c.GET(tc.path)
-			}
-			resp.MustStatus(t, http.StatusBadRequest)
-			schema.AssertProblem(t, tc.op, http.StatusBadRequest, resp.Body())
-
-			if code := resp.Problem(t).Code; code != "unknown_parameter" {
-				t.Fatalf("code = %q, want unknown_parameter", code)
-			}
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newDrillFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
 			if f.svc.disposed != 0 {
 				t.Fatal("a refused request still disposed of the drill")
 			}
-		})
-	}
+		}
+	}, []apitest.Route{
+		{Op: "getDeliveryDrill", Method: http.MethodGet,
+			Path: "/drills/" + contractDrillID.String() + "?verbose=true"},
+		{Op: "disposeDeliveryDrill", Method: http.MethodDelete,
+			Path: "/drills/" + contractDrillID.String() + "?force=1"},
+	})
 }
 
 // ------------------------------------------------------------------ helpers

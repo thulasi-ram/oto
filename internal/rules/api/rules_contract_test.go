@@ -892,83 +892,39 @@ func TestTheHistoryLimitBoundsTheVersionsReturned(t *testing.T) {
 func TestARuleReadOutsideTheCallersTenantIsANotFound(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name string
-		op   string
-		path string
-	}{
-		{
-			name: "a snapshot id owned by another org",
-			op:   "getRuleSnapshot",
-			path: snapshotPath(apitest.StrangerID),
-		},
-		{
-			name: "an occurrence id owned by another org",
-			op:   "getOccurrenceRule",
-			path: occurrenceRulePath(apitest.StrangerID.String()),
-		},
-		{
-			name: "an alert id owned by another org",
-			op:   "getAlertRuleHistory",
-			path: alertRulePath(apitest.StrangerID.String()),
-		},
-		{
-			name: "a snapshot id that is not a uuid at all",
-			op:   "getRuleSnapshot",
-			path: "/rule-snapshots/banana",
-		},
-		{
-			name: "an occurrence id that is not a uuid at all",
-			op:   "getOccurrenceRule",
-			path: occurrenceRulePath("banana"),
-		},
-		{
-			name: "an alert id that is not a uuid at all",
-			op:   "getAlertRuleHistory",
-			path: alertRulePath("banana"),
-		},
-		{
-			name: "the nil uuid as a snapshot id",
-			op:   "getRuleSnapshot",
-			path: "/rule-snapshots/00000000-0000-0000-0000-000000000000",
-		},
-		{
-			name: "the nil uuid as an occurrence id",
-			op:   "getOccurrenceRule",
-			path: occurrenceRulePath("00000000-0000-0000-0000-000000000000"),
-		},
-		{
-			name: "the nil uuid as an alert id",
-			op:   "getAlertRuleHistory",
-			path: alertRulePath("00000000-0000-0000-0000-000000000000"),
-		},
+	routes := []apitest.Route{
+		{Name: "a snapshot id owned by another org", Op: "getRuleSnapshot",
+			Method: http.MethodGet, Path: snapshotPath(apitest.StrangerID)},
+		{Name: "an occurrence id owned by another org", Op: "getOccurrenceRule",
+			Method: http.MethodGet, Path: occurrenceRulePath(apitest.StrangerID.String())},
+		{Name: "an alert id owned by another org", Op: "getAlertRuleHistory",
+			Method: http.MethodGet, Path: alertRulePath(apitest.StrangerID.String())},
+		{Name: "a snapshot id that is not a uuid at all", Op: "getRuleSnapshot",
+			Method: http.MethodGet, Path: "/rule-snapshots/banana"},
+		{Name: "an occurrence id that is not a uuid at all", Op: "getOccurrenceRule",
+			Method: http.MethodGet, Path: occurrenceRulePath("banana")},
+		{Name: "an alert id that is not a uuid at all", Op: "getAlertRuleHistory",
+			Method: http.MethodGet, Path: alertRulePath("banana")},
+		{Name: "the nil uuid as a snapshot id", Op: "getRuleSnapshot",
+			Method: http.MethodGet, Path: "/rule-snapshots/00000000-0000-0000-0000-000000000000"},
+		{Name: "the nil uuid as an occurrence id", Op: "getOccurrenceRule",
+			Method: http.MethodGet, Path: occurrenceRulePath("00000000-0000-0000-0000-000000000000")},
+		{Name: "the nil uuid as an alert id", Op: "getAlertRuleHistory",
+			Method: http.MethodGet, Path: alertRulePath("00000000-0000-0000-0000-000000000000")},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := newRuleContractFixture(t)
-			resp := f.c.GET(tc.path).MustStatus(t, http.StatusNotFound)
-			schema.AssertProblem(t, tc.op, http.StatusNotFound, resp.Body())
-
-			if ct := resp.Header("Content-Type"); !strings.Contains(ct, "problem+json") {
-				t.Fatalf("Content-Type = %q, want application/problem+json", ct)
-			}
-			// ⚠️ The refusal says nothing about the other tenant. Naming the
-			// owning org would be the same leak the status code just avoided.
-			body := string(resp.Body())
-			if strings.Contains(body, apitest.OtherOrgID.String()) {
-				t.Fatalf("the 404 names the owning org: %s", resp)
-			}
+	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newRuleContractFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, resp *apitest.Response) {
 			// `instance` echoes the request path by design (RFC 9457 §3.1), and
 			// the caller already knows the id it asked for — so the leak to guard
 			// is the ANSWER, not the question. Nothing of ours may come back.
+			body := string(resp.Body())
 			if strings.Contains(body, ruleContractOldExpr) || strings.Contains(body, ruleContractNewExpr) {
 				t.Fatalf("the refusal carries a rule expression: %s", resp)
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 // TestABadHistoryLimitIsRefusedWithTheFieldNamed — the 422 the contract declares
@@ -1027,32 +983,21 @@ func TestABadHistoryLimitIsRefusedWithTheFieldNamed(t *testing.T) {
 func TestAnUnauthenticatedCallerGetsTheSame401OnEveryRuleRoute(t *testing.T) {
 	t.Parallel()
 
-	routes := []struct {
-		op   string
-		path string
-	}{
-		{"getRuleSnapshot", snapshotPath(ruleContractOldSnapshotID)},
-		{"getOccurrenceRule", occurrenceRulePath(ruleContractOccurrenceID.String())},
-		{"getAlertRuleHistory", alertRulePath(ruleContractAlertID.String())},
+	routes := []apitest.Route{
+		{Op: "getRuleSnapshot", Method: http.MethodGet, Path: snapshotPath(ruleContractOldSnapshotID)},
+		{Op: "getOccurrenceRule", Method: http.MethodGet, Path: occurrenceRulePath(ruleContractOccurrenceID.String())},
+		{Op: "getAlertRuleHistory", Method: http.MethodGet, Path: alertRulePath(ruleContractAlertID.String())},
 	}
 
-	for _, route := range routes {
-		t.Run(route.op, func(t *testing.T) {
-			t.Parallel()
-
-			f := newRuleContractFixture(t)
-			resp := f.c.Anonymous().GET(route.path).MustStatus(t, http.StatusUnauthorized)
-			schema.AssertProblem(t, route.op, http.StatusUnauthorized, resp.Body())
-
-			if code := resp.Problem(t).Code; code != "unauthenticated" {
-				t.Fatalf("code = %q, want unauthenticated", code)
-			}
+	apitest.AssertUnauthenticated(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newRuleContractFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
 			if f.rules.getCalls != 0 || f.rules.historyCalls != 0 ||
 				f.reader.alertCalls != 0 || f.reader.occCalls != 0 {
 				t.Fatal("an unauthenticated request reached the services")
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 // TestAFailedRuleReadIsNotAnEmptyRule.
@@ -1254,31 +1199,14 @@ func TestAnEpisodeWhosePredecessorWentBlindReportsNoChange(t *testing.T) {
 func TestAnUnknownQueryParameterIsRefusedWithADeclared400(t *testing.T) {
 	t.Parallel()
 
-	routes := []struct {
-		op   string
-		path string
-	}{
-		{"getRuleSnapshot", snapshotPath(ruleContractOldSnapshotID) + "?verbose=true"},
-		{"getOccurrenceRule", occurrenceRulePath(ruleContractOccurrenceID.String()) + "?verbose=true"},
-		{"getAlertRuleHistory", alertRulePath(ruleContractAlertID.String()) + "?limt=1"},
-	}
-
-	for _, route := range routes {
-		t.Run(route.op, func(t *testing.T) {
-			t.Parallel()
-
-			if !schema.Op(t, route.op).Declares(http.StatusBadRequest) {
-				t.Fatalf("%s declares no 400, and §E.3 makes one reachable with any unknown "+
-					"query parameter", route.op)
-			}
-
-			f := newRuleContractFixture(t)
-			resp := f.c.GET(route.path).MustStatus(t, http.StatusBadRequest)
-			schema.AssertProblem(t, route.op, http.StatusBadRequest, resp.Body())
-
-			if code := resp.Problem(t).Code; code != "unknown_parameter" {
-				t.Fatalf("code = %q, want unknown_parameter", code)
-			}
-		})
-	}
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newRuleContractFixture(t).c, nil
+	}, []apitest.Route{
+		{Op: "getRuleSnapshot", Method: http.MethodGet,
+			Path: snapshotPath(ruleContractOldSnapshotID) + "?verbose=true"},
+		{Op: "getOccurrenceRule", Method: http.MethodGet,
+			Path: occurrenceRulePath(ruleContractOccurrenceID.String()) + "?verbose=true"},
+		{Op: "getAlertRuleHistory", Method: http.MethodGet,
+			Path: alertRulePath(ruleContractAlertID.String()) + "?limt=1"},
+	})
 }

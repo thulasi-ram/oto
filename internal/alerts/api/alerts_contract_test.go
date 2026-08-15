@@ -32,7 +32,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -457,17 +456,16 @@ func TestALabelNameThatIsNotOneIsRefusedWithTheFieldNamed(t *testing.T) {
 func TestAnUnknownQueryParameterIsRefusedRatherThanIgnored(t *testing.T) {
 	t.Parallel()
 
-	c, svc := newAlertsProbe(t)
-	resp := c.GET("/snoozes?state=firing").MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listActiveSnoozes", http.StatusBadRequest, resp.Body())
-
-	p := resp.MustViolate(t, "state")
-	if p.Code != "unknown_parameter" {
-		t.Fatalf("code = %q, want unknown_parameter", p.Code)
-	}
-	if svc.calls["ActiveSnoozes"] != 0 {
-		t.Fatal("a refused query still reached the service")
-	}
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		c, svc := newAlertsProbe(t)
+		return c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
+			if svc.calls["ActiveSnoozes"] != 0 {
+				t.Fatal("a refused query still reached the service")
+			}
+		}
+	}, []apitest.Route{
+		{Op: "listActiveSnoozes", Method: http.MethodGet, Path: "/snoozes?state=firing"},
+	})
 }
 
 /* -------------------------------------------------------------------------- */
@@ -741,23 +739,21 @@ func TestACommentMustCarryABody(t *testing.T) {
 // It is a TABLE rather than thirteen hand-written tests for one reason: the probe
 // is the highest-value assertion in this suite and the one most easily forgotten,
 // and a table makes forgetting one visible.
-func idAddressedOperations(id string) []struct {
-	op, method, path, body string
-} {
-	return []struct{ op, method, path, body string }{
-		{"getAlert", http.MethodGet, "/alerts/" + id, ""},
-		{"listAlertOccurrences", http.MethodGet, "/alerts/" + id + "/occurrences", ""},
-		{"listAlertEvents", http.MethodGet, "/alerts/" + id + "/events", ""},
-		{"listAlertEnrichments", http.MethodGet, "/alerts/" + id + "/enrichments", ""},
-		{"listAlertNotifications", http.MethodGet, "/alerts/" + id + "/notifications", ""},
-		{"listAlertSnoozes", http.MethodGet, "/alerts/" + id + "/snoozes", ""},
-		{"ackAlert", http.MethodPost, "/alerts/" + id + "/ack", `{"note":"looking"}`},
-		{"unackAlert", http.MethodPost, "/alerts/" + id + "/unack", `{"note":"handing back"}`},
-		{"commentOnAlert", http.MethodPost, "/alerts/" + id + "/comments", `{"body":"who owns this?"}`},
-		{"snoozeAlert", http.MethodPost, "/alerts/" + id + "/snooze", `{"duration_seconds":3600}`},
-		{"unsnoozeAlert", http.MethodPost, "/alerts/" + id + "/unsnooze", `{"note":"awake"}`},
-		{"getOccurrence", http.MethodGet, "/occurrences/" + id, ""},
-		{"listOccurrenceEvents", http.MethodGet, "/occurrences/" + id + "/events", ""},
+func idAddressedOperations(id string) []apitest.Route {
+	return []apitest.Route{
+		{Op: "getAlert", Method: http.MethodGet, Path: "/alerts/" + id},
+		{Op: "listAlertOccurrences", Method: http.MethodGet, Path: "/alerts/" + id + "/occurrences"},
+		{Op: "listAlertEvents", Method: http.MethodGet, Path: "/alerts/" + id + "/events"},
+		{Op: "listAlertEnrichments", Method: http.MethodGet, Path: "/alerts/" + id + "/enrichments"},
+		{Op: "listAlertNotifications", Method: http.MethodGet, Path: "/alerts/" + id + "/notifications"},
+		{Op: "listAlertSnoozes", Method: http.MethodGet, Path: "/alerts/" + id + "/snoozes"},
+		{Op: "ackAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/ack", Body: `{"note":"looking"}`},
+		{Op: "unackAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/unack", Body: `{"note":"handing back"}`},
+		{Op: "commentOnAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/comments", Body: `{"body":"who owns this?"}`},
+		{Op: "snoozeAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/snooze", Body: `{"duration_seconds":3600}`},
+		{Op: "unsnoozeAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/unsnooze", Body: `{"note":"awake"}`},
+		{Op: "getOccurrence", Method: http.MethodGet, Path: "/occurrences/" + id},
+		{Op: "listOccurrenceEvents", Method: http.MethodGet, Path: "/occurrences/" + id + "/events"},
 	}
 }
 
@@ -775,25 +771,10 @@ func idAddressedOperations(id string) []struct {
 func TestAnIdOutsideTheCallersTenantIsANotFoundOnEveryOperation(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range idAddressedOperations(apitest.StrangerID.String()) {
-		t.Run(tc.op, func(t *testing.T) {
-			t.Parallel()
-
-			c, _ := newAlertsProbe(t)
-			resp := c.Raw(tc.method, tc.path, contentTypeFor(tc.body), tc.body).
-				MustStatus(t, http.StatusNotFound)
-			schema.AssertProblem(t, tc.op, http.StatusNotFound, resp.Body())
-
-			if ct := resp.Header("Content-Type"); !strings.Contains(ct, "problem+json") {
-				t.Fatalf("Content-Type = %q, want application/problem+json", ct)
-			}
-			// ⚠️ The refusal names neither the other tenant nor its id.
-			body := string(resp.Body())
-			if strings.Contains(body, apitest.OtherOrgID.String()) {
-				t.Fatalf("the 404 names the owning org: %s", resp)
-			}
-		})
-	}
+	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		c, _ := newAlertsProbe(t)
+		return c, nil
+	}, idAddressedOperations(apitest.StrangerID.String()))
 }
 
 // TestAnIdThatIsNotAUUIDIsTheSameNotFound.
@@ -832,23 +813,14 @@ func TestAnIdThatIsNotAUUIDIsTheSameNotFound(t *testing.T) {
 func TestAnUnauthenticatedCallerGetsTheSame401OnEveryRoute(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range idAddressedOperations(fxAlertID.String()) {
-		t.Run(tc.op, func(t *testing.T) {
-			t.Parallel()
-
-			c, svc := newAlertsProbe(t)
-			resp := c.Anonymous().Raw(tc.method, tc.path, contentTypeFor(tc.body), tc.body).
-				MustStatus(t, http.StatusUnauthorized)
-			schema.AssertProblem(t, tc.op, http.StatusUnauthorized, resp.Body())
-
-			if code := resp.Problem(t).Code; code != "unauthenticated" {
-				t.Fatalf("code = %q, want unauthenticated", code)
-			}
+	apitest.AssertUnauthenticated(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		c, svc := newAlertsProbe(t)
+		return c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
 			if len(svc.calls) != 0 {
 				t.Fatalf("an unauthenticated request reached the service: %v", svc.calls)
 			}
-		})
-	}
+		}
+	}, idAddressedOperations(fxAlertID.String()))
 }
 
 // TestTheDeclaredAlertOperationsAreTheOnesThisPackageServes guards the failure
@@ -862,8 +834,8 @@ func TestTheDeclaredAlertOperationsAreTheOnesThisPackageServes(t *testing.T) {
 	// An operation that declared none would make the probe above assert a status
 	// no client is allowed to expect.
 	for _, tc := range idAddressedOperations("x") {
-		if op := schema.Op(t, tc.op); !op.Declares(http.StatusNotFound) {
-			t.Fatalf("%s declares no 404, but a cross-tenant id must produce one", tc.op)
+		if op := schema.Op(t, tc.Op); !op.Declares(http.StatusNotFound) {
+			t.Fatalf("%s declares no 404, but a cross-tenant id must produce one", tc.Op)
 		}
 	}
 	for _, v := range humanVerbs() {
@@ -891,16 +863,6 @@ func TestTheDeclaredAlertOperationsAreTheOnesThisPackageServes(t *testing.T) {
 /* -------------------------------------------------------------------------- */
 /* Small helpers                                                              */
 /* -------------------------------------------------------------------------- */
-
-// contentTypeFor labels a body only when there is one, so that an argument-free
-// verb is sent the way a chat button sends it: no body, and no header claiming
-// there is one.
-func contentTypeFor(body string) string {
-	if body == "" {
-		return ""
-	}
-	return apitest.ContentTypeJSON
-}
 
 // reverseFixtureEvents makes the fake answer newest-first, which is the order the
 // keyset read actually returns.

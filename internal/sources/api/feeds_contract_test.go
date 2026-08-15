@@ -298,26 +298,19 @@ func TestAnotherTenantsSourceHasNoFeedAtAll(t *testing.T) {
 	t.Parallel()
 
 	stranger := apitest.StrangerID
-	for _, tc := range []struct {
-		op     string
-		suffix string
-	}{
-		{"listSourceRejections", "/rejections"},
-		{"listSourceFailedBatches", "/failed-batches"},
-	} {
-		t.Run(tc.op, func(t *testing.T) {
-			t.Parallel()
+	routes := []apitest.Route{
+		{Op: "listSourceRejections", Method: http.MethodGet, Path: sourcePath(stranger, "/rejections")},
+		{Op: "listSourceFailedBatches", Method: http.MethodGet, Path: sourcePath(stranger, "/failed-batches")},
+	}
 
-			s := newContractStack()
-			resp := s.client().GET(sourcePath(stranger, tc.suffix)).
-				MustStatus(t, http.StatusNotFound)
-			schema.AssertProblem(t, tc.op, http.StatusNotFound, resp.Body())
-
+	apitest.AssertCrossTenant404(t, func(_ *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		s := newContractStack()
+		return s.client(), func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
 			if s.feeds.calls != 0 {
 				t.Fatal("a stranger's id still reached the feed; the refusal must come first")
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 /* -------------------------------------------------------------------------- */

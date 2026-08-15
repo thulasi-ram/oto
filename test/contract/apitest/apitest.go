@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 	"github.com/thulasiram/oto/internal/platform/httpx/middleware"
+	"github.com/thulasiram/oto/test/contract/schema"
 )
 
 // The two tenants every test in this suite is written against.
@@ -112,6 +114,10 @@ type Client struct {
 	// anonymous suppresses the principal entirely, for the unauthenticated
 	// surfaces (/healthz, /version, login).
 	anonymous bool
+	// cookies ride on every request, for the one router that mounts the REAL
+	// session middleware and therefore authenticates from the wire rather than
+	// from the context principal.
+	cookies []http.Cookie
 }
 
 // New builds a client for rt, calling as an org member.
@@ -128,10 +134,21 @@ func (c *Client) As(p authn.Principal) *Client {
 	return &cp
 }
 
-// Anonymous returns a copy of c that presents no principal at all.
+// Anonymous returns a copy of c that presents no principal at all — no
+// context principal and no cookie, because a session cookie IS a credential.
 func (c *Client) Anonymous() *Client {
 	cp := *c
 	cp.anonymous = true
+	return &cp
+}
+
+// WithCookie returns a copy of c that presents the cookie on every request —
+// how a suite whose router mounts the real session middleware signs its
+// client in, since that middleware authenticates from the wire and not from
+// the context principal.
+func (c *Client) WithCookie(name, value string) *Client {
+	cp := *c
+	cp.cookies = append(append([]http.Cookie{}, c.cookies...), http.Cookie{Name: name, Value: value})
 	return &cp
 }
 
@@ -139,6 +156,9 @@ func (c *Client) Anonymous() *Client {
 func (c *Client) Do(req *http.Request) *Response {
 	if !c.anonymous {
 		req = req.WithContext(authn.Into(req.Context(), c.p))
+		for i := range c.cookies {
+			req.AddCookie(&c.cookies[i])
+		}
 	}
 	rec := httptest.NewRecorder()
 	c.h.ServeHTTP(rec, req)
@@ -321,3 +341,196 @@ const ContentTypeJSON = httpx.ContentTypeJSON
 
 // ContentTypeProblem is what a refusal must be labelled (RFC 9457 §3).
 const ContentTypeProblem = httpx.ContentTypeProblem
+
+/* -------------------------------------------------------------------------- */
+/* The cross-cutting probes                                                   */
+/* -------------------------------------------------------------------------- */
+
+// Route is one operation of a module's surface, spelled the way its contract
+// suite addresses it on the wire: the operationId the contract declares, the
+// method, the concrete path, and the JSON body verbatim — empty for the
+// body-less operations, which are sent the way a chat button sends them: no
+// body, and no header claiming there is one.
+//
+// The route TABLES stay in the module suites, because a module's table is the
+// readable statement of what it serves; only the probes every module owes —
+// the same 401 on every route, a stranger's id answering 404, an unknown
+// query parameter refused — are executed here, once.
+type Route struct {
+	Op     string
+	Method string
+	Path   string
+	Body   string
+	// Name labels the subtest when one operation is probed under several
+	// spellings (a stranger's id, `banana`, the nil uuid). Empty means Op
+	// labels it.
+	Name string
+}
+
+func (r Route) label() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.Op
+}
+
+// send drives the route through Raw so the bytes on the wire are exactly the
+// bytes the table declares.
+func (r Route) send(c *Client) *Response {
+	return c.Raw(r.Method, r.Path, contentTypeFor(r.Body), r.Body)
+}
+
+// contentTypeFor labels a body only when there is one.
+func contentTypeFor(body string) string {
+	if body == "" {
+		return ""
+	}
+	return ContentTypeJSON
+}
+
+// RouteCheck is a module's own assertion on top of a shared probe's refusal —
+// typically that the service behind the transport saw no call. It receives
+// the route so a module can branch on which spelling was probed.
+type RouteCheck func(t *testing.T, r Route, resp *Response)
+
+// WorldFactory builds a fresh world for ONE probe: the client that drives it,
+// and the module's RouteCheck (nil when the shared assertions are the whole
+// story). Every route gets its own world so the subtests can run in parallel
+// and a leak in one cannot pollute the next.
+type WorldFactory func(t *testing.T) (*Client, RouteCheck)
+
+// AssertUnauthenticated proves that with no principal there is no tenant, so
+// there is nothing to read and nobody to attribute a write to: every route
+// answers the contract's own 401 problem with `code: unauthenticated` — one
+// code, one shape — before anything behind the transport is reached.
+func AssertUnauthenticated(t *testing.T, newWorld WorldFactory, routes []Route) {
+	t.Helper()
+	for _, r := range routes {
+		t.Run(r.label(), func(t *testing.T) {
+			t.Parallel()
+
+			c, check := newWorld(t)
+			resp := r.send(c.Anonymous())
+			requireStatus(t, r, resp, http.StatusUnauthorized)
+			schema.AssertProblem(t, r.Op, http.StatusUnauthorized, resp.Body())
+
+			if code := resp.Problem(t).Code; code != "unauthenticated" {
+				t.Fatalf("%s %s (%s): code = %q, want unauthenticated",
+					r.Method, r.Path, r.Op, code)
+			}
+			requireProblemContentType(t, r, resp)
+			if check != nil {
+				check(t, r, resp)
+			}
+		})
+	}
+}
+
+// AssertCrossTenant404 proves the tenant boundary on every id-addressed
+// route: an id the caller's org does not own answers 404 — never 403, which
+// confirms the row exists somewhere and turns the id space into a
+// cross-tenant existence oracle; never 200 with somebody else's data; never a
+// 500, which is a boundary held by accident — and the refusal says nothing
+// about who does own it. v1 has no roles, so this boundary is the only
+// boundary there is.
+func AssertCrossTenant404(t *testing.T, newWorld WorldFactory, routes []Route) {
+	t.Helper()
+	for _, r := range routes {
+		t.Run(r.label(), func(t *testing.T) {
+			t.Parallel()
+
+			c, check := newWorld(t)
+			resp := r.send(c)
+			requireStatus(t, r, resp, http.StatusNotFound)
+			schema.AssertProblem(t, r.Op, http.StatusNotFound, resp.Body())
+			requireProblemContentType(t, r, resp)
+
+			// ⚠️ The refusal names neither the other tenant nor anything it owns.
+			if strings.Contains(string(resp.Body()), OtherOrgID.String()) {
+				t.Fatalf("%s %s (%s): the 404 names the owning org\n%s",
+					r.Method, r.Path, r.Op, resp)
+			}
+			if check != nil {
+				check(t, r, resp)
+			}
+		})
+	}
+}
+
+// AssertUnknownQueryParamRefused is SPEC §E.3: a query parameter the
+// operation does not declare is `400 unknown_parameter` with `violations[]`
+// naming the parameter — never silently dropped, because a silently ignored
+// filter returns the wrong page wearing the right shape. Each route's Path
+// carries the offending parameter itself (the typo is part of the scenario),
+// and the helper reads its name back out of the query string.
+func AssertUnknownQueryParamRefused(t *testing.T, newWorld WorldFactory, routes []Route) {
+	t.Helper()
+	for _, r := range routes {
+		t.Run(r.label(), func(t *testing.T) {
+			t.Parallel()
+
+			// The 400 must be DECLARED, not merely produced: §E.3 makes it
+			// reachable with any unknown parameter, and an undeclared status is
+			// one no generated client has a branch for (git-bug ee3ae9c).
+			if !schema.Op(t, r.Op).Declares(http.StatusBadRequest) {
+				t.Fatalf("%s declares no 400, and §E.3 makes one reachable with any "+
+					"unknown query parameter", r.Op)
+			}
+
+			param := soleQueryParam(t, r)
+			c, check := newWorld(t)
+			resp := r.send(c)
+			requireStatus(t, r, resp, http.StatusBadRequest)
+			schema.AssertProblem(t, r.Op, http.StatusBadRequest, resp.Body())
+
+			p := resp.MustViolate(t, param)
+			if p.Code != "unknown_parameter" {
+				t.Fatalf("%s %s (%s): code = %q, want unknown_parameter",
+					r.Method, r.Path, r.Op, p.Code)
+			}
+			if check != nil {
+				check(t, r, resp)
+			}
+		})
+	}
+}
+
+// requireStatus is MustStatus with the operation named: a shared executor
+// that fails without saying WHICH route failed would be a regression on the
+// hand-rolled loops it replaced.
+func requireStatus(t *testing.T, r Route, resp *Response, want int) {
+	t.Helper()
+	if resp.Code() != want {
+		t.Fatalf("%s: status = %d, want %d\n%s", r.Op, resp.Code(), want, resp)
+	}
+}
+
+// requireProblemContentType holds RFC 9457 §3: a refusal is labelled
+// application/problem+json, or a generated client will not parse it as one.
+func requireProblemContentType(t *testing.T, r Route, resp *Response) {
+	t.Helper()
+	if ct := resp.Header("Content-Type"); !strings.Contains(ct, "problem+json") {
+		t.Fatalf("%s %s (%s): Content-Type = %q, want application/problem+json",
+			r.Method, r.Path, r.Op, ct)
+	}
+}
+
+// soleQueryParam reads the offending parameter's name out of the route's own
+// query string, and insists there is exactly one: a probe carrying two could
+// not say which of them the refusal must name.
+func soleQueryParam(t *testing.T, r Route) string {
+	t.Helper()
+	u, err := url.Parse(r.Path)
+	if err != nil {
+		t.Fatalf("%s: the path does not parse: %v", r.Op, err)
+	}
+	q := u.Query()
+	if len(q) != 1 {
+		t.Fatalf("%s: the path carries %d query parameters, want exactly the unknown one",
+			r.Op, len(q))
+	}
+	for name := range q {
+		return name
+	}
+	return ""
+}

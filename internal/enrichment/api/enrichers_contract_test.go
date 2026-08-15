@@ -233,19 +233,16 @@ func TestADeploymentWithEnrichmentSwitchedOffAnswersAnEmptyListRatherThanNull(t 
 func TestAnUnauthenticatedCallerReadsNoEnrichers(t *testing.T) {
 	t.Parallel()
 
-	f := newEnricherFixture(t)
-	resp := f.c.Anonymous().GET("/enrichers").MustStatus(t, http.StatusUnauthorized)
-	schema.AssertProblem(t, "listEnrichers", http.StatusUnauthorized, resp.Body())
-
-	if code := resp.Problem(t).Code; code != "unauthenticated" {
-		t.Fatalf("code = %q, want unauthenticated", code)
-	}
-	if ct := resp.Header("Content-Type"); !strings.Contains(ct, "problem+json") {
-		t.Fatalf("Content-Type = %q, want application/problem+json", ct)
-	}
-	if f.reg.calls != 0 {
-		t.Fatalf("an unauthenticated request reached the registry %d time(s)", f.reg.calls)
-	}
+	apitest.AssertUnauthenticated(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newEnricherFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
+			if f.reg.calls != 0 {
+				t.Fatalf("an unauthenticated request reached the registry %d time(s)", f.reg.calls)
+			}
+		}
+	}, []apitest.Route{
+		{Op: "listEnrichers", Method: http.MethodGet, Path: "/enrichers"},
+	})
 }
 
 // TestTheDeclaredEnricherOperationIsTheOneThisPackageServes guards the failure
@@ -285,22 +282,16 @@ func TestTheDeclaredEnricherOperationIsTheOneThisPackageServes(t *testing.T) {
 func TestAnUnknownQueryParameterIsRefusedWithADeclared400(t *testing.T) {
 	t.Parallel()
 
-	if !schema.Op(t, "listEnrichers").Declares(http.StatusBadRequest) {
-		t.Fatal("listEnrichers declares no 400, and §E.3 makes one reachable with any unknown " +
-			"query parameter")
-	}
-
-	f := newEnricherFixture(t)
-	resp := f.c.GET("/enrichers?phase=1").MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listEnrichers", http.StatusBadRequest, resp.Body())
-
-	p := resp.MustViolate(t, "phase")
-	if p.Code != "unknown_parameter" {
-		t.Fatalf("code = %q, want unknown_parameter", p.Code)
-	}
-	if f.reg.calls != 0 {
-		t.Fatal("a refused query still reached the registry")
-	}
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newEnricherFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
+			if f.reg.calls != 0 {
+				t.Fatal("a refused query still reached the registry")
+			}
+		}
+	}, []apitest.Route{
+		{Op: "listEnrichers", Method: http.MethodGet, Path: "/enrichers?phase=1"},
+	})
 }
 
 // ------------------------------------------------------------------ helpers

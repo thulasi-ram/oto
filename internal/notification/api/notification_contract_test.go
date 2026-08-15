@@ -876,62 +876,27 @@ func TestAnotherTenantsNotificationIdIsAlwaysA404(t *testing.T) {
 	t.Parallel()
 
 	stranger := apitest.StrangerID.String()
-
-	probes := []struct {
-		op   string
-		send func(t *testing.T, c *apitest.Client) *apitest.Response
-	}{
-		{
-			op: "updateNotificationPolicy",
-			send: func(t *testing.T, c *apitest.Client) *apitest.Response {
-				return c.PATCH(t, "/notification-policies/"+stranger, map[string]any{"name": "mine now"})
-			},
-		},
-		{
-			op: "deleteNotificationPolicy",
-			send: func(_ *testing.T, c *apitest.Client) *apitest.Response {
-				return c.DELETE("/notification-policies/" + stranger)
-			},
-		},
-		{
-			op: "getNotification",
-			send: func(_ *testing.T, c *apitest.Client) *apitest.Response {
-				return c.GET("/notifications/" + stranger)
-			},
-		},
-		{
-			op: "getDelivery",
-			send: func(_ *testing.T, c *apitest.Client) *apitest.Response {
-				return c.GET("/deliveries/" + stranger)
-			},
-		},
-		{
-			op: "retryDelivery",
-			send: func(t *testing.T, c *apitest.Client) *apitest.Response {
-				return c.POST(t, "/deliveries/"+stranger+"/retry", nil)
-			},
-		},
+	routes := []apitest.Route{
+		{Op: "updateNotificationPolicy", Method: http.MethodPatch,
+			Path: "/notification-policies/" + stranger, Body: `{"name":"mine now"}`},
+		{Op: "deleteNotificationPolicy", Method: http.MethodDelete,
+			Path: "/notification-policies/" + stranger},
+		{Op: "getNotification", Method: http.MethodGet, Path: "/notifications/" + stranger},
+		{Op: "getDelivery", Method: http.MethodGet, Path: "/deliveries/" + stranger},
+		{Op: "retryDelivery", Method: http.MethodPost, Path: "/deliveries/" + stranger + "/retry"},
 	}
 
-	for _, p := range probes {
-		t.Run(p.op, func(t *testing.T) {
-			t.Parallel()
-			w := newNotifWorld(t)
-
-			resp := p.send(t, w.client)
-			if resp.Code() != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404 for another tenant's id.\n%s", resp.Code(), resp)
-			}
-			schema.AssertProblem(t, p.op, http.StatusNotFound, resp.Body())
-
+	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		w := newNotifWorld(t)
+		return w.client, func(t *testing.T, _ apitest.Route, resp *apitest.Response) {
 			if strings.Contains(string(resp.Body()), "#sre-alerts") {
 				t.Fatalf("⛔ the refusal leaked the other tenant's data:\n%s", resp.Body())
 			}
 			if len(w.policies.deleted) != 0 || len(w.policies.patched) != 0 || w.audit.requeued != 0 {
 				t.Fatal("⛔ a cross-tenant request still reached a write")
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 // TestPreviewingAgainstAnotherTenantsAlertIsA404.
@@ -1100,14 +1065,11 @@ func TestAnUpdateThatAsksForNothingIsRefused(t *testing.T) {
 func TestAnUnknownQueryParameterOnTheDeliveryListIsA400(t *testing.T) {
 	t.Parallel()
 
-	w := newNotifWorld(t)
-	resp := w.client.GET("/deliveries?statuss=dead").MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listDeliveries", http.StatusBadRequest, resp.Body())
-
-	if got := resp.Problem(t).Code; got != "unknown_parameter" {
-		t.Fatalf("code = %q, want unknown_parameter", got)
-	}
-	_ = w
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newNotifWorld(t).client, nil
+	}, []apitest.Route{
+		{Op: "listDeliveries", Method: http.MethodGet, Path: "/deliveries?statuss=dead"},
+	})
 }
 
 // TestANegativeSinceSeqIsRefused. `since_seq` addresses a position in a monotonic

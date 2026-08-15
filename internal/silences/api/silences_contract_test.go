@@ -605,45 +605,16 @@ func TestTheAlertmanagerDeepLinkIsNullRatherThanGuessedWhenTheSourceResolvesToNo
 func TestASilenceOutsideTheCallersTenantIsANotFound(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name string
-		op   string
-		path string
-	}{
-		{
-			name: "an id owned by another org",
-			op:   "getSilence",
-			path: "/silences/" + apitest.StrangerID.String(),
-		},
-		{
-			name: "an id that is not a uuid at all",
-			op:   "getSilence",
-			path: "/silences/banana",
-		},
-		{
-			name: "the nil uuid",
-			op:   "getSilence",
-			path: "/silences/00000000-0000-0000-0000-000000000000",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := newSilenceFixture(t)
-			resp := f.c.GET(tc.path).MustStatus(t, http.StatusNotFound)
-			schema.AssertProblem(t, tc.op, http.StatusNotFound, resp.Body())
-
-			if ct := resp.Header("Content-Type"); !strings.Contains(ct, "problem+json") {
-				t.Fatalf("Content-Type = %q, want application/problem+json", ct)
-			}
-			// ⚠️ The refusal says nothing about the other tenant.
-			if strings.Contains(string(resp.Body()), apitest.OtherOrgID.String()) {
-				t.Fatalf("the 404 names the owning org: %s", resp)
-			}
-		})
-	}
+	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newSilenceFixture(t).c, nil
+	}, []apitest.Route{
+		{Name: "an id owned by another org", Op: "getSilence",
+			Method: http.MethodGet, Path: "/silences/" + apitest.StrangerID.String()},
+		{Name: "an id that is not a uuid at all", Op: "getSilence",
+			Method: http.MethodGet, Path: "/silences/banana"},
+		{Name: "the nil uuid", Op: "getSilence",
+			Method: http.MethodGet, Path: "/silences/00000000-0000-0000-0000-000000000000"},
+	})
 }
 
 // TestAnUnknownQueryParameterIsRefusedRatherThanIgnored — SPEC §E.3.
@@ -656,17 +627,16 @@ func TestASilenceOutsideTheCallersTenantIsANotFound(t *testing.T) {
 func TestAnUnknownQueryParameterIsRefusedRatherThanIgnored(t *testing.T) {
 	t.Parallel()
 
-	f := newSilenceFixture(t)
-	resp := f.c.GET("/silences?stat=active").MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listSilences", http.StatusBadRequest, resp.Body())
-
-	p := resp.MustViolate(t, "stat")
-	if p.Code != "unknown_parameter" {
-		t.Fatalf("code = %q, want unknown_parameter", p.Code)
-	}
-	if f.svc.listCalls != 0 {
-		t.Fatal("a refused query still reached the service")
-	}
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newSilenceFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
+			if f.svc.listCalls != 0 {
+				t.Fatal("a refused query still reached the service")
+			}
+		}
+	}, []apitest.Route{
+		{Op: "listSilences", Method: http.MethodGet, Path: "/silences?stat=active"},
+	})
 }
 
 // TestAMalformedFilterIsRefusedWithTheFieldNamed.
@@ -706,30 +676,19 @@ func TestAMalformedFilterIsRefusedWithTheFieldNamed(t *testing.T) {
 func TestAnUnauthenticatedCallerGetsTheSame401OnEverySilenceRoute(t *testing.T) {
 	t.Parallel()
 
-	routes := []struct {
-		op   string
-		path string
-	}{
-		{"listSilences", "/silences"},
-		{"getSilence", "/silences/" + contractSilenceID.String()},
+	routes := []apitest.Route{
+		{Op: "listSilences", Method: http.MethodGet, Path: "/silences"},
+		{Op: "getSilence", Method: http.MethodGet, Path: "/silences/" + contractSilenceID.String()},
 	}
 
-	for _, route := range routes {
-		t.Run(route.op, func(t *testing.T) {
-			t.Parallel()
-
-			f := newSilenceFixture(t)
-			resp := f.c.Anonymous().GET(route.path).MustStatus(t, http.StatusUnauthorized)
-			schema.AssertProblem(t, route.op, http.StatusUnauthorized, resp.Body())
-
-			if code := resp.Problem(t).Code; code != "unauthenticated" {
-				t.Fatalf("code = %q, want unauthenticated", code)
-			}
+	apitest.AssertUnauthenticated(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		f := newSilenceFixture(t)
+		return f.c, func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
 			if f.svc.listCalls != 0 || f.svc.getCalls != 0 {
 				t.Fatal("an unauthenticated request reached the service")
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 // TestTheDeclaredSilenceOperationsAreTheOnesThisPackageServes is a guard against

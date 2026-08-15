@@ -575,54 +575,24 @@ func TestAnotherTenantsChannelIdIsAlwaysA404(t *testing.T) {
 	t.Parallel()
 
 	stranger := apitest.StrangerID.String()
-
-	probes := []struct {
-		op string
-		// send runs the request. It takes the *testing.T of its own subtest so a
-		// marshalling failure is attributed where it happened.
-		send func(t *testing.T, c *apitest.Client) *apitest.Response
-	}{
-		{
-			op:   "getChannel",
-			send: func(_ *testing.T, c *apitest.Client) *apitest.Response { return c.GET("/channels/" + stranger) },
-		},
-		{
-			op: "updateChannel",
-			send: func(t *testing.T, c *apitest.Client) *apitest.Response {
-				return c.PATCH(t, "/channels/"+stranger, map[string]any{"name": "mine now"})
-			},
-		},
-		{
-			op:   "deleteChannel",
-			send: func(_ *testing.T, c *apitest.Client) *apitest.Response { return c.DELETE("/channels/" + stranger) },
-		},
-		{
-			op: "testChannel",
-			send: func(t *testing.T, c *apitest.Client) *apitest.Response {
-				return c.POST(t, "/channels/"+stranger+"/test", nil)
-			},
-		},
+	routes := []apitest.Route{
+		{Op: "getChannel", Method: http.MethodGet, Path: "/channels/" + stranger},
+		{Op: "updateChannel", Method: http.MethodPatch, Path: "/channels/" + stranger, Body: `{"name":"mine now"}`},
+		{Op: "deleteChannel", Method: http.MethodDelete, Path: "/channels/" + stranger},
+		{Op: "testChannel", Method: http.MethodPost, Path: "/channels/" + stranger + "/test"},
 	}
 
-	for _, p := range probes {
-		t.Run(p.op, func(t *testing.T) {
-			t.Parallel()
-			w := newChanWorld(t)
-
-			resp := p.send(t, w.client)
-			if resp.Code() != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404 for another tenant's id.\n%s", resp.Code(), resp)
-			}
-			schema.AssertProblem(t, p.op, http.StatusNotFound, resp.Body())
-
+	apitest.AssertCrossTenant404(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		w := newChanWorld(t)
+		return w.client, func(t *testing.T, _ apitest.Route, resp *apitest.Response) {
 			if strings.Contains(string(resp.Body()), "#sre-alerts") {
 				t.Fatalf("⛔ the refusal leaked the other tenant's channel name:\n%s", resp.Body())
 			}
 			if len(w.store.deleted) != 0 || len(w.store.patched) != 0 {
 				t.Fatal("⛔ a cross-tenant request still reached a write")
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 /* -------------------------------------------------------------------------- */
@@ -767,13 +737,11 @@ func TestASoftDeletedChannelIs404AndNotAGhost(t *testing.T) {
 func TestAnUnknownQueryParameterOnTheChannelListIsRefused(t *testing.T) {
 	t.Parallel()
 
-	w := newChanWorld(t)
-	resp := w.client.GET("/channels?limitt=200").MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listChannels", http.StatusBadRequest, resp.Body())
-
-	if got := resp.Problem(t).Code; got != "unknown_parameter" {
-		t.Fatalf("code = %q, want unknown_parameter", got)
-	}
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newChanWorld(t).client, nil
+	}, []apitest.Route{
+		{Op: "listChannels", Method: http.MethodGet, Path: "/channels?limitt=200"},
+	})
 }
 
 /* -------------------------------------------------------------------------- */
@@ -943,32 +911,12 @@ func TestEveryTestErrorClassTheServerCanEmitSatisfiesTheContract(t *testing.T) {
 func TestAnUnknownQueryParameterOnAChannelEndpointIsADeclared400(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct{ op, method, target string }{
-		{"listChannelTypes", http.MethodGet, "/channel-types?foo=bar"},
-		{"getChannel", http.MethodGet, "/channels/" + chanMine.String() + "?foo=bar"},
-		{"deleteChannel", http.MethodDelete, "/channels/" + chanMine.String() + "?foo=bar"},
-		{"testChannel", http.MethodPost, "/channels/" + chanMine.String() + "/test?foo=bar"},
-	} {
-		t.Run(tc.op, func(t *testing.T) {
-			t.Parallel()
-			w := newChanWorld(t)
-
-			var resp *apitest.Response
-			switch tc.method {
-			case http.MethodDelete:
-				resp = w.client.DELETE(tc.target)
-			case http.MethodPost:
-				resp = w.client.POST(t, tc.target, nil)
-			default:
-				resp = w.client.GET(tc.target)
-			}
-			resp.MustStatus(t, http.StatusBadRequest)
-			schema.AssertProblem(t, tc.op, http.StatusBadRequest, resp.Body())
-
-			p := resp.MustViolate(t, "foo")
-			if p.Code != "unknown_parameter" {
-				t.Fatalf("code = %q, want unknown_parameter", p.Code)
-			}
-		})
-	}
+	apitest.AssertUnknownQueryParamRefused(t, func(t *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newChanWorld(t).client, nil
+	}, []apitest.Route{
+		{Op: "listChannelTypes", Method: http.MethodGet, Path: "/channel-types?foo=bar"},
+		{Op: "getChannel", Method: http.MethodGet, Path: "/channels/" + chanMine.String() + "?foo=bar"},
+		{Op: "deleteChannel", Method: http.MethodDelete, Path: "/channels/" + chanMine.String() + "?foo=bar"},
+		{Op: "testChannel", Method: http.MethodPost, Path: "/channels/" + chanMine.String() + "/test?foo=bar"},
+	})
 }

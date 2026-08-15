@@ -776,53 +776,30 @@ func TestAnotherTenantsIdIsIndistinguishableFromNothingAtAll(t *testing.T) {
 	t.Parallel()
 
 	stranger := apitest.StrangerID
-	cases := []struct {
-		op     string
-		method string
-		target string
-		body   any
-	}{
-		{"getSource", http.MethodGet, sourcePath(stranger, ""), nil},
-		{"updateSource", http.MethodPatch, sourcePath(stranger, ""), map[string]any{"name": "borrowed"}},
-		{"deleteSource", http.MethodDelete, sourcePath(stranger, ""), nil},
-		{"testSource", http.MethodPost, sourcePath(stranger, "/test"), nil},
-		{"rotateSourceIngestToken", http.MethodPost, sourcePath(stranger, "/rotate-token"), nil},
-		{"reconcileSource", http.MethodPost, sourcePath(stranger, "/reconcile"), nil},
-		{"getSourceHealth", http.MethodGet, sourcePath(stranger, "/health"), nil},
-		{"updateCluster", http.MethodPatch, "/clusters/" + stranger.String(),
-			map[string]any{"display_name": "Borrowed"}},
+	routes := []apitest.Route{
+		{Op: "getSource", Method: http.MethodGet, Path: sourcePath(stranger, "")},
+		{Op: "updateSource", Method: http.MethodPatch, Path: sourcePath(stranger, ""),
+			Body: `{"name":"borrowed"}`},
+		{Op: "deleteSource", Method: http.MethodDelete, Path: sourcePath(stranger, "")},
+		{Op: "testSource", Method: http.MethodPost, Path: sourcePath(stranger, "/test")},
+		{Op: "rotateSourceIngestToken", Method: http.MethodPost, Path: sourcePath(stranger, "/rotate-token")},
+		{Op: "reconcileSource", Method: http.MethodPost, Path: sourcePath(stranger, "/reconcile")},
+		{Op: "getSourceHealth", Method: http.MethodGet, Path: sourcePath(stranger, "/health")},
+		{Op: "updateCluster", Method: http.MethodPatch, Path: "/clusters/" + stranger.String(),
+			Body: `{"display_name":"Borrowed"}`},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.op, func(t *testing.T) {
-			t.Parallel()
-
-			s := newContractStack()
-			c := s.client()
-
-			var resp *apitest.Response
-			switch tc.method {
-			case http.MethodGet:
-				resp = c.GET(tc.target)
-			case http.MethodDelete:
-				resp = c.DELETE(tc.target)
-			case http.MethodPatch:
-				resp = c.PATCH(t, tc.target, tc.body)
-			default:
-				resp = c.POST(t, tc.target, tc.body)
-			}
-
-			resp.MustStatus(t, http.StatusNotFound)
-			schema.AssertProblem(t, tc.op, http.StatusNotFound, resp.Body())
-
+	apitest.AssertCrossTenant404(t, func(_ *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		s := newContractStack()
+		return s.client(), func(t *testing.T, _ apitest.Route, _ *apitest.Response) {
 			// ⛔ AND NOTHING HAPPENED. A refused write that still reached the
 			// registry would be a leak the status line hides.
 			if s.registry.updated != 0 || s.registry.deleted != 0 || s.registry.issued != 0 {
 				t.Fatalf("a stranger's id still caused %d updates, %d deletes and %d mints",
 					s.registry.updated, s.registry.deleted, s.registry.issued)
 			}
-		})
-	}
+		}
+	}, routes)
 }
 
 // TestTheOwnersOfARowCanStillSeeIt is the other half of the boundary, and it is
@@ -850,11 +827,11 @@ func TestTheOwnersOfARowCanStillSeeIt(t *testing.T) {
 func TestATypoedFilterOnTheSourceListIsRefusedRatherThanIgnored(t *testing.T) {
 	t.Parallel()
 
-	resp := newContractStack().client().
-		GET("/sources?serverity=critical").
-		MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listSources", http.StatusBadRequest, resp.Body())
-	resp.MustViolate(t, "serverity")
+	apitest.AssertUnknownQueryParamRefused(t, func(_ *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newContractStack().client(), nil
+	}, []apitest.Route{
+		{Op: "listSources", Method: http.MethodGet, Path: "/sources?serverity=critical"},
+	})
 }
 
 // TestTheClusterListRefusesTheParameterItDoesNotDeclare.
@@ -865,11 +842,11 @@ func TestATypoedFilterOnTheSourceListIsRefusedRatherThanIgnored(t *testing.T) {
 func TestTheClusterListRefusesTheParameterItDoesNotDeclare(t *testing.T) {
 	t.Parallel()
 
-	resp := newContractStack().client().
-		GET("/clusters?since_seq=42").
-		MustStatus(t, http.StatusBadRequest)
-	schema.AssertProblem(t, "listClusters", http.StatusBadRequest, resp.Body())
-	resp.MustViolate(t, "since_seq")
+	apitest.AssertUnknownQueryParamRefused(t, func(_ *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newContractStack().client(), nil
+	}, []apitest.Route{
+		{Op: "listClusters", Method: http.MethodGet, Path: "/clusters?since_seq=42"},
+	})
 }
 
 // TestCreatingASourceWithoutANameNamesTheField.
@@ -1012,10 +989,11 @@ func TestAMissingCollaboratorIsAnHonest503(t *testing.T) {
 func TestAnUnauthenticatedCallerIsRefusedBeforeAnythingIsRead(t *testing.T) {
 	t.Parallel()
 
-	resp := newContractStack().client().Anonymous().
-		GET("/sources").
-		MustStatus(t, http.StatusUnauthorized)
-	schema.AssertProblem(t, "listSources", http.StatusUnauthorized, resp.Body())
+	apitest.AssertUnauthenticated(t, func(_ *testing.T) (*apitest.Client, apitest.RouteCheck) {
+		return newContractStack().client(), nil
+	}, []apitest.Route{
+		{Op: "listSources", Method: http.MethodGet, Path: "/sources"},
+	})
 }
 
 /* -------------------------------------------------------------------------- */
