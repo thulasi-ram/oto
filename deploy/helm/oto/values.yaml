@@ -1,0 +1,589 @@
+# Default values for the oto chart.
+#
+# ⭐ EVERY KEY UNDER `config:` MAPS ONTO AN ENVIRONMENT VARIABLE THE BINARY
+# ACTUALLY READS. The mapping is mechanical and it is oto's own: koanf reads
+# `OTO_<SECTION>_<KEY>` and resolves it to `<section>.<key>`
+# (internal/platform/config/config.go, `EnvPrefix` and `envKeyToPath`). So
+# `config.db.ingest_share_percent` here becomes `OTO_DB_INGEST_SHARE_PERCENT` in
+# the ConfigMap, and that is the same key `.env.example` documents.
+#
+# Nothing in this file is invented. If a knob is not here it is because the
+# binary does not read it — the B1–B17 ingest bounds (`max_alerts`, `max_labels`,
+# `max_body_bytes`, `max_batch_bytes`) are deliberately absent, because they are
+# constants bound to DDL CHECKs and a variable that disagreed with the CHECK
+# would turn a rejected alert into a 500. See the ⛔ block on `IngestConfig`.
+#
+# ⛔ POSTGRES IS EXTERNAL AND THERE IS NO SUBCHART (ADR 0014, ADR 0015, SPEC R7).
+# Set `secrets.databaseUrl` (or `existingSecret`) to a database you back up.
+
+# -----------------------------------------------------------------------------
+# Naming
+# -----------------------------------------------------------------------------
+
+# Override the chart name used in resource names and labels.
+nameOverride: ""
+# Override the full release-qualified resource name outright.
+fullnameOverride: ""
+
+# Extra labels and annotations applied to every object this chart renders.
+commonLabels: {}
+commonAnnotations: {}
+
+# -----------------------------------------------------------------------------
+# Image
+# -----------------------------------------------------------------------------
+
+image:
+  # The oto image. One image runs every mode; the subcommand chooses which
+  # (`oto api`, `oto worker`, `oto migrate`, `oto bootstrap`).
+  #
+  # ⭐ PUBLISHED BY .github/workflows/release.yml, ON EVERY `v*.*.*` TAG. The
+  # namespace is the GitHub repository's own owner (`thulasi-ram`), because that
+  # is the only namespace the workflow's built-in GITHUB_TOKEN is allowed to
+  # push a package to. This used to read `ghcr.io/thulasiram/oto` — an owner
+  # this repository is not under, so no workflow could ever have written there.
+  #
+  # Each release publishes `X.Y.Z` (this is the one appVersion resolves to),
+  # `vX.Y.Z`, the moving `X.Y`, and `sha-<commit>`. THERE IS NO `latest` — see
+  # the note on `tag` below; asking you to pin and then shipping a floating tag
+  # would be a contradiction. `linux/amd64` and `linux/arm64` are both in the
+  # manifest.
+  repository: ghcr.io/thulasi-ram/oto
+  # Defaults to the chart's appVersion when empty. Pin it in production: a
+  # floating tag makes "which build is this" unanswerable, which is the question
+  # GET /api/v1/version exists to answer — and the answer is stamped into the
+  # published image, so `oto version` inside the pod names the exact commit.
+  tag: ""
+  # Safe with the immutable `X.Y.Z` default: that tag never moves, so a cached
+  # layer is never a stale one. Set `Always` only if you pin the moving `X.Y`.
+  pullPolicy: IfNotPresent
+
+# Names of pre-created image pull secrets, e.g. [{name: ghcr-creds}].
+#
+# ⚠️ A GHCR PACKAGE IS PRIVATE UNTIL SOMEBODY MAKES IT PUBLIC, and no workflow
+# can do that for you — it is a package setting on GitHub. If pulls fail with
+# `denied`/`unauthorized` rather than `manifest unknown`, the package is still
+# private: either flip it to public once, or create a docker-registry Secret
+# holding a read:packages token and name it here. It is projected into all four
+# pod specs this chart renders (api, worker, the migrate hook, the bootstrap
+# hook), so naming it once here is enough.
+imagePullSecrets: []
+
+# -----------------------------------------------------------------------------
+# Secrets
+#
+# ⛔ SECRETS ARE NEVER BAKED INTO THE IMAGE AND SHOULD NOT LIVE IN THIS FILE
+# EITHER. Set `existingSecret` to a Secret you manage (sealed-secrets, External
+# Secrets, SOPS, whatever your cluster already trusts) and leave everything
+# under `secrets:` empty. The inline values exist so a `helm install` on a
+# scratch cluster works in one command; a values file in git is not a secret
+# store.
+# -----------------------------------------------------------------------------
+
+# Name of an existing Secret holding oto's secret material. When set, NOTHING
+# under `secrets:` is rendered and no Secret is created by this chart.
+existingSecret: ""
+
+# The keys this chart reads out of the Secret — its own or `existingSecret`.
+#
+# They default to the environment variable names, but they are projected KEY BY
+# KEY with `secretKeyRef`, so you can rename any of them to whatever your secret
+# store already calls it and the chart maps it onto the right variable. Only
+# `databaseUrl` is mandatory; the rest are `optional: true` because the binary
+# genuinely runs without them (and says so).
+existingSecretKeys:
+  databaseUrl: OTO_DB_URL
+  secretKey: OTO_SECURITY_SECRET_KEY
+  slackAppToken: OTO_SLACK_APP_TOKEN
+  slackSigningSecret: OTO_SLACK_SIGNING_SECRET
+  bootstrapPassword: OTO_BOOTSTRAP_PASSWORD
+
+secrets:
+  # REQUIRED. The libpq/pgx URL of the external Postgres, e.g.
+  # postgres://oto:password@postgres.db.svc:5432/oto?sslmode=require
+  #
+  # ⚠️ IT MUST NOT CONTAIN A COMMA. koanf's env provider splits any value
+  # containing a comma into a list (config.Load's TransformFunc), so a comma in
+  # a password or in a multi-host DSN becomes a parse failure at boot.
+  databaseUrl: ""
+
+  # base64 of 32 random bytes:  openssl rand -base64 32
+  #
+  # This is the AES-256-GCM key `platform/secrets` seals channel credentials
+  # with — the Slack BOT token included. Leave it empty and oto boots WITHOUT a
+  # keyring: it logs a warning, every credential read fails at the repository,
+  # and no channel can be configured. Nothing is stored in the clear.
+  #
+  # ⛔ LOSING IT LOSES EVERY SEALED CREDENTIAL. Back it up where you back up the
+  # database, and rotate it only through a keyring generation (see
+  # internal/platform/secrets).
+  secretKey: ""
+
+  # Slack app-level token (xapp-…). Read as OTO_SLACK_APP_TOKEN.
+  # ⚠️ Socket Mode is NOT IMPLEMENTED (see `config.slack.mode`), so this is
+  # carried for completeness and does nothing today.
+  slackAppToken: ""
+
+  # Slack signing secret. REQUIRED when `config.slack.enabled` is true and
+  # `config.slack.mode` is `http` — the boot refuses to start otherwise, because
+  # an empty signing secret accepts forged interaction payloads and it is the
+  # ONLY thing authenticating POST /api/v1/integrations/slack/interactions.
+  slackSigningSecret: ""
+
+  # Password for the first user, consumed by the optional bootstrap hook below.
+  # It is an environment variable and not a flag on purpose: a flag value is
+  # visible in `ps` and in shell history (cmd/oto/bootstrap.go).
+  bootstrapPassword: ""
+
+# ⛔ THE SLACK BOT TOKEN IS NOT HERE, AND THAT IS CORRECT. `xoxb-…` is a
+# per-channel credential: it is POSTed to /api/v1/channels, sealed with
+# `secrets.secretKey` and stored in Postgres. Only the app-level token and the
+# signing secret are process-wide, and only those two are process configuration.
+
+# -----------------------------------------------------------------------------
+# Migrations — SPEC acceptance criterion 32
+# -----------------------------------------------------------------------------
+
+migration:
+  # Run `oto migrate` as a pre-install/pre-upgrade hook.
+  #
+  # ⭐ IT RUNS BOTH MIGRATORS, because `oto migrate` does: goose over
+  # db/migrations for oto's own schema, then River's own migrator for
+  # river_job/river_leader/river_queue (cmd/oto/migrate.go). Running goose alone
+  # leaves River's tables absent and every worker pod dies at boot.
+  enabled: true
+  # Job.spec.backoffLimit. A migration that cannot apply should fail the release,
+  # not retry forever against a database that is not coming back.
+  backoffLimit: 3
+  # Seconds before the Job is killed. Long enough for a first-install schema on a
+  # cold database.
+  activeDeadlineSeconds: 600
+  # Seconds after which a finished Job is garbage-collected. A SUCCEEDED job is
+  # removed by the hook-delete-policy immediately; this is what bounds how long a
+  # FAILED one stays around, and a failed migration's `kubectl logs` is the first
+  # thing anyone will want. Raise it if your on-call cannot look within 5 minutes.
+  ttlSecondsAfterFinished: 300
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
+# Bootstrap — the install path
+#
+# ⭐ A MIGRATED DATABASE HAS NO CREDENTIAL THAT CAN REACH IT. v1 has no
+# org-creation API and no signup, so `oto bootstrap` is how a fresh install
+# becomes usable: it creates the first org, the first user and the first API
+# token. It refuses to run if the deployment already has an org, so re-running it
+# on an upgrade is safe and is a no-op — which is why it is a post-install hook
+# only, not post-upgrade.
+#
+# ⛔ IT PRINTS THE API TOKEN ONCE, TO THE JOB'S STDOUT, AND NEVER TO THE LOGGER.
+# Read it with `kubectl logs job/<release>-bootstrap` and store it; when the Job
+# is garbage-collected the token is unrecoverable and you bootstrap again.
+# -----------------------------------------------------------------------------
+
+bootstrap:
+  enabled: false
+  # URL-safe tenant handle, e.g. acme. Required when enabled.
+  orgSlug: ""
+  # Org display name. Defaults to the slug.
+  orgName: ""
+  # First user's email address. Required when enabled.
+  email: ""
+  # First user's display name. Defaults to the email.
+  displayName: ""
+  # Label for the API token this mints.
+  tokenName: bootstrap
+  ttlSecondsAfterFinished: 3600
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# The API deployment — `oto api`
+#
+# ⛔ THE API AND THE WORKER ARE SEPARATE DEPLOYMENTS ON PURPOSE. `oto` with no
+# subcommand runs both in one process and that is what a single-container
+# deployment does; on Kubernetes they are split so a storm can be answered with
+# more ingest workers rather than more HTTP handlers, and so a bad rollout of one
+# cannot take the other down (cmd/oto/main.go).
+# -----------------------------------------------------------------------------
+
+api:
+  replicaCount: 2
+  # Port the container listens on. It is rendered into OTO_HTTP_ADDR as `:PORT`
+  # and into the probes and the Service, so the three cannot disagree.
+  containerPort: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  # ⭐ /healthz IS LIVENESS AND IT DELIBERATELY DOES NOT TOUCH POSTGRES
+  # (internal/app/routes.go): a database outage must not make Kubernetes restart
+  # every oto pod.
+  livenessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  # ⭐ /readyz IS READINESS AND IT REPORTS THE TRUTH: 200 only when the pools
+  # answer a ping AND the applied schema matches the binary. A pod two migrations
+  # behind is removed from the Service instead of serving queries against columns
+  # that do not exist yet (internal/app/ops.go).
+  readinessProbe:
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  # Startup probe, so a slow first connection does not trip liveness.
+  startupProbe:
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30
+  # Matches http.shutdown_timeout below, with room for the drain.
+  terminationGracePeriodSeconds: 40
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  # Rendered only when replicaCount > 1.
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: ""
+
+# -----------------------------------------------------------------------------
+# The worker deployment — `oto worker`
+#
+# ⛔ ONE REPLICA BY DEFAULT, AND RAISING IT IS SAFE. River claims jobs
+# transactionally, so N workers do not double-deliver. The default is 1 because
+# `jobs.queue_*` below already sets the per-process concurrency, and two knobs
+# multiplying into your Postgres connection count is worth doing on purpose.
+#
+# ⚠️ A WORKER WITH NO DATABASE EXITS. Unlike the API it does not serve while
+# Postgres is away — it has nothing to do — so CrashLoopBackOff during a database
+# outage is the designed behaviour, not a bug (cmd/oto/main.go step 4).
+# -----------------------------------------------------------------------------
+
+worker:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  # The worker has no listener, so there is no HTTP probe to run. Liveness is
+  # left to the process: it exits on a fatal, and the Deployment restarts it.
+  terminationGracePeriodSeconds: 90
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+# -----------------------------------------------------------------------------
+# Service and Ingress
+# -----------------------------------------------------------------------------
+
+service:
+  type: ClusterIP
+  port: 80
+  # Only used when type is NodePort.
+  nodePort: ""
+  annotations: {}
+
+ingress:
+  # OFF BY DEFAULT. oto's ingest endpoint is authenticated by a bearer token and
+  # nothing else; exposing it is a decision, not a default.
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: oto.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # e.g.
+  # tls:
+  #   - secretName: oto-tls
+  #     hosts:
+  #       - oto.example.com
+
+# -----------------------------------------------------------------------------
+# Service account and pod security
+# -----------------------------------------------------------------------------
+
+serviceAccount:
+  create: true
+  # Defaults to the fullname when empty.
+  name: ""
+  annotations: {}
+  # ⛔ FALSE. oto reads no Kubernetes API — k8scontext is DEFERRED-POST-V1 and
+  # needs cluster RBAC oto deliberately does not have. A projected service
+  # account token in the pod would be an credential with nothing to use it.
+  automountServiceAccountToken: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# ⭐ readOnlyRootFilesystem IS TRUE AND IT HOLDS. The binary writes nothing to
+# disk: no os.Create, no os.WriteFile, no temp files anywhere in cmd/ or
+# internal/. State is Postgres and only Postgres (ADR 0001).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop:
+      - ALL
+
+# -----------------------------------------------------------------------------
+# oto's own configuration — the non-secret half, rendered into a ConfigMap.
+#
+# Every key below is `OTO_<SECTION>_<KEY>` upper-cased. Defaults here are the
+# binary's own defaults from config.Default(), EXCEPT where a production default
+# differs and is called out.
+# -----------------------------------------------------------------------------
+
+config:
+  # dev | staging | prod. Validated at boot.
+  # The chart defaults to prod; the binary defaults to dev.
+  env: prod
+  # Service name on every log line and every metric.
+  service: oto
+
+  http:
+    # ⚠️ `addr` IS NOT SETTABLE HERE. It is derived from `api.containerPort`, so
+    # the listener, the probes and the Service cannot drift apart.
+
+    # The externally reachable URL of this install. It is what deep links in
+    # Slack cards point at, so a wrong value produces cards whose "open in oto"
+    # button goes nowhere. Set it to your ingress host.
+    base_url: http://localhost:8080
+    # Browser origins allowed to read AUTHENTICATED responses. Comma-joined into
+    # one variable; koanf splits it back on the comma.
+    #
+    # ⛔ EMPTY MEANS CORS IS DISABLED, WHICH IS THE SAFE DEFAULT. `*` is refused
+    # at boot: oto sends credentials and no browser honours a wildcard with them.
+    cors_origins: []
+    read_timeout: 15s
+    write_timeout: 30s
+    idle_timeout: 120s
+    # Drain budget for in-flight requests on SIGTERM. Keep it below
+    # `api.terminationGracePeriodSeconds`.
+    shutdown_timeout: 20s
+    # Bounds a single non-streaming request. SSE routes opt out.
+    request_timeout: 30s
+    # 16 MiB. The ingest hard bound is 8 MiB and lives in the domain, not here.
+    max_body_bytes: 16777216
+
+  db:
+    # ⛔ `url` IS A SECRET AND LIVES UNDER `secrets.databaseUrl`, NOT HERE.
+
+    # THE TWO POOLS (SPEC §G.10, ADR 0014). oto opens two pgx pools over one
+    # database so that UI queries can never starve ingestion. You do not size
+    # them directly; you size the total and the ingest share, and the binary
+    # derives both (DBConfig.IngestPoolSize / GeneralPoolSize):
+    #
+    #   ingest  = clamp(max_conns * ingest_share_percent / 100,
+    #                   ingest_min_conns, max_conns - 1)
+    #   general = max_conns - ingest
+    #
+    # At the defaults below that is 5 ingest + 15 general per POD, and every API
+    # pod and every worker pod opens its own pair. Multiply by
+    # (api.replicaCount + worker.replicaCount) before comparing with Postgres's
+    # max_connections.
+    max_conns: 20
+    ingest_share_percent: 25
+    ingest_min_conns: 4
+
+    # Per-pool `statement_timeout`, set as a runtime parameter on every
+    # connection the pool opens. The ingest budget is short because the webhook
+    # path must answer 202 in under 250 ms at p99 or shed with a 503.
+    ingest_statement_timeout: 2s
+    general_statement_timeout: 15s
+
+    max_conn_lifetime: 1h
+    max_conn_idle_time: 30m
+    connect_timeout: 5s
+
+    # ⛔ LEAVE THIS FALSE. Migrations are the pre-install hook's job. Setting it
+    # true makes every replica race to migrate at boot, which is how a rolling
+    # deploy corrupts in-flight jobs.
+    auto_migrate: false
+
+  log:
+    level: info
+    # json in production. `text` is for a terminal.
+    format: json
+    # Adds caller file:line to every record. Costly.
+    source_location: false
+    # ⛔ THERE IS NO `redact_labels` HERE AND THERE MUST NOT BE. Redaction is PER
+    # SOURCE — `alert_sources.redact_labels` / `redact_annotations`, glob patterns
+    # applied before the raw payload is persisted. A process-wide list used to
+    # exist, was read by nothing, and redacted nothing.
+
+  telemetry:
+    metrics_enabled: true
+    metrics_path: /metrics
+    tracing_enabled: false
+    otlp_endpoint: localhost:4317
+    otlp_insecure: true
+    trace_sample_rate: 0.1
+
+  jobs:
+    # Whether this process WORKS jobs. It gates the worker pods; API pods run
+    # `oto api` and never work jobs regardless of this value.
+    enabled: true
+    # Per-process concurrency per queue.
+    queue_ingest: 10
+    queue_default: 5
+    queue_delivery: 5
+    fetch_interval: 1s
+    job_timeout: 1m
+    # How long a job may sit `running` before the rescuer reclaims it — the
+    # backstop for a worker pod that was killed mid-job.
+    rescue_after: 1h
+
+  ingest:
+    # The Retry-After sent with a 503. Never 429, never any other 4xx (C4).
+    retry_after: 10s
+    # How long a webhook may wait for an ingest slot before it is shed with a
+    # 503. pgxpool has no acquire timeout of its own; the shedder enforces this.
+    acquire_timeout: 500ms
+
+  retention:
+    # These three are the FLOOR the partition dropper starts from, not the last
+    # word: §D.11 retention is a table-level property, so `partitions.manage`
+    # takes the MAXIMUM of the value here and every org's `orgs.settings` value
+    # (ADR 0024).
+    #
+    # ⛔ 720h IS 30 DAYS AND IT IS DERIVED, NOT CHOSEN. It is the
+    # `alert_event_keys` idempotency horizon (SPEC §D.4), and the two numbers are
+    # coupled: the one stated requirement a stored raw payload exists to serve is
+    # SPEC acceptance criterion 36 — "replaying a stored `ingest_batch` after a
+    # parser fix reproduces the same state without duplicate Slack messages" —
+    # and that replay is idempotent ONLY while the batch's dedupe keys are still
+    # in `alert_event_keys`. Drop the payload sooner and you have thrown away
+    # bytes that were still replayable; keep it longer and a replay appends the
+    # timeline a second time.
+    #
+    # This said 336h (14 days), which is the value `identity/domain` measured and
+    # REJECTED as "traceable to nothing" — and 14 days here would have left every
+    # payload aged 14–30 days unreplayable while its dedupe keys were still live.
+    # It must move with `identity/domain.DefaultRawRetention` and
+    # `.env.example`, both of which say 720h.
+    raw_payloads: 720h   # 30 days
+    # 13 months: the longest window that keeps one org inside ADR 0014's scale
+    # envelope (~130M event rows, ~98 GB). Mirrors DefaultEventRetention.
+    events: 9360h        # 13 months
+    ui_events: 24h
+
+  slack:
+    enabled: false
+    # ⚠️ `socket` IS THE DEFAULT AND SOCKET MODE IS NOT IMPLEMENTED. Left here,
+    # the Acknowledge button on every alert card renders and nothing listens for
+    # it. Interactivity needs `http`, a signing secret, and the Slack app's
+    # Request URL pointed at POST /api/v1/integrations/slack/interactions.
+    # See docs/setup/slack.md.
+    mode: socket
+
+  security:
+    # ⛔ `secret_key` IS A SECRET AND LIVES UNDER `secrets.secretKey`.
+    session_ttl: 720h   # 30 days
+    session_cookie: oto_session
+
+    # SSRF guard. DEFAULT CLOSED, and it opens for the WHOLE PROCESS: with it on
+    # oto will dial 10.0.0.0/8, 127.0.0.1 and 169.254.169.254 on behalf of any
+    # tenant that configures a source pointing there. On a Kubernetes install
+    # whose Alertmanager and Prometheus are cluster-internal Services you will
+    # need it — turn it on knowing that is what you are turning on.
+    allow_private_targets: false
+
+    # Lets the tenant-writable `alert_sources.tls_skip_verify` take effect.
+    # DEFAULT CLOSED: whether an unverified certificate is acceptable is a
+    # statement about your network, not about one org's source.
+    allow_insecure_tls: false
+
+    # argon2id costs 19 MiB per verification and runs on every login path,
+    # including unknown addresses. The first two bound brute force per client
+    # address; the third bounds how much memory concurrent verifications can hold
+    # at once, and it is the one that decides whether login can exhaust the pod.
+    login_rate_burst: 5
+    login_rate_refill: 12s
+    login_max_concurrent: 8
+
+# -----------------------------------------------------------------------------
+# The declarative tuning layer (docs/setup/tuning.md)
+#
+# ⛔ SETTING A KEY HERE TAKES IT AWAY FROM THE UI. Precedence is
+#     shipped default → org override (Postgres) → these (highest)
+# so a key named here is reported by the settings API as `config`, names the
+# variable an operator must edit, and a PATCH on it is refused with 409 rather
+# than accepted and silently reverted on your next deploy. An org override that
+# already exists is kept and reported as `shadowed`.
+#
+# ⚠️ AN UNKNOWN KEY OR AN OUT-OF-BOUNDS VALUE FAILS THE BOOT, by design — a
+# values file with a line that quietly does nothing is worse.
+#
+# Keys are the ones on docs/setup/tuning.md, e.g.
+#   refire_grace_s, resolve_grace_s, group_close_delay_s,
+#   flap_threshold, flap_window_s, flap_digest_interval_s,
+#   storm_threshold, storm_window_s, storm_cooldown_s,
+#   raw_retention_days, event_retention_months,
+#   unacked_reminder_after_s, default_verbosity, broadcast_on_resolved,
+#   unacked_reminder_mention, unacked_reminder_mention_list,
+#   unacked_reminder_mention_min_severity
+# -----------------------------------------------------------------------------
+
+tuning: {}
+# tuning:
+#   refire_grace_s: 900
+#   storm_threshold: 25
+
+# -----------------------------------------------------------------------------
+# Escape hatches
+# -----------------------------------------------------------------------------
+
+# Extra environment variables appended to every oto container, after the
+# ConfigMap and the Secret, so they win. Use this for an OTO_* key this chart
+# does not model rather than forking the chart.
+extraEnv: []
+# - name: OTO_LOG_LEVEL
+#   value: debug
+
+# Extra `envFrom` sources (ConfigMaps or Secrets) for every oto container.
+extraEnvFrom: []
+# - secretRef:
+#     name: oto-extra
+
+# Extra volumes and mounts, e.g. a CA bundle for a Postgres with a private CA.
+extraVolumes: []
+extraVolumeMounts: []

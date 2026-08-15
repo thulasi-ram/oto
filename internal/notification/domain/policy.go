@@ -29,8 +29,21 @@ import (
 const (
 	// MaxPolicyMatchers is policies_matchers_ck.
 	MaxPolicyMatchers = 32
-	// MaxPolicyReasons is policies_reasons_ck.
-	MaxPolicyReasons = 32
+	// MaxPolicyReasons is policies_reasons_ck, and it is 18 because `reasons` is a
+	// SET over the 18-value Reason enum.
+	//
+	// It used to be 32 while the contract said 18, and that gap was not a wire
+	// bound differing from a storage bound on purpose: it was the room duplicates
+	// occupied. `uniqueItems: true` made a 19th element unreachable on the wire
+	// while the column would happily hold `fired` thirty-two times, so 32 was the
+	// only number that described what could actually be stored.
+	//
+	// Migration 00046 closed that — the CHECK now refuses a repeated element, and
+	// Validate below refuses one too — so an array of DISTINCT values drawn from a
+	// closed 18-value vocabulary cannot reach 19, and a ceiling of 32 would be a
+	// number no row could ever test. All three layers now say 18 and all three say
+	// set, which is what CONTEXT.md §5b asks of a bound.
+	MaxPolicyReasons = 18
 	// MaxPolicyChannels is policies_chan_ck.
 	MaxPolicyChannels = 16
 	// MinPolicyPriority and MaxPolicyPriority are policies_prio_ck. LOWER IS
@@ -297,9 +310,21 @@ func (p Policy) Validate() error {
 		})
 	case len(p.Reasons) > MaxPolicyReasons:
 		v = append(v, errs.Violation{
-			Field: "reasons", Code: "max_items", Message: "at most 32 reasons",
+			Field: "reasons", Code: "max_items", Message: "at most 18 reasons",
 		})
 	}
+	// ⭐ `reasons` IS A SET, and this loop is the layer that says so where it
+	// counts. The `unique` tag on both request DTOs used to be the only place the
+	// rule existed, so a duplicate was refused for an HTTP body and storable by
+	// anything else — while the contract publishes `uniqueItems: true` on the
+	// RESPONSE, which makes a stored duplicate a row oto's own generated client
+	// rejects when it is read back. The code is `duplicate_items` because that is
+	// what layer 1's `unique` tag emits (platform/validate), and one rule that
+	// answers with two codes depending on which layer caught it is the drift §5b
+	// exists to prevent. Reported once per repeated value: a list of six `fired`s
+	// is one mistake, not five.
+	seen := make(map[Reason]bool, len(p.Reasons))
+	duplicated := make(map[Reason]bool)
 	for _, r := range p.Reasons {
 		if !r.Valid() {
 			v = append(v, errs.Violation{
@@ -307,6 +332,14 @@ func (p Policy) Validate() error {
 				Message: "unknown notification reason " + string(r),
 			})
 		}
+		if seen[r] && !duplicated[r] {
+			duplicated[r] = true
+			v = append(v, errs.Violation{
+				Field: "reasons", Code: "duplicate_items",
+				Message: "reasons must not contain duplicates: " + string(r) + " is listed twice",
+			})
+		}
+		seen[r] = true
 	}
 
 	switch {

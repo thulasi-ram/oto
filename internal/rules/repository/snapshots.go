@@ -28,6 +28,30 @@ const (
 	CodeBadID = "rules_invalid_id"
 )
 
+// mapErr turns a database error into an errs.Kind for this package. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository — this
+// module contributes only the codes it alone can name. `code` keeps the
+// read/write split this package has always published: `rules_query_failed` on
+// a read, `rules_write_failed` on a write.
+//
+// ⛔ `ComputedKeys` IS WHY A KEY VIOLATION STAYS A 500. `rule_snapshots` has two
+// unique keys: the `id` PRIMARY KEY, minted with `id.New()` immediately before
+// the INSERT, and `rule_snapshots_content_uniq`, which is the upsert's own ON
+// CONFLICT target and is swallowed there. A `23505` reaching Go is therefore a
+// statement that drifted from the schema — §L.9 row 2's oto bug — never a
+// conflict the capture path could fix by changing the request. The foreign keys
+// are the same shape: `org_id` is the authenticated scope's and `source_id` is
+// resolved before a capture is built.
+func mapErr(err error, code, msg string) error {
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           CodeNotFound,
+		NotFoundMessage:    "no such rule snapshot",
+		QueryFailed:        code,
+		QueryFailedMessage: msg,
+		ComputedKeys:       true,
+	})
+}
+
 // snapshotRow is the row model of `rule_snapshots`. Unexported, per the
 // three-model rule: no DTO and no domain type may embed it.
 type snapshotRow struct {
@@ -120,13 +144,30 @@ func NewSnapshotRepository(q db.Querier) *SnapshotRepository { return &SnapshotR
 func (r *SnapshotRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
 // upsertSnapshotSQL inserts a capture, or returns the row that already holds
-// this content.
+// this content FOR THIS RULE KEY.
 //
 // The CTE is what makes "captured on every fire" cost one row: the INSERT is
 // ON CONFLICT DO NOTHING against rule_snapshots_content_uniq, and the UNION arm
 // reads the incumbent only when the insert produced nothing. The `inserted`
 // column is how the service tells a NEW VERSION of a rule from the ten
 // thousandth fire of an unchanged one, without a second round trip.
+//
+// ⭐ THE RULE KEY IS IN THE CONFLICT TARGET, and 00040 is the migration that put
+// it in the constraint. `rule_fingerprint` is over the DEFINITION only (SPEC
+// §C.6), so it cannot double as the identity of a rule: an `unavailable` capture
+// is an empty expr, zero durations and empty maps, which means EVERY unavailable
+// capture in a source hashes identically. Keyed on content alone, one firewalled
+// Prometheus produced one shared row for every rule in the source, named after
+// whichever alert failed first — and every read path filters on rule_name, so
+// nobody could ever retrieve it again to notice.
+//
+// ⛔ THE UNION ARM'S PREDICATE MUST BE THE CONFLICT TARGET, COLUMN FOR COLUMN.
+// It is the row the INSERT lost to, so anything looser could return a different
+// row than the one that won, and anything tighter would return NOTHING on a
+// conflict and fail the capture. This is the one place in the module where an
+// empty rule_file or rule_group is compared as an EQUALITY rather than read as
+// "unknown" (contrast keyPredicate): the constraint compares them that way, so
+// the recovery read has to as well.
 const upsertSnapshotSQL = `
 WITH ins AS (
   INSERT INTO rule_snapshots (
@@ -134,7 +175,7 @@ WITH ins AS (
     expr, for_seconds, keep_firing_for_seconds, rule_labels, rule_annotations,
     origin, prometheus_url, match_confidence, candidate_count, captured_at)
   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17)
-  ON CONFLICT (org_id, source_id, rule_fingerprint) DO NOTHING
+  ON CONFLICT (org_id, source_id, rule_name, rule_group, rule_file, rule_fingerprint) DO NOTHING
   RETURNING ` + snapshotColumns + `, true AS inserted
 )
 SELECT * FROM ins
@@ -142,6 +183,7 @@ UNION ALL
 SELECT ` + snapshotColumns + `, false AS inserted
   FROM rule_snapshots
  WHERE org_id = $2 AND source_id = $3 AND rule_fingerprint = $4
+   AND rule_name = $7 AND rule_group = $6 AND rule_file = $5
    AND NOT EXISTS (SELECT 1 FROM ins)
  LIMIT 1`
 
@@ -180,8 +222,16 @@ func (r *SnapshotRepository) Upsert(ctx context.Context, s db.TenantScope, snap 
 		string(snap.Origin), promURL, string(snap.Confidence), snap.CandidateCount,
 		snap.CapturedAt,
 	), &inserted)
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// The recovery arm reads with the statement's snapshot, so a conflicting
+		// capture that commits mid-statement can leave BOTH arms empty. The row
+		// exists by the time the caller could look, so this is oto's to retry and
+		// never a 404.
 		return domain.Snapshot{}, false, errs.Wrap(err, errs.KindInternal, CodeWriteFailed,
+			"could not store the rule snapshot")
+	case err != nil:
+		return domain.Snapshot{}, false, mapErr(err, CodeWriteFailed,
 			"could not store the rule snapshot")
 	}
 
@@ -200,24 +250,106 @@ SELECT ` + snapshotColumns + `
 // Get returns one snapshot by id.
 func (r *SnapshotRepository) Get(ctx context.Context, s db.TenantScope, snapshotID uuid.UUID) (domain.Snapshot, error) {
 	row, err := scanSnapshot(r.db(ctx).QueryRow(ctx, getSnapshotSQL, s.OrgID(), snapshotID))
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return domain.Snapshot{}, errs.NotFound(CodeNotFound, "no such rule snapshot")
-	case err != nil:
-		return domain.Snapshot{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule snapshot")
+	if err != nil {
+		return domain.Snapshot{}, mapErr(err, CodeQueryFailed, "could not read the rule snapshot")
 	}
 	return row.toDomain()
 }
 
+const getSnapshotsByIDsSQL = `
+SELECT ` + snapshotColumns + `
+  FROM rule_snapshots
+ WHERE org_id = $1 AND id = ANY($2)
+ ORDER BY captured_at DESC, id DESC`
+
+// GetMany reads many snapshots by id in ONE round trip.
+//
+// ⭐ IT IS WHAT LETS THE ALERT LIST SHOW WHAT THE RULE SAID. `include=rule` on
+// `GET /alerts` carries the snapshot id and nothing more, so rendering `expr` on
+// fifty rows used to mean fifty calls to `/alerts/{id}/rule`. Content addressing
+// makes the batch cheaper than it looks: a page where every alert fired under
+// the same unchanged rule collapses to ONE id, because the rows ARE the same row
+// (ADR 0025).
+//
+// ⛔ An id with no row is ABSENT FROM THE RESULT, never an error. The table is
+// append-only, so the only way to miss is an id from another org or one a caller
+// invented — and failing the whole batch for one of those would blank an entire
+// page's rule column. The caller joins by id and renders the misses as unknown.
+//
+// NOTE (planner): the predicate is the primary key with the org filter on top,
+// so this is an index scan per id and never a table scan. The ordering is the
+// same `(captured_at DESC, id DESC)` every other snapshot read uses, so a client
+// that renders the batch as a list gets the order it already expects.
+func (r *SnapshotRepository) GetMany(
+	ctx context.Context, s db.TenantScope, ids []uuid.UUID,
+) ([]domain.Snapshot, error) {
+	if len(ids) == 0 {
+		return []domain.Snapshot{}, nil
+	}
+
+	rows, err := r.db(ctx).Query(ctx, getSnapshotsByIDsSQL, s.OrgID(), ids)
+	if err != nil {
+		return nil, mapErr(err, CodeQueryFailed, "could not read the rule snapshots")
+	}
+	defer rows.Close()
+
+	out := make([]domain.Snapshot, 0, len(ids))
+	for rows.Next() {
+		row, scanErr := scanSnapshot(rows)
+		if scanErr != nil {
+			return nil, mapErr(scanErr, CodeQueryFailed, "could not read the rule snapshots")
+		}
+		snap, convErr := row.toDomain()
+		if convErr != nil {
+			return nil, convErr
+		}
+		out = append(out, snap)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, CodeQueryFailed, "could not read the rule snapshots")
+	}
+	return out, nil
+}
+
 // keyPredicate builds the rule-key filter.
 //
-// rule_file and rule_group are matched ONLY when the caller supplied them. That
-// is deliberate: a generatorURL capture knows the expression but not the file
-// it is written in, so an empty component means "unknown", not "the empty
-// string". Treating it as an equality would split one rule's history into two
-// on the day Prometheus became reachable. The predicate stays a prefix of
-// rule_snapshots_key_idx (org_id, source_id, rule_name, …) either way.
+// ⭐ AN EMPTY rule_file OR rule_group MEANS "UNKNOWN" ON BOTH SIDES OF THE
+// COMPARISON. That symmetry is the whole point, and it is what this function got
+// wrong for as long as it only applied the leniency to the query.
+//
+// A generatorURL capture knows the expression but not the file it is written in,
+// so it is stored with `”` in those columns; a later /api/v1/rules recovery of
+// the SAME rule supplies both. Skipping the filter when the CALLER's component is
+// empty handles the first direction — a query that does not know the file matches
+// rows that do. The stored `”` needs the same treatment in reverse, or a query
+// carrying a now-known file and group misses every row captured before it was
+// known, which is exactly "the rule's history splits in two on the day Prometheus
+// became reachable" that this comment used to promise it prevented. The asymmetry
+// was visible in the product as drift reported in one direction only: promoting
+// generator_url → prometheus_api found no predecessor and reported no drift, so a
+// real rule edit landing in the same fire as the promotion was hidden with it.
+//
+// ⛔ TWO SAME-NAMED RULES IN DIFFERENT FILES CAN BOTH MATCH a query for one of
+// them, when there is also a capture whose file is unknown. That is inherent: a
+// row whose file is `”` may belong to either, and there is no evidence in the
+// table that says which. Attributing it to both is the lesser error — the
+// alternative is a rule whose own history cannot see its earliest captures.
+//
+// ⛔ AN `unavailable` ROW ALWAYS HAS AN EMPTY FILE AND GROUP — a lookup that
+// recovered no rule recovered no file to store — so it is matched by EVERY query
+// for its rule name, including the fully-keyed ones. That is correct: it is a
+// capture of that rule, and hiding it would be hiding the fact that oto looked
+// and could not see. It is also why the drift comparison does not read this
+// predicate's newest row: see LatestDefinition, and rules/domain.Drifted for
+// what a capture that observed nothing can and cannot evidence. Tightening the
+// predicate instead would not even fix it — a generatorURL query carries an
+// empty file and group of its own and matches the outage row on plain equality,
+// with no leniency involved anywhere.
+//
+// The predicate stays usable as a prefix of rule_snapshots_key_idx
+// (org_id, source_id, rule_name, rule_group, rule_file, captured_at DESC): an
+// `IN ($n, ”)` is a ScalarArrayOp the planner can still drive the index with,
+// not a filter it has to apply after the fact.
 func keyPredicate(key domain.Key, args *[]any) (string, error) {
 	sourceID, err := uuid.Parse(key.SourceID)
 	if err != nil {
@@ -227,11 +359,11 @@ func keyPredicate(key domain.Key, args *[]any) (string, error) {
 	sql := " AND source_id = $2 AND rule_name = $3"
 	if key.Group != "" {
 		*args = append(*args, key.Group)
-		sql += fmt.Sprintf(" AND rule_group = $%d", len(*args))
+		sql += fmt.Sprintf(" AND rule_group IN ($%d, '')", len(*args))
 	}
 	if key.File != "" {
 		*args = append(*args, key.File)
-		sql += fmt.Sprintf(" AND rule_file = $%d", len(*args))
+		sql += fmt.Sprintf(" AND rule_file IN ($%d, '')", len(*args))
 	}
 	return sql, nil
 }
@@ -253,8 +385,7 @@ func (r *SnapshotRepository) ListByKey(ctx context.Context, s db.TenantScope, ke
 
 	rows, err := r.db(ctx).Query(ctx, sql, args...)
 	if err != nil {
-		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule history")
+		return nil, mapErr(err, CodeQueryFailed, "could not read the rule history")
 	}
 	defer rows.Close()
 
@@ -262,8 +393,7 @@ func (r *SnapshotRepository) ListByKey(ctx context.Context, s db.TenantScope, ke
 	for rows.Next() {
 		row, scanErr := scanSnapshot(rows)
 		if scanErr != nil {
-			return nil, errs.Wrap(scanErr, errs.KindInternal, CodeQueryFailed,
-				"could not read the rule history")
+			return nil, mapErr(scanErr, CodeQueryFailed, "could not read the rule history")
 		}
 		snap, convErr := row.toDomain()
 		if convErr != nil {
@@ -272,8 +402,7 @@ func (r *SnapshotRepository) ListByKey(ctx context.Context, s db.TenantScope, ke
 		out = append(out, snap)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule history")
+		return nil, mapErr(err, CodeQueryFailed, "could not read the rule history")
 	}
 	return out, nil
 }
@@ -326,8 +455,7 @@ func (r *SnapshotRepository) ListPage(
 
 	rows, err := r.db(ctx).Query(ctx, sql, args...)
 	if err != nil {
-		return nil, db.Cursor{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule history")
+		return nil, db.Cursor{}, mapErr(err, CodeQueryFailed, "could not read the rule history")
 	}
 	defer rows.Close()
 
@@ -336,8 +464,7 @@ func (r *SnapshotRepository) ListPage(
 	for rows.Next() {
 		row, scanErr := scanSnapshot(rows)
 		if scanErr != nil {
-			return nil, db.Cursor{}, errs.Wrap(scanErr, errs.KindInternal, CodeQueryFailed,
-				"could not read the rule history")
+			return nil, db.Cursor{}, mapErr(scanErr, CodeQueryFailed, "could not read the rule history")
 		}
 		snap, convErr := row.toDomain()
 		if convErr != nil {
@@ -347,8 +474,7 @@ func (r *SnapshotRepository) ListPage(
 		ids = append(ids, row.id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, db.Cursor{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule history")
+		return nil, db.Cursor{}, mapErr(err, CodeQueryFailed, "could not read the rule history")
 	}
 
 	hasMore := len(out) > limit
@@ -371,12 +497,55 @@ func (r *SnapshotRepository) ListPage(
 	return out, cursor, nil
 }
 
-// Latest returns the newest capture for one rule key.
+// Latest returns the newest capture for one rule key, whatever it holds.
+//
+// An `unavailable` row is a capture like any other here, and deliberately so:
+// "oto looked at 03:00 and could not see it" is the honest answer to "what is
+// the newest thing you know about this rule", and every read that renders the
+// current state of a rule wants it. LatestDefinition is the one that does not.
 func (r *SnapshotRepository) Latest(ctx context.Context, s db.TenantScope, key domain.Key) (domain.Snapshot, bool, error) {
+	return r.latest(ctx, s, key, false)
+}
+
+// LatestDefinition returns the newest capture that actually CARRIES a rule
+// definition — the newest row whose origin is not `unavailable`.
+//
+// ⭐ IT EXISTS FOR DRIFT, AND ONLY FOR DRIFT. An unavailable capture has an empty
+// expr and empty everything else, and it is stored with an empty rule_file and
+// rule_group because a lookup that recovered nothing recovered no file either.
+// It is therefore the newest row for its key AND a row every query for that key
+// matches — the fully-keyed ones through keyPredicate's "empty means unknown",
+// the generatorURL-keyed ones through plain equality. Handing it to the capture
+// path as "the version the previous fire was bound to" made every recovering
+// fire report a rule edit against an empty expression.
+//
+// ⛔ SKIPPING THE ROW IS NOT THE SAME AS SKIPPING THE COMPARISON. The predecessor
+// has to be the last row that WAS a definition, not nothing at all, or a
+// threshold edited while Prometheus was unreachable is never reported: the fire
+// that recovers is the first one that can see the edit, and it is the only one
+// that will ever have both sides to compare. See domain.Drifted.
+//
+// NOTE (planner): `origin` is not in rule_snapshots_key_idx, so this is the same
+// index range as Latest with one more filter applied over it. The range is one
+// rule's distinct texts — a handful — so the filter is free and an index on
+// origin would be a write cost paid for nothing.
+func (r *SnapshotRepository) LatestDefinition(ctx context.Context, s db.TenantScope, key domain.Key) (domain.Snapshot, bool, error) {
+	return r.latest(ctx, s, key, true)
+}
+
+func (r *SnapshotRepository) latest(
+	ctx context.Context, s db.TenantScope, key domain.Key, definitionsOnly bool,
+) (domain.Snapshot, bool, error) {
 	args := []any{s.OrgID()}
 	pred, err := keyPredicate(key, &args)
 	if err != nil {
 		return domain.Snapshot{}, false, err
+	}
+	if definitionsOnly {
+		// A literal, not a parameter: it is a constant of the schema
+		// (rule_snapshots_origin_ck), not an input, and inlining it keeps the
+		// argument numbering the caller-independent thing it is above.
+		pred += ` AND origin <> 'unavailable'`
 	}
 
 	sql := `SELECT ` + snapshotColumns + ` FROM rule_snapshots WHERE org_id = $1` + pred +
@@ -389,7 +558,7 @@ func (r *SnapshotRepository) Latest(ctx context.Context, s db.TenantScope, key d
 		// rule has no predecessor and that is not an error condition.
 		return domain.Snapshot{}, false, nil
 	case err != nil:
-		return domain.Snapshot{}, false, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+		return domain.Snapshot{}, false, mapErr(err, CodeQueryFailed,
 			"could not read the latest rule snapshot")
 	}
 	snap, err := row.toDomain()

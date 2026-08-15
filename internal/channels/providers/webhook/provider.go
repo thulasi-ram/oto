@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/thulasiram/oto/internal/channels/configschema"
 	"github.com/thulasiram/oto/internal/channels/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
+	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/netguard"
 )
 
@@ -31,9 +33,10 @@ const (
 
 // Provider mints generic webhook Channels.
 type Provider struct {
-	guard     *netguard.Guard
-	clock     clock.Clock
-	transport http.RoundTripper
+	guard            *netguard.Guard
+	clock            clock.Clock
+	transport        http.RoundTripper
+	allowInsecureTLS bool
 }
 
 // Options configures the webhook provider.
@@ -43,6 +46,13 @@ type Options struct {
 	// by default: oto runs inside the operator's network, so an unguarded
 	// operator-supplied URL is a Server-Side Request Forgery primitive (§L.5).
 	AllowPrivateTargets bool
+	// AllowInsecureTLS comes from `security.allow_insecure_tls`, the SAME
+	// deployment-level switch that gates `alert_sources.tls_skip_verify`. It is off
+	// by default: whether an unverified certificate is acceptable is a statement
+	// about the operator's network, so `config.insecure_skip_verify` — which any
+	// org member can write — is refused at validation and ignored at open unless
+	// this is on (§M2).
+	AllowInsecureTLS bool
 	// Transport overrides the HTTP transport, for tests.
 	Transport http.RoundTripper
 	// Guard overrides the SSRF guard, which is how a test models an attacker's
@@ -69,18 +79,24 @@ func NewProvider(o Options) *Provider {
 		})
 	}
 	return &Provider{
-		guard:     guard,
-		clock:     clk,
-		transport: o.Transport,
+		guard:            guard,
+		clock:            clk,
+		transport:        o.Transport,
+		allowInsecureTLS: o.AllowInsecureTLS,
 	}
 }
 
-// Descriptor is static and is served verbatim by GET /api/v1/channel-types.
+// Descriptor is served verbatim by GET /api/v1/channel-types.
+//
+// ⛔ IT IS STATIC PER PROCESS, NOT PER TENANT. The one thing that varies is
+// whether the config schema declares `insecure_skip_verify`, and that varies with
+// a DEPLOYMENT switch read once at boot: a deployment that will refuse the flag
+// does not offer the control. See GatedSchema.
 func (p *Provider) Descriptor() domain.Descriptor {
 	return domain.Descriptor{
 		Type:            domain.TypeWebhook,
 		DisplayName:     "Webhook",
-		ConfigSchema:    Schema.Raw(),
+		ConfigSchema:    p.schema().Raw(),
 		CredentialKinds: []string{CredNone, CredBasic, CredBearer},
 		Capabilities:    capabilities,
 		Renderers:       []domain.RendererID{domain.RendererWebhookJSON},
@@ -88,9 +104,10 @@ func (p *Provider) Descriptor() domain.Descriptor {
 	}
 }
 
-// ValidateConfig checks a stored config against the schema, then applies the two
-// rules a JSON Schema cannot express (§L.5): no Authorization header, and no
-// loopback, link-local or private target unless the operator opted in.
+// ValidateConfig checks a stored config against the schema, then applies the
+// three rules a JSON Schema cannot express (§L.5): no Authorization header, no
+// loopback, link-local or private target unless the operator opted in, and no
+// tenant-set `insecure_skip_verify` unless the deployment allows it.
 //
 // ⚠️ The URL check here is FAST FEEDBACK, not the control. The control is the
 // guard's dialer, installed on every channel's transport by httpClient. That is
@@ -106,7 +123,52 @@ func (p *Provider) ValidateConfig(ctx context.Context, raw json.RawMessage) erro
 	if err := CheckHeaders(cfg.Headers); err != nil {
 		return err
 	}
+	if err := p.checkInsecureSkipVerify(cfg.InsecureSkipVerify); err != nil {
+		return err
+	}
 	return p.checkTarget(ctx, cfg.URL)
+}
+
+// checkInsecureSkipVerify refuses a tenant's attempt to turn off certificate
+// verification.
+//
+// ⛔ IT IS REFUSED, NOT IGNORED. Silently dropping the flag would leave an
+// operator believing their receiver is reached without verification when it is
+// not — and, worse, leave the org member who set it believing they had disabled
+// something they had not. The 422 names the field, so a settings form points at
+// the control and says who owns the decision. It is `schema()` that stops the
+// form offering it in the first place; this is the server-side truth, because a
+// client is not a trust boundary and `curl` is a client.
+func (p *Provider) checkInsecureSkipVerify(requested bool) error {
+	if !requested || p.allowInsecureTLS {
+		return nil
+	}
+	return errs.Validation("insecure_skip_verify_not_permitted",
+		"certificate verification is enforced by this deployment",
+		errs.Violation{
+			Field: insecureSkipVerifyProperty, Code: "forbidden",
+			Message: "this is a deployment-level setting and cannot be changed per channel",
+		})
+}
+
+// schema is the config schema this deployment will actually honour.
+func (p *Provider) schema() *configschema.Schema {
+	if p.allowInsecureTLS {
+		return Schema
+	}
+	return GatedSchema
+}
+
+// skipVerify resolves the effective TLS posture for one channel.
+//
+// ⛔ A TENANT CANNOT TURN OFF CERTIFICATE VERIFICATION. ValidateConfig refuses
+// the flag on the way in; this is the layer that decides what the socket does, so
+// a row written BEFORE the gate existed cannot keep working either. Such a row is
+// ignored here rather than migrated or rejected at Open: refusing to open the
+// channel would turn a hardening change into silent non-delivery, and oto's
+// silence must never be indistinguishable from "no alert".
+func (p *Provider) skipVerify(cfg Config) bool {
+	return p.allowInsecureTLS && cfg.InsecureSkipVerify
 }
 
 // checkTarget runs the configuration-time URL check, tolerating an undecided
@@ -158,10 +220,10 @@ func (p *Provider) httpClient(cfg Config, cred domain.Credential) *http.Client {
 		t, ok := http.DefaultTransport.(*http.Transport)
 		if ok {
 			clone := t.Clone()
-			if cfg.InsecureSkipVerify {
-				// Opt-in, per channel, for a receiver behind a private CA. It is
-				// never the default and never global.
-				clone.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // operator opt-in, documented in the schema
+			if p.skipVerify(cfg) {
+				// Per channel, for a receiver behind a private CA, and ONLY where
+				// the deployment has opted in. Never the default.
+				clone.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // gated on security.allow_insecure_tls; see skipVerify
 			}
 			clone.DialContext = p.guard.DialContext
 			// A proxy would dial the proxy rather than the target, which takes the

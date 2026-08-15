@@ -14,6 +14,27 @@
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
+  /* ---- Type scale (§M.8) --------------------------------------------
+     `text-micro` … `text-page`. These are the ONLY font sizes in the product:
+     `scales.test.ts` rejects a `text-[Npx]` bracket and rejects Tailwind's own
+     `text-sm`/`text-base` ladder too, because a second vocabulary for the same
+     axis is the thing this block exists to end. */
+  --text-micro: var(--oto-type-micro);
+  --text-meta: var(--oto-type-meta);
+  --text-body: var(--oto-type-body);
+  --text-item: var(--oto-type-item);
+  --text-title: var(--oto-type-title);
+  --text-page: var(--oto-type-page);
+
+  /* ---- Radius scale (§M.8) ------------------------------------------
+     `rounded-chip` / `rounded-control` / `rounded-surface`, composing with the
+     side variants (`rounded-t-surface`) exactly as a built-in would.
+     `rounded-full` and `rounded-none` are shapes rather than steps and stay
+     available; every other named radius is rejected. */
+  --radius-chip: var(--oto-radius-chip);
+  --radius-control: var(--oto-radius-control);
+  --radius-surface: var(--oto-radius-surface);
+
   /* ---- Tier A ------------------------------------------------------- */
   --color-bg: var(--oto-bg);
   --color-surface: var(--oto-surface);
@@ -88,11 +109,16 @@
     font-family: var(--font-sans);
   }
 
-  /* U7: focus is ALWAYS visible, 2 px ring at 2 px offset, never `outline:none`. */
+  /* U7: focus is ALWAYS visible, 2 px ring at 2 px offset, never `outline:none`.
+     The radius is the CONTROL step (§M.8), because what takes focus is a control:
+     a button, an input, a nav item, a link. This line used to read `3px`, which
+     agreed with the chip step by coincidence and with the buttons it actually
+     draws around by nothing at all — a third hand-written instance of a decision
+     the scale now owns. */
   :focus-visible {
     outline: 2px solid var(--oto-focus);
     outline-offset: 2px;
-    border-radius: 3px;
+    border-radius: var(--oto-radius-control);
   }
 
   ::selection {
@@ -106,55 +132,97 @@
   }
 }
 
-@layer utilities {
-  /* U4: the ONLY urgency motion in the product — a slow 2 s opacity pulse on
-     the unacked-critical dot. No flashing, no blinking, ever, and nothing at
-     all under prefers-reduced-motion. */
-  .oto-pulse {
-    animation: oto-pulse 2s ease-in-out infinite;
-  }
-  @keyframes oto-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
-  }
+/* Every first-party utility below is declared with `@utility`, never as a plain
+   rule inside `@layer utilities`. The distinction is not cosmetic: a rule in a
+   `@layer utilities` block is pass-through CSS that Tailwind copies out
+   verbatim, so the class name is never registered and the variant machinery
+   cannot see it. Writing `motion-safe:oto-enter` against such a class makes the
+   scanner resolve the variant, fail to resolve the utility, and silently drop
+   the whole candidate — no rule is emitted and the markup looks correct while
+   doing nothing. `@utility` registers the name, so `motion-safe:`, `open:`,
+   `hover:` and friends compose exactly as they do on a built-in utility.
+   `web/src/index.css.test.ts` fails the build if this convention is broken. */
 
-  .oto-enter {
-    animation: oto-enter 140ms ease-out;
+/* U4: the ONLY urgency motion in the product — a slow 2 s opacity pulse on
+   the unacked-critical dot. No flashing, no blinking, ever, and nothing at
+   all under prefers-reduced-motion. */
+@utility oto-pulse {
+  animation: oto-pulse 2s ease-in-out infinite;
+}
+@keyframes oto-pulse {
+  0%,
+  100% {
+    opacity: 1;
   }
-  @keyframes oto-enter {
-    from {
-      opacity: 0;
-      transform: translateY(-2px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
+  50% {
+    opacity: 0.45;
   }
+}
 
-  @media (prefers-reduced-motion: reduce) {
-    .oto-pulse,
-    .oto-enter {
-      animation: none !important;
-    }
-    *,
-    *::before,
-    *::after {
-      transition-duration: 0.01ms !important;
-      animation-duration: 0.01ms !important;
-      animation-iteration-count: 1 !important;
-      scroll-behavior: auto !important;
-    }
+/* U9, form (a) — a one-shot on a discrete event. 140 ms, opacity + transform. */
+@utility oto-enter {
+  animation: oto-enter 140ms ease-out;
+}
+@keyframes oto-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
   }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 
-  /* Visually hidden but reachable by assistive tech. Used for live regions and
-     for the table's semantic column headers. */
-  .sr-only-focusable:not(:focus):not(:focus-within) {
+/* U9, form (a) — the fūrin's greeting, and the only decorative motion in the
+   product (§M.3 U9, ADR 0028). It is a *brand* one-shot, so it fires at most
+   once per document, on the header mark's first mount. It says nothing: no
+   connection state, no severity, no count reaches it, which is why it is
+   allowed to be silent about what it means.
+
+   180 ms is the whole budget U9 allows, and it is spent on rotation alone —
+   two swings and the rest at zero. The researched 1400 ms damped swing is not
+   here because U9 forbids it; see the ADR, which rejected it deliberately
+   rather than widening the rule to fit the feature.
+
+   ⛔ THE ROTATION IS ON THE `<svg>` ELEMENT, NEVER ON AN INNER `<g>`. The SVG
+   viewport clips at `overflow: hidden`, so an inner group swings its shoulders
+   straight out of the box; `overflow: visible` is not an escape either, because
+   the wordmark sits 6 px away. Rotating the element rotates its clip with it,
+   and at the 8° peak the mark's furthest corner travels 0.25 px past its own
+   edge — a quarter of the gap it has.
+
+   `transform-origin: 50% 15%` is the hanger, not the centre: y=6 of the 40-unit
+   viewBox is where the dome's crown meets the cord, and a bell that pivots
+   anywhere else reads as a wobbling icon rather than as something hanging.
+
+   Suppression is doubled on purpose. The call site writes `motion-safe:`, so no
+   rule is even generated under `reduce`; and the `*` sweep in `@layer base`
+   would neutralise it regardless. Neither is a list of class names, so neither
+   can forget this one. */
+@utility oto-chime-swing {
+  transform-origin: 50% 15%;
+  animation: oto-chime-swing 180ms cubic-bezier(0.32, 0.72, 0.35, 1);
+}
+@keyframes oto-chime-swing {
+  0% {
+    transform: rotate(0deg);
+  }
+  32% {
+    transform: rotate(8deg);
+  }
+  68% {
+    transform: rotate(-3.2deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+/* Visually hidden but reachable by assistive tech. Used for live regions and
+   for the table's semantic column headers. */
+@utility sr-only-focusable {
+  &:not(:focus):not(:focus-within) {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -164,5 +232,32 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border-width: 0;
+  }
+}
+
+@layer base {
+  /* The single reduced-motion guard for the whole product. It sits in `base`
+     rather than `utilities` because `!important` reverses layer order: an
+     important declaration in an earlier layer beats one in a later layer, so
+     from here it also overrides an important-flagged utility (`animate-spin!`).
+
+     There is deliberately no list of animation class names here. Once a utility
+     is registered with `@utility`, a variant use of it generates a *different*
+     selector — `.open\:oto-enter`, not `.oto-enter` — which a hand-maintained
+     list would silently miss. The wildcard sweep is what actually suppresses
+     motion, and it needs no maintenance when a utility is added.
+
+     0.01 ms rather than `animation: none` on purpose: the animation still
+     starts and ends within a frame, so anything waiting on `animationend`
+     resolves instead of hanging, while nothing is visible to the user. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+    }
   }
 }

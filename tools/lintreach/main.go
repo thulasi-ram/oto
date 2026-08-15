@@ -30,10 +30,21 @@
 //     is the check that catches a contract shape with no Go home at all, which no
 //     amount of Go-side analysis can see (GroupDetailDTO.threads).
 //
-//  3. noctor — an exported New* constructor with no caller outside its own file.
-//     The Slack Acknowledge service was fully implemented, fully tested, and never
-//     constructed; NewInteractionService had zero callers and nothing else in the
-//     tree could tell.
+//  3. noctor — an exported New* constructor or Compute* identity function with no
+//     caller outside its own file. The Slack Acknowledge service was fully
+//     implemented, fully tested, and never constructed; NewInteractionService had
+//     zero callers and nothing else in the tree could tell.
+//
+//     Compute* is here for the same reason and a sharper one. The SPEC §C identity
+//     functions are the tree's most quotable code: exported from the shared kernel,
+//     documented against a spec clause, heavily tested — and two of them were
+//     called by nothing but their own tests, while a SECOND implementation of the
+//     same clause did the real work elsewhere. That is worse than dead code. A
+//     reader edits the copy that looks canonical, watches the tests go green, and
+//     ships nothing. The prefix is not a naming convention this gate invents: §C
+//     names these functions, and every one of them computes a value some column
+//     stores. If a Compute* has no production caller, either the column is filled
+//     by a duplicate or the column is never filled.
 //
 // # WHAT COUNTS AS A WRITE, AND WHY THE ANSWER IS NOT OBVIOUS
 //
@@ -42,9 +53,18 @@
 // conversion — `ViolationDTO(v)` writes every field of ViolationDTO and reads
 // every field of v. Reads: every other selector use, plus every intermediate
 // embedded field on a promoted selection, so `args.PayloadVersion()` counts as a
-// read of the embedded `args.Payload`. Those two — conversions and promotion —
-// were the ONLY false-positive classes the manual sweep hit, and both are handled
-// here rather than baselined.
+// read of the embedded `args.Payload`.
+//
+// A write also travels OUT along a selector chain. `&o.Alerts.Firing` writes
+// Firing, and it writes Alerts too, because Firing's storage is inside it; that
+// is one AST node per hop, so counting only the node the write syntactically
+// names is what once made every struct field filled by a two-deep `rows.Scan`
+// read as never-written. See writeThrough — it is also where the chain stops,
+// which is at the first pointer.
+//
+// Conversions, promotion and chains are the false-positive classes found so far.
+// All three are handled here rather than baselined, and the third was found only
+// after six of its false positives had been baselined as real debt.
 //
 // # REFLECTION
 //
@@ -421,12 +441,18 @@ func (a *analyzer) load() error {
 			a.checkOne(imp, p.ImportPath+"_test", p.Dir, p.XTestGoFiles)
 		}
 	}
+	a.count()
+	return nil
+}
+
+// count is phase two: every declaration is known, so every read and write can be
+// attributed to the field it names.
+func (a *analyzer) count() {
 	for _, u := range a.units {
 		for _, f := range u.files {
 			a.walk(f, u.pkg, u.info)
 		}
 	}
-	return nil
 }
 
 // exportOnly narrows an importer to types.Importer, hiding ImportFrom.
@@ -450,6 +476,17 @@ func (a *analyzer) checkOne(imp types.Importer, path, dir string, names []string
 			continue
 		}
 		files = append(files, f)
+	}
+	a.check(imp, path, files)
+}
+
+// check type-checks one already-parsed package and holds it for the counting
+// phase. It is split from checkOne, which reads the package off disk, so that a
+// test can drive the whole analysis from source text: everything below this line
+// is what the tests exercise, and the walk had no test at all when it was found
+// to be miscounting selector chains.
+func (a *analyzer) check(imp types.Importer, path string, files []*ast.File) {
+	for _, f := range files {
 		a.collectMarkers(f)
 		if isGenerated(f) {
 			a.generated[a.fset.Position(f.Pos()).Filename] = true
@@ -475,7 +512,19 @@ func (a *analyzer) checkOne(imp types.Importer, path, dir string, names []string
 	a.units = append(a.units, unit{pkg: pkg, files: files, info: info})
 }
 
-// ctorUse attributes one reference to an exported New* function. A reference
+// reachChecked reports whether a package-level function name is one the noctor
+// check follows. `New` is a constructor; `Compute` is a SPEC §C identity function.
+//
+// The list is deliberately two entries and not "every exported function". A
+// package exists to be imported, so "no caller yet" is an ordinary state for
+// general API surface and generalising here would trade two real findings for a
+// baseline nobody reads. These two prefixes are different: both name a function
+// that BUILDS something the product stores, so no caller means nothing is built.
+func reachChecked(name string) bool {
+	return strings.HasPrefix(name, "New") || strings.HasPrefix(name, "Compute")
+}
+
+// ctorUse attributes one reference to an exported New*/Compute* function. A reference
 // from the declaring file proves nothing on its own: the Acknowledge service's
 // own file referenced NewInteractionService and the composition root never did.
 func (a *analyzer) ctorUse(id *ast.Ident, info *types.Info, enclosing *types.Func, file string) {
@@ -483,7 +532,7 @@ func (a *analyzer) ctorUse(id *ast.Ident, info *types.Info, enclosing *types.Fun
 	if !ok || fn.Pkg() == nil || fn.Signature().Recv() != nil {
 		return
 	}
-	if !fn.Exported() || !strings.HasPrefix(fn.Name(), "New") || !inDeclRoot(fn.Pkg().Path()) {
+	if !fn.Exported() || !reachChecked(fn.Name()) || !inDeclRoot(fn.Pkg().Path()) {
 		return
 	}
 	key := fn.Pkg().Path() + "." + fn.Name()
@@ -565,7 +614,7 @@ func (a *analyzer) walk(f *ast.File, pkg *types.Package, info *types.Info) {
 		dv := *v
 		if fd, ok := d.(*ast.FuncDecl); ok {
 			dv.fn, _ = info.Defs[fd.Name].(*types.Func)
-			if fd.Recv == nil && fd.Name.IsExported() && strings.HasPrefix(fd.Name.Name, "New") &&
+			if fd.Recv == nil && fd.Name.IsExported() && reachChecked(fd.Name.Name) &&
 				!isTestFile(file) && !a.generated[file] && inDeclRoot(pkg.Path()) {
 				key := pkg.Path() + "." + fd.Name.Name
 				rec := a.ctors[key]
@@ -604,24 +653,17 @@ func (v *visitor) Visit(n ast.Node) ast.Visitor {
 	case *ast.AssignStmt:
 		for _, lhs := range n.Lhs {
 			if sel, ok := lhs.(*ast.SelectorExpr); ok {
-				v.written[sel] = true
-				a.record(sel, v.info, v.slot, true)
-				if n.Tok != token.ASSIGN && n.Tok != token.DEFINE {
-					a.record(sel, v.info, v.slot, false) // x.F += y reads too
-				}
+				// x.F += y reads too.
+				v.writeThrough(sel, n.Tok != token.ASSIGN && n.Tok != token.DEFINE)
 			}
 		}
 	case *ast.IncDecStmt:
 		if sel, ok := n.X.(*ast.SelectorExpr); ok {
-			v.written[sel] = true
-			a.record(sel, v.info, v.slot, true)
-			a.record(sel, v.info, v.slot, false)
+			v.writeThrough(sel, true)
 		}
 	case *ast.UnaryExpr:
 		if sel, ok := n.X.(*ast.SelectorExpr); ok && n.Op == token.AND {
-			v.written[sel] = true
-			a.record(sel, v.info, v.slot, true)
-			a.record(sel, v.info, v.slot, false)
+			v.writeThrough(sel, true)
 		}
 	case *ast.Ident:
 		a.ctorUse(n, v.info, v.fn, v.file)
@@ -638,10 +680,8 @@ func (v *visitor) Visit(n ast.Node) ast.Visitor {
 		// reading as a field nothing ever populates. Pre-order walk means this
 		// runs before the inner selector is visited.
 		if s := v.info.Selections[n]; s != nil && s.Kind() != types.FieldVal && ptrRecv(s) {
-			if inner, ok := n.X.(*ast.SelectorExpr); ok && !v.written[inner] {
-				v.written[inner] = true
-				a.record(inner, v.info, v.slot, true)
-				a.record(inner, v.info, v.slot, false)
+			if inner, ok := n.X.(*ast.SelectorExpr); ok {
+				v.writeThrough(inner, true)
 			}
 		}
 		if !v.written[n] {
@@ -649,6 +689,59 @@ func (v *visitor) Visit(n ast.Node) ast.Visitor {
 		}
 	}
 	return v
+}
+
+// writeThrough records a write of the field sel names, and then keeps walking
+// OUTWARD along the selector chain, because a chain is many AST nodes and the
+// write lands in all of them.
+//
+// `&o.Alerts.Firing` is a UnaryExpr over ONE selector node whose Sel is Firing
+// and whose X is a second selector node naming Alerts. go/types gives the outer
+// node a Selection whose Recv is the type of `o.Alerts` and whose Index is a
+// single hop, so record attributes the write to Firing and nothing at all tells
+// Alerts it was written; the walk then reaches the inner node and books an
+// ordinary read. That is how five fields of stats/domain.Overview and
+// notification/domain.Snapshot.Org — all of them filled by exactly this shape,
+// which is how pgx fills a nested struct — read as never-written.
+//
+// The rule: the storage a write reaches is INSIDE every field the chain
+// traverses, so each enclosing hop is a write of that field as well as a read of
+// it (evaluating `o.Alerts` is a read whichever way the value is then used).
+// The chain stops at the first hop that is not a selector — `x.A[i].B` and
+// `f().B` say nothing about a field of x — and at the first POINTER, because
+// `p.Ptr.F = v` stores into the pointee and leaves the field Ptr itself exactly
+// as it was: Ptr is read, not written, and a Ptr that nothing ever assigns is a
+// real finding this gate must keep reporting.
+//
+// read is false only for a plain assignment, where the outermost field is
+// written without being read; every enclosing hop is always both.
+func (v *visitor) writeThrough(sel *ast.SelectorExpr, read bool) {
+	for {
+		if v.written[sel] {
+			return
+		}
+		v.written[sel] = true
+		v.a.record(sel, v.info, v.slot, true)
+		if read {
+			v.a.record(sel, v.info, v.slot, false)
+		}
+		inner, ok := sel.X.(*ast.SelectorExpr)
+		if !ok || !reachesInto(v.info.TypeOf(inner)) {
+			return
+		}
+		sel, read = inner, true
+	}
+}
+
+// reachesInto reports whether a write to a field of t lands in t's own storage.
+// It does for a struct value; it does not through a pointer, and an unknown type
+// is treated as not, so the chain stops rather than inventing a write.
+func reachesInto(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	_, isPtr := types.Unalias(t).(*types.Pointer)
+	return !isPtr
 }
 
 // ptrRecv reports whether a method selection's receiver is a pointer, which is
@@ -698,8 +791,15 @@ func (a *analyzer) record(sel *ast.SelectorExpr, info *types.Info, slot int, wri
 			key := named.Obj().Pkg().Path() + "." + named.Obj().Name() + "." + fv.Name()
 			if rec := a.fields[key]; rec != nil {
 				last := k == hops-1
-				// Only the final hop can be a write; every hop before it is an
-				// embedded field that had to be READ to reach the target.
+				// Only the final hop can be a write. A multi-hop Index is a
+				// PROMOTED selection and nothing else — go/types puts one entry
+				// here per EMBEDDED field traversed — so every hop before the
+				// last is an embedded field that had to be READ to reach the
+				// target, and embedded fields are never reported anyway
+				// (findings skips them). A CHAINED selector never arrives here
+				// as several hops: the AST has already split `x.A.B` into two
+				// selector nodes of one hop each, and writeThrough is what
+				// carries the write across them.
 				if write && last {
 					rec.writes[slot]++
 				} else {
@@ -973,7 +1073,7 @@ func (a *analyzer) findings() []finding {
 			note = fmt.Sprintf("called by %d test site(s) and nothing else", test)
 		}
 		out = append(out, finding{key: "noctor:" + key, pos: pos(rec.pos),
-			why: "exported constructor has no caller outside its own file", note: note})
+			why: "exported constructor or Compute* has no caller outside its own file", note: note})
 	}
 	return out
 }

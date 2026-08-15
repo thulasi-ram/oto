@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/platform/db"
+	silencesapi "github.com/thulasiram/oto/internal/silences/api"
 	silencesservice "github.com/thulasiram/oto/internal/silences/service"
 	sourcesdomain "github.com/thulasiram/oto/internal/sources/domain"
 	sourcesservice "github.com/thulasiram/oto/internal/sources/service"
@@ -17,7 +18,7 @@ import (
 // ⚠️ IT EXISTS BECAUSE `silences` MAY NOT NAME `sources/domain` (depguard,
 // silences-must-not-reach-into-other-domains). The consumer declares the port in
 // plain types and the composition root does the mapping — the same arrangement
-// `sources/api.CredentialWriter` uses to reach the channels secret store, and for
+// `sources/service.CredentialSealer` uses to reach the channels secret store, and
 // the same reason.
 //
 // ⛔ IT IS READ-ONLY, AND SO IS EVERYTHING BEHIND IT. `sources/service` has no
@@ -62,6 +63,54 @@ func (s silenceSource) UpstreamSilences(
 			Annotations: sil.Annotations,
 			State:       sil.State,
 		})
+	}
+	return out, nil
+}
+
+// silenceBaseURLs is `silences/api.SourceBaseURLs`, the other half of the
+// per-silence Alertmanager deep link: the mirror knows which source a silence
+// came from, and this says where that source's UI lives.
+//
+// ⚠️ SAME BOUNDARY AS ABOVE, same reason: the port speaks ids and strings because
+// `silences` may not name `sources/domain`, so the flattening happens here.
+//
+// It is per-source rather than per-deployment because a process-wide Alertmanager
+// URL would deep-link every cluster's silences at one cluster's UI — the 404 the
+// link exists to avoid.
+type silenceBaseURLs struct{ svc *sourcesservice.Service }
+
+// silenceBaseURLs satisfies the port the silences module declared.
+var _ silencesapi.SourceBaseURLs = silenceBaseURLs{}
+
+// BaseURLs resolves a whole page of source ids in one lookup, and answers only
+// for the sources oto can vouch for as ALERTMANAGER UI ROOTS.
+//
+// ⛔ KIND IS THE FILTER, AND IT BELONGS HERE. `base_url` is documented
+// everywhere as the Alertmanager API root; for `KindAlertmanager` the API root
+// and the UI root are the same origin, so `<base>/#/silences/<id>` resolves. For
+// `KindGrafana` neither half holds: the source factory appends stock
+// `/api/v2/...` paths without ever reading Kind, so a grafana `base_url` must
+// already carry Grafana's AM-compat prefix — and Grafana serves its silences at
+// `/alerting/silences`, not at `/#/silences`. Whichever way an operator
+// configured it, the link would be wrong.
+//
+// So a source that is not an Alertmanager is simply ABSENT from this map, which
+// the silences layer already renders as no link at all. That is the honest
+// answer: an operator who clicks a fabricated link mid-incident and lands on a
+// 404 has lost the one affordance v1 offers.
+func (b silenceBaseURLs) BaseURLs(
+	ctx context.Context, scope db.TenantScope, ids []uuid.UUID,
+) (map[uuid.UUID]string, error) {
+	srcs, err := b.svc.ListByIDs(ctx, scope, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]string, len(srcs))
+	for _, src := range srcs {
+		if src.Kind != sourcesdomain.KindAlertmanager {
+			continue
+		}
+		out[src.ID] = src.BaseURL
 	}
 	return out, nil
 }

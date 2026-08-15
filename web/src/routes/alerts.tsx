@@ -18,26 +18,17 @@
  * which this screen used to do — under-reported every count the moment the
  * result exceeded one page.
  */
-import {
-  For,
-  Match,
-  Show,
-  Switch,
-  createEffect,
-  createMemo,
-  createSignal,
-  onCleanup,
-  onMount,
-} from "solid-js";
+import { For, Match, Show, Switch, createMemo, onCleanup, onMount } from "solid-js";
 import { useNavigate, useSearchParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listAlertRollups, listAlerts } from "~/api/endpoints";
+import { batchGetRuleSnapshots, listAlertRollups, listAlerts } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { Alert, AlertRollup, ListEnvelope, RollupAxis } from "~/api/types";
+import type { Alert, AlertRollup, RollupAxis, RuleSnapshot } from "~/api/types";
 import { Button } from "~/components/ui/primitives";
 import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
 import { count as fmtCount } from "~/lib/format";
+import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { AlertTable } from "~/features/alerts/AlertTable";
 import { FilterBar } from "~/features/alerts/FilterBar";
 import { GroupedAlerts } from "~/features/alerts/GroupedAlerts";
@@ -82,42 +73,35 @@ export default function AlertsRoute() {
 
   /* ---- keyset pagination ------------------------------------------------- */
 
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  /** Pages already folded in. The page in flight is added by the memo below. */
-  const [kept, setKept] = createSignal<readonly Alert[]>([]);
-  const [pageCount, setPageCount] = createSignal(1);
-
-  /** The bucket stream is a separate keyset: its cursor is a bucket key. */
-  const [bucketCursor, setBucketCursor] = createSignal<string | null>(null);
-  const [keptBuckets, setKeptBuckets] = createSignal<readonly AlertRollup[]>([]);
-
   // Any filter change invalidates every cursor minted under the old filters
-  // (§E.3 answers a stale one with `400 cursor_filter_mismatch`), so the stack
-  // resets. The roll-up cursor is bound to the filters **and** to `group_by`,
-  // because regrouping changes the keys themselves — so it carries the axis.
+  // (§E.3 answers a stale one with `400 cursor_filter_mismatch`). The roll-up
+  // cursor is bound to the filters **and** to `group_by`, because regrouping
+  // changes the bucket keys themselves — so its fingerprint carries the axis.
   const filterFingerprint = createMemo(() => searchFromFilters({ ...filters(), groupBy: "none" }));
-  createEffect((previous: string | undefined) => {
-    const current = filterFingerprint();
-    if (previous !== undefined && previous !== current) {
-      setCursor(null);
-      setKept([]);
-      setPageCount(1);
-      setBucketCursor(null);
-      setKeptBuckets([]);
-    }
-    return current;
+  const rollupFingerprint = createMemo(() => `${axis() ?? "none"} ${filterFingerprint()}`);
+
+  // A discarded roll-up position is not hypothetical here: a shadowed one
+  // surviving a Back would splice two axes of buckets into one list, and a
+  // drill-down would write a namespace into `alertname=`. The machine that
+  // prevents it — and the §E.3 argument for why it must be a pure-phase
+  // derivation — lives in `createKeysetFeed`.
+  // The annotations cut the type-inference loop the closure creates: the feed
+  // reads the query's envelope, and the query's key carries the feed's cursor.
+  const listFeed: KeysetFeed<Alert> = createKeysetFeed({
+    envelope: () => query.data,
+    isPlaceholder: () => query.isPlaceholderData,
+    keyOf: (a) => a.id,
+    fingerprint: filterFingerprint,
   });
 
-  createEffect((previous: RollupAxis | null | undefined) => {
-    const current = axis();
-    if (previous !== undefined && previous !== current) {
-      setBucketCursor(null);
-      setKeptBuckets([]);
-    }
-    return current;
+  const bucketFeed: KeysetFeed<AlertRollup> = createKeysetFeed({
+    envelope: () => rollups.data,
+    isPlaceholder: () => rollups.isPlaceholderData,
+    keyOf: (b) => b.key,
+    fingerprint: rollupFingerprint,
   });
 
-  const compiled = createMemo(() => compileFilters(filters(), PAGE_SIZE, cursor()));
+  const compiled = createMemo(() => compileFilters(filters(), PAGE_SIZE, listFeed.cursor()));
 
   const query = useQuery(() => ({
     queryKey: qk.alerts.list(compiled().query),
@@ -127,13 +111,11 @@ export default function AlertsRoute() {
     // with the filter quietly dropped returns an unfiltered page that looks
     // filtered. The flat list is also not fetched while a roll-up is on screen.
     enabled: compiled().ok && axis() === null,
-    // Keep the previous page on screen while the next one is in flight, so a
-    // filter change never blanks the table out from under a cursor.
-    placeholderData: (prev: ListEnvelope<Alert> | undefined) => prev,
+    placeholderData: keepPrevious,
   }));
 
   const rollupCompiled = createMemo(() =>
-    compileRollupFilters(filters(), axis() ?? "alertname", BUCKET_PAGE_SIZE, bucketCursor()),
+    compileRollupFilters(filters(), axis() ?? "alertname", BUCKET_PAGE_SIZE, bucketFeed.cursor()),
   );
 
   const rollups = useQuery(() => ({
@@ -141,53 +123,64 @@ export default function AlertsRoute() {
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       listAlertRollups(rollupCompiled().query, {}, { signal }),
     enabled: rollupCompiled().ok && axis() !== null,
-    placeholderData: (prev: ListEnvelope<AlertRollup> | undefined) => prev,
+    placeholderData: keepPrevious,
   }));
 
+  const alerts = listFeed.rows;
+  const buckets = bucketFeed.rows;
+
+  /* ---- what the rule said (ADR 0025) ------------------------------------- */
+
   /**
-   * The visible list is a pure function of the kept pages plus the page in
-   * flight, deduplicated by id — a live refetch of page one legitimately
-   * overlaps what we already hold, and appending it twice would show ghosts.
+   * The distinct snapshot ids on screen.
+   *
+   * `include=rule` puts one id on each row and nothing more, because
+   * `alerts/api` may not name the rules module's types. Content addressing is
+   * what makes this set small: a page of alerts firing under one unchanged rule
+   * is **one** id, not one per row. Sorted so the query key is stable — the same
+   * set in a different order is the same question.
    */
-  const alerts = createMemo<readonly Alert[]>(() => {
-    const page = query.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(kept().map((a) => a.id));
-    return [...kept(), ...page.filter((a) => !seen.has(a.id))];
+  const ruleIds = createMemo<readonly string[]>(() => {
+    const ids = new Set<string>();
+    for (const a of alerts()) {
+      const id = a.rule?.id;
+      if (typeof id === "string" && id !== "") ids.add(id);
+    }
+    return [...ids].sort();
   });
 
-  /** The same fold for buckets, deduplicated by bucket key. */
-  const buckets = createMemo<readonly AlertRollup[]>(() => {
-    const page = rollups.data?.data ?? [];
-    if (bucketCursor() === null) return page;
-    const seen = new Set(keptBuckets().map((b) => b.key));
-    return [...keptBuckets(), ...page.filter((b) => !seen.has(b.key))];
+  /**
+   * One call for the whole page, never one per row — the N+1 this endpoint
+   * exists to remove.
+   *
+   * `staleTime: Infinity` is a statement about the data, not a tuning knob: a
+   * rule snapshot is immutable and content-addressed, so once an id has been
+   * resolved its answer can never change. Refetching it would be asking a
+   * settled question again.
+   */
+  const rules = useQuery(() => ({
+    queryKey: qk.rules.batch(ruleIds()),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      batchGetRuleSnapshots(ruleIds(), { signal }),
+    enabled: ruleIds().length > 0,
+    staleTime: Infinity,
+    // Keep what is already resolved while a bigger batch is in flight, so
+    // "Load more" never blanks the rule column of the rows already on screen.
+    placeholderData: keepPrevious,
+  }));
+
+  const rulesById = createMemo<ReadonlyMap<string, RuleSnapshot>>(() => {
+    const byId = new Map<string, RuleSnapshot>();
+    for (const snapshot of rules.data ?? []) byId.set(snapshot.id, snapshot);
+    return byId;
   });
 
-  const hasMore = (): boolean =>
-    (axis() === null ? query.data?.page.has_more : rollups.data?.page.has_more) ?? false;
+  const hasMore = (): boolean => (axis() === null ? listFeed.hasMore() : bucketFeed.hasMore());
 
   const failed = (): boolean => (axis() === null ? query.isError : rollups.isError);
   const failure = (): unknown => (axis() === null ? query.error : rollups.error);
   const retry = (): void => {
     void (axis() === null ? query.refetch() : rollups.refetch());
-  };
-
-  const loadMore = (): void => {
-    const next = query.data?.page.next_cursor;
-    if (typeof next !== "string" || next === "") return;
-    // Freeze what is on screen before asking for the next page, so the fold is
-    // additive rather than a race between two in-flight responses.
-    setKept(alerts());
-    setPageCount((n) => n + 1);
-    setCursor(next);
-  };
-
-  const loadMoreBuckets = (): void => {
-    const next = rollups.data?.page.next_cursor;
-    if (typeof next !== "string" || next === "") return;
-    setKeptBuckets(buckets());
-    setBucketCursor(next);
   };
 
   const onFilterLabel = (name: string, value: string): void => {
@@ -261,7 +254,7 @@ export default function AlertsRoute() {
         onChange={setFilters}
         onReset={() => setFilters(DEFAULT_FILTERS)}
         status={
-          <span class="text-[12px] tabular-nums text-ink-muted" aria-live="polite">
+          <span class="text-body tabular-nums text-ink-muted" aria-live="polite">
             {status()}
           </span>
         }
@@ -305,7 +298,7 @@ export default function AlertsRoute() {
                 by={axis() as RollupAxis}
                 hasMore={hasMore()}
                 loading={rollups.isFetching}
-                onLoadMore={loadMoreBuckets}
+                onLoadMore={bucketFeed.loadMore}
                 onDrillDown={drillDown()}
               />
             </Match>
@@ -344,14 +337,17 @@ export default function AlertsRoute() {
           <AlertTable
             alerts={alerts()}
             snoozedKnown={filters().snoozed}
+            rules={rulesById()}
+            rulesPending={rules.isFetching}
             onFilterLabel={onFilterLabel}
             footer={
               <Footer
                 hasMore={hasMore()}
                 loading={query.isFetching}
                 loaded={alerts().length}
-                pageCount={pageCount()}
-                onLoadMore={loadMore}
+                pageCount={listFeed.pageCount()}
+                pageSize={PAGE_SIZE}
+                onLoadMore={listFeed.loadMore}
               />
             }
           />
@@ -361,7 +357,7 @@ export default function AlertsRoute() {
       {/* Rejected matchers are explained at the bottom too, where the empty
           state points, so the reason is never off-screen from its effect. */}
       <Show when={rejected().length > 0}>
-        <ul class="border-t border-line bg-raised px-3 py-2 text-[11px] leading-snug text-ink">
+        <ul class="border-t border-line bg-raised px-3 py-2 text-meta leading-snug text-ink">
           <For each={rejected()}>
             {(r) => (
               <li>
@@ -385,6 +381,8 @@ function Footer(props: {
   readonly loading: boolean;
   readonly loaded: number;
   readonly pageCount: number;
+  /** How many rows one press adds — the number the button names, not a second copy of it. */
+  readonly pageSize: number;
   readonly onLoadMore: () => void;
 }) {
   return (
@@ -392,15 +390,15 @@ function Footer(props: {
       <Show
         when={props.hasMore}
         fallback={
-          <span class="text-[11px] text-ink-subtle">
+          <span class="text-meta text-ink-subtle">
             That is all {fmtCount(props.loaded)} of them.
           </span>
         }
       >
         <Button size="sm" busy={props.loading} onClick={props.onLoadMore}>
-          Load {fmtCount(100)} more
+          Load {fmtCount(props.pageSize)} more
         </Button>
-        <span class="text-[11px] text-ink-subtle">
+        <span class="text-meta text-ink-subtle">
           {fmtCount(props.loaded)} loaded across {props.pageCount} page
           {props.pageCount === 1 ? "" : "s"}
         </span>

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -30,16 +31,22 @@ const (
 	CodeUnknownVersion = "rules_unknown_version"
 )
 
-// The alert timeline types this service appends (SPEC §D.4.1). They are a
-// CLOSED enum; implementers must not invent more.
-const (
-	// EventSnapshotCaptured records that a rule definition was stored.
-	EventSnapshotCaptured = "rule.snapshot_captured"
-	// EventDefinitionChanged records drift: the rule is not what it was.
-	EventDefinitionChanged = "rule.definition_changed"
-	// EventLookupFailed records that the rule could not be recovered at all.
-	EventLookupFailed = "rule.lookup_failed"
-)
+// ⛔ THE THREE `rule.*` STRING CONSTANTS THAT USED TO BE HERE ARE GONE.
+//
+// They were `EventSnapshotCaptured = "rule.snapshot_captured"` and its two
+// siblings: a second Go spelling of `alerts/domain.EventRuleSnapshotCaptured`,
+// which made the "closed" enum closed over only one of the two ways to say the
+// same value. This package now names the kernel's values directly —
+// `kernel.EventRuleSnapshotCaptured`, `kernel.EventRuleDefinitionChanged`,
+// `kernel.EventRuleLookupFailed` — and there is no local alias to re-add, because
+// `EventType` is a struct and an alias could only be a MUTABLE package var.
+//
+// ⚠️ NAMING THE KERNEL IS NOT A MODULE EDGE, AND THIS IS NOT `rules ──► alerts`.
+// RULE K (§5.2b, `.golangci.yml`, and `exemptReason` in `test/arch/arch_test.go`)
+// grants every domain `internal/alerts/domain` uniformly. The WRITE is untouched:
+// it is still the `EventRecorder` port this package declares and
+// `internal/app/adapters.go` satisfies, so `rules/service` still never opens
+// somebody else's table. A value object crossed; a dependency did not.
 
 // DefaultHistoryLimit bounds a history read. A rule with more than this many
 // distinct texts is pathological, and an unbounded query on a hot path is worse
@@ -117,11 +124,15 @@ type Capture struct {
 	Recovery domain.Recovery
 	// NewVersion reports that this exact rule text had not been stored before.
 	NewVersion bool
-	// Drifted reports that the rule differs from the previous capture for this
-	// rule key: SPEC §C.6's definition of drift.
+	// Drifted reports that the rule was EDITED between the previous capture and
+	// this one: SPEC §C.6's definition of drift, decided by domain.Drifted over
+	// what the two captures both observed. An outage between the two fires is
+	// not an edit, and neither is a change of recovery path.
 	Drifted bool
-	// PreviousFingerprint is the content address this rule had before, empty on
-	// a first capture.
+	// PreviousFingerprint is the content address of the last capture that held
+	// a DEFINITION, empty when the rule has never been recovered before. An
+	// `unavailable` capture in between does not move it: what oto last knew the
+	// rule to be is still what it last knew.
 	PreviousFingerprint string
 	// Warnings are the lookup's stable note codes plus any degradation this
 	// service applied. They are shown, never swallowed.
@@ -182,7 +193,16 @@ func (s *Service) Capture(ctx context.Context, scope db.TenantScope, req Capture
 	// The previous capture is read BEFORE the write so that "the newest
 	// snapshot for this rule key" means the one the last fire saw, not the one
 	// this fire just created.
-	previous, hadPrevious, err := s.repo.Latest(ctx, scope, snap.Key)
+	//
+	// ⭐ LatestDefinition, NOT Latest. The predecessor drift is measured against
+	// is the last capture that WAS a definition — an `unavailable` row records
+	// that oto could not see the rule, and "we went blind" is not an edit to
+	// diff against. Reading it here as though it were made every fire that
+	// recovered from an outage announce that the rule had changed, against an
+	// empty expression, for every rule in the source. Stepping over it rather
+	// than declining to compare is the other half: a threshold edited during
+	// the outage is still reported, by the first fire that can see it.
+	previous, hadPrevious, err := s.repo.LatestDefinition(ctx, scope, snap.Key)
 	if err != nil {
 		return Capture{}, err
 	}
@@ -200,10 +220,20 @@ func (s *Service) Capture(ctx context.Context, scope db.TenantScope, req Capture
 	}
 	if hadPrevious {
 		out.PreviousFingerprint = previous.Fingerprint
-		out.Drifted = previous.Fingerprint != stored.Fingerprint
+		out.Drifted = domain.Drifted(previous, stored)
 	}
 
-	s.narrate(ctx, scope, req, out)
+	// The diff is computed HERE and not in narrate, because `previous` is the
+	// only thing in this method the Capture does not carry out with it: the
+	// timeline entry AC-16 asks for is "`rule.definition_changed` with a diff",
+	// and re-reading the predecessor later to build one would be a second answer
+	// to a question this transaction already answered.
+	var drift domain.Diff
+	if out.Drifted {
+		drift = domain.Compare(previous, stored)
+	}
+
+	s.narrate(ctx, scope, req, out, drift)
 	return out, nil
 }
 
@@ -241,7 +271,9 @@ func (s *Service) lookupRule(ctx context.Context, scope db.TenantScope, req Capt
 // narrate appends the timeline events for one capture. It never fails the
 // capture: a timeline is a record of what happened, and failing the thing that
 // happened because it could not be written down is backwards.
-func (s *Service) narrate(ctx context.Context, scope db.TenantScope, req CaptureRequest, c Capture) {
+func (s *Service) narrate(
+	ctx context.Context, scope db.TenantScope, req CaptureRequest, c Capture, drift domain.Diff,
+) {
 	if s.events == nil {
 		return
 	}
@@ -254,7 +286,7 @@ func (s *Service) narrate(ctx context.Context, scope db.TenantScope, req Capture
 		snapID = id
 	}
 
-	emit := func(typ, summary string, payload map[string]any, dedupe string) {
+	emit := func(typ kernel.EventType, summary string, payload map[string]any, dedupe string) {
 		if err := s.events.RecordRuleEvent(ctx, scope, RuleEvent{
 			Type:         typ,
 			AlertID:      req.AlertID,
@@ -281,28 +313,89 @@ func (s *Service) narrate(ctx context.Context, scope db.TenantScope, req Capture
 	}
 
 	if !c.Recovered() {
-		emit(EventLookupFailed,
+		emit(kernel.EventRuleLookupFailed,
 			fmt.Sprintf("rule %q could not be recovered", c.Snapshot.Key.Name),
 			base, dedupeKey("rule_lookup_failed", req.OccurrenceID, c.Snapshot.Fingerprint))
 		return
 	}
 
-	emit(EventSnapshotCaptured,
+	emit(kernel.EventRuleSnapshotCaptured,
 		fmt.Sprintf("captured rule %q (%s, %s match)",
 			c.Snapshot.Key.Name, c.Snapshot.Origin, c.Snapshot.Confidence),
 		base, dedupeKey("rule_captured", req.OccurrenceID, c.Snapshot.Fingerprint))
 
 	if c.Drifted {
-		drift := make(map[string]any, len(base)+2)
+		diff := driftPayload(drift)
+		payload := make(map[string]any, len(base)+len(diff)+2)
 		for k, v := range base {
-			drift[k] = v
+			payload[k] = v
 		}
-		drift["previous_fingerprint"] = c.PreviousFingerprint
-		drift["fingerprint"] = c.Snapshot.Fingerprint
-		emit(EventDefinitionChanged,
+		payload["fingerprint"] = c.Snapshot.Fingerprint
+		for k, v := range diff {
+			payload[k] = v
+		}
+		// Written LAST because it is the one fact the caller is guaranteed: an
+		// origin change makes `Compare` decline to fill most of the rest in, and
+		// nothing in the diff may quietly overwrite the predecessor's address.
+		payload["previous_fingerprint"] = c.PreviousFingerprint
+		emit(kernel.EventRuleDefinitionChanged,
 			fmt.Sprintf("rule %q changed since the previous fire", c.Snapshot.Key.Name),
-			drift, dedupeKey("rule_changed", req.OccurrenceID, c.Snapshot.Fingerprint))
+			payload, dedupeKey("rule_changed", req.OccurrenceID, c.Snapshot.Fingerprint))
 	}
+}
+
+// driftPayload renders the structured diff that AC-16 requires on
+// `rule.definition_changed`.
+//
+// ⭐ IT IS `RuleChangeDTO`-SHAPED ON PURPOSE, key for key, because the contract
+// says so in as many words: "`rule.definition_changed` carries a `RuleChangeDTO`-
+// shaped diff" (api/openapi/openapi.yaml, AlertEventDTO.payload). A client that
+// can render the drift panel can then render the timeline entry with the same
+// code.
+//
+// ⛔ `expr_diff` IS NOT DUPLICATED HERE, and that is the one deliberate omission.
+// The verdict union is `rules/api`'s to build — narrowing on `verdict` is the
+// only door to a threshold narrative, per the RuleExprDiffDTO contract — and a
+// second, hand-rolled encoding of it inside a payload map is exactly how the two
+// would come to disagree. What travels is the raw evidence: the two expressions,
+// the two durations, and the label and annotation changes.
+func driftPayload(d domain.Diff) map[string]any {
+	if !d.Changed {
+		return nil
+	}
+	out := map[string]any{
+		"previous_snapshot_id": d.From.ID,
+		"previous_captured_at": d.From.CapturedAt.UTC(),
+		"expr_changed":         d.ExprChanged,
+		"for_changed":          d.ForChanged,
+	}
+	if d.ExprChanged {
+		out["previous_expr"] = d.From.Expr
+		out["new_expr"] = d.To.Expr
+	}
+	if d.ForChanged {
+		out["previous_for_seconds"] = d.From.ForSeconds
+		out["new_for_seconds"] = d.To.ForSeconds
+	}
+	if len(d.Labels) > 0 {
+		out["label_diff"] = mapChangePayload(d.Labels)
+	}
+	if len(d.Annotations) > 0 {
+		out["annotation_diff"] = mapChangePayload(d.Annotations)
+	}
+	return out
+}
+
+// mapChangePayload encodes label and annotation moves as `name → [old, new]`,
+// the same encoding the contract uses: an empty string on one side means the
+// entry was absent there, which is how an addition and a removal are expressed
+// without a third shape.
+func mapChangePayload(cs []domain.MapChange) map[string]any {
+	out := make(map[string]any, len(cs))
+	for _, c := range cs {
+		out[c.Name] = []string{c.Old, c.New}
+	}
+	return out
 }
 
 func dedupeKey(prefix string, occurrenceID uuid.UUID, fingerprint string) string {
@@ -330,10 +423,74 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, id uuid.UUID) (
 	return s.repo.Get(ctx, scope, id)
 }
 
+// GetMany returns the stored snapshots for a set of ids, in one round trip.
+//
+// ⭐ THIS IS WHAT THE ALERT LIST READS. `include=rule` gives the list one
+// snapshot id per row and nothing else, because `alerts/api` may not name this
+// module's types (CONTEXT.md §5.4); asking `/alerts/{id}/rule` per row is the
+// N+1 that kept `expr` off the busiest screen in the product. One call with the
+// page's ids answers all of them — and usually with far fewer rows than ids,
+// since a rule that has not changed is ONE content-addressed snapshot however
+// many alerts fired under it (ADR 0025).
+//
+// ⛔ An unknown id is silently absent, never a 404. A single stale id must not
+// be able to blank the rule column of an entire page.
+func (s *Service) GetMany(ctx context.Context, scope db.TenantScope, ids []uuid.UUID) ([]domain.Snapshot, error) {
+	if len(ids) == 0 {
+		return []domain.Snapshot{}, nil
+	}
+	// Duplicates are the NORMAL case here, not a caller error: fifty alerts
+	// firing under one unchanged rule send fifty copies of one id. They are
+	// collapsed before the query so the batch costs what the distinct set costs.
+	seen := make(map[uuid.UUID]struct{}, len(ids))
+	unique := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return []domain.Snapshot{}, nil
+	}
+	return s.repo.GetMany(ctx, scope, unique)
+}
+
 // Latest returns the newest capture for a rule key. The bool is false when the
 // rule has never been captured, which is a state and not an error.
 func (s *Service) Latest(ctx context.Context, scope db.TenantScope, key domain.Key) (domain.Snapshot, bool, error) {
 	return s.repo.Latest(ctx, scope, key)
+}
+
+// Addressable reports whether a RuleKey can name rows in the snapshot store.
+//
+// ⭐ IT IS THE DIFFERENCE BETWEEN "A KEY THAT FINDS NOTHING" AND "NOT A KEY AT
+// ALL", and the two must not be confused. `rule_snapshots` is indexed on
+// `(org_id, source_id, rule_name, …)`, so a key with no AlertSource behind it
+// cannot be turned into a predicate: the repository refuses it as a VALIDATION
+// error, which is exactly right when a caller typed the source id and exactly
+// wrong when oto derived the key itself and had nothing to derive it from.
+//
+// That second case is ordinary and expected. `rules/api.keyOf` builds a key
+// from an alert's `alertname` alone when no snapshot was ever bound to the
+// episode — a Grafana-sourced alert, a hand-fired one, an Alertmanager whose
+// Prometheus is unreachable. Asking such a key for its history is not a client
+// mistake; the honest answer is "oto has captured nothing here", and this
+// predicate is what lets callers say that instead of raising a 422.
+//
+// The nil UUID is not addressable either. It parses, so the repository would
+// happily build a predicate from it, but no AlertSource is ever the zero id —
+// a query under it is a round trip that cannot match.
+func Addressable(key domain.Key) bool {
+	if strings.TrimSpace(key.Name) == "" {
+		return false
+	}
+	id, err := uuid.Parse(key.SourceID)
+	return err == nil && id != uuid.Nil
 }
 
 // History returns the rule's numbered edit history, oldest first.
@@ -341,7 +498,15 @@ func (s *Service) Latest(ctx context.Context, scope db.TenantScope, key domain.K
 // The versions are the DISTINCT TEXTS the rule has had, not the fires: a rule
 // that fired ten thousand times unchanged has exactly one version, and a rule
 // whose threshold was doubled last Tuesday has two.
+//
+// ⛔ AN UNADDRESSABLE KEY IS AN EMPTY HISTORY, NEVER AN ERROR. See Addressable:
+// the key oto derives from an alert with no captured snapshot names no source,
+// and pushing it down to the repository turns "we captured nothing" into "your
+// request was invalid" — a 422 on the one screen the product exists for.
 func (s *Service) History(ctx context.Context, scope db.TenantScope, key domain.Key) (domain.History, error) {
+	if !Addressable(key) {
+		return domain.NewHistory(key, nil), nil
+	}
 	snaps, err := s.repo.ListByKey(ctx, scope, key, DefaultHistoryLimit)
 	if err != nil {
 		return domain.History{}, err
@@ -388,28 +553,6 @@ func (s *Service) DiffVersions(ctx context.Context, scope db.TenantScope, key do
 			"rule %q has %d versions; %d..%d is out of range", key.Name, h.Len(), from, to)
 	}
 	return d, nil
-}
-
-// DiffSince compares the version an occurrence was bound to against the newest
-// one, which is what the alert card needs to say "this rule has changed since
-// this alert last fired".
-//
-// The bool is false when there is nothing to compare: no history, or the bound
-// fingerprint is the newest one.
-func (s *Service) DiffSince(ctx context.Context, scope db.TenantScope, key domain.Key, boundFingerprint string) (domain.Diff, bool, error) {
-	h, err := s.History(ctx, scope, key)
-	if err != nil {
-		return domain.Diff{}, false, err
-	}
-	bound, ok := h.ByFingerprint(boundFingerprint)
-	if !ok {
-		return domain.Diff{}, false, nil
-	}
-	latest, ok := h.Latest()
-	if !ok || latest.Number == bound.Number {
-		return domain.Diff{}, false, nil
-	}
-	return domain.Compare(bound.Snapshot, latest.Snapshot), true, nil
 }
 
 // DiffSnapshots compares two snapshots by id, oldest capture first.

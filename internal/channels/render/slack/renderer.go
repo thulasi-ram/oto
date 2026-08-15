@@ -245,6 +245,13 @@ func instanceDetail(a domain.AlertView) string {
 
 // actorLabel renders who did it. Slack member ids become real mentions; anything
 // else is escaped, because an actor label is upstream-supplied text.
+//
+// ⛔ IT RETURNS "" FOR A MACHINE, AND "" IS NOT "NOBODY". oto's own agents —
+// system, reconciler, ingest — are recorded on the timeline with a kind and no
+// label at all (only a human actor is guaranteed an id and a label), so an empty
+// answer here with `v.Actor` set means "something other than a person did this".
+// Callers must never paste this straight after " by": see `by` in reply.go,
+// which is the only place allowed to turn this into a clause.
 func actorLabel(v *domain.NotificationView) string {
 	if v.Actor == nil {
 		return ""
@@ -328,4 +335,47 @@ func truncateURL(u string) string {
 		return u[:i]
 	}
 	return u[:maxURL]
+}
+
+// safeURL returns u if it is a URL oto may put in a message, and "" if it is not.
+//
+// ⛔⛔ AN UPSTREAM ANNOTATION MUST NOT BE ABLE TO SUPPRESS ITS OWN ALERT, AND IT
+// COULD. `Links.Runbook` is `runbook_url` copied verbatim out of the alert
+// (`internal/notification/service/view.go`), and `Links.Prometheus` is
+// Alertmanager's `generatorURL`. Neither is validated anywhere upstream of here.
+// Both were handed straight to `truncateURL` and emitted as a button `url` or an
+// overflow option `url` — where V10 refuses anything that is not absolute
+// http(s), which fails the render, which kills the WHOLE DELIVERY as a
+// config_invalid dead letter.
+//
+// So `runbook_url: "see the wiki"` — a plausible thing for a human to write in a
+// Prometheus rule — made oto silently stop delivering that alert. For an alerting
+// tool that is the worst available failure: CONTEXT.md §3 is that oto's silence
+// must never be indistinguishable from "there was no alert", and this was
+// upstream holding the switch.
+//
+// Dropping the link degrades the card by one affordance. Refusing the payload
+// deletes the alert. The card wins.
+//
+// It is also the mrkdwn escape hatch: a URL is the one string oto puts in a
+// message that CANNOT be `escape`d, because `<`, `>` and `&` are legal in a URL
+// and encoding them would break the link. The scheme check is therefore doing
+// double duty — it is what makes `javascript:` and `<!channel>` unable to reach a
+// message through this door at all.
+func safeURL(u string) string {
+	u = strings.TrimSpace(u)
+	if u == "" {
+		return ""
+	}
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return ""
+	}
+	// A URL carrying an mrkdwn control character cannot be rendered faithfully:
+	// inside `<url|label>` a `>` or a `|` terminates the link early and the tail
+	// becomes visible text, and a `<` opens a second one. Percent-encoded forms
+	// are untouched, which is what every real deep link uses.
+	if strings.ContainsAny(u, "<>|") {
+		return ""
+	}
+	return truncateURL(u)
 }

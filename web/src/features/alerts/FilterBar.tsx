@@ -13,8 +13,7 @@
 import { For, Show, createMemo, createSignal, type Component, type JSX } from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listClusters } from "~/api/endpoints";
-import { qk } from "~/api/keys";
+import { clustersQuery } from "~/api/queries";
 import { Button, Input, Select, ToggleGroup, cx } from "~/components/ui/primitives";
 import { STATE_LABEL } from "~/components/StateChip";
 import type { State } from "~/api/types";
@@ -58,11 +57,7 @@ export interface FilterBarProps {
 export const FilterBar: Component<FilterBarProps> = (props) => {
   const [qDraft, setQDraft] = createSignal(props.filters.q);
 
-  const clusters = useQuery(() => ({
-    queryKey: qk.settings.clusters(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listClusters({ signal }),
-    staleTime: 5 * 60_000,
-  }));
+  const clusters = useQuery(() => clustersQuery());
 
   const patch = (part: Partial<AlertFilters>): void => {
     props.onChange({ ...props.filters, ...part });
@@ -176,7 +171,7 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
 
         {/* Acknowledgement is orthogonal to state (§B): `acked` still returns
             firing alerts, because acknowledging one does not end it. */}
-        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+        <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Ack</span>
           <Select
             value={props.filters.ack ?? ""}
@@ -195,7 +190,7 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
         {/* Snooze is a third orthogonal axis, never a state (§B.8): the default
             includes both, because hiding snoozed alerts is how an incident is
             lost. A snoozed alert still reads at its true severity. */}
-        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+        <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Snoozed</span>
           <Select
             value={props.filters.snoozed === null ? "" : String(props.filters.snoozed)}
@@ -211,7 +206,7 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
           </Select>
         </label>
 
-        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+        <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Flapping</span>
           <Select
             value={props.filters.flapping === null ? "" : String(props.filters.flapping)}
@@ -227,7 +222,7 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
         </label>
 
         <Show when={(clusters.data?.data.length ?? 0) > 0}>
-          <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+          <label class="flex items-center gap-1.5 text-body text-ink-muted">
             <span>Cluster</span>
             <Select
               value={props.filters.cluster[0] ?? ""}
@@ -244,7 +239,7 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
           </label>
         </Show>
 
-        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+        <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Since</span>
           <Select
             value={sincePreset()}

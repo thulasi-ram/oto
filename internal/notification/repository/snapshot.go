@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -46,12 +47,40 @@ func (r *SnapshotRepository) db(ctx context.Context) db.Querier { return db.From
 
 const orgFactsSQL = `SELECT id, slug, name FROM orgs WHERE id = $1`
 
+// groupFactsSQL reads the card's group-level facts, and decides ONE thing about
+// the joined source beyond its address: whether that address is somewhere oto
+// may send an operator.
+//
+// ⛔ THE `kind` PREDICATE IS THE WHOLE POINT OF THE `CASE`, and it is why this
+// query reads a second column it never returns. `base_url` is documented
+// everywhere as the Alertmanager API root; for `alertmanager` the API root and
+// the UI root are the same origin, so `<base>/#/alerts` and
+// `<base>/#/silences/new` resolve. For `grafana` neither half holds: the source
+// factory appends stock `/api/v2/...` paths without ever reading kind, so a
+// grafana `base_url` must already carry Grafana's AM-compat prefix — and Grafana
+// serves its silences at `/alerting/silences`, not at `/#/silences`. Whichever
+// way an operator configured it, the link would be wrong.
+//
+// So a source oto cannot vouch for yields the EMPTY STRING, which the renderer
+// already draws as no link and no Silence button. That is the same verdict
+// `silenceBaseURLs` reaches on the silences feed by leaving such a source out of
+// its map (`internal/app/silencesource.go`): kind is the filter, absence is the
+// answer, and the layer above renders nothing rather than something wrong.
+//
+// ⚠️ IT IS DECIDED HERE, NOT UPSTAIRS, and that is deliberate. This file is
+// already the one place in `notification` that names `alert_sources` and its
+// columns; carrying the raw kind instead would put the source-kind taxonomy into
+// `notification/domain` (a field) and `notification/service` (a comparison) as
+// well — three copies of an enum this module has no business knowing. What
+// crosses the boundary is a URL oto has vouched for, or nothing, and the layers
+// above have no vocabulary for the difference.
 const groupFactsSQL = `
 SELECT g.id, g.group_key, g.generation, coalesce(g.source_group_key,''), g.receiver,
        g.group_labels, g.title, g.state, coalesce(g.severity,''), g.state_version,
        g.firing_count, g.suppressed_count, g.resolved_count, g.expired_count,
        g.total_count, g.acked_count, g.storm_mode, g.storm_since,
-       coalesce(g.last_notification_reason,''), coalesce(s.base_url,''),
+       coalesce(g.last_notification_reason,''),
+       CASE WHEN s.kind = 'alertmanager' THEN coalesce(s.base_url,'') ELSE '' END,
        g.first_seen_at, g.last_activity_at, g.closed_at
   FROM alert_groups g
   LEFT JOIN alert_sources s ON s.id = g.source_id
@@ -155,6 +184,17 @@ const MaxTrailEntries = 12
 // Ordered by `recorded_at` — oto's clock, which is the causal order — and
 // DISPLAYED by `occurred_at`, which is upstream's. Conflating the two is how a
 // skewed cluster gets a trail that reads backwards.
+//
+// ⛔ THE TWELVE VALUES BELOW ARE A COPY OF THE KERNEL'S ENUM, IN SQL, AND THEY
+// CANNOT BE ANYTHING ELSE. They are part of a predicate Postgres plans — the walk
+// is `ev_group_idx` plus this filter — not of the parameter list, so there is no
+// `EventType` to bind here the way `readCause` binds one. What that costs is
+// exactly the hazard `causeEventTypes` below describes: rename a value in SPEC
+// §D.4.1, miss this line, and the trail silently goes empty, because a read that
+// returns no rows is indistinguishable from a group that never changed state.
+// `test/arch.TestEventTypeSQLNamesLiveValues` is the thing that notices — this
+// package is registered in `eventTypeSQLSites`, and the gate reads INSIDE this
+// literal and fails if any value in it has left the enum.
 const groupTrailSQL = `
 SELECT type, occurred_at, coalesce(actor_label,'')
   FROM alert_events
@@ -165,6 +205,79 @@ SELECT type, occurred_at, coalesce(actor_label,'')
                 'group.opened','group.closed','group.storm_started','group.storm_ended')
  ORDER BY recorded_at DESC, id DESC
  LIMIT $3`
+
+// causeEventTypes maps a Reason onto the `alert_events` type whose row IS that
+// fact — the one entry on the timeline that knows who caused it and, for a
+// comment, what they said.
+//
+// ⛔ IT IS FOUR ENTRIES AND NOT THE WHOLE REASON ENUM, and the absences are the
+// design. A reason with no entry costs NOTHING — no row, no round trip — and
+// `fired`, `repeat`, `new_alerts`, `all_resolved` and the rest are caused by the
+// world rather than by anybody, so there is no name to fetch and no sentence on
+// the card that would carry one. What is here is exactly the set the renderer
+// attributes: §E.1.1's human verbs as a card renders them (an acknowledgement,
+// its withdrawal, a comment) plus the silence, which is attributed too and whose
+// answer is that no human at oto caused it.
+//
+// ⛔ `snoozed` AND `unsnoozed` ARE DELIBERATELY ABSENT. A snooze is a fact about
+// oto's own notifications, the Slack renderer has no `snoozed` card at all, and
+// a query whose result nothing renders is a query nobody should pay for.
+// ⚠️ THE VALUES ARE THE KERNEL'S ENUM, NOT FOUR MORE STRING LITERALS. They used to
+// be spelled out here, and a typo in one produced a query that silently matched
+// nothing — worse than a bad write, because a read that returns no rows looks
+// exactly like a fact that never happened. Here that hazard is GONE rather than
+// gated: the value is bound as a parameter, so `.String()` happens at the bind in
+// readCause and a value that has left the enum is a compile error.
+//
+// ⚠️ IT IS NOT TRUE OF THIS WHOLE FILE, AND AN EARLIER VERSION OF THIS COMMENT
+// IMPLIED IT WAS. `groupTrailSQL`, forty lines up, still spells twelve of these
+// values out — it must, because they sit in a predicate rather than a parameter —
+// so `occurrence.acknowledged` IS still written in Go in this package. What
+// changed is that the copy is now registered and checked: see that statement's own
+// comment and `test/arch.TestEventTypeSQLNamesLiveValues`.
+var causeEventTypes = map[domain.Reason]kernel.EventType{
+	domain.ReasonAcked:      kernel.EventOccurrenceAcknowledged,
+	domain.ReasonUnacked:    kernel.EventOccurrenceUnacknowledged,
+	domain.ReasonComment:    kernel.EventCommentAdded,
+	domain.ReasonSuppressed: kernel.EventOccurrenceSuppressed,
+}
+
+// causeByOccurrenceSQL, causeByAlertSQL and causeByGroupSQL read the ONE event
+// that caused the fact being rendered: the newest of its type against the
+// narrowest subject the notification names.
+//
+// Three statements rather than one with an `OR`, because an `OR` across three
+// columns cannot use any of their indexes: they ride `ev_occ_idx`
+// (org_id, occurrence_id, recorded_at DESC, id DESC), `ev_alert_idx` and
+// `ev_group_idx` respectively, and each is a LIMIT 1 walk backwards from the
+// newest row.
+//
+// `payload->>'body'` is the comment's text and is NULL for the other three
+// types, which is why one set of statements serves all four: the body column is
+// simply empty for a fact that has no text.
+const causeByOccurrenceSQL = `
+SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
+       coalesce(payload->>'body','')
+  FROM alert_events
+ WHERE org_id = $1 AND occurrence_id = $2 AND type = $3
+ ORDER BY recorded_at DESC, id DESC
+ LIMIT 1`
+
+const causeByAlertSQL = `
+SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
+       coalesce(payload->>'body','')
+  FROM alert_events
+ WHERE org_id = $1 AND alert_id = $2 AND type = $3
+ ORDER BY recorded_at DESC, id DESC
+ LIMIT 1`
+
+const causeByGroupSQL = `
+SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
+       coalesce(payload->>'body','')
+  FROM alert_events
+ WHERE org_id = $1 AND group_id = $2 AND type = $3
+ ORDER BY recorded_at DESC, id DESC
+ LIMIT 1`
 
 // groupNotificationsSQL counts what oto has SAID about this group.
 //
@@ -219,8 +332,72 @@ func (r *SnapshotRepository) Snapshot(
 		return domain.Snapshot{}, err
 	}
 	r.readTrail(ctx, s, q.GroupID, &snap)
+	r.readCause(ctx, s, q, &snap)
 	r.readNotificationCount(ctx, s, q.GroupID, &snap)
 	return snap, nil
+}
+
+// readCause loads WHO caused the fact being rendered, and what they said.
+//
+// ⭐ IT READS THE RECORD RATHER THAN CARRYING A COPY, and that is the whole
+// choice. The actor and the comment body are already written, exactly once, by
+// the module that owns the human verb — in the same transaction that enqueued
+// this notification, so they are on disk before any delivery can claim it — and
+// `alert_events.actor_label` is denormalised there precisely so a renamed or
+// deleted user never rewrites what a card said. Copying either onto the
+// notification row would be a second answer to the same question, and two
+// answers can disagree.
+//
+// ⛔ ONE ROUND TRIP, AND ONLY FOR THE REASONS SOMEBODY CAUSES. A reason with no
+// entry in `causeEventTypes` returns before touching the database, so the common
+// delivery path — fired, repeat, resolved, enriched — pays nothing at all. It is
+// not an N+1 either: a snapshot is built once per delivery (C11), and this is one
+// indexed `LIMIT 1` beside the round trips already above it.
+//
+// A failure DEGRADES to no actor, exactly like the trail: a card that cannot
+// name the acker is a small loss, and a card that never renders is an alert
+// nobody sees.
+func (r *SnapshotRepository) readCause(
+	ctx context.Context, s db.TenantScope, q domain.SnapshotQuery, snap *domain.Snapshot,
+) {
+	eventType, ok := causeEventTypes[q.Reason]
+	if !ok {
+		return
+	}
+
+	// The NARROWEST subject the notification names, and every one of these
+	// reasons names an EPISODE in production — `alerts` enqueues them from the
+	// occurrence it just moved. That matters: a group is many alerts acknowledged
+	// one at a time, so a group-scoped read would return whichever member was
+	// acted on last and put one person's name against another person's action.
+	// The group is the fallback for a preview that names nothing narrower.
+	//
+	// ⛔ IT NARROWS EXACTLY AS `readOccurrence` DOES, INCLUDING THE ALERT
+	// FALLBACK, and the two must not drift. `readOccurrence` answers "which
+	// episode is this card about" from the occurrence id and then from the alert
+	// id; this answers "who caused that card". A preview by `alert_id` — the
+	// policy-preview endpoint takes exactly one of alert/occurrence/group and any
+	// reason — would otherwise pair Ada's episode with the whole GROUP's newest
+	// acknowledgement, which is grace's, and render "Acknowledged by grace" over
+	// Ada's alert. For `comment` it would drag the sibling's WORDS across too.
+	sql, subject := causeByGroupSQL, q.GroupID
+	switch {
+	case q.OccurrenceID != nil:
+		sql, subject = causeByOccurrenceSQL, *q.OccurrenceID
+	case q.AlertID != nil:
+		sql, subject = causeByAlertSQL, *q.AlertID
+	}
+
+	var (
+		actor domain.ActorFacts
+		body  string
+	)
+	if err := r.db(ctx).QueryRow(ctx, sql, s.OrgID(), subject, eventType.String()).
+		Scan(&actor.Kind, &actor.ID, &actor.Label, &body); err != nil {
+		return
+	}
+	snap.Actor = &actor
+	snap.Comment = body
 }
 
 // readNotificationCount records how many notifications oto has sent about this

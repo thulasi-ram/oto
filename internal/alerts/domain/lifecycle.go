@@ -9,17 +9,36 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/tuning"
 )
 
 // Lifecycle defaults (SPEC §B.5, §D.1 org settings). A caller always passes the
 // org's configured value; these are what the configuration defaults to.
+//
+// ⛔ THEY ARE REFERENCES, NOT COPIES, AND THAT IS THE WHOLE FIX. These two used to
+// be spelled here as literals with a ⚠️ comment saying they MIRROR
+// `identity/domain` and must move with it — which is a note, not a mechanism. ADR
+// 0026 moved three of oto's tuning defaults at once and two mirrored copies were
+// missed; the failure is silent, because a stale fallback is only reached by an
+// org whose settings failed to load, so exactly that tenant runs the OLD
+// arithmetic and nobody is told.
+//
+// This package may not import `identity/domain` — CONTEXT.md §5.4, enforced by
+// depguard — so the numbers live one layer below both of us, in
+// `platform/tuning`, which every module may import and which may import none.
+// The derivation for each is stated there.
 const (
 	// DefaultRefireGrace decides T7 from T8: a re-fire inside this window reopens
-	// the existing AlertOccurrence, a re-fire after it opens a new one.
-	DefaultRefireGrace = 10 * time.Minute
+	// the existing AlertOccurrence, a re-fire after it opens a new one. The number
+	// is derived rather than chosen — `for + group_interval` for the modal real
+	// rule, 15m + 5m — because the clock starts at the occurrence's `ended_at`,
+	// which T5 below takes from the UPSTREAM `EndsAt`, so the re-fire has to pay
+	// the rule's whole `for:` dwell again before oto can observe it at all. See
+	// ADR 0026 and docs/setup/tuning.md.
+	DefaultRefireGrace = tuning.DefaultRefireGrace
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
 	// before an occurrence may expire.
-	DefaultResolveGrace = 5 * time.Minute
+	DefaultResolveGrace = tuning.DefaultResolveGrace
 )
 
 // Trigger is what happened to make the lifecycle machine run. There are exactly
@@ -121,8 +140,11 @@ type transitionRule struct {
 	// event is the AlertEvent this edge appends; the zero EventType means the
 	// edge appends nothing unless something material changed.
 	event EventType
-	// opensNewOccurrence marks T7: the current occurrence is untouched and the
-	// caller must open a new one.
+	// opensNewOccurrence marks the two rows that OPEN an episode rather than move
+	// one: T1, where there is no occurrence to move, and T7, where the terminal
+	// one is left exactly as it is. `Decide` reads this column and nothing else to
+	// route an observation, which is what keeps "which rows open an episode?" a
+	// fact of the table rather than an `if` at a call site.
 	opensNewOccurrence bool
 }
 
@@ -133,6 +155,10 @@ var transitionTable = []transitionRule{
 		from: StateNone, to: StateFiring, trigger: TriggerObserveFiring,
 		id: TransitionT1, actors: []ActorKind{ActorIngest, ActorReconciler},
 		event: EventOccurrenceOpened,
+		// T1 opens the FIRST episode, so it opens one exactly as T7 does — the
+		// column says so here rather than being re-derived from the id anywhere
+		// else. Apply still refuses this row: opening is OpenNewOccurrence's job.
+		opensNewOccurrence: true,
 	},
 	{
 		from: StateFiring, to: StateFiring, trigger: TriggerObserveFiring,
@@ -514,6 +540,74 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 	}
 	res.Events = []Event{ev}
 	return res, nil
+}
+
+// Decision is the §B.3 verdict for ONE observation against ONE Alert's LATEST
+// episode: which row of the table runs, and — for the two rows that open an
+// episode rather than move one — everything that episode must be opened with.
+//
+// It is reached with no I/O, no clock and no repository, which is what makes
+// every edge of the table addressable from a test that never opens a database.
+type Decision struct {
+	// ID names the §B.3 row that selectRule matched.
+	ID TransitionID
+	// From is the state the episode was in when the verdict was reached. It is
+	// StateNone when the Alert has no episode at all, which is T1's whole meaning:
+	// there is no state to come from.
+	From State
+
+	// OpensEpisode is true for exactly the rows that do not move the occurrence
+	// they were decided against — T1, where there is none, and T7, where the
+	// terminal one is left exactly as it is (§B.5). The caller opens the new
+	// episode with Seq and ReopenOf; every other row is applied with Apply.
+	OpensEpisode bool
+	// Seq is the sequence number the new episode takes.
+	Seq int
+	// ReopenOf is the episode the new one succeeds, and is uuid.Nil for T1.
+	ReopenOf uuid.UUID
+	// DropsAck is T10 by the `new_occurrence` road: the episode being succeeded
+	// was ACKED, and an acknowledgement does not survive into a new one. The
+	// caller records that on the NEW episode and leaves the old one exactly as it
+	// is — see autoUnackEvent.
+	DropsAck bool
+}
+
+// Decide names the one §B.3 row an observation runs, and is the ONLY place that
+// question is answered.
+//
+// ⭐ AN ALERT WITH NO EPISODE IS THE ZERO Occurrence, whose state is StateNone —
+// the state T1's row already comes from. That is why this takes an Occurrence and
+// no "is there one?" flag: the absence of an episode is a state the table models,
+// not a case a caller special-cases around it. The zero Occurrence also carries
+// seq 0 and a nil id, so the arithmetic below yields exactly the first episode's
+// parameters without a branch.
+//
+// ⛔ IT READS ONLY THE ROUTING FIELDS of cmd — Trigger, At and RefireGrace, which
+// are what selectRule matches on. The rest of a TransitionCommand is what an edge
+// is APPLIED with, and a caller may finish assembling it after this returns;
+// Apply is what validates it.
+//
+// ⛔ IT DOES NOT CHECK rule.actors, AND THAT IS NOT AN OVERSIGHT. Apply checks
+// them, because authorisation belongs to the edge that MUTATES an occurrence
+// (§L.4 invariant 2) — `suppressed` set by ingest, `expired` set by anything but
+// the reaper. Opening an episode mutates none: the previous one is untouched. And
+// the reconciler MUST be able to open one — "present upstream, absent in oto" is
+// the recovery ADR 0006 promises, and refusing it because T7's actor column names
+// only ingest would turn oto's own repair path into an internal error.
+func Decide(current Occurrence, cmd TransitionCommand) (Decision, error) {
+	rule, err := selectRule(current, cmd)
+	if err != nil {
+		return Decision{}, err
+	}
+	d := Decision{ID: rule.id, From: current.state}
+	if !rule.opensNewOccurrence {
+		return d, nil
+	}
+	d.OpensEpisode = true
+	d.Seq = current.seq + 1
+	d.ReopenOf = current.id
+	d.DropsAck = current.ackState.IsAcked()
+	return d, nil
 }
 
 // selectRule finds the one §B.3 row that matches the occurrence and the command,

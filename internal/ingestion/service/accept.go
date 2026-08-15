@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thulasiram/oto/internal/ingestion/decode"
 	"github.com/thulasiram/oto/internal/ingestion/domain"
@@ -103,7 +104,15 @@ func (s *Service) Accept(ctx context.Context, scope db.TenantScope, cmd AcceptCo
 			"the request body is not an Alertmanager webhook payload")
 	}
 
-	if !src.AcceptsPush() {
+	// ⭐ A DELIVERY DRILL IS NOT A PUSH. `push_enabled` gates the webhook
+	// endpoint — a credential living in every cluster's `alertmanager.yml` — and
+	// a drill arrives from an authenticated operator through the API instead. An
+	// operator who has not yet pointed Alertmanager at oto is precisely the
+	// operator who most needs to know whether a card would reach their channel,
+	// so the flag they have not set yet must not be what stops them finding out.
+	// A DELETED source still refuses, and that check lives in the drill service,
+	// which can answer 404 without an Alertmanager retry budget to protect.
+	if !cmd.Mode.IsSynthetic() && !src.AcceptsPush() {
 		// Recorded, not refused. An operator who disabled pushes, or a source that
 		// was soft deleted while its token was still live, must not silently vanish
 		// alerts — and a 4xx here would delete them at the upstream too.
@@ -325,8 +334,41 @@ func asBackpressure(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
+	if isUnstorableBytes(err) {
+		return errs.Wrap(err, errs.KindUnavailable, CodeAcceptUnstorable,
+			"oto could not durably record this batch right now").WithRetryAfter(domain.RetryAfter)
+	}
 	return errs.Wrap(err, errs.KindUnavailable, CodeAcceptFailed,
 		"oto could not durably record this batch right now").WithRetryAfter(domain.RetryAfter)
+}
+
+// isUnstorableBytes reports whether Postgres refused the BYTES, as opposed to
+// being busy, deadlocked or gone.
+//
+// This is a backstop for a hole in `decode.PersistedPayload`'s pre-scan, not a
+// handler: nothing here can repair the batch, and the answer is still a 503. What
+// it buys is a distinguishable code on a failure that would otherwise be
+// indistinguishable from transient backpressure while being permanent — an
+// Alertmanager retrying one poisoned body until its budget runs out, on a metric
+// that reads as "the database is slow".
+//
+// ⛔ THE MESSAGE MUST NOT WIDEN. `err` here can carry Postgres's own rendering of
+// the offending value, and §L.3.3 forbids the payload reaching a log line or an
+// error string at any level. The wrap above keeps the same neutral sentence every
+// other backpressure case uses; only the CODE changes.
+func isUnstorableBytes(err error) bool {
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) {
+		return false
+	}
+	switch pg.Code {
+	case "22P05", // untranslatable_character — U+0000 in text or jsonb
+		"22021", // character_not_in_repertoire — invalid UTF-8 for the database encoding
+		"22P02": // invalid_text_representation
+		return true
+	default:
+		return false
+	}
 }
 
 // batchRejectionEvidence is the `raw` column for a batch-level rejection. The

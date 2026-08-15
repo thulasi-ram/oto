@@ -18,22 +18,37 @@ const ContentTypeProblem = "application/problem+json"
 // The struct lives here, not in httpx, so that this package stays free of any
 // transport import — internal/<domain>/domain packages import errs, and they may
 // not depend on net/http (SPEC §L.4). httpx owns the write.
+//
+// ⭐ THE FIELDS BELOW HAVE NO GO READER BY DESIGN. json.Marshal is the consumer and
+// the client is the reader; the contract suite asserts each one against
+// openapi.yaml's Problem schema. For a response DTO, "no production reader" is what
+// correct looks like — so each carries its own reachable-ok rather than the struct,
+// because lintreach reports per field.
 type ProblemDTO struct {
-	Type       string         `json:"type"`
-	Title      string         `json:"title"`
-	Status     int            `json:"status"`
-	Detail     string         `json:"detail,omitempty"`
-	Instance   string         `json:"instance,omitempty"`
-	Code       string         `json:"code"`
+	//oto:reachable-ok wire-only: the RFC 9457 type URI, read by the client, never by Go.
+	Type string `json:"type"`
+	//oto:reachable-ok wire-only: the human-readable title, read by the client, never by Go.
+	Title  string `json:"title"`
+	Status int    `json:"status"`
+	Detail string `json:"detail,omitempty"`
+	//oto:reachable-ok wire-only: the request path, read by the client, never by Go.
+	Instance string `json:"instance,omitempty"`
+	Code     string `json:"code"`
+	//oto:reachable-ok wire-only: the correlation id an operator quotes in a bug report; read by the client and by humans, never by Go.
 	RequestID  string         `json:"request_id"`
 	Violations []ViolationDTO `json:"violations,omitempty"`
 	RetryAfter int            `json:"retry_after_seconds,omitempty"`
 }
 
 // ViolationDTO is one entry of the problem's violations[] array (SPEC §L.2.2).
+//
+// Wire-only, exactly as ProblemDTO above.
 type ViolationDTO struct {
-	Field   string `json:"field"`
-	Code    string `json:"code"`
+	//oto:reachable-ok wire-only: the UI maps this onto the control that was refused; the contract tests assert it on every 422 branch. Nothing in Go reads it back.
+	Field string `json:"field"`
+	//oto:reachable-ok wire-only: the stable machine code a client switches on, asserted by the contract tests. Nothing in Go reads it back.
+	Code string `json:"code"`
+	//oto:reachable-ok wire-only: the sentence shown next to the refused control. Nothing in Go reads it back.
 	Message string `json:"message"`
 }
 

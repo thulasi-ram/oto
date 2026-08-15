@@ -6,6 +6,11 @@
  * `npm run generate:check` and fails on any diff — that is gate G3 of SPEC
  * §L.8.1, and it is why no hand-written response type may exist in this app.
  *
+ * Its runtime counterpart is `./generated/validators.ts` — one valibot schema
+ * per component schema, from the same file, by `npm run gen:validators`, checked
+ * in and diffed in CI by `npm run gen:validators:check`. That is gate G4, and it
+ * is why no hand-written valibot schema may describe a response.
+ *
  * Paths are relative: the Vite dev server proxies them to the Go process
  * (see vite.config.ts) and in production the same origin serves both.
  */
@@ -234,12 +239,47 @@ async function decode(res: Response, path: string): Promise<unknown> {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* The session died                                                           */
+/* -------------------------------------------------------------------------- */
+
+const unauthenticatedListeners = new Set<() => void>();
+
+/**
+ * Subscribe to "the server says nobody is signed in". Returns an unsubscribe.
+ *
+ * ⛔ THIS PUBLISHES, IT DOES NOT NAVIGATE. A redirect fired from inside a fetch
+ * handler is a second place that decides where the app goes, and the two
+ * disagree the first time a 401 lands during a navigation. `session.tsx` owns
+ * that decision; this only reports the fact.
+ *
+ * `login` itself is exempt: a wrong password is a 401 that the form must render
+ * as "check your details", not a signal that the session ended. Signing the
+ * whole app out because someone mistyped would be absurd.
+ */
+export function onUnauthenticated(fn: () => void): () => void {
+  unauthenticatedListeners.add(fn);
+  return () => unauthenticatedListeners.delete(fn);
+}
+
+// An EXACT match, not a suffix. `endsWith` was exempting any path that merely
+// ended in the same characters — and route params are interpolated unencoded, so
+// an id containing `%2Fauth%2Flogin` produced `/api/v1/alerts/x/auth/login` and
+// silently opted that request out of the publisher. Harmless in practice (the
+// server answers 404, not 401) and free to close.
+function isLoginAttempt(path: string): boolean {
+  return path === "/api/v1/auth/login";
+}
+
 /** Perform a request and return the decoded body, or throw an `ApiError`. */
 async function request(path: string, opts: RequestOptions = {}): Promise<unknown> {
   const res = await rawRequest(path, opts);
   const body = await decode(res, path);
 
   if (!res.ok) {
+    if (res.status === 401 && !isLoginAttempt(path)) {
+      for (const fn of unauthenticatedListeners) fn();
+    }
     const problem = asProblem(body);
     throw new ApiError(res.status, problem, `${res.status} ${res.statusText}`);
   }
@@ -250,10 +290,15 @@ async function request(path: string, opts: RequestOptions = {}): Promise<unknown
  * `{ data, meta }` — the single-resource envelope every read endpoint uses.
  *
  * The envelope is checked structurally; the resource inside is trusted to the
- * generated type. SPEC §L.8 forbids hand-written valibot schemas for responses
- * (they must come from gate G4, which does not exist yet — see the report), so
- * this deliberately validates the envelope and nothing deeper rather than
- * duplicating the contract by hand and creating a second source of truth.
+ * generated type.
+ *
+ * Gate G4 now exists, so `./generated/validators.ts` has a runtime schema for
+ * every response body — but this function does not yet take one. SPEC §L.8's
+ * `get<S>(path, schema)` shape, with its dev-throws/prod-degrades split, is
+ * still unbuilt, and saying so here is more useful than implying the bodies are
+ * parsed. What has changed is that closing that gap no longer means writing a
+ * schema by hand: pass `<Name>ResponseSchema` to `v.safeParse` and the contract
+ * is already there.
  */
 export async function getItem<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const body = await request(path, opts);
@@ -318,6 +363,17 @@ export function patchItem<T>(path: string, body: unknown, opts: RequestOptions =
 /** A mutation with no response body worth reading (204, or an ignored envelope). */
 export async function del(path: string, opts: RequestOptions = {}): Promise<void> {
   await request(path, { ...opts, method: "DELETE" });
+}
+
+/**
+ * A POST whose success is a `204` and whose body there is nothing to read.
+ *
+ * `del` cannot serve this: it pins the method to `DELETE`, and a caller that
+ * spread `method: "POST"` over it would silently be sending a `DELETE`. `logout`
+ * is the case that needs it.
+ */
+export async function postVoid(path: string, opts: RequestOptions = {}): Promise<void> {
+  await request(path, { ...opts, method: "POST" });
 }
 
 /** An empty page, for optimistic and placeholder rendering. */

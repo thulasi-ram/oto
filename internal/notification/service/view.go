@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -67,12 +68,16 @@ func NewViewService(cfg ViewConfig) (*ViewService, error) {
 }
 
 // ViewRequest names the fact to be rendered.
+//
+// ⛔ IT CARRIES NO ACTOR AND NO COMMENT TEXT, and it used to carry both. Nothing
+// ever set them: a caller at claim time has a notification row and no memory of
+// the click that produced it, so the two fields were a channel with no source
+// and every card rendered `Acknowledged` with nobody's name on it. Who acted and
+// what they typed are read from the timeline, where they were written once and
+// frozen — see `readCause` in the snapshot repository. Do not add them back: a
+// second way to name a human is a second name to disagree with.
 type ViewRequest struct {
 	Notification domain.Notification
-	// Actor labels who caused the fact, for the human-caused reasons.
-	Actor string
-	// Comment is the text of a `comment` notification.
-	Comment string
 }
 
 // Build reads the world and projects it into the renderer's read model.
@@ -85,6 +90,10 @@ func (v *ViewService) Build(
 		AlertID:      n.AlertID,
 		OccurrenceID: n.OccurrenceID,
 		MaxAlerts:    v.maxAlerts,
+		// The Reason travels because it is what names the timeline entry that
+		// caused this card: without it the read model can say what the world looks
+		// like but not who moved it.
+		Reason: n.Reason,
 	})
 	if err != nil {
 		return nil, err
@@ -101,10 +110,13 @@ func (v *ViewService) project(snap domain.Snapshot, req ViewRequest) *Notificati
 		Org: OrgRef{
 			ID: snap.Org.ID.String(), Slug: snap.Org.Slug, Name: snap.Org.Name,
 		},
-		Reason:     string(n.Reason),
-		Group:      v.group(snap),
-		Alerts:     v.alerts(snap),
-		Comment:    req.Comment,
+		Reason: string(n.Reason),
+		Group:  v.group(snap),
+		Alerts: v.alerts(snap),
+		// The words a human typed, from the event they typed them onto. A comment
+		// lives nowhere else (CONTEXT.md §6), so an empty one here is a person's
+		// message replaced by an emoji in the channel they wrote it in.
+		Comment:    snap.Comment,
 		RenderedAt: snap.TakenAt,
 	}
 
@@ -130,11 +142,9 @@ func (v *ViewService) project(snap domain.Snapshot, req ViewRequest) *Notificati
 			}
 		}
 	}
-	if req.Actor != "" {
-		view.Actor = &ActorView{Kind: "user", Label: req.Actor}
-	} else if snap.Actor != nil {
+	if snap.Actor != nil {
 		view.Actor = &ActorView{
-			Kind: snap.Actor.Kind, ID: snap.Actor.ID, Label: snap.Actor.Label,
+			Kind: actorViewKind(snap.Actor.Kind), ID: snap.Actor.ID, Label: snap.Actor.Label,
 		}
 	}
 
@@ -159,20 +169,49 @@ func (v *ViewService) project(snap domain.Snapshot, req ViewRequest) *Notificati
 	return view
 }
 
+// actorViewKind translates the timeline's actor vocabulary into the view's.
+//
+// `alert_events.actor_kind` says `slack` for a human acting through a Slack
+// interaction; the view says `slack_user`, which is the word every renderer
+// tests for before it turns the id into a real `<@U…>` mention instead of
+// printing it as text. They are the same fact in two vocabularies, and THIS IS
+// THE SEAM, so this is where they meet: a renderer that learned the database's
+// word would be a renderer that knows the database.
+//
+// Every other kind travels UNCHANGED, including oto's own machines — `system`,
+// `reconciler`, `ingest`. Carrying a machine actor is not noise: an actor with
+// no label is how a card knows that a transition was automatic, which is a
+// different answer from not knowing who did it, and §B.6 makes the difference
+// something oto owes the reader.
+func actorViewKind(kind string) string {
+	if kind == "slack" {
+		return "slack_user"
+	}
+	return kind
+}
+
 // trailKinds maps `alert_events.type` onto the renderer's small closed
 // vocabulary. A type with no entry is DROPPED, never printed raw: the trail is
 // read by a human at 03:00 and `occurrence.unsuppressed` is not a sentence.
-var trailKinds = map[string]string{
-	"occurrence.opened":         "fired",
-	"occurrence.reopened":       "refired",
-	"occurrence.acknowledged":   "acked",
-	"occurrence.unacknowledged": "unacked",
-	"occurrence.suppressed":     "suppressed",
-	"occurrence.unsuppressed":   "unsuppressed",
-	"occurrence.resolved":       "resolved",
-	"occurrence.expired":        "expired",
-	"group.storm_started":       "storm",
-	"group.storm_ended":         "storm_ended",
+//
+// ⭐ IT IS KEYED BY THE KERNEL'S `EventType`, NOT BY TEN STRING LITERALS. Keyed by
+// string, this map was the quietest of the re-declaration sites and the one with
+// the worst failure mode: a mistyped key does not fail, it simply never matches,
+// and the entry it was meant to render vanishes from every card with nothing
+// anywhere reporting a problem. `EventType` is comparable — one unexported string
+// field — so it is a map key like any other, and now a key that is not one of the
+// closed 36 does not compile.
+var trailKinds = map[kernel.EventType]string{
+	kernel.EventOccurrenceOpened:         "fired",
+	kernel.EventOccurrenceReopened:       "refired",
+	kernel.EventOccurrenceAcknowledged:   "acked",
+	kernel.EventOccurrenceUnacknowledged: "unacked",
+	kernel.EventOccurrenceSuppressed:     "suppressed",
+	kernel.EventOccurrenceUnsuppressed:   "unsuppressed",
+	kernel.EventOccurrenceResolved:       "resolved",
+	kernel.EventOccurrenceExpired:        "expired",
+	kernel.EventGroupStormStarted:        "storm",
+	kernel.EventGroupStormEnded:          "storm_ended",
 	// `group.opened` and `group.closed` are oto's OWN bookkeeping about a
 	// generation, not things that happened to the signal. They are deliberately
 	// absent: a trail that says "oto opened a group" answers a question nobody
@@ -188,7 +227,16 @@ var trailKinds = map[string]string{
 func trail(snap domain.Snapshot) []TrailEntry {
 	out := make([]TrailEntry, 0, len(snap.Trail))
 	for _, f := range snap.Trail {
-		kind, ok := trailKinds[f.Type]
+		// `TransitionFact.Type` is still a `string` because it is read straight off
+		// `alert_events.type` by the repository, and a row written by a future
+		// version of oto must not be able to make a card fail to render. Parsing
+		// here keeps the DROP behaviour identical for an unknown value — the
+		// renderer's whole rule — while the map above stays closed over the enum.
+		typ, err := kernel.NewEventType(f.Type)
+		if err != nil {
+			continue
+		}
+		kind, ok := trailKinds[typ]
 		if !ok {
 			continue
 		}
@@ -399,6 +447,16 @@ func (v *ViewService) links(snap domain.Snapshot) Links {
 	// The filter is Alertmanager's own matcher syntax, `{a="b", c="d"}`, built from
 	// the GROUP LABELS — the labels Alertmanager itself grouped by, so the silence
 	// covers exactly this card and not the whole alertname across every cluster.
+	//
+	// ⛔ THE EMPTY CHECK IS ALSO THE SOURCE-KIND GUARD, and both of these URL
+	// shapes are ALERTMANAGER'S OWN CONSOLE — `/#/alerts`, `/#/silences/new` — not
+	// a shape every source serves. `AlertmanagerURL` is a UI root oto has vouched
+	// for or nothing at all (see its doc on `domain.GroupFacts`), so a group whose
+	// source is a Grafana, or whose source resolved to nothing, arrives here empty
+	// and leaves with no link — and `actions` below already reads an empty
+	// `AlertmanagerSilenceNew` as no Silence button. Never guess the missing half:
+	// an operator who clicks a fabricated link mid-incident and lands on a 404 has
+	// lost the one action v1 offers and gained a reason not to trust the next card.
 	if base := strings.TrimRight(snap.Group.AlertmanagerURL, "/"); base != "" {
 		if filter := alertmanagerFilter(snap); filter != "" {
 			escaped := url.QueryEscape(filter)

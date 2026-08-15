@@ -25,7 +25,11 @@
  * staging and times out during an incident is worse than one that says no.
  */
 
-export type MatcherOperator = "=" | "!=" | "=~" | "!~";
+import { maxLengthOf, patternOf } from "~/api/bounds";
+import { LabelNameSchema, MatcherOpSchema } from "~/api/generated/validators";
+
+/** The contract's `MatcherOp`, not a fifth spelling of it. */
+export type MatcherOperator = (typeof MatcherOpSchema.options)[number];
 
 export interface LabelMatcher {
   readonly name: string;
@@ -44,14 +48,32 @@ export interface ParseResult {
   readonly errors: readonly ParseError[];
 }
 
-/** Alertmanager's own label-name rule, and the one the API enforces (§E.3). */
-const LABEL_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+/**
+ * Alertmanager's own label-name rule, and the one the API enforces (§E.3) — read
+ * off the contract's `LabelName` rather than re-typed from it.
+ *
+ * ⛔ A LABEL NAME HAS **TWO** RULES AND THIS FILE ONLY HAD ONE. The charset was
+ * copied faithfully; the 1024-character cap beside it was dropped, so a 2000-byte
+ * label name parsed cleanly here and then came back as a 422 from a request the
+ * user had no way to see coming. Both halves now come from the same object.
+ */
+const LABEL_NAME = patternOf(LabelNameSchema);
+const LABEL_NAME_MAX = maxLengthOf(LabelNameSchema);
 
-/** Operators, longest first — `!=` must win over `!` and `=~` over `=`. */
-const OPERATORS: readonly MatcherOperator[] = ["=~", "!~", "!=", "="];
+/**
+ * Operators, longest first — `!=` must win over `!` and `=~` over `=`.
+ *
+ * The *set* is the contract's; only the ordering is this parser's, and it is a
+ * property of tokenising rather than a fact about the API. Sorting by length is
+ * what "longest first" means, so an operator the contract adds is tokenised
+ * correctly instead of being unparseable until somebody notices this list.
+ */
+const OPERATORS: readonly MatcherOperator[] = [...MatcherOpSchema.options].sort(
+  (a, b) => b.length - a.length,
+);
 
 /** Every operator the contract's `matcher=` parameter accepts. All four are sent. */
-export const SUPPORTED_OPERATORS: readonly MatcherOperator[] = ["=", "!=", "=~", "!~"];
+export const SUPPORTED_OPERATORS: readonly MatcherOperator[] = MatcherOpSchema.options;
 
 export function isRegexOperator(op: MatcherOperator): boolean {
   return op === "=~" || op === "!~";
@@ -64,6 +86,10 @@ export function isRegexOperator(op: MatcherOperator): boolean {
  * `[` `]` `{` `}` `\`. Note what is **absent** — `|` is how an alternation is
  * spelled and `^`/`$` are the anchors an alternation may carry, so all three
  * are served.
+ *
+ * ⚠️ NOT DERIVABLE. The contract states this list in the *prose* description of
+ * the `matcher` query parameter, so `gen-validators.mjs` emits nothing to read it
+ * from; there is no generated value for `~/api/bounds` to return.
  */
 const REGEX_METACHARACTERS = [".", "*", "+", "?", "(", ")", "[", "]", "{", "}", "\\"] as const;
 
@@ -165,7 +191,14 @@ export function parseMatchers(input: string): ParseResult {
     if (!LABEL_NAME.test(name)) {
       errors.push({
         at,
-        message: `\`${name}\` is not a valid label name — must match [a-zA-Z_][a-zA-Z0-9_]*`,
+        message: `\`${name}\` is not a valid label name — must match ${LABEL_NAME.source}`,
+      });
+      continue;
+    }
+    if (name.length > LABEL_NAME_MAX) {
+      errors.push({
+        at,
+        message: `that label name is ${name.length} characters — the API accepts at most ${LABEL_NAME_MAX}`,
       });
       continue;
     }

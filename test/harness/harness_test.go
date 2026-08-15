@@ -74,12 +74,14 @@ func TestPostgresAndBuildersProduceAUsableTenant(t *testing.T) {
 
 	// alert_events is partitioned with no default partition. If
 	// oto_partitions_manage did not run, this insert fails — and every timeline
-	// append in every harness test would fail with it.
+	// append in every harness test would fail with it. It is stamped at h.Now(),
+	// not now(), because that is the instant every test writes at: see
+	// TestEpochHasAPartitionEverywhere below.
 	h.Exec(`INSERT INTO alert_events (id, org_id, alert_id, occurrence_id, type, actor_kind,
 	                                  summary, occurred_at, recorded_at, payload)
 	        VALUES (gen_random_uuid(), $1, $2, $3, 'alert.observed', 'ingest',
-	                'observed by a harness test', now(), now(), '{}'::jsonb)`,
-		org.ID, alert.ID, occ.ID)
+	                'observed by a harness test', $4, $4, '{}'::jsonb)`,
+		org.ID, alert.ID, occ.ID, h.Now())
 
 	var users int
 	if err := h.Pool.QueryRow(h.Ctx,
@@ -89,6 +91,57 @@ func TestPostgresAndBuildersProduceAUsableTenant(t *testing.T) {
 	}
 	if users != 1 {
 		t.Fatalf("the seeded user is not in its org")
+	}
+}
+
+// TestEpochHasAPartitionEverywhere is git-bug 6547228's regression test, and it
+// is a test about the CALENDAR: it passes today and it has to go on passing on
+// the first of every month after today.
+//
+// All four of these are PARTITION BY RANGE with no default partition, and the
+// partition manager builds its window around the database's `now()`. Epoch does
+// not move, so without the second call in `migrateTemplate` the window walks off
+// it and a row a harness test writes into one of these tables fails with a bare
+// 23514. Five tests worked around that by deriving their own `now`; none of them
+// needs to any more, and the way to keep it that way is here.
+func TestEpochHasAPartitionEverywhere(t *testing.T) {
+	t.Parallel()
+	h := harness.New(t)
+
+	for _, table := range []struct {
+		parent, grain string
+		// callerStamped is whether a Go caller supplies the partition key. Where it
+		// does, a missing partition is a failing test; where it does not, a missing
+		// partition is only a missing precaution.
+		callerStamped bool
+	}{
+		{"alert_events", "month", true},
+		{"ingest_batches", "day", true},
+		{"ingest_rejections", "day", true},
+		// `ui_events.at` is DEFAULT now() and every writer omits the column, so
+		// nothing is ever stamped at Epoch here. The partition is kept for the day
+		// one supplies `at`, and this row asserts the harness still creates it.
+		{"ui_events", "hour", false},
+	} {
+		// to_regclass answers NULL for a partition that was never created, which is
+		// exactly the state that produces the 23514.
+		var name *string
+		if err := h.Pool.QueryRow(h.Ctx,
+			`SELECT to_regclass('public.' || oto_partition_name($1, $2, $3))::text`,
+			table.parent, table.grain, harness.Epoch).Scan(&name); err != nil {
+			t.Fatalf("look up %s's partition for Epoch: %v", table.parent, err)
+		}
+		if name == nil {
+			if table.callerStamped {
+				t.Fatalf("%s has no %s partition covering harness.Epoch (%s): a row stamped "+
+					"at h.Now() would fail with 'no partition of relation'",
+					table.parent, table.grain, harness.Epoch)
+			}
+			t.Fatalf("%s has no %s partition covering harness.Epoch (%s): no writer stamps "+
+				"`at` today, so nothing fails yet — but epochPartitionsSQL stopped "+
+				"creating it and the first writer that does will",
+				table.parent, table.grain, harness.Epoch)
+		}
 	}
 }
 

@@ -89,16 +89,16 @@ ON CONFLICT (group_id, occurrence_id) DO NOTHING`
 func (r *MemberRepository) Join(
 	ctx context.Context, s db.TenantScope, groupID, occurrenceID, alertID uuid.UUID, at time.Time,
 ) (bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return false, err
 	}
-	if err := requireID("group_id", groupID); err != nil {
+	if err := db.RequireID("group_id", groupID); err != nil {
 		return false, err
 	}
-	if err := requireID("occurrence_id", occurrenceID); err != nil {
+	if err := db.RequireID("occurrence_id", occurrenceID); err != nil {
 		return false, err
 	}
-	if err := requireID("alert_id", alertID); err != nil {
+	if err := db.RequireID("alert_id", alertID); err != nil {
 		return false, err
 	}
 	if at.IsZero() {
@@ -122,7 +122,7 @@ UPDATE alert_group_members
 func (r *MemberRepository) Leave(
 	ctx context.Context, s db.TenantScope, groupID, occurrenceID uuid.UUID, at time.Time,
 ) (bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return false, err
 	}
 	if at.IsZero() {
@@ -133,27 +133,6 @@ func (r *MemberRepository) Leave(
 		return false, mapErr(err, "leave alert group")
 	}
 	return tag.RowsAffected() == 1, nil
-}
-
-var currentMembersSQL = `
-SELECT ` + memberColumns + `
-  FROM alert_group_members
- WHERE org_id = $1 AND group_id = $2 AND left_at IS NULL
- ORDER BY joined_at ASC`
-
-// CurrentMembers lists the occurrences still in a generation.
-func (r *MemberRepository) CurrentMembers(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
-) ([]domain.Member, error) {
-	if err := requireScope(s); err != nil {
-		return nil, err
-	}
-	rows, err := r.db(ctx).Query(ctx, currentMembersSQL, s.OrgID(), groupID)
-	if err != nil {
-		return nil, mapErr(err, "list group members")
-	}
-	defer rows.Close()
-	return collectMembers(rows)
 }
 
 var allMembersSQL = `
@@ -167,12 +146,57 @@ SELECT ` + memberColumns + `
 func (r *MemberRepository) AllMembers(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
 ) ([]domain.Member, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	rows, err := r.db(ctx).Query(ctx, allMembersSQL, s.OrgID(), groupID)
 	if err != nil {
 		return nil, mapErr(err, "list group members")
+	}
+	defer rows.Close()
+	return collectMembers(rows)
+}
+
+// membersAtSQL is domain.Member.WasMemberAt, written as a predicate.
+//
+// ⭐ THE INSTANT IS AN ARGUMENT, NOT A FILTER THE CALLER APPLIES AFTERWARDS.
+// `joined_at <= $3` is `!t.Before(joinedAt)` and `left_at IS NULL OR left_at >
+// $3` is `leftAt.IsZero() || t.Before(leftAt)` — the same two clauses, in the
+// place that can discard the rows instead of shipping them. The service used to
+// read `AllMembers` (every membership the generation has ever had, joined and
+// departed) and drop most of them in Go, which is a replay of a forty-member
+// group paid for at the size of its whole history.
+var membersAtSQL = `
+SELECT ` + memberColumns + `
+  FROM alert_group_members
+ WHERE org_id = $1 AND group_id = $2
+   AND joined_at <= $3
+   AND (left_at IS NULL OR left_at > $3)
+ ORDER BY joined_at ASC`
+
+// MembersAt lists the occurrences that were in a generation at one instant.
+//
+// NOTE (planner): NO INDEX SERVES THIS ONE, and that is a decision rather than
+// an omission. gm_current_idx (00044) is PARTIAL on `left_at IS NULL` and a
+// replay is precisely the read that wants the departed rows back, so this falls
+// to the `(group_id, occurrence_id)` primary key's group prefix or to a
+// sequential scan by size, with both time clauses as filters and a Sort for the
+// ORDER BY. That is affordable only because the read has NO PAGE: it answers
+// "what was in the group when the thread was posted", the caller wants the whole
+// set, and a sort of the answer is not a sort of the membership. What SQL buys
+// here is the departed rows never crossing the wire. The day this read acquires
+// a bound it needs `(org_id, group_id, joined_at)` unpartialled, and not before
+// — a second btree on the ingest path's own table, to serve a method with one
+// caller, would be paying for a page nobody has asked for.
+func (r *MemberRepository) MembersAt(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time,
+) ([]domain.Member, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	rows, err := r.db(ctx).Query(ctx, membersAtSQL, s.OrgID(), groupID, at.UTC())
+	if err != nil {
+		return nil, mapErr(err, "list group members at")
 	}
 	defer rows.Close()
 	return collectMembers(rows)
@@ -190,10 +214,10 @@ SELECT ` + memberColumns + `
 func (r *MemberRepository) GroupsForAlert(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int,
 ) ([]domain.Member, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, groupsForAlertSQL, s.OrgID(), alertID, clampLimit(limit))
+	rows, err := r.db(ctx).Query(ctx, groupsForAlertSQL, s.OrgID(), alertID, db.ClampLimit(limit))
 	if err != nil {
 		return nil, mapErr(err, "list groups for alert")
 	}
@@ -217,7 +241,7 @@ SELECT count(DISTINCT alert_id), max(joined_at)
 func (r *MemberRepository) DistinctJoinsSince(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time,
 ) (int, time.Time, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return 0, time.Time{}, err
 	}
 	var n int64
@@ -263,7 +287,7 @@ SELECT
 func (r *MemberRepository) Rollup(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
 ) (domain.Counts, string, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Counts{}, "", err
 	}
 	var (
@@ -285,14 +309,17 @@ func (r *MemberRepository) Rollup(
 	}, strOrEmpty(severity), nil
 }
 
-// listCurrentMembersSQL is the keyset page of a generation's current members.
+// listCurrentMembersSQL is the keyset page of a generation's current members,
+// and the ONLY read of them: there is no unbounded sibling to reach for.
 //
 // ⭐ It orders NEWEST JOIN FIRST and pages by `(joined_at, occurrence_id)`,
 // which is a total order because `(group_id, occurrence_id)` is the table's
-// primary key. The handler used to read EVERY member through `Get()` and slice
+// primary key. Both callers used to read EVERY member through `Get()` and slice
 // the result in Go: correct for a group of forty, a full membership fetch for a
 // storm of five thousand, and a page whose `has_more` was computed from a list
-// the caller had already paid to materialise.
+// the caller had already paid to materialise. `/alert-groups/{id}/alerts` came
+// here first; `/alert-groups/{id}` followed, and its twenty-row preview is now
+// this query with `LIMIT 21` rather than a `sort.SliceStable` over the storm.
 var listCurrentMembersSQL = `
 SELECT ` + memberColumns + `
   FROM alert_group_members
@@ -303,17 +330,25 @@ SELECT ` + memberColumns + `
 
 // ListCurrentMembers returns one keyset page of a generation's current members.
 //
-// NOTE (planner): the driving path is the `(group_id, occurrence_id)` primary
-// key with `left_at IS NULL` and the keyset applied as a filter. A generation
-// holds at most a few thousand members, so this is a bounded index range and not
-// the org-wide scan the alert list is careful about.
+// NOTE (planner): the driving index is gm_current_idx (00044), `(org_id,
+// group_id, joined_at DESC, occurrence_id DESC) WHERE left_at IS NULL`. It
+// carries the two equalities, the partial predicate and the WHOLE sort key, so
+// the LIMIT stops the scan and nothing is sorted in memory — asserted against a
+// real plan in member_plan_test.go, with the index dropped as the control. The
+// keyset arrives inside `$3 IS NULL OR …`, which a CUSTOM plan folds away so the
+// row comparison becomes an index bound and a deep page starts at the cursor; a
+// GENERIC plan cannot fold it and re-walks the rows it has passed, which a
+// generation of a few thousand members can afford. Before 00044 there was no
+// index carrying `joined_at` under `group_id` at all, so every read of this
+// statement — including the twenty-row preview on the detail page — sorted the
+// generation's whole current membership to return its first page.
 func (r *MemberRepository) ListCurrentMembers(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset,
 ) ([]domain.Member, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	var (
 		afterAt *time.Time
@@ -335,19 +370,45 @@ func (r *MemberRepository) ListCurrentMembers(
 	if err != nil {
 		return nil, db.Cursor{}, err
 	}
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.JoinedAt(), last.OccurrenceID(), p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(last.JoinedAt(), last.OccurrenceID(), p.Cursor.Hash, hasMore), nil
 }
 
+// memberAlertsSQL is the fan-out's candidate read, and it is BOUNDED.
+//
+// ⭐ THE `LIMIT` IS THE POINT. It carried no limit until the group verbs were
+// given a ceiling: every ack, comment, snooze and unsnooze of a generation
+// materialised the WHOLE membership and then opened one write transaction per
+// row of it, so a storm's group button was ~5 000 sequential commits inside one
+// request. The bound now arrives as SQL, where it also stops the scan, rather
+// than as a slice in the service — a service that reads everything and keeps the
+// first 500 has still paid for the storm.
+//
+// It orders OLDEST JOIN FIRST, unlike `listCurrentMembersSQL`, and that is a
+// different question rather than an inconsistency: a preview shows what arrived
+// most recently, a fan-out applies to the members that have been waiting
+// longest. The order is also what makes a truncated fan-out reproducible —
+// pressing the button twice reaches the same 500 members, not a reshuffle.
+//
+// NOTE (planner): gm_current_idx is `(org_id, group_id, joined_at DESC,
+// occurrence_id DESC) WHERE left_at IS NULL`. It carries the two equalities and
+// the partial predicate, and Postgres reads a DESC index backwards for an ASC
+// order, so the LIMIT stops the scan here too.
 const memberAlertsSQL = `
 SELECT m.alert_id, m.occurrence_id
   FROM alert_group_members m
  WHERE m.org_id = $1 AND m.group_id = $2 AND m.left_at IS NULL
- ORDER BY m.joined_at ASC`
+ ORDER BY m.joined_at ASC
+ LIMIT $3`
+
+const countCurrentMembersSQL = `
+SELECT count(*)
+  FROM alert_group_members
+ WHERE org_id = $1 AND group_id = $2 AND left_at IS NULL`
 
 // MemberAlert pairs a currently-joined alert with the episode that joined.
 type MemberAlert struct {
@@ -355,18 +416,28 @@ type MemberAlert struct {
 	OccurrenceID uuid.UUID
 }
 
-// CurrentMemberAlerts lists the CURRENTLY-JOINED members of a generation.
+// CurrentMemberAlerts lists at most `limit` CURRENTLY-JOINED members of a
+// generation, oldest join first.
 //
 // It is what the §B.8.3 group snooze fans out over: one snooze per currently
 // joined member alert. Alerts that join later are NOT snoozed — a snooze is never
 // predictive.
+//
+// ⚠️ `limit` IS NOT A PAGE SIZE and is deliberately not run through
+// `clampLimit`: the §E.1 page bounds cap at 200 because that is what an API
+// response should carry, and this is a WRITE ceiling with an argument of its own
+// (domain.FanOutLimit). A non-positive limit means the caller did not choose, and
+// gets that ceiling rather than an unbounded read.
 func (r *MemberRepository) CurrentMemberAlerts(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID, limit int,
 ) ([]MemberAlert, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, memberAlertsSQL, s.OrgID(), groupID)
+	if limit <= 0 {
+		limit = domain.FanOutLimit
+	}
+	rows, err := r.db(ctx).Query(ctx, memberAlertsSQL, s.OrgID(), groupID, limit)
 	if err != nil {
 		return nil, mapErr(err, "list member alerts")
 	}
@@ -384,6 +455,28 @@ func (r *MemberRepository) CurrentMemberAlerts(
 		return nil, mapErr(err, "read member alerts")
 	}
 	return out, nil
+}
+
+// CountCurrentMembers is how many members a generation currently has.
+//
+// ⭐ It exists so that a fan-out stopped by its ceiling can say HOW MANY members
+// it did not reach, rather than only that there were more. "500 of 5 000" and
+// "500, and some others" are different sentences to the person who pressed the
+// button, and only the first one lets them judge whether the group is done.
+//
+// It is one indexed aggregate on gm_current_idx, and the fan-out only asks when
+// its candidate read came back full — a group of forty never pays for it.
+func (r *MemberRepository) CountCurrentMembers(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+) (int, error) {
+	if err := db.RequireScope(s); err != nil {
+		return 0, err
+	}
+	var n int64
+	if err := r.db(ctx).QueryRow(ctx, countCurrentMembersSQL, s.OrgID(), groupID).Scan(&n); err != nil {
+		return 0, mapErr(err, "count current members")
+	}
+	return int(n), nil
 }
 
 const snoozeRollupSQL = `
@@ -429,7 +522,7 @@ SELECT m.group_id,
 func (r *MemberRepository) SnoozeRollup(
 	ctx context.Context, s db.TenantScope, groupIDs []uuid.UUID, now time.Time,
 ) (map[uuid.UUID]domain.SnoozeRollup, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(groupIDs) == 0 {

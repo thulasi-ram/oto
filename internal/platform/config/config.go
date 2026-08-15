@@ -14,6 +14,7 @@ import (
 	"github.com/knadh/koanf/v2"
 
 	"github.com/thulasiram/oto/internal/platform/ratelimit"
+	"github.com/thulasiram/oto/internal/platform/tuning"
 )
 
 // EnvPrefix is the prefix every oto environment variable carries.
@@ -174,7 +175,7 @@ type JobsConfig struct {
 
 // IngestConfig configures the webhook accept path. SPEC §C.9 and §G.2.
 //
-// ⛔ THE B1-B17 BOUNDS ARE NOT HERE AND ARE NOT CONFIGURABLE. `max_batch_bytes`,
+// ⛔ THE B1-B19 BOUNDS ARE NOT HERE AND ARE NOT CONFIGURABLE. `max_batch_bytes`,
 // `max_alerts`, `max_labels` and `max_label_bytes` were declared here, published
 // in `.env.example`, validated at boot — and read by nothing, while the enforced
 // limits sat in `ingestion/domain.bounds` as constants. `OTO_INGEST_MAX_ALERTS`
@@ -240,13 +241,18 @@ type SecurityConfig struct {
 	// OTO_SECURITY_ALLOW_PRIVATE_TARGETS.
 	AllowPrivateTargets bool `koanf:"allow_private_targets"`
 
-	// AllowInsecureTLS lets `alert_sources.tls_skip_verify` actually take effect.
+	// AllowInsecureTLS lets `alert_sources.tls_skip_verify` and a webhook channel's
+	// `config.insecure_skip_verify` actually take effect.
 	//
-	// ⛔ DEFAULT CLOSED. The column is tenant-writable through
-	// `POST /api/v1/sources`, and honouring it unconditionally let any org member
-	// turn off certificate verification for an outbound connection made by oto's
-	// own process. Whether an unverified certificate is acceptable is a statement
-	// about the operator's network. OTO_SECURITY_ALLOW_INSECURE_TLS.
+	// ⛔ DEFAULT CLOSED. Both are tenant-writable — through `POST /api/v1/sources`
+	// and `POST /api/v1/channels` — and honouring either unconditionally let any
+	// org member turn off certificate verification for an outbound connection made
+	// by oto's own process. On the channel side that traffic is the notification
+	// itself: labels, annotations and the rule expression, i.e. a description of
+	// what is broken inside the customer's infrastructure. Whether an unverified
+	// certificate is acceptable is a statement about the operator's network. With
+	// this false, both flags are refused at validation rather than silently
+	// dropped. OTO_SECURITY_ALLOW_INSECURE_TLS.
 	AllowInsecureTLS bool `koanf:"allow_insecure_tls"`
 
 	// LoginRateBurst and LoginRateRefill bound `POST /api/v1/auth/login` per
@@ -312,9 +318,20 @@ func Default() Config {
 			RetryAfter:     10 * time.Second,
 			AcquireTimeout: 500 * time.Millisecond,
 		},
+		// The FLOOR the partition dropper starts from, not the last word: §D.11
+		// retention is a table-level property, so `partitions.manage` takes the
+		// MAXIMUM of this and every org's `orgs.settings` value (ADR 0024).
+		//
+		// ⛔ THESE ARE THE SAME NUMBERS `identity/domain` SERVES, so they are the
+		// same CONSTANTS now. They used to be literals under a comment saying they
+		// "mirror identity/domain.DefaultRawRetention and DefaultEventRetention and
+		// must move with them" — and platform may never import a domain (rule 7),
+		// so there was no way to say it in code until the numbers moved down to
+		// `platform/tuning`. A floor that drifted BELOW an org's own retention would
+		// drop a partition that org still expects to be able to read.
 		Retention: RetentionConfig{
-			RawPayloads: 14 * 24 * time.Hour,
-			Events:      13 * 30 * 24 * time.Hour,
+			RawPayloads: tuning.DefaultRawRetention,
+			Events:      tuning.DefaultEventRetention,
 			UIEvents:    24 * time.Hour,
 		},
 		Slack: SlackConfig{

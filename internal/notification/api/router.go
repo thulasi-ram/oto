@@ -7,17 +7,25 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/thulasiram/oto/internal/notification/service"
 	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
 
 // Options are the Router's dependencies. Everything is a port, so the whole
 // surface is exercisable with fakes and an httptest.Server.
 type Options struct {
-	Policies      PolicyStore
+	Policies PolicyStore
+	// PolicyWrites registers a policy. It is a DIFFERENT collaborator from
+	// Policies — the service rather than the repository — because an
+	// `Idempotency-Key` claim has to join the insert's transaction, and the
+	// transaction boundary is not an HTTP concern. Nil is a declared `503` on
+	// `createNotificationPolicy` and nothing at all to the reads.
+	PolicyWrites  PolicyCreator
 	Audit         AuditStore
 	Notifications NotificationReader
 	Deliveries    DeliveryReader
@@ -38,6 +46,7 @@ type Options struct {
 // notification intents and their deliveries.
 type Router struct {
 	policies      PolicyStore
+	policyWrites  PolicyCreator
 	audit         AuditStore
 	notifications NotificationReader
 	deliveries    DeliveryReader
@@ -60,6 +69,7 @@ func NewRouter(o Options) *Router {
 	}
 	return &Router{
 		policies:      o.Policies,
+		policyWrites:  o.PolicyWrites,
 		audit:         o.Audit,
 		notifications: o.Notifications,
 		deliveries:    o.Deliveries,
@@ -130,6 +140,13 @@ func (rt *Router) subject(r *http.Request) (db.TenantScope, uuid.UUID, error) {
 		return db.TenantScope{}, uuid.Nil, err
 	}
 	return scope, id, nil
+}
+
+// idempotencyIntent reads the caller's `Idempotency-Key` into the intent the
+// write facade acts on (see idempotency.IntentFromRequest for the seam's rules —
+// the claiming transaction belongs to `notification/service`).
+func idempotencyIntent(r *http.Request, hash idempotency.RequestHash) (service.Idempotency, error) {
+	return idempotency.IntentFromRequest(r, hash)
 }
 
 // requireDependency turns a missing collaborator into an honest 503 rather than a

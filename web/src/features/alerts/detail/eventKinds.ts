@@ -15,7 +15,7 @@
  * a signal, never ownership; nothing here says "triage", "escalation-as-a-human-
  * process", "MTTA" or "assigned".
  */
-import type { AlertEventType } from "~/api/types";
+import type { ActorKind, AlertEventType } from "~/api/types";
 
 export type EventCategory =
   | "lifecycle"
@@ -341,8 +341,12 @@ export function typesForCategories(
  * SCOPE-BOUNDARY: attribution is metadata on the event, never the subject of
  * one. So this answers "what wrote this row" and stops there — no ownership, no
  * assignment, and never a per-person aggregate.
+ *
+ * ⛔ Keyed by `ActorKind` rather than by `string`: an actor the server starts
+ * writing must be a build failure here, not a timeline row attributed to a bare
+ * wire token.
  */
-export const ACTOR_LABEL: Record<string, string> = {
+export const ACTOR_LABEL: Record<ActorKind, string> = {
   system: "oto",
   ingest: "webhook ingest",
   reconciler: "reconciler",
@@ -353,12 +357,12 @@ export const ACTOR_LABEL: Record<string, string> = {
   slack: "Slack",
 };
 
-export function describeActor(kind: string, label: string | null | undefined): string {
+export function describeActor(kind: ActorKind, label: string | null | undefined): string {
   if (label !== null && label !== undefined && label !== "") return label;
   return ACTOR_LABEL[kind] ?? kind;
 }
 
 /** True when a human did this, which is the only case worth naming prominently. */
-export function isHuman(kind: string): boolean {
+export function isHuman(kind: ActorKind): boolean {
   return kind === "user" || kind === "slack";
 }

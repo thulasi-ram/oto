@@ -39,6 +39,7 @@ import { Button, Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/com
 import { ApiError } from "~/api/client";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
+import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
 
@@ -59,13 +60,23 @@ export default function GroupDetailRoute() {
 
   const [categories, setCategories] = createSignal<readonly EventCategory[]>([]);
   const [order, setOrder] = createSignal<"asc" | "desc">("desc");
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  const [events, setEvents] = createSignal<readonly AlertEvent[]>([]);
+
+  // Any change of direction or event-kind filter invalidates every cursor
+  // minted under the old one (§E.3), so both are the fingerprint — see
+  // `createKeysetFeed` for why the reset must be a pure-phase derivation. The
+  // annotation cuts the type-inference loop the closure creates: the feed
+  // reads the query's envelope, and the query's key carries the feed's cursor.
+  const feed: KeysetFeed<AlertEvent> = createKeysetFeed({
+    envelope: () => timeline.data,
+    isPlaceholder: () => timeline.isPlaceholderData,
+    keyOf: (e) => e.id,
+    fingerprint: () => `${order()}|${[...categories()].sort().join(",")}`,
+  });
 
   const timelineQuery = createMemo<TimelineQuery>(() => {
     const q: Record<string, unknown> = { limit: 100, order: order() };
     if (categories().length > 0) q["type"] = [...typesForCategories(categories())];
-    if (cursor() !== null) q["cursor"] = cursor();
+    if (feed.cursor() !== null) q["cursor"] = feed.cursor();
     return q as TimelineQuery;
   });
 
@@ -73,14 +84,8 @@ export default function GroupDetailRoute() {
     queryKey: qk.groups.timeline(params.id, timelineQuery()),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       getAlertGroupTimeline(params.id, timelineQuery(), { signal }),
+    placeholderData: keepPrevious,
   }));
-
-  const folded = createMemo<readonly AlertEvent[]>(() => {
-    const page = timeline.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(events().map((e) => e.id));
-    return [...events(), ...page.filter((e) => !seen.has(e.id))];
-  });
 
   /**
    * Acking a group is a **fan-out of the same primitive**, not a new one: one
@@ -127,7 +132,7 @@ export default function GroupDetailRoute() {
               <div class="flex flex-wrap items-start gap-3">
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-2">
-                    <h1 class="min-w-0 truncate text-[18px] font-semibold tracking-tight text-ink">
+                    <h1 class="min-w-0 truncate text-page font-semibold tracking-tight text-ink">
                       {g().title}
                     </h1>
                     <SeverityMark severity={g().severity} withLabel />
@@ -140,7 +145,7 @@ export default function GroupDetailRoute() {
                     <Chip>{g().state}</Chip>
                   </div>
 
-                  <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-ink-muted">
+                  <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-ink-muted">
                     <span class="tabular-nums">{fmtCount(g().total_count)} members</span>
                     <span>{g().firing_count} firing</span>
                     <span>{g().acked_count} acknowledged</span>
@@ -166,7 +171,7 @@ export default function GroupDetailRoute() {
 
                   <Show when={g().last_notification_reason}>
                     {(reason) => (
-                      <p class="mt-1 text-[11px] text-ink-subtle">
+                      <p class="mt-1 text-meta text-ink-subtle">
                         Alertmanager last said: <span class="font-mono">{reason()}</span>
                       </p>
                     )}
@@ -229,7 +234,7 @@ export default function GroupDetailRoute() {
                   <PanelTitle>Group timeline</PanelTitle>
                 </PanelHeader>
                 <Switch>
-                  <Match when={timeline.isPending && folded().length === 0}>
+                  <Match when={timeline.isPending && feed.rows().length === 0}>
                     <LoadingLine />
                   </Match>
                   <Match when={timeline.isError}>
@@ -237,18 +242,14 @@ export default function GroupDetailRoute() {
                   </Match>
                   <Match when={true}>
                     <Timeline
-                      events={folded()}
+                      events={feed.rows()}
                       categories={categories()}
                       onCategoriesChange={setCategories}
                       order={order()}
                       onOrderChange={setOrder}
-                      hasMore={timeline.data?.page.has_more ?? false}
+                      hasMore={feed.hasMore()}
                       loading={timeline.isFetching}
-                      onLoadMore={() => {
-                        setEvents(folded());
-                        const next = timeline.data?.page.next_cursor;
-                        if (typeof next === "string" && next !== "") setCursor(next);
-                      }}
+                      onLoadMore={feed.loadMore}
                     />
                   </Match>
                 </Switch>
@@ -259,7 +260,7 @@ export default function GroupDetailRoute() {
                 <Panel>
                   <PanelHeader>
                     <PanelTitle>Members</PanelTitle>
-                    <span class="text-[11px] text-ink-subtle">
+                    <span class="text-meta text-ink-subtle">
                       {members.data?.data.length ?? 0} loaded
                     </span>
                   </PanelHeader>
@@ -287,7 +288,7 @@ export default function GroupDetailRoute() {
                                   )}
                                 />
                                 <SeverityMark severity={alert.severity} />
-                                <span class="min-w-0 flex-1 truncate text-[12px] text-ink">
+                                <span class="min-w-0 flex-1 truncate text-body text-ink">
                                   {alert.alertname}
                                 </span>
                                 <StateChip state={alert.state} size="sm" />
@@ -319,7 +320,7 @@ export default function GroupDetailRoute() {
                       <For each={Object.entries(g().group_labels)}>
                         {([k, val]) => (
                           <DataRow term={k}>
-                            <span class="break-all font-mono text-[12px]">{val}</span>
+                            <span class="break-all font-mono text-body">{val}</span>
                           </DataRow>
                         )}
                       </For>
@@ -327,7 +328,7 @@ export default function GroupDetailRoute() {
                     <Show when={g().source_group_key}>
                       {(key) => (
                         <p
-                          class="mt-2 break-all border-t border-line pt-2 font-mono text-[10px] text-ink-subtle"
+                          class="mt-2 break-all border-t border-line pt-2 font-mono text-micro text-ink-subtle"
                           title="Alertmanager's own groupKey. Stored verbatim for observability only — it embeds the route path and changes on every config reload, so oto never parses it."
                         >
                           {key()}
@@ -364,7 +365,7 @@ const DeliveryRollup = (props: { readonly summary: DeliverySummary }) => {
         <Chip>{s().dead} gave up</Chip>
         <Show when={s().last_sent_at}>
           {(at) => (
-            <span class="ml-auto text-[11px] text-ink-subtle">
+            <span class="ml-auto text-meta text-ink-subtle">
               last sent <RelativeTime value={at()} label="Last sent" /> ago
             </span>
           )}
@@ -372,7 +373,7 @@ const DeliveryRollup = (props: { readonly summary: DeliverySummary }) => {
       </div>
 
       <Show when={s().dead > 0}>
-        <p class="mt-2 rounded-[4px] border border-line-strong border-l-[3px] border-l-ink bg-sunken px-2 py-1.5 text-[12px] font-medium leading-snug text-ink">
+        <p class="mt-2 rounded-control border border-line-strong border-l-[3px] border-l-ink bg-sunken px-2 py-1.5 text-body font-medium leading-snug text-ink">
           {s().dead} {s().dead === 1 ? "delivery" : "deliveries"} gave up permanently. Nobody was
           told through {s().dead === 1 ? "that channel" : "those channels"}.
           {s().last_error_class ? ` Last error class: ${s().last_error_class}.` : ""}
@@ -380,7 +381,7 @@ const DeliveryRollup = (props: { readonly summary: DeliverySummary }) => {
       </Show>
 
       <Show when={s().total === 0}>
-        <p class="mt-2 text-[12px] leading-snug text-ink-muted">
+        <p class="mt-2 text-body leading-snug text-ink-muted">
           No notification was even attempted for this generation. That usually means no policy
           matched it — which is worth knowing, because it is indistinguishable from silence.
         </p>

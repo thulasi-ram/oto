@@ -27,9 +27,21 @@ var (
 	actionIDRe = regexp.MustCompile(`^oto\.[a-z0-9._]+$`)
 )
 
-// allowedBlocks is the V4 whitelist. `header` is forbidden because the title must
-// be a linkable section (S1); `alert` is forbidden because, despite its name, it
-// is modals-only and silently fails in a channel message (S2).
+// allowedBlocks is the V4 whitelist.
+//
+// `header` is forbidden because the title must be a linkable section: a header is
+// plain_text only, so it cannot carry the deep link, and that link is the point
+// (S1). Slack accepts headers in messages perfectly well — this is oto's taste,
+// not Slack's rule.
+//
+// ⚠️ S2 SAYS THE `alert` BLOCK IS FORBIDDEN "BECAUSE IT IS MODALS-ONLY DESPITE
+// THE NAME", AND THERE IS NO `alert` BLOCK. Slack's block list is actions,
+// context, divider, file, header, image, input, markdown, rich_text, section,
+// video. The block that is surface-restricted is `input`, which is modals and
+// App Home only and is rejected in a message — so the rule S2 wanted is real and
+// this whitelist enforces it, by omission, along with `file`, `video` and
+// `markdown`. Only the NAME in S2 and in ADR 0008 is wrong, and it is wrong in
+// the two places a reader would go to check.
 var allowedBlocks = map[string]bool{
 	BlockSection:  true,
 	BlockContext:  true,
@@ -43,8 +55,12 @@ var allowedBlocks = map[string]bool{
 //
 // It carries the offending payload deliberately: §L.6 requires the bytes to land
 // in notification_deliveries.rendered so the dead delivery can be debugged, and
-// Check names the counter label (oto_render_invalid_total{check}) that oto alerts
-// itself on. This is always an oto bug.
+// Check names which rule refused it. This is always an oto bug.
+//
+// ⛔ `Check` IS NOT A METRIC LABEL. It reads like one, and this comment used to
+// say so — `oto_render_invalid_total{check}` was promised by an early draft and
+// never built (5bc341a). The check name reaches an operator through the dead
+// delivery and the log line, not through a series.
 type Error struct {
 	Check   string
 	Detail  string
@@ -91,6 +107,14 @@ func Validate(payload json.RawMessage) error {
 
 	// V14: the top-level text is the push notification, the search snippet and
 	// the only thing a screen reader reads. An empty one is a silent alert.
+	//
+	// ⚠️ Slack does NOT require `text` when `blocks` or `attachments` are present
+	// — "the text field is not enforced as required when using blocks or
+	// attachments" — so this is oto's rule, and it is the right one: without it a
+	// card is invisible on a locked phone and silent to a screen reader. The
+	// LENGTH bound is oto's too; Slack's own numbers are 4 000 (chat.update's hard
+	// `msg_too_long`) and 40 000 (where a message is silently truncated), and
+	// maxTopLevelText is neither. See the constant.
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return fail(payload, "V14", "top-level text is empty")
@@ -122,7 +146,12 @@ func Validate(payload json.RawMessage) error {
 		}
 	}
 
-	// V3: fifty blocks is Slack's hard ceiling; oto's own budget is seven.
+	// V3. ⚠️ Fifty is Slack's ceiling for a MESSAGE's blocks — "you can include up
+	// to 50 blocks in each message". Slack publishes no ceiling for an
+	// ATTACHMENT's blocks, which is where every one of oto's live (S3). The number
+	// is applied to a position the documentation does not cover; it is
+	// conservative and oto's own budget is seven, so nothing rides on it, but it
+	// is an assumption and not a citation.
 	if len(att.Blocks) > maxBlocks {
 		return fail(payload, "V3", "%d blocks, limit %d", len(att.Blocks), maxBlocks)
 	}
@@ -134,8 +163,15 @@ func Validate(payload json.RawMessage) error {
 		}
 	}
 
-	// V17: Slack rejects oversized metadata with metadata_too_large, which would
+	// V17: Slack rejects oversized metadata with `metadata_too_large`, which would
 	// kill the whole delivery for a debugging convenience.
+	//
+	// ⚠️ THE ERROR IS DOCUMENTED; THE SIZE IS NOT. "Metadata exceeds size limit"
+	// appears in the error tables of both write methods and Slack states no figure
+	// anywhere — not on the method pages, not in the message-metadata guide.
+	// maxMetadata is oto's guess. oto's own payload is three short scalars, so the
+	// guess has never been near the truth in either direction and only a live
+	// workspace can find where the real edge is.
 	if msg.Metadata != nil {
 		raw, err := json.Marshal(msg.Metadata.EventPayload)
 		if err != nil {
@@ -169,15 +205,29 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 	switch b.Type {
 	case BlockSection:
 		// V5.
-		if b.Text != nil && len(b.Text.Text) > maxSectionText {
-			return fail(payload, "V5", "block %d section text is %d chars, limit %d",
-				idx, len(b.Text.Text), maxSectionText)
+		if b.Text != nil {
+			// ⚠️ SLACK'S MINIMUM IS ONE CHARACTER, NOT ZERO: "the minimum length is
+			// 1 and maximum length is 3000". An empty text object is `invalid_blocks`
+			// and this check did not exist — the only emptiness V5 caught was a
+			// section with no text object AT ALL, so `{"type":"mrkdwn","text":""}`
+			// passed every one of oto's eighteen rules and would have been refused by
+			// Slack.
+			if strings.TrimSpace(b.Text.Text) == "" {
+				return fail(payload, "V5", "block %d section text object is empty", idx)
+			}
+			if len(b.Text.Text) > maxSectionText {
+				return fail(payload, "V5", "block %d section text is %d chars, limit %d",
+					idx, len(b.Text.Text), maxSectionText)
+			}
 		}
 		// V6.
 		if len(b.Fields) > maxFields {
 			return fail(payload, "V6", "block %d has %d fields, limit %d", idx, len(b.Fields), maxFields)
 		}
 		for j, f := range b.Fields {
+			if strings.TrimSpace(f.Text) == "" {
+				return fail(payload, "V6", "block %d field %d is an empty text object", idx, j)
+			}
 			if len(f.Text) > maxFieldText {
 				return fail(payload, "V6", "block %d field %d is %d chars, limit %d",
 					idx, j, len(f.Text), maxFieldText)
@@ -188,7 +238,13 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 		}
 
 	case BlockContext:
-		// V7.
+		// V7. Slack documents the maximum ("an array of image elements and text
+		// objects. Maximum number of items is 10") and no minimum, but an empty
+		// `elements` array is not a context block — it is a block with nothing in it,
+		// and it costs the same as one that says something.
+		if len(b.Elements) == 0 {
+			return fail(payload, "V7", "block %d is a context block with no elements", idx)
+		}
 		if len(b.Elements) > maxContextItems {
 			return fail(payload, "V7", "block %d has %d context elements, limit %d",
 				idx, len(b.Elements), maxContextItems)
@@ -201,6 +257,26 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 
 	case BlockImage:
 		// V10.
+		//
+		// ⚠️ `alt_text` IS REQUIRED AND WAS NOT CHECKED. Slack's image block
+		// reference lists it as a required field — "a plain-text summary of the
+		// image … maximum length for this field is 2000 characters" — and an image
+		// block without one is `invalid_blocks`. So was an image block with no
+		// `image_url`: `checkURL` returns nil for an empty string, which is right for
+		// an OPTIONAL url and wrong for a required one. oto emits no image blocks
+		// today (§H.3's budget is seven blocks and none is an image) — which is
+		// exactly why the gap survived: the whitelist permits the block, so the first
+		// person to render a Grafana panel would have hit a dead delivery.
+		if strings.TrimSpace(b.AltText) == "" {
+			return fail(payload, "V10", "block %d is an image with no alt_text", idx)
+		}
+		if len(b.AltText) > maxAltText {
+			return fail(payload, "V10", "block %d alt_text is %d chars, limit %d",
+				idx, len(b.AltText), maxAltText)
+		}
+		if b.ImageURL == "" {
+			return fail(payload, "V10", "block %d is an image with no image_url", idx)
+		}
 		if err := checkURL(payload, "V10", "image_url", b.ImageURL); err != nil {
 			return err
 		}
@@ -210,7 +286,11 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 }
 
 func validateActions(payload json.RawMessage, idx int, b Block) error {
-	// V8.
+	// V8. An actions block with no elements is an empty row: it costs a block and
+	// offers nothing to press.
+	if len(b.Elements) == 0 {
+		return fail(payload, "V8", "block %d is an actions block with no elements", idx)
+	}
 	if len(b.Elements) > maxActionItems {
 		return fail(payload, "V8", "block %d has %d action elements, limit %d",
 			idx, len(b.Elements), maxActionItems)
@@ -278,20 +358,47 @@ func validateActions(payload json.RawMessage, idx int, b Block) error {
 			}
 
 		case ElementOverflow:
+			// ⛔⛔ AN OVERFLOW MENU IS NOT A ROW OF BUTTONS, AND THIS BRANCH USED TO
+			// TREAT IT AS ONE. Slack's overflow element and its option objects have
+			// their OWN limits, and two of them were being checked against a button's:
+			//
+			//	option count  Slack: "up to five option objects"    oto: not checked
+			//	option value  Slack: 150 characters                 oto: 2000
+			//
+			// The count was enforced only by `overflowMenu` refusing to add a sixth —
+			// a renderer-side convention, not a rule. Anything that built an overflow
+			// another way, and every future caller, had nothing standing between it
+			// and `invalid_blocks`. That is precisely the job V0–V18 exist to do: the
+			// renderer's own discipline is not a check, because the check has to hold
+			// when the renderer changes.
+			if len(el.Options) == 0 {
+				return fail(payload, "V9", "overflow %d in block %d has no options", j, idx)
+			}
+			if len(el.Options) > maxOverflowOptions {
+				return fail(payload, "V9", "overflow %d in block %d has %d options, limit %d",
+					j, idx, len(el.Options), maxOverflowOptions)
+			}
 			for k, opt := range el.Options {
 				if strings.TrimSpace(opt.Text.Text) == "" {
 					return fail(payload, "V9", "overflow option %d in block %d has no label", k, idx)
 				}
-				if len([]rune(opt.Text.Text)) > maxButtonText {
+				// An overflow's option label is plain_text, always. mrkdwn in an
+				// option renders as its own source text.
+				if opt.Text.Type != TypePlainText {
+					return fail(payload, "V9", "overflow option %d in block %d label must be plain_text, got %q",
+						k, idx, opt.Text.Type)
+				}
+				if len([]rune(opt.Text.Text)) > maxOptionText {
 					return fail(payload, "V9", "overflow option %d label is %d chars, limit %d",
-						k, len([]rune(opt.Text.Text)), maxButtonText)
+						k, len([]rune(opt.Text.Text)), maxOptionText)
 				}
 				if err := checkURL(payload, "V10", "overflow option url", opt.URL); err != nil {
 					return err
 				}
-				if len(opt.Value) > maxButtonValue {
-					return fail(payload, "V11", "overflow option value is %d chars, limit %d",
-						len(opt.Value), maxButtonValue)
+				if len(opt.Value) > maxOptionValue {
+					return fail(payload, "V11", "overflow option value is %d chars, limit %d "+
+						"(an OPTION's limit, not a button's %d)",
+						len(opt.Value), maxOptionValue, maxButtonValue)
 				}
 			}
 

@@ -12,6 +12,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
 
 // IdentityService is the port THIS LAYER declares for itself (CONTEXT.md §5.4).
@@ -45,6 +46,28 @@ type LoginLimiter interface {
 	Reset(key string)
 }
 
+// UnitOfWork runs fn inside ONE database transaction, satisfied by
+// `*identity/repository.TxRunner`.
+//
+// ⭐⭐ IT IS WHAT MAKES A MINT AND ITS IDEMPOTENCY CLAIM ONE FACT. This path had
+// no transaction at all until the claim needed one: `createApiToken` inserted a
+// credential and returned its plaintext in a single unguarded commit. A claim
+// that lost the race must roll the mint back with it, or a second live token
+// exists that nobody knows the secret of and nobody knows to revoke.
+type UnitOfWork interface {
+	InTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// IdempotencyClaims takes a client-supplied `Idempotency-Key` for one operation,
+// satisfied by `*platform/idempotency.Repository`.
+//
+// It is a PORT THIS LAYER DECLARES (CONTEXT.md §5.4) even though the store is a
+// platform type: the transport is what reads the header, so the transport is what
+// owns the dependency.
+type IdempotencyClaims interface {
+	Claim(ctx context.Context, s db.TenantScope, c idempotency.Claim) (idempotency.Result, error)
+}
+
 // LoginGate bounds how many password verifications run CONCURRENTLY, satisfied
 // by `*platform/ratelimit.Gate`. It is a separate port from LoginLimiter because
 // it answers a different question: the limiter bounds the rate, the gate bounds
@@ -66,6 +89,8 @@ type Router struct {
 	cookie  CookieConfig
 	limiter LoginLimiter
 	gate    LoginGate
+	tx      UnitOfWork
+	claims  IdempotencyClaims
 	clk     clock.Clock
 }
 
@@ -83,8 +108,17 @@ type Options struct {
 	Limiter LoginLimiter
 	// Gate bounds concurrent password verifications, which is what actually
 	// bounds argon2id's 19 MiB-per-evaluation memory cost.
-	Gate  LoginGate
-	Clock clock.Clock
+	Gate LoginGate
+	// Tx makes a minted credential and the idempotency claim that guards it one
+	// commit. A nil Tx degrades to no transaction, which is what this path used to
+	// do; production always wires it.
+	Tx UnitOfWork
+	// Claims is the store behind `Idempotency-Key`. Nil means this deployment
+	// cannot honour the header, which is a declared `503` rather than a silently
+	// unprotected create — the whole defect was a header the contract promised and
+	// the server ignored, and ignoring it quietly a second time is the same bug.
+	Claims IdempotencyClaims
+	Clock  clock.Clock
 }
 
 // NewRouter builds the identity router.
@@ -99,8 +133,19 @@ func NewRouter(o Options) *Router {
 		cookie:  o.Cookie.normalise(),
 		limiter: o.Limiter,
 		gate:    o.Gate,
+		tx:      o.Tx,
+		claims:  o.Claims,
 		clk:     clk,
 	}
+}
+
+// inTx runs fn in one transaction when a unit of work is wired, and inline
+// otherwise.
+func (rt *Router) inTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if rt.tx == nil {
+		return fn(ctx)
+	}
+	return rt.tx.InTx(ctx, fn)
 }
 
 // Middleware is the authenticator this router was built with, so

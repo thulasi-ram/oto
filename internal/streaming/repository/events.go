@@ -3,17 +3,13 @@ package repository
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/streaming/domain"
 )
 
@@ -204,25 +200,50 @@ func (r *EventRepository) SeqBounds(ctx context.Context, s db.TenantScope, cutof
 	return *lo, *hi, true, nil
 }
 
-// mapErr is the single place a SQLSTATE becomes an errs.Kind for this repository
-// (SPEC §L.9). The repository never validates a business rule; it does own this
-// translation.
+// mapErr turns a database error into an errs.Kind for this repository. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository — this
+// module contributes only the two codes it alone can name. The repository never
+// validates a business rule; it does own this translation.
+//
+// Three things changed when this stopped being its own copy, and all three are
+// deliberate.
+//
+// FIRST, it spelled three rows and dropped everything else onto `KindInternal`,
+// so a `57014` — the statement_timeout every pool sets — was a 500 where §L.9
+// says 503. That is the ticket.
+//
+// SECOND, it discarded the constraint name in favour of `ui_event_conflict` and
+// `ui_event_fk` even when Postgres had named one, which contradicts CONTEXT.md
+// §6. A named constraint now wins; the two codes survive as the fallback they
+// should always have been, so nothing branching on them breaks.
+//
+// THIRD, a `40001`/`40P01` is now a 409 rather than a 500. §L.1 defines
+// KindConflict as "the caller must re-read and retry", which is exactly what a
+// serialization failure asks for, and eight of the ten copies already said so —
+// this was one of the two that had not written the row yet, not a decision
+// against it. It is invisible to the worker that does almost all of the
+// appending: `jobs.Classify` puts KindConflict and KindInternal in the same
+// ClassRetryable, so nothing about retry or backoff moves.
+//
+// ⛔ THE APPEND IS NOT ON THE SYNCHRONOUS INGEST PATH, which is the only reason a
+// 409 here is discussable at all. `ui_events` rows are written by `alerts` and
+// `grouping` from inside `ingest.process_batch` (§G.4), a job — so C4's "never a
+// 4xx to Alertmanager" is answered by the 202 the ingest handler already sent,
+// not by this Kind.
 func mapErr(err error, what string) error {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errs.NotFound("ui_event_not_found", "no such ui event")
-	}
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           "ui_event_not_found",
+		NotFoundMessage:    "no such ui event",
+		QueryFailed:        "ui_event_query_failed",
+		QueryFailedMessage: fmt.Sprintf("could not %s", what),
+		Codes:              uiEventCodes,
+	})
+}
 
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) {
-		switch pg.Code {
-		case "23514": // check_violation — a payload that got past domain validation
-			return errs.Wrap(err, errs.KindInternal, "ui_event_check_violation",
-				"a ui event violated a database constraint")
-		case "23505":
-			return errs.Wrap(err, errs.KindConflict, "ui_event_conflict", "ui event already exists")
-		case "23503":
-			return errs.Wrap(err, errs.KindConflict, "ui_event_fk", "ui event references a missing row")
-		}
-	}
-	return errs.Wrap(err, errs.KindInternal, "ui_event_query_failed", fmt.Sprintf("could not %s", what))
+// uiEventCodes are the codes this module published for the rows it spelled, kept
+// as the fallback for when Postgres names no constraint.
+var uiEventCodes = map[string]string{
+	"23505": "ui_event_conflict",
+	"23503": "ui_event_fk",
+	"23514": "ui_event_check_violation",
 }

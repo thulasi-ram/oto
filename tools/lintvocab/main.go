@@ -10,6 +10,22 @@
 //	go run ./tools/lintvocab          # non-zero exit on any violation
 //	go run ./tools/lintvocab -v       # also print what was suppressed and why
 //
+// # ⛔ THIS IS AC-49 ONLY. IT IS NOT AC-50, AC-51 OR AC-52.
+//
+// The `columns` list below reads like a schema gate and is not one: it matches
+// SOURCE TEXT, so it answers "is a forbidden column NAMED in a file we scanned".
+// AC-50 asks what the LIVE SCHEMA has, and the two differ every time DDL is run
+// outside `db/migrations/`, an expand/contract's contract half never deploys, or
+// a Down section restores what an Up removed — the last of which this tool
+// exempts on purpose. AC-51 has the same gap in the routing direction: a path
+// assembled from a constant is invisible here and present in the chi trie.
+//
+// Those three ACs are asserted in `test/scope`, against a live database, a real
+// mounted router and the compiler. This lint is still the FIRST gate — it runs in
+// a second, needs no Docker, and catches spellings AC-50's own alternation misses
+// (`assignee_id`, `escalation_owner`) — but a green run here is evidence about
+// this repository's text, and nothing at all about a deployed system.
+//
 // # WHAT IS SCANNED, AND WHY NOT COMMENTS
 //
 // Comments are stripped before matching. This is deliberate and it is the only

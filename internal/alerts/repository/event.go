@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -157,7 +158,7 @@ func (r *EventRepository) Append(
 // actually written. A batch that is entirely deduped writes nothing and returns
 // zero.
 func (r *EventRepository) AppendBatch(ctx context.Context, s db.TenantScope, in []domain.Event) (int, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return 0, err
 	}
 	if len(in) == 0 {
@@ -278,6 +279,79 @@ func (r *EventRepository) claimDedupeKeys(
 	return won, nil
 }
 
+// ---------------------------------------------------------------- the pruner
+
+// pruneDedupeKeysSQL is the only reader of `alert_event_keys_prune_idx
+// (created_at)`, the index 00007 created FOR THIS STATEMENT and for no other — the
+// idempotency probe itself rides the PRIMARY KEY, so until this query existed the
+// index was an unbounded write cost serving nothing. Its INNER SELECT is the half
+// that rides it, and only when the planner can see that the tail past the horizon
+// is a small fraction of the table: measured on PG16 that case is a `Bitmap Index
+// Scan on alert_event_keys_prune_idx`, while a first sweep over a mostly-expired
+// table — or a generic plan, which a long-lived pooled connection may settle on
+// once pgx has prepared this statement — reasonably takes a `Seq Scan` instead.
+// Either is bounded: the LIMIT stops the scan at `batch` matching rows, and on an
+// append-only table heap order tracks `created_at`, so the expired rows are the
+// ones a sequential scan meets first.
+//
+// The inner SELECT is what bounds the tick. A bare `DELETE ... WHERE created_at <
+// $1 LIMIT` is not legal SQL and an unbounded `DELETE ... WHERE created_at < $1`
+// is the outage this shape exists to avoid: the first sweep on an install that has
+// been growing this table since it shipped would otherwise be one statement over
+// tens of millions of rows.
+//
+// ⛔ IT MATCHES ON `ctid`, AND THE OBVIOUS `(org_id, dedupe_key) IN (…)` IS THE
+// TRAP — it makes the tick O(table) while reading as O(batch). The planner does
+// not re-probe the PRIMARY KEY for each returned tuple; measured on PG16 with
+// 400k ANALYZEd rows it takes a `Hash Semi Join` whose outer input is a full `Seq
+// Scan on alert_event_keys`, so every hourly tick reads the whole table however
+// small the batch is — the growing table this sweep exists to bound is the very
+// thing it would then scan. Matching on `ctid` gets the plan the shape implies:
+//
+//	Delete on alert_event_keys
+//	  ->  Nested Loop
+//	        ->  HashAggregate  (the bounded batch)
+//	        ->  Tid Scan on alert_event_keys  (actual rows=1 loops=20000)
+//	              TID Cond: (ctid = "ANY_subquery".ctid)
+//
+// ⚠️ `ctid` IS ONLY SAFE HERE BECAUSE THIS TABLE IS APPEND-ONLY. A row's ctid moves
+// when the row is UPDATEd, and nothing updates `alert_event_keys` — the C.8 write
+// is `INSERT ... ON CONFLICT DO NOTHING` and this sweep is the only DELETE, so a
+// tid captured by the subquery still names the same key when the outer half reaches
+// it (one statement, one snapshot). Should anything ever UPDATE this table, this
+// query has to go back to matching the key.
+const pruneDedupeKeysSQL = `
+DELETE FROM alert_event_keys
+ WHERE ctid IN (
+   SELECT ctid FROM alert_event_keys WHERE created_at < $1 LIMIT $2)`
+
+// PruneDedupeKeys deletes claimed C.8 keys past the horizon, in bounded batches,
+// and returns how many went.
+//
+// ⚠️ UNSCOPED BY DESIGN, exactly like `SessionRepository.DeleteExpired` and
+// `DedupRepository.Prune`: it is a maintenance sweep across every tenant, run by
+// `retention.prune` and reachable from no request. The horizon is passed in
+// rather than written as `now() - interval '30 days'` so the clock stays
+// injectable — a sweeper whose window only exists in SQL is a sweeper no test can
+// pin.
+//
+// ⚠️ THE COLUMN IT KEYS ON HAS TWO WRITERS WITH TWO CLOCKS (00034 says so): this
+// repository lets the DEFAULT stamp `created_at` from the database, while
+// `notification/repository/events.go` names it from the injected clock. Both are
+// wall clocks and the horizon is thirty days, so skew between them is immaterial
+// here; it is recorded because this sweep is now the reader that makes the column
+// mean something.
+func (r *EventRepository) PruneDedupeKeys(ctx context.Context, before time.Time, batch int) (int64, error) {
+	if batch <= 0 {
+		batch = 1000
+	}
+	tag, err := r.db(ctx).Exec(ctx, pruneDedupeKeysSQL, before.UTC(), batch)
+	if err != nil {
+		return 0, mapErr(err, "prune alert event dedupe keys")
+	}
+	return tag.RowsAffected(), nil
+}
+
 func strPtr(s string) *string {
 	if s == "" {
 		return nil
@@ -318,10 +392,10 @@ func (r *EventRepository) listBy(
 	ctx context.Context, s db.TenantScope, column string, subject uuid.UUID,
 	w db.TimeWindow, p db.Keyset,
 ) ([]domain.Event, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	if err := requireID("subject id", subject); err != nil {
+	if err := db.RequireID("subject id", subject); err != nil {
 		return nil, db.Cursor{}, err
 	}
 	// ⭐ The window's lower bound is REQUIRED. `recorded_at` is the partition key
@@ -339,7 +413,7 @@ func (r *EventRepository) listBy(
 		return nil, db.Cursor{}, errs.Validation("time_window_invalid",
 			"the time window must end after it starts")
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	sql := `SELECT ` + eventColumns + `
 	          FROM alert_events
@@ -367,12 +441,62 @@ func (r *EventRepository) listBy(
 	if err != nil {
 		return nil, db.Cursor{}, err
 	}
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.RecordedAt(), last.ID(), p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(last.RecordedAt(), last.ID(), p.Cursor.Hash, hasMore), nil
+}
+
+// getByDedupeKeySQL resolves the entry a §C.8 key already claimed.
+//
+// ⭐⭐ THE JOIN IS WHAT MAKES A KEYED COMMENT REPLAYABLE, and it is the reason
+// `alert_event_keys.event_id` was worth a column when nothing read it. The key
+// table is UNPARTITIONED and holds the id of the row that won the key, so a
+// retry can be answered with the annotation the first attempt actually appended
+// rather than with a second one.
+//
+// ⛔ `recorded_at` IS STILL BOUNDED, from the key row's own `created_at`. Reading
+// `alert_events` by id alone would scan thirteen months of partitions on a path
+// that runs on every retried comment; the two timestamps are written in the same
+// transaction, so a minute either side is generous by three orders of magnitude
+// and still lands the query on exactly one partition.
+var getByDedupeKeySQL = `
+SELECT ` + eventColumns + `
+  FROM alert_events e
+  JOIN alert_event_keys k
+    ON k.org_id = e.org_id AND k.event_id = e.id
+ WHERE k.org_id = $1 AND k.dedupe_key = $2
+   AND e.recorded_at >= k.created_at - interval '1 minute'
+   AND e.recorded_at <  k.created_at + interval '1 minute'`
+
+// GetByDedupeKey reads the event a §C.8 key belongs to.
+//
+// `false` means no key row, which is not an error: it is what a caller asking
+// "was this already appended" is entitled to be told.
+func (r *EventRepository) GetByDedupeKey(
+	ctx context.Context, s db.TenantScope, key string,
+) (domain.Event, bool, error) {
+	if err := db.RequireScope(s); err != nil {
+		return domain.Event{}, false, err
+	}
+	if key == "" {
+		return domain.Event{}, false, nil
+	}
+	var row eventRow
+	err := r.db(ctx).QueryRow(ctx, getByDedupeKeySQL, s.OrgID(), key).Scan(row.scanDest()...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Event{}, false, nil
+	}
+	if err != nil {
+		return domain.Event{}, false, mapErr(err, "read alert event by dedupe key")
+	}
+	e, err := row.toDomain()
+	if err != nil {
+		return domain.Event{}, false, err
+	}
+	return e, true, nil
 }
 
 func collectEvents(rows pgx.Rows, capacity int) ([]domain.Event, error) {
@@ -394,6 +518,19 @@ func collectEvents(rows pgx.Rows, capacity int) ([]domain.Event, error) {
 	return out, nil
 }
 
+// stateChangeCountsSQL counts the six lifecycle transitions the flap score is an
+// EWMA of.
+//
+// ⛔ THE SIX VALUES ARE A COPY OF THE KERNEL'S ENUM, IN SQL, AND THEY CANNOT BE
+// ANYTHING ELSE. `NewEventType` guards every value that enters this table from Go;
+// nothing guards a value written into a PREDICATE, because the list is planned
+// with the statement (`ev_type_idx` is `(org_id, type, recorded_at DESC)`, so this
+// is six index ranges) rather than bound with the parameters. Rename one in SPEC
+// §D.4.1 without touching this line and `flap.score` computes an EWMA over five
+// transition types, reports a calmer alert than the truth, and nothing anywhere
+// errors. This package is registered in `test/arch`'s `eventTypeSQLSites`, and
+// `TestEventTypeSQLNamesLiveValues` reads inside this literal and fails when a
+// value in it has left the enum.
 const stateChangeCountsSQL = `
 SELECT alert_id, count(*)
   FROM alert_events
@@ -402,20 +539,32 @@ SELECT alert_id, count(*)
    AND alert_id IS NOT NULL
    AND type IN ('occurrence.opened','occurrence.reopened','occurrence.resolved',
                 'occurrence.expired','occurrence.suppressed','occurrence.unsuppressed')
- GROUP BY alert_id`
+ GROUP BY alert_id
+ ORDER BY count(*) DESC, alert_id
+ LIMIT $4`
 
 // StateChangeCounts counts lifecycle transitions per Alert inside a window. It
 // is the input to the `flap.score` job (§B.6), which is an EWMA of state
 // transitions per hour.
 //
+// ⭐ THE CAP LIVES IN THE STATEMENT, WITH AN ORDER. `flap.score` can afford only
+// `limit` alerts per tick, and which alerts those are must be a property of the
+// data: the caller iterates a map, and a cap applied over Go map iteration
+// scored a RANDOM subset every tick. Most-changed first, because when the cap
+// binds, the alerts nearest the flap threshold are the ones a stale score
+// misleads about the most; alert_id breaks ties so two equal counts cannot swap
+// places between ticks.
+//
 // NOTE (planner): ev_type_idx is (org_id, type, recorded_at DESC), so this is
 // six index ranges aggregated — the partition pruning from the window is what
 // keeps it cheap. There is no (org_id, recorded_at, alert_id) index and adding
-// one is a migration this module does not own.
+// one is a migration this module does not own. The ORDER BY/LIMIT is a top-N
+// over the aggregate's output, which is already bounded by the org's distinct
+// alerts in the window.
 func (r *EventRepository) StateChangeCounts(
-	ctx context.Context, s db.TenantScope, w db.TimeWindow,
+	ctx context.Context, s db.TenantScope, w db.TimeWindow, limit int,
 ) (map[uuid.UUID]int, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if w.From.IsZero() {
@@ -426,8 +575,9 @@ func (r *EventRepository) StateChangeCounts(
 	if to.IsZero() {
 		to = r.clock.Now()
 	}
+	n := db.ClampLimit(limit)
 
-	rows, err := r.db(ctx).Query(ctx, stateChangeCountsSQL, s.OrgID(), w.From.UTC(), to.UTC())
+	rows, err := r.db(ctx).Query(ctx, stateChangeCountsSQL, s.OrgID(), w.From.UTC(), to.UTC(), n)
 	if err != nil {
 		return nil, mapErr(err, "count state changes")
 	}

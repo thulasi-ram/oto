@@ -134,13 +134,13 @@ func (r *SnoozeRepository) Create(
 func (r *SnoozeRepository) CreateWithID(
 	ctx context.Context, s db.TenantScope, snoozeID uuid.UUID, in domain.SnoozeRequest,
 ) (domain.Snooze, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Snooze{}, err
 	}
-	if err := requireID("snooze id", snoozeID); err != nil {
+	if err := db.RequireID("snooze id", snoozeID); err != nil {
 		return domain.Snooze{}, err
 	}
-	if err := requireID("alert_id", in.AlertID); err != nil {
+	if err := db.RequireID("alert_id", in.AlertID); err != nil {
 		return domain.Snooze{}, err
 	}
 	if in.Until.IsZero() {
@@ -174,7 +174,7 @@ func (r *SnoozeRepository) CreateWithID(
 func (r *SnoozeRepository) GetActive(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
 ) (domain.Snooze, bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Snooze{}, false, err
 	}
 	var row snoozeRow
@@ -218,7 +218,7 @@ SELECT ` + snoozeColumns + `
 func (r *SnoozeRepository) ActiveByAlerts(
 	ctx context.Context, s db.TenantScope, alertIDs []uuid.UUID,
 ) (map[uuid.UUID]domain.Snooze, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(alertIDs) == 0 {
@@ -285,13 +285,13 @@ SELECT ` + snoozeColumns + `
 func (r *SnoozeRepository) ListActive(
 	ctx context.Context, s db.TenantScope, now time.Time, p db.Keyset,
 ) ([]domain.Snooze, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
 	if now.IsZero() {
 		now = r.clock.Now()
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	var (
 		afterAt *time.Time
@@ -326,12 +326,12 @@ func (r *SnoozeRepository) ListActive(
 		return nil, db.Cursor{}, mapErr(err, "read active snoozes")
 	}
 
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return page, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.SnoozedUntil(), last.ID(), p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(last.SnoozedUntil(), last.ID(), p.Cursor.Hash, hasMore), nil
 }
 
 var endSnoozeSQL = `
@@ -349,10 +349,10 @@ RETURNING ` + snoozeColumns
 func (r *SnoozeRepository) End(
 	ctx context.Context, s db.TenantScope, in domain.SnoozeEnd,
 ) (domain.Snooze, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Snooze{}, err
 	}
-	if err := requireID("snooze id", in.SnoozeID); err != nil {
+	if err := db.RequireID("snooze id", in.SnoozeID); err != nil {
 		return domain.Snooze{}, err
 	}
 	if in.Reason == "" {
@@ -395,13 +395,13 @@ SELECT ` + snoozeColumns + `
 func (r *SnoozeRepository) ExpiredCandidates(
 	ctx context.Context, s db.TenantScope, before time.Time, limit int,
 ) ([]domain.Snooze, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if before.IsZero() {
 		before = r.clock.Now()
 	}
-	n := clampLimit(limit)
+	n := db.ClampLimit(limit)
 
 	rows, err := r.db(ctx).Query(ctx, expiredSnoozesSQL, s.OrgID(), before.UTC(), n)
 	if err != nil {
@@ -433,10 +433,10 @@ func (r *SnoozeRepository) ExpiredCandidates(
 func (r *SnoozeRepository) ListByAlert(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int,
 ) ([]domain.Snooze, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	n := clampLimit(limit)
+	n := db.ClampLimit(limit)
 
 	rows, err := r.db(ctx).Query(ctx,
 		`SELECT `+snoozeColumns+`

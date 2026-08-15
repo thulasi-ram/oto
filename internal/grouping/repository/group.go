@@ -163,7 +163,7 @@ func (r *GroupRepository) db(ctx context.Context) db.Querier { return db.FromCon
 
 // GetByID reads one generation within the caller's org.
 func (r *GroupRepository) GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Group, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Group{}, err
 	}
 	var row groupRow
@@ -188,7 +188,7 @@ func (r *GroupRepository) GetByID(ctx context.Context, s db.TenantScope, id uuid
 func (r *GroupRepository) GetOpenByKey(
 	ctx context.Context, s db.TenantScope, groupKey string,
 ) (domain.Group, bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Group{}, false, err
 	}
 	var row groupRow
@@ -218,11 +218,11 @@ var insertGroupSQL = `
 WITH g AS (
   INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, generation,
                             source_group_key, receiver, group_labels, title, state, severity,
-                            state_version, first_seen_at, last_activity_at)
+                            state_version, first_seen_at, last_activity_at, synthetic)
   SELECT $1, $2, $3, $4, $5,
          COALESCE((SELECT max(prev.generation) FROM alert_groups prev
                     WHERE prev.org_id = $2 AND prev.group_key = $5), 0) + 1,
-         $6, $7, $8, $9, 'open', $10, 1, $11, $11
+         $6, $7, $8, $9, 'open', $10, 1, $11, $11, $12
   RETURNING ` + groupColumns + `
 )
 SELECT ` + groupColumnsQualified + `, c.cluster_key
@@ -241,16 +241,16 @@ SELECT ` + groupColumnsQualified + `, c.cluster_key
 func (r *GroupRepository) OpenGeneration(
 	ctx context.Context, s db.TenantScope, in NewGeneration,
 ) (domain.Group, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Group{}, err
 	}
-	if err := requireID("group id", in.ID); err != nil {
+	if err := db.RequireID("group id", in.ID); err != nil {
 		return domain.Group{}, err
 	}
-	if err := requireID("source_id", in.SourceID); err != nil {
+	if err := db.RequireID("source_id", in.SourceID); err != nil {
 		return domain.Group{}, err
 	}
-	if err := requireID("cluster_id", in.ClusterID); err != nil {
+	if err := db.RequireID("cluster_id", in.ClusterID); err != nil {
 		return domain.Group{}, err
 	}
 	if in.GroupKey == "" || strings.TrimSpace(in.Title) == "" {
@@ -270,6 +270,7 @@ func (r *GroupRepository) OpenGeneration(
 	err = r.db(ctx).QueryRow(ctx, insertGroupSQL,
 		in.ID, s.OrgID(), in.SourceID, in.ClusterID, in.GroupKey,
 		strPtr(in.SourceGroupKey), in.Receiver, labels, in.Title, strPtr(in.Severity), at.UTC(),
+		in.Synthetic,
 	).Scan(row.scanDest()...)
 	if err != nil {
 		return domain.Group{}, mapErr(err, "open alert group generation")
@@ -291,6 +292,17 @@ type NewGeneration struct {
 	Title          string
 	Severity       string
 	At             time.Time
+	// Synthetic marks a generation opened by a DELIVERY DRILL, so the dashboard
+	// group counts can exclude it with an indexed predicate rather than reaching
+	// `alerts` through `alert_group_members` for every group in the window.
+	//
+	// ⛔ IT IS WRITE-ONLY HERE AND IS DELIBERATELY NOT IN `groupColumnList`. It is
+	// a REPORTING fact about how a generation came to exist, not an invariant of
+	// a Group, and putting it on the entity would invite code to branch on it —
+	// which is exactly what must not happen: a drill's card is rendered, threaded
+	// and delivered by the identical code path a real alert takes, or the drill
+	// proves nothing.
+	Synthetic bool
 }
 
 // ⭐ `state_version = $12` is the OPTIMISTIC LOCK, and $12 is the version the
@@ -333,7 +345,7 @@ WHERE org_id = $1 AND id = $2 AND state_version = $12`
 func (r *GroupRepository) SetRollup(
 	ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	c := g.Counts()
@@ -367,7 +379,7 @@ WHERE org_id = $1 AND id = $2 AND state_version = $6`
 func (r *GroupRepository) SetStorm(
 	ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx, setStormSQL, s.OrgID(), g.ID(),
@@ -400,7 +412,7 @@ WHERE org_id = $1 AND id = $2 AND state = 'open' AND state_version = $5`
 // it was read — a member that joined in the meantime bumps the version, and
 // freezing its thread would be freezing a live incident's conversation.
 func (r *GroupRepository) Close(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx, closeGroupSQL, s.OrgID(), g.ID(),
@@ -437,7 +449,7 @@ func (r *GroupRepository) versionMiss(
 
 // Touch records activity so an idle generation's close clock restarts.
 func (r *GroupRepository) Touch(ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	if at.IsZero() {
@@ -456,7 +468,7 @@ func (r *GroupRepository) Touch(ctx context.Context, s db.TenantScope, groupID u
 func (r *GroupRepository) SetNotificationReason(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID, reason string,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	_, err := r.db(ctx).Exec(ctx,
@@ -471,7 +483,7 @@ func (r *GroupRepository) SetNotificationReason(
 func (r *GroupRepository) StateVersion(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
 ) (int, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return 0, err
 	}
 	var v int32
@@ -507,7 +519,7 @@ func (r *GroupRepository) StateVersion(
 func (r *GroupRepository) List(
 	ctx context.Context, s db.TenantScope, f domain.GroupFilter, sort string, p db.Keyset,
 ) ([]domain.Group, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
 
@@ -520,7 +532,7 @@ func (r *GroupRepository) List(
 		return nil, db.Cursor{}, errs.Validation("sort_invalid",
 			"sort must be one of: -last_activity_at, -first_seen_at")
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	args := []any{s.OrgID()}
 	where := " WHERE g.org_id = $1"
@@ -589,7 +601,7 @@ func (r *GroupRepository) List(
 	if err != nil {
 		return nil, db.Cursor{}, err
 	}
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
@@ -598,7 +610,7 @@ func (r *GroupRepository) List(
 	if sortCol == "g.first_seen_at" {
 		sortKey = last.FirstSeenAt()
 	}
-	return page, nextCursor(sortKey, last.ID(), p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(sortKey, last.ID(), p.Cursor.Hash, hasMore), nil
 }
 
 var closeCandidatesSQL = selectGroups + `
@@ -615,13 +627,13 @@ var closeCandidatesSQL = selectGroups + `
 func (r *GroupRepository) CloseCandidates(
 	ctx context.Context, s db.TenantScope, idleBefore time.Time, limit int,
 ) ([]domain.Group, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if idleBefore.IsZero() {
 		return nil, errs.Internal("close_bound_missing", errsMissing("idleBefore is required"))
 	}
-	n := clampLimit(limit)
+	n := db.ClampLimit(limit)
 
 	rows, err := r.db(ctx).Query(ctx, closeCandidatesSQL, s.OrgID(), idleBefore.UTC(), n)
 	if err != nil {

@@ -7,11 +7,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/thulasiram/oto/internal/channels/service"
 	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
 
 // TestTimeout bounds `testChannel`.
@@ -26,10 +28,15 @@ const TestTimeout = 15 * time.Second
 // Options are the Router's dependencies. Everything is a port, so the whole
 // surface is exercisable with fakes and an httptest.Server.
 type Options struct {
-	Registry     ProviderRegistry
-	Channels     ChannelStore
-	Creds        CredentialWriter
-	Tester       ChannelTester
+	Registry ProviderRegistry
+	Channels ChannelStore
+	Creds    CredentialWriter
+	// Writes owns `createChannel` and `testChannel`. It is a DIFFERENT
+	// collaborator from Channels — the service rather than the repository —
+	// because an `Idempotency-Key` claim has to join the transaction of the act it
+	// guards, and the transaction boundary is not an HTTP concern. Nil is a
+	// declared `503` on those two and nothing at all to the rest.
+	Writes       ChannelWriter
 	Interactions SlackInteractions
 	// SigningSecret is Slack's HMAC signing secret for the HTTP interactivity
 	// transport. Empty DISABLES the endpoint entirely rather than accepting
@@ -44,7 +51,7 @@ type Router struct {
 	registry     ProviderRegistry
 	channels     ChannelStore
 	creds        CredentialWriter
-	tester       ChannelTester
+	writes       ChannelWriter
 	interactions SlackInteractions
 	signing      []byte
 	clk          clock.Clock
@@ -60,7 +67,7 @@ func NewRouter(o Options) *Router {
 		registry:     o.Registry,
 		channels:     o.Channels,
 		creds:        o.Creds,
-		tester:       o.Tester,
+		writes:       o.Writes,
 		interactions: o.Interactions,
 		signing:      []byte(o.SigningSecret),
 		clk:          clk,
@@ -127,6 +134,15 @@ func (rt *Router) subject(r *http.Request) (db.TenantScope, uuid.UUID, error) {
 		return db.TenantScope{}, uuid.Nil, err
 	}
 	return scope, id, nil
+}
+
+// idempotencyIntent reads the caller's `Idempotency-Key` into the intent the
+// write facade acts on (see idempotency.IntentFromRequest for the seam's rules).
+// The hash is passed in because what "the same request" means differs by
+// operation: a create is identified by the RAW bytes it sent, and a test — which
+// has no body — by the channel it would send to.
+func idempotencyIntent(r *http.Request, hash idempotency.RequestHash) (service.Idempotency, error) {
+	return idempotency.IntentFromRequest(r, hash)
 }
 
 // requireDependency turns a missing collaborator into an honest 503 rather than a

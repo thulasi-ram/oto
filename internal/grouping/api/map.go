@@ -85,6 +85,7 @@ func alertDTO(a alertdomain.Alert, snooze *alertdomain.Snooze) AlertDTO {
 		TotalOccurrences:  int32(a.TotalOccurrences()),
 		FlapScore:         a.FlapScore(),
 		IsFlapping:        a.IsFlapping(),
+		Synthetic:         a.Synthetic(),
 	}
 	if snooze != nil {
 		dto.Snooze = &SnoozeDTO{

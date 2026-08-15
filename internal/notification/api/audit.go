@@ -156,8 +156,14 @@ func (rt *Router) getNotification(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, deliveryDTO(d, contexts[d.ChannelID]))
 	}
 
+	// The summary is set on both the embedded DTO and the detail's own field.
+	// They are the same value; the detail's field is the one that reaches the
+	// wire (encoding/json prefers the shallower name) and is what makes
+	// `delivery_summary` structurally unskippable on this response.
+	summary := summarise(deliveries)
 	httpx.Data(w, r, http.StatusOK, NotificationDetailDTO{
-		NotificationDTO: notificationDTO(n, summarise(deliveries)),
+		NotificationDTO: notificationDTO(n, &summary),
+		DeliverySummary: summary,
 		Deliveries:      rows,
 	}, started)
 }

@@ -117,10 +117,10 @@ type ResolvedTimings struct {
 	GroupInterval  RouteTiming
 	RepeatInterval RouteTiming
 
-	// ChildRoutes and ChildrenWithTimings are carried through unchanged. They are
-	// the v1 boundary made countable: only the top-level route is evaluated, and
-	// a non-zero ChildrenWithTimings says out loud that the three above do not
-	// govern every alert.
+	// ChildRoutes and ChildrenWithTimings are carried through unchanged. They
+	// describe the TREE, not whichever route the three above came from: a
+	// non-zero ChildrenWithTimings says out loud that the top-level route does not
+	// govern every alert. `RouteResolution` (routes.go) is that shape in full.
 	ChildRoutes         int
 	ChildrenWithTimings int
 

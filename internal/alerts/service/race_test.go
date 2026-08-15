@@ -12,7 +12,19 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/id"
+	"github.com/thulasiram/oto/test/harness"
 )
+
+// ⚠️ EVERY INSTANT IN THIS FILE HANGS OFF harness.Epoch, and the reason is the
+// partition manager. These races write timeline events, `alert_events` is
+// partitioned with NO default partition, and an instant the template has no
+// partition for fails with a bare 23514 before any race is staged. The instant
+// used to be a hard-coded 2026-08-08 — inside the live window on the day it was
+// written, and OUT of it on the first of the following month, because the window
+// is built around the database's `now()`. Epoch has its own partitions now
+// (git-bug 6547228), so the fixed clock the rest of the suite uses works here and
+// cannot go stale. Nothing below needs the instant to be RECENT: every bound is
+// passed explicitly and every repository is on the fixture's FakeClock.
 
 // TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed is the regression test for
 // the highest-value rule in the system: A RESOLUTION IS NEVER FABRICATED.
@@ -26,7 +38,7 @@ import (
 // that no longer existed, and stamped `expired`/`timeout` on a demonstrably live
 // alert.
 func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
-	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
 	cfg := DefaultSettings()
@@ -80,7 +92,7 @@ func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
 // had explicitly stated. The append-only timeline and the projection then
 // disagreed permanently.
 func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
-	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
 	cfg := DefaultSettings()
@@ -139,7 +151,7 @@ func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
 // episode silently returned to `suppressed` with its end time erased, and
 // occ_one_open_idx counted it open again.
 func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
-	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
 
@@ -191,7 +203,7 @@ func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 // — the instant oto happened to run — so the two passes minted two different keys,
 // and nothing stopped the second unguarded UPDATE from landing either.
 func TestTwoConcurrentReconcilerPassesAppendOneSuppressedEvent(t *testing.T) {
-	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
 
@@ -237,7 +249,7 @@ func TestTwoConcurrentReconcilerPassesAppendOneSuppressedEvent(t *testing.T) {
 // They must, and a genuinely SECOND suppression of the same episode must still
 // differ, or the fix would trade a duplicated timeline entry for a lost one.
 func TestSuppressionDedupeKeyIsACounterNotAClock(t *testing.T) {
-	base := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	base := harness.Epoch
 	occ := firingOccurrence(t, base)
 
 	first, err := domain.Apply(occ, suppressCommandAt(t, base.Add(time.Second), base))
@@ -276,7 +288,7 @@ func TestSuppressionDedupeKeyIsACounterNotAClock(t *testing.T) {
 // This is what the interim `sourceUpdatedAt` key could not promise and what a
 // `lastObservedAt` key promised falsely.
 func TestRepeatedSuppressionInOneEpisodeIsCounted(t *testing.T) {
-	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
 
@@ -327,7 +339,7 @@ func TestRepeatedSuppressionInOneEpisodeIsCounted(t *testing.T) {
 // next tick, and a firing alert was expired — the same fabricated resolution,
 // reached without ever racing anybody.
 func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
-	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
 	cfg := DefaultSettings()
@@ -377,7 +389,7 @@ func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
 // from the alert IT read, so the list went back to showing `firing` for an alert
 // Alertmanager had explicitly resolved.
 func TestAcknowledgeCannotLandOnAnEpisodeThatEnded(t *testing.T) {
-	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
 
@@ -416,7 +428,7 @@ func TestAcknowledgeCannotLandOnAnEpisodeThatEnded(t *testing.T) {
 // only moving part is oto's processing clock.
 func suppressCommand(t *testing.T, recordedAt time.Time) domain.TransitionCommand {
 	t.Helper()
-	return suppressCommandAt(t, recordedAt, time.Date(2026, 8, 8, 11, 59, 0, 0, time.UTC))
+	return suppressCommandAt(t, recordedAt, harness.Epoch.Add(-time.Minute))
 }
 
 func suppressCommandAt(t *testing.T, recordedAt, upstreamAt time.Time) domain.TransitionCommand {

@@ -36,12 +36,13 @@ import {
 } from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listRuleSnapshots } from "~/api/endpoints";
-import { qk } from "~/api/keys";
+import { ruleSnapshotsQuery } from "~/api/queries";
 import type {
+  MatchConfidence,
   RuleChange,
   RuleExprNumberChange,
   RuleHistory,
+  RuleOrigin,
   RuleSnapshot,
   RuleSnapshotQuery,
 } from "~/api/types";
@@ -111,13 +112,13 @@ export const RuleDiff: Component<{
   return (
     <div
       class={cx(
-        "rounded-[4px] border border-line-strong border-l-[3px] border-l-ink-muted bg-sunken",
+        "rounded-control border border-line-strong border-l-[3px] border-l-ink-muted bg-sunken",
         props.class,
       )}
     >
       <div class="flex flex-wrap items-baseline gap-x-2 border-b border-line px-2.5 py-1.5">
-        <span class="text-[12px] font-semibold text-ink">This rule changed</span>
-        <span class="text-[11px] text-ink-subtle">
+        <span class="text-body font-semibold text-ink">This rule changed</span>
+        <span class="text-meta text-ink-subtle">
           previous version captured{" "}
           <RelativeTime value={props.change.previous_captured_at} label="Previously captured" /> ago
         </span>
@@ -125,7 +126,7 @@ export const RuleDiff: Component<{
 
       <div class="space-y-2 px-2.5 py-2">
         <Show when={nothing()}>
-          <p class="text-[11px] text-ink-subtle">
+          <p class="text-meta text-ink-subtle">
             The fingerprint changed but no field oto compares differed — usually formatting.
           </p>
         </Show>
@@ -278,23 +279,23 @@ const ExprVerdict: Component<{ readonly drift: ExprDrift }> = (props) => {
             <For each={numbers()}>
               {(n) => (
                 <li class="flex items-baseline gap-2">
-                  <span class="w-10 shrink-0 text-right font-mono text-[10px] text-ink-subtle">
+                  <span class="w-10 shrink-0 text-right font-mono text-micro text-ink-subtle">
                     #{n.index + 1}
                   </span>
-                  <span class="font-mono text-[11px] text-ink-muted line-through decoration-ink-subtle/60">
+                  <span class="font-mono text-meta text-ink-muted line-through decoration-ink-subtle/60">
                     {fmtLiteral(n.previous_value)}
                   </span>
-                  <span class="text-[11px] text-ink-subtle" aria-hidden="true">
+                  <span class="text-meta text-ink-subtle" aria-hidden="true">
                     →
                   </span>
-                  <span class="font-mono text-[11px] font-semibold text-ink">
+                  <span class="font-mono text-meta font-semibold text-ink">
                     {fmtLiteral(n.new_value)}
                   </span>
                 </li>
               )}
             </For>
           </ul>
-          <p class="mt-1 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-1 text-meta leading-snug text-ink-subtle">
             Numbered by position among the literals oto vouched for — durations, subquery steps and{" "}
             <code class="font-mono">offset</code> operands are not counted, and are never reported as
             thresholds.
@@ -340,7 +341,7 @@ const VerdictNote: ParentComponent<{
   <div class="mt-1.5 border-l border-line pl-2">
     <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
       <Chip>oto: {props.label}</Chip>
-      <p class="min-w-0 flex-1 text-[11px] leading-snug text-ink-subtle">{props.note}</p>
+      <p class="min-w-0 flex-1 text-meta leading-snug text-ink-subtle">{props.note}</p>
     </div>
     {props.children}
   </div>
@@ -362,28 +363,28 @@ const DiffBlock: Component<{
 }> = (props) => (
   <div>
     <div class="mb-0.5 flex items-baseline gap-2">
-      <span class="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+      <span class="text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
         {props.term}
       </span>
       <Show when={props.hint}>
-        <span class="text-[11px] text-ink-subtle">{props.hint}</span>
+        <span class="text-meta text-ink-subtle">{props.hint}</span>
       </Show>
     </div>
     <div class="grid grid-cols-[2.6rem_minmax(0,1fr)] gap-x-2 gap-y-1">
-      <span class="pt-px text-right text-[11px] text-ink-subtle">was</span>
+      <span class="pt-px text-right text-meta text-ink-subtle">was</span>
       <code
         class={cx(
-          "min-w-0 break-words rounded-[3px] bg-surface px-1.5 py-0.5 text-[11px] leading-snug text-ink-muted line-through decoration-ink-subtle/60",
+          "min-w-0 break-words rounded-chip bg-surface px-1.5 py-0.5 text-meta leading-snug text-ink-muted line-through decoration-ink-subtle/60",
           props.mono === true ? "font-mono" : "",
         )}
       >
         {props.was === "" ? "(absent)" : props.was}
       </code>
 
-      <span class="pt-px text-right text-[11px] font-semibold text-ink">now</span>
+      <span class="pt-px text-right text-meta font-semibold text-ink">now</span>
       <code
         class={cx(
-          "min-w-0 break-words rounded-[3px] border border-line-strong bg-surface px-1.5 py-0.5 text-[11px] font-medium leading-snug text-ink",
+          "min-w-0 break-words rounded-chip border border-line-strong bg-surface px-1.5 py-0.5 text-meta font-medium leading-snug text-ink",
           props.mono === true ? "font-mono" : "",
         )}
       >
@@ -397,7 +398,10 @@ const DiffBlock: Component<{
 /* The panel                                                                  */
 /* -------------------------------------------------------------------------- */
 
-const ORIGIN_NOTE: Record<string, string> = {
+// ⛔ Both notes are keyed by the contract's own enums rather than by `string`:
+// an origin or a confidence the server adds must fail the build here, not render
+// a bare wire token in the tooltip that explains how much to trust the panel.
+const ORIGIN_NOTE: Record<RuleOrigin, string> = {
   prometheus_api: "Read from the Prometheus rules API — the authoritative source.",
   generator_url:
     "Reconstructed from the alert's generatorURL because the rules API was not reachable. The expression is what the URL encoded, not what the file said.",
@@ -405,7 +409,7 @@ const ORIGIN_NOTE: Record<string, string> = {
     "oto could not obtain the rule at all. The expression below is empty, and that absence is recorded rather than guessed at.",
 };
 
-const CONFIDENCE_NOTE: Record<string, string> = {
+const CONFIDENCE_NOTE: Record<MatchConfidence, string> = {
   exact: "Exactly one rule matched this alert.",
   probable: "More than one rule could have produced this alert; oto picked the best match.",
   ambiguous:
@@ -421,19 +425,38 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
       <PanelHeader>
         <PanelTitle>Rule at fire time</PanelTitle>
         <Show when={props.history.versions.length > 0}>
-          <span class="text-[11px] text-ink-subtle">
+          <span class="text-meta text-ink-subtle">
             {props.history.versions.length} version
             {props.history.versions.length === 1 ? "" : "s"} captured
           </span>
         </Show>
       </PanelHeader>
 
+      {/* ⛔ NO RULE IS AN ORDINARY ANSWER AND IS RENDERED AS ONE.
+          `current: null` with an empty `versions` means oto captured nothing
+          for this alert, and that is normal rather than broken: a
+          Grafana-sourced alert, an alert fired by hand, an Alertmanager whose
+          Prometheus is unreachable, a `generatorURL` with no `g0.expr` in it.
+
+          This used to be a red "Validation failed — a rule key's source id must
+          be a UUID" box with a Try again button and a request id, because the
+          server reported the absence as a 422 (TICKET 015b25b). Three things
+          were wrong with that and all three are worth naming, because they are
+          the trap any absence-as-error falls into: it was not a validation
+          failure and nothing the operator did caused it; the sentence was
+          internal vocabulary about a database index; and the retry could never
+          succeed, so the button was an invitation to waste time at 3am.
+
+          The alert LIST has always rendered these same alerts as a plain
+          em-dash. This is the same fact at the size a panel affords: a sentence
+          instead of a dash, and the ordinary causes named so the operator knows
+          whether to go and configure something or to stop looking. */}
       <Show
         when={current()}
         fallback={
           <EmptyState
-            title="No rule was captured for this occurrence."
-            body="oto records the absence rather than guessing. The rules API may have been unreachable when this fired, or the alert may not come from a Prometheus rule at all."
+            title="oto captured no rule for this alert."
+            body="That is an ordinary outcome, not a failure. The alert may not come from a Prometheus alerting rule at all — one raised by Grafana, or fired by hand — or its generatorURL carried no expression and the rules API was not reachable when it fired. oto records the absence rather than guessing at a definition it never saw."
           />
         }
       >
@@ -447,24 +470,24 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
 
             <dl class="space-y-1">
               <DataRow term="Rule">
-                <span class="font-mono text-[12px]">{rule().rule_name}</span>
+                <span class="font-mono text-body">{rule().rule_name}</span>
               </DataRow>
               <Show when={rule().rule_group !== ""}>
                 <DataRow term="Group">
-                  <span class="font-mono text-[12px]">{rule().rule_group}</span>
+                  <span class="font-mono text-body">{rule().rule_group}</span>
                 </DataRow>
               </Show>
               <Show when={rule().rule_file !== ""}>
                 <DataRow term="File">
-                  <span class="break-all font-mono text-[12px] text-ink-muted">
+                  <span class="break-all font-mono text-body text-ink-muted">
                     {rule().rule_file}
                   </span>
                 </DataRow>
               </Show>
               <DataRow term="for:">
-                <span class="font-mono text-[12px]">{duration(rule().for_seconds)}</span>
+                <span class="font-mono text-body">{duration(rule().for_seconds)}</span>
                 <Show when={rule().keep_firing_for_seconds > 0}>
-                  <span class="ml-2 text-[11px] text-ink-subtle">
+                  <span class="ml-2 text-meta text-ink-subtle">
                     keep_firing_for {duration(rule().keep_firing_for_seconds)}
                   </span>
                 </Show>
@@ -477,10 +500,10 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
             </dl>
 
             <div>
-              <p class="mb-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+              <p class="mb-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
                 Expression
               </p>
-              <pre class="overflow-x-auto rounded-[4px] border border-line bg-sunken px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink">
+              <pre class="overflow-x-auto rounded-control border border-line bg-sunken px-2 py-1.5 font-mono text-meta leading-relaxed text-ink">
                 <code>{rule().expr === "" ? "(oto could not read this rule)" : rule().expr}</code>
               </pre>
             </div>
@@ -500,7 +523,7 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
                     href={url()}
                     target="_blank"
                     rel="noreferrer noopener"
-                    class="text-[11px] text-accent hover:underline"
+                    class="text-meta text-accent hover:underline"
                   >
                     Prometheus ↗
                   </a>
@@ -508,7 +531,7 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
               </Show>
             </div>
 
-            <p class="text-[11px] leading-snug text-ink-subtle">
+            <p class="text-meta leading-snug text-ink-subtle">
               {ORIGIN_NOTE[rule().origin] ?? ""} {CONFIDENCE_NOTE[rule().match_confidence] ?? ""}
             </p>
 
@@ -538,6 +561,13 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
  * now keyset-paginated over `(captured_at, id)` for real, so on hitting the cap
  * this keeps reading rather than presenting a truncated list as if it were
  * complete.
+ *
+ * Deliberately not `createKeysetFeed`: this machine differs in kind, not in
+ * spelling. Page one is the embedded `versions` array from a *different*
+ * endpoint, the first "load more" press starts the snapshot keyset from the top
+ * rather than advancing a cursor, `hasMore` before that press is a claim about
+ * the embedded cap rather than about any envelope — and the RuleKey never
+ * changes under the panel, so there is no filter axis to fingerprint.
  */
 const VersionHistory: Component<{
   readonly versions: readonly RuleSnapshot[];
@@ -565,8 +595,9 @@ const VersionHistory: Component<{
   });
 
   const page = useQuery(() => ({
-    queryKey: qk.rules.snapshots(query()),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listRuleSnapshots(query(), { signal }),
+    ...ruleSnapshotsQuery(query()),
+    // The only thing that is this screen's rather than the resource's: history
+    // is fetched when the operator asks for it, not when the panel renders.
     enabled: atCap() && started(),
   }));
 
@@ -595,8 +626,8 @@ const VersionHistory: Component<{
   };
 
   return (
-    <details class="rounded-[4px] border border-line">
-      <summary class="cursor-pointer list-none px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted hover:bg-raised">
+    <details class="rounded-control border border-line">
+      <summary class="cursor-pointer list-none px-2 py-1.5 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted hover:bg-raised">
         Version history ({all().length}
         {hasMore() ? "+" : ""})
       </summary>
@@ -610,20 +641,20 @@ const VersionHistory: Component<{
             )}
           >
             <div class="flex items-baseline gap-2">
-              <span class="font-mono text-[10px] text-ink-subtle">
+              <span class="font-mono text-micro text-ink-subtle">
                 {v.rule_fingerprint.slice(0, 12)}
               </span>
-              <span class="text-[11px] text-ink-muted">
+              <span class="text-meta text-ink-muted">
                 <RelativeTime value={v.captured_at} label="Captured" /> ago
               </span>
-              <span class="text-[11px] text-ink-subtle">for {duration(v.for_seconds)}</span>
+              <span class="text-meta text-ink-subtle">for {duration(v.for_seconds)}</span>
               <Show when={v.id === props.currentId}>
-                <span class="ml-auto text-[10px] font-semibold uppercase tracking-wide text-ink">
+                <span class="ml-auto text-micro font-semibold uppercase tracking-wide text-ink">
                   bound to this occurrence
                 </span>
               </Show>
             </div>
-            <code class="mt-0.5 block truncate font-mono text-[10px] text-ink-muted" title={v.expr}>
+            <code class="mt-0.5 block truncate font-mono text-micro text-ink-muted" title={v.expr}>
               {v.expr === "" ? "(unavailable)" : v.expr}
             </code>
           </li>
@@ -636,7 +667,7 @@ const VersionHistory: Component<{
           <Button size="sm" busy={page.isFetching} onClick={loadOlder}>
             Load older versions
           </Button>
-          <p class="mt-1 text-[10px] leading-snug text-ink-subtle">
+          <p class="mt-1 text-micro leading-snug text-ink-subtle">
             The alert's own response embeds at most {EMBEDDED_VERSION_CAP} captures. There are more,
             and they are reachable — this pages the full history with a keyset cursor.
           </p>

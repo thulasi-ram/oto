@@ -21,10 +21,31 @@ func TestDefaultStormPolicy(t *testing.T) {
 
 	// The §D.1 numbers themselves. Storm collapse is ON BY DEFAULT and there is
 	// no "off" — a zero threshold would collapse every group on its first member.
+	//
+	// The three storm numbers are the group-level damper's own and answer a
+	// question nothing else asks: how many DISTINCT alerts joining one generation
+	// inside a minute counts as one event rather than many. They were never part
+	// of ADR 0026's derivation and did not move.
 	assert.Equal(t, 25, domain.DefaultStormThreshold)
 	assert.Equal(t, 60*time.Second, domain.DefaultStormWindow)
 	assert.Equal(t, 10*time.Minute, domain.DefaultStormCooldown)
-	assert.Equal(t, 5*time.Minute, domain.DefaultGroupCloseDelay)
+
+	// ⛔ `group_close_delay` is NOT a storm number. It only lives in StormPolicy
+	// because it is the same kind of clock, and it MIRRORS
+	// `identity/domain.DefaultGroupCloseDelay`, which ADR 0026 pins EQUAL to
+	// `refire_grace`. 20m, not the 5m this test used to transcribe: closing a
+	// generation freezes its Slack thread, so the next observation opens N+1 with
+	// a brand-new root card (ADR 0005, §B.5). At 5m against a 10m grace the
+	// generation closed halfway through the grace and the whole second half bought
+	// an occurrence reopen that posted a new card anyway — the mismatch defeated
+	// the grace. Equality is safe rather than racy because this clock runs from the
+	// group's last ACTIVITY (the resolve as oto observed it) and the grace runs
+	// from the upstream `ended_at`, which is the same instant or earlier.
+	//
+	// If this assertion fails, the fix is almost certainly in `identity/domain`
+	// and not here; `identity/domain/defaults_derivation_test.go` is what keeps
+	// the two in step.
+	assert.Equal(t, 20*time.Minute, domain.DefaultGroupCloseDelay)
 }
 
 func TestStormPolicyNormalise(t *testing.T) {

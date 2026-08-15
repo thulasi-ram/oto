@@ -30,6 +30,16 @@ type SnapshotQuery struct {
 	// instances inline and then says "and N more"; fetching more than it can show
 	// is work nobody sees.
 	MaxAlerts int
+	// Reason is the fact about to be RENDERED, and it is the only thing that can
+	// name the timeline entry which caused it: `acked` means
+	// `occurrence.acknowledged`, `comment` means `comment.added`. Without it a
+	// read model can fill in the world but not the actor, because "who did this"
+	// is a question about ONE event and the subject ids alone do not say which.
+	//
+	// EMPTY IS A REAL ANSWER: it means the caller is not rendering — the
+	// evaluation path reads a snapshot to decide whether to send at all — and a
+	// reader that is not rendering must not pay for the lookup.
+	Reason Reason
 }
 
 // OrgFacts identifies the tenant.
@@ -86,9 +96,22 @@ type GroupFacts struct {
 	// they act on at 03:00.
 	FiringSince time.Time
 
-	// AlertmanagerURL is the source's `base_url`. It is what the Silence and
-	// "Open in Alertmanager" deep links are built from (§H.3, R3): oto never
-	// writes a silence, it only shows you where to write one.
+	// AlertmanagerURL is an Alertmanager UI root oto CAN VOUCH FOR — the base the
+	// Silence and "Open in Alertmanager" deep links are built from (§H.3, R3): oto
+	// never writes a silence, it only shows you where to write one — or the empty
+	// string, meaning there is nowhere to send anyone.
+	//
+	// ⛔ IT IS NOT SIMPLY THE SOURCE'S `base_url`, and filling it as if it were is
+	// the bug this field's name once invited. `base_url` is the Alertmanager API
+	// ROOT; only for a source of kind `alertmanager` is that also the UI root. A
+	// grafana source's base_url addresses an AM-compat API whose console keeps
+	// silences somewhere else entirely, so `<base>/#/silences/new` is a 404 with a
+	// button on it. Whoever implements `SnapshotSource` owes that check before
+	// setting this — the read model does it in `groupFactsSQL`.
+	//
+	// EMPTY IS A REAL ANSWER, not a missing one, and every consumer already draws
+	// it as no link and no Silence button. A fabricated link that 404s at 03:00
+	// costs an operator the one affordance v1 offers them.
 	AlertmanagerURL string
 
 	FirstSeenAt    time.Time
@@ -235,7 +258,19 @@ type EnrichmentFacts struct {
 // ActorFacts is who caused the fact being communicated. ACTOR, NEVER SUBJECT: a
 // person appears on a notification as metadata about an action, never as its
 // topic.
+//
+// It is read from the ONE event that IS the fact, never assembled from a user
+// row: `alert_events.actor_label` is frozen at write time precisely so that a
+// renamed or deleted user does not rewrite what a card said (§D.4). So there is
+// no id to resolve here and no directory lookup on the delivery path — the name
+// was already decided, by the module that owns the verb, at the instant the
+// human acted.
 type ActorFacts struct {
+	// Kind is `alert_events.actor_kind`: system | ingest | reconciler | reaper |
+	// enricher | notifier | user | slack. The last two are the human ones, and
+	// only they are guaranteed an id AND a label (ev_actor_ck) — so an actor with
+	// no label is one of oto's own machines, which is a DIFFERENT answer from no
+	// actor at all.
 	Kind  string
 	ID    string
 	Label string

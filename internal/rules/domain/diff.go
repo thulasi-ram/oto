@@ -98,6 +98,48 @@ type Diff struct {
 // Empty reports whether nothing at all differs.
 func (d Diff) Empty() bool { return !d.Changed }
 
+// Drifted reports whether `current` is a rule EDIT relative to `previous`. It is
+// the predicate behind `rule.definition_changed`, behind the enricher's
+// `rule_definition_changed` warning and behind the alert card's "this rule has
+// changed since it fired".
+//
+// ⭐ IT IS NOT `previous.Fingerprint != current.Fingerprint`, and the difference
+// is the whole reason this function exists. The fingerprint addresses the
+// definition oto MANAGED TO SEE, and the recovery paths do not see the same
+// amount:
+//
+//   - `unavailable` observed NOTHING. An empty expr, zero durations and empty
+//     maps are what rule_snapshots_expr_ck requires of such a row, not a rule
+//     somebody edited down to nothing. Comparing against it says "the rule
+//     changed" when the truth is "oto went blind for an hour", and comparing
+//     against it in the OTHER direction says the same thing again on the way
+//     back. Neither is an edit, so neither is drift.
+//   - `generator_url` observed the expression and nothing else: g0.expr carries
+//     no `for:`, no `keep_firing_for:` and no rule-level labels or annotations,
+//     so those fields are ABSENT rather than zero. `prometheus_api` observed all
+//     of them. A source that flaps between the two paths — which is what a
+//     Prometheus that is intermittently reachable looks like — would otherwise
+//     report an edit on every single fire, alternating in both directions.
+//
+// So two captures are compared over what they BOTH observed. Same origin: the
+// whole definition, which is the fingerprint. Different origins: the expression,
+// which is the only field every path that recovers anything recovers. The cost
+// is stated plainly — a `for:` edited across a change of recovery path is not
+// reported, because oto never held both values and saying it changed would be a
+// guess. domain/fingerprint_stability_test.go calls the two failure modes TOO
+// UNSTABLE and TOO STABLE and both fatal; this is the boundary between them
+// drawn on evidence rather than on digests.
+func Drifted(previous, current Snapshot) bool {
+	// Nothing observed on one side means nothing to compare on either.
+	if !previous.Available() || !current.Available() {
+		return false
+	}
+	if previous.Origin != current.Origin {
+		return previous.Expr != current.Expr
+	}
+	return previous.Fingerprint != current.Fingerprint
+}
+
 // Compare diffs two snapshots of the same rule, oldest first.
 //
 // It is a pure function over two rows: no I/O, no clock, no ordering

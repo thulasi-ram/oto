@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
 	alertsapi "github.com/thulasiram/oto/internal/alerts/api"
+	alertsdomain "github.com/thulasiram/oto/internal/alerts/domain"
 	alertsrepo "github.com/thulasiram/oto/internal/alerts/repository"
 	alertsservice "github.com/thulasiram/oto/internal/alerts/service"
 	channelsapi "github.com/thulasiram/oto/internal/channels/api"
@@ -18,6 +20,9 @@ import (
 	channelsregistry "github.com/thulasiram/oto/internal/channels/registry"
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
 	channelsservice "github.com/thulasiram/oto/internal/channels/service"
+	drillapi "github.com/thulasiram/oto/internal/drill/api"
+	drillrepo "github.com/thulasiram/oto/internal/drill/repository"
+	drillservice "github.com/thulasiram/oto/internal/drill/service"
 	enrichapi "github.com/thulasiram/oto/internal/enrichment/api"
 	"github.com/thulasiram/oto/internal/enrichment/enrichers/alerthistory"
 	"github.com/thulasiram/oto/internal/enrichment/enrichers/promrule"
@@ -33,6 +38,7 @@ import (
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
 	"github.com/thulasiram/oto/internal/ingestion"
+	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
 	notifapi "github.com/thulasiram/oto/internal/notification/api"
 	notifrepo "github.com/thulasiram/oto/internal/notification/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -41,6 +47,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/config"
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	"github.com/thulasiram/oto/internal/platform/netguard"
 	"github.com/thulasiram/oto/internal/platform/ratelimit"
@@ -118,6 +125,14 @@ type Container struct {
 	// "which addresses may this deployment reach" has exactly one answer.
 	NetGuard *netguard.Guard
 
+	// Idempotency claims a client-supplied `Idempotency-Key` so a retried mutation
+	// cannot act twice (SPEC §E.1). It is a PLATFORM store rather than one
+	// domain's, because the header is a transport mechanism 28 operations across
+	// nine modules declare — `identity` and `sources` are merely the first two
+	// callers, being the two that mint credentials. It is held on the container so
+	// `retention.prune` can sweep it beside the other unpartitioned siblings.
+	Idempotency *idempotency.Repository
+
 	// LoginLimiter and LoginGate bound `POST /auth/login`: the first by rate per
 	// client address, the second by concurrent argon2id evaluations, which is what
 	// actually bounds the 19 MiB-per-verification memory cost.
@@ -148,18 +163,23 @@ type Container struct {
 	Silences   *silencesservice.Service
 	Stats      *statsservice.Service
 	Ingestion  *ingestion.Module
+	// Drills runs delivery drills: one synthetic alert pushed through the REAL
+	// pipeline. It is built AFTER ingestion because it drives ingestion — through
+	// the same `Accept` the webhook handler calls, which is the whole point.
+	Drills *drillservice.Service
 
 	Streaming       *streamingservice.Service
 	StreamHub       *streamingservice.Hub
 	StreamBridge    *streamingservice.Bridge
 	ChannelRegistry *channelsregistry.Registry
-	ChannelTester   *channelsservice.Tester
+	ChannelWrites   *channelsservice.Writer
 	// SlackInteractions consumes verified Slack block actions (§H.8). It is
 	// reachable from TWO places on purpose — the HTTP endpoint enqueues through
 	// it, the `slack.interaction` worker applies through it — which is what keeps
 	// the three-second rule and the work on opposite sides of one type.
 	SlackInteractions *channelsservice.InteractionService
 
+	PolicyWrites    *notifservice.PolicyWriter
 	Notify          *notifservice.NotificationService
 	Dispatch        *notifservice.DispatchService
 	Policies        *notifservice.PolicyService
@@ -203,6 +223,7 @@ type routerSet struct {
 	notifs    *notifapi.Router
 	silences  *silencesapi.Router
 	stats     *statsapi.Router
+	drills    *drillapi.Router
 	enrichers *enrichapi.Router
 	streaming *streamingapi.Router
 	ingestion *ingestion.Module
@@ -261,6 +282,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	c.orgs = orgLister{pool: general}
 	c.enqueuer = &lateEnqueuer{}
 
+	// ---- the idempotency claim store -------------------------------------
+	//
+	// Built before every domain, because it belongs to none of them: it is the
+	// store behind the `Idempotency-Key` header, which is a property of how a
+	// request is RETRIED and not a fact about any entity. Its rows are swept by
+	// `retention.prune`.
+	c.Idempotency = idempotency.NewRepository(general)
+
 	// ---- the keyring ---------------------------------------------------
 	// A deployment with no `security.secret_key` boots WITHOUT a keyring rather
 	// than with a fabricated one. Every credential read then fails loudly at the
@@ -303,12 +332,19 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		return nil, err
 	}
 	tokenRepo := identityrepo.NewAPITokenRepository(general)
+	// ⭐ `createApiToken` HAD NO TRANSACTION AT ALL. It minted a credential and
+	// returned its plaintext in one unguarded commit, so there was nowhere for the
+	// idempotency claim that guards it to join. The two are one unit of work now.
+	identityTx := identityrepo.NewTxRunner(general)
 	c.Identity = identityservice.New(identityservice.Deps{
-		Orgs:        identityrepo.NewOrgRepository(general, clk),
-		Users:       identityrepo.NewUserRepository(general),
-		Tokens:      tokenRepo,
-		Sessions:    identityrepo.NewSessionRepository(general),
-		Slack:       identityrepo.NewSlackIdentityRepository(general),
+		Orgs:     identityrepo.NewOrgRepository(general, clk),
+		Users:    identityrepo.NewUserRepository(general),
+		Tokens:   tokenRepo,
+		Sessions: identityrepo.NewSessionRepository(general),
+		Slack:    identityrepo.NewSlackIdentityRepository(general),
+		// The same runner the identity API uses: it is what makes the ingest-token
+		// rotation's mint and revocation ONE commit (IssueIngestToken).
+		Tx:          identityTx,
 		Clock:       clk,
 		Logger:      logger,
 		SessionTTL:  o.Config.Security.SessionTTL,
@@ -346,6 +382,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// transport, exactly as the Alertmanager and Prometheus clients do. One
 		// decision for the operator, one SSRF control for the process.
 		AllowPrivateWebhookTargets: o.Config.Security.AllowPrivateTargets,
+		// And the webhook provider gates `config.insecure_skip_verify` on the SAME
+		// switch that gates `alert_sources.tls_skip_verify`. Both are "which
+		// certificates does this deployment trust", and both were tenant-writable.
+		AllowInsecureWebhookTLS: o.Config.Security.AllowInsecureTLS,
 	})
 	channelRepo := channelsrepo.NewChannelRepository(general, clk)
 	credentialRepo := channelsrepo.NewCredentialRepository(general, keyringSealer(c.Keyring), channelsUnsealer(c.Keyring), clk)
@@ -359,7 +399,22 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.ChannelTester = tester
+
+	// `createChannel` and `testChannel` move behind the service so an
+	// `Idempotency-Key` claim can join the transaction of the act it guards. The
+	// tester is handed over rather than kept beside it: a retried `testChannel`
+	// that took its claim outside the send would still make the second real send
+	// the claim exists to prevent.
+	c.ChannelWrites, err = channelsservice.NewWriter(channelsservice.WriterOptions{
+		Store:  channelRepo,
+		Tester: tester,
+		Tx:     channelsrepo.NewTxRunner(general),
+		Claims: c.Idempotency,
+		Clock:  clk,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	// ---- the SSRF guard --------------------------------------------------
 	//
@@ -395,15 +450,56 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Clients: clientFactory,
 		Clock:   clk,
 		Logger:  logger,
+		// ---- the write half (ticket 0869f21) ------------------------------
+		//
+		// These four used to be injected into `sources/api`, which meant the
+		// transaction boundary, the ordering of writes across three tables and the
+		// `Idempotency-Key` claim were reachable only through an HTTP request. They
+		// belong to the service that performs the operation.
+		//
+		// Sealer is the CHANNELS credential repository: one sealed-secret store
+		// serves both modules, and `sources` reaches it through a plain-typed port
+		// rather than an import.
+		Sealer: credentialRepo,
+		// Tokens is the identity service itself: the ingest mint is credential
+		// lifecycle and lives beside the PAT mint it mirrors
+		// (identity/service.IssueIngestToken). Its mint-before-revoke transaction
+		// is identity's own runner, and it JOINS the unit of work this service
+		// opens around a create or a rotation — the transaction travels in the
+		// context, so the source row, its credential and its token still commit
+		// together.
+		Tokens: c.Identity,
+		// One transaction for the source row, its credential and its ingest token.
+		// They used to be independent commits, and a source without its token can
+		// never receive a webhook.
+		Tx: sourceTx,
+		// `rotateSourceIngestToken` is `createApiToken`'s defect twin: it hands out
+		// a secret exactly once AND revokes the previous one, so a retry destroyed
+		// the credential the caller was still holding. The claim joins the
+		// rotation's own transaction.
+		Claims: c.Idempotency,
+		// `createCluster` is the last write that went API→repository directly, so
+		// there was no transaction for its claim to join. The registry comes here
+		// for that; `sources/api` keeps the same repository for the reads.
+		Clusters: clusterRepo,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	// ---- rules: content-addressed snapshots, plus the lookup adapter -----
+	//
+	// `Events` is LATE-BOUND for the same reason `grouping`'s ports are: the alert
+	// timeline belongs to a service built further down this function, and rules is
+	// built first because it depends on nothing. The holder is filled the moment
+	// `c.Alerts` exists; until then it answers nil, which is the port's documented
+	// "captured but not narrated" degradation and is what the unit tests run
+	// against anyway.
+	timeline := &timelineRecorder{}
 	c.Rules, err = rulesservice.New(rulesservice.Options{
 		Repo:   rulesrepo.NewSnapshotRepository(general),
 		Lookup: ruleLookup{sources: c.Sources},
+		Events: timeline,
 		Clock:  clk,
 		Logger: logger,
 	})
@@ -420,10 +516,10 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	occurrenceRepo := alertsrepo.NewOccurrenceRepository(general)
 	eventRepo := alertsrepo.NewEventRepository(general, clk)
 	snoozeRepo := alertsrepo.NewSnoozeRepository(general, clk)
-	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general)
+	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general).WithLogger(logger)
 
 	groupVersionsPort := &groupVersions{}
-	notificationsPort := &lateNotificationReader{}
+	notificationsPort := &notificationReader{}
 
 	c.Alerts, err = alertsservice.New(alertsservice.Deps{
 		Alerts:        alertRepo,
@@ -445,12 +541,21 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		GroupVersions: groupVersionsPort,
 		Enrichments:   enrichmentReader{repo: enrichmentRepo},
 		Notifications: notificationsPort,
-		Clock:         clk,
-		Logger:        logger,
+		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
+		// transaction as the write, on the store every other guarded operation
+		// claims in. A comment is the one action a retry duplicates VISIBLY —
+		// the same sentence twice on an incident timeline.
+		Claims: c.Idempotency,
+		Clock:  clk,
+		Logger: logger,
 	})
 	if err != nil {
 		return nil, err
 	}
+	// The timeline exists now, so the two narrators that were built before it can
+	// reach it. Every `rule.*` and `enrichment.*` row in `alert_events` is written
+	// through this one line (§D.4.1, T11 and T12).
+	timeline.svc = c.Alerts
 
 	// ---- grouping: durable generations, membership, storm damping --------
 	c.Grouping, err = groupingservice.New(groupingservice.Deps{
@@ -493,6 +598,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 			occSrc:   &occurrenceSourceReader{resolver: occurrenceRepo},
 		},
 		Notifier: enrichservice.NewQueueNotifier(c.enqueuer),
+		Events:   timeline,
 		Enqueuer: c.enqueuer,
 		Clock:    clk,
 		Logger:   logger,
@@ -505,7 +611,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	if err := c.buildNotification(general, reg, clk, logger); err != nil {
 		return nil, err
 	}
-	notificationsPort.inner = notificationReader{svc: c.NotifyHistory}
+	notificationsPort.svc = c.NotifyHistory
 
 	// ---- silences and stats ---------------------------------------------
 	//
@@ -543,9 +649,16 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Enqueuer: c.enqueuer,
 		Config:   o.Config.Ingest,
 		Alerts:   observer,
-		Clock:    clk,
-		Logger:   logger,
-		Registry: reg,
+		// The READ side of the same boundary, for `oto replay` alone. It is built
+		// over the two alerts repositories on the GENERAL pool — the pool they were
+		// constructed on — because the supersession check is a human at a terminal
+		// asking a question, and spending an ingest connection on it would put an
+		// operator's recovery command in the way of the webhook path it is trying
+		// to recover.
+		AlertStates: alertStates{alerts: alertRepo, occurrences: occurrenceRepo},
+		Clock:       clk,
+		Logger:      logger,
+		Registry:    reg,
 	})
 	if err != nil {
 		return nil, err
@@ -592,8 +705,33 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// resolved" without asking the operator for anything the manifest does
 		// not already request.
 		Notice: slackprovider.NewNotice(o.HTTPClient),
-		Clock:  clk,
-		Logger: logger,
+		// ⭐ `oto_slack_unknown_action_total` (§H.8). An unroutable action id is
+		// answered 200 like every other interaction — Slack disables an app's
+		// subscriptions when deliveries fail — so this counter is the ONLY
+		// evidence that a human pressed a button oto could not route. Left
+		// unregistered it would be the same silent success this endpoint was
+		// fixed for, one layer down.
+		Metrics: channelsservice.NewInteractionMetrics(reg),
+		Clock:   clk,
+		Logger:  logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// ---- delivery drills -------------------------------------------------
+	//
+	// ⭐ AFTER INGESTION, AND THAT ORDER IS THE FEATURE. A drill drives the real
+	// pipeline by handing a manufactured payload to the SAME
+	// `ingestion/service.Service` the webhook handler uses; there is no second
+	// entry point, and if this were ever wired to anything else a passing drill
+	// would stop being evidence.
+	c.Drills, err = drillservice.New(drillservice.Options{
+		Store:   drillrepo.NewDrillRepository(general),
+		Ingest:  drillIngest{svc: c.Ingestion.Service},
+		Sources: drillSources{sources: c.Sources, clusters: clusterRepo},
+		Clock:   clk,
+		Logger:  logger,
 	})
 	if err != nil {
 		return nil, err
@@ -605,7 +743,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	}
 	c.enqueuer.set(c.Jobs)
 
-	c.buildRouters(channelRepo, credentialRepo, tokenRepo, sourceRepo, clusterRepo, sourceTx, enricherRegistry, clk)
+	c.buildRouters(channelRepo, credentialRepo, clusterRepo, identityTx, enricherRegistry, clk)
 	return c, nil
 }
 
@@ -636,10 +774,25 @@ func (c *Container) buildNotification(
 	if c.Policies, err = notifservice.NewPolicyService(policyRepo, channelRepo); err != nil {
 		return err
 	}
+	// `createPolicy` moves behind the service for the claim, on the SAME unit of
+	// work the dispatch path uses: the claim and the insert commit together or
+	// neither does.
+	if c.PolicyWrites, err = notifservice.NewPolicyWriter(notifservice.PolicyWriterOptions{
+		Store:  c.notifConfigRepo,
+		Tx:     txRunner,
+		Claims: c.Idempotency,
+		Clock:  clk,
+	}); err != nil {
+		return err
+	}
 
 	// The snapshot is read AT CLAIM TIME, always (§C11). A cached one would make
 	// a card describe a world the alert has already left.
-	snapshots := snapshotSource(notifrepo.NewSnapshotRepository(general, clk))
+	//
+	// This is the repository itself, not a port wrapper: `notifservice.SnapshotSource`
+	// has exactly one implementation and `assertions.go` pins it. Should
+	// `alerts/service` ever publish an equivalent, the swap is this one constructor.
+	snapshots := notifrepo.NewSnapshotRepository(general, clk)
 
 	if c.Views, err = notifservice.NewViewService(notifservice.ViewConfig{
 		Snapshots: snapshots,
@@ -775,13 +928,19 @@ func (c *Container) buildJobs(
 }
 
 // buildRouters constructs every domain's HTTP surface.
+//
+// ⭐ IT TAKES THE COLLABORATORS THE ROUTERS ACTUALLY BIND. The sources API used
+// to be handed `*SourceRepository`, `*TxRunner` and the API-token repository so
+// it could write through them; since ticket 0869f21 it binds the `sources`
+// service facade (`c.Sources`) instead, which owns the transaction and the
+// `Idempotency-Key` claim taken inside it. The parameters outlived their last
+// reader and are gone: an unused dependency in a wiring signature reads as a
+// relationship that exists.
 func (c *Container) buildRouters(
 	channelRepo *channelsrepo.ChannelRepository,
 	credentialRepo *channelsrepo.CredentialRepository,
-	tokenRepo *identityrepo.APITokenRepository,
-	sourceRepo *sourcesrepo.SourceRepository,
 	clusterRepo *sourcesrepo.ClusterRepository,
-	sourceTx *sourcesrepo.TxRunner,
+	identityTx *identityrepo.TxRunner,
 	enricherRegistry *enrichservice.Registry,
 	clk clock.Clock,
 ) {
@@ -792,7 +951,14 @@ func (c *Container) buildRouters(
 			Cookie:  identityapi.DefaultCookieConfig(c.Config.Security.SessionCookie),
 			Limiter: c.LoginLimiter,
 			Gate:    c.LoginGate,
-			Clock:   clk,
+			// One transaction for the minted credential and the `Idempotency-Key`
+			// claim that guards it, and the store that claim is taken in. Together
+			// they are what stops a retried create — a dropped response, a proxy
+			// timeout, a double-clicked button — from handing out a second live
+			// token whose secret nobody ever receives.
+			Tx:     identityTx,
+			Claims: c.Idempotency,
+			Clock:  clk,
 		}),
 		alerts: alertsapi.NewRouter(c.Alerts, clk),
 		// The third argument is `delivery_summary` on the group card: was anybody
@@ -803,21 +969,29 @@ func (c *Container) buildRouters(
 			groupDeliveryRollups{svc: c.NotifyHistory}, clk),
 		rules: rulesapi.NewRouter(c.Rules, c.Alerts, clk),
 		sources: sourcesapi.NewRouter(sourcesapi.Options{
-			Sources:  c.Sources,
-			Registry: sourceRepo,
+			Sources: c.Sources,
+			// ⭐ THE WRITE FACADE, NOT THE REPOSITORY. `sources/service` owns the
+			// create/update/delete/rotate path, the transaction around it and the
+			// `Idempotency-Key` claim taken inside it, so this router binds a
+			// request, calls one method and maps the error (ticket 0869f21).
+			Registry: c.Sources,
 			Clusters: clusterRepo,
-			Creds:    credentialRepo,
-			Tokens:   ingestTokenIssuer{tokens: tokenRepo, tx: sourceTx, clk: clk},
+			// `createCluster` went API→repository directly, so there was no
+			// transaction for an `Idempotency-Key` claim to join. It goes through the
+			// same service as every other write now; the repository above stays for
+			// the reads.
+			ClusterWrites: c.Sources,
 			// `POST /sources/{id}/reconcile` forces one pass now (§G.8). It answers
 			// 200 with `ok:false` for an upstream that is down, because "the source
 			// is unreachable" is a RESULT the operator asked for — and because the
 			// same pass has already recorded the failure in `source_health`, where
 			// three of them block the reaper (§B.4).
 			Reconcile: c.Reconciler,
-			// One transaction for the source row and its ingest credential. They
-			// used to be independent commits, and a source without its token can
-			// never receive a webhook.
-			Tx: sourceTx,
+			// `GET /sources/{id}/rejections` and `/failed-batches`: the read half
+			// of ingestion, which was written from the first migration and could
+			// not be read back from anywhere but `psql`. It is the SAME
+			// `ingestion/service.Service` the webhook handler writes through.
+			Feeds: ingestFeeds{svc: c.Ingestion.Service},
 			// Configuration-time SSRF feedback. The DIALER is the control; this is
 			// so an operator who pastes a metadata-service URL sees a 422 naming the
 			// field rather than a probe that mysteriously returns someone else's data.
@@ -830,7 +1004,7 @@ func (c *Container) buildRouters(
 			Registry: c.ChannelRegistry,
 			Channels: channelRepo,
 			Creds:    credentialRepo,
-			Tester:   c.ChannelTester,
+			Writes:   c.ChannelWrites,
 			// ⭐ THE ACKNOWLEDGE BUTTON, WIRED. It was `nil` here for the whole of
 			// the product's life, and the comment that stood in its place claimed
 			// the endpoint "answers 503"; it did not — it verified the HMAC and
@@ -846,7 +1020,12 @@ func (c *Container) buildRouters(
 			Clock:         clk,
 		}),
 		notifs: notifapi.NewRouter(notifapi.Options{
-			Policies:      c.notifConfigRepo,
+			Policies: c.notifConfigRepo,
+			// The service, not the repository: `createPolicy` takes its
+			// `Idempotency-Key` claim inside the same transaction as the insert, so
+			// a retry is answered with the original policy instead of a `409` from
+			// `policies_name_uniq` that names nothing.
+			PolicyWrites:  c.PolicyWrites,
 			Audit:         c.notifConfigRepo,
 			Notifications: notifrepo.NewNotificationRepository(c.Pools.General),
 			Deliveries:    notifrepo.NewDeliveryRepository(c.Pools.General),
@@ -858,8 +1037,9 @@ func (c *Container) buildRouters(
 			Clock:         clk,
 			BaseURL:       c.Config.HTTP.BaseURL,
 		}),
-		silences:  silencesapi.NewRouter(c.Silences, c.alertmanagerURL(), clk),
+		silences:  silencesapi.NewRouter(c.Silences, silenceBaseURLs{svc: c.Sources}, clk),
 		stats:     statsapi.NewRouter(c.Stats, clk),
+		drills:    drillRouter(c.Drills, clk),
 		enrichers: enrichapi.NewRouter(enricherRegistry, clk),
 		streaming: streamingapi.NewRouter(c.Streaming, c.StreamHub,
 			streamingapi.ScopeResolverFunc(func(ctx context.Context) (db.TenantScope, error) {
@@ -873,11 +1053,6 @@ func (c *Container) buildRouters(
 		ingestion: c.Ingestion,
 	}
 }
-
-// alertmanagerURL is the Alertmanager UI root used for the per-silence deep
-// link. v1 has no write path into a cluster, so the link is the ONLY silence
-// affordance and an empty value renders `null` rather than a guess.
-func (c *Container) alertmanagerURL() string { return "" }
 
 // newBridge builds the LISTEN/NOTIFY bridge over the general pool.
 //
@@ -1009,4 +1184,114 @@ func bridgeMetrics(m *streamingservice.Metrics) streamingservice.BridgeMetrics {
 		PollRecovered:   func(n int) { m.PollRecovered.Add(float64(n)) },
 		FetchErrors:     m.FetchErrors.Inc,
 	}
+}
+
+// alertStates is `ingestion/service.AlertStateReader`: the READ half of the
+// ingestion↔alerts boundary, and the only thing `oto replay` needs from the
+// alerts module.
+//
+// ⭐ IT LIVES HERE, WITH alertObserver, FOR THE SAME REASON. `ingestion` may not
+// import `alerts/repository`, and the one `alerts/domain` type it may name is
+// `Observation` (§C.1, CONTEXT.md §5.2b). So the composition root translates: two
+// existing reads in, one flat ingestion-owned struct out. No new SQL — the
+// batched shapes were already there for the T2 material-change probe and for
+// §G.4's "a 200-alert payload must not become 200 round trips".
+//
+// ⛔ IT ANSWERS ONLY WHAT THE REFUSAL NEEDS, and the temptation to widen it
+// should be refused. A replay asks one question — has this alert moved since the
+// batch was received — and every extra field handed across this boundary is a
+// field the ingest path can start branching on.
+type alertStates struct {
+	alerts      *alertsrepo.AlertRepository
+	occurrences *alertsrepo.OccurrenceRepository
+}
+
+func (a alertStates) StatesByAlertKey(
+	ctx context.Context, s db.TenantScope, alertKeys []string,
+) (map[string]ingestionservice.AlertState, error) {
+	out := make(map[string]ingestionservice.AlertState, len(alertKeys))
+	if len(alertKeys) == 0 {
+		return out, nil
+	}
+
+	found, err := a.alerts.GetByAlertKeys(ctx, s, alertKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]uuid.UUID, 0, len(found))
+	byID := make(map[uuid.UUID]alertsdomain.Alert, len(found))
+	for _, al := range found {
+		ids = append(ids, al.ID())
+		byID[al.ID()] = al
+	}
+	latest, err := a.occurrences.LatestByAlerts(ctx, s, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, key := range alertKeys {
+		al, ok := found[key]
+		if !ok {
+			// An alert this batch names that oto has never seen. Nothing can have
+			// overtaken it, so it is reported as absent rather than omitted — the
+			// caller's denominator is the batch, not the database.
+			out[key] = ingestionservice.AlertState{}
+			continue
+		}
+
+		st := ingestionservice.AlertState{
+			Exists:   true,
+			Identity: alertIdentity(al),
+		}
+		occ, ok := latest[al.ID()]
+		if !ok {
+			// An alert row with no episode yet. There is no timeline to duplicate.
+			out[key] = st
+			continue
+		}
+
+		st.State = occ.State().String()
+		st.Terminal = occ.State().IsTerminal()
+		st.SourceUpdatedAt = occ.SourceUpdatedAt()
+		// ⛔ THE LATER OF THE TWO, AND `ended_at` IS WHY. Reaper expiry closes an
+		// occurrence without any upstream saying so and never touches
+		// `source_updated_at`, so reporting only the latter would print "last moved"
+		// as the day the alert last fired for an episode that closed a week later.
+		st.MovedAt = occ.SourceUpdatedAt()
+		if occ.EndedAt().After(st.MovedAt) {
+			st.MovedAt = occ.EndedAt()
+		}
+		out[key] = st
+	}
+	return out, nil
+}
+
+// alertIdentity renders an alert the way an operator recognises it — the name
+// plus the one label that says WHICH one — for the refusal message and nothing
+// else.
+//
+// It is `service` before `namespace` because that is the order the alert list
+// shows them in, and it degrades to the bare alertname rather than to an empty
+// brace pair: an alert carrying neither is still identified by its key on the
+// same line.
+func alertIdentity(a alertsdomain.Alert) string {
+	switch {
+	case a.Service() != "":
+		return a.AlertName() + "{service=" + a.Service() + "}"
+	case a.Namespace() != "":
+		return a.AlertName() + "{namespace=" + a.Namespace() + "}"
+	default:
+		return a.AlertName()
+	}
+}
+
+// drillRouter builds the delivery-drill surface, or nothing when drills are not
+// wired. A nil router is skipped by mountDomains, so a deployment without them
+// answers 404 rather than panicking on the first request.
+func drillRouter(svc *drillservice.Service, clk clock.Clock) *drillapi.Router {
+	if svc == nil {
+		return nil
+	}
+	return drillapi.NewRouter(svc, clk)
 }

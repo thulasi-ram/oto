@@ -1,0 +1,13 @@
+.git
+.github
+bin
+web/node_modules
+web/dist
+node_modules
+deploy/helm
+docs
+test/load
+*.md
+.env
+.env.*
+!.env.example

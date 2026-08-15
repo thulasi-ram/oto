@@ -43,7 +43,21 @@ const (
 // persisted as itself. What is persisted is the raw batch (short retention) and
 // the AlertEvents the machine appends.
 type Observation struct {
-	Source     ObservationSource
+	Source ObservationSource
+	// Synthetic is true when this observation came from a batch oto manufactured
+	// for a DELIVERY DRILL rather than from a cluster.
+	//
+	// ⭐ It is PROVENANCE and never payload: it is carried from
+	// `ingest_batches.mode`, which is set by the code path that accepted the
+	// batch. Deriving it from a reserved label would let any upstream forge it,
+	// and — because labels participate in `alert_key` (§C.2) — would make marking
+	// an alert change its identity.
+	//
+	// ⛔ IT PROPAGATES TO `alerts.synthetic`, AND EVERY AGGREGATE EXCLUDES IT.
+	// See the column comment in 00039_delivery_drills.sql for the complete list
+	// of reads that were changed. An aggregate that forgets is a silently wrong
+	// number in a report a customer is paying for.
+	Synthetic  bool
 	BatchID    uuid.UUID
 	SourceID   uuid.UUID
 	ClusterID  uuid.UUID
@@ -172,6 +186,15 @@ type AlertUpsert struct {
 	GeneratorURL *string
 	State        State
 	SeenAt       time.Time
+	// Synthetic marks an Alert oto manufactured for a delivery drill. Carried
+	// from Observation.Synthetic, written to `alerts.synthetic`, and excluded
+	// from every aggregate in oto.
+	//
+	// ⛔ On an ON CONFLICT update it is deliberately NOT re-written: an identity
+	// is synthetic because of how it FIRST arrived, and a real alert that later
+	// collides with a drill's label set must not be able to erase itself from
+	// the statistics by doing so.
+	Synthetic bool
 }
 
 // AlertUpsertResult is what one AlertUpsert produced.
@@ -199,6 +222,14 @@ type AlertProjection struct {
 	TotalOccurrences  int
 }
 
+// AlertProjectionWrite pairs one AlertProjection with the alert it lands on, so
+// a whole batch's projections can travel to the repository as ONE write. A
+// 500-alert storm chunk must not become 500 projection round trips (§G.4).
+type AlertProjectionWrite struct {
+	AlertID    uuid.UUID
+	Projection AlertProjection
+}
+
 // AlertFilter is the compiled, validated form of the §E.3 query string. A nil or
 // empty slice means "no constraint on this dimension".
 type AlertFilter struct {
@@ -221,6 +252,15 @@ type AlertFilter struct {
 	// NEVER HIDES SNOOZED ALERTS (§B.8.6) — hiding them is how an incident is
 	// lost. `?snoozed=true|false` is an explicit, visible filter chip.
 	Snoozed *bool
+	// Synthetic filters on `alerts.synthetic`, and nil means EXCLUDE — the
+	// opposite default from Snoozed, one field up, on purpose.
+	//
+	// A snoozed alert is a real thing happening in a real cluster, so hiding it
+	// by default is how an incident is lost. A synthetic alert is one oto
+	// manufactured for a delivery drill: nothing fired anywhere, and letting it
+	// into a default list would put oto's own plumbing into the customer's
+	// history. `?synthetic=true` is the explicit way to look at one.
+	Synthetic *bool
 	// LabelsAll is the AND form: labels @> {…}.
 	LabelsAll map[string]string
 	// LabelsAny is the IN form: labels @> {k:v1} OR labels @> {k:v2}.

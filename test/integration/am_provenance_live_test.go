@@ -44,6 +44,9 @@ type timingsWire struct {
 	Route               string     `json:"route"`
 	ChildRoutes         int        `json:"child_routes"`
 	ChildRoutesWithTime int        `json:"child_routes_with_timings"`
+	Receiver            *string    `json:"receiver"`
+	ReceiverBasis       string     `json:"receiver_basis"`
+	RoutesAgree         bool       `json:"routes_agree"`
 	DefaultsFromVersion *string    `json:"defaults_from_version"`
 	DefaultsVerified    bool       `json:"defaults_verified"`
 	ObservedAt          *string    `json:"observed_at"`
@@ -185,8 +188,20 @@ func probeAndRead(t *testing.T, e *env, token, clusterID, name, baseURL string) 
 		t.Fatalf("%s: route_timings is absent; it is required and always present, because "+
 			"`unknown` is a state the object carries rather than a reason to omit it", name)
 	}
-	if health.Data.RouteTimings.Route != "top_level" {
-		t.Fatalf("%s: route = %q, want top_level", name, health.Data.RouteTimings.Route)
+	// ⚠️ `route` IS NOT PINNED TO ONE VALUE ANY MORE. oto resolves the route tree
+	// and reports `oto_receiver` when it can name its own receiver and every route
+	// reaching it agrees — which the compose Alertmanager, with its single webhook
+	// receiver, is exactly the shape for. `top_level` is the fallback. What this
+	// assertion is for is that it is always ONE OF THE TWO, never blank and never a
+	// value nothing renders.
+	switch r := health.Data.RouteTimings.Route; r {
+	case "top_level", "oto_receiver":
+	default:
+		t.Fatalf("%s: route = %q, want top_level or oto_receiver", name, r)
+	}
+	if health.Data.RouteTimings.Route == "oto_receiver" && !health.Data.RouteTimings.RoutesAgree {
+		t.Fatalf("%s: the headline numbers were taken from oto's receiver while the routes "+
+			"reaching it disagree; that is the one combination that must never be served", name)
 	}
 	return *health.Data.RouteTimings
 }

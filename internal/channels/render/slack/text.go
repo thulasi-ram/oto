@@ -8,22 +8,89 @@ import (
 	"unicode/utf8"
 )
 
-// Slack's documented character limits (§H.7). They are constants here so that the
-// renderer truncates against the same numbers Validate rejects against; a limit
-// that lives in two places is a limit that will diverge.
+// Slack's limits (§H.7). They are constants here so that the renderer truncates
+// against the same numbers Validate rejects against; a limit that lives in two
+// places is a limit that will diverge.
+//
+// ⛔⛔ NOT ALL OF THESE ARE SLACK'S, AND THE ONES THAT ARE NOT USED TO CLAIM TO
+// BE. The block comment said "Slack's documented character limits" over a list
+// that mixed three different kinds of number, which is how a guess acquires the
+// authority of a citation. Each constant now says which kind it is, because a
+// reviewer's next question is always "where did 8000 come from" and the honest
+// answer for three of them is "nowhere".
+//
+//	DOCUMENTED — a figure Slack states in writing, cited below.
+//	OTO BUDGET  — oto's own tighter rule. Slack would accept more.
+//	UNDOCUMENTED — a defensive ceiling Slack does not publish. It may be wrong in
+//	               either direction and only a live workspace can settle it.
 const (
-	maxSectionText  = 3000
-	maxFieldText    = 2000
-	maxFields       = 10
+	// DOCUMENTED: section block, "maximum length is 3000 characters".
+	maxSectionText = 3000
+	// DOCUMENTED: section block, "maximum length for the text in each item is
+	// 2000 characters".
+	maxFieldText = 2000
+	// DOCUMENTED: section block, "maximum number of items is 10".
+	maxFields = 10
+	// DOCUMENTED: context block, "maximum number of items is 10".
 	maxContextItems = 10
-	maxActionItems  = 25
-	maxButtonText   = 75
-	maxURL          = 3000
-	maxButtonValue  = 2000
-	maxID           = 255
-	maxBlocks       = 50
+	// DOCUMENTED: actions block, "there is a maximum of 25 elements in each
+	// action block". ⚠️ It was 5 in an older revision of the reference; the
+	// current number is 25 and both figures are still quoted around the web.
+	maxActionItems = 25
+	// DOCUMENTED: button element, "maximum length for the text in this field is
+	// 75 characters".
+	maxButtonText = 75
+	// DOCUMENTED: button `url` and overflow option `url`, "maximum length is 3000
+	// characters".
+	maxURL = 3000
+	// DOCUMENTED: button element, "maximum length is 2000 characters".
+	//
+	// ⛔ IT IS THE BUTTON'S LIMIT AND NOTHING ELSE'S. An OPTION object — every
+	// entry in the overflow menu — has its own, far shorter `value` limit; see
+	// maxOptionValue. Using this number for an option is the single easiest Block
+	// Kit limit to get wrong, and oto was getting it wrong.
+	maxButtonValue = 2000
+	// DOCUMENTED: option object, "maximum length for this field is 150
+	// characters". Thirteen times shorter than a button's.
+	maxOptionValue = 150
+	// DOCUMENTED: option object, "maximum length for the text in this field is 75
+	// characters".
+	maxOptionText = 75
+	// DOCUMENTED: overflow menu element, "an array of up to five option objects to
+	// display in the menu". ⚠️ The MINIMUM is no longer documented — the current
+	// reference states none, where an older revision required two — so oto does
+	// not enforce one.
+	maxOverflowOptions = 5
+	// DOCUMENTED: image block, "maximum length for this field is 2000
+	// characters". alt_text is REQUIRED on an image block.
+	maxAltText = 2000
+	// DOCUMENTED: `block_id` and `action_id`, "maximum length for this field is
+	// 255 characters".
+	maxID = 255
+	// DOCUMENTED FOR A MESSAGE, UNDOCUMENTED FOR AN ATTACHMENT. Slack publishes
+	// "you can include up to 50 blocks in each message"; the legacy attachments
+	// reference describes `attachments[].blocks` only as "an array of layout
+	// blocks in the same format" and states NO count. Every oto card puts all its
+	// blocks inside one attachment (S3), so the number this is checked against is
+	// the message figure applied to a position Slack does not document. It is
+	// conservative and oto's own budget is seven, so nothing rides on it.
+	maxBlocks = 50
+	// OTO BUDGET. Slack's own numbers for the top-level `text` are 4000 (the hard
+	// cap `chat.update` enforces with `msg_too_long`) and 40000 (the length at
+	// which Slack silently truncates a message). 3000 is neither; it is the TEXT
+	// OBJECT limit, borrowed for a field it does not govern. Nothing depends on
+	// the confusion — otoTopLevelText below caps the string at 300 long before
+	// this is reached — but the number is oto's, not Slack's.
 	maxTopLevelText = 3000
-	maxMetadata     = 8000
+	// UNDOCUMENTED. `metadata_too_large` ("Metadata exceeds size limit") is a real
+	// error on both write methods and Slack publishes NO figure for it, on the
+	// method pages or in the message-metadata guide. 8000 is a guess dressed as
+	// 8 KiB. oto's own metadata is three short fields, so the ceiling has never
+	// been approached and the guess has never been tested.
+	maxMetadata = 8000
+	// UNDOCUMENTED. Slack publishes no total request size for chat.postMessage.
+	// `attachment_payload_limit_exceeded` and `msg_blocks_too_long` both exist and
+	// neither states a number. 100000 is a guess.
 	maxPayloadBytes = 100000
 
 	// otoTopLevelText is oto's own, tighter budget for the top-level text. Slack

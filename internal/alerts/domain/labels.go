@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/validate"
@@ -71,6 +72,96 @@ func appendCanonField(buf []byte, s string) []byte {
 	return append(buf, s...)
 }
 
+// ---------------------------------------------------------------- storability
+//
+// ⭐ THE STORABILITY RULE, IN ONE PLACE, WITH TWO OPPOSITE CONSEQUENCES (§L.3.2).
+//
+// oto keeps strings in Postgres `text` and in `jsonb`, and in a UTF8 database
+// neither can hold:
+//
+//   - U+0000. `text` cannot store it at all, and `jsonb` refuses the JSON
+//     escape that would encode it ("unsupported Unicode escape sequence").
+//   - any byte sequence that is not valid UTF-8 ("invalid byte sequence for
+//     encoding UTF8").
+//
+// Either one is fatal at LAYER 6, the INSERT — where it is a 500 and the alert is
+// gone. Deciding it here is what turns that 500 into a recorded rejection at
+// layer 2, with a reason that names what was actually wrong.
+//
+// What oto then DOES about it depends on what the string is FOR:
+//
+//	LABEL VALUES ARE IDENTITY, so an unstorable one REJECTS THE ALERT (B18).
+//	  alert_key hashes the label set. Replacing a byte would change which Alert
+//	  this is, and quietly file an observation under an identity the upstream
+//	  never sent. A recorded rejection loses one observation; a silent mutation
+//	  corrupts a timeline and cannot be detected afterwards.
+//
+//	ANNOTATION VALUES ARE PROSE, so an unstorable one is SANITISED (B19).
+//	  Annotations are deliberately not part of any identity (§C.9.3) and their
+//	  ingest policy is already truncate-and-keep (B7, B8). Dropping an alert over
+//	  a bad byte in its description would contradict that policy and lose the
+//	  signal underneath the prose; replacing the byte costs one character of a
+//	  human-readable sentence, and the substitution is recorded.
+//
+// These are the same bound and opposite verdicts, and the difference is not
+// stylistic: it is whether the string decides WHICH ROW this is.
+
+// UnstorableReason reports why s cannot be persisted, or "" when it can.
+//
+// The returned string is a phrase for an error message, never a code. It embeds
+// none of the offending bytes, so it is safe to log and safe to write to the
+// `ingest_rejections.detail` TEXT column — which would itself refuse the very
+// bytes being complained about.
+func UnstorableReason(s string) string {
+	if strings.IndexByte(s, 0x00) >= 0 {
+		return "a NUL byte (U+0000), which Postgres text and jsonb cannot store"
+	}
+	if !utf8.ValidString(s) {
+		return "an invalid UTF-8 byte sequence, which a UTF8 database cannot store"
+	}
+	return ""
+}
+
+// SanitiseText replaces every code point Postgres cannot store with U+FFFD and
+// reports whether it changed anything. It is the ANNOTATION half of the rule
+// above and must never be reached for a label value.
+//
+// U+FFFD REPLACEMENT CHARACTER is the substitute because it is what every UTF-8
+// decoder already emits for exactly these bytes, so a reader sees the standard
+// "something was here that could not be represented" glyph rather than a hole.
+//
+// ⛔ IT CAN GROW THE STRING. A NUL is one byte and an invalid byte is one byte;
+// U+FFFD is three. A value may therefore be up to 3x longer coming out, which is
+// why B19 runs BEFORE B8's length bound and not after — sanitising a value that
+// was already at the cap would otherwise push it over.
+//
+// An input that already carries a genuine U+FFFD is unchanged and reports false:
+// the rune is decoded, not re-substituted.
+func SanitiseText(s string) (string, bool) {
+	if UnstorableReason(s) == "" {
+		return s, false
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size <= 1:
+			// An invalid byte. DecodeRuneInString reports size 1 for it, and size 3
+			// for a real U+FFFD, which is how the two are told apart.
+			b.WriteRune(utf8.RuneError)
+			i++
+		case r == 0x00:
+			b.WriteRune(utf8.RuneError)
+			i += size
+		default:
+			b.WriteString(s[i : i+size])
+			i += size
+		}
+	}
+	return b.String(), true
+}
+
 // Label is one name/value pair of a label set. It is an output projection: a
 // Label can only be observed by way of a Labels or LabelSet, both of which have
 // already enforced the charset and the bounds.
@@ -92,18 +183,18 @@ type Labels struct{ m map[string]string }
 //
 // Invariants: at most MaxLabels entries; every name matches the Prometheus label
 // name charset; every name at most MaxLabelNameBytes and every value at most
-// MaxLabelValueBytes; no NUL byte anywhere; canonical serialisation at most
-// MaxLabelSetBytes.
+// MaxLabelValueBytes; every value STORABLE (UnstorableReason); canonical
+// serialisation at most MaxLabelSetBytes.
 //
-// The NUL bound is a STORABILITY bound, not sanitisation. Postgres `text` cannot
-// hold U+0000 at all, so a value carrying one fails on INSERT whatever oto does
-// with it; refusing it here turns a 500 from layer 6 into a recorded rejection at
-// layer 2. It is the only byte oto refuses, and oto still never edits a value —
-// what upstream said is stored verbatim or not at all.
+// The storability bound (B18) is not sanitisation and oto still never edits a
+// value: a label value is part of alert IDENTITY, so what upstream said is stored
+// verbatim or not at all. The full argument, and why annotations get the opposite
+// verdict, is on UnstorableReason.
 //
-// A NUL in a NAME is already refused by the label-name charset, which admits only
-// [a-zA-Z_][a-zA-Z0-9_]*; that rejection carries `invalid_label_name`, and adding
-// a second check for the same byte would be a branch no input can reach.
+// An unstorable NAME is already refused by the label-name charset, which admits
+// only [a-zA-Z_][a-zA-Z0-9_]* — neither a NUL nor any non-ASCII byte can get
+// past it. That rejection carries `invalid_label_name`, and adding a second check
+// for the same bytes would be a branch no input can reach.
 //
 // The error codes are the same strings the ingest path records in
 // `ingest_rejections.reason` (§L.3.2), so layer 2 can persist a rejection without
@@ -129,9 +220,11 @@ func NewLabels(in map[string]string) (Labels, error) {
 			return Labels{}, errs.Newf(errs.KindValidation, "label_value_too_large",
 				"label %q value exceeds %d bytes", name, MaxLabelValueBytes)
 		}
-		if strings.IndexByte(value, 0x00) >= 0 {
+		if why := UnstorableReason(value); why != "" {
+			// %q, not %s: the offending bytes are escaped rather than copied, so this
+			// message can be written to a TEXT column that would refuse them raw.
 			return Labels{}, errs.Newf(errs.KindValidation, "invalid_label_value",
-				"label %q value contains a NUL byte, which Postgres text cannot store", name)
+				"label %q value contains %s", name, why)
 		}
 		size += len(name) + len(value) + canonOverheadPerLabel
 		m[name] = value
@@ -391,11 +484,22 @@ const (
 
 // NewAnnotations validates an annotation map: at most MaxAnnotations entries,
 // every name at most MaxLabelNameBytes, every value at most
-// MaxAnnotationValueBytes.
+// MaxAnnotationValueBytes, and every name and value STORABLE.
 //
-// The name charset is deliberately NOT constrained. §L.3.2 bounds annotation
-// count and value length and nothing else, and Grafana's Unified Alerting
-// superset is free to send names oto has never seen.
+// The name CHARSET is deliberately NOT constrained beyond storability. §L.3.2
+// bounds annotation count and value length, and Grafana's Unified Alerting
+// superset is free to send names oto has never seen — but a name oto cannot write
+// to a `jsonb` key is not a naming choice, it is an INSERT that fails.
+//
+// ⭐ THIS CONSTRUCTOR REJECTS WHERE INGEST SANITISES, AND THAT IS NOT A
+// CONTRADICTION. B19 says layer 2 replaces the unstorable code points of an
+// annotation VALUE and drops an annotation whose NAME is unstorable, keeping the
+// alert either way; by the time anything constructs an Annotations, that has
+// already happened. So this branch is unreachable from the ingest path by
+// construction, and reaching it means layer 2 has a hole — which is exactly what
+// a layer 3 invariant is for (§L.4). The code it mints is the same string
+// `ingest_rejections.reason` carries, so even then the rejection would name what
+// was wrong rather than degrade to `undecodable`.
 func NewAnnotations(in map[string]string) (Annotations, error) {
 	if len(in) > MaxAnnotations {
 		return Annotations{}, errs.Newf(errs.KindValidation, "too_many_annotations",
@@ -407,9 +511,17 @@ func NewAnnotations(in map[string]string) (Annotations, error) {
 			return Annotations{}, errs.Newf(errs.KindValidation, "annotation_name_too_large",
 				"annotation name exceeds %d bytes", MaxLabelNameBytes)
 		}
+		if why := UnstorableReason(name); why != "" {
+			return Annotations{}, errs.Newf(errs.KindValidation, "annotation_unstorable",
+				"annotation name %q contains %s", name, why)
+		}
 		if len(value) > MaxAnnotationValueBytes {
 			return Annotations{}, errs.Newf(errs.KindValidation, "annotation_too_large",
 				"annotation %q exceeds %d bytes", name, MaxAnnotationValueBytes)
+		}
+		if why := UnstorableReason(value); why != "" {
+			return Annotations{}, errs.Newf(errs.KindValidation, "annotation_unstorable",
+				"annotation %q value contains %s", name, why)
 		}
 		m[name] = value
 	}

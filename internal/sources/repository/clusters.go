@@ -74,7 +74,7 @@ const getClusterSQL = `SELECT ` + clusterColumns + ` FROM clusters c WHERE c.org
 
 // Get reads one cluster.
 func (r *ClusterRepository) Get(ctx context.Context, s db.TenantScope, clusterID uuid.UUID) (domain.Cluster, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Cluster{}, err
 	}
 	var row clusterRow
@@ -92,7 +92,7 @@ const getClusterByKeySQL = `SELECT ` + clusterColumns + `
 
 // GetByKey reads one cluster by the key that participates in alert identity.
 func (r *ClusterRepository) GetByKey(ctx context.Context, s db.TenantScope, key string) (domain.Cluster, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Cluster{}, err
 	}
 	var row clusterRow
@@ -117,10 +117,10 @@ const listClustersSQL = `SELECT ` + clusterColumns + `
 func (r *ClusterRepository) List(
 	ctx context.Context, s db.TenantScope, includeDeleted bool, p db.Keyset,
 ) ([]domain.Cluster, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	var (
 		afterAt *time.Time
@@ -149,11 +149,11 @@ func (r *ClusterRepository) List(
 		return nil, db.Cursor{}, mapErr(err, "cluster_not_found", "read clusters")
 	}
 
-	page, hasMore := pageOf(out, limit)
+	page, hasMore := db.PageOf(out, limit)
 	cur := db.Cursor{Hash: p.Cursor.Hash}
 	if len(page) > 0 {
 		last := page[len(page)-1]
-		cur = nextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
+		cur = db.NextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
 	}
 	return page, cur, nil
 }
@@ -164,28 +164,48 @@ VALUES ($1, $2, $3, $4, $5, $5)
 RETURNING id`
 
 // Create adds an identity/failure domain.
+//
+// ⭐ THE ID IS SUPPLIED BY THE CALLER AND NO LONGER MINTED HERE. `sources/service`
+// records that id in the `Idempotency-Key` claim it takes in this same
+// transaction, and a claim can only name a row whose id existed BEFORE the insert
+// — otherwise the retry it is meant to replay hits `clusters_key_uniq` first and
+// is answered with a name conflict, which is the defect ticket a6cc834 describes.
+// A zero id still mints one, so a caller with no claim to record needs to know
+// nothing about this.
 func (r *ClusterRepository) Create(
-	ctx context.Context, s db.TenantScope, key, displayName string,
+	ctx context.Context, s db.TenantScope, clusterID uuid.UUID, key, displayName string,
 ) (domain.Cluster, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Cluster{}, err
 	}
 	if strings.TrimSpace(key) == "" || strings.TrimSpace(displayName) == "" {
 		return domain.Cluster{}, errs.Internal("cluster_incomplete",
 			errsMissing("a cluster needs a key and a display name"))
 	}
+	if clusterID == uuid.Nil {
+		clusterID = id.New()
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, insertClusterSQL,
-		id.New(), s.OrgID(), key, displayName, r.clock.Now().UTC()).Scan(&stored)
+		clusterID, s.OrgID(), key, displayName, r.clock.Now().UTC()).Scan(&stored)
 	if err != nil {
 		return domain.Cluster{}, mapErr(err, "cluster_not_found", "create a cluster")
 	}
 	return r.Get(ctx, s, stored)
 }
 
+// ⭐ GREATEST KEEPS `updated_at` MONOTONIC, and that is a correctness guard, not
+// a nicety. Both of this row's timestamps come from the application — Create
+// above names them from the injected clock — but "the application" is N pods
+// with N clocks, and the pod serving a rename is rarely the pod that registered
+// the cluster. A few milliseconds of lag between them would otherwise write an
+// `updated_at` BELOW `created_at` and fail `clusters_time_ck` with a 23514 — a
+// 500 on an ordinary rename, with nothing wrong. GREATEST makes the check
+// unfalsifiable while leaving the value app-owned; it is the same idiom, for the
+// same reason, as `channels`, `orgs` and OrderingStore.Advance.
 const updateClusterSQL = `
-UPDATE clusters SET display_name = $3, updated_at = $4
+UPDATE clusters SET display_name = $3, updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
@@ -198,7 +218,7 @@ RETURNING id`
 func (r *ClusterRepository) UpdateDisplayName(
 	ctx context.Context, s db.TenantScope, clusterID uuid.UUID, displayName string,
 ) (domain.Cluster, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Cluster{}, err
 	}
 	if strings.TrimSpace(displayName) == "" {
@@ -222,7 +242,7 @@ func (r *ClusterRepository) UpdateDisplayName(
 func (r *ClusterRepository) ClusterKeysFor(
 	ctx context.Context, s db.TenantScope, clusterIDs []uuid.UUID,
 ) (map[uuid.UUID]string, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(clusterIDs) == 0 {

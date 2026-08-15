@@ -1,0 +1,101 @@
+{{/*
+`oto worker` — the River job runtime. No listener, so there is no HTTP probe:
+oto exposes /healthz and /readyz on the API surface only, and inventing a TCP
+probe here would assert liveness from a socket that does not exist.
+
+⚠️ A WORKER WITH NO DATABASE EXITS AND IS MEANT TO. Unlike the API, which serves
+while Postgres is away so a liveness probe cannot kill it, a worker has nothing
+to do without a database and starting anyway would mean a pod reporting healthy
+while working nothing (cmd/oto/main.go, step 4). CrashLoopBackOff during a
+database outage is the designed behaviour.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oto.fullname" . }}-worker
+  labels:
+    {{- include "oto.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "oto.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  strategy:
+    # ⭐ RECREATE, NOT ROLLINGUPDATE. Every extra worker pod opens its own pair of
+    # pgx pools, so a rolling update transiently doubles this Deployment's
+    # connection count against a Postgres whose max_connections was sized for the
+    # steady state. River's claims are transactional, so draining first costs a
+    # few seconds of queue latency and nothing else.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "oto.selectorLabels" (dict "ctx" . "component" "worker") | nindent 8 }}
+        {{- with .Values.worker.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "oto.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Long enough for the container to drain in-flight jobs before SIGKILL. A
+      # job killed mid-flight sits `running` until `jobs.rescue_after` reclaims
+      # it, which is minutes of an alert sitting undelivered for no reason.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "oto.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["worker"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          envFrom:
+            {{- include "oto.envFrom" . | nindent 12 }}
+          env:
+            {{- include "oto.secretEnv" . | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

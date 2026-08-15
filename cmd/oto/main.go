@@ -9,6 +9,13 @@
 //	oto api        the HTTP API only; jobs are enqueued, never worked
 //	oto worker     the job worker only; no listener
 //	oto migrate    apply every pending migration and exit
+//	oto replay     re-enqueue ingest.process_batch for a batch left `failed` or
+//	               `partial`, after a fix has shipped. THE ONE LEGAL EXIT FROM
+//	               `failed`: the processing path was built to be replayed (§G.5)
+//	               and until this existed nothing could trigger a replay, so a
+//	               parser bug cost every alert in every affected batch forever.
+//	               Like `bootstrap` it is not a route — it crosses the org
+//	               boundary the API is scoped by, and a batch id carries no scope.
 //	oto bootstrap  create the first org, user and API token, then exit. THIS IS
 //	               THE INSTALL PATH: v1 has no org-creation API and no signup, so
 //	               a migrated database has no credential that can reach it until
@@ -39,6 +46,13 @@ import (
 
 func main() {
 	if err := run(); err != nil {
+		// ⭐ A REFUSED REPLAY IS NOT A FAILURE, and it must not exit 1. It already
+		// printed its reasons on stdout, and an operator scripting a bulk replay has
+		// to be able to tell "this batch was refused for cause" from "the command
+		// could not run". See replay.go.
+		if errors.Is(err, errRefused) {
+			os.Exit(exitRefused)
+		}
 		fmt.Fprintf(os.Stderr, "oto: %v\n", err)
 		os.Exit(1)
 	}
@@ -48,7 +62,15 @@ func main() {
 type mode struct {
 	serveHTTP bool
 	runJobs   bool
-	name      string
+	// needsDB is whether a database that will not open is FATAL at startup.
+	//
+	// It is false for anything that serves HTTP: /healthz must answer while
+	// Postgres is down so a liveness probe does not kill every pod during an
+	// outage. It is true for everything else, because a worker with no database
+	// works nothing and a one-shot command with no database has nothing to read —
+	// both would sit there looking healthy.
+	needsDB bool
+	name    string
 }
 
 func run() error {
@@ -114,10 +136,11 @@ func run() error {
 	//
 	//    A WORKER is different: it has nothing to do without a database, and a
 	//    worker that starts anyway would sit reporting healthy while working
-	//    nothing.
+	//    nothing. So is a one-shot command like `replay`, which exists only to
+	//    read a stored batch. Both say so through mode.needsDB.
 	pools, err := db.Open(ctx, cfg.DB)
 	if err != nil {
-		if m.runJobs && !m.serveHTTP {
+		if m.needsDB {
 			return fmt.Errorf("database: %w", err)
 		}
 		logger.Error("database unavailable at startup; serving until it returns",
@@ -153,6 +176,17 @@ func run() error {
 		}
 	}()
 
+	if m.name == "replay" {
+		// ⛔ BEFORE Start, DELIBERATELY. `replay` enqueues; it does not work. Starting
+		// the worker pool here would make a recovery command spend the process's
+		// lifetime racing the deployment's real workers for the job it just queued,
+		// and then exit and orphan it. The deferred Close above still drains cleanly.
+		//
+		// It takes flag.Args()[1:] for the same reason `bootstrap` does: `-config` is
+		// oto's, and everything after the subcommand is the command's own.
+		return replayCommand(ctx, container, flag.Args()[1:])
+	}
+
 	if err := container.Start(ctx); err != nil {
 		return err
 	}
@@ -183,16 +217,22 @@ func modeOf(arg string) (mode, error) {
 	case "api":
 		return mode{serveHTTP: true, runJobs: false, name: "api"}, nil
 	case "worker":
-		return mode{serveHTTP: false, runJobs: true, name: "worker"}, nil
+		return mode{serveHTTP: false, runJobs: true, needsDB: true, name: "worker"}, nil
 	case "migrate":
 		return mode{name: "migrate"}, nil
 	case "bootstrap":
 		return mode{name: "bootstrap"}, nil
+	case "replay":
+		// It builds the container — it needs the ingestion service, the alerts
+		// reads behind the supersession gate and the SAME outbox the accept path
+		// enqueues through — but it neither listens nor works jobs. The job it
+		// queues is picked up by whatever worker is already running.
+		return mode{serveHTTP: false, runJobs: false, needsDB: true, name: "replay"}, nil
 	case "version":
 		fmt.Println(versionString())
 		os.Exit(0)
 		return mode{}, nil
 	default:
-		return mode{}, fmt.Errorf("unknown subcommand %q; try: serve | api | worker | migrate | bootstrap | version", arg)
+		return mode{}, fmt.Errorf("unknown subcommand %q; try: serve | api | worker | migrate | replay | bootstrap | version", arg)
 	}
 }

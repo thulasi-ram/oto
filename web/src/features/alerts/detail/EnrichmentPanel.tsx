@@ -46,7 +46,7 @@ export const EnrichmentPanel: Component<EnrichmentPanelProps> = (props) => (
     <PanelHeader>
       <PanelTitle>Enrichment</PanelTitle>
       <Show when={props.enrichments.length > 0}>
-        <span class="text-[11px] text-ink-subtle">{props.enrichments.length} results</span>
+        <span class="text-meta text-ink-subtle">{props.enrichments.length} results</span>
       </Show>
     </PanelHeader>
 
@@ -80,11 +80,11 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
   return (
     <li class="border-b border-line px-3 py-2 last:border-b-0">
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span class="font-mono text-[12px] font-medium text-ink">{e().enricher}</span>
-        <span class={cx("text-[11px]", STATUS_WEIGHT[e().status])} title={STATUS_NOTE[e().status]}>
+        <span class="font-mono text-body font-medium text-ink">{e().enricher}</span>
+        <span class={cx("text-meta", STATUS_WEIGHT[e().status])} title={STATUS_NOTE[e().status]}>
           {e().status}
         </span>
-        <span class="ml-auto text-[11px] text-ink-subtle">
+        <span class="ml-auto text-meta text-ink-subtle">
           <RelativeTime value={e().computed_at} label="Computed" /> ago
         </span>
       </div>
@@ -120,7 +120,7 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
 
       <Show when={e().error}>
         {(err) => (
-          <p class="mt-1 border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink">
+          <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
             {err()}
           </p>
         )}
@@ -129,7 +129,7 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
       <Show when={(e().warnings ?? []).length > 0}>
         <ul class="mt-1 space-y-0.5 border-l-2 border-line pl-2">
           <For each={e().warnings ?? []}>
-            {(w) => <li class="text-[11px] leading-snug text-ink-muted">{w}</li>}
+            {(w) => <li class="text-meta leading-snug text-ink-muted">{w}</li>}
           </For>
         </ul>
       </Show>
@@ -138,14 +138,14 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
         <div class="mt-1">
           <button
             type="button"
-            class="text-[11px] text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
+            class="text-meta text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
             aria-expanded={open()}
             onClick={() => setOpen(!open())}
           >
             {open() ? "Hide" : "Show"} result
           </button>
           <Show when={open()}>
-            <pre class="mt-1 max-h-64 overflow-auto rounded-[4px] border border-line bg-sunken px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink">
+            <pre class="mt-1 max-h-64 overflow-auto rounded-control border border-line bg-sunken px-2 py-1.5 font-mono text-meta leading-relaxed text-ink">
               <code>{JSON.stringify(e().payload, null, 2)}</code>
             </pre>
           </Show>

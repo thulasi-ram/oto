@@ -41,32 +41,6 @@ func NewReminderRepository(q db.Querier) *ReminderRepository { return &ReminderR
 
 func (r *ReminderRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
-const listOrgsSQL = `SELECT id FROM orgs WHERE deleted_at IS NULL ORDER BY id`
-
-// ListOrgIDs enumerates the tenants a periodic sweep must visit.
-//
-// The sweep job carries a zero payload, so it has to discover its own work. Note
-// what this does NOT do: it does not scan every org's alerts in one query. Each
-// org is swept under its own TenantScope, so a query that forgets an org_id is a
-// query that returns nothing rather than a query that leaks.
-func (r *ReminderRepository) ListOrgIDs(ctx context.Context) ([]uuid.UUID, error) {
-	rows, err := r.db(ctx).Query(ctx, listOrgsSQL)
-	if err != nil {
-		return nil, mapErr(err, "org_not_found", "list orgs")
-	}
-	defer rows.Close()
-
-	out := make([]uuid.UUID, 0, 8)
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, mapErr(err, "org_not_found", "scan an org id")
-		}
-		out = append(out, id)
-	}
-	return out, mapErr(rows.Err(), "org_not_found", "read orgs")
-}
-
 const unackedGroupsSQL = `
 SELECT g.id, g.state_version, g.group_labels, min(o.started_at) AS unacked_since
   FROM alert_groups g

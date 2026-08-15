@@ -1,0 +1,90 @@
+{{- if .Values.bootstrap.enabled }}
+{{/*
+`oto bootstrap` — THE INSTALL PATH.
+
+⭐ v1 HAS NO ORG-CREATION API AND NO SIGNUP, so `oto migrate` leaves a schema
+that POST /api/v1/auth/login can never authenticate against: the product can be
+started and not used. This creates the first org, its first user and its first
+API token (cmd/oto/bootstrap.go).
+
+⛔ IT IS A SUBCOMMAND AND NOT A ROUTE, and this Job is the Kubernetes shape of
+the same authority: creating the first org over unauthenticated HTTP would be
+account takeover with a friendly name.
+
+⛔ POST-INSTALL ONLY, NEVER POST-UPGRADE. It refuses to run when the deployment
+already has an org, so on an upgrade it would fail the release for doing exactly
+what it should.
+
+⛔ THE TOKEN IS PRINTED ONCE, TO STDOUT, AND NEVER TO THE LOGGER — the logger is
+structured, shipped and retained, and a bearer token in it is a bearer token in
+every log sink you own. Read it with
+
+  kubectl logs -n <namespace> job/{{ include "oto.fullname" . }}-bootstrap
+
+and store it. `bootstrap.ttlSecondsAfterFinished` is how long you have.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "oto.fullname" . }}-bootstrap
+  labels:
+    {{- include "oto.labels" (dict "ctx" . "component" "bootstrap") | nindent 4 }}
+  annotations:
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    helm.sh/hook: post-install
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: {{ .Values.bootstrap.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "oto.selectorLabels" (dict "ctx" . "component" "bootstrap") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "oto.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: bootstrap
+          image: {{ include "oto.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - bootstrap
+            - --org-slug={{ .Values.bootstrap.orgSlug }}
+            {{- with .Values.bootstrap.orgName }}
+            - --org-name={{ . }}
+            {{- end }}
+            - --email={{ .Values.bootstrap.email }}
+            {{- with .Values.bootstrap.displayName }}
+            - --name={{ . }}
+            {{- end }}
+            - --token-name={{ .Values.bootstrap.tokenName }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # ⛔ THE PASSWORD ARRIVES AS OTO_BOOTSTRAP_PASSWORD AND NOT AS A FLAG.
+          # A flag value is visible in `ps` and in shell history; the binary
+          # refuses to read one for exactly that reason.
+          envFrom:
+            {{- include "oto.envFrom" . | nindent 12 }}
+          env:
+            {{- include "oto.secretEnv" . | nindent 12 }}
+            - name: OTO_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "oto.secretName" . }}
+                  key: {{ .Values.existingSecretKeys.bootstrapPassword }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.bootstrap.resources | nindent 12 }}
+{{- end }}

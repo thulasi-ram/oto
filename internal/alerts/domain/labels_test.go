@@ -110,6 +110,40 @@ func TestNewLabels_Bounds(t *testing.T) {
 			in:       map[string]string{"a\x00b": "v"},
 			wantCode: "invalid_label_name",
 		},
+
+		// B18, the other half of storability. ⛔ NOTE THE DELIBERATE INVERSION:
+		// `"\xff"` sat in `adversarialValues` below as a value oto ACCEPTS, and it
+		// is now a value oto REFUSES. See the note on that variable.
+		{
+			name:     "invalid UTF-8: a lone 0xff, which is legal in no position",
+			in:       map[string]string{"a": "\xff"},
+			wantCode: "invalid_label_value",
+		},
+		{
+			// The first two bytes of 日 (0xe6 0x97 0xa5) with the third missing —
+			// what a byte-wise truncation upstream of oto produces.
+			name:     "invalid UTF-8: a truncated multi-byte rune",
+			in:       map[string]string{"a": "ok-\xe6\x97"},
+			wantCode: "invalid_label_value",
+		},
+		{
+			name:     "invalid UTF-8: a bare continuation byte",
+			in:       map[string]string{"a": "\x80"},
+			wantCode: "invalid_label_value",
+		},
+		{
+			// A GENUINE U+FFFD is valid UTF-8 and is stored unchanged. oto refuses
+			// bytes Postgres cannot hold, not bytes that look like damage — and the
+			// distinction matters because U+FFFD is what B19 substitutes into
+			// annotations, so it must survive a round trip everywhere else.
+			name: "a real U+FFFD is legal in a value",
+			in:   map[string]string{"a": "x\uFFFDy"},
+		},
+		{
+			name:     "an unstorable name is invalid_label_name, not invalid_label_value",
+			in:       map[string]string{"a\xffb": "v"},
+			wantCode: "invalid_label_name",
+		},
 	}
 
 	for _, tc := range tests {
@@ -306,12 +340,30 @@ func TestCanonical_SeparatorInValueMustNotCollide(t *testing.T) {
 //
 // Every entry is chosen to attack the framing: the old separators, the bytes a
 // length prefix is made of that a value is still allowed to carry, decimal digits
-// (which a text-encoded length would be made of), the Alertmanager fingerprint
-// separator, whitespace, empty, and multi-byte UTF-8 whose BYTE length differs
-// from its rune count.
+// (which a text-encoded length would be made of), whitespace, empty, and
+// multi-byte UTF-8 whose BYTE length differs from its rune count.
 //
-// NUL is deliberately absent: NewLabels refuses it, and TestNewLabels_Bounds
-// covers that. Everything here is a value oto must accept AND keep distinct.
+// ⛔ ONE ENTRY DELIBERATELY REVERSED ITS MEANING, AND THE REVERSAL IS THE POINT.
+// This list used to carry a bare `"\xff"` — model.SeparatorByte, the separator
+// Alertmanager's own Fingerprint writes — as A VALUE OTO ACCEPTS, on the stated
+// grounds that NUL was the only byte oto refused. B18 makes it A VALUE OTO
+// REFUSES: 0xff is legal in no position of valid UTF-8, so Postgres cannot store
+// it, and an alert carrying it used to reach layer 6 and die at the INSERT
+// instead of being recorded as a rejection. It now lives in TestNewLabels_Bounds
+// with `wantCode: "invalid_label_value"`.
+//
+// What stands in its place here is U+00FF, its closest STORABLE neighbour: the
+// character 0xff denotes, encoded as 0xc3 0xbf, containing no 0xff byte. The
+// corpus keeps its size and its shape; only the verdict on one member moved.
+//
+// The consequence is worth stating once: no value oto accepts can now contain
+// model.SeparatorByte at all, so the Fingerprint framing's own ambiguity is
+// unreachable through NewLabels. That is a SIDE EFFECT of a storability bound and
+// not a design goal — Fingerprint remains a join key and never identity (C10).
+//
+// NUL and invalid UTF-8 are therefore both deliberately absent: NewLabels refuses
+// both (B18) and TestNewLabels_Bounds covers them. Everything here is a value oto
+// must accept AND keep distinct.
 var adversarialValues = []string{
 	"",
 	"1",
@@ -325,7 +377,7 @@ var adversarialValues = []string{
 	"\x02\x01\x01\x01b",      // near-miss framing
 	"4",                      // a decimal length, had the prefix been text
 	"0004",                   //
-	"\xff",                   // model.SeparatorByte, which Fingerprint uses
+	"\u00ff",                 // was "\xff"; see the inversion note above
 	" ",                      //
 	"日本語",                    // 3 runes, 9 bytes
 	"☃",                      // 1 rune, 3 bytes
@@ -669,7 +721,7 @@ func TestNewAnnotations_Bounds(t *testing.T) {
 	}{
 		{name: "empty", in: map[string]string{}},
 		{
-			name: "the name charset is deliberately unconstrained",
+			name: "the name charset is deliberately unconstrained, apart from storability",
 			in:   map[string]string{"grafana.com/dashboardUId": "abc", "日本語": "v", "": "v"},
 		},
 		{name: "too many", in: tooMany, wantCode: "too_many_annotations"},
@@ -682,6 +734,37 @@ func TestNewAnnotations_Bounds(t *testing.T) {
 			name:     "value too large",
 			in:       map[string]string{"summary": strings.Repeat("v", MaxAnnotationValueBytes+1)},
 			wantCode: "annotation_too_large",
+		},
+
+		// B19 AS SEEN FROM LAYER 3, which is NOT how ingest behaves. On the ingest
+		// path decode.boundAnnotations sanitises the value and drops an unstorable
+		// NAME, keeping the alert — so by the time anything reaches this constructor
+		// the bytes are already gone. These cases assert the backstop: if layer 2
+		// ever grows a hole, the failure names what was wrong instead of surfacing as
+		// a 22021 from Postgres.
+		{
+			name:     "NUL in a value",
+			in:       map[string]string{"summary": "x\x00y"},
+			wantCode: "annotation_unstorable",
+		},
+		{
+			name:     "invalid UTF-8 in a value",
+			in:       map[string]string{"summary": "x\xffy"},
+			wantCode: "annotation_unstorable",
+		},
+		{
+			name:     "NUL in a name",
+			in:       map[string]string{"sum\x00mary": "v"},
+			wantCode: "annotation_unstorable",
+		},
+		{
+			name:     "invalid UTF-8 in a name",
+			in:       map[string]string{"sum\xffmary": "v"},
+			wantCode: "annotation_unstorable",
+		},
+		{
+			name: "an already-sanitised value round-trips",
+			in:   map[string]string{"summary": "x\uFFFDy"},
 		},
 	}
 	for _, tc := range tests {
@@ -698,6 +781,97 @@ func TestNewAnnotations_Bounds(t *testing.T) {
 			assert.Equal(t, tc.wantCode, e.Code)
 		})
 	}
+}
+
+// TestUnstorableReason is the predicate B18 and B19 share. It is ONE definition
+// on purpose: the two bounds differ in their verdict, never in what they consider
+// storable, and two copies of "what Postgres can hold" is how they would diverge.
+func TestUnstorableReason(t *testing.T) {
+	storable := []string{
+		"",
+		"plain ascii",
+		"日本語 ☃ – ok",
+		"\x01\x02",   // control bytes are FINE: they are valid UTF-8 and storable
+		"\x7f",       // DEL, likewise
+		"\u00ff",     // 0xc3 0xbf — the character 0xff denotes, which is storable
+		"x\uFFFDy",   // a genuine replacement character, not damage
+		"\U0001F600", // 4-byte rune
+	}
+	for _, s := range storable {
+		assert.Empty(t, UnstorableReason(s), "must be storable: %q", s)
+		got, changed := SanitiseText(s)
+		assert.False(t, changed, "a storable string is never rewritten: %q", s)
+		assert.Equal(t, s, got)
+	}
+
+	unstorable := []string{
+		"\x00",           // Postgres text cannot hold U+0000 at all
+		"a\x00b",         //
+		"\xff",           // legal in no position of UTF-8
+		"\x80",           // a bare continuation byte
+		"\xe6\x97",       // 日 with its last byte lost
+		"ok\xc0\x80done", // an overlong encoding of NUL, which is also invalid UTF-8
+	}
+	for _, s := range unstorable {
+		assert.NotEmpty(t, UnstorableReason(s), "must be unstorable: %q", s)
+	}
+}
+
+// TestSanitiseText is B19's mechanism: the ONLY place oto rewrites what an
+// upstream sent, and only ever in an annotation.
+func TestSanitiseText(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "a NUL becomes U+FFFD", in: "a\x00b", want: "a\uFFFDb"},
+		{name: "a lone NUL", in: "\x00", want: "\uFFFD"},
+		{name: "an invalid byte becomes U+FFFD", in: "a\xffb", want: "a\uFFFDb"},
+		{
+			// Each invalid BYTE is replaced individually, which is what every UTF-8
+			// decoder does and what makes the output stable under re-sanitisation.
+			name: "a truncated rune becomes one U+FFFD per orphaned byte",
+			in:   "x\xe6\x97y",
+			want: "x\uFFFD\uFFFDy",
+		},
+		{
+			name: "storable runes either side are untouched",
+			in:   "日本語\x00 ☃",
+			want: "日本語\uFFFD ☃",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := SanitiseText(tc.in)
+			assert.True(t, changed, "an unstorable input must report that it was rewritten")
+			assert.Equal(t, tc.want, got)
+			assert.Empty(t, UnstorableReason(got), "the output must itself be storable")
+
+			// Idempotent: sanitising a sanitised value changes nothing further, so a
+			// value cannot decay a little more on every pass.
+			again, changedAgain := SanitiseText(got)
+			assert.False(t, changedAgain)
+			assert.Equal(t, got, again)
+		})
+	}
+}
+
+// TestSanitiseTextGrowsTheValue pins the reason B19 must run BEFORE B8.
+//
+// U+FFFD is three bytes where the byte it replaces is one, so sanitising a value
+// that is already at the annotation cap pushes it over. Truncating first and
+// sanitising second would hand layer 6 a value longer than the bound layer 2
+// claims to enforce.
+func TestSanitiseTextGrowsTheValue(t *testing.T) {
+	in := strings.Repeat("\xff", MaxAnnotationValueBytes)
+	require.Len(t, in, MaxAnnotationValueBytes)
+
+	got, changed := SanitiseText(in)
+	assert.True(t, changed)
+	assert.Len(t, got, 3*MaxAnnotationValueBytes,
+		"one byte in, three bytes out — the growth B19's ordering exists to absorb")
+	assert.Greater(t, len(got), MaxAnnotationValueBytes)
 }
 
 func TestAnnotations_EqualAndCanonical(t *testing.T) {

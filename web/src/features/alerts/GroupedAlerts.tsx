@@ -18,6 +18,7 @@
  */
 import { For, Show, type Component } from "solid-js";
 
+import { StateSchema } from "~/api/generated/validators";
 import type { AlertRollup, RollupAxis, State } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import {
@@ -38,6 +39,19 @@ const NOUN: Record<RollupAxis, string> = {
 };
 
 const SEVERITY_RANK: Record<KnownSeverity, number> = { critical: 0, warning: 1, info: 2 };
+
+/**
+ * The order a bucket's counts read in: still-live first, then ended.
+ *
+ * The *set* is the contract's, so a lifecycle state added server-side is counted
+ * rather than silently dropped from every bucket. Only the order is local — and
+ * `Record<State, …>` makes it exhaustive, so a new state is a compile error here
+ * asking where it belongs instead of an unranked value sorting arbitrarily.
+ */
+const COUNT_ORDER: Record<State, number> = { firing: 0, suppressed: 1, expired: 2, resolved: 3 };
+const COUNTED_STATES: readonly State[] = [...StateSchema.options].sort(
+  (a, b) => COUNT_ORDER[a] - COUNT_ORDER[b],
+);
 
 /**
  * The most urgent severity present in a bucket.
@@ -73,7 +87,7 @@ export interface GroupedAlertsProps {
 
 export const GroupedAlerts: Component<GroupedAlertsProps> = (props) => (
   <div class="min-h-0 flex-1 overflow-auto">
-    <p class="border-b border-line bg-raised px-3 py-1.5 text-[11px] text-ink-muted">
+    <p class="border-b border-line bg-raised px-3 py-1.5 text-meta text-ink-muted">
       {fmtCount(props.buckets.length)}
       {props.hasMore ? "+" : ""} bucket{props.buckets.length === 1 ? "" : "s"} by{" "}
       {NOUN[props.by]}. Counted server-side over every alert matching these filters, not over the
@@ -81,7 +95,7 @@ export const GroupedAlerts: Component<GroupedAlertsProps> = (props) => (
     </p>
 
     <Show when={props.onDrillDown === null}>
-      <p class="border-b border-line bg-surface px-3 py-1.5 text-[11px] leading-snug text-ink-muted">
+      <p class="border-b border-line bg-surface px-3 py-1.5 text-meta leading-snug text-ink-muted">
         These buckets cannot be opened: the alert list has no source-fingerprint filter, so oto
         cannot narrow to one fingerprint without pretending a different filter means the same
         thing. The counts below are still exact.
@@ -119,19 +133,17 @@ const BucketRow: Component<{
   };
 
   const counts = (): readonly { readonly state: State; readonly n: number }[] =>
-    (["firing", "suppressed", "expired", "resolved"] as readonly State[])
-      .map((state) => ({
-        state,
-        n:
-          state === "firing"
-            ? b().firing_count
-            : state === "suppressed"
-              ? b().suppressed_count
-              : state === "expired"
-                ? b().expired_count
-                : b().resolved_count,
-      }))
-      .filter((c) => c.n > 0);
+    COUNTED_STATES.map((state) => ({
+      state,
+      n:
+        state === "firing"
+          ? b().firing_count
+          : state === "suppressed"
+            ? b().suppressed_count
+            : state === "expired"
+              ? b().expired_count
+              : b().resolved_count,
+    })).filter((c) => c.n > 0);
 
   // A component rather than a stored element: `<Show>` may swap between the two
   // branches, and each branch must get its own nodes rather than sharing one set.
@@ -152,7 +164,7 @@ const BucketRow: Component<{
           {label()}
         </span>
         <Show when={b().key === "" && props.by === "namespace"}>
-          <span class="block truncate text-[11px] text-ink-subtle">
+          <span class="block truncate text-meta text-ink-subtle">
             These alerts carry no promoted namespace label.
           </span>
         </Show>
@@ -160,13 +172,13 @@ const BucketRow: Component<{
 
       <StateChip state={b().state} size="sm" />
 
-      <span class="shrink-0 text-[11px] tabular-nums text-ink-muted">
+      <span class="shrink-0 text-meta tabular-nums text-ink-muted">
         {fmtCount(b().total_count)} total
       </span>
 
       {/* Per-state counts. `resolved` and `expired` stay separate — they are
           different facts and merging them would lose the interesting one. */}
-      <span class="flex shrink-0 items-center gap-1.5 text-[11px] tabular-nums text-ink-muted">
+      <span class="flex shrink-0 items-center gap-1.5 text-meta tabular-nums text-ink-muted">
         <For each={counts()}>
           {(c) => (
             <span
@@ -183,7 +195,7 @@ const BucketRow: Component<{
 
       <Show when={b().unacked_count > 0}>
         <span
-          class="shrink-0 rounded-[3px] border border-line-strong bg-raised px-1 text-[11px] leading-4 text-ink"
+          class="shrink-0 rounded-chip border border-line-strong bg-raised px-1 text-meta leading-4 text-ink"
           title="Nobody has recorded seeing these yet."
         >
           {b().unacked_count} unseen
@@ -192,7 +204,7 @@ const BucketRow: Component<{
 
       <Show when={b().flapping_count > 0}>
         <span
-          class="shrink-0 rounded-[3px] border border-line bg-surface px-1 text-[11px] leading-4 text-ink-muted"
+          class="shrink-0 rounded-chip border border-line bg-surface px-1 text-meta leading-4 text-ink-muted"
           title="Members oto has damped as flapping. A visible state, never a silent drop."
         >
           {b().flapping_count} flapping
@@ -203,14 +215,14 @@ const BucketRow: Component<{
           still whatever severity they were. */}
       <Show when={b().snoozed_count > 0}>
         <span
-          class="shrink-0 rounded-[3px] border border-line bg-surface px-1 text-[11px] leading-4 text-ink-muted"
+          class="shrink-0 rounded-chip border border-line bg-surface px-1 text-meta leading-4 text-ink-muted"
           title="Members whose notifications oto is holding. They are still firing and still counted as such."
         >
           {b().snoozed_count} snoozed
         </span>
       </Show>
 
-      <span class="w-14 shrink-0 text-right text-[11px] text-ink-subtle">
+      <span class="w-14 shrink-0 text-right text-meta text-ink-subtle">
         <RelativeTime value={b().last_seen_at} label="Newest activity" />
       </span>
     </>

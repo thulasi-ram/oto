@@ -16,6 +16,7 @@
 import { For, Show, type Component, type JSX, type ParentComponent } from "solid-js";
 
 import { ApiError } from "~/api/client";
+import { Chime } from "./Chime";
 import { Button, cx } from "./primitives";
 
 /* -------------------------------------------------------------------------- */
@@ -35,19 +36,10 @@ export const EmptyState: Component<EmptyStateProps> = (props) => (
   >
     {/* A quiet chime mark — the product's own glyph rather than a generic
         "no data" illustration, and the only decorative art in the app. */}
-    <svg viewBox="0 0 40 40" class="size-8 text-line-strong" aria-hidden="true">
-      <path
-        d="M20 6c-5 0-9 4-9 9v7l-3 5h24l-3-5v-7c0-5-4-9-9-9Z"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linejoin="round"
-      />
-      <path d="M17 31a3 3 0 0 0 6 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-    </svg>
-    <p class="text-[14px] font-medium text-ink">{props.title}</p>
+    <Chime size="glyph" class="text-line-strong" />
+    <p class="text-title font-medium text-ink">{props.title}</p>
     <Show when={props.body}>
-      <p class="max-w-sm text-[12px] leading-relaxed text-ink-muted">{props.body}</p>
+      <p class="max-w-sm text-body leading-relaxed text-ink-muted">{props.body}</p>
     </Show>
     <Show when={props.action}>
       <div class="mt-1">{props.action}</div>
@@ -67,7 +59,7 @@ export const EmptyState: Component<EmptyStateProps> = (props) => (
 export const Skeleton: Component<{ readonly class?: string }> = (props) => (
   <span
     aria-hidden="true"
-    class={cx("block rounded-[3px] bg-sunken motion-safe:animate-pulse", props.class)}
+    class={cx("block rounded-chip bg-sunken motion-safe:animate-pulse", props.class)}
   />
 );
 
@@ -99,7 +91,7 @@ export const TableSkeleton: Component<{ readonly rows?: number; readonly cols?: 
 
 /** An inline "working…" line for panels that are small enough not to need rows. */
 export const LoadingLine: Component<{ readonly label?: string }> = (props) => (
-  <p class="px-3 py-6 text-center text-[12px] text-ink-subtle" aria-live="polite">
+  <p class="px-3 py-6 text-center text-body text-ink-subtle" aria-live="polite">
     {props.label ?? "Loading…"}
   </p>
 );
@@ -151,14 +143,14 @@ export const ErrorState: Component<ErrorStateProps> = (props) => {
       class={cx("flex flex-col items-center gap-2 px-6 py-12 text-center", props.class)}
       role="alert"
     >
-      <p class="text-[14px] font-semibold text-ink">{title()}</p>
-      <p class="max-w-md text-[12px] leading-relaxed text-ink-muted">{body()}</p>
+      <p class="text-title font-semibold text-ink">{title()}</p>
+      <p class="max-w-md text-body leading-relaxed text-ink-muted">{body()}</p>
       <Show when={api()?.violations.length}>
-        <ul class="mt-1 max-w-md space-y-0.5 text-left text-[12px] text-ink-muted">
+        <ul class="mt-1 max-w-md space-y-0.5 text-left text-body text-ink-muted">
           <For each={api()?.violations}>
             {(v) => (
               <li>
-                <code class="font-mono text-[11px] text-ink">{v.field}</code> — {v.message}
+                <code class="font-mono text-meta text-ink">{v.field}</code> — {v.message}
               </li>
             )}
           </For>
@@ -173,7 +165,7 @@ export const ErrorState: Component<ErrorStateProps> = (props) => {
       </Show>
       <Show when={api()?.requestId}>
         {(id) => (
-          <p class="mt-1 font-mono text-[10px] text-ink-subtle" title="Quote this when reporting it">
+          <p class="mt-1 font-mono text-micro text-ink-subtle" title="Quote this when reporting it">
             request {id()}
           </p>
         )}
@@ -190,8 +182,8 @@ export const ErrorBanner: ParentComponent<{
   <div
     role="alert"
     class={cx(
-      "flex items-start gap-2 rounded-[4px] border border-line-strong bg-raised px-2.5 py-2",
-      "text-[12px] leading-snug text-ink",
+      "flex items-start gap-2 rounded-control border border-line-strong bg-raised px-2.5 py-2",
+      "text-body leading-snug text-ink",
       props.class,
     )}
   >

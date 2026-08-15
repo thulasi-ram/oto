@@ -56,6 +56,43 @@ services:
       retries: 6
       start_period: 10s
 
+  # Something that actually FIRES. Without it the stack can receive a webhook
+  # but nothing produces one, so the fastest way to see oto do its job was to
+  # write a Prometheus config by hand (git-bug d6d97de). This one scrapes oto's
+  # own /metrics on the host, routes to the Alertmanager above, and loads a
+  # deliberately always-true rule with a 15 s `for:` so an alert lands inside a
+  # minute instead of only when something breaks.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: oto-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Dev only: 24 h is plenty to demonstrate the path and keeps the volume small.
+      - --storage.tsdb.retention.time=24h
+      - --web.enable-lifecycle
+      - --log.level=info
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The path SPEC §H.8 names for oto's self-alerting rules.
+      - ./deploy/prometheus/oto-rules.yaml:/etc/prometheus/oto-rules.yaml:ro
+      - oto-promdata:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      alertmanager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
 volumes:
   oto-pgdata:
   oto-amdata:
+  oto-promdata:

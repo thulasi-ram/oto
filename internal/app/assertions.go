@@ -10,6 +10,7 @@ import (
 	enrichservice "github.com/thulasiram/oto/internal/enrichment/service"
 	enrichworker "github.com/thulasiram/oto/internal/enrichment/worker"
 	groupingservice "github.com/thulasiram/oto/internal/grouping/service"
+	identityapi "github.com/thulasiram/oto/internal/identity/api"
 	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
 	ingestservice "github.com/thulasiram/oto/internal/ingestion/service"
@@ -18,11 +19,15 @@ import (
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	notifworker "github.com/thulasiram/oto/internal/notification/worker"
 	"github.com/thulasiram/oto/internal/platform/authn"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
+	"github.com/thulasiram/oto/internal/platform/jobs"
 	"github.com/thulasiram/oto/internal/platform/secrets"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
 	silencesservice "github.com/thulasiram/oto/internal/silences/service"
 	sourcesapi "github.com/thulasiram/oto/internal/sources/api"
 	sourcesrepo "github.com/thulasiram/oto/internal/sources/repository"
+	sourcesservice "github.com/thulasiram/oto/internal/sources/service"
+	statsworker "github.com/thulasiram/oto/internal/stats/worker"
 )
 
 // ⭐ THE PORT-DRIFT WALL.
@@ -51,20 +56,23 @@ var (
 	_ authn.Resolver = (*identityservice.Service)(nil)
 
 	// --- the cross-module ports this package writes adapters for -------------
-	_ alertsservice.StreamAppender       = streamAppender{}
-	_ groupingservice.StreamAppender     = streamAppender{}
-	_ alertsservice.NotificationReader   = (*lateNotificationReader)(nil)
-	_ alertsservice.GroupVersionReader   = (*groupVersions)(nil)
-	_ alertsservice.EnrichmentReader     = enrichmentReader{}
-	_ alertsservice.SourceHealth         = sourceHealth{}
-	_ alertsservice.SettingsReader       = orgSettings{}
-	_ groupingservice.SettingsReader     = orgSettings{}
-	_ notifservice.SettingsReader        = orgSettings{}
-	_ rulesservice.RuleLookup            = ruleLookup{}
-	_ enrichservice.SubjectLoader        = subjectLoader{}
-	_ enrichworker.ScopeResolver         = occurrenceScopes{}
-	_ ingestservice.AlertObserver        = alertObserver{}
-	_ sourcesapi.IngestTokenIssuer       = ingestTokenIssuer{}
+	_ alertsservice.StreamAppender     = streamAppender{}
+	_ groupingservice.StreamAppender   = streamAppender{}
+	_ alertsservice.NotificationReader = (*notificationReader)(nil)
+	_ alertsservice.GroupVersionReader = (*groupVersions)(nil)
+	_ alertsservice.EnrichmentReader   = enrichmentReader{}
+	_ alertsservice.SourceHealth       = sourceHealth{}
+	_ alertsservice.SettingsReader     = orgSettings{}
+	_ groupingservice.SettingsReader   = orgSettings{}
+	_ notifservice.SettingsReader      = orgSettings{}
+	_ rulesservice.RuleLookup          = ruleLookup{}
+	_ enrichservice.SubjectLoader      = subjectLoader{}
+	_ enrichworker.ScopeResolver       = occurrenceScopes{}
+	_ ingestservice.AlertObserver      = alertObserver{}
+	// The ingest-token mint moved INTO identity (relocation, not a merge with the
+	// PAT mint): the identity service satisfies the sources-side port directly,
+	// and this line is what breaks if either side of that seam drifts.
+	_ sourcesservice.IngestTokens        = (*identityservice.Service)(nil)
 	_ notifapi.SubjectResolver           = subjectResolver{}
 	_ notifworker.ScopeResolver          = (*notifrepo.ScopeResolver)(nil)
 	_ notifservice.CredentialUnsealer    = (*secrets.Keyring)(nil)
@@ -79,14 +87,14 @@ var (
 	_ silencesservice.AlertLister = (*alertsservice.Service)(nil)
 
 	// --- the channels registry is three different narrow views ---------------
-	_ channelsapi.ProviderRegistry  = (*channelsregistry.Registry)(nil)
-	_ channelsservice.Registry      = (*channelsregistry.Registry)(nil)
-	_ notifservice.ChannelRegistry  = (*channelsregistry.Registry)(nil)
-	_ notifapi.RendererSource       = (*channelsregistry.Registry)(nil)
-	_ channelsapi.CredentialWriter  = (*channelsrepo.CredentialRepository)(nil)
-	_ sourcesapi.CredentialWriter   = (*channelsrepo.CredentialRepository)(nil)
-	_ channelsapi.ChannelStore      = (*channelsrepo.ChannelRepository)(nil)
-	_ channelsservice.InstanceStore = (*channelsrepo.ChannelRepository)(nil)
+	_ channelsapi.ProviderRegistry    = (*channelsregistry.Registry)(nil)
+	_ channelsservice.Registry        = (*channelsregistry.Registry)(nil)
+	_ notifservice.ChannelRegistry    = (*channelsregistry.Registry)(nil)
+	_ notifapi.RendererSource         = (*channelsregistry.Registry)(nil)
+	_ channelsapi.CredentialWriter    = (*channelsrepo.CredentialRepository)(nil)
+	_ sourcesservice.CredentialSealer = (*channelsrepo.CredentialRepository)(nil)
+	_ channelsapi.ChannelStore        = (*channelsrepo.ChannelRepository)(nil)
+	_ channelsservice.InstanceStore   = (*channelsrepo.ChannelRepository)(nil)
 
 	// --- the Acknowledge button: four seams, all of them load-bearing --------
 	//
@@ -99,9 +107,27 @@ var (
 	_ channelsservice.AlertGroups        = slackGroupActions{}
 	_ channelsservice.SlackConversations = slackConversations{}
 
-	// --- sources: the write side the API declares, the read side the service is
-	_ sourcesapi.SourceRegistry  = (*sourcesrepo.SourceRepository)(nil)
-	_ sourcesapi.ClusterRegistry = (*sourcesrepo.ClusterRepository)(nil)
+	// --- sources: both halves of the module are the SERVICE ------------------
+	//
+	// ⭐ THE WRITE SIDE USED TO BE THE REPOSITORY HERE (ticket 0869f21), which is
+	// what put the transaction boundary, the three-table ordering and the
+	// credential-rotation rule inside an HTTP handler. `sources/service` owns them
+	// now, and these two lines are what would break if either half drifted.
+	_ sourcesapi.SourceReader         = (*sourcesservice.Service)(nil)
+	_ sourcesapi.SourceRegistry       = (*sourcesservice.Service)(nil)
+	_ sourcesservice.SourceRepository = (*sourcesrepo.SourceRepository)(nil)
+	_ sourcesapi.ClusterRegistry      = (*sourcesrepo.ClusterRepository)(nil)
+
+	// --- the tenant list every per-tenant periodic fans out over -------------
+	//
+	// ⛔ THE TWO HALVES MUST STAY TOGETHER OR THE SWEEPS GO QUIET. `ScopePage`
+	// feeds the fan-out and `LiveScope` is what refuses to build a scope from a
+	// job payload alone; a drift on either is a periodic that enqueues nothing, or
+	// one that sweeps a tenant the list deliberately skips. Neither shows up as a
+	// compile error at the call site, because both travel as interfaces.
+	_ jobs.Tenants                = orgLister{}
+	_ statsworker.TenantLister    = orgLister{}
+	_ sourcesservice.TenantLister = orgLister{}
 
 	// --- notification: the settings half and the evaluation half -------------
 	_ notifapi.PolicyStore        = (*notifrepo.ConfigRepository)(nil)
@@ -116,4 +142,14 @@ var (
 	_ notifservice.HistoryStore   = (*notifrepo.NotificationRepository)(nil)
 	_ notifservice.GateFactory    = (*notifrepo.OrderingGates)(nil)
 	_ notifservice.SnapshotSource = (*notifrepo.SnapshotRepository)(nil)
+
+	// --- `Idempotency-Key`: one store, read by two transports ----------------
+	//
+	// The header was declared on 28 operations and read by NONE of them. These two
+	// lines are what make "the credential endpoints honour it" a compile-time fact
+	// rather than a wiring the container could quietly drop again.
+	_ identityapi.IdempotencyClaims    = (*idempotency.Repository)(nil)
+	_ sourcesservice.IdempotencyClaims = (*idempotency.Repository)(nil)
+	_ identityapi.UnitOfWork           = (*identityrepo.TxRunner)(nil)
+	_ sourcesservice.UnitOfWork        = (*sourcesrepo.TxRunner)(nil)
 )

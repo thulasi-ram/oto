@@ -23,11 +23,13 @@ import (
 // *service.Service.
 type RuleService interface {
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Snapshot, error)
+	// GetMany is Get for a whole page of alert rows at once — the read behind
+	// `GET /rule-snapshots/batch` (ADR 0025).
+	GetMany(ctx context.Context, s db.TenantScope, ids []uuid.UUID) ([]domain.Snapshot, error)
 	// History is the NUMBERED edit history, used to compute a diff. ListSnapshots
 	// is the paginated list. They are different questions — see ListSnapshots.
 	History(ctx context.Context, s db.TenantScope, key domain.Key) (domain.History, error)
 	ListSnapshots(ctx context.Context, s db.TenantScope, key domain.Key, p db.Keyset) (service.SnapshotPage, error)
-	DiffSince(ctx context.Context, s db.TenantScope, key domain.Key, boundFingerprint string) (domain.Diff, bool, error)
 }
 
 // AlertReader is the cross-domain port that resolves an alert or an occurrence to
@@ -38,6 +40,17 @@ type RuleService interface {
 type AlertReader interface {
 	Get(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (alerts.AlertDetail, error)
 	GetOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (alertdomain.Occurrence, error)
+	// PreviousOccurrenceWithRule is the episode BEFORE this one that had a rule
+	// bound to it — the OLDER side of `RuleHistoryDTO.change`.
+	//
+	// ⛔ IT IS THE READ THIS PORT WAS MISSING. With only the current and latest
+	// episodes reachable, the only diff this package could compute was "this
+	// episode's text against the newest text upstream" — which names this
+	// episode's own row as `previous_*` and goes null exactly when a rule was
+	// edited and then fired. An episode's predecessor is a fact about
+	// `alert_occurrences`, so it is asked for here rather than guessed from the
+	// snapshot history, which is per RULE KEY and knows nothing about episodes.
+	PreviousOccurrenceWithRule(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (alertdomain.Occurrence, bool, error)
 }
 
 // Compile-time proof that the services satisfy the ports this layer declares.
@@ -69,9 +82,17 @@ func NewRouter(svc RuleService, alertReader AlertReader, clk clock.Clock) *Route
 // than by `alerts/api`, because rendering a `RuleSnapshotDTO` means naming
 // `rules/domain` and only this package may (CONTEXT.md §5.4). The contract cares
 // about the path and the payload, not about which Go package produced them.
+//
+// `/rule-snapshots/batch` is the same idea applied to a LIST: the alert list
+// needs the rule text for every row, this package is the only one that may render
+// it, so the join happens in the client over two calls rather than by inverting
+// the dependency (ADR 0025). `batch` is a literal segment and can never be a
+// UUID, so it can never be mistaken for `/{id}`; chi matches the static segment
+// first either way.
 func (rt *Router) Register(r chi.Router) {
 	r.Route("/rule-snapshots", func(r chi.Router) {
 		r.Get("/", rt.listRuleSnapshots)
+		r.Get("/batch", rt.batchGetRuleSnapshots)
 		r.Get("/{id}", rt.getRuleSnapshot)
 	})
 	r.Get("/alerts/{id}/rule", rt.getAlertRuleHistory)
@@ -132,6 +153,42 @@ func parseListSnapshots(r *http.Request) (snapshotsRequest, error) {
 		return snapshotsRequest{}, err
 	}
 	return snapshotsRequest{ListSnapshotsQuery: q, Page: httpx.Keyset(q.Limit, cursor)}, nil
+}
+
+var batchSnapshotParams = []string{"id"}
+
+// parseBatchSnapshots compiles `GET /api/v1/rule-snapshots/batch`.
+//
+// ⛔ Duplicates are ACCEPTED and are the normal case, not a caller error. The
+// ids come off a page of alert rows, and a page where nothing has changed
+// upstream is the same content-addressed snapshot id repeated — refusing that
+// would make every caller dedupe before it could ask a question it already knew
+// the answer to. The service collapses them before the query.
+func parseBatchSnapshots(r *http.Request) ([]uuid.UUID, error) {
+	p := httpx.NewParams(r, batchSnapshotParams...)
+	if err := p.Err(); err != nil {
+		return nil, err
+	}
+	q := BatchSnapshotsQuery{IDs: p.CSV("id")}
+	if err := p.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := httpx.BindEmpty(q); err != nil {
+		return nil, err
+	}
+
+	out := make([]uuid.UUID, 0, len(q.IDs))
+	for _, raw := range q.IDs {
+		// The `dive,uuid` tag above already refused anything unparseable, so a
+		// failure here is impossible rather than tolerated; skipping keeps the
+		// two layers from disagreeing if one is ever loosened.
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // notFound is the one shape a missing rule read takes. A `404` on the occurrence

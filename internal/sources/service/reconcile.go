@@ -345,8 +345,14 @@ func (r *Reconciler) Reconcile(
 	}
 
 	if out.DivergenceCount > 0 {
-		// `oto_reconcile_divergence` is the canary for every correctness bug in
-		// the system (§G.8.4), so a non-zero pass is never silent.
+		// Divergence is the canary for every correctness bug in the system
+		// (§G.8.4), so a non-zero pass is never silent.
+		//
+		// ⛔ THIS LOG LINE IS THE SIGNAL, not a metric. The comment used to name
+		// `oto_reconcile_divergence`, which no collector ever constructed
+		// (5bc341a) — so an operator alerting on that name would have watched a
+		// series that never existed while this line went by unread. The durable
+		// count is `source_health.divergence_count`.
 		r.log.InfoContext(ctx, "sources: reconcile divergence",
 			"source_id", src.ID, "org_id", scope.OrgID(),
 			"observed", out.Observed, "suppressed", out.SuppressedObserved,
@@ -617,40 +623,98 @@ func suppressionReasonFor(st domain.AlertStatus) string {
 
 // ------------------------------------------------------------------ fan-out
 
-// FanOut enqueues one `source.reconcile` per due source and one `silences.sync`
-// per reconcile-enabled source, across every tenant.
+// FanOut is the body of the `source.reconcile` job when its payload names NO
+// source: it is a TWO-LEVEL fan-out, and this method is whichever level the
+// payload asked for.
 //
-// It is the body of the `source.reconcile` job when its payload names NO source
-// — the periodic tick cannot know the source list, and `platform/jobs` says so
-// out loud: "the fan-out needs the source list and belongs to the `sources`
-// service, which enqueues them through db.Enqueuer".
+//   - No org id → THE TENANT LEVEL. One bounded page of tenants, one job each,
+//     and a continuation carrying the cursor when the page came back full.
+//   - An org id → THE SOURCE LEVEL, for that one tenant: `fanOutTenant`'s bounded
+//     `ListDue` and the reconcile/silences pair per due source.
 //
-// One tenant's failure logs and CONTINUES. The tick repeats within thirty
-// seconds, which makes "carry on" strictly better than "abort": aborting turns
-// one tenant's problem into every tenant's silence.
-func (r *Reconciler) FanOut(ctx context.Context) (int, error) {
+// The periodic tick cannot know the source list, and `platform/jobs` says so out
+// loud: "the fan-out needs the source list and belongs to the `sources` service,
+// which enqueues them through db.Enqueuer".
+//
+// ⭐ THE OUTER LEVEL USED TO BE A LOOP OVER `Scopes()`, AND THAT WAS THE DEFECT
+// (2d699d6). The inner level was always bounded by `FanOutLimit`; the outer one
+// was bounded by nothing, so every tenant in the deployment was visited inside ONE
+// execution of a job scheduled every thirty seconds and killed at sixty. Adding a
+// customer added fixed work to every tick inside a budget nobody widened, and a
+// run killed part-way through restarted at the first tenant on the next tick —
+// so the tenants at the end of the list could be starved of the pass that
+// discovers their due sources. `jobs.TenantFanOut` is the shape that fixes it, and
+// this kind is where that shape was copied FROM.
+//
+// ⭐ "ONE TENANT'S FAILURE LOGS AND CONTINUES" IS NOW THE QUEUE'S PROMISE RATHER
+// THAN A LOG LINE'S. The tenants are separate jobs, so a tenant whose `ListDue`
+// fails fails alone, retries on its own budget, and dead-letters under its own
+// payload; nothing is swallowed and no other tenant is in the execution to stop.
+// The tenant-level failure — an unreadable tenant list, an unreachable queue — is
+// RETURNED, because a tick that fanned out to nobody has scheduled nothing at all
+// and that is what a retry is for.
+//
+// The count is jobs enqueued by THIS execution: per-tenant jobs at the tenant
+// level, and the reconcile/silences pair per due source at the source level.
+//
+// ⛔⛔ WHAT BOUNDS THIS DEPLOYMENT IS THE RECONCILE QUEUE'S TWO WORKERS, NOT THIS
+// WALK, AND A READER SIZING AN INSTALL SHOULD GET THE NUMBERS HERE RATHER THAN
+// DISCOVER THEM. `reconcile` runs two workers (SPEC §G.3's queue table), so one
+// 30-second tick is 60 worker-seconds of drain. The tenant walk costs almost none
+// of it: 501 rows at roughly 3 ms is about 1.5 s, some 2.5% of the budget. What
+// spends it is the work the walk SCHEDULES — two jobs per due source per tenant,
+// each one a call to somebody else's Alertmanager over a network. Draining a tick
+// inside its own period needs
+//
+//	2·N·S·t + 0.003·N ≤ 60
+//
+// for N tenants, S due sources each and t seconds per upstream call. At one due
+// source per tenant and a one-second upstream that is N ≤ ~30 tenants; at the
+// client's own 10-second HTTP timeout (`factory.go`'s `Timeout`) it is N ≤ 3.
+// Roughly seventeen times tighter than the walk this method pages, and reached
+// long before `TenantFanOutLimit` is.
+//
+// ⚠️ THAT CEILING IS NOT INTRODUCED HERE, AND ONE ACCIDENTAL BRAKE IS REMOVED. The
+// per-source cost was always the binding constraint; what has changed is that the
+// old loop was ALSO throttled by its own failure mode — the sixty-second execution
+// timeout killed the tenant walk part-way through, so at high tenant counts fewer
+// per-source jobs were ever enqueued, and the queue looked calmer because the
+// sweep was silently incomplete. Now the whole tenant list is reached, so the whole
+// per-source demand is real. Raising `MaxWorkers` for the `reconcile` queue is the
+// lever, and it is deliberately NOT pulled here: the value is a binding SPEC table
+// row and `FromPlatformConfig` exposes no knob for this queue, so it is a
+// deployment decision with a SPEC edit attached, not a detail of this conversion.
+func (r *Reconciler) FanOut(ctx context.Context, fo jobs.TenantFanOut) (int, error) {
 	if r.orgs == nil || r.enq == nil {
 		return 0, errs.New(errs.KindInternal, CodeReconcileUnwired,
 			"the reconcile fan-out has no tenant lister or no queue")
 	}
-	scopes, err := r.orgs.Scopes(ctx)
+
+	if !fo.IsFanOut() {
+		// ⛔ THE SCOPE COMES FROM THE `orgs` TABLE AND NEVER FROM THE PAYLOAD. A job
+		// row is data; a tenant that departed between the tick and this pass must
+		// get no sweep, and `jobs.ForTenant` reads that as "nothing to do and
+		// nothing to retry" rather than as a failure.
+		enqueued := 0
+		err := jobs.ForTenant(ctx, jobs.KindSourceReconcile, r.orgs, fo.OrgID,
+			func(ctx context.Context, scope db.TenantScope) error {
+				n, err := r.fanOutTenant(ctx, scope)
+				enqueued = n
+				return err
+			})
+		return enqueued, err
+	}
+
+	out, err := jobs.FanOutTenants(ctx, jobs.KindSourceReconcile, r.enq, r.orgs, r.log, fo.After,
+		func(f jobs.TenantFanOut) db.JobArgs { return jobs.SourceReconcileArgs{TenantFanOut: f} })
 	if err != nil {
 		return 0, err
 	}
-
-	enqueued := 0
-	for _, scope := range scopes {
-		n, err := r.fanOutTenant(ctx, scope)
-		enqueued += n
-		if err != nil {
-			r.log.ErrorContext(ctx, "sources: reconcile fan-out failed for one tenant",
-				"org_id", scope.OrgID(), "error", err)
-		}
-	}
-	return enqueued, nil
+	return out.Enqueued, nil
 }
 
-// fanOutTenant schedules one tenant's passes.
+// fanOutTenant schedules one tenant's passes — the whole of a job execution and
+// the whole of the kind's sixty-second budget, rather than a share of one.
 func (r *Reconciler) fanOutTenant(ctx context.Context, scope db.TenantScope) (int, error) {
 	// ListDue is the bounded fan-out query: only sources whose
 	// `reconcile_interval_s` has elapsed, never-reconciled ones first.

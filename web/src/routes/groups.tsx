@@ -14,11 +14,12 @@
  * thread. Conflating them would suggest oto invents groupings, and it does not:
  * grouping is Alertmanager's decision, mirrored.
  */
-import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createMemo } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
 import { listAlertGroups } from "~/api/endpoints";
+import { GroupStateSchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import type { Group, GroupListQuery, GroupState } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
@@ -26,9 +27,16 @@ import { SeverityMark, StormChip } from "~/components/StateChip";
 import { Button, Chip, Input, Select, ToggleGroup, cx } from "~/components/ui/primitives";
 import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
 import { count as fmtCount } from "~/lib/format";
+import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 
 const PAGE_SIZE = 50;
 
+/**
+ * The two group states, the contract's list rather than a copy of it. This only
+ * supplies the capital letter — a state added server-side is a compile error
+ * here rather than a toggle nobody can reach.
+ */
+const GROUP_STATES: readonly GroupState[] = GroupStateSchema.options;
 const STATE_LABEL: Record<GroupState, string> = { open: "Open", closed: "Closed" };
 
 export default function GroupsRoute() {
@@ -39,7 +47,7 @@ export default function GroupsRoute() {
     const raw = typeof params["state"] === "string" ? params["state"] : "";
     return raw
       .split(",")
-      .filter((s): s is GroupState => s === "open" || s === "closed");
+      .filter((s): s is GroupState => (GROUP_STATES as readonly string[]).includes(s));
   });
 
   const search = (): string => (typeof params["q"] === "string" ? params["q"] : "");
@@ -63,8 +71,22 @@ export default function GroupsRoute() {
     navigate(`/groups${s === "" ? "" : `?${s}`}`, { scroll: false });
   };
 
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  const [rows, setRows] = createSignal<readonly Group[]>([]);
+  // A cursor is minted under the whole filter set — state, search, storm and
+  // ack, all of them URL params — and §E.3 answers one carried across a filter
+  // change with `400 cursor_filter_mismatch`. The fingerprint is those four,
+  // so any of them changing discards the held pages (see `createKeysetFeed`).
+  const fingerprint = createMemo(
+    () => `${states().join(",")}|${search()}|${String(storm())}|${String(ack())}`,
+  );
+
+  // The annotation cuts the type-inference loop the closure creates: the feed
+  // reads the query's envelope, and the query's key carries the feed's cursor.
+  const feed: KeysetFeed<Group> = createKeysetFeed({
+    envelope: () => groups.data,
+    isPlaceholder: () => groups.isPlaceholderData,
+    keyOf: (g) => g.id,
+    fingerprint,
+  });
 
   const query = createMemo<GroupListQuery>(() => {
     const q: Record<string, unknown> = { limit: PAGE_SIZE, sort: "-last_activity_at" };
@@ -72,27 +94,17 @@ export default function GroupsRoute() {
     if (search() !== "") q["q"] = search();
     if (storm() !== null) q["storm"] = storm();
     if (ack() !== null) q["ack"] = ack();
-    if (cursor() !== null) q["cursor"] = cursor();
+    if (feed.cursor() !== null) q["cursor"] = feed.cursor();
     return q as GroupListQuery;
   });
 
   const groups = useQuery(() => ({
     queryKey: qk.groups.list(query()),
     queryFn: ({ signal }: { signal: AbortSignal }) => listAlertGroups(query(), { signal }),
+    placeholderData: keepPrevious,
   }));
 
-  const all = createMemo<readonly Group[]>(() => {
-    const page = groups.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(rows().map((g) => g.id));
-    return [...rows(), ...page.filter((g) => !seen.has(g.id))];
-  });
-
-  const loadMore = (): void => {
-    setRows(all());
-    const next = groups.data?.page.next_cursor;
-    if (typeof next === "string" && next !== "") setCursor(next);
-  };
+  const all = feed.rows;
 
   return (
     <div class="flex min-h-0 flex-1 flex-col">
@@ -115,12 +127,12 @@ export default function GroupsRoute() {
 
         <ToggleGroup<GroupState>
           legend="Group state"
-          options={(["open", "closed"] as const).map((s) => ({ value: s, label: STATE_LABEL[s] }))}
+          options={GROUP_STATES.map((s) => ({ value: s, label: STATE_LABEL[s] }))}
           selected={states()}
           onChange={(next) => setParam("state", next.length > 0 ? next.join(",") : null)}
         />
 
-        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+        <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Ack</span>
           <Select
             value={ack() ?? ""}
@@ -133,7 +145,7 @@ export default function GroupsRoute() {
           </Select>
         </label>
 
-        <label class="flex items-center gap-1.5 text-[12px] text-ink-muted">
+        <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Storm</span>
           <Select
             value={storm() === null ? "" : String(storm())}
@@ -145,9 +157,9 @@ export default function GroupsRoute() {
           </Select>
         </label>
 
-        <span class="ml-auto text-[12px] tabular-nums text-ink-muted" aria-live="polite">
+        <span class="ml-auto text-body tabular-nums text-ink-muted" aria-live="polite">
           {fmtCount(all().length)}
-          {groups.data?.page.has_more === true ? "+" : ""} groups
+          {feed.hasMore() ? "+" : ""} groups
         </span>
       </div>
 
@@ -170,9 +182,9 @@ export default function GroupsRoute() {
               <For each={all()}>{(group) => <GroupRow group={group} />}</For>
             </ul>
 
-            <Show when={groups.data?.page.has_more === true}>
+            <Show when={feed.hasMore()}>
               <div class="border-t border-line px-3 py-2 text-center">
-                <Button size="sm" busy={groups.isFetching} onClick={loadMore}>
+                <Button size="sm" busy={groups.isFetching} onClick={feed.loadMore}>
                   Load more
                 </Button>
               </div>
@@ -208,7 +220,7 @@ const GroupRow = (props: { readonly group: Group }) => {
 
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="min-w-0 truncate text-[13px] font-medium text-ink">{g().title}</span>
+            <span class="min-w-0 truncate text-item font-medium text-ink">{g().title}</span>
             <Show when={g().generation > 1}>
               <Chip title="A new generation opens when a closed group re-opens. One generation owns exactly one chat thread.">
                 gen {g().generation}
@@ -222,7 +234,7 @@ const GroupRow = (props: { readonly group: Group }) => {
             </Show>
           </div>
 
-          <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-muted">
+          <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-ink-muted">
             <span class="tabular-nums">
               {fmtCount(g().total_count)} member{g().total_count === 1 ? "" : "s"}
             </span>
@@ -262,7 +274,7 @@ const GroupRow = (props: { readonly group: Group }) => {
           </div>
         </div>
 
-        <span class="shrink-0 text-right text-[11px] text-ink-subtle">
+        <span class="shrink-0 text-right text-meta text-ink-subtle">
           <RelativeTime value={g().last_activity_at} label="Last activity" />
         </span>
       </A>

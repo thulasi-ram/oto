@@ -1,0 +1,12 @@
+{
+  "blocks": [
+    {
+      "type": "section",
+      "block_id": "oto_reply_a14bd30645",
+      "text": {
+        "type": "mrkdwn",
+        "text": ":eyes: *Acknowledged* by <@U0123456789> — _Looking at it — provider side, escalating to their support._"
+      }
+    }
+  ]
+}

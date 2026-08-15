@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -92,6 +93,59 @@ func (s *Service) GetOrg(ctx context.Context, scope db.TenantScope) (domain.Org,
 		return domain.Org{}, err
 	}
 	return org.WithDeclarative(s.declarative), nil
+}
+
+// retentionPageSize bounds one ListLive query in the MaxRetention walk. It is
+// the repository's own page ceiling, stated once here: with the walk ending
+// only on an EMPTY page, the number is a round-trip cost and never a
+// correctness input, so it cannot reproduce the truncation defect the walk's
+// own comment describes.
+const retentionPageSize = 200
+
+// MaxRetention reports the widest retention window any LIVE org has asked for:
+// the maximum effective RawRetention and EventRetention over every tenant this
+// process serves. Zero orgs answer zero durations, which every caller treats
+// as "no tenant asks for anything" and floors with its own configuration.
+//
+// ⭐ IT LIVES HERE, IN IDENTITY, BECAUSE THE DECLARATIVE OVERLAY DOES. This
+// service overlays the deployment's Declarative onto EVERY org read and
+// RECOMPUTES the effective settings from it (`Org.WithDeclarative`), and the
+// declarative value BEATS the org's own. An aggregate a caller wrote over the
+// raw `orgs.settings` column would skip that overlay, so on an install where
+// configuration forces a retention key it would compute a maximum over numbers
+// nobody is using. The reduce has to run where the overlay is applied, so each
+// row gets the same `WithDeclarative` the settings screen and the hot path get.
+//
+// ⛔ THE REDUCE IS EXACT OR IT IS AN ERROR, NEVER A PARTIAL ANSWER. Its caller
+// drops partitions on this number, a maximum that missed the tenant with the
+// longest window drops that tenant's rows early, and retention is the one
+// setting pair whose wrong value is unrecoverable. So any failure mid-walk is
+// returned as an error — the caller's documented response is to WIDEN — and
+// the walk ends only when a page comes back EMPTY: a short page is not trusted
+// as the end of the table, because a limit clamped anywhere between here and
+// the SQL would otherwise truncate the reduce into a silently narrower answer.
+// The extra empty read costs one round trip an hour.
+func (s *Service) MaxRetention(ctx context.Context) (raw, event time.Duration, err error) {
+	after := uuid.Nil
+	for {
+		orgs, lerr := s.orgs.ListLive(ctx, after, retentionPageSize)
+		if lerr != nil {
+			return 0, 0, lerr
+		}
+		if len(orgs) == 0 {
+			return raw, event, nil
+		}
+		for _, org := range orgs {
+			eff := org.WithDeclarative(s.declarative).Settings
+			if eff.RawRetention > raw {
+				raw = eff.RawRetention
+			}
+			if eff.EventRetention > event {
+				event = eff.EventRetention
+			}
+		}
+		after = orgs[len(orgs)-1].ID
+	}
 }
 
 // UpdateOrgSettings applies a partial write to this org's tuning and returns the

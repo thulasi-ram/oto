@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +62,35 @@ func TestAllEventTypes_IsAClosedWellShapedSet(t *testing.T) {
 			assert.NotContains(t, s, banned,
 				"no human writes a signal's state: there is no %q", s)
 		}
+	}
+}
+
+// TestEventTypeRendersAsItsStringForEveryEncoder is the regression for the blank
+// log line: `"type":{}` where the fact's name belongs.
+//
+// The three subjects are the three ways this value leaves the process — a JSON log
+// record, a text log record, and any encoder handed a value carrying one — and all
+// three route through `MarshalText`. `String()` covers only `fmt`, which is why
+// having it was not enough.
+func TestEventTypeRendersAsItsStringForEveryEncoder(t *testing.T) {
+	typ := EventRuleLookupFailed
+
+	b, err := json.Marshal(map[string]any{"type": typ})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"rule.lookup_failed"}`, string(b),
+		"an EventType with no MarshalText encodes as {} — every field it has is unexported")
+
+	var jsonOut, textOut strings.Builder
+	slog.New(slog.NewJSONHandler(&jsonOut, nil)).Warn("could not record", "type", typ)
+	slog.New(slog.NewTextHandler(&textOut, nil)).Warn("could not record", "type", typ)
+	assert.Contains(t, jsonOut.String(), `"type":"rule.lookup_failed"`)
+	assert.Contains(t, textOut.String(), "type=rule.lookup_failed")
+
+	// Every member, not just the one that regressed.
+	for _, ty := range AllEventTypes() {
+		text, marshalErr := ty.MarshalText()
+		require.NoError(t, marshalErr)
+		assert.Equal(t, ty.String(), string(text))
 	}
 }
 

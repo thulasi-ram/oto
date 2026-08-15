@@ -564,9 +564,10 @@ mirror image of the mistake this amendment exists to correct.
 | 3 | 2026-08-08 | `unacked_reminder_mention` added, default `none`, gated on severity, rendered in the top-level `text` | Slack documents that `@here`/`@channel` do not notify in threads, so a default of `here` would ship a control that does nothing |
 | 4 | 2026-08-09 | The "stripped reference" premise is recorded as **half true**: buttons ARE stripped, attachments and colour are NOT. Rule 5 split into 5a (colour is a progressive enhancement) and 5b (no broadcast may depend on a button — now confirmed by observation); **rule 4 kept unchanged and re-justified from screen readers and push notifications** | A live workspace: `conversations.history` returns the `thread_broadcast` with `attachments` intact, and a human saw the colour bar render while the buttons did not |
 
-This ADR has now been revised three times after acceptance — twice by research and once by a real
-Slack workspace. That is the system working: the Decision was reached from documentation, the
-amendments were reached from the schema, from a database and finally from production, and the parts
-of the original argument that survived are stronger for having been attacked. Amendment 4 is the
+This ADR has now been revised four times after acceptance — by a product review, by a real
+database, by a closer reading of Slack's documentation, and finally by a real Slack workspace. That
+is the system working: the Decision was reached from documentation, the amendments were reached
+from a product review, from a database and finally from production, and the parts of the original
+argument that survived are stronger for having been attacked. Amendment 4 is the
 most instructive of the four, because the documentation was simply wrong and the rule it produced
 was right anyway — for a reason nobody had written down until they were forced to.

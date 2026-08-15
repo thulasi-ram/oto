@@ -5,6 +5,10 @@
 #   → pick your workspace → paste this file → Create.
 #   Full setup guide: docs/setup/slack.md
 #
+#   ⚠️ ONE EDIT BEFORE YOU PASTE: replace `<your-oto-host>` in
+#   `settings.interactivity.request_url` with the public HTTPS host your oto is
+#   reachable at. Everything else in this file is correct as written.
+#
 # WHAT THIS APP IS
 #   An INTERNAL, customer-built Slack app (ADR 0018). You create it in your own
 #   workspace, it is installed only there, and oto never talks to any oto-operated
@@ -98,36 +102,47 @@ oauth_config:
       #   SOURCE: https://docs.slack.dev/reference/methods/auth.test/  [VERIFIED]
 
 settings:
-  # Socket Mode: oto opens an outbound WebSocket to Slack and receives the
-  # Acknowledge button press over it. No public ingress, no inbound firewall
-  # rule, no TLS certificate, no Slack-side auto-disable on deploy. This is the
-  # default and the reason a self-hosted install works behind a firewall
-  # (ADR 0018, SPEC §H.8).
+  # Socket Mode: OFF, because oto does not implement it. There is no WebSocket
+  # client anywhere in the codebase; `OTO_SLACK_APP_TOKEN` is accepted by the
+  # config loader and read by nothing, and a channel's `transport: socket_mode`
+  # is inert too (see the comments in
+  # `internal/channels/providers/slack/config.go`). This setting used to be
+  # `true`, which produced an app whose Acknowledge button had nowhere to POST:
+  # every press went to a socket nothing was listening on.
   #
-  # ⚠️ Socket Mode ALSO needs an app-level token carrying the `connections:write`
-  # scope. That token CANNOT be declared in a manifest — the manifest schema
-  # documents only `oauth_config.scopes.bot` and `.user`. You must create it by
-  # hand after installing: Basic Information → App-Level Tokens → Generate →
-  # add scope `connections:write`. It is the `xapp-…` value.
+  # oto implements exactly ONE interactivity transport — a public HTTPS Request
+  # URL authenticated by the signing secret (docs/setup/slack.md §3). Slack will
+  # not save a Request URL while Socket Mode is on, so this line and the
+  # `request_url` below are a single decision, not two.
   #
-  # SOURCE (connections:write, "app-level tokens only", grants apps.connections.open):
-  #   https://docs.slack.dev/reference/scopes/connections.write/
-  # SOURCE (manifest documents only bot/user scope arrays):
+  # ⚠️ Do NOT generate an app-level (`xapp-…`) token. Its only purpose is to open
+  # a Socket Mode connection, and nothing in oto reads it.
+  #
+  # SOURCE (manifest schema, `settings.socket_mode_enabled`):
   #   https://docs.slack.dev/reference/app-manifest/
-  socket_mode_enabled: true
+  socket_mode_enabled: false
 
   # Interactivity must be on for the Acknowledge button to deliver a
-  # `block_actions` payload at all. With Socket Mode enabled the payload arrives
-  # over the WebSocket and `request_url` is omitted — set it (and set
-  # socket_mode_enabled to false) only if you are running oto behind public
-  # HTTPS ingress and want the HTTP transport instead. See docs/setup/slack.md.
+  # `block_actions` payload at all, and `request_url` is the endpoint Slack
+  # POSTs that payload to. oto verifies the HMAC-SHA256 signature over the raw
+  # body and enqueues the ack.
+  #
+  # The PATH is fixed by oto's router — `internal/channels/api/router.go`
+  # registers `/integrations/slack/interactions` on the sub-router that
+  # `internal/app/routes.go` mounts at `/api/v1`. Do not change it. Only the
+  # host is yours.
+  #
+  # ⚠️ REPLACE `<your-oto-host>` with your public HTTPS host before pasting this
+  # file into Slack. Slack does not verify the URL on save, so leaving the
+  # placeholder in surfaces later as a button that fails rather than as an error
+  # now.
   #
   # Every URL button and every URL overflow option in oto's card ALSO delivers an
   # interaction payload that must be acknowledged, which is why this switch is
   # required even though only one button does real work (SPEC §H.1 S9).
   interactivity:
     is_enabled: true
-    # request_url: https://oto.example.com/api/v1/integrations/slack/interactions
+    request_url: https://<your-oto-host>/api/v1/integrations/slack/interactions
 
   # oto subscribes to ZERO Slack events. It does not watch messages, joins,
   # reactions or channel changes. There is deliberately no `event_subscriptions`
@@ -208,11 +223,17 @@ settings:
 #   usergroup memberships (mention targets are literal ids from oto's own
 #   config) and registers no slash commands.
 #
+# connections:write — NOT REQUESTED, and it could not be granted here anyway: it
+#   is an app-level token scope, and the manifest schema documents only
+#   `oauth_config.scopes.bot` and `.user`. It exists to authorise
+#   `apps.connections.open`, the Socket Mode handshake — which oto never makes,
+#   because oto has no WebSocket client. `socket_mode_enabled` above is `false`
+#   for the same reason. Do not generate an `xapp-…` token for this app.
+#   SOURCE: https://docs.slack.dev/reference/scopes/connections.write/  [VERIFIED]
+#   SOURCE: https://docs.slack.dev/reference/app-manifest/  [VERIFIED]
+#
 # NO SCOPE NEEDED (listed so a reviewer is not surprised to see the call):
 #   auth.test — "No scopes required". oto calls it to prove a token is alive and
 #     to show "connected to <workspace> as @oto" in the settings UI.
 #     SOURCE: https://docs.slack.dev/reference/methods/auth.test/  [VERIFIED]
-#   apps.connections.open — "No scopes required" as a method; authorised by the
-#     app-level token's `connections:write` scope described above.
-#     SOURCE: https://docs.slack.dev/reference/methods/apps.connections.open/  [VERIFIED]
 # ---------------------------------------------------------------------------

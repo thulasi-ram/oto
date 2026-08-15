@@ -38,6 +38,12 @@ type Deps struct {
 	Sessions SessionStore
 	Slack    SlackIdentityStore
 
+	// Tx makes the ingest-token rotation atomic: the mint and the revocation
+	// sweep beside it commit together (IssueIngestToken). Nil degrades to two
+	// independent writes, which is what once left a source with no working
+	// token at all; production wires it.
+	Tx TxRunner
+
 	// Hasher is the argon2id password hasher. It is a port so a test can swap in
 	// a cheap one rather than spend 19 MiB per case.
 	Hasher authn.PasswordHasher
@@ -69,6 +75,7 @@ type Service struct {
 	tokens   TokenStore
 	sessions SessionStore
 	slack    SlackIdentityStore
+	tx       TxRunner
 
 	hasher     authn.PasswordHasher
 	clk        clock.Clock
@@ -111,6 +118,7 @@ func New(d Deps) *Service {
 		tokens:      d.Tokens,
 		sessions:    d.Sessions,
 		slack:       d.Slack,
+		tx:          d.Tx,
 		hasher:      hasher,
 		clk:         clk,
 		log:         logger,

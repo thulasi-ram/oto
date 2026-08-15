@@ -1,0 +1,62 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+⛔ OFF BY DEFAULT. The ingest endpoint is authenticated by a bearer token and
+nothing else, and /healthz, /readyz, /metrics and /openapi.json sit outside the
+authenticator entirely (internal/app/routes.go, mountOps). Publishing that to the
+internet is a decision an operator makes on purpose, not a default they discover.
+
+⚠️ IF YOU ENABLE THIS, SET TWO OTHER THINGS. `config.http.base_url` must be the
+URL this Ingress serves — it is what the "open in oto" button on every Slack card
+points at, so a stale value ships dead links into other people's Slack. And
+`config.http.cors_origins` must name the browser origin of your UI, or the UI
+cannot read an authenticated response at all.
+
+⚠️ SSE NEEDS BUFFERING OFF. The live stream is a long-lived
+text/event-stream response; an ingress that buffers it will hold every event
+until the connection closes. On ingress-nginx that is
+  nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+in `ingress.annotations`. This chart does not set them for you because the
+annotation namespace is your controller's, not oto's.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "oto.fullname" . }}
+  labels:
+    {{- include "oto.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+  {{- if or .Values.ingress.annotations .Values.commonAnnotations }}
+  annotations:
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - {{- with .host }}
+      host: {{ . | quote }}
+      {{- end }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ default "Prefix" .pathType }}
+            backend:
+              service:
+                name: {{ include "oto.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}

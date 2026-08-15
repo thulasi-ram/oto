@@ -129,7 +129,7 @@ func (r *StatsRepository) AlertQuality(
 		s.OrgID(), f.Since, f.Until, clusters, names, f.Sort.String(),
 		afterValue, f.AfterKey, limit+1)
 	if err != nil {
-		return nil, false, errs.Wrap(err, errs.KindInternal, "stats_quality_failed",
+		return nil, false, mapErr(err, "stats_quality_failed",
 			"could not read the alert-hygiene rollup")
 	}
 	defer rows.Close()
@@ -147,7 +147,7 @@ func (r *StatsRepository) AlertQuality(
 		)
 		if err := rows.Scan(&q.ClusterKey, &q.AlertName, &occ, &notif, &del,
 			&acked, &auto, &exp, &firing, &flap, &sortValue, &keysetKey); err != nil {
-			return nil, false, errs.Wrap(err, errs.KindInternal, "stats_quality_scan_failed",
+			return nil, false, mapErr(err, "stats_quality_scan_failed",
 				"could not read the alert-hygiene rollup")
 		}
 		if len(out) == limit {
@@ -166,7 +166,7 @@ func (r *StatsRepository) AlertQuality(
 		out = append(out, QualityRow{Quality: q, SortValue: sortValue, KeysetKey: keysetKey})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, errs.Wrap(err, errs.KindInternal, "stats_quality_failed",
+		return nil, false, mapErr(err, "stats_quality_failed",
 			"could not read the alert-hygiene rollup")
 	}
 	return out, hasMore, nil
@@ -176,6 +176,48 @@ func (r *StatsRepository) AlertQuality(
 //
 // `resolved` and `expired` are counted into separate columns and are never
 // summed, because conflating them is precisely the lie oto exists to prevent.
+//
+// ⛔⛔ THE FIRST THREE CTEs EXCLUDE DELIVERY DRILLS, and each one had to be
+// changed separately because each counts a different table:
+//
+//   - `a` reads `alerts.synthetic` directly.
+//   - `g` reads `alert_groups.synthetic`, which is denormalised at
+//     generation-open time for exactly this predicate.
+//   - `d` has no column of its own, so it walks the two FKs it already has —
+//     delivery -> notification -> group — and reads the group's flag. Both hops
+//     are primary-key lookups on a set already bounded by the time window, which
+//     is a far better bargain than a fourth denormalised boolean that a future
+//     writer could forget to set.
+//
+// A drill that showed up here would tell an operator their estate had one more
+// firing alert, one more open group and one more sent delivery than it does, on
+// the dashboard they check first. The other two CTEs need no predicate:
+// `source_health` and `channels` count configuration, and a drill creates
+// neither.
+//
+// ⛔ AND THE SOURCE CTE JOINS `alert_sources`, BECAUSE A DELETED SOURCE GOES ON
+// REPORTING ITS LAST VERDICT FOREVER. `SoftDelete` sets `alert_sources.deleted_at`
+// and leaves the `source_health` row exactly as the reconciler last wrote it;
+// nothing in the system ever removes that row, and the `ON DELETE CASCADE` the
+// table declares fires only on a hard delete this codebase deliberately never
+// performs. Unjoined, an org that deleted a source while it was unreachable read
+// as permanently unreachable — on the dashboard, and on the shell strip that is
+// the sole surface for the reaper guard, over a sources screen with nothing wrong
+// on it and no source left to name. The `c` CTE has always carried the same
+// `deleted_at IS NULL` predicate; it needs no join only because a channel carries
+// its own health column.
+//
+// `max_skew` and `divergence` were overstated by exactly the same rows and are
+// corrected by the same join. The worst skew oto ever measured on a source it no
+// longer polls is not a fact about the estate, and a divergence count from a
+// retired Alertmanager is a canary for a correctness bug nobody can act on.
+//
+// The join needs no new index: `source_health.source_id` is that table's primary
+// key and `alert_sources.id` is its own, so this is a key lookup per source over
+// a table holding one row per configured Alertmanager. `source_health_status_idx
+// (org_id, status)` still serves the org filter. The redundant `org_id` equality
+// is deliberate — `source_health.org_id` is denormalised with no FK (§D.2), so
+// joining on it is what asserts the two rows agree about the tenant.
 const overviewSQL = `
 WITH a AS (
   SELECT
@@ -188,6 +230,7 @@ WITH a AS (
     COUNT(*) FILTER (WHERE is_flapping)            AS flapping
   FROM alerts
  WHERE org_id = $1
+   AND NOT synthetic
    AND ($2::text[] IS NULL OR cluster_key = ANY($2))
    AND last_seen_at >= $3 AND last_seen_at <= $4
 ), g AS (
@@ -196,27 +239,32 @@ WITH a AS (
     COUNT(*) FILTER (WHERE state = 'closed') AS closed,
     COUNT(*) FILTER (WHERE storm_mode)       AS storm
   FROM alert_groups
- WHERE org_id = $1 AND last_activity_at >= $3 AND last_activity_at <= $4
+ WHERE org_id = $1 AND NOT synthetic
+   AND last_activity_at >= $3 AND last_activity_at <= $4
 ), d AS (
   SELECT
-    COUNT(*) FILTER (WHERE status = 'sent')    AS sent,
-    COUNT(*) FILTER (WHERE status = 'failed')  AS failed,
-    COUNT(*) FILTER (WHERE status = 'dead')    AS dead,
-    COUNT(*) FILTER (WHERE status = 'skipped') AS skipped,
-    COUNT(*) FILTER (WHERE status IN ('pending','sending')) AS pending,
-    COUNT(*) FILTER (WHERE ambiguous)          AS ambiguous
-  FROM notification_deliveries
- WHERE org_id = $1 AND created_at >= $3 AND created_at <= $4
+    COUNT(*) FILTER (WHERE dv.status = 'sent')    AS sent,
+    COUNT(*) FILTER (WHERE dv.status = 'failed')  AS failed,
+    COUNT(*) FILTER (WHERE dv.status = 'dead')    AS dead,
+    COUNT(*) FILTER (WHERE dv.status = 'skipped') AS skipped,
+    COUNT(*) FILTER (WHERE dv.status IN ('pending','sending')) AS pending,
+    COUNT(*) FILTER (WHERE dv.ambiguous)          AS ambiguous
+  FROM notification_deliveries dv
+  JOIN notifications n ON n.id = dv.notification_id AND n.org_id = dv.org_id
+  JOIN alert_groups ag ON ag.id = n.group_id        AND ag.org_id = n.org_id
+ WHERE dv.org_id = $1 AND NOT ag.synthetic
+   AND dv.created_at >= $3 AND dv.created_at <= $4
 ), s AS (
   SELECT
-    COUNT(*) FILTER (WHERE status = 'healthy')     AS healthy,
-    COUNT(*) FILTER (WHERE status = 'degraded')    AS degraded,
-    COUNT(*) FILTER (WHERE status = 'unreachable') AS unreachable,
-    COUNT(*) FILTER (WHERE status = 'unknown')     AS unknown,
-    COALESCE(MAX(ABS(clock_skew_ms)), 0)           AS max_skew,
-    COALESCE(SUM(divergence_count), 0)             AS divergence
-  FROM source_health
- WHERE org_id = $1
+    COUNT(*) FILTER (WHERE sh.status = 'healthy')     AS healthy,
+    COUNT(*) FILTER (WHERE sh.status = 'degraded')    AS degraded,
+    COUNT(*) FILTER (WHERE sh.status = 'unreachable') AS unreachable,
+    COUNT(*) FILTER (WHERE sh.status = 'unknown')     AS unknown,
+    COALESCE(MAX(ABS(sh.clock_skew_ms)), 0)           AS max_skew,
+    COALESCE(SUM(sh.divergence_count), 0)             AS divergence
+  FROM source_health sh
+  JOIN alert_sources src ON src.id = sh.source_id AND src.org_id = sh.org_id
+ WHERE sh.org_id = $1 AND src.deleted_at IS NULL
 ), c AS (
   SELECT
     COUNT(*) FILTER (WHERE health_status = 'healthy')        AS healthy,
@@ -257,7 +305,7 @@ func (r *StatsRepository) Overview(
 		&o.Channels.Healthy, &o.Channels.Degraded, &o.Channels.AuthFailed, &o.Channels.ConfigInvalid,
 	)
 	if err != nil {
-		return domain.Overview{}, errs.Wrap(err, errs.KindInternal, "stats_overview_failed",
+		return domain.Overview{}, mapErr(err, "stats_overview_failed",
 			"could not read the dashboard roll-up")
 	}
 	return o, nil

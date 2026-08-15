@@ -47,12 +47,16 @@ func TestIdempotencyKeyPreImageIsLengthPrefixed(t *testing.T) {
 		"the §C.7 pre-image is uint32be(len(x))||x per field, with itoa(state_version) raw")
 }
 
-// TestIdempotencyKeyAgreesWithTheKernel is the reason both implementations may
-// exist at all: §C.7 is ONE key with two spellings, and the day they disagree the
-// UNIQUE (org_id, idempotency_key) index stops meaning what it says.
+// TestIdempotencyKeyAgreesWithTheKernel was written because §C.7 had TWO
+// implementations, agreeing by luck, and the live one was NOT the kernel's. There
+// is one now: this package keeps the closed enums (alerts/domain may import no
+// other domain package, so SubjectKind and Reason cannot move there) and the
+// kernel keeps the bytes.
 //
-// alerts/domain owns the shape; this package owns the closed enums and is what the
-// notify path calls. Nothing else keeps them in step, so this does.
+// The test survives the collapse deliberately. It reads as a tautology and is not
+// one in the way that matters: the day somebody re-inlines sha256 here rather than
+// import the kernel — which is how the pair arose the first time — this goes red,
+// and the UNIQUE (org_id, idempotency_key) index keeps meaning what it says.
 func TestIdempotencyKeyAgreesWithTheKernel(t *testing.T) {
 	t.Parallel()
 

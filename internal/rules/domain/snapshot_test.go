@@ -354,14 +354,21 @@ func TestFingerprintIsInjectiveOverAdversarialExprs(t *testing.T) {
 		"one content address per distinct rule definition")
 }
 
-// TestFingerprintAgreesWithTheKernel is the reason two implementations of §C.6
-// may exist at all: it is ONE content address with two spellings — this one over a
-// raw map that has never been through NewLabels, and alerts/domain's over
-// constructed value objects — and the day they disagree, rule drift is reported
-// for every rule that happens to be computed by the other path.
+// TestFingerprintAgreesWithTheKernel was written because §C.6 had TWO
+// implementations that agreed only by luck. It survives the collapse to one,
+// because what it asserts is still the thing that must never stop being true: the
+// value this package returns is the kernel's value, for every input.
 //
-// The corpus is restricted to inputs BOTH can express: whole seconds, and label
-// values without a NUL (NewLabels refuses those as a storability bound).
+// It is close to a tautology today — domain.Fingerprint is three tokens of
+// delegation — and that is precisely why it stays. The failure it guards against
+// is not arithmetic drift, it is somebody re-inlining the digest here "to avoid
+// the import", which is exactly how the pair came to exist the first time. The
+// test goes red the moment the delegation stops.
+//
+// The corpus is no longer restricted to what both spellings could express. It now
+// carries FRACTIONAL seconds and label values with a NUL — the inputs the old
+// kernel spelling could not represent, and where the two implementations silently
+// disagreed until this collapse.
 func TestFingerprintAgreesWithTheKernel(t *testing.T) {
 	t.Parallel()
 
@@ -372,6 +379,8 @@ func TestFingerprintAgreesWithTheKernel(t *testing.T) {
 		{"severity": "critical", "team": "sre"},
 		{"severity": ""},
 		{"severity": "\x01\x02"},
+		{"severity": "\x00"},
+		{"not a legal label name": "x"},
 	}
 	annSets := []map[string]string{
 		nil,
@@ -383,20 +392,39 @@ func TestFingerprintAgreesWithTheKernel(t *testing.T) {
 	for _, expr := range exprs {
 		for _, ls := range labelSets {
 			for _, an := range annSets {
-				for _, secs := range []int{0, 1, 300, 600} {
-					labels, err := alerts.NewLabels(ls)
-					require.NoError(t, err)
-					annotations, err := alerts.NewAnnotations(an)
-					require.NoError(t, err)
-
-					want := alerts.ComputeRuleFingerprint(expr,
-						time.Duration(secs)*time.Second, 0, labels, annotations).String()
-					got := domain.Fingerprint(expr, float64(secs), 0, ls, an)
+				for _, secs := range []float64{0, 1, 1.5, 90.4, 300, 600} {
+					want := alerts.ComputeRuleFingerprint(expr, secs, 0, ls, an).String()
+					got := domain.Fingerprint(expr, secs, 0, ls, an)
 					require.Equal(t, want, got,
-						"§C.6 must have one value: expr=%q for=%ds labels=%v ann=%v", expr, secs, ls, an)
+						"§C.6 must have one value: expr=%q for=%gs labels=%v ann=%v", expr, secs, ls, an)
 				}
 			}
 		}
+	}
+}
+
+// TestCanonAgreesWithTheKernel is the other half, and the half that is NOT a
+// tautology: Canon must be the same byte string alerts/domain produces for a
+// label set that IS constructible, because §C.1 is one format shared by
+// alert_key, group_key and this fingerprint. A raw map that NewLabels would refuse
+// has no kernel value-object counterpart to compare against, so the overlap is
+// where the claim lives.
+func TestCanonAgreesWithTheKernel(t *testing.T) {
+	t.Parallel()
+
+	for _, m := range []map[string]string{
+		nil,
+		{},
+		{"severity": "critical"},
+		{"severity": "critical", "team": "sre"},
+		{"a": "", "b": ""},
+		{"ab": ""},
+		{"severity": "\x01\x02"},
+	} {
+		labels, err := alerts.NewLabels(m)
+		require.NoError(t, err)
+		require.Equal(t, string(labels.Canonical(nil)), domain.Canon(m),
+			"§C.1 must have one spelling: %v", m)
 	}
 }
 

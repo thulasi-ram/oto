@@ -1,0 +1,165 @@
+{
+  "blocks": [
+    {
+      "type": "section",
+      "block_id": "oto_title_0688c83b5d",
+      "text": {
+        "type": "mrkdwn",
+        "text": ":rotating_light: *<https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a|CheckoutErrorRateHigh>*  ·  `eu-west-1`\n_5xx rate on checkout-api is 11.4% over the last five minutes, against a 5% threshold._"
+      }
+    },
+    {
+      "type": "section",
+      "block_id": "oto_body_0688c83b5d",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Requests to POST /v2/checkout are failing upstream of the payment provider. The error budget for the month is 38% spent."
+      }
+    },
+    {
+      "type": "section",
+      "block_id": "oto_fields_0688c83b5d",
+      "fields": [
+        {
+          "type": "mrkdwn",
+          "text": "*Status*\n:fire: Firing"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Severity*\n:rotating_light: critical"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Service*\n`checkout-api`"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Namespace*\n`checkout`"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Started*\n<!date^1786125369^{time}|17:56 UTC>"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Firing for*\n1m 20s"
+        },
+        {
+          "type": "mrkdwn",
+          "text": "*Team*\npayments"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "block_id": "oto_members_0688c83b5d",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Affected instances*\n• `checkout-api-7d9f-b2` — 0.11\n• `checkout-api-7d9f-a1` — 0.09"
+      }
+    },
+    {
+      "type": "context",
+      "block_id": "oto_rule_0688c83b5d",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": ":mag: `sum(rate(http_requests_total{job=\"checkout-api\",code=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"checkout-api\"}[5m])) &gt; 0.05`   `for: 5m`"
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "block_id": "oto_actions_0688c83b5d",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Acknowledge",
+            "emoji": true
+          },
+          "action_id": "oto.ack",
+          "value": "019fe297-d84f-7599-b5b2-1f231749104a",
+          "style": "primary"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Runbook",
+            "emoji": true
+          },
+          "action_id": "oto.noop.runbook",
+          "url": "https://runbooks.example.com/checkout-error-rate"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Silence",
+            "emoji": true
+          },
+          "action_id": "oto.noop.silence",
+          "url": "https://am.example.com/#/silences/new?filter=%7Balertname%3D%22CheckoutErrorRateHigh%22%7D"
+        },
+        {
+          "type": "overflow",
+          "action_id": "oto.more",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": ":blue_book: Show timeline",
+                "emoji": true
+              },
+              "url": "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": ":chart_with_upwards_trend: Open in Prometheus",
+                "emoji": true
+              },
+              "url": "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": ":bell: Open in Alertmanager",
+                "emoji": true
+              },
+              "url": "https://am.example.com/#/alerts?filter=%7Balertname%3D%22CheckoutErrorRateHigh%22%7D"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": ":scroll: Rule history",
+                "emoji": true
+              },
+              "url": "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": ":label: Show all labels",
+                "emoji": true
+              },
+              "value": "labels|019fe297-d84f-7599-b5b2-1f231749104a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "block_id": "oto_footer_0688c83b5d",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "oto  ·  `gk_4vbuj1c49jbpf`  ·  receiver `platform-critical`  ·  _first notification_  ·  oto first saw it <!date^1786126629^{time}|18:17 UTC> (21m later)  ·  updated <!date^1786125449^{time}|17:57 UTC>"
+        }
+      ]
+    }
+  ]
+}

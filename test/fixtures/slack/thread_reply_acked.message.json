@@ -1,0 +1,29 @@
+{
+  "text": ":eyes: Acknowledged: CheckoutErrorRateHigh on eu-west-1. Severity critical, team payments, acknowledged, firing since 17:56 UTC.",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "metadata": {
+    "event_type": "oto_alert_group",
+    "event_payload": {
+      "generation": 1,
+      "group_id": "019fe297-d84f-7599-b5b2-1f231749104a",
+      "reason": "acked"
+    }
+  },
+  "attachments": [
+    {
+      "color": "#daa038",
+      "fallback": ":eyes: Acknowledged: CheckoutErrorRateHigh on eu-west-1. Severity critical, team payments, acknowledged, firing since 17:56 UTC.",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_reply_a14bd30645",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":eyes: *Acknowledged* by <@U0123456789> — _Looking at it — provider side, escalating to their support._"
+          }
+        }
+      ]
+    }
+  ]
+}

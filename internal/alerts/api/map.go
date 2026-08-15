@@ -36,6 +36,7 @@ func alertDTO(a domain.Alert) AlertDTO {
 		TotalOccurrences:  int32(a.TotalOccurrences()),
 		FlapScore:         a.FlapScore(),
 		IsFlapping:        a.IsFlapping(),
+		Synthetic:         a.Synthetic(),
 	}
 }
 

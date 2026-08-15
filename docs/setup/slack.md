@@ -23,8 +23,29 @@ Use the manifest instead.
 1. Go to <https://api.slack.com/apps> and click **Create New App**.
 2. Choose **From an app manifest**.
 3. Pick the workspace oto should post into.
-4. Paste the contents of [`deploy/slack/manifest.yaml`](../../deploy/slack/manifest.yaml).
-5. Review the summary Slack shows you, then **Create**.
+4. Copy the contents of [`deploy/slack/manifest.yaml`](../../deploy/slack/manifest.yaml)
+   and **replace the one placeholder in it** — `<your-oto-host>` in
+   `settings.interactivity.request_url` — with the public HTTPS host oto is
+   reachable at, so the line reads:
+
+   ```yaml
+   request_url: https://oto.your-company.example/api/v1/integrations/slack/interactions
+   ```
+
+   That is the endpoint the **Acknowledge** button POSTs to. Nothing else in the
+   file needs editing. If you have not decided on a host yet, see
+   [section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button) —
+   you can paste the manifest as-is and set the Request URL later, but the button
+   will not work until you do.
+5. Paste it into Slack.
+6. Review the summary Slack shows you, then **Create**.
+
+The manifest sets **`socket_mode_enabled: false`**, which is the only correct
+value: **Socket Mode is not implemented in oto** (see
+[section 3](#3-turn-on-interactivity--required-for-the-acknowledge-button) and
+[Why there is no Socket Mode](#why-there-is-no-socket-mode)). Do not switch it on
+in the Slack UI afterwards — Slack will drop the Request URL you just set, and
+button presses will go to a WebSocket nothing is listening on.
 
 The manifest is commented with a justification for every scope it asks for, and a
 list of the scopes it deliberately does **not** ask for. If your security team
@@ -88,17 +109,26 @@ and this is not one.
 
 ### 3.1 Point Slack at your oto
 
+**The manifest already does this** — `interactivity.is_enabled: true`,
+`socket_mode_enabled: false`, and a `request_url` you filled the host into in
+[section 1](#1-create-the-app-from-the-manifest). So this section is a *check*,
+not a chore, unless you pasted the manifest with the placeholder still in it.
+
 1. Make oto reachable at a public HTTPS URL (an ingress, a load balancer, a
    tunnel — oto does not care which).
-2. In the Slack app: **Interactivity & Shortcuts → Interactivity → On.**
-3. Set **Request URL** to:
+2. In the Slack app, open **Interactivity & Shortcuts**. **Interactivity** should
+   already be **On** and **Request URL** should already read:
 
    ```
    https://<your-oto-host>/api/v1/integrations/slack/interactions
    ```
 
-4. Save. Slack does **not** verify the URL on save for interactivity, so a typo
-   here surfaces later as a button that fails rather than as an error now.
+   with your own host in place of `<your-oto-host>`. If it is empty, or still has
+   the literal placeholder in it, set it now and **Save**.
+
+3. Slack does **not** verify the URL on save for interactivity, so a typo here
+   surfaces later as a button that fails rather than as an error now. The path is
+   fixed by oto's router — only the host is yours.
 
 ### 3.2 Copy the signing secret
 
@@ -273,7 +303,7 @@ channel health banner, so you can look it up here.
 | `channel_not_found` | The `conversation_id` in the channel config does not name a conversation this token can address. Nearly always a wrong or stale ID — or an ID copied from a **different workspace**. | Re-copy the channel ID from Slack. Check `team_id` matches the workspace the token belongs to. If the channel was deleted, point the oto channel somewhere else. |
 | `not_in_channel` | The channel exists, the token is fine, the bot is simply not a member. Someone removed it, or it was never invited. | `/invite @oto` in that channel. Then re-run the channel test. |
 | `is_archived` | Someone archived the channel. | Unarchive it, or point the oto channel at a live one. Do not expect oto to un-archive it — it has no scope to. |
-| `is_inactive` | The conversation is a DM with a deactivated account. | Point the channel at a real channel. |
+| `is_inactive` | Slack's `chat.update` reference defines this as a **frozen, archived or deleted** conversation — not, as this table used to say, only a DM with a deactivated account. | Point the oto channel at a live conversation. |
 
 None of these retry, and that is correct: retrying twelve times against a channel
 that will never exist again just delays the moment you find out. **Check the
@@ -324,11 +354,132 @@ messages than expected — look at flap and storm damping in
 | oto replies *"already acknowledged"* | Somebody got there first — possibly you, twice. | Nothing to fix. An acknowledgement is a receipt, and the first one is the fact on the record. |
 | Button works, but the ack is attributed to a bare Slack handle instead of an oto user | That Slack member is not linked to an oto user **in the organisation that owns this channel**. The mapping is per-organisation on purpose: one workspace can serve two oto tenants, and a link in one must not attribute a press in the other. | Link the identity in oto's user settings. oto records the ack either way rather than refusing it — losing an acknowledgement because of a missing link would be worse. The first press already stored the Slack identity, so linking is a pick-from-a-list rather than typing a member id. |
 
-### `invalid_blocks`, `msg_too_long`, `too_many_attachments`
+### `invalid_blocks`, `msg_blocks_too_long`, `too_many_attachments`, `metadata_*`
 
 **This is an oto bug, not a configuration problem.** oto built a message Slack
-would not accept. The delivery is dead on arrival and oto alerts on itself
-(`oto_render_invalid_total`). Please file an issue with the delivery ID.
+would not accept. The delivery is dead on arrival, it is never retried — a
+payload that is illegal is exactly as illegal on the twelfth attempt. It lands
+as a dead delivery carrying the offending payload, and `oto_jobs_dead_total`
+carries the rate. Please file an issue with the delivery ID.
+
+The full set oto treats this way:
+`invalid_blocks`, `invalid_blocks_format`, `block_mismatch`,
+`msg_blocks_too_long`, `msg_too_long`, `too_many_attachments`,
+`invalid_attachments`, `attachment_payload_limit_exceeded`, `metadata_too_large`,
+`invalid_metadata_format`, `invalid_metadata_schema`,
+`metadata_must_be_sent_from_app`, `no_dual_broadcast_content_update`, `no_text`,
+`markdown_text_conflict`, `invalid_arguments`.
+
+Two of those are worth knowing about individually.
+
+- **`msg_too_long` is a `chat.update` error and is not returned by
+  `chat.postMessage` at all.** Posting has no length rejection: Slack **silently
+  truncates** a message over 40 000 characters. A card that was shortened without
+  saying so is the one failure mode oto's whole render-validation story exists to
+  prevent, and it is the one Slack will do quietly. oto's own cap is far below
+  either number, so this should be unreachable.
+- **`metadata_must_be_sent_from_app`** would mean **no oto card has ever been
+  delivered** — see the note in [section 8](#8-verifying-oto-against-a-real-workspace-the-part-no-test-can-do).
+
+---
+
+## 8. Verifying oto against a real workspace — the part no test can do
+
+> **Read this if you have a Slack workspace and thirty minutes. You are the only
+> person who can close it.**
+
+**Nothing in this repository has ever been rendered by Slack.** No Slack
+credential has ever been used by oto's code. Every rule oto obeys about Block Kit
+lives in `internal/channels/render/slack/validate.go` and is checked by oto
+against oto — a closed loop that cannot detect a wrong belief. Two ADRs rest on
+that loop: [0008](../adr/0008-slack-update-in-place-primary.md) (update in place)
+and [0020](../adr/0020-broadcast-the-transitions-that-must-be-seen.md)
+(broadcast).
+
+Two things have been done to make your thirty minutes count.
+
+1. **The card payloads are checked in.** `test/fixtures/slack/` holds every card
+   variant oto can emit, twice: `*.message.json` is the exact bytes oto sends,
+   and `*.blockkit.json` is the same card in the shape
+   [Block Kit Builder](https://app.slack.com/block-kit-builder) accepts.
+   `index.json` lists them with the attachment colour of each.
+2. **The client behaviour is already proved.** `test/harness/slack_conformance.go`
+   is a Slack double that enforces Slack's *published* request contract, and
+   `test/harness/slack_conformance_test.go` drives the real provider through
+   root → reply → update → broadcast against it. So the arguments, the threading
+   and the error handling are not what you are checking. **You are checking
+   Slack's renderer**, which is the one thing a fake cannot be.
+
+### 8.1 Five minutes, no workspace admin needed: Block Kit Builder
+
+Open <https://app.slack.com/block-kit-builder>, and for each `*.blockkit.json`
+file paste its contents over the sample payload.
+
+| # | File | What must be true | What a failure looks like |
+|---|---|---|---|
+| 1 | `root_firing.blockkit.json` | Seven blocks. Title is a **bold clickable link**, cluster is a separate grey chip. Two-column field grid. Three buttons plus a `…` overflow with five entries. | A validation error in the right-hand pane names the offending block. A title that is not a link means the section/`header` decision (S1) is wrong. |
+| 2 | `root_update_acked.blockkit.json` | Status field reads `~Firing~ → Acked by …`, i.e. **struck through**. | Literal tildes on screen means Slack's strikethrough is not single-`~`. |
+| 3 | `root_resolved.blockkit.json` | The state trail context line renders as one line with `→` separators and **times in your own timezone**, not UTC. | `<!date^…>` shown raw means the token or its fallback is malformed. |
+| 4 | `root_silenced.blockkit.json` | The rule expression renders inside a code span with a literal **`>`**, not `&gt;`. | `&gt;` on screen means oto is double-escaping mrkdwn. |
+| 5 | `thread_reply_acked.blockkit.json` | One section. Emoji `:eyes:` renders as a glyph. | A literal `:eyes:` means shortcodes are not resolved in `mrkdwn`. |
+| 6 | `broadcast_unacked_reminder.blockkit.json` | One section. | — |
+| 7 | `storm_notice.blockkit.json` | One section with a working `see them all` link. | — |
+
+⛔ **What this cannot check, and it is a lot.** Block Kit Builder renders
+`blocks` only. It cannot render `attachments`, and *every* oto block lives inside
+one attachment because that is the only way to get a colour bar (§H.1 S3). So the
+builder proves nothing about the **colour bar**, the **top-level `text`** (the
+push notification and the screen-reader content), the attachment **fallback**, or
+the **metadata**. Those need 8.2.
+
+### 8.2 Twenty-five minutes, with a workspace: the six behaviours
+
+Install the app ([section 1](#1-create-the-app-from-the-manifest), with your host
+filled into the manifest's `request_url`), invite it to a scratch channel, point
+an oto channel at that conversation id, and fire a synthetic alert.
+
+**Do the first check before anything else — it can invalidate every other one.**
+
+| # | Behaviour | Do this | It passes if | It fails if |
+|---|---|---|---|---|
+| 0 | **Metadata is accepted from a bot token** | Send one alert. Look at the delivery record. | The delivery succeeded. | The delivery is dead with `metadata_must_be_sent_from_app`. Slack lists that error on both write methods with the text *"message metadata can only be posted or updated using an app-level token"*, and **oto attaches metadata to every card under an `xoxb-` bot token**. If it fires, no oto card has ever been deliverable and `rootMetadata` in `internal/channels/render/slack/root.go` must go. Nothing offline can decide this. |
+| 1 | **The card renders** | Look at the firing card in the channel. | It matches `root_firing.blockkit.json` from 8.1, **plus** a red `#a30200` bar down the left edge. | No colour bar → attachments are no longer rendering, and §H.2's peripheral-vision cue is gone. Report it: ADR 0008 is built on the colour bar being the only thing that answers "do I need to act?" at a glance. |
+| 2 | **The push notification is a sentence** | Lock your phone. Fire the alert. Read the banner **without unlocking**. | A complete sentence: severity, what, where, since when. Compare with `"text"` in `root_firing.message.json`. | The banner shows only the app name, or a fragment, or ends `…​.` — the top-level `text` is not doing its job, and it is the only thing a screen reader reads. |
+| 3 | **`chat.update` edits in place** (ADR 0008) | Acknowledge, then resolve. Watch the channel — do not open the thread. | **One** message, changing colour and content: red → amber → green. No new message. The `ts` in oto's `channel_threads` row never changes. | A second card appears → the update path fell back to posting. A card that stops changing → check for `cant_update_message`, which is what a **rotated bot token** produces: only the token that posted a message may edit it. |
+| 4 | **Threads carry the detail** | Open the thread on the card. | Replies are threaded under the root, in order, and no reply ever appears as a top-level channel message. | A reply in the channel body → `thread_ts` was omitted. Replies nested under each other → oto threaded off a reply's `ts` instead of the root's. |
+| 5 | **`reply_broadcast` surfaces a reply** (ADR 0020) | Let an alert go unacknowledged past the reminder threshold with `unacked_reminder_mention` set to an explicit list. | The reminder appears **in the channel** as well as in the thread, and the mentioned people get a **notification on their phone**. | Only in the thread → `reply_broadcast` is not being set. Visible but nobody notified → confirms Amendment 3's suspicion that mentions from a thread reply do not notify, and `unacked_reminder_mention` should stay defaulted to `none`. |
+| 6 | **The in-channel broadcast copy** | Look at the broadcast **in the channel body**, not in the thread. | Record exactly three things: does the **colour bar** show? do the **buttons** show? does the **top-level text** show in full? | Slack documents the `thread_broadcast` reference as carrying neither attachments nor buttons. ADR 0020 Amendment 4 claims the attachment survives and the buttons do not. **That claim is currently unverifiable from this repository** — see 8.3. Whatever you observe, write it down; it is the evidence Amendment 4 is missing. |
+
+### 8.3 One thing to settle while you are there
+
+ADR 0020 **Amendment 4** and several code comments in
+`internal/channels/render/slack/` describe observations from a *"first live
+Slack run"* — a `conversations.history` read, and a human looking at a message in
+a client. git-bug **edb670f** states that no workspace has ever been connected.
+**Both cannot be true**, and no offline check can tell you which is: the claimed
+evidence is an observation, and observations leave no trace in a repository.
+
+If your run contradicts Amendment 4, say so in the ADR. If it confirms it,
+Amendment 4 gains the citation it needs. Either way the ambiguity is worth
+ending, because three ⛔ comments and two of ADR 0020's binding rules point at it.
+
+### 8.4 What is still unverifiable after all of the above
+
+These have no documented answer and no offline test. They are listed so nobody
+mistakes their absence for a passing result.
+
+- **Attachment block limit.** Slack documents 50 blocks per *message* and states
+  nothing for an attachment's blocks. oto applies 50 anyway. Its own budget is
+  seven, so it has never been near it.
+- **`metadata_too_large` size.** The error is documented; the number is not,
+  anywhere. oto guesses 8 000 bytes.
+- **Total request size.** Undocumented. oto guesses 100 000 bytes.
+- **Threading off a reply's `ts`.** Slack says *"avoid it"* and does not say what
+  happens. oto never does it, which is the only defence that does not depend on
+  knowing.
+- **Whether a broadcast reply counts against the workspace-wide posting limit.**
+  Undocumented either way. oto's rate limiter is **per conversation only** and
+  models no workspace-wide bucket at all.
 
 ---
 
@@ -337,8 +488,11 @@ would not accept. The delivery is dead on arrival and oto alerts on itself
 Socket Mode is the transport most self-hosted installs would prefer: oto would
 dial **out** to Slack over a WebSocket and receive button presses on it, with no
 ingress rule, no TLS certificate and no public URL. The documentation used to say
-that was the default. **It was never built** — there is no WebSocket client in
-oto, and `OTO_SLACK_APP_TOKEN` has no reader.
+that was the default, and the manifest used to ship `socket_mode_enabled: true`.
+**It was never built** — there is no WebSocket client in oto, and
+`OTO_SLACK_APP_TOKEN` has no reader. The manifest now ships
+`socket_mode_enabled: false` and a Request URL, which is the only combination
+that produces a working Acknowledge button.
 
 Until it exists, interactivity means an HTTPS Request URL and a signing secret.
 If you cannot expose one, run oto without buttons: alerts, grouping, cards,

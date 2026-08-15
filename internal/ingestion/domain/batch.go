@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Mode distinguishes the two producers of a batch (ingest_batches_mode_ck).
+// Mode distinguishes the producers of a batch (ingest_batches_mode_ck).
 type Mode string
 
 const (
@@ -19,13 +19,31 @@ const (
 	// path (C18) — it produces Observations for the same state machine — but its
 	// raw response is recorded here so the two are equally auditable.
 	ModeReconcile Mode = "reconcile"
+	// ModeSynthetic is a DELIVERY DRILL: a payload oto manufactured for itself
+	// and pushed through this very path, so an operator can prove the
+	// notification chain works without waiting for a real outage.
+	//
+	// ⭐⭐ THIS CONSTANT IS THE PROVENANCE MARK, AND IT IS WHY THE MARK IS NOT A
+	// LABEL. A mode is set by the CODE PATH that accepted the batch; it appears
+	// nowhere in any body, so no Alertmanager on earth can cause one. A reserved
+	// label would be forgeable by every upstream — and worse, a label
+	// participates in `alert_key` (§C.2), so marking an alert with one would
+	// change its identity. `alerts.synthetic` is carried down from here, and
+	// every aggregate in oto excludes it.
+	ModeSynthetic Mode = "synthetic"
 )
 
 // String renders the mode.
 func (m Mode) String() string { return string(m) }
 
 // Valid reports membership of ingest_batches_mode_ck.
-func (m Mode) Valid() bool { return m == ModePush || m == ModeReconcile }
+func (m Mode) Valid() bool {
+	return m == ModePush || m == ModeReconcile || m == ModeSynthetic
+}
+
+// IsSynthetic reports whether this batch was manufactured by oto for a delivery
+// drill and must therefore never reach an aggregate.
+func (m Mode) IsSynthetic() bool { return m == ModeSynthetic }
 
 // Status is the lifecycle of one batch (ingest_batches_state_ck).
 type Status string
@@ -39,6 +57,10 @@ const (
 	StatusProcessed Status = "processed"
 	// StatusPartial means a batch over ChunkThreshold is mid-chunking (§G.4).
 	// It is RESUMABLE, not terminal — see Resumable.
+	//
+	// ⛔ Its absence proves nothing about how a batch is being processed. EVERY
+	// batch is chunked by ChunkSize; only one over ChunkThreshold wears this mark,
+	// so a batch of 2 000 runs four transactions while still reading `pending`.
 	StatusPartial Status = "partial"
 	// StatusFailed means processing gave up. Terminal; `error` is required.
 	StatusFailed Status = "failed"
@@ -61,8 +83,39 @@ func (s Status) String() string { return string(s) }
 // chunk that already committed produces no second observation.
 //
 // `processed` and `failed` are the two genuinely terminal states, and those are
-// the ones the "no longer pending" rule is about.
+// the ones the "no longer pending" rule is about. Terminal to the JOB, that is —
+// see Replayable for the one door out of `failed`, which an operator opens and
+// the queue cannot.
 func (s Status) Resumable() bool { return s == StatusPending || s == StatusPartial }
+
+// Replayable reports whether an OPERATOR may re-enqueue this batch.
+//
+// ⭐ IT IS A DIFFERENT QUESTION FROM Resumable AND IT HAS TO BE. Resumable asks
+// "may the job queue do more work on this row", and the answer for `failed` is no
+// forever: a redelivered job that resumed a batch someone gave up on would undo
+// the giving up. Replayable asks "may a human, after shipping a parser fix, say
+// do it again" — and `failed` is exactly the state that question exists for. The
+// batch's alerts are on disk and not in the product, and the payload that broke
+// is still there.
+//
+// ⛔ `processed` IS NOT HERE. A processed batch already reached the product, so
+// replaying it buys nothing and risks the T7/T8 double-write for free.
+//
+// It is the same pair Troubled returns, and that is not a coincidence to be
+// deduplicated away: the failed-batch feed lists the batches whose alerts are
+// stranded, and those are precisely the batches worth replaying. The two would
+// diverge the moment either question changed, and merging them would hide that.
+func (s Status) Replayable() bool { return s == StatusFailed || s == StatusPartial }
+
+// Troubled reports whether this status is one an operator has to look at.
+//
+// `failed` gave up and `partial` is mid-chunking — resumable in principle, and
+// the state a batch is left in when a worker dies between chunks. Those two are
+// what the failed-batch feed lists, because they are the two states in which
+// alerts are on disk and not in the product. `pending` is excluded on purpose:
+// every accepted batch passes through it, so listing it would drown the answer
+// in the normal case.
+func (s Status) Troubled() bool { return s == StatusFailed || s == StatusPartial }
 
 // TopStatus is the batch-level `status` field of the webhook envelope
 // (ingest_batches_status_ck). It is `resolved` only when EVERY alert in the group
@@ -150,6 +203,44 @@ type NewBatchParams struct {
 	AlertCount         int
 	TruncatedAlerts    int
 	Payload            json.RawMessage
+}
+
+// BatchFailureFilter narrows the failed-batch feed.
+//
+// SourceID is REQUIRED for the same reason RejectionFilter's is:
+// `ingest_batches_source_idx` is `(org_id, source_id, received_at DESC)`. The
+// other index over this table, `ingest_batches_status_idx`, is deliberately not
+// org-scoped — it serves the worker picking up unfinished work across every
+// tenant — so it is not the one a tenant-scoped screen may ride.
+type BatchFailureFilter struct {
+	SourceID uuid.UUID
+	// Statuses is an OR over the TROUBLED statuses only. Empty means both, which
+	// is the question the screen is asking.
+	Statuses []Status
+}
+
+// BatchFailure is one row of that feed: a batch whose alerts are on disk and not
+// in the product, with the reason it stopped.
+//
+// It is a READ model and it deliberately does NOT carry `payload`. The column
+// holds up to 8 MiB of redacted body per row, and a page of fifty is four
+// hundred megabytes to render a table of error strings.
+type BatchFailure struct {
+	ID         uuid.UUID
+	SourceID   uuid.UUID
+	Mode       Mode
+	ReceivedAt time.Time
+	Status     Status
+	// ProcessedAt is when the batch stopped. Never nil for a troubled batch:
+	// ingest_batches_proc_ck ties every non-pending status to a timestamp.
+	ProcessedAt *time.Time
+	// Error is why it stopped. Required for `failed` (ingest_batches_err_ck) and
+	// usually empty for `partial`, which stopped by dying rather than by deciding.
+	Error string
+	// AlertCount is how many alerts are sitting in that payload unprocessed, which
+	// is the number that says how much this failure cost.
+	AlertCount      int
+	TruncatedAlerts int
 }
 
 // DedupHit is the outcome of the `ingest_dedup` insert (§C.5).

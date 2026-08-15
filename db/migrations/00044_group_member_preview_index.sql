@@ -1,0 +1,115 @@
+-- The index the two current-member reads have always needed, and never had.
+--
+-- ⭐⭐ WHY. `listCurrentMembersSQL` (internal/grouping/repository/member.go) is
+-- now the ONLY way a generation's currently-joined members are read, and both
+-- routes that read them are bounded:
+--
+--   GET /alert-groups/{id}/alerts   one keyset page, newest join first
+--   GET /alert-groups/{id}          the twenty-row `top_alerts` preview, which
+--                                   ack, snooze and unsnooze also render
+--
+-- Its shape is `org_id = $1 AND group_id = $2 AND left_at IS NULL`, ordered
+-- `joined_at DESC, occurrence_id DESC`, with a LIMIT. `alert_group_members`
+-- carried three access paths from 00008 and NOT ONE of them can serve it:
+--
+--   1. PRIMARY KEY (group_id, occurrence_id) restricts to the generation and
+--      then offers the WRONG ORDER. `occurrence_id` is a uuidv7, so it is
+--      time-ordered by MINTING and the join is a different event; and even if it
+--      agreed, the planner cannot know that. So the whole generation is read and
+--      SORTED, and a LIMIT of twenty on a five-thousand-member storm is a
+--      top-N heapsort over five thousand rows to keep twenty.
+--   2. gm_alert_idx (org_id, alert_id, joined_at DESC) carries `joined_at` in
+--      the right direction behind the WRONG SECOND COLUMN. This read supplies no
+--      `alert_id`; it asks for a group. That index answers the opposite question
+--      ("which groups has this alert been in") and is left alone.
+--   3. gm_occ_idx (occurrence_id) is the reverse lookup for a state change on
+--      one episode. No org_id, no group_id, no timestamp.
+--
+-- ⛔ WHAT IT COST, and why a LIMIT alone would not have fixed it. Until this
+-- migration's companion change, `GET /alert-groups/{id}` did not even ask for a
+-- bound: it read EVERY member row through a second query, copied the slice,
+-- `sort.SliceStable`d the copy in Go and rendered the first twenty. Moving that
+-- to `LIMIT 21` takes the copy and the Go sort away, but WITHOUT AN INDEX the
+-- sort simply moves into Postgres — same five thousand rows read, same
+-- comparison work, one process further away. A LIMIT is a promise about the
+-- ANSWER; only the index makes it a promise about the WORK.
+--
+-- The scale figure is the code's own: `member.go` names "a storm of five
+-- thousand" as the case the old fetch was wrong for, and a storm is exactly when
+-- a human is pressing the ack and snooze buttons that re-render this card.
+--
+-- ⭐ THE FIX, and why each part of the key is there.
+--
+--   gm_current_idx (org_id, group_id, joined_at DESC, occurrence_id DESC)
+--                  WHERE left_at IS NULL
+--
+-- org_id LEADS because every read in oto is tenant-scoped and an index that does
+-- not lead with it makes the tenant predicate a post-scan filter (CONTEXT.md §5
+-- rule 7). group_id is the second equality. `joined_at DESC` is the sort key, so
+-- the LIMIT can stop the scan instead of feeding a sort. `occurrence_id DESC` is
+-- the keyset tiebreak and makes the ordering TOTAL: without it two members that
+-- joined in the same batch, at the same instant, could swap places between two
+-- requests and a page boundary could show or hide a row.
+--
+-- ⚠️ WHAT THE KEYSET DOES, because it is not what reading the SQL suggests. The
+-- query spells its cursor `($3::timestamptz IS NULL OR (joined_at,
+-- occurrence_id) < ($3, $4))` so that ONE statement serves the first page and
+-- the rest. Under a CUSTOM plan — which is what a page request gets, since the
+-- parameters are known at planning time — Postgres constant-folds the `IS NULL`
+-- test away and the row comparison becomes an INDEX COND on this index: the
+-- deep page starts AT the cursor rather than walking to it. That was checked on
+-- a real 17.10 planner rather than assumed. Under a GENERIC plan, where `$3` is
+-- unknown, the OR cannot be folded and the whole thing degrades to a filter over
+-- the ordered range — which a generation of a few thousand members can afford,
+-- and which is why the statement keeps its one-query shape. Either way the rows
+-- arrive IN ORDER and the LIMIT stops the scan. What this index removes in every
+-- case is the SORT, which was what could not be afforded.
+--
+-- ⭐ PARTIAL ON `left_at IS NULL`, which is both halves of a decision. It keeps
+-- the index the size of the CURRENT membership rather than of the history, and
+-- membership here is history: nothing deletes a row, a departed member keeps its
+-- own, and a long-lived generation accumulates them. It also means the index
+-- CANNOT serve the replay reads, and must not be expected to: `allMembersSQL`
+-- and `membersAtSQL` want the departed rows back, and they keep riding the
+-- primary key's group_id prefix. That is right for them — a replay has no page
+-- and no ceiling, so there is no sort worth an index of its own until one of
+-- those reads acquires a bound.
+--
+-- ⭐ NO `INCLUDE` LIST. The read wants all six columns of the row, four of which
+-- are already in the key; adding `alert_id` and `left_at` as payload to chase an
+-- index-only scan would widen every entry for a heap fetch of at most twenty
+-- rows, on a table the ingest path writes on every membership change.
+--
+-- ⚠️ THE PRICE. One more btree on a table written once per join and updated once
+-- per leave. It is a partial index, so a row leaves the index when it leaves the
+-- group, and the entries it holds are exactly the rows the two read paths ask
+-- for. That is the cheapest form this index has.
+--
+-- ⚠️ NOT `CONCURRENTLY`, for the reason 00042 sets out at length and does not
+-- need repeating here: no migration in this tree runs outside goose's
+-- transaction, and taking this one out of it would trade a bounded write pause
+-- for a migration that can fail halfway and leave an INVALID index no `goose
+-- down` removes. `alert_group_members` is written by the ingest path, which is a
+-- retrying queue worker rather than a human waiting on a page.
+--
+-- EXPAND/CONTRACT (CONTEXT.md §6). An index is a pure widening: nothing to
+-- backfill, no constraint a release-N writer can violate, and the Down drops it
+-- and loses only speed. The release rolled back to still returns the right
+-- twenty members; it just sorts the storm to find them.
+--
+-- Verified rather than believed: internal/grouping/repository/member_plan_test.go
+-- EXPLAINs the real statement against five thousand members and asserts both
+-- that it names this index and that no Sort node appears, with the index dropped
+-- inside a rolled-back transaction as the control.
+
+-- +goose Up
+
+CREATE INDEX gm_current_idx ON alert_group_members (org_id, group_id, joined_at DESC, occurrence_id DESC)
+  WHERE left_at IS NULL;
+
+COMMENT ON INDEX gm_current_idx IS
+  'Serves listCurrentMembersSQL, the only read of the CURRENT members of a generation: the keyset page behind GET /alert-groups/{id}/alerts and the twenty-row top_alerts preview behind GET /alert-groups/{id}, which the ack, snooze and unsnooze replies render too. It carries both equalities, the partial predicate and the WHOLE sort key, so the LIMIT stops the scan and nothing is sorted. None of the three access paths from 00008 could: the primary key (group_id, occurrence_id) restricts to the generation and then offers the wrong order, gm_alert_idx (org_id, alert_id, joined_at DESC) puts joined_at behind an alert_id this read does not supply, and gm_occ_idx (occurrence_id) carries neither the tenant nor the group nor a timestamp. PARTIAL on left_at IS NULL to stay the size of the current membership rather than of the history, which also means the replay reads (allMembersSQL, membersAtSQL) do NOT ride it and are not meant to: they want the departed rows back and fall to the primary key group_id prefix or to a scan.';
+
+-- +goose Down
+
+DROP INDEX IF EXISTS gm_current_idx;

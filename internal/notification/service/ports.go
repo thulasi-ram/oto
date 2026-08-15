@@ -106,8 +106,12 @@ type EventSink interface {
 }
 
 // ReminderStore serves the one-stage unacked reminder sweep.
+//
+// It reads under a TenantScope and nothing else: the sweep is per-tenant, one
+// job per org (jobs.TenantFanOut), and the tenant list those jobs are minted
+// from belongs to the fan-out's live-org pager in internal/app — not to this
+// module, which must never enumerate tenants for itself.
 type ReminderStore interface {
-	ListOrgIDs(ctx context.Context) ([]uuid.UUID, error)
 	ListUnackedGroups(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]repository.UnackedGroup, error)
 }
 

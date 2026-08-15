@@ -14,11 +14,13 @@ import {
   getUnpagedList,
   patchItem,
   postItem,
+  postVoid,
   type LabelSelector,
   type QueryParams,
   type RequestOptions,
 } from "./client";
 import type {
+  ActiveSnooze,
   Alert,
   AlertDetail,
   AlertEvent,
@@ -33,14 +35,18 @@ import type {
   CreateClusterRequest,
   CreatePolicyRequest,
   CreateSourceRequest,
+  DeliveryDrill,
   Delivery,
   Enricher,
   Enrichment,
+  FailedBatch,
+  FailedBatchListQuery,
   Group,
   GroupDetail,
   GroupListQuery,
   LabelNameRow,
   LabelValueRow,
+  LoginRequest,
   ListEnvelope,
   Me,
   Notification,
@@ -49,6 +55,8 @@ import type {
   Policy,
   PolicyPreview,
   PolicyPreviewRequest,
+  Rejection,
+  RejectionListQuery,
   RuleHistory,
   RuleSnapshot,
   RuleSnapshotQuery,
@@ -190,6 +198,53 @@ export function listRuleSnapshots(
   });
 }
 
+/**
+ * Resolve a page's worth of snapshot ids in **one** call (ADR 0025).
+ *
+ * `listAlerts(..., include: ["rule"])` gives each row a `{ id }` reference and
+ * nothing more, because `alerts/api` may not name the rules module's types. This
+ * is the other half of that join: the alert list renders `expr` in two requests
+ * instead of one per row.
+ *
+ * Two behaviours the caller must not be surprised by, both of them deliberate:
+ *
+ *   - **The result can be shorter than the request.** Ids that resolve to
+ *     nothing are absent rather than an error, so one stale id cannot blank the
+ *     whole column. Join by `id`; never by position.
+ *   - **Duplicates are fine.** Snapshots are content-addressed, so a page under
+ *     one unchanged rule is the same id over and over. It is still worth
+ *     deduplicating here — it is what makes the batch small enough to fit in one
+ *     call — but it is not required for correctness.
+ *
+ * Ids beyond the contract's cap are chunked. The chunking is arithmetic, not a
+ * fallback: the cap is a URL-length bound, and a truncated request line fails in
+ * a way no error message ever reaches the user.
+ */
+const MAX_SNAPSHOT_IDS_PER_CALL = 100;
+
+export async function batchGetRuleSnapshots(
+  ids: readonly Uuid[],
+  c: Ctx = {},
+): Promise<readonly RuleSnapshot[]> {
+  const distinct = [...new Set(ids)].filter((id) => id !== "");
+  if (distinct.length === 0) return [];
+
+  const chunks: Uuid[][] = [];
+  for (let i = 0; i < distinct.length; i += MAX_SNAPSHOT_IDS_PER_CALL) {
+    chunks.push(distinct.slice(i, i + MAX_SNAPSHOT_IDS_PER_CALL));
+  }
+
+  const pages = await Promise.all(
+    chunks.map((chunk) =>
+      getUnpagedList<RuleSnapshot>(`${V1}/rule-snapshots/batch`, {
+        ...ctx(c),
+        query: { id: chunk } as QueryParams,
+      }),
+    ),
+  );
+  return pages.flat();
+}
+
 export function listAlertNotifications(
   id: Uuid,
   query: { limit?: number; cursor?: string } = {},
@@ -268,6 +323,21 @@ export function listAlertSnoozes(
     ...ctx(c),
     query: query as QueryParams,
   });
+}
+
+/**
+ * Every quiet period currently in force across the org, soonest wake-up first.
+ *
+ * This is the counterweight that makes snoozing safe (§B.8.6). It is a top-level
+ * collection rather than a per-alert one because the question it answers — "what
+ * is oto not telling us right now?" — has no alert to ask it from: the operator
+ * who needs it is looking at a list that seems calm.
+ */
+export function listActiveSnoozes(
+  query: { limit?: number; cursor?: string } = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<ActiveSnooze>> {
+  return getList<ActiveSnooze>(`${V1}/snoozes`, { ...ctx(c), query: query as QueryParams });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -407,8 +477,89 @@ export function testSource(id: Uuid): Promise<SourceTest> {
   return postItem<SourceTest>(`${V1}/sources/${id}/test`, {});
 }
 
+/**
+ * Push one synthetic alert through the REAL pipeline and get back its staged
+ * result.
+ *
+ * Not `testSource` (which probes the upstream) and not `testChannel` (which
+ * renders a card and hands it to the provider). This runs ingestion, alert
+ * identity, grouping, the policy match, threading, the ordering gate and the
+ * delivery record — the stages where every real failure lives.
+ *
+ * Answers 202 with everything still `pending`: poll `getDeliveryDrill`.
+ */
+export function startDeliveryDrill(sourceID: Uuid, severity?: string): Promise<DeliveryDrill> {
+  return postItem<DeliveryDrill>(`${V1}/drills`, {
+    source_id: sourceID,
+    ...(severity ? { severity } : {}),
+  });
+}
+
+/** Poll one drill. Settled drills return their frozen verdict unchanged. */
+export function getDeliveryDrill(id: Uuid, c: Ctx = {}): Promise<DeliveryDrill> {
+  return getItem<DeliveryDrill>(`${V1}/drills/${id}`, ctx(c));
+}
+
+/** A source's recent drills, newest first. Uncursored by design. */
+export function listDeliveryDrills(sourceID: Uuid, c: Ctx = {}): Promise<readonly DeliveryDrill[]> {
+  return getUnpagedList<DeliveryDrill>(
+    `${V1}/drills?source_id=${encodeURIComponent(sourceID)}`,
+    ctx(c),
+  );
+}
+
+/**
+ * Delete a drill's synthetic alert now, without waiting for the sweep.
+ *
+ * The receipt survives, which is why this returns the drill rather than void:
+ * "deleted" means the fake alert is gone, not the record that a drill ran.
+ */
+export function disposeDeliveryDrill(id: Uuid): Promise<DeliveryDrill> {
+  return getItem<DeliveryDrill>(`${V1}/drills/${id}`, { method: "DELETE" });
+}
+
 export function getSourceHealth(id: Uuid, c: Ctx = {}): Promise<SourceHealth> {
   return getItem<SourceHealth>(`${V1}/sources/${id}/health`, ctx(c));
+}
+
+/**
+ * Everything oto refused from one source, newest first (SPEC AC-6, AC-38).
+ *
+ * This is the read half of "oto never silently drops". Each row carries the
+ * reason, the specifics, and the label set that was refused — already redacted,
+ * because that is how it is stored.
+ *
+ * Keyset, and the cursor is bound to the filter set: a cursor minted under a
+ * different `reason` selection is answered `400 cursor_filter_mismatch`, so a
+ * caller that changes the filter must drop the cursor rather than reuse it.
+ */
+export function listSourceRejections(
+  id: Uuid,
+  query: RejectionListQuery = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<Rejection>> {
+  return getList<Rejection>(`${V1}/sources/${id}/rejections`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/**
+ * The batches from one source that stopped, newest first.
+ *
+ * The other half of the same question, and not the same fact: a rejection is an
+ * alert oto looked at and refused, whereas a failed batch is a payload oto never
+ * finished reading — its alerts are on disk and were never seen by anything.
+ */
+export function listSourceFailedBatches(
+  id: Uuid,
+  query: FailedBatchListQuery = {},
+  c: Ctx = {},
+): Promise<ListEnvelope<FailedBatch>> {
+  return getList<FailedBatch>(`${V1}/sources/${id}/failed-batches`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
 }
 
 /**
@@ -494,8 +645,23 @@ export function listEnrichers(c: Ctx = {}): Promise<readonly Enricher[]> {
   return getUnpagedList<Enricher>(`${V1}/enrichers`, ctx(c));
 }
 
+/**
+ * The dashboard roll-up for one window.
+ *
+ * The three parameters are the three the contract declares and the server reads
+ * — `since`, `until`, `cluster` (`GET /stats/overview` binds exactly that set and
+ * 400s on anything else). This used to take `{ window?: string }`, which no
+ * version of the endpoint has ever accepted; passing it would have been rejected
+ * rather than narrowed. `cluster` goes on the wire comma-separated, as everywhere
+ * else in this file.
+ *
+ * `since`/`until` bound the alert, group and delivery counts only. The source and
+ * channel counts are current state and ignore the window entirely, so calling
+ * this with no arguments still costs the full aggregate — it does not become a
+ * cheap read by asking for nothing.
+ */
 export function getStatsOverview(
-  query: { window?: string } = {},
+  query: { since?: string; until?: string; cluster?: string } = {},
   c: Ctx = {},
 ): Promise<StatsOverview> {
   return getItem<StatsOverview>(`${V1}/stats/overview`, {
@@ -506,6 +672,28 @@ export function getStatsOverview(
 
 export function getCurrentPrincipal(c: Ctx = {}): Promise<Me> {
   return getItem<Me>(`${V1}/me`, ctx(c));
+}
+
+/**
+ * Exchange a password for the `oto_session` cookie.
+ *
+ * ⛔ THE RESPONSE IS NOT THE CREDENTIAL. The cookie is, it is `HttpOnly`, and no
+ * script in this app can read it or set it — which is the whole point, and also
+ * why there is no "am I signed in?" the UI can answer locally. The body is the
+ * same `MeResponse` `getCurrentPrincipal` returns, so a successful login seeds
+ * the session with no second round trip.
+ *
+ * No idempotency key: the contract accepts one, but a retried login is not a
+ * duplicated side effect the way a retried acknowledgement is, and minting a key
+ * per keystroke-driven submit would key the rate limiter's own evidence.
+ */
+export function login(body: LoginRequest, c: Ctx = {}): Promise<Me> {
+  return postItem<Me>(`${V1}/auth/login`, body, ctx(c));
+}
+
+/** Revoke the session SERVER-SIDE. 204, and the cookie is gone. */
+export function logout(c: Ctx = {}): Promise<void> {
+  return postVoid(`${V1}/auth/logout`, ctx(c));
 }
 
 /**

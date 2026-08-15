@@ -33,7 +33,10 @@ type ProcessResult struct {
 // and a pod can die between any two statements:
 //
 //  1. A batch that is already `processed` or `failed` exits immediately, having
-//     done nothing (§G.4 step 1).
+//     done nothing (§G.4 step 1). `failed` stays terminal TO THE QUEUE however
+//     many times the job is redelivered; the only thing that can undo it is an
+//     operator running `oto replay` after shipping a fix, which moves the row
+//     back to `pending` first (Service.Replay).
 //  2. A batch left `partial` by a worker that died mid-chunking is RESUMED rather
 //     than abandoned — see domain.Status.Resumable for why the literal reading of
 //     §G.4 would strand it.
@@ -78,23 +81,22 @@ func (s *Service) ProcessBatch(ctx context.Context, scope db.TenantScope, batchI
 func (s *Service) processResumable(ctx context.Context, scope db.TenantScope, batch domain.Batch) (ProcessResult, error) {
 	res := ProcessResult{BatchID: batch.ID}
 
-	env, err := decode.Decode(batch.Payload)
+	observations, rejections, err := s.plan(ctx, scope, batch)
 	if err != nil {
-		// The payload failed its own CHECK on the way in, so this is oto's bug, not
-		// the upstream's. Mark the batch failed rather than retrying thirteen times
-		// against bytes that will never decode.
-		s.markFailed(ctx, scope, batch, "stored payload is not decodable: "+err.Error())
-		res.FinalStat = domain.StatusFailed
-		return res, nil
+		if errs.CodeOf(err) == CodeUndecodable {
+			// The payload failed its own CHECK on the way in, so this is oto's bug, not
+			// the upstream's. Mark the batch failed rather than retrying thirteen times
+			// against bytes that will never decode.
+			reason := err.Error()
+			if e, ok := errs.As(err); ok {
+				reason = e.Message
+			}
+			s.markFailed(ctx, scope, batch, reason)
+			res.FinalStat = domain.StatusFailed
+			return res, nil
+		}
+		return res, err
 	}
-
-	src, err := s.sources.Config(ctx, scope, batch.SourceID)
-	if err != nil {
-		return res, errs.Wrap(err, errs.KindUnavailable, CodeSourceUnavailable,
-			"this source's configuration is temporarily unreadable")
-	}
-
-	observations, rejections := s.normalise(ctx, env, batch, src)
 	res.Rejected = len(rejections)
 
 	// Rejections are written FIRST and outside the observation transactions. If
@@ -128,6 +130,44 @@ func (s *Service) processResumable(ctx context.Context, scope db.TenantScope, ba
 			"the batch could not be closed out")
 	}
 	return res, nil
+}
+
+// plan is the READ-ONLY PREFIX of processing a batch: decode the stored payload,
+// read the source's configuration, normalise. It writes nothing — not the
+// rejections, not the observations, not the batch's own status.
+//
+// ⭐ IT IS EXTRACTED SO THAT REPLAY CAN ASK WHAT A BATCH WOULD DO WITHOUT DOING
+// IT. `Service.Replay` has to know which alerts a `failed` batch would touch
+// before it is allowed to enqueue anything (see the supersession gate there), and
+// the only honest way to answer is to run the same code the worker runs. A second
+// implementation of "which alerts does this payload name" would be right on the
+// day it was written and wrong on the first day someone changed a bound.
+//
+// ⛔ THE REJECTIONS ARE RETURNED, NOT RECORDED. Writing them is the caller's
+// business precisely because one of the two callers must not: a refused replay
+// changes nothing at all, and a refusal that had already appended forty rows to
+// the rejection feed would not be a refusal.
+//
+// An undecodable payload comes back as CodeUndecodable, which is a PERMANENT
+// failure with a message meant for `ingest_batches.error`; everything else is
+// retryable.
+func (s *Service) plan(
+	ctx context.Context, scope db.TenantScope, batch domain.Batch,
+) ([]alerts.Observation, []domain.Rejection, error) {
+	env, err := decode.Decode(batch.Payload)
+	if err != nil {
+		return nil, nil, errs.Wrap(err, errs.KindMalformed, CodeUndecodable,
+			"stored payload is not decodable: "+err.Error())
+	}
+
+	src, err := s.sources.Config(ctx, scope, batch.SourceID)
+	if err != nil {
+		return nil, nil, errs.Wrap(err, errs.KindUnavailable, CodeSourceUnavailable,
+			"this source's configuration is temporarily unreadable")
+	}
+
+	observations, rejections := s.normalise(ctx, env, batch, src)
+	return observations, rejections, nil
 }
 
 // normalise turns wire alerts into Observations, one at a time, collecting the
@@ -171,7 +211,12 @@ func (s *Service) normalise(
 		s.metrics.ClockSkew.Observe(skew.Seconds())
 
 		observations = append(observations, alerts.Observation{
-			Source:     observationSource(batch.Mode),
+			Source: observationSource(batch.Mode),
+			// ⭐ THE PROVENANCE MARK, carried from the batch and from nowhere else.
+			// It is deliberately NOT read out of `n.Labels`: a label is what an
+			// upstream sends, and an upstream must never be able to evict its own
+			// alerts from oto's statistics by naming one.
+			Synthetic:  batch.Mode.IsSynthetic(),
 			BatchID:    batch.ID,
 			SourceID:   batch.SourceID,
 			ClusterID:  src.ClusterID,
@@ -222,11 +267,40 @@ func (s *Service) normalise(
 // applyChunks hands the observations to the alerts service, in transactions of
 // at most domain.ChunkSize (B17).
 //
-// A batch at or under ChunkThreshold is ONE transaction, which is the common case
-// and the fast one. Above it, the batch is split and marked `partial` until the
-// last chunk commits, because a single transaction holding twenty thousand
-// upserts blocks vacuum, bloats WAL and is the one shape that can make a 2 s
-// statement timeout look like an outage.
+// ⛔ THE CHUNKING IS UNCONDITIONAL, AND ChunkThreshold DOES NOT GATE IT. Every
+// batch is sliced by ChunkSize: 500 alerts is one transaction, 501 is two, 2 000
+// is four. ChunkThreshold governs exactly one thing — whether the batch is marked
+// `partial` while those chunks run. This comment used to say that a batch at or
+// under ChunkThreshold was ONE transaction. It never was, and the sentence was the
+// dangerous kind of wrong: someone tuning ChunkThreshold to bring the transaction
+// count down would have changed nothing at all.
+//
+// ⭐ 500 IS A CAP, NOT A FLOOR TO BE RAISED FOR THE COMMON CASE, because the chunk
+// IS the size of a single SQL statement. ObserveBatch upserts the whole chunk in
+// one round trip (§D.12c) and reads its occurrences in another, on THE INGEST POOL,
+// whose `statement_timeout` is 2 s (§G.10, ADR 0007). A 2 000-row upsert that
+// crosses that timeout takes its whole transaction with it, and the retry runs the
+// same statement at the same size — a deterministic failure that spends the job's
+// entire retry budget and ends with 2 000 alerts in a `failed` batch during the
+// incident they were reporting. At 500 the same slow database loses one chunk: the
+// chunks that committed stay committed, and the retry resumes over them for free,
+// because every write underneath is idempotent by construction (ON CONFLICT plus
+// `alert_event_keys`, §G.5).
+//
+// The same argument covers everything else a transaction holds while it is open:
+// row locks on `alerts`, taken in the ⚠️ lock order that `Service.expire` takes
+// backwards; the xmin horizon that keeps vacuum off the hottest tables in the
+// schema; and the WAL the commit has to flush. Four short transactions cost three
+// extra commits. One long one costs all of that at four times the width, and the
+// alerts service's own re-decide loop would replay 2 000 observations on a lost
+// compare-and-set instead of 500.
+//
+// Above ChunkThreshold the batch is ADDITIONALLY marked `partial` before the first
+// chunk. That is a visibility marker and nothing more: `pending` and `partial` are
+// both resumable (domain.Status.Resumable), so a batch under the threshold that
+// dies between chunks is resumed just the same. What the mark buys is an operator
+// being able to tell a batch that was in the middle of a long job from one that
+// never started.
 func (s *Service) applyChunks(
 	ctx context.Context, scope db.TenantScope, batch domain.Batch, obs []alerts.Observation,
 ) (int, error) {
@@ -270,6 +344,12 @@ func (s *Service) applyChunks(
 
 // markFailed closes a batch out as failed. `error` is REQUIRED when status is
 // failed (ingest_batches_err_ck), so the reason is never optional.
+//
+// ⭐ THE REASON IS ALSO THE OPERATOR'S ONLY LEAD, which is why it is stored in
+// full rather than reduced to a code: `oto replay` prints it back verbatim before
+// asking whether to run the batch again, and "observations 500..1000 could not be
+// applied" is the sentence that tells a human whether their fix was the right one.
+// Truncation to maxDetailBytes is the only thing done to it.
 func (s *Service) markFailed(ctx context.Context, scope db.TenantScope, batch domain.Batch, reason string) {
 	if reason == "" {
 		reason = "unspecified failure"

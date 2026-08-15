@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/id"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
 
 // MaxCommentBytes bounds a human comment.
@@ -181,19 +183,39 @@ func (s *Service) setAck(
 //
 // It is an ANNOTATION, never a state change: nothing in this method touches
 // state, ack_state, severity or the snooze projection.
+//
+// ⭐⭐ A KEYED RETRY REPLAYS THE ORIGINAL ANNOTATION INSTEAD OF APPENDING A
+// SECOND, and the second return value is which of the two happened. A comment is
+// an APPEND and has no state machine to refuse a repeat, so before ticket a6cc834
+// it was one of exactly three operations in oto that genuinely duplicated a side
+// effect on retry — and the §C.8 key it already carried could not catch one,
+// because it was minted from the wall clock and a retry arrives at a different
+// nanosecond.
 func (s *Service) Comment(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor, body string,
-) (domain.Event, error) {
+	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor,
+	body string, idem Idempotency,
+) (domain.Event, bool, error) {
 	if actor.IsZero() || !actor.Kind().IsHuman() {
-		return domain.Event{}, errs.Validation("actor_required", "a comment requires a human actor")
+		return domain.Event{}, false, errs.Validation("actor_required", "a comment requires a human actor")
 	}
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return domain.Event{}, errs.Validation("comment_required", "a comment must not be blank")
+		return domain.Event{}, false, errs.Validation("comment_required", "a comment must not be blank")
 	}
 	if len(body) > MaxCommentBytes {
-		return domain.Event{}, errs.Newf(errs.KindValidation, "max_length",
+		return domain.Event{}, false, errs.Newf(errs.KindValidation, "max_length",
 			"a comment must have at most %d characters", MaxCommentBytes)
+	}
+	if err := idempotency.Require(idem, s.claims, s.tx); err != nil {
+		return domain.Event{}, false, err
+	}
+
+	// The keyed §C.8 key is derived OUTSIDE the transaction because the replay
+	// read below happens outside it too: a replay rolls this whole unit of work
+	// back, and the key is the handle that finds what the first attempt wrote.
+	keyedDedupe := ""
+	if idem.Keyed {
+		keyedDedupe = commentDedupeKey(alertID, idem)
 	}
 
 	var out domain.Event
@@ -213,18 +235,33 @@ func (s *Service) Comment(
 			return err
 		}
 
+		// ⭐ THE CLOCK KEY IS THE UNKEYED FORM AND ONLY THE UNKEYED FORM. It gives
+		// the append a §C.8 claim of its own so that two comments minted inside
+		// the same nanosecond cannot collide, and it does NOTHING for a retry: a
+		// second HTTP request reads a different `now`, computes a different key,
+		// and `alert_event_keys` sees no repeat.
+		//
+		// ⛔ NEITHER FORM IS A HASH OF THE BODY. Two people who type "restarted
+		// it" ten minutes apart wrote two facts, and a content key would silently
+		// discard the second — losing a human's words is worse than keeping one
+		// too many. Retry safety belongs to the caller's `Idempotency-Key`, which
+		// is a handle on ONE gesture rather than on a sentence, and which is what
+		// keyedDedupe is derived from.
+		dedupe := "comment:" + alert.ID().String() + ":" + now.Format(time.RFC3339Nano)
+		if keyedDedupe != "" {
+			dedupe = keyedDedupe
+		}
+
 		params := domain.EventParams{
-			ID:      id.New(),
-			OrgID:   scope.OrgID(),
-			AlertID: alert.ID(),
-			Type:    domain.EventCommentAdded,
-			At:      at,
-			Actor:   actor,
-			Summary: commentSummary(actor.Label(), body),
-			Payload: map[string]any{"body": body},
-			// Two comments a second apart are two facts; the key exists so a
-			// retried request is one.
-			DedupeKey: "comment:" + alert.ID().String() + ":" + now.Format(time.RFC3339Nano),
+			ID:        id.New(),
+			OrgID:     scope.OrgID(),
+			AlertID:   alert.ID(),
+			Type:      domain.EventCommentAdded,
+			At:        at,
+			Actor:     actor,
+			Summary:   commentSummary(actor.Label(), body),
+			Payload:   map[string]any{"body": body},
+			DedupeKey: dedupe,
 		}
 		if hasOpen {
 			params.OccurrenceID = occ.ID()
@@ -234,6 +271,15 @@ func (s *Service) Comment(
 		ev, err := domain.NewEvent(params)
 		if err != nil {
 			return err
+		}
+		if idem.Keyed {
+			// ⭐ BEFORE THE APPEND, because a replay must not have appended
+			// anything to roll back — and because the claim records what this call
+			// creates, which is the event id the caller's `201` would have carried.
+			if _, err := idempotency.Resolve(ctx, s.claims, scope, idem,
+				idempotency.Replay, ev.ID(), s.Now()); err != nil {
+				return err
+			}
 		}
 		if _, err := s.appendEvents(ctx, scope, []domain.Event{ev}); err != nil {
 			return err
@@ -252,10 +298,28 @@ func (s *Service) Comment(
 		out = ev
 		return nil
 	})
-	if err != nil {
-		return domain.Event{}, err
+	if errors.Is(err, idempotency.ErrReplay) {
+		// The transaction above is rolled back, so this read sees the world the
+		// FIRST attempt committed and nothing this one did.
+		ev, found, readErr := s.events.GetByDedupeKey(ctx, scope, keyedDedupe)
+		if readErr != nil {
+			return domain.Event{}, false, readErr
+		}
+		if !found {
+			// The claim exists and the annotation it names does not — the event
+			// aged out of `alert_events`, or its key row was pruned ahead of it.
+			// Refusing is the honest answer and carries the same code, so a client
+			// still learns that its first attempt succeeded.
+			return domain.Event{}, false, errs.Conflict(idempotency.CodeReuse,
+				"this Idempotency-Key was already used and that comment was appended; "+
+					"it is no longer readable, so it cannot be returned a second time")
+		}
+		return ev, true, nil
 	}
-	return out, nil
+	if err != nil {
+		return domain.Event{}, false, err
+	}
+	return out, false, nil
 }
 
 // commentSummary renders the timeline one-liner once, at write time, so reading a
@@ -286,16 +350,30 @@ func commentSummary(who, body string) string {
 // enqueue `notify.evaluate(reason=snoozed)` so the channel is TOLD it is going
 // quiet. A snooze that does not announce itself is the silent suppression §B.6
 // forbids, which is why that last step is not optional.
+//
+// ⭐⭐ A KEYED RETRY REPLAYS THE SNOOZE IT ALREADY GRANTED, and the second return
+// value is which of the two happened. Nothing here ever asked "have I already
+// granted this snooze": a retry found its own incumbent, ended it as
+// `superseded`, inserted a second row, and announced the quiet period AGAIN — one
+// user click, two rows and two outbound Slack messages. That was the sharpest of
+// the three genuine duplications ticket a6cc834 names, because it fires during
+// exactly the network conditions the header exists for.
 func (s *Service) Snooze(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor,
-	until time.Time, note string,
-) (domain.Snooze, error) {
+	until time.Time, note string, idem Idempotency,
+) (domain.Snooze, bool, error) {
 	if actor.IsZero() || !actor.Kind().IsHuman() {
-		return domain.Snooze{}, errs.Validation("actor_required",
+		return domain.Snooze{}, false, errs.Validation("actor_required",
 			"a snooze requires a human actor: it is always attributed")
 	}
+	if err := idempotency.Require(idem, s.claims, s.tx); err != nil {
+		return domain.Snooze{}, false, err
+	}
 
-	var out domain.Snooze
+	var (
+		out      domain.Snooze
+		replayOf uuid.UUID
+	)
 	err := s.tx.InTx(ctx, func(ctx context.Context) error {
 		alert, err := s.alerts.GetByID(ctx, scope, alertID)
 		if err != nil {
@@ -305,6 +383,22 @@ func (s *Service) Snooze(
 		at, err := domain.NewObservationTime(now, now)
 		if err != nil {
 			return err
+		}
+
+		// The id is minted here rather than beside the domain command below
+		// because the claim has to name it, and the claim has to be taken BEFORE
+		// the incumbent is superseded: a replay that discovered itself afterwards
+		// would already have ended the very snooze it is about to replay, and the
+		// rollback that undoes that is a promise about the database rather than
+		// about the notification `endSnooze` would have enqueued.
+		snoozeID := id.New()
+		if idem.Keyed {
+			ref, err := idempotency.Resolve(ctx, s.claims, scope, idem,
+				idempotency.Replay, snoozeID, s.Now())
+			if err != nil {
+				replayOf = ref
+				return err
+			}
 		}
 
 		var events []domain.Event
@@ -324,10 +418,9 @@ func (s *Service) Snooze(
 			events = append(events, evs...)
 		}
 
-		snoozeID := id.New()
 		// The domain factory proves the §B.8.3 bounds (5 minutes to 30 days,
 		// never indefinite) and mints the event whose payload names the snooze.
-		// The id is minted here so the row and the event agree.
+		// The id was minted above so the row, the event and the claim all agree.
 		_, evs, err := domain.StartSnooze(alert, domain.SnoozeCommand{
 			ID:      snoozeID,
 			Actor:   actor,
@@ -370,10 +463,27 @@ func (s *Service) Snooze(
 		out = created
 		return nil
 	})
-	if err != nil {
-		return domain.Snooze{}, err
+	if errors.Is(err, idempotency.ErrReplay) {
+		// The transaction above is rolled back, so the incumbent this read finds
+		// is the snooze the FIRST attempt granted. Its id has to match the one the
+		// claim recorded: an alert that has since been unsnoozed and snoozed again
+		// has a DIFFERENT live snooze, and handing that one back as the caller's
+		// own would be a lie about which quiet period they are holding.
+		active, ok, readErr := s.snoozes.GetActive(ctx, scope, alertID)
+		if readErr != nil {
+			return domain.Snooze{}, false, readErr
+		}
+		if ok && active.ID() == replayOf {
+			return active, true, nil
+		}
+		return domain.Snooze{}, false, errs.Conflict(idempotency.CodeReuse,
+			"this Idempotency-Key was already used and that snooze was granted; it has since "+
+				"ended, so it cannot be returned. Retry with a new key if you meant a new snooze")
 	}
-	return out, nil
+	if err != nil {
+		return domain.Snooze{}, false, err
+	}
+	return out, false, nil
 }
 
 // Unsnooze ends an active snooze early (§B.8.3).

@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -40,20 +39,52 @@ type Options struct {
 	Clients ClientFactory
 	Clock   clock.Clock
 	Logger  *slog.Logger
+
+	// Sealer seals a supplied upstream credential. Nil means this deployment
+	// cannot store one, which is a declared 503 on the two endpoints that accept
+	// a `credential` and nothing at all to the rest.
+	Sealer CredentialSealer
+	// Tokens mints and revokes the per-source ingest credential. Nil means no
+	// source can be registered here, because a source that cannot receive a
+	// webhook is not a source.
+	Tokens IngestTokens
+	// Tx makes a source, its credential and its ingest token ONE commit. A nil Tx
+	// degrades to independent commits, which is what left orphan sources behind;
+	// production always wires it.
+	Tx UnitOfWork
+	// Claims is the store behind `Idempotency-Key`. Nil means this deployment
+	// cannot honour the header, which is the declared `503` rather than a rotation
+	// that silently mints a second secret.
+	Claims IdempotencyClaims
+	// Clusters registers an identity/failure domain. Nil is a declared `503` on
+	// `createCluster` and nothing at all to the rest.
+	Clusters ClusterWriter
 }
 
 // Service composes the outbound clients with the source registry.
 //
-// It is the read side of the sources module: probe a source, report its health,
-// and serve the Alertmanager and Prometheus reads that the reconciler and the
-// enrichment pipeline call. There is no write path into a cluster (R3), so there
-// is no method here that mutates anything upstream.
+// It owns the sources module's aggregate END TO END: the reads (probe a source,
+// report its health, serve the Alertmanager and Prometheus calls the reconciler
+// and the enrichment pipeline make) and the writes (register, edit, retire a
+// source, and rotate its ingest credential) — including the transaction that
+// makes a source and its token one fact, and the `Idempotency-Key` claim taken
+// inside it.
+//
+// ⛔ THERE IS STILL NO WRITE PATH INTO A CLUSTER (R3). Nothing here mutates
+// anybody else's Alertmanager; `write.go` writes oto's OWN tables, which is a
+// different question and always was.
 type Service struct {
 	repo    SourceRepository
 	creds   CredentialStore
 	clients ClientFactory
 	clk     clock.Clock
 	log     *slog.Logger
+
+	sealer   CredentialSealer
+	tokens   IngestTokens
+	tx       UnitOfWork
+	claims   IdempotencyClaims
+	clusters ClusterWriter
 }
 
 // New builds the Service.
@@ -72,7 +103,11 @@ func New(o Options) (*Service, error) {
 	if lg == nil {
 		lg = slog.Default()
 	}
-	return &Service{repo: o.Repo, creds: o.Creds, clients: o.Clients, clk: clk, log: lg}, nil
+	return &Service{
+		repo: o.Repo, creds: o.Creds, clients: o.Clients, clk: clk, log: lg,
+		sealer: o.Sealer, tokens: o.Tokens, tx: o.Tx, claims: o.Claims,
+		clusters: o.Clusters,
+	}, nil
 }
 
 // Get returns one source.
@@ -104,56 +139,49 @@ func (s *Service) List(ctx context.Context, scope db.TenantScope, f domain.Sourc
 	return s.repo.List(ctx, scope, f, p)
 }
 
+// ListByIDs returns the live sources named by ids, in one lookup rather than one
+// per id.
+//
+// It is the read a page-rendering caller needs: a list of rows that each name a
+// source resolves every one of them here, not row by row. An id this org does not
+// own is absent from the result, never an error.
+func (s *Service) ListByIDs(ctx context.Context, scope db.TenantScope, ids []uuid.UUID) ([]domain.Source, error) {
+	return s.repo.ListByIDs(ctx, scope, ids)
+}
+
 // Health returns the liveness projection for one source.
 //
 // Anything other than healthy BLOCKS the reaper (SPEC §B.4). Callers must read
 // this before expiring anything: losing sight of an alert is not the alert
 // resolving, and a dead Alertmanager looks exactly like a quiet one.
+//
+// ⭐ IT IS A STRAIGHT READ AGAIN, AND THAT IS A CORRECTNESS PROPERTY. It used to
+// synthesise a `reconcile_disabled` warning for sources whose reconciliation had
+// been switched off — the entire mechanism by which that switch was supposed to
+// be "documented, never silent". It was silent anyway: the sources LIST built its
+// rows straight off `HealthFor` and never passed through here, and the settings
+// screen renders no warnings at all. The switch is gone (00038), so the warning
+// has nothing left to describe, and health is once more only what was observed.
 func (s *Service) Health(ctx context.Context, scope db.TenantScope, id uuid.UUID) (domain.SourceHealth, error) {
-	src, err := s.source(ctx, scope, id)
-	if err != nil {
+	if _, err := s.source(ctx, scope, id); err != nil {
+		// Still resolved first: a deleted or foreign source must 404 rather than
+		// answer with an empty projection.
 		return domain.SourceHealth{}, err
 	}
-	h, err := s.repo.GetHealth(ctx, scope, id)
-	if err != nil {
-		return h, err
-	}
-	return withReconcileWarning(h, src, s.clk.Now().UTC()), nil
+	return s.repo.GetHealth(ctx, scope, id)
 }
 
-// withReconcileWarning raises the standing warning for a source whose
-// reconciliation has been turned off.
+// HealthFor resolves a page of sources' health in ONE round trip.
 //
-// ⭐ ADR 0006 CALLS THE RECONCILER MANDATORY, AND `reconcile_enabled` LETS A
-// TENANT TURN IT OFF. The two disagreed silently, so the disagreement is made
-// visible here rather than resolved by pretending the flag does not exist — see
-// ADR 0006's amendment for why the flag survives.
-//
-// The consequence is specific and permanent: Alertmanager's MuteStage drops
-// silenced and inhibited alerts BEFORE any webhook fires, so the reconciler is
-// the only thing in oto that can ever observe suppression. A source with
-// reconciliation off will show an alert as firing for as long as it stays
-// silenced upstream, with no way to learn otherwise. It also loses divergence
-// accounting and `send_resolved` discovery.
-//
-// ⚠️ IT IS A WARNING AND NOT A STATUS CHANGE. Downgrading the status would block
-// the reaper for the lifetime of the source, so nothing would ever expire — a
-// correctness rule turned into a leak. The operator is told; the machine keeps
-// its existing semantics.
-func withReconcileWarning(h domain.SourceHealth, src domain.Source, now time.Time) domain.SourceHealth {
-	if src.ReconcileEnabled {
-		return h
-	}
-	if _, ok := h.Warning(domain.WarnReconcileDisabled); ok {
-		return h
-	}
-	h.Warnings = append(h.Warnings, domain.HealthWarning{
-		Code:    domain.WarnReconcileDisabled,
-		Message: "reconciliation is off for this source, so oto can never observe a silenced or inhibited alert here and will show upstream-muted alerts as firing",
-		Subject: src.Name,
-		At:      now,
-	})
-	return h
+// It is the batch companion to Health and deliberately does NOT re-resolve each
+// source first: the caller is rendering rows it has already read, and an id this
+// org does not own is simply absent from the result. A source that has never been
+// probed is absent too, which the caller renders as `unknown` — the state that
+// blocks the reaper (§B.4).
+func (s *Service) HealthFor(
+	ctx context.Context, scope db.TenantScope, ids []uuid.UUID,
+) (map[uuid.UUID]domain.SourceHealth, error) {
+	return s.repo.HealthFor(ctx, scope, ids)
 }
 
 // Alerts reads the source's current world from GET /api/v2/alerts.

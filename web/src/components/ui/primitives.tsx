@@ -38,7 +38,7 @@ export interface ButtonProps extends JSX.ButtonHTMLAttributes<HTMLButtonElement>
 }
 
 const BUTTON_BASE =
-  "inline-flex items-center justify-center gap-1.5 rounded-[4px] border font-medium " +
+  "inline-flex items-center justify-center gap-1.5 rounded-control border font-medium " +
   "whitespace-nowrap transition-colors duration-100 " +
   "disabled:cursor-not-allowed disabled:opacity-45";
 
@@ -53,8 +53,8 @@ const BUTTON_VARIANT: Record<ButtonVariant, string> = {
 };
 
 const BUTTON_SIZE: Record<ButtonSize, string> = {
-  sm: "h-7 px-2 text-[12px]",
-  md: "h-8 px-3 text-[13px]",
+  sm: "h-7 px-2 text-body",
+  md: "h-8 px-3 text-item",
 };
 
 export const Button: Component<ButtonProps> = (props) => {
@@ -96,7 +96,7 @@ export const Spinner: Component<{ readonly class?: string }> = (props) => (
 /* -------------------------------------------------------------------------- */
 
 const FIELD_BASE =
-  "w-full rounded-[4px] border border-line-strong bg-surface text-ink " +
+  "w-full rounded-control border border-line-strong bg-surface text-ink " +
   "placeholder:text-ink-subtle " +
   "disabled:cursor-not-allowed disabled:bg-sunken disabled:opacity-60 " +
   "aria-[invalid=true]:border-line-strong aria-[invalid=true]:ring-1 " +
@@ -115,7 +115,7 @@ export const Input: Component<InputProps> = (props) => {
       aria-invalid={local.invalid === true ? "true" : undefined}
       class={cx(
         FIELD_BASE,
-        "h-8 px-2 text-[13px]",
+        "h-8 px-2 text-item",
         local.mono === true ? "font-mono" : "",
         local.class,
       )}
@@ -133,7 +133,7 @@ export const Textarea: Component<TextareaProps> = (props) => {
     <textarea
       {...rest}
       aria-invalid={local.invalid === true ? "true" : undefined}
-      class={cx(FIELD_BASE, "min-h-16 resize-y px-2 py-1.5 text-[13px] leading-relaxed", local.class)}
+      class={cx(FIELD_BASE, "min-h-16 resize-y px-2 py-1.5 text-item leading-relaxed", local.class)}
     />
   );
 };
@@ -169,7 +169,7 @@ export const Select: Component<SelectProps> = (props) => {
       ref={el}
       {...rest}
       aria-invalid={local.invalid === true ? "true" : undefined}
-      class={cx(FIELD_BASE, "h-8 cursor-pointer px-1.5 text-[13px]", local.class)}
+      class={cx(FIELD_BASE, "h-8 cursor-pointer px-1.5 text-item", local.class)}
     >
       {local.children}
     </select>
@@ -204,7 +204,7 @@ export const Field: Component<FieldProps> = (props) => {
 
   return (
     <div class="flex flex-col gap-1">
-      <label for={props.id} class="text-[12px] font-medium text-ink-muted">
+      <label for={props.id} class="text-body font-medium text-ink-muted">
         {props.label}
         {props.required === true ? (
           <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
@@ -218,12 +218,12 @@ export const Field: Component<FieldProps> = (props) => {
         "aria-invalid": props.error ? "true" : undefined,
       })}
       {props.hint ? (
-        <p id={hintId()} class="text-[11px] leading-snug text-ink-subtle">
+        <p id={hintId()} class="text-meta leading-snug text-ink-subtle">
           {props.hint}
         </p>
       ) : null}
       {props.error ? (
-        <p id={errorId()} class="text-[11px] font-medium leading-snug text-ink" role="alert">
+        <p id={errorId()} class="text-meta font-medium leading-snug text-ink" role="alert">
           <span
             aria-hidden="true"
             class="mr-1 inline-block size-1.5 rounded-full bg-accent align-middle"
@@ -250,7 +250,7 @@ export interface CheckboxProps {
 export const Checkbox: Component<CheckboxProps> = (props) => (
   <label
     class={cx(
-      "inline-flex cursor-pointer select-none items-center gap-1.5 text-[13px] text-ink",
+      "inline-flex cursor-pointer select-none items-center gap-1.5 text-item text-ink",
       props.disabled === true ? "cursor-not-allowed opacity-50" : "",
     )}
   >
@@ -295,20 +295,24 @@ export function ToggleGroup<T extends string>(props: ToggleGroupProps<T>): JSX.E
       <legend
         class={
           props.showLegend === true
-            ? "mb-1 text-[12px] font-medium text-ink-muted"
+            ? "mb-1 text-body font-medium text-ink-muted"
             : "sr-only-focusable"
         }
       >
         {props.legend}
       </legend>
-      <div class="flex flex-wrap items-center gap-1" role="group" aria-label={props.legend}>
+      {/* No `role="group"` here: `<fieldset>` already is one, named by its
+          `<legend>`. Nesting a second identically-named group made assistive
+          technology announce the same label twice — and made "the group called
+          Severity" an ambiguous thing to ask for. */}
+      <div class="flex flex-wrap items-center gap-1">
         {props.options.map((opt) => {
           const active = (): boolean => props.selected.includes(opt.value);
           return (
             <label
               class={cx(
-                "inline-flex cursor-pointer items-center gap-1 rounded-[4px] border px-1.5 py-0.5",
-                "text-[12px] transition-colors duration-100",
+                "inline-flex cursor-pointer items-center gap-1 rounded-control border px-1.5 py-0.5",
+                "text-body transition-colors duration-100",
                 active()
                   ? "border-accent-border bg-accent-fill text-ink"
                   : "border-line bg-surface text-ink-muted hover:bg-raised",
@@ -334,7 +338,7 @@ export function ToggleGroup<T extends string>(props: ToggleGroupProps<T>): JSX.E
 /* -------------------------------------------------------------------------- */
 
 export const Panel: ParentComponent<{ readonly class?: string }> = (props) => (
-  <section class={cx("rounded-[6px] border border-line bg-surface", props.class)}>
+  <section class={cx("rounded-surface border border-line bg-surface", props.class)}>
     {props.children}
   </section>
 );
@@ -343,7 +347,7 @@ export const PanelHeader: ParentComponent<{ readonly class?: string }> = (props)
   <header
     class={cx(
       "flex items-center justify-between gap-3 border-b border-line bg-raised px-3 py-2",
-      "rounded-t-[6px]",
+      "rounded-t-surface",
       props.class,
     )}
   >
@@ -354,7 +358,7 @@ export const PanelHeader: ParentComponent<{ readonly class?: string }> = (props)
 export const PanelTitle: ParentComponent<{ readonly class?: string }> = (props) => (
   <h2
     class={cx(
-      "text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-muted",
+      "text-meta font-semibold uppercase tracking-[0.08em] text-ink-muted",
       props.class,
     )}
   >
@@ -371,8 +375,8 @@ export const Chip: ParentComponent<{
   <span
     title={props.title}
     class={cx(
-      "inline-flex max-w-full items-center gap-1 rounded-[3px] border border-line bg-raised",
-      "px-1 py-px text-[11px] leading-4 text-ink-muted",
+      "inline-flex max-w-full items-center gap-1 rounded-chip border border-line bg-raised",
+      "px-1 py-px text-meta leading-4 text-ink-muted",
       props.mono === true ? "font-mono" : "",
       props.class,
     )}
@@ -386,9 +390,9 @@ export const DataRow: ParentComponent<{ readonly term: string; readonly class?: 
   props,
 ) => (
   <div class={cx("grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] gap-x-3 gap-y-0.5", props.class)}>
-    <dt class="truncate pt-px text-[12px] text-ink-subtle" title={props.term}>
+    <dt class="truncate pt-px text-body text-ink-subtle" title={props.term}>
       {props.term}
     </dt>
-    <dd class="min-w-0 text-[13px] text-ink">{props.children}</dd>
+    <dd class="min-w-0 text-item text-ink">{props.children}</dd>
   </div>
 );

@@ -10,7 +10,7 @@
  * renders its own error inside its own box, at its own size, so the page never
  * reflows around a failure.
  */
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { A, useParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
@@ -39,6 +39,7 @@ import { Elapsed, RelativeTime } from "~/components/Time";
 import { Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
 import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
 import { absoluteTime, count as fmtCount, formatLabels } from "~/lib/format";
+import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { AlertActions } from "~/features/alerts/detail/Actions";
 import { DeliveryPanel } from "~/features/alerts/detail/DeliveryPanel";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
@@ -62,15 +63,25 @@ export default function AlertDetailRoute() {
 
   const [categories, setCategories] = createSignal<readonly EventCategory[]>([]);
   const [order, setOrder] = createSignal<"asc" | "desc">("desc");
-  const [cursor, setCursor] = createSignal<string | null>(null);
-  const [events, setEvents] = createSignal<readonly AlertEvent[]>([]);
+
+  // Any change of direction or event-kind filter invalidates every cursor
+  // minted under the old one (§E.3), so both are the fingerprint — see
+  // `createKeysetFeed` for why the reset must be a pure-phase derivation. The
+  // annotation cuts the type-inference loop the closure creates: the feed
+  // reads the query's envelope, and the query's key carries the feed's cursor.
+  const feed: KeysetFeed<AlertEvent> = createKeysetFeed({
+    envelope: () => timeline.data,
+    isPlaceholder: () => timeline.isPlaceholderData,
+    keyOf: (e) => e.id,
+    fingerprint: () => `${order()}|${[...categories()].sort().join(",")}`,
+  });
 
   const timelineQuery = createMemo<TimelineQuery>(() => {
     const q: Record<string, unknown> = { limit: TIMELINE_PAGE, order: order() };
     // An empty category selection means "everything", which the contract
     // expresses by omitting `type` rather than by listing all 34 of them.
     if (categories().length > 0) q["type"] = [...typesForCategories(categories())];
-    if (cursor() !== null) q["cursor"] = cursor();
+    if (feed.cursor() !== null) q["cursor"] = feed.cursor();
     return q as TimelineQuery;
   });
 
@@ -78,33 +89,8 @@ export default function AlertDetailRoute() {
     queryKey: qk.alerts.events(params.id, timelineQuery()),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       listAlertEvents(params.id, timelineQuery(), { signal }),
+    placeholderData: keepPrevious,
   }));
-
-  // Any change of direction or event-kind filter invalidates every cursor
-  // minted under the old one, so the fold resets. Doing it in an effect rather
-  // than inside the memo keeps the memo pure and the reset observable.
-  const timelineFingerprint = createMemo(() => `${order()}|${[...categories()].sort().join(",")}`);
-  createEffect((previous: string | undefined) => {
-    const current = timelineFingerprint();
-    if (previous !== undefined && previous !== current) {
-      setCursor(null);
-      setEvents([]);
-    }
-    return current;
-  });
-
-  const foldedEvents = createMemo<readonly AlertEvent[]>(() => {
-    const page = timeline.data?.data ?? [];
-    if (cursor() === null) return page;
-    const seen = new Set(events().map((e) => e.id));
-    return [...events(), ...page.filter((e) => !seen.has(e.id))];
-  });
-
-  const loadMoreEvents = (): void => {
-    setEvents(foldedEvents());
-    const next = timeline.data?.page.next_cursor;
-    if (typeof next === "string" && next !== "") setCursor(next);
-  };
 
   /* ---- supporting panels ------------------------------------------------- */
 
@@ -162,7 +148,7 @@ export default function AlertDetailRoute() {
 
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-2">
-                    <h1 class="min-w-0 truncate text-[18px] font-semibold tracking-tight text-ink">
+                    <h1 class="min-w-0 truncate text-page font-semibold tracking-tight text-ink">
                       {data().alertname}
                     </h1>
                     <SeverityMark severity={data().severity} withLabel />
@@ -184,7 +170,7 @@ export default function AlertDetailRoute() {
                     <SnoozeChip snooze={data().snooze ?? null} />
                   </div>
 
-                  <p class="mt-0.5 text-[12px] text-ink-muted">
+                  <p class="mt-0.5 text-body text-ink-muted">
                     {STATE_MEANING[data().state]}
                     <Show when={data().snooze}>
                       {" "}
@@ -193,7 +179,7 @@ export default function AlertDetailRoute() {
                     </Show>
                   </p>
 
-                  <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-ink-muted">
+                  <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-ink-muted">
                     <span>
                       <span class="text-ink-subtle">cluster</span>{" "}
                       <span class="font-mono">{data().cluster_key}</span>
@@ -252,7 +238,7 @@ export default function AlertDetailRoute() {
                       href={url()}
                       target="_blank"
                       rel="noreferrer noopener"
-                      class="text-[12px] text-accent hover:underline"
+                      class="text-body text-accent hover:underline"
                     >
                       Open the query in Prometheus ↗
                     </a>
@@ -262,7 +248,7 @@ export default function AlertDetailRoute() {
                   {(group) => (
                     <A
                       href={`/groups/${group().id}`}
-                      class="text-[12px] text-accent hover:underline"
+                      class="text-body text-accent hover:underline"
                       title="The Alertmanager notification group this episode joined"
                     >
                       In group: {group().title} ↗
@@ -284,12 +270,12 @@ export default function AlertDetailRoute() {
               <Panel class="flex min-h-0 flex-col xl:overflow-hidden">
                 <PanelHeader>
                   <PanelTitle>Timeline</PanelTitle>
-                  <span class="text-[11px] text-ink-subtle">
+                  <span class="text-meta text-ink-subtle">
                     displayed in the upstream's time · ordered by oto's
                   </span>
                 </PanelHeader>
                 <Switch>
-                  <Match when={timeline.isPending && foldedEvents().length === 0}>
+                  <Match when={timeline.isPending && feed.rows().length === 0}>
                     <LoadingLine label="Reading the timeline…" />
                   </Match>
                   <Match when={timeline.isError}>
@@ -297,14 +283,14 @@ export default function AlertDetailRoute() {
                   </Match>
                   <Match when={true}>
                     <Timeline
-                      events={foldedEvents()}
+                      events={feed.rows()}
                       categories={categories()}
                       onCategoriesChange={setCategories}
                       order={order()}
                       onOrderChange={setOrder}
-                      hasMore={timeline.data?.page.has_more ?? false}
+                      hasMore={feed.hasMore()}
                       loading={timeline.isFetching}
-                      onLoadMore={loadMoreEvents}
+                      onLoadMore={feed.loadMore}
                     />
                   </Match>
                 </Switch>
@@ -396,7 +382,7 @@ function LabelsPanel(props: {
         <PanelTitle>Labels and annotations</PanelTitle>
         <button
           type="button"
-          class="text-[11px] text-ink-subtle hover:text-ink hover:underline"
+          class="text-meta text-ink-subtle hover:text-ink hover:underline"
           onClick={() => void navigator.clipboard?.writeText(formatLabels(props.labels))}
           title="Copy as an Alertmanager matcher set"
         >
@@ -407,13 +393,13 @@ function LabelsPanel(props: {
       <div class="p-3">
         <Show
           when={labelEntries().length > 0}
-          fallback={<p class="text-[12px] text-ink-subtle">This alert carries no labels.</p>}
+          fallback={<p class="text-body text-ink-subtle">This alert carries no labels.</p>}
         >
           <dl class="space-y-0.5">
             <For each={labelEntries()}>
               {([k, val]) => (
                 <DataRow term={k}>
-                  <span class="break-all font-mono text-[12px]">{val}</span>
+                  <span class="break-all font-mono text-body">{val}</span>
                 </DataRow>
               )}
             </For>
@@ -422,15 +408,15 @@ function LabelsPanel(props: {
 
         <Show when={annotationEntries().length > 0}>
           <div class="mt-3 border-t border-line pt-3">
-            <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+            <p class="mb-1.5 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
               Annotations
             </p>
             <dl class="space-y-1.5">
               <For each={annotationEntries()}>
                 {([k, val]) => (
                   <div>
-                    <dt class="text-[11px] text-ink-subtle">{k}</dt>
-                    <dd class="whitespace-pre-wrap break-words text-[12px] leading-snug text-ink">
+                    <dt class="text-meta text-ink-subtle">{k}</dt>
+                    <dd class="whitespace-pre-wrap break-words text-body leading-snug text-ink">
                       {val}
                     </dd>
                   </div>

@@ -91,8 +91,13 @@ func (h *H) User(org Org) User {
 		Email:       uniqueSlug("user") + "@example.test",
 		DisplayName: "Test User",
 	}
-	h.Exec(`INSERT INTO users (id, org_id, email, display_name) VALUES ($1, $2, $3, $4)`,
-		u.ID, u.OrgID, u.Email, u.DisplayName)
+	// `created_at`/`updated_at` are NAMED and take the harness clock. 00034 removed
+	// this table's DEFAULT now() for the reason 00032 removed `channels`': the row
+	// is written by the application, so a seed that let `now()` fill it would be
+	// seeding a row the product itself cannot write.
+	h.Exec(`INSERT INTO users (id, org_id, email, display_name, created_at, updated_at)
+	        VALUES ($1, $2, $3, $4, $5, $5)`,
+		u.ID, u.OrgID, u.Email, u.DisplayName, h.Now())
 	return u
 }
 
@@ -113,8 +118,11 @@ func (h *H) Cluster(org Org) Cluster { return h.ClusterNamed(org, "prod") }
 func (h *H) ClusterNamed(org Org, key string) Cluster {
 	h.T.Helper()
 	c := Cluster{ID: id.New(), OrgID: org.ID, Key: ClusterKey(h.T, key)}
-	h.Exec(`INSERT INTO clusters (id, org_id, cluster_key, display_name) VALUES ($1, $2, $3, $4)`,
-		c.ID, c.OrgID, key, key)
+	// `created_at`/`updated_at` are NAMED and take the harness clock; 00034 removed
+	// this table's DEFAULT now(). See `User` above.
+	h.Exec(`INSERT INTO clusters (id, org_id, cluster_key, display_name, created_at, updated_at)
+	        VALUES ($1, $2, $3, $4, $5, $5)`,
+		c.ID, c.OrgID, key, key, h.Now())
 	return c
 }
 
@@ -128,7 +136,11 @@ type Source struct {
 	ClusterID uuid.UUID
 	// Name is unique per org.
 	Name string
-	// BaseURL is the Alertmanager root, with no trailing slash.
+	// Kind is `alertmanager` or `grafana` (alert_sources_kind_ck). It decides what
+	// BaseURL actually addresses, so a test about a deep link has to state it.
+	Kind string
+	// BaseURL is the Alertmanager API root, with no trailing slash. For a
+	// `grafana` source it is the AM-compat prefix, which is NOT a UI root.
 	BaseURL string
 }
 
@@ -141,20 +153,42 @@ func (h *H) Source(org Org, cl Cluster) Source {
 	return h.SourceAt(org, cl, "https://am.invalid.example")
 }
 
-// SourceAt seeds a source whose base_url is baseURL — normally
-// `fake.URL()` from an Alertmanager fake.
+// SourceAt seeds an alertmanager-kind source whose base_url is baseURL —
+// normally `fake.URL()` from an Alertmanager fake.
 func (h *H) SourceAt(org Org, cl Cluster, baseURL string) Source {
+	return h.SourceOfKind(org, cl, "alertmanager", baseURL)
+}
+
+// GrafanaSourceAt seeds a `grafana`-kind source at baseURL.
+//
+// Same table, same column, a DIFFERENT claim about what that URL addresses: a
+// grafana base_url is an Alertmanager-COMPATIBLE API prefix, and Grafana's own
+// console is not behind it (SPEC §L.3). Behaviour turns on that difference — the
+// per-silence deep link, the card's Silence button — and a suite that can only
+// seed alertmanagers cannot show that it does.
+func (h *H) GrafanaSourceAt(org Org, cl Cluster, baseURL string) Source {
+	return h.SourceOfKind(org, cl, "grafana", baseURL)
+}
+
+// SourceOfKind seeds a source of an explicit kind. `alert_sources_kind_ck`
+// rejects anything but `alertmanager` and `grafana`, so a typo fails here rather
+// than quietly seeding a source no code path handles.
+func (h *H) SourceOfKind(org Org, cl Cluster, kind, baseURL string) Source {
 	h.T.Helper()
 	s := Source{
 		ID:        id.New(),
 		OrgID:     org.ID,
 		ClusterID: cl.ID,
 		Name:      uniqueSlug("src"),
+		Kind:      kind,
 		BaseURL:   baseURL,
 	}
-	h.Exec(`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url)
-	        VALUES ($1, $2, $3, $4, 'alertmanager', $5)`,
-		s.ID, s.OrgID, s.ClusterID, s.Name, s.BaseURL)
+	// `created_at`/`updated_at` are NAMED and take the harness clock; 00034 removed
+	// this table's DEFAULT now(). See `User` above.
+	h.Exec(`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url,
+	                                   created_at, updated_at)
+	        VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
+		s.ID, s.OrgID, s.ClusterID, s.Name, s.Kind, s.BaseURL, h.Now())
 	return s
 }
 

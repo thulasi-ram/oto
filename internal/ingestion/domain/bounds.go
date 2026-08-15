@@ -61,11 +61,18 @@ const (
 	// `undecodable` — recorded, then 400, because the same bytes never will decode.
 	MaxJSONDepth = 32
 
-	// ChunkSize is B17: alerts per processing transaction.
+	// ChunkSize is B17: alerts per processing transaction, and EVERY batch is
+	// sliced by it. 500 alerts is one transaction, 501 is two, 2 000 is four.
+	// The chunk is the size of one multi-row statement on the ingest pool, whose
+	// `statement_timeout` is 2 s — see service.applyChunks for why that makes 500
+	// a cap rather than a target.
 	ChunkSize = 500
-	// ChunkThreshold is B17's split point. A batch larger than this is processed in
-	// ChunkSize chunks, each its own transaction, with the batch marked `partial`
-	// until the last chunk commits.
+	// ChunkThreshold is B17's PARTIAL-MARKING point. ⛔ It is NOT the point at
+	// which chunking begins: chunking is unconditional. A batch larger than this is
+	// marked `partial` before its first chunk and until the last one commits, so an
+	// operator can tell a batch that was in the middle of a long job from one that
+	// never started. Both states are resumable, so nothing under the threshold is
+	// stranded by not being marked.
 	ChunkThreshold = 2000
 )
 
@@ -73,6 +80,14 @@ const (
 // alerts/domain.NewLabels. B10's "alertname present and non-empty" is enforced by
 // alerts/domain.NewLabelSet. Neither is restated here; restating a regex is how a
 // charset acquires two definitions and one bug.
+//
+// B18 and B19 are the same kind of bound and live in the same place: what
+// Postgres can actually STORE. `alerts/domain.UnstorableReason` is the single
+// definition — no U+0000, valid UTF-8 — and the two bounds differ only in the
+// verdict. B18 (label value) REJECTS the alert through NewLabels, because a label
+// value is identity. B19 (annotation) SANITISES the value or drops the annotation
+// in decode.boundAnnotations, because an annotation is prose. Both record; neither
+// is silent.
 
 // The B12/B13 timestamp sanity windows.
 //
@@ -97,9 +112,9 @@ const (
 // window: its only job is to recognise the same delivery arriving twice.
 //
 // ⛔ IT MUST STAY STRICTLY BELOW `refire_grace`, AND THAT IS NOT A COINCIDENCE
-// TO BE PRESERVED BY LUCK. It was ten minutes, and `refire_grace` defaults to
-// ten minutes, so the two windows were exactly equal — which made the T8 re-fire
-// path UNREACHABLE by construction:
+// TO BE PRESERVED BY LUCK. It was ten minutes, and `refire_grace` then defaulted
+// to ten minutes too, so the two windows were exactly equal — which made the T8
+// re-fire path UNREACHABLE by construction:
 //
 //   - a re-fire inside `refire_grace` is, by the equality, also inside the replay
 //     window, so it was dropped at ingest and the state machine never saw it;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -127,6 +128,15 @@ type GroupAckResult struct {
 	// thing that can tell "somebody already acked this" from "it resolved while
 	// you were reading it".
 	SkippedCodes map[string]int
+	// Unreached is how many currently-joined members the fan-out never offered
+	// the verb to, because a group ack is bounded and a storm can be larger than
+	// the bound.
+	//
+	// ⭐ IT IS HERE SO THE BUTTON CANNOT LOOK LIKE IT WORKED. That is this
+	// surface's whole standard — see applyUnacknowledge — and an ack that
+	// silently covered a tenth of a five-thousand-alert group would fail it more
+	// quietly than the bug that standard was written for.
+	Unreached int
 }
 
 // SlackNotice sends a message only the person who pressed the button can see.
@@ -148,8 +158,12 @@ type InteractionOptions struct {
 	Groups        AlertGroups
 	Enqueuer      db.Enqueuer
 	Notice        SlackNotice
-	Clock         clock.Clock
-	Logger        *slog.Logger
+	// Metrics is optional. A nil one costs the `oto_slack_unknown_action_total`
+	// series and nothing else, which is the right trade for a test that does not
+	// want a registry.
+	Metrics *InteractionMetrics
+	Clock   clock.Clock
+	Logger  *slog.Logger
 }
 
 // InteractionService consumes verified Slack block actions.
@@ -166,6 +180,7 @@ type InteractionService struct {
 	groups        AlertGroups
 	enqueuer      db.Enqueuer
 	notice        SlackNotice
+	metrics       *InteractionMetrics
 	clk           clock.Clock
 	log           *slog.Logger
 }
@@ -190,6 +205,7 @@ func NewInteractionService(o InteractionOptions) (*InteractionService, error) {
 		groups:        o.Groups,
 		enqueuer:      o.Enqueuer,
 		notice:        o.Notice,
+		metrics:       o.Metrics,
 		clk:           clk,
 		log:           logger,
 	}, nil
@@ -259,6 +275,16 @@ func (s *InteractionService) Handle(ctx context.Context, payload json.RawMessage
 			// acknowledge and there is nothing else to do; the explicit namespace
 			// is what makes that a decision rather than an oversight (S9).
 		default:
+			// ⛔ THE OUTCOME IS RECORDED, NOT MERELY LOGGED (§H.8). The response is
+			// already a 200 and has to be — Slack disables an app's event
+			// subscriptions when more than 95 % of deliveries fail in a 60-minute
+			// window — so a counter is the only thing that turns "a human pressed a
+			// button oto could not route" into something an operator can see
+			// without grepping logs. There is no rejection table this belongs in:
+			// `ingest_rejections` is the ingest path's, keyed by a NOT NULL
+			// `source_id` under a closed reason enum bound to the §C.9.1 bounds
+			// checks, and a Slack press has no source.
+			s.metrics.unknownAction()
 			logger.Warn("channels: a Slack interaction named an unknown action",
 				slog.String("action_id", id))
 		}
@@ -296,6 +322,20 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 		slog.String("slack_channel_id", args.ChannelID))
 
 	// ---- 1. THE TENANT -------------------------------------------------
+	//
+	// ⛔ THIS LINE IS WHERE THE TENANCY COMES FROM, and it is the last moment
+	// anything can question it. `db.NewTenantScope` below turns the org id into
+	// PROOF OF AUTHENTICATION — a TenantScope's field is unexported and every
+	// repository method downstream takes one on trust — so a scope cannot
+	// re-check what produced it, and nothing after this point asks whether the
+	// org is still alive. `resolveSlackConversationSQL` therefore asks, in SQL,
+	// with an INNER `orgs … deleted_at IS NULL` join, exactly as the four
+	// resolvers in `identity/repository` do; the roll-call of all five and the
+	// test that keeps it complete are documented on `resolveByEmailSQL`.
+	//
+	// The tests for this half are necessarily in `channels/repository`: the fake
+	// below cannot have an opinion about a soft-deleted org, because the question
+	// is a predicate and not a branch.
 	dest, err := s.conversations.ResolveSlackConversation(ctx, args.TeamID, args.ChannelID)
 	if err != nil {
 		if errs.IsKind(err, errs.KindNotFound) {
@@ -318,6 +358,12 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 	case ActionUnacknowledge:
 		return s.applyUnacknowledge(ctx, args)
 	default:
+		// Reachable only across a deploy: `Handle` enqueues nothing it cannot
+		// route, so a job carrying an unserved action is one an OLDER binary
+		// enqueued and a newer one drained. It counts on the same series as the
+		// transport's own unknown branch, because from an operator's chair it is
+		// the same fact — a press oto could not act on.
+		s.metrics.unknownAction()
 		logger.Warn("channels: the interaction worker met an action it does not serve")
 		return nil
 	}
@@ -370,21 +416,41 @@ func (s *InteractionService) applyAcknowledge(
 		return err
 	}
 
+	// ⭐ NOTHING IS POSTED FROM HERE. The acknowledgement enqueued a
+	// `notify.evaluate` inside its own transaction, and the card is updated by the
+	// dispatch path — which is what keeps thread ordering, delivery idempotency and
+	// the per-channel rate limit in force (§G.5, §G.7, §H.9). A `chat.update`
+	// issued from this worker would bypass all three and race the very
+	// notification it duplicates.
 	if res.Applied > 0 {
-		// ⭐ NOTHING IS POSTED FROM HERE. The acknowledgement enqueued a
-		// `notify.evaluate` inside its own transaction, and the card is updated
-		// by the dispatch path — which is what keeps thread ordering, delivery
-		// idempotency and the per-channel rate limit in force (§G.5, §G.7, §H.9).
-		// A `chat.update` issued from this worker would bypass all three and race
-		// the very notification it duplicates.
 		logger.Info("channels: acknowledged from Slack",
-			slog.Int("members", res.Members), slog.Int("applied", res.Applied))
-		return nil
+			slog.Int("members", res.Members), slog.Int("applied", res.Applied),
+			slog.Int("unreached", res.Unreached))
+	} else {
+		logger.Info("channels: a Slack acknowledgement applied to nothing",
+			slog.Int("members", res.Members), slog.Any("skipped", res.SkippedCodes),
+			slog.Int("unreached", res.Unreached))
 	}
 
-	logger.Info("channels: a Slack acknowledgement applied to nothing",
-		slog.Int("members", res.Members), slog.Any("skipped", res.SkippedCodes))
-	s.tell(ctx, args, nothingAppliedText(res))
+	// ⛔ REACH IS ANSWERED FIRST, AND IT IS ANSWERED HOWEVER MANY THE PRESS
+	// APPLIED TO. This used to be nested inside `Applied > 0`, which made the
+	// warning unreachable in the exact case it was written for: a group above
+	// domain.FanOutLimit whose oldest 500 members are ALREADY acknowledged applies
+	// nothing, and fell through to "Already acknowledged" while thousands of its
+	// alerts behind the ceiling were not. That is the failure this whole surface's
+	// standard is against — see applyUnacknowledge — told from the other side: not
+	// a button that pretends it worked, but one that pretends there is nothing
+	// left to do. An unreached member is an unacknowledged alert whatever the
+	// members in front of it answered.
+	switch {
+	case res.Unreached > 0:
+		// The card will show what was acked and would otherwise read as the whole
+		// group. Only the person who pressed is told, because this is about their
+		// press and not a fact about the alerts.
+		s.tell(ctx, args, partialAckText(res))
+	case res.Applied == 0:
+		s.tell(ctx, args, nothingAppliedText(res))
+	}
 	return nil
 }
 
@@ -402,11 +468,45 @@ func (s *InteractionService) applyUnacknowledge(ctx context.Context, args jobs.S
 	return nil
 }
 
+// partialAckText says that the press did not cover the group.
+//
+// ⛔ IT PROMISES NOTHING IT CANNOT DO. It does not say "press again": a second
+// press walks the same members in the same order, finds them acknowledged and
+// applies nothing, so telling somebody to press again during a storm would be
+// worse than saying nothing at all. It reports the size of what is left and
+// stops there.
+//
+// ⚠️ IT ALSO ANSWERS THE PRESS THAT APPLIED TO NOTHING. That is the case the
+// ceiling actually produces after the first press: the oldest 500 members are
+// already acknowledged, so the second press concludes on 500 refusals and never
+// sees the thousands behind them. "Acknowledged 0 alerts" would be a strange
+// sentence, so it is not said — but the count of what is still outstanding is,
+// because that is the only number the person pressing needs.
+func partialAckText(res GroupAckResult) string {
+	if res.Applied == 0 {
+		return fmt.Sprintf(
+			"The alerts this acknowledgement reached were already acknowledged or have resolved. "+
+				"This group is larger than one acknowledgement covers: %d of its alerts were "+
+				"not reached and are still unacknowledged.",
+			res.Unreached)
+	}
+	return fmt.Sprintf(
+		"Acknowledged %d alerts. This group is larger than one acknowledgement covers: "+
+			"%d of its alerts were not reached and are still unacknowledged.",
+		res.Applied, res.Unreached)
+}
+
 // nothingAppliedText says WHICH kind of nothing happened.
 //
 // "Already acknowledged" and "it resolved while you were reading it" are
 // different afternoons, and a button that answers both with the same shrug is
 // only marginally better than one that says nothing at all.
+//
+// ⚠️ EVERY SENTENCE HERE IS ABOUT THE WHOLE GROUP, so it is only reached when
+// the fan-out reached the whole group. An incomplete one is answered by
+// partialAckText instead: "already acknowledged" said of the 500 members a
+// bounded press concluded on is not a statement about the 4 500 behind them, and
+// said to somebody in a storm it is the exact opposite of one.
 func nothingAppliedText(res GroupAckResult) string {
 	switch {
 	case res.Members == 0:

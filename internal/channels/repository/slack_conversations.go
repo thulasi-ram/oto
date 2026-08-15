@@ -46,9 +46,39 @@ type SlackDestination struct {
 //
 // Deleted and disabled channels are excluded: a destination an operator has
 // turned off must not still accept commands from Slack.
+//
+// ⛔ THE `orgs` JOIN IS INNER AND IT ASKS ABOUT THE TENANT, NOT THE CHANNEL.
+// `c.deleted_at IS NULL AND c.enabled` are questions about the DESTINATION, and
+// answering them is not the same as asking whether the tenant is still alive:
+// SOFT-DELETING AN ORG DOES NOT TOUCH `channels`. The FK is `ON DELETE CASCADE`,
+// which fires for a hard DELETE and never for `deleted_at = now()`, so every row
+// this statement can see outlives the tenant that owns it. Nor can anything
+// downstream re-check: `InteractionService.Apply` hands the `org_id` below
+// straight to `db.NewTenantScope`, and a TenantScope is proof of authentication
+// by construction — it cannot interrogate what produced it. This join is the
+// only place the question can be asked, which is why it is the same join
+// `resolveSessionSQL`, `resolveByPrefixSQL` and `resolveByEmailSQL` carry. See
+// the roll-call in `identity/repository/users.go`.
+//
+// Without it, both halves of the defect 7f8e710 fixed for the login path were
+// live here, in the resolver a human actually presses:
+//
+//  1. a dead tenant's Acknowledge button still worked — the press resolved, a
+//     scope was minted for an org that no longer exists, and the acknowledgement
+//     was written into it;
+//  2. worse, the dead row still counted towards the `LIMIT 2` below, so a LIVE
+//     tenant that had configured the same conversation in the same workspace was
+//     refused as `slack_conversation_ambiguous` and told "no oto channel is
+//     configured for this conversation" on every press, forever, with nothing in
+//     the message that names the deleted tenant shadowing them.
+//
+// ⚠️ IT IS ALSO WHY `LIMIT 2` CAN STILL BE TRUSTED. The ambiguity this query
+// refuses is "more than one LIVE org claims this conversation"; counting dead
+// orgs towards that ceiling turns a deletion into somebody else's lockout.
 const resolveSlackConversationSQL = `
 SELECT c.org_id, c.id
   FROM channels c
+  JOIN orgs o ON o.id = c.org_id AND o.deleted_at IS NULL
  WHERE c.type = 'slack'
    AND c.deleted_at IS NULL
    AND c.enabled

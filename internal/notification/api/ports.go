@@ -22,13 +22,31 @@ import (
 // hand the thing that reads the rules a way to change them. The settings write
 // path is therefore its own port, injected from the composition root. `api` still
 // does not IMPORT `repository`, so depguard's rule holds.
+//
+// ⛔ AND `CreatePolicy` IS NO LONGER ON IT. See PolicyCreator.
 type PolicyStore interface {
 	ListPolicies(ctx context.Context, s db.TenantScope, p db.Keyset) ([]domain.Policy, db.Cursor, error)
 	GetPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Policy, error)
-	CreatePolicy(ctx context.Context, s db.TenantScope, in domain.PolicyDraft) (domain.Policy, error)
 	UpdatePolicy(ctx context.Context, s db.TenantScope, id uuid.UUID, p domain.PolicyPatch) (domain.Policy, error)
 	SoftDeletePolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) error
 }
+
+// PolicyCreator registers a routing policy, satisfied by
+// `*notification/service.PolicyWriter`.
+//
+// ⭐⭐ IT IS A SEPARATE PORT BECAUSE IT IS SATISFIED BY A DIFFERENT LAYER. An
+// `Idempotency-Key` claim has to join the insert's own transaction, so a handler
+// wired straight to the repository had nowhere to take one — which is why
+// `createNotificationPolicy` answered a same-body retry with a `policies_name_uniq`
+// conflict naming nothing rather than with the policy the caller already made.
+// It is NOT `PolicyService`: that one evaluates policies, and the evaluator must
+// not gain a way to change the rules it reads.
+type PolicyCreator interface {
+	CreatePolicy(ctx context.Context, s db.TenantScope, in domain.PolicyDraft, idem service.Idempotency) (domain.Policy, error)
+}
+
+// Compile-time proof that the writer satisfies the port this layer declares.
+var _ PolicyCreator = (*service.PolicyWriter)(nil)
 
 // AuditStore serves the two read-only audit lists and the delivery retry,
 // satisfied by the same `ConfigRepository`.

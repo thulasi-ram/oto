@@ -47,6 +47,11 @@ type AlertRepository interface {
 	GetByAlertKey(ctx context.Context, s db.TenantScope, alertKey string) (domain.Alert, error)
 	List(ctx context.Context, s db.TenantScope, f domain.AlertFilter, p db.Keyset) ([]domain.Alert, db.Cursor, error)
 	SetProjection(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p domain.AlertProjection) error
+	// SetProjectionBatch is SetProjection for a whole observe batch in ONE
+	// statement. Each alert may appear AT MOST ONCE: the caller has already
+	// collapsed its writes to the last one per alert, and a duplicate here would
+	// leave which projection lands to the planner.
+	SetProjectionBatch(ctx context.Context, s db.TenantScope, in []domain.AlertProjectionWrite) error
 	SetFlap(ctx context.Context, s db.TenantScope, alertID uuid.UUID, score float32, flapping bool) error
 	// The two discovery reads return the alert COUNT alongside each name and
 	// value. The contract has declared `alert_count` on both DTOs since the
@@ -66,6 +71,12 @@ type OccurrenceRepository interface {
 	GetOpenByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Occurrence, bool, error)
 	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Occurrence, error)
 	GetLatestByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Occurrence, bool, error)
+	// PreviousWithRuleSnapshot is "the last time this alert fired with a rule oto
+	// could see": the newest episode before beforeSeq that carries a rule
+	// snapshot. It is what rule drift between two episodes is measured from, and
+	// it cannot be assembled from the reads above — GetLatestByAlert answers about
+	// the CURRENT episode and ListByAlert pages by started_at.
+	PreviousWithRuleSnapshot(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (domain.Occurrence, bool, error)
 	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) ([]domain.Occurrence, db.Cursor, error)
 	Observe(ctx context.Context, s db.TenantScope, id uuid.UUID, o domain.Observation) error
 	Transition(ctx context.Context, s db.TenantScope, id uuid.UUID, t domain.Transition) error
@@ -84,6 +95,13 @@ type OccurrenceRepository interface {
 // EventRepository is APPEND ONLY. There is no Update and there is no Delete —
 // alert_events is the truth and everything else is a projection. Events age out
 // by dropping a partition, never by a statement.
+//
+// ⚠️ `PruneDedupeKeys` IS NOT AN EXCEPTION TO THAT, and reading it as one would
+// be reading it as the opposite of what it is. It deletes from
+// `alert_event_keys`, the unpartitioned SIDE TABLE that holds the C.8 idempotency
+// tokens — not from `alert_events`, which it cannot reach. The side table has no
+// partition to age out with, so a statement is the only way it ages out at all,
+// and its own DDL comment has promised that statement since 00007.
 type EventRepository interface {
 	// Append returns written=false when the C.8 dedupe key had already been
 	// recorded, which is the idempotency mechanism working, not an error.
@@ -94,6 +112,15 @@ type EventRepository interface {
 	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
 	ListByOccurrence(ctx context.Context, s db.TenantScope, occID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
 	ListByGroup(ctx context.Context, s db.TenantScope, groupID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
+	// GetByDedupeKey resolves the entry a C.8 key already belongs to, so that a
+	// retried KEYED comment can be answered with the annotation its first attempt
+	// appended instead of a second one. `false` means the key has never been
+	// claimed, which is an answer and not an error.
+	GetByDedupeKey(ctx context.Context, s db.TenantScope, key string) (domain.Event, bool, error)
+	// PruneDedupeKeys ages out `alert_event_keys` and takes no TenantScope: it is
+	// the maintenance sweep `retention.prune` runs across every tenant, and it is
+	// reachable from no request. `batch` bounds one tick.
+	PruneDedupeKeys(ctx context.Context, before time.Time, batch int) (int64, error)
 }
 
 // SnoozeRepository owns `alert_snoozes` (§B.8, §F.5.2).

@@ -11,16 +11,23 @@
  *      one. The copy lives in `tuningCopy.ts` and is taken from
  *      `docs/setup/tuning.md` — this screen must not contradict that page.
  *
- *   2. **The Alertmanager relationship is inline, live and PROVENANCED.** Almost
- *      every value here is only meaningful as a multiple of the source's own
- *      `group_wait` / `group_interval` / `repeat_interval`. A re-fire grace
- *      shorter than `group_interval` is unreachable at any value. oto reads those
- *      three off each source's published configuration and serves them on
- *      `SourceHealthDTO.route_timings`, each with one of three states —
+ *   2. **The Alertmanager relationship is inline, live, PROVENANCED and
+ *      ROUTE-RESOLVED.** Almost every value here is only meaningful as a multiple
+ *      of the source's own `group_wait` / `group_interval` / `repeat_interval`. A
+ *      re-fire grace shorter than `group_interval` is unreachable at any value.
+ *      oto reads those three off each source's published configuration and serves
+ *      them on `SourceHealthDTO.route_timings`, each with one of three states —
  *      `observed`, `default_applies`, `unknown` — and this screen renders all
  *      three differently. They were four inputs kept in one browser's
  *      `localStorage` until this rewrite: unshared, unvalidated, and silently
  *      wrong the moment somebody edited `alertmanager.yml`.
+ *
+ *      ⛔ AND THE THREE ARE PER-ROUTE. The numbers that govern the alerts oto is
+ *      sent are the ones on the route delivering to oto's own RECEIVER, not the
+ *      top-level route. `route_timings.route` says which of the two the headline
+ *      three are; `routes` is the whole resolved tree; and where several routes
+ *      reach oto with different timings this screen shows the DISAGREEMENT rather
+ *      than picking one — see `RouteOrigin`.
  *
  *   3. **Origin is the primary fact, not a footnote.** An operator debugging a
  *      noisy Slack needs to see instantly which values are theirs, which are
@@ -56,10 +63,13 @@ import {
 } from "solid-js";
 
 import { ApiError, orphanViolations, violationsByField } from "~/api/client";
-import { getOrgSettings, listSources, updateOrgSettings } from "~/api/endpoints";
+import { getOrgSettings, updateOrgSettings } from "~/api/endpoints";
 import { qk } from "~/api/keys";
+import { sourcesQuery } from "~/api/queries";
 import type {
+  InheritedTiming,
   OrgSettingsView,
+  ReceiverRoute,
   RouteTiming,
   SettingBound,
   SettingOrigin,
@@ -86,6 +96,7 @@ import {
   AM_FIELDS,
   ASSUMED_RULE_FOR_S,
   KNOBS,
+  RECEIVER_BASIS_COPY,
   KNOB_GROUPS,
   MENTION_LIST_MAX,
   MENTION_MODE_OPTIONS,
@@ -135,12 +146,43 @@ function amRefOf(source: Source): AmRef | null {
     groupWait: asTiming(timings.group_wait),
     groupInterval: asTiming(timings.group_interval),
     repeatInterval: asTiming(timings.repeat_interval),
+    route: timings.route,
     childRoutes: timings.child_routes,
     childRoutesWithTimings: timings.child_routes_with_timings,
+    receiver: timings.receiver ?? null,
+    receiverBasis: timings.receiver_basis,
+    webhookReceivers: timings.webhook_receivers,
+    routes: timings.routes,
+    routesAgree: timings.routes_agree,
+    routesDropped: timings.routes_dropped,
     observedAt: timings.observed_at ?? null,
     defaultsFromVersion: timings.defaults_from_version ?? null,
     defaultsVerified: timings.defaults_verified,
   };
+}
+
+/** The routes that deliver to the receiver oto believes is its own. */
+function reachingRoutes(am: AmRef): readonly ReceiverRoute[] {
+  return am.routes.filter((r) => r.reaches_oto);
+}
+
+/**
+ * One route's matcher path, rendered the way an operator's own file reads it.
+ *
+ * The top-level route contributes `{}` and is dropped from the label when there
+ * is anything below it: `route:` is where everybody starts, and repeating it in
+ * every line is noise. A route that IS the top-level one keeps it, because "the
+ * top-level route" is exactly what it needs to say.
+ */
+function routeLabel(r: ReceiverRoute): string {
+  const steps = r.path.map((s) => `{${s.matchers.join(", ")}}`);
+  if (steps.length === 1) return "the top-level route";
+  return steps.slice(1).join(" \u203a ");
+}
+
+/** Whether any route on the path used the deprecated `match` / `match_re`. */
+function usesDeprecatedMatchers(r: ReceiverRoute): boolean {
+  return r.path.some((s) => s.deprecated);
 }
 
 /** How usable a reference is, for picking which source the guidance argues from. */
@@ -218,10 +260,7 @@ export const TuningSection: Component = () => {
 
   // The upstream timings, read per source. This is the query that replaced four
   // number inputs and a localStorage key.
-  const sources = useQuery(() => ({
-    queryKey: qk.settings.sources(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listSources({ signal }),
-  }));
+  const sources = useQuery(() => sourcesQuery());
 
   const refs = createMemo<readonly AmRef[]>(() =>
     (sources.data?.data ?? []).map(amRefOf).filter((r): r is AmRef => r !== null),
@@ -547,7 +586,7 @@ export const TuningSection: Component = () => {
                     <For each={managedViolations(save.error)}>
                       {(v) => (
                         <span class="text-ink">
-                          <code class="font-mono text-[11px]">{v.field}</code> — {v.message}
+                          <code class="font-mono text-meta">{v.field}</code> — {v.message}
                         </span>
                       )}
                     </For>
@@ -596,7 +635,7 @@ export const TuningSection: Component = () => {
                   <Panel>
                     <PanelHeader class="flex-col items-start gap-0.5">
                       <PanelTitle>{group.title}</PanelTitle>
-                      <p class="text-[11px] leading-snug text-ink-muted">{group.blurb}</p>
+                      <p class="text-meta leading-snug text-ink-muted">{group.blurb}</p>
                     </PanelHeader>
                     <ul>
                       <For each={keys()}>{(key) => <KnobRow knob={KNOBS[key]} ctl={ctl} />}</For>
@@ -616,8 +655,8 @@ export const TuningSection: Component = () => {
             }
           >
             <Panel class="px-3 py-8 text-center">
-              <p class="text-[13px] font-medium text-ink">This org has changed nothing.</p>
-              <p class="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-ink-muted">
+              <p class="text-item font-medium text-ink">This org has changed nothing.</p>
+              <p class="mx-auto mt-1 max-w-md text-body leading-relaxed text-ink-muted">
                 Every value in force is oto's shipped default, and each will follow that default if
                 oto moves it. That is a legitimate state, not an empty one.
               </p>
@@ -675,7 +714,7 @@ const ProvenanceBadge: Component<{ readonly provenance: TimingProvenance }> = (p
         return {
           label: "from your config",
           title:
-            "This value is stated in the route your oto receiver is attached to. Changing it means editing alertmanager.yml.",
+            "This value is stated in your configuration, on the route named just below these three numbers or on one of its parents. Changing it means editing alertmanager.yml.",
           tone: "border-accent-border bg-accent-fill font-semibold text-ink",
         };
       case "default_applies":
@@ -698,7 +737,7 @@ const ProvenanceBadge: Component<{ readonly provenance: TimingProvenance }> = (p
   return (
     <span
       class={cx(
-        "inline-flex shrink-0 items-center gap-1 rounded-[3px] border px-1.5 py-px text-[11px] leading-4",
+        "inline-flex shrink-0 items-center gap-1 rounded-chip border px-1.5 py-px text-meta leading-4",
         copy().tone,
       )}
       title={copy().title}
@@ -714,13 +753,283 @@ const TimingCell: Component<{ readonly field: AmFieldCopy; readonly am: AmRef }>
   return (
     <div class="flex min-w-0 flex-col gap-1">
       <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <code class="font-mono text-[11px] text-ink-muted">{props.field.label}</code>
-        <span class="text-[13px] font-medium text-ink tabular-nums">
+        <code class="font-mono text-meta text-ink-muted">{props.field.label}</code>
+        <span class="text-item font-medium text-ink tabular-nums">
           {timing().provenance === "unknown" ? "—" : duration(timing().seconds)}
         </span>
         <ProvenanceBadge provenance={timing().provenance} />
       </div>
-      <p class="text-[11px] leading-snug text-ink-subtle">{props.field.why}</p>
+      <p class="text-meta leading-snug text-ink-subtle">{props.field.why}</p>
+    </div>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+/* Where the three numbers actually came from                                 */
+/* -------------------------------------------------------------------------- */
+
+/** One per-route duration, rendered from milliseconds. */
+function routeDuration(t: InheritedTiming): string {
+  return t.value_ms === null ? "\u2014" : duration(t.value_ms / 1000);
+}
+
+/**
+ * One resolved route: its matchers, its receiver, and its three timings with the
+ * depth each was stated at.
+ *
+ * ⭐ INHERITED AND STATED ARE SHOWN DIFFERENTLY ON PURPOSE. `group_interval: 5m`
+ * inherited from the top-level route and `group_interval: 5m` written on this
+ * route are the same number and two different lines of the operator's file, and
+ * only the second survives them editing the child.
+ */
+const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: number }> = (
+  props,
+) => {
+  const own = (t: InheritedTiming): boolean => t.from_depth === props.ownDepth;
+  const cell = (label: string, t: InheritedTiming): JSX.Element => (
+    <span class="whitespace-nowrap">
+      <code class="font-mono text-micro text-ink-subtle">{label}</code>{" "}
+      <span class={cx("tabular-nums", own(t) ? "font-medium text-ink" : "text-ink-muted")}>
+        {routeDuration(t)}
+      </span>
+      <Show when={t.provenance === "default_applies"}>
+        <span class="text-ink-subtle" title="No route on this path states it, so Alertmanager's documented default governs. There is no line in alertmanager.yml to change.">
+          {" "}
+          (default)
+        </span>
+      </Show>
+      <Show when={t.provenance !== "default_applies" && !own(t)}>
+        <span class="text-ink-subtle" title="Inherited from a parent route, not stated on this one.">
+          {" "}
+          (inherited)
+        </span>
+      </Show>
+    </span>
+  );
+
+  return (
+    <li
+      class={cx(
+        "flex flex-col gap-1 border-b border-line px-2 py-1.5 last:border-b-0",
+        props.route.reaches_oto && "bg-accent-fill/40",
+        props.route.unreachable && "opacity-60",
+      )}
+    >
+      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <Show
+          when={props.route.path.length > 1}
+          fallback={<span class="text-meta font-medium text-ink">the top-level route</span>}
+        >
+          <code class="font-mono text-meta text-ink">{routeLabel(props.route)}</code>
+        </Show>
+        <span class="text-meta text-ink-muted">
+          &rarr; <span class="font-medium text-ink">{props.route.receiver}</span>
+        </span>
+        <Show when={props.route.reaches_oto}>
+          <span class="rounded-chip border border-accent-border bg-accent-fill px-1 text-micro leading-4 text-ink">
+            reaches oto
+          </span>
+        </Show>
+        <Show when={props.route.path.at(-1)?.continue === true}>
+          <span
+            class="rounded-chip border border-line-strong px-1 text-micro leading-4 text-ink-muted"
+            title="continue: true — evaluation does not stop here, so later sibling routes are still considered. This is why more than one route can reach the same receiver."
+          >
+            continue
+          </span>
+        </Show>
+        <Show when={usesDeprecatedMatchers(props.route)}>
+          <span
+            class="rounded-chip border border-line-strong px-1 text-micro leading-4 text-ink-muted"
+            title="Written with the deprecated match / match_re keys. Still routing, still read by oto; shown here in the current matchers spelling."
+          >
+            match/match_re
+          </span>
+        </Show>
+        <Show when={props.route.group_by_all}>
+          <span
+            class="rounded-chip border border-line-strong px-1 text-micro leading-4 text-ink-muted"
+            title="group_by: ['...'] groups by every label, so no group ever accumulates a second member and storm collapse is unreachable at any threshold. That fix is in alertmanager.yml, not on this screen."
+          >
+            group_by: ...
+          </span>
+        </Show>
+      </div>
+      <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-meta">
+        {cell("group_wait", props.route.group_wait)}
+        {cell("group_interval", props.route.group_interval)}
+        {cell("repeat_interval", props.route.repeat_interval)}
+      </div>
+      <Show when={props.route.unreachable}>
+        <p class="text-micro leading-snug text-ink-muted">
+          <span class="font-medium text-ink">Unreachable. </span>
+          An earlier sibling route states no matchers and no{" "}
+          <code class="font-mono text-micro">continue</code>, so it takes everything before
+          evaluation gets this far. Nothing can ever match here.
+        </p>
+      </Show>
+    </li>
+  );
+};
+
+/** The resolved tree, listed. Collapsed by default: calm unless it matters. */
+const RouteList: Component<{
+  readonly am: AmRef;
+  readonly openByDefault: boolean;
+}> = (props) => {
+  const [open, setOpen] = createSignal(props.openByDefault);
+  return (
+    <div class="mt-2">
+      <Show
+        when={open()}
+        fallback={
+          <Button size="sm" variant="ghost" onClick={() => setOpen(true)}>
+            Show all {props.am.routes.length} route{props.am.routes.length === 1 ? "" : "s"}
+          </Button>
+        }
+      >
+        <ul class="rounded-control border border-line">
+          <For each={props.am.routes}>
+            {(r) => <RouteRow route={r} ownDepth={r.path.length - 1} />}
+          </For>
+        </ul>
+        <Show when={props.am.routesDropped > 0}>
+          <p class="mt-1 text-micro leading-snug text-ink-muted">
+            {props.am.routesDropped} more route{props.am.routesDropped === 1 ? "" : "s"} exist and
+            were not read: this configuration is past the size oto resolves, so the list above is
+            not the whole tree.
+          </p>
+        </Show>
+        <Show when={!props.openByDefault}>
+          <Button size="sm" variant="ghost" class="mt-1" onClick={() => setOpen(false)}>
+            Hide routes
+          </Button>
+        </Show>
+      </Show>
+    </div>
+  );
+};
+
+/**
+ * WHICH ROUTE the three numbers above came from — the fact that used to be a
+ * caveat and is now the answer.
+ *
+ * ⛔ THIS BLOCK IS THE HONESTY OF THE WHOLE SCREEN. The three timings are
+ * per-route and inherited, so the numbers governing the alerts oto is sent are
+ * the ones on the route delivering to oto's receiver. Where oto can name that
+ * route it says so and shows the matchers. Where it cannot — Alertmanager
+ * redacts the webhook URL that would identify oto's receiver, so several webhook
+ * receivers are genuinely indistinguishable — it says THAT, shows every route,
+ * and claims none. And where several routes reach oto and disagree, it shows the
+ * disagreement rather than picking a side, because there is no single answer and
+ * inventing one is exactly what the old hand-typed form did.
+ */
+const RouteOrigin: Component<{ readonly am: AmRef }> = (props) => {
+  const reaching = (): readonly ReceiverRoute[] => reachingRoutes(props.am);
+  const basis = (): (typeof RECEIVER_BASIS_COPY)[keyof typeof RECEIVER_BASIS_COPY] =>
+    RECEIVER_BASIS_COPY[props.am.receiverBasis];
+
+  return (
+    <div class="mt-2 rounded-control border border-line px-2 py-1.5 text-meta leading-snug text-ink-muted">
+      <Switch>
+        {/* The answer. One route reaches oto, or several that agree. */}
+        <Match when={props.am.route === "oto_receiver"}>
+          <p>
+            <span class="font-medium text-ink">
+              Read from the route your oto receiver is attached to.
+            </span>{" "}
+            <Show
+              when={reaching().length === 1}
+              fallback={
+                <>
+                  {reaching().length} routes deliver to{" "}
+                  <span class="font-medium text-ink">{props.am.receiver}</span> and they agree on
+                  all three, so the numbers above describe every one of them.
+                </>
+              }
+            >
+              <code class="font-mono text-meta text-ink">{routeLabel(reaching()[0]!)}</code>{" "}
+              delivers to <span class="font-medium text-ink">{props.am.receiver}</span>, and the
+              three numbers above are that route&apos;s — everything it inherits from its parents
+              included.
+            </Show>{" "}
+            oto identified that receiver because this configuration has {basis().label}.
+          </p>
+        </Match>
+
+        {/*
+          ⚠️ THE DISAGREEMENT CASE. Alertmanager evaluates children in order and
+          `continue: true` does not stop it, so two routes can both deliver to
+          oto under different matchers with different timings. There is no single
+          triple; the guidance above is the TOP-LEVEL route's and describes
+          neither of them.
+        */}
+        <Match when={!props.am.routesAgree}>
+          <p>
+            <span class="font-medium text-ink">
+              {reaching().length} routes reach your oto receiver and they disagree.
+            </span>{" "}
+            They state different timings, so there is no single set of numbers for oto&apos;s
+            traffic. The three above are the <span class="font-medium">top-level route&apos;s</span>{" "}
+            and describe none of them — treat every verdict below as approximate until these routes
+            agree or you know which one your alerts take.
+          </p>
+        </Match>
+
+        {/* Identified a receiver, but nothing delivers to it. */}
+        <Match when={props.am.receiver !== null && reaching().length === 0}>
+          <p>
+            <span class="font-medium text-ink">
+              No route delivers to {props.am.receiver}.
+            </span>{" "}
+            oto reads that as its own receiver ({basis().label}), but every alert is consumed by a
+            route pointing somewhere else — so this Alertmanager is not sending oto anything. The
+            numbers above are the top-level route&apos;s.
+          </p>
+        </Match>
+
+        {/* Cannot tell which receiver is oto's. Show everything, claim nothing. */}
+        <Match when={props.am.receiverBasis === "ambiguous"}>
+          <p>
+            <span class="font-medium text-ink">
+              oto cannot tell which of these receivers is its own.
+            </span>{" "}
+            {basis().detail}{" "}
+            <span class="text-ink">
+              Candidates:{" "}
+              <For each={props.am.webhookReceivers}>
+                {(name, i) => (
+                  <>
+                    <code class="font-mono text-meta">{name}</code>
+                    {i() < props.am.webhookReceivers.length - 1 ? ", " : ""}
+                  </>
+                )}
+              </For>
+              .
+            </span>{" "}
+            The numbers above are the top-level route&apos;s — what governs every alert matching
+            nothing more specific.
+          </p>
+        </Match>
+
+        <Match when={props.am.receiverBasis === "no_webhook"}>
+          <p>
+            <span class="font-medium text-ink">No receiver here can push to oto.</span>{" "}
+            {basis().detail} The numbers above are the top-level route&apos;s.
+          </p>
+        </Match>
+
+        <Match when={true}>
+          <p>{basis().detail}</p>
+        </Match>
+      </Switch>
+
+      <Show when={props.am.routes.length > 0}>
+        <RouteList
+          am={props.am}
+          openByDefault={!props.am.routesAgree || props.am.receiverBasis === "ambiguous"}
+        />
+      </Show>
     </div>
   );
 };
@@ -734,14 +1043,14 @@ const SourceTimings: Component<{
   <li class={cx("border-b border-line px-3 py-3 last:border-b-0", props.isBasis && "bg-accent-fill/40")}>
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[13px] font-medium text-ink">{props.am.sourceName}</span>
+        <span class="text-item font-medium text-ink">{props.am.sourceName}</span>
         <Show when={props.isBasis}>
-          <span class="rounded-[3px] border border-accent-border bg-accent-fill px-1.5 py-px text-[11px] font-semibold leading-4 text-ink">
+          <span class="rounded-chip border border-accent-border bg-accent-fill px-1.5 py-px text-meta font-semibold leading-4 text-ink">
             guidance below uses this source
           </span>
         </Show>
       </div>
-      <div class="flex items-center gap-2 text-[11px] text-ink-subtle">
+      <div class="flex items-center gap-2 text-meta text-ink-subtle">
         <Show
           when={props.am.observedAt !== null}
           fallback={<span>never read</span>}
@@ -762,29 +1071,10 @@ const SourceTimings: Component<{
       <For each={AM_FIELDS}>{(f) => <TimingCell field={f} am={props.am} />}</For>
     </div>
 
-    {/*
-      ⚠️ THE v1 BOUNDARY, STATED RATHER THAN IMPLIED. All three settings are
-      per-route and inherited, so the values governing a PARTICULAR alert are the
-      ones on the route that matched it. oto evaluates the top-level route only,
-      and resolving per alert would mean re-implementing Alertmanager's matcher
-      tree — regex matchers, `continue: true`, mute time intervals — and being
-      wrong in a way nobody could see.
-    */}
-    <Show when={props.am.childRoutes > 0}>
-      <p class="mt-2 rounded-[4px] border border-line px-2 py-1 text-[11px] leading-snug text-ink-muted">
-        <span class="font-medium text-ink">Top-level route only. </span>
-        {props.am.childRoutesWithTimings} of {props.am.childRoutes} child route
-        {props.am.childRoutes === 1 ? "" : "s"}{" "}
-        {props.am.childRoutesWithTimings === 1 ? "states" : "state"} a timing of its own, and oto
-        does not evaluate {props.am.childRoutesWithTimings === 1 ? "it" : "them"} in this version.
-        Alerts matching{" "}
-        {props.am.childRoutesWithTimings === 1 ? "that route" : "those routes"} are batched by
-        different numbers, and the guidance below does not cover them.
-      </p>
-    </Show>
+    <RouteOrigin am={props.am} />
 
     <Show when={props.am.defaultsFromVersion !== null}>
-      <p class="mt-2 text-[11px] leading-snug text-ink-subtle">
+      <p class="mt-2 text-meta leading-snug text-ink-subtle">
         Defaulted values are Alertmanager{" "}
         <span class="font-mono">{props.am.defaultsFromVersion}</span>&apos;s documented 30s / 5m / 4h.
         <Show when={!props.am.defaultsVerified}>
@@ -810,7 +1100,7 @@ const AlertmanagerPanel: Component<{
   <Panel>
     <PanelHeader class="flex-col items-start gap-0.5">
       <PanelTitle>Your Alertmanager</PanelTitle>
-      <p class="text-[11px] leading-snug text-ink-muted">
+      <p class="text-meta leading-snug text-ink-muted">
         Read from each source&apos;s own running configuration on the status call oto already makes.
         Every duration below this panel is a multiple of these, not an absolute time.
       </p>
@@ -832,16 +1122,16 @@ const AlertmanagerPanel: Component<{
 
       <Match when={props.sources.length === 0}>
         <div class="px-3 py-6 text-center">
-          <p class="text-[13px] font-medium text-ink">No source has been read yet.</p>
-          <p class="mx-auto mt-1 max-w-lg text-[12px] leading-relaxed text-ink-muted">
+          <p class="text-item font-medium text-ink">No source has been read yet.</p>
+          <p class="mx-auto mt-1 max-w-lg text-body leading-relaxed text-ink-muted">
             Every duration on this screen is a multiple of an Alertmanager&apos;s{" "}
-            <code class="font-mono text-[11px]">group_wait</code>,{" "}
-            <code class="font-mono text-[11px]">group_interval</code> and{" "}
-            <code class="font-mono text-[11px]">repeat_interval</code>. Add a source under Sources
+            <code class="font-mono text-meta">group_wait</code>,{" "}
+            <code class="font-mono text-meta">group_interval</code> and{" "}
+            <code class="font-mono text-meta">repeat_interval</code>. Add a source under Sources
             and clusters, and oto reads all three off its published configuration — the guidance
             below turns on by itself. It is deliberately not something you can type in here: a
             number entered by hand is unshared, unchecked, and wrong the moment somebody edits{" "}
-            <code class="font-mono text-[11px]">alertmanager.yml</code>.
+            <code class="font-mono text-meta">alertmanager.yml</code>.
           </p>
         </div>
       </Match>
@@ -862,7 +1152,7 @@ const AlertmanagerPanel: Component<{
     </Switch>
 
     <div class="border-t border-line bg-raised px-3 py-2">
-      <p class="text-[11px] leading-snug text-ink-subtle">
+      <p class="text-meta leading-snug text-ink-subtle">
         oto does not read your rule files, so every verdict that depends on a rule&apos;s{" "}
         <code class="font-mono text-ink-muted">for:</code> assumes{" "}
         {duration(ASSUMED_RULE_FOR_S)} and says so where it is used. And one thing no number
@@ -888,8 +1178,8 @@ const OriginSummary: Component<{
   readonly onlyOverrides: boolean;
   readonly setOnlyOverrides: (next: boolean) => void;
 }> = (props) => (
-  <div class="flex flex-wrap items-center justify-between gap-3 rounded-[6px] border border-line bg-raised px-3 py-2">
-    <p class="text-[12px] leading-snug text-ink">
+  <div class="flex flex-wrap items-center justify-between gap-3 rounded-surface border border-line bg-raised px-3 py-2">
+    <p class="text-body leading-snug text-ink">
       <span class="font-medium">
         {props.overrides} of {props.total}
       </span>{" "}
@@ -915,7 +1205,7 @@ const OriginSummary: Component<{
     <Checkbox
       checked={props.onlyOverrides}
       onChange={props.setOnlyOverrides}
-      label={<span class="text-[12px]">Show only what this org has changed</span>}
+      label={<span class="text-body">Show only what this org has changed</span>}
     />
   </div>
 );
@@ -992,7 +1282,7 @@ const OriginBadge: Component<{
   return (
     <span
       class={cx(
-        "inline-flex shrink-0 items-center gap-1 rounded-[3px] border px-1.5 py-px text-[11px] leading-4",
+        "inline-flex shrink-0 items-center gap-1 rounded-chip border px-1.5 py-px text-meta leading-4",
         copy().tone,
       )}
       title={copy().title}
@@ -1000,7 +1290,7 @@ const OriginBadge: Component<{
       <span aria-hidden="true" class={cx("size-1.5 rounded-full", copy().dot)} />
       {copy().label}
       <Show when={props.origin === "config" && props.configKey !== null}>
-        <code class="font-mono text-[10px] text-ink-muted">{props.configKey}</code>
+        <code class="font-mono text-micro text-ink-muted">{props.configKey}</code>
       </Show>
     </span>
   );
@@ -1015,7 +1305,7 @@ const Note: Component<{ readonly kind: "warn" | "quiet"; readonly children: JSX.
   // reading as urgent.
   <p
     class={cx(
-      "rounded-[4px] border px-2 py-1 text-[11px] leading-snug",
+      "rounded-control border px-2 py-1 text-meta leading-snug",
       props.kind === "warn"
         ? "border-line-strong bg-raised font-medium text-ink"
         : "border-line bg-sunken text-ink-muted",
@@ -1118,7 +1408,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
         {/* ---- control column ---- */}
         <div class="flex min-w-0 flex-col gap-2">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-[13px] font-medium text-ink">{props.knob.label}</span>
+            <span class="text-item font-medium text-ink">{props.knob.label}</span>
             <OriginBadge origin={ctl().origin(key())} configKey={ctl().configKey(key())} />
           </div>
 
@@ -1130,7 +1420,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
                 disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                 onChange={(next) => ctl().setText(key(), next ? "true" : "false")}
                 label={
-                  <span class="text-[12px]">
+                  <span class="text-body">
                     {ctl().text(key()) === "true"
                       ? "On — the resolve is broadcast into the channel"
                       : "Off — the resolve stays in the thread"}
@@ -1202,7 +1492,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
                       value={ctl().text(key())}
                       onInput={(e) => ctl().setText(key(), e.currentTarget.value)}
                     />
-                    <span class="shrink-0 text-[11px] text-ink-subtle">
+                    <span class="shrink-0 text-meta text-ink-subtle">
                       {unitSuffix(props.knob)}
                     </span>
                   </div>
@@ -1212,7 +1502,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
           </Switch>
 
           <Show when={numeric() && Number.isFinite(ctl().num(key()))}>
-            <p class="text-[11px] text-ink-subtle">
+            <p class="text-meta text-ink-subtle">
               in force: {readValue(props.knob.kind, ctl().num(key()))}
               <Show when={b()}>
                 {(bound) => (
@@ -1291,22 +1581,22 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
 
         {/* ---- explanation column ---- */}
         <div class="flex min-w-0 flex-col gap-2">
-          <p class="text-[12px] leading-relaxed text-ink-muted">{props.knob.what}</p>
+          <p class="text-body leading-relaxed text-ink-muted">{props.knob.what}</p>
 
           <dl class="flex flex-col gap-1.5">
             <For each={props.knob.risks}>
               {(risk) => (
                 <div class="grid grid-cols-[minmax(0,5.5rem)_minmax(0,1fr)] gap-x-2">
-                  <dt class="text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-subtle">
+                  <dt class="text-meta font-semibold uppercase tracking-[0.04em] text-ink-subtle">
                     {risk.label}
                   </dt>
-                  <dd class="text-[12px] leading-relaxed text-ink">{risk.text}</dd>
+                  <dd class="text-body leading-relaxed text-ink">{risk.text}</dd>
                 </div>
               )}
             </For>
           </dl>
 
-          <p class="border-l-2 border-line-strong pl-2 text-[12px] leading-relaxed text-ink-muted">
+          <p class="border-l-2 border-line-strong pl-2 text-body leading-relaxed text-ink-muted">
             <span class="font-medium text-ink">Against your Alertmanager. </span>
             {props.knob.amRule}
           </p>
@@ -1406,11 +1696,11 @@ const MentionListField: Component<{
         <ul class="flex flex-wrap gap-1">
           <For each={list()}>
             {(item) => (
-              <li class="inline-flex items-center gap-1 rounded-[3px] border border-line bg-raised px-1 py-px font-mono text-[11px] text-ink-muted">
+              <li class="inline-flex items-center gap-1 rounded-chip border border-line bg-raised px-1 py-px font-mono text-meta text-ink-muted">
                 {item}
                 <button
                   type="button"
-                  class="rounded-[2px] px-0.5 text-ink-subtle hover:text-ink"
+                  class="rounded-chip px-0.5 text-ink-subtle hover:text-ink"
                   aria-label={`Remove ${item}`}
                   disabled={props.disabled}
                   onClick={() => emit(list().filter((x) => x !== item))}
@@ -1448,7 +1738,7 @@ const MentionListField: Component<{
         )}
       </Field>
 
-      <p class="text-[11px] text-ink-subtle" aria-live="polite">
+      <p class="text-meta text-ink-subtle" aria-live="polite">
         {list().length} of {MENTION_LIST_MAX} used
         {full() ? " — the cap the server enforces" : ""}.
       </p>
@@ -1475,7 +1765,7 @@ const SaveBar: Component<{
       class="fixed inset-x-0 bottom-0 z-40 border-t border-line-strong bg-raised motion-safe:oto-enter"
     >
       <div class="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-3 px-4 py-2.5">
-        <p class="text-[12px] text-ink" aria-live="polite">
+        <p class="text-body text-ink" aria-live="polite">
           <span class="font-medium">
             {props.dirty} unsaved change{props.dirty === 1 ? "" : "s"}
           </span>

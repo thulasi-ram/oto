@@ -64,6 +64,31 @@ const (
 	// alert_sources_prom_ck.
 	PatternHTTPURL = `^https?://[^[:space:]]+$`
 
+	// PatternOperatorLinkURL is the shape of a LINK SHOWN TO A HUMAN — a runbook,
+	// a dashboard, a log search — and is deliberately NOT PatternHTTPURL.
+	//
+	// ⛔ The two look alike and mean opposite things. PatternHTTPURL (with
+	// PredicateHTTPURLNoTrailingSlash) describes `alert_sources.base_url`: a
+	// PREFIX oto concatenates API paths onto, where a query string, a fragment or
+	// a trailing slash cannot survive concatenation and are therefore refused. A
+	// link is the other case entirely — it is handed to a browser whole, so
+	// `?from=now-1h&to=now` IS the dashboard, `#step-2` IS the step of the runbook
+	// somebody needs at 3am, and a trailing slash is just a directory. Reusing the
+	// base_url predicate on a link rejects the three commonest shapes a real
+	// annotation takes and blames the operator for a bound belonging to a
+	// different column.
+	//
+	// ⭐ It is case-insensitive where PatternHTTPURL is not. RFC 3986 §3.1 makes a
+	// scheme case-insensitive, so `HTTPS://wiki.example/runbook` is a good link;
+	// PatternHTTPURL stays case-sensitive because it mirrors a Postgres CHECK byte
+	// for byte and may not drift from it.
+	//
+	// It has no DDL counterpart: links live inside an enrichment payload's JSONB,
+	// which Postgres has nothing to CHECK. It is therefore written in Go's regexp
+	// syntax rather than Postgres's POSIX class syntax — there is no migration for
+	// it to stay byte-identical to.
+	PatternOperatorLinkURL = `(?i)^https?://[^\s]+$`
+
 	// PredicateHTTPURLNoTrailingSlash mirrors the OTHER HALF of
 	// alert_sources_base_ck and alert_sources_prom_ck, verbatim as the DDL spells
 	// it. ⭐ kernel finding C.8: those CHECKs are TWO predicates ANDed together,
@@ -108,4 +133,7 @@ var (
 	// HTTPURLRe evaluates PatternHTTPURL, with Postgres's [:space:] class
 	// rewritten in Go's syntax.
 	HTTPURLRe = regexp.MustCompile(`^https?://[^\s]+$`)
+	// OperatorLinkURLRe evaluates PatternOperatorLinkURL. Unlike HTTPURLRe it
+	// needs no translation: it mirrors no CHECK, so it is already Go syntax.
+	OperatorLinkURLRe = regexp.MustCompile(PatternOperatorLinkURL)
 )

@@ -164,9 +164,30 @@ func (r *SlackIdentityRepository) GetBySlackUser(
 // LIMIT 2 for the same reason ResolveByEmail uses it: `slack_identities_uniq` is
 // per-org, so one workspace connected to two orgs is representable, and picking
 // the planner's first row would decide a tenancy by physical ordering.
+//
+// ⛔ THE `orgs` JOIN IS INNER, exactly as in `resolveSessionSQL`,
+// `resolveByPrefixSQL`, `resolveByEmailSQL` and
+// `channels/repository.resolveSlackConversationSQL` — the five statements listed
+// in the roll-call in `users.go`. A soft-deleted tenant is not a tenant any more,
+// and soft-deleting one does not touch `slack_identities`: the FK is `ON DELETE
+// CASCADE`, which fires for a hard DELETE and never for `deleted_at = now()`.
+//
+// This resolver is LATENT rather than live — `Service.ResolveSlackActor` has no
+// production caller, because `app/adapters.go` deliberately wires the ORG-SCOPED
+// `RecordSlackIdentity` instead — but "latent" is a fact about the wiring and not
+// about the query, and the wiring is one line. Without the join the same two
+// consequences the login path had would arrive with it:
+//
+//  1. a dead tenant's Slack member would resolve, and the org id that comes back
+//     is what a caller turns into a `db.TenantScope`;
+//  2. worse, the dead row would still count towards the `LIMIT 2` below, so a
+//     LIVE tenant whose member is sighted in the same workspace would be refused
+//     as ambiguous — one tenant's deletion becoming another tenant's press that
+//     cannot be attributed.
 const resolveSlackIdentitySQL = `
 SELECT ` + slackIdentityColumns + `
   FROM slack_identities si
+  JOIN orgs o ON o.id = si.org_id AND o.deleted_at IS NULL
  WHERE si.team_id = $1 AND si.slack_user_id = $2
  ORDER BY si.id
  LIMIT 2`

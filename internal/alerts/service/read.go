@@ -235,6 +235,20 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, alertID uuid.UU
 	return out, nil
 }
 
+// GetAlert returns the Alert row alone — identity, labels, projections — with
+// none of the detail page's companion reads.
+//
+// It exists for MACHINE callers. `Get` above is the detail PAGE: beside the
+// alert it re-reads the latest occurrence and the active snooze, because a
+// human opening the page is owed all three §B.1 axes at once. The enrichment
+// pipeline needs only the frozen identity of the subject it is enriching — it
+// already holds the occurrence it was dispatched for — and a worker that
+// consumed the page paid two extra reads per run whose results were discarded.
+// A machine that wants one fact asks for one fact.
+func (s *Service) GetAlert(ctx context.Context, scope db.TenantScope, alertID uuid.UUID) (domain.Alert, error) {
+	return s.alerts.GetByID(ctx, scope, alertID)
+}
+
 // GetByKey resolves an Alert by its §C.2 identity key — the human-copyable
 // handle that appears in Slack buttons and URLs.
 func (s *Service) GetByKey(ctx context.Context, scope db.TenantScope, alertKey string) (AlertDetail, error) {
@@ -268,6 +282,31 @@ func (s *Service) GetOccurrence(
 	ctx context.Context, scope db.TenantScope, occurrenceID uuid.UUID,
 ) (domain.Occurrence, error) {
 	return s.occurrences.GetByID(ctx, scope, occurrenceID)
+}
+
+// PreviousOccurrenceWithRule resolves the episode that fired BEFORE the given
+// one and had a rule snapshot bound to it.
+//
+// ⭐ IT EXISTS SO THAT DRIFT CAN BE MEASURED BETWEEN TWO EPISODES. "What changed
+// about this rule since the last time this alert fired" is a question about two
+// FIRES, and the only reads this service had — the current episode and the
+// newest captured version of the rule — answer neither half of it. Comparing an
+// episode against the newest version upstream answers a different question, and
+// answers it `null` in the case that matters: an alert that fired under a text
+// somebody had just edited is an alert whose bound snapshot IS the newest one.
+//
+// The episode is addressed by `seq`, the ordinal the state machine mints, and an
+// episode with no snapshot is stepped over rather than stopped at — see
+// `repository.PreviousWithRuleSnapshot`, which is where both choices are argued.
+func (s *Service) PreviousOccurrenceWithRule(
+	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, beforeSeq int,
+) (domain.Occurrence, bool, error) {
+	// The first episode of an alert has no predecessor, and asking the database
+	// to prove that on every rule panel read is a query with a known answer.
+	if beforeSeq <= 1 {
+		return domain.Occurrence{}, false, nil
+	}
+	return s.occurrences.PreviousWithRuleSnapshot(ctx, scope, alertID, beforeSeq)
 }
 
 // TimelineResult is one page of the append-only timeline.

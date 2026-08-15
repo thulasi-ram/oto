@@ -49,11 +49,21 @@ type GroupRepository interface {
 type MemberRepository interface {
 	Join(ctx context.Context, s db.TenantScope, groupID, occurrenceID, alertID uuid.UUID, at time.Time) (bool, error)
 	Leave(ctx context.Context, s db.TenantScope, groupID, occurrenceID uuid.UUID, at time.Time) (bool, error)
-	CurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]domain.Member, error)
-	// ListCurrentMembers is CurrentMembers, keyset-paginated, for the one caller
-	// that renders a page rather than a rollup.
+	// ListCurrentMembers is the READ PATH's view of a generation's current
+	// members, and it is bounded. There was an unbounded `CurrentMembers` beside
+	// it until the detail page's twenty-row preview stopped fetching a storm to
+	// render twenty of it; a port that offers both is a port whose next caller
+	// picks the wrong one.
+	//
+	// ⚠️ It is not the only read of current members — `CurrentMemberAlerts` below
+	// is the WRITE path's, and this comment used to claim otherwise while an
+	// unbounded sibling sat three lines under it. Both are bounded now, which is
+	// what makes the claim safe to make about the port as a whole.
 	ListCurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset) ([]domain.Member, db.Cursor, error)
 	AllMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]domain.Member, error)
+	// MembersAt takes the INSTANT, because the alternative is AllMembers plus a
+	// loop, and that is a filter the database was asked to skip.
+	MembersAt(ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time) ([]domain.Member, error)
 	GroupsForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Member, error)
 	DistinctJoinsSince(ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time) (int, time.Time, error)
 	Rollup(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (domain.Counts, string, error)
@@ -62,7 +72,15 @@ type MemberRepository interface {
 	// because whether a snooze is active is a question about the clock and a
 	// stored count would be stale after every expiry.
 	SnoozeRollup(ctx context.Context, s db.TenantScope, groupIDs []uuid.UUID, now time.Time) (map[uuid.UUID]domain.SnoozeRollup, error)
-	CurrentMemberAlerts(ctx context.Context, s db.TenantScope, groupID uuid.UUID) ([]repository.MemberAlert, error)
+	// CurrentMemberAlerts is the FAN-OUT's candidate read, and `limit` is not
+	// optional decoration: one member is one write transaction, so the number of
+	// rows this returns is the number of transactions the caller is about to
+	// open. It is bounded in SQL rather than sliced afterwards.
+	CurrentMemberAlerts(ctx context.Context, s db.TenantScope, groupID uuid.UUID, limit int) ([]repository.MemberAlert, error)
+	// CountCurrentMembers lets a fan-out that stopped at its ceiling say how many
+	// members it did not reach. It is asked only when the candidate read came
+	// back full.
+	CountCurrentMembers(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (int, error)
 }
 
 // TxRunner runs a unit of work inside ONE transaction.
@@ -77,7 +95,7 @@ type TxRunner interface {
 // enum live. A second writer would mean a second idempotency mechanism, and two
 // idempotency mechanisms are none.
 type EventAppender interface {
-	AppendGroupEvent(ctx context.Context, s db.TenantScope, in alerts.GroupEventRequest) error
+	AppendTimelineEvent(ctx context.Context, s db.TenantScope, in alerts.TimelineEventRequest) error
 }
 
 // TimelineReader reads the merged group timeline — §D.12(b), the signature view.
@@ -98,8 +116,14 @@ type MemberActions interface {
 	// endpoint answers `201` with the event it wrote, and reading it back off the
 	// timeline afterwards — which is what the handler used to do — is a second
 	// query that can return a different row than the one just appended.
-	CommentAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, body string) (kernel.Event, error)
-	SnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string) error
+	//
+	// ⭐ THE SECOND BOOL IS "THIS WAS A REPLAY". The caller's `Idempotency-Key`
+	// travels with the intent and is claimed inside the MEMBER'S OWN transaction —
+	// which is the only transaction a fan-out has, since it is deliberately one per
+	// member (see fanOut). A replay means the whole gesture already landed, and the
+	// fan-out must stop rather than annotate the remaining members a second time.
+	CommentAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, body string, idem alerts.Idempotency) (kernel.Event, bool, error)
+	SnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel string, until time.Time, note string, idem alerts.Idempotency) (bool, error)
 	UnsnoozeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, note string) error
 }
 

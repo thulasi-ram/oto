@@ -5,6 +5,7 @@ import (
 
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
 
 // listNotificationPolicies serves GET /api/v1/notification-policies.
@@ -64,6 +65,12 @@ func (rt *Router) listNotificationPolicies(w http.ResponseWriter, r *http.Reques
 // The domain's own Validate runs before the write, so a bad matcher regex or an
 // out-of-range priority comes back as a field violation rather than as a 23514 an
 // operator has to decode.
+//
+// ⭐⭐ A RETRY CARRYING THE SAME `Idempotency-Key` IS ANSWERED WITH THE ORIGINAL
+// `201`. This endpoint declared the header and read it nowhere, and was safe only
+// by accident — `policies_name_uniq (org_id, name)` refused a second create under
+// the same name with a `409` that named nothing, so a client that lost its
+// response could not even learn the id of the policy it had already made.
 func (rt *Router) createNotificationPolicy(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -72,7 +79,7 @@ func (rt *Router) createNotificationPolicy(w http.ResponseWriter, r *http.Reques
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if err := requireDependency(rt.policies != nil, "policies_unavailable",
+	if err := requireDependency(rt.policyWrites != nil, "policies_unavailable",
 		"the policy store is not configured in this deployment"); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -82,7 +89,20 @@ func (rt *Router) createNotificationPolicy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// The RAW bytes, before Bind consumes the stream: "the same body" is decided
+	// by the sha256 of what the caller actually sent, not by a re-encoding of the
+	// DTO it parsed into.
+	raw, err := httpx.ReadBody(w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	dto, err := httpx.Bind[CreatePolicyRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	idem, err := idempotencyIntent(r, idempotency.HashRequest(raw))
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -98,7 +118,7 @@ func (rt *Router) createNotificationPolicy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	pol, err := rt.policies.CreatePolicy(r.Context(), scope, draft)
+	pol, err := rt.policyWrites.CreatePolicy(r.Context(), scope, draft, idem)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return

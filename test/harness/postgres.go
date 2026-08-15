@@ -37,6 +37,12 @@ const adminDB = "postgres"
 // Epoch is the instant every harness FakeClock is pinned at. It is a fixed,
 // far-from-any-boundary UTC time so that a test which advances the clock can
 // state its expectations as arithmetic rather than as "roughly now".
+//
+// It stays fixed, and the PARTITIONS COME TO IT: `migrateTemplate` builds the
+// four partitioned tables a window around Epoch as well as around the database's
+// own `now()`, so a row stamped at `h.Now()` always has somewhere to land. See
+// epochPartitionsSQL below — and git-bug 6547228 for what happened when it did
+// not.
 var Epoch = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 // pg is the single Postgres shared by every test in one test binary.
@@ -265,8 +271,54 @@ func migrateTemplate(ctx context.Context, dsn string) error {
 	if _, err := pool.Exec(ctx, `SELECT oto_partitions_manage()`); err != nil {
 		return fmt.Errorf("partitions: %w", err)
 	}
+
+	// ⚠️ AND THE SAME WINDOW AGAIN, AROUND Epoch — git-bug 6547228. The call
+	// above builds its partitions around the DATABASE's `now()`, while every
+	// harness FakeClock is pinned at Epoch, so the two disagree by as many months
+	// as have passed since Epoch was written down and the gap widens on the first
+	// of every one. A timeline append stamped at `h.Now()` then matches no range
+	// and fails with SQLSTATE 23514, "no partition of relation alert_events found
+	// for row" — a check_violation naming no constraint, because there is no
+	// constraint to name, which `platform/db` maps to a `sqlstate_23514` 500 that
+	// reads like a generic database defect rather than like a calendar
+	// disagreement. Five tests had already worked around it one call site at a
+	// time by deriving their own `now` from the wall clock. This is that fix,
+	// once, where the clock and the partitions are both decided.
+	//
+	// WHICH PARENTS THIS ACTUALLY RESCUES. `alert_events` (`recorded_at`),
+	// `ingest_batches` and `ingest_rejections` (`received_at`) take their
+	// partition key from a Go caller, so a harness clock reaches them and the trap
+	// is real. `ui_events.at` is `DEFAULT now()` and every writer omits the column
+	// (`internal/streaming/repository/events.go`), so no row is ever stamped at
+	// Epoch and its Epoch partitions are precaution, not repair — they cost an
+	// empty table each and they are there for the day a writer supplies `at`.
+	//
+	// ⚠️ ONE LIMIT, HONESTLY. This runs ONCE, at template bootstrap. A test that
+	// DISPATCHES the `partitions.manage` worker (`app/workers.go`) against its own
+	// database re-runs retention with the real `now()`, which drops the Epoch
+	// `ui_events` and `ingest_*` partitions immediately — they are months past a
+	// 24-hour and a 30-day cutoff. `alert_events` survives until Epoch is 13
+	// months old. Nothing dispatches that job in a test today; a test that starts
+	// to will have to re-run this statement afterwards.
+	if _, err := pool.Exec(ctx, epochPartitionsSQL, Epoch); err != nil {
+		return fmt.Errorf("epoch partitions: %w", err)
+	}
 	return nil
 }
+
+// epochPartitionsSQL gives Epoch the window `oto_partitions_manage` gives
+// `now()` — the grains and the counts are 00005's, table for table — plus one
+// period of headroom BEHIND it, so a test that stamps something just before
+// Epoch (an occurrence "three hours ago", a batch "yesterday") has a partition
+// too.
+//
+// Widening it is cheap; a partition is an empty table in a template nothing else
+// reads. Narrowing it is how git-bug 6547228 comes back.
+const epochPartitionsSQL = `
+	SELECT oto_ensure_partitions_ahead('ui_events',         'hour',  7, $1::timestamptz - interval '1 hour'),
+	       oto_ensure_partitions_ahead('ingest_batches',    'day',   8, $1::timestamptz - interval '1 day'),
+	       oto_ensure_partitions_ahead('ingest_rejections', 'day',   8, $1::timestamptz - interval '1 day'),
+	       oto_ensure_partitions_ahead('alert_events',      'month', 4, $1::timestamptz - interval '1 month')`
 
 func evictTemplateSessions(ctx context.Context, admin *pgxpool.Pool) error {
 	deadline := time.Now().Add(30 * time.Second)

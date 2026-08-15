@@ -620,3 +620,88 @@ func TestLexicalExprComparerIsTheShippedSeam(t *testing.T) {
 			c.CompareExpr("a > 1 and b[5m] > 2", "a > 3 and b[5m] > 2"))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Drifted: which differences are EDITS
+// ---------------------------------------------------------------------------
+
+// unavailableSnap is what a capture stores when the lookup recovered nothing:
+// rule_snapshots_expr_ck requires an empty expr, and the fingerprint of that is
+// the same for every unrecoverable rule in the estate.
+func unavailableSnap() domain.Snapshot {
+	s := domain.NewSnapshot("org-1", validKey(), domain.Recovery{
+		Origin:     domain.OriginUnavailable,
+		Strategy:   domain.StrategyNone,
+		Confidence: domain.ConfidenceNone,
+	}, capturedAt)
+	return s
+}
+
+// viaGeneratorURLSnap is the zero-API-call capture: the expression and nothing
+// else, because g0.expr carries nothing else.
+func viaGeneratorURLSnap(expr string) domain.Snapshot {
+	s := snap(expr, 0, 0, nil, nil)
+	s.Origin = domain.OriginGeneratorURL
+	s.PrometheusURL = ""
+	return s
+}
+
+// TestDriftedIsAboutEditsNotDigests is the predicate behind
+// `rule.definition_changed`, and the reason it is not `a.Fingerprint != b.Fingerprint`.
+//
+// ⛔ THE TWO FAILURE MODES ARE OPPOSITE AND BOTH FATAL (see
+// fingerprint_stability_test.go). Saying "the rule changed" when oto merely
+// stopped being able to see it, or when it changed which door it looked through,
+// is the TOO UNSTABLE mode reached by a different road: the operator gets a
+// "the rule changed" reply on every fire of every rule in a source whose
+// Prometheus is flapping, and learns to ignore the one signal this module
+// exists to raise. Refusing to compare when the evidence IS there is the TOO
+// STABLE mode, and the last case here pins it.
+func TestDriftedIsAboutEditsNotDigests(t *testing.T) {
+	t.Parallel()
+
+	api := snap("up == 0", 300, 0, map[string]string{"severity": "critical"}, nil)
+	apiEdited := snap("up == 1", 300, 0, map[string]string{"severity": "critical"}, nil)
+	apiForEdited := snap("up == 0", 600, 0, map[string]string{"severity": "critical"}, nil)
+	gen := viaGeneratorURLSnap("up == 0")
+	genEdited := viaGeneratorURLSnap("up == 1")
+	none := unavailableSnap()
+
+	require.NotEqual(t, api.Fingerprint, gen.Fingerprint,
+		"the fixture is only interesting if the two paths address the same rule differently")
+
+	cases := []struct {
+		name              string
+		previous, current domain.Snapshot
+		want              bool
+		why               string
+	}{
+		{"the same rule recovered the same way twice", api, api, false,
+			"the thousandth fire of an unchanged rule"},
+		{"an edited expression, same path", api, apiEdited, true,
+			"THE product: somebody changed the rule and oto saw both texts"},
+		{"an edited `for`, same path", api, apiForEdited, true,
+			"both captures observed `for`, so the change is evidenced"},
+		{"an outage after a recovery", api, none, false,
+			"oto went blind; the rule did not change"},
+		{"a recovery after an outage", none, api, false,
+			"oto can see again; the rule did not change"},
+		{"an outage after an outage", none, none, false,
+			"two rows that observed nothing cannot evidence an edit"},
+		{"promotion to the rules API, same expression", gen, api, false,
+			"g0.expr never carried a `for:`; learning one is not somebody editing one"},
+		{"demotion to generatorURL, same expression", api, gen, false,
+			"and forgetting it again is not an edit either — otherwise a flapping " +
+				"Prometheus reports an edit on every fire, alternating forever"},
+		{"promotion carrying an edited expression", gen, apiEdited, true,
+			"the expression is what both paths observe, so this one is evidenced"},
+		{"demotion carrying an edited expression", api, genEdited, true,
+			"and it is evidenced in the other direction too"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, domain.Drifted(tc.previous, tc.current), tc.why)
+		})
+	}
+}

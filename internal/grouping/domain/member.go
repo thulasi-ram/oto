@@ -8,6 +8,56 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
+// MemberPreviewLimit is how many currently-joined members the detail view shows.
+// `top_alerts` is `maxItems: 20` in the contract, and this is that number.
+//
+// ⭐ IT IS THE ONLY COPY, and it lives in `domain` because that is the one place
+// all three layers may name: `service.Get` passes it as the SQL LIMIT of the
+// preview read, `api` renders exactly the rows that read returned and caps
+// nothing of its own, and `repository`'s plan test EXPLAINs the statement at
+// `MemberPreviewLimit + 1` — the extra row `ListCurrentMembers` reads to answer
+// `has_more`. It cannot live in `service`: `service` imports `repository`, so a
+// repository test naming it back would be an import cycle, which is exactly how
+// the third hand-written 21 got there.
+//
+// Two literals could drift, and the direction they would drift in is the one
+// where the endpoint fetches more rows than it can render.
+//
+// The full list is `GET /alert-groups/{id}/alerts`, which pages.
+const MemberPreviewLimit = 20
+
+// FanOutLimit is how many currently-joined members ONE press of a group verb —
+// ack, comment, snooze, unsnooze — acts on.
+//
+// ⛔ IT IS NOT MemberPreviewLimit AND MUST NEVER BE. A preview renders a
+// sample; a fan-out WRITES, and writing to a sample of a group would be a button
+// that acks twenty of five thousand alerts and says nothing about the rest. The
+// two numbers are unrelated and live apart on purpose.
+//
+// ⭐ WHY THERE IS A CEILING AT ALL. A fan-out is one full write transaction per
+// member — a read of the alert, a read of the open occurrence, a compare-and-set
+// on the episode, a projection write, and a dedupe-key claim plus an event
+// insert — applied in series. At the storm figure this module names for itself
+// (`repository`'s member reads call it "a storm of five thousand") an unbounded
+// fan-out is ~5 000 sequential commits and ~30 000 statements inside ONE HTTP
+// request or ONE job. `internal/app/workers.go` says the rest of it: "A sweep
+// that is not bounded is a sweep that becomes an outage the first time somebody
+// has a bad night."
+//
+// ⭐ WHY 500. It is `sweepLimit`, deliberately: the same order of work oto
+// already considers one safe unit for one tick. The binding deadline is tighter
+// here than for a sweep — `slack.interaction` is registered with a FIFTEEN
+// SECOND timeout (`internal/platform/jobs/registry.go`) because a human is
+// watching the card, where a lifecycle sweep gets two minutes and repeats every
+// sixty seconds. Five hundred member transactions fit inside fifteen seconds
+// with room; five thousand do not, and a fan-out that outlives the timeout is
+// retried from the beginning of the membership.
+//
+// ⚠️ A ceiling makes a big fan-out PARTIAL, and partial is only honest if it is
+// counted: `service.FanOutResult.Unreached` is that count, and it is why this is
+// a bound rather than a silent truncation.
+const FanOutLimit = 500
+
 // Member is the membership of ONE AlertOccurrence in ONE AlertGroup generation.
 //
 // ⭐ Membership is HISTORY, NOT A BOOLEAN. `left_at` is nullable rather than a

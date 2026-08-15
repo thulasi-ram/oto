@@ -16,8 +16,8 @@ import (
 // row still goes to `ingest_rejections` so nothing is silent.
 //
 // The distinction between a Note and an error from Normalise is the whole shape
-// of §L.3.2: B7, B8, B13, B14 and B15 record and keep, B3-B6 and B9-B12 record
-// and drop THAT ALERT, and nothing at all drops the batch.
+// of §L.3.2: B7, B8, B13, B14, B15 and B19 record and keep, B3-B6, B9-B12 and
+// B18 record and drop THAT ALERT, and nothing at all drops the batch.
 type Note struct {
 	Reason domain.Reason
 	Detail string
@@ -79,7 +79,7 @@ type AlertOptions struct {
 	InjectLabels map[string]string
 }
 
-// Normalised is one alert that survived B3-B14.
+// Normalised is one alert that survived B3-B14 and B18-B19.
 type Normalised struct {
 	Labels       alerts.LabelSet
 	Annotations  map[string]string
@@ -106,7 +106,7 @@ type Normalised struct {
 	Notes []Note
 }
 
-// Normalise applies the per-alert bounds B3-B14 to one wire alert.
+// Normalise applies the per-alert bounds B3-B14, B18 and B19 to one wire alert.
 //
 // A returned error means THIS ALERT is dropped and recorded; the rest of the
 // batch proceeds and the response is still 202. Use domain.ReasonFromError to
@@ -135,7 +135,7 @@ func Normalise(a Alert, opt AlertOptions) (Normalised, error) {
 	// identity, so a shortened one costs a click and nothing else.
 	out.GeneratorURL = truncateBytes(a.GeneratorURL, domain.MaxGeneratorURLBytes)
 
-	// B3-B6, B9-B11 are the shared kernel's own invariants. Calling the
+	// B3-B6, B9-B11 and B18 are the shared kernel's own invariants. Calling the
 	// constructor rather than re-checking them here is what keeps layer 2 and
 	// layer 3 from drifting: there is one definition of "a legal label set".
 	labels, err := alerts.NewLabelSet(mergeLabels(a.Labels, opt.InjectLabels))
@@ -226,20 +226,60 @@ var annotationPriority = []string{
 	alerts.AnnotationRunbookURL,
 }
 
-// boundAnnotations applies B7 (count) and B8 (value length).
+// boundAnnotations applies B7 (count), B8 (value length) and B19 (storability).
 //
-// Both KEEP the alert: an annotation is display text and is deliberately not part
-// of any identity (§C.9.3), so no amount of annotation abuse justifies losing the
-// signal underneath it.
+// All three KEEP the alert: an annotation is display text and is deliberately not
+// part of any identity (§C.9.3), so no amount of annotation abuse justifies losing
+// the signal underneath it. B19 is the reason this is not symmetric with the label
+// path, where the same unstorable bytes reject the alert outright (B18) — a label
+// value decides WHICH Alert this is, and oto will not rewrite an identity in order
+// to store it. Prose it will rewrite, visibly, and say so.
+//
+// ⭐ THE ORDER IS BINDING: names are filtered BEFORE B7's count, and values are
+// sanitised BEFORE B8's length bound.
+//
+//   - Filtering names first stops an annotation that is about to be dropped
+//     anyway from consuming one of the 32 slots and evicting a good one.
+//   - Sanitising before truncating is required because SanitiseText can GROW a
+//     value — U+FFFD is three bytes where the byte it replaced was one — so a
+//     value sanitised after the length check could leave here over the cap and
+//     trip `alerts_annotations_ck` at layer 6.
 func boundAnnotations(in map[string]string, notes *[]Note) map[string]string {
 	if len(in) == 0 {
 		return map[string]string{}
 	}
 
-	kept := selectAnnotations(in, notes)
+	// B19, names. A name is a jsonb KEY, so it is not sanitised: two different
+	// unstorable names can sanitise to one string, and the second would silently
+	// overwrite the first. Dropping the annotation loses one line of prose and
+	// records that it did; merging two would lose one silently.
+	storable := make(map[string]string, len(in))
+	for name, value := range in {
+		if why := alerts.UnstorableReason(name); why != "" {
+			*notes = append(*notes, Note{
+				Reason: domain.ReasonAnnotationUnstorable,
+				Detail: fmt.Sprintf("annotation name %q contains %s; the annotation was dropped", name, why),
+			})
+			continue
+		}
+		storable[name] = value
+	}
+
+	kept := selectAnnotations(storable, notes)
 	out := make(map[string]string, len(kept))
 	for _, name := range kept {
-		value := in[name]
+		value := storable[name]
+
+		// B19, values.
+		if why := alerts.UnstorableReason(value); why != "" {
+			value, _ = alerts.SanitiseText(value)
+			*notes = append(*notes, Note{
+				Reason: domain.ReasonAnnotationUnstorable,
+				Detail: fmt.Sprintf("annotation %q value contains %s; replaced with U+FFFD", name, why),
+			})
+		}
+
+		// B8.
 		if len(value) > domain.MaxAnnotationValueBytes {
 			value = truncateBytes(value, domain.MaxAnnotationValueBytes-len(TruncationMarker)) + TruncationMarker
 			*notes = append(*notes, Note{

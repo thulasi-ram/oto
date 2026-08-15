@@ -1,95 +1,37 @@
 package repository
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Pagination bounds from SPEC §E.1.
-const (
-	// DefaultLimit is the page size when a caller asks for none.
-	DefaultLimit = 50
-	// MaxLimit is the hard ceiling on a page.
-	MaxLimit = 200
-)
-
-func clampLimit(n int) int {
-	switch {
-	case n <= 0:
-		return DefaultLimit
-	case n > MaxLimit:
-		return MaxLimit
-	default:
-		return n
-	}
-}
-
-// mapErr is the single place a SQLSTATE becomes an errs.Kind for this module
-// (SPEC §L.9). The constraint name travels out as the error Code because §L.9
-// makes constraint names a runtime contract.
+// mapErr turns a database error into an errs.Kind for this module. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository — this
+// module contributes only the two codes it alone can name. The constraint name
+// travels out as the error Code because §L.9 makes constraint names a runtime
+// contract.
+//
+// Nothing about the mapping moved when this stopped being its own copy: the copy
+// spelled all eight rows, with the same Kinds, the same codes and the same retry
+// hints. Two messages were its own wording of a shared row — "the row already
+// exists" for `23505` and "missing or in use" for `23503` — and they are now the
+// table's, because a message that differs per module is a drift waiting to
+// happen, not a fact about grouping.
 func mapErr(err error, what string) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errs.NotFound("not_found", "no such row")
-	}
-
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) {
-		code := pg.ConstraintName
-		if code == "" {
-			code = "sqlstate_" + pg.Code
-		}
-		switch pg.Code {
-		case "23505":
-			return errs.Wrap(err, errs.KindConflict, code, "the row already exists")
-		case "23503":
-			return errs.Wrap(err, errs.KindConflict, code,
-				"the row references something that is missing or in use")
-		case "23514":
-			return errs.Wrap(err, errs.KindInternal, code, "a row violated a database constraint")
-		case "23502":
-			return errs.Wrap(err, errs.KindInternal, code, "a required column was null")
-		case "40001", "40P01":
-			return errs.Wrap(err, errs.KindConflict, code, "the transaction conflicted; retry").
-				WithRetryAfter(0)
-		case "57014":
-			return errs.Wrap(err, errs.KindUnavailable, code, "the query exceeded its time budget").
-				WithRetryAfter(time.Second)
-		case "53300":
-			return errs.Wrap(err, errs.KindUnavailable, code, "the database is at capacity").
-				WithRetryAfter(time.Second)
-		}
-	}
-	return errs.Wrap(err, errs.KindInternal, "grouping_query_failed", fmt.Sprintf("could not %s", what))
-}
-
-// requireScope refuses a scope that names no tenant. A missing org_id predicate
-// is a data leak, not a performance bug.
-func requireScope(s db.TenantScope) error {
-	if !s.Valid() {
-		return errs.Internal("missing_tenant_scope", db.ErrNoTenant)
-	}
-	return nil
-}
-
-func requireID(field string, v uuid.UUID) error {
-	if v == uuid.Nil {
-		return errs.Internal("missing_"+field, errors.New("repository: "+field+" is required"))
-	}
-	return nil
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           "not_found",
+		NotFoundMessage:    "no such row",
+		QueryFailed:        "grouping_query_failed",
+		QueryFailedMessage: fmt.Sprintf("could not %s", what),
+	})
 }
 
 func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
@@ -146,32 +88,9 @@ func strPtr(s string) *string {
 	return &v
 }
 
-// pageOf trims a slice fetched with limit+1 rows down to the page and reports
-// whether a further page exists.
-func pageOf[T any](rows []T, limit int) ([]T, bool) {
-	if len(rows) > limit {
-		return rows[:limit], true
-	}
-	return rows, false
-}
-
-func nextCursor(sortKey time.Time, id uuid.UUID, hash string, hasMore bool) db.Cursor {
-	if !hasMore {
-		return db.Cursor{Hash: hash}
-	}
-	return db.Cursor{SortKey: sortKey.UTC(), ID: id, Hash: hash, HasMore: true}
-}
-
-// TxRunner runs a function inside one transaction. It is the concrete half of
-// the port `grouping/service` declares, and it lives here because this is the
-// layer permitted to name pgx.
-type TxRunner struct{ pool *pgxpool.Pool }
+// TxRunner is the concrete half of the port `grouping/service` declares; the
+// runner itself is `db.TxRunner`, in the layer permitted to name pgx.
+type TxRunner = db.TxRunner
 
 // NewTxRunner builds a transaction runner over a pool.
-func NewTxRunner(pool *pgxpool.Pool) *TxRunner { return &TxRunner{pool: pool} }
-
-// InTx runs fn inside a transaction. It nests safely: a ctx already carrying a
-// transaction joins it rather than opening a second.
-func (r *TxRunner) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return db.Tx(ctx, r.pool, fn)
-}
+func NewTxRunner(pool *pgxpool.Pool) *TxRunner { return db.NewTxRunner(pool) }

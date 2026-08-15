@@ -182,6 +182,97 @@ func (r *BatchRepository) MarkProcessed(
 	return nil
 }
 
+const reopenBatchSQL = `
+UPDATE ingest_batches
+   SET status = 'pending', processed_at = NULL, error = NULL
+ WHERE org_id = $1 AND id = $2 AND received_at = $3
+   AND status = ANY($4::text[])`
+
+// Reopen is the ONE legal exit from `failed` (§G.4), and it is a COMPARE-AND-SET.
+//
+// ⭐ THE `status = ANY($4)` IS THE WHOLE MECHANISM, not a belt on a read the
+// caller already did. Between the operator's decision and this statement the
+// batch can be moved by anything with the row: a redelivered job finishing a
+// `partial`, a second operator running the same command, the retention sweep. A
+// SELECT-then-UPDATE would let two replays both win and enqueue the batch twice.
+// Here the second one affects no rows and is told so.
+//
+// It clears `processed_at` and `error` because ingest_batches_proc_ck ties
+// `pending` to the absence of a timestamp — a batch cannot be pending and have
+// stopped — and because leaving the old failure on a row that is about to run
+// again would describe an attempt that is no longer the current one.
+//
+// ⛔ IT IS NOT MarkProcessed WITH A DIFFERENT ARGUMENT. That method refuses
+// `pending` on purpose and must keep refusing it: the queue must never walk a
+// batch backwards, and the only actor allowed to is a human who has just shipped
+// a fix. Two callers, two guarantees, two methods.
+func (r *BatchRepository) Reopen(
+	ctx context.Context, s db.TenantScope, batchID uuid.UUID, receivedAt time.Time,
+	from []domain.Status,
+) error {
+	if err := db.RequireScope(s); err != nil {
+		return err
+	}
+	if len(from) == 0 {
+		// An unconditional reopen is a compare-and-set with nothing to compare, and
+		// it would happily resurrect a `processed` batch.
+		return errs.New(errs.KindInternal, "ingest_reopen_unguarded",
+			"a reopen must name the states it is allowed to move out of")
+	}
+
+	allowed := make([]string, 0, len(from))
+	for _, st := range from {
+		if !st.Replayable() {
+			return errs.Newf(errs.KindInternal, "ingest_batches_state_ck",
+				"%q is not a status a batch may be replayed out of", st)
+		}
+		allowed = append(allowed, st.String())
+	}
+
+	tag, err := r.db(ctx).Exec(ctx, reopenBatchSQL, s.OrgID(), batchID, receivedAt, allowed)
+	if err != nil {
+		return mapErr(err, "reopen ingest batch")
+	}
+	if tag.RowsAffected() == 0 {
+		// Either there is no such batch or it is no longer in a state a replay may
+		// take it out of. Both mean the same thing to the caller — the replay did
+		// not happen — and the caller has already read the row, so "it moved" is the
+		// honest reading and the actionable one.
+		return errs.Conflict("ingest_batch_moved",
+			"the batch is no longer in a state a replay may reopen; nothing was changed")
+	}
+	return nil
+}
+
+const locateBatchSQL = `SELECT org_id, received_at FROM ingest_batches WHERE id = $1`
+
+// Locate finds a batch's org and partition key from its id alone.
+//
+// ⚠️ IT IS THE SECOND SCOPELESS METHOD HERE and the second UNPARTITIONED read,
+// and both need saying out loud. `ingest_batches` is daily-ranged on
+// `received_at`, so a query that names only `id` opens every retained partition —
+// exactly what the doc comment on Get says never to do.
+//
+// It is justified by the caller and by nothing else: `oto replay` is a one-shot
+// operator command holding a batch id copied off a dashboard. It knows no org
+// (that is why the replay is a subcommand and not a tenant route — a batch id
+// carries no scope) and no `received_at`. One scan of ~22 index-only partitions,
+// once, by a human, is the price of not asking that human for the partition key
+// of a table they have never heard of. Nothing on the hot path may call this.
+//
+// It returns TWO columns of ONE row addressed by primary key prefix, and every
+// call the replay makes afterwards is scoped by what it returns.
+func (r *BatchRepository) Locate(ctx context.Context, batchID uuid.UUID) (uuid.UUID, time.Time, error) {
+	var (
+		orgID      uuid.UUID
+		receivedAt time.Time
+	)
+	if err := r.db(ctx).QueryRow(ctx, locateBatchSQL, batchID).Scan(&orgID, &receivedAt); err != nil {
+		return uuid.Nil, time.Time{}, mapErr(err, "locate the batch")
+	}
+	return orgID, receivedAt, nil
+}
+
 const resolveOrgSQL = `SELECT org_id FROM ingest_batches WHERE id = $1 AND received_at = $2`
 
 // ResolveOrg returns the org that owns a batch.
@@ -198,6 +289,119 @@ func (r *BatchRepository) ResolveOrg(ctx context.Context, batchID uuid.UUID, rec
 		return uuid.Nil, mapErr(err, "resolve the batch's org")
 	}
 	return orgID, nil
+}
+
+// ---------------------------------------------------------------------- reads
+
+// batchFailureColumns is the feed's projection. `payload` and `checksum` are NOT
+// in it: the payload is up to 8 MiB per row and a page of fifty would be four
+// hundred megabytes to render a table of error strings.
+const batchFailureColumns = `
+       id, source_id, mode, received_at, status, processed_at, coalesce(error, ''),
+       alert_count, truncated_alerts`
+
+// listFailedBatchesSQL is the FIRST page. See ListFailed for the partition note.
+const listFailedBatchesSQL = `
+SELECT` + batchFailureColumns + `
+  FROM ingest_batches
+ WHERE org_id = $1 AND source_id = $2 AND status = ANY($3::text[])
+ ORDER BY received_at DESC, id DESC
+ LIMIT $4`
+
+// listFailedBatchesFromSQL is every subsequent page. The `received_at <= $5` is
+// redundant against the row comparison below it and is what makes the partition
+// pruning happen — see listRejectionsFromSQL, which carries the full argument.
+const listFailedBatchesFromSQL = `
+SELECT` + batchFailureColumns + `
+  FROM ingest_batches
+ WHERE org_id = $1 AND source_id = $2 AND status = ANY($3::text[])
+   AND received_at <= $5
+   AND (received_at, id) < ($5, $6)
+ ORDER BY received_at DESC, id DESC
+ LIMIT $4`
+
+// ListFailed is the failed-batch feed: the batches whose alerts are on disk and
+// never reached the product, newest first.
+//
+// It is the batch-level half of the same question `RejectionRepository.List`
+// answers per alert. A rejection says "oto refused this element and here is why";
+// this says "oto accepted the whole body and then could not process it" — and
+// without it, a 202 that never became an alert is invisible outside `psql`.
+//
+// It rides `ingest_batches_source_idx (org_id, source_id, received_at DESC)`
+// with `status` as a filter over that range. The other index on this table,
+// `ingest_batches_status_idx`, leads with `status` and carries NO `org_id`: it
+// exists for the worker sweeping unfinished work across every tenant, and a
+// tenant-scoped screen must not ride an index that cannot express its scope.
+//
+// ⚠️ Same partition scope as the rejection feed: the first page has no bound on
+// `received_at` and therefore merges every retained daily partition; every page
+// after it prunes.
+func (r *BatchRepository) ListFailed(
+	ctx context.Context, s db.TenantScope, f domain.BatchFailureFilter, p db.Keyset,
+) ([]domain.BatchFailure, db.Cursor, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, db.Cursor{}, err
+	}
+	if f.SourceID == uuid.Nil {
+		return nil, db.Cursor{}, errs.New(errs.KindInternal, "batch_source_required",
+			"a failed-batch feed is about one source")
+	}
+
+	statuses := make([]string, 0, 2)
+	for _, st := range f.Statuses {
+		if !st.Troubled() {
+			// `pending` and `processed` are not failures, and a caller asking for one
+			// here is asking the wrong question rather than asking for nothing.
+			return nil, db.Cursor{}, errs.Newf(errs.KindInternal, "ingest_batches_state_ck",
+				"%q is not a status the failed-batch feed lists", st)
+		}
+		statuses = append(statuses, st.String())
+	}
+	if len(statuses) == 0 {
+		statuses = []string{domain.StatusFailed.String(), domain.StatusPartial.String()}
+	}
+
+	limit := db.ClampLimit(p.Limit)
+	sql, args := listFailedBatchesSQL, []any{s.OrgID(), f.SourceID, statuses, limit + 1}
+	if !p.Cursor.IsZero() {
+		sql = listFailedBatchesFromSQL
+		args = append(args, p.Cursor.SortKey.UTC(), p.Cursor.ID)
+	}
+
+	rows, err := r.db(ctx).Query(ctx, sql, args...)
+	if err != nil {
+		return nil, db.Cursor{}, mapErr(err, "list failed ingest batches")
+	}
+	defer rows.Close()
+
+	collected := make([]domain.BatchFailure, 0, limit+1)
+	for rows.Next() {
+		var (
+			b                      domain.BatchFailure
+			mode, status           string
+			alertCount, truncCount int32
+		)
+		if err := rows.Scan(&b.ID, &b.SourceID, &mode, &b.ReceivedAt, &status,
+			&b.ProcessedAt, &b.Error, &alertCount, &truncCount); err != nil {
+			return nil, db.Cursor{}, mapErr(err, "scan failed ingest batch")
+		}
+		b.Mode = domain.Mode(mode)
+		b.Status = domain.Status(status)
+		b.AlertCount = int(alertCount)
+		b.TruncatedAlerts = int(truncCount)
+		collected = append(collected, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, db.Cursor{}, mapErr(err, "read failed ingest batches")
+	}
+
+	page, hasMore := db.PageOf(collected, limit)
+	if len(page) == 0 {
+		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
+	}
+	last := page[len(page)-1]
+	return page, db.NextCursor(last.ReceivedAt, last.ID, p.Cursor.Hash, hasMore), nil
 }
 
 func deref(p *string) string {

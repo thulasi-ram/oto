@@ -139,10 +139,10 @@ Rules you must not get wrong:
 
 | Module | Mark | Responsibility |
 |---|---|---|
-| `platform` | CORE | Config, logging, telemetry, **two** DB pools + tx, httpx, authn, jobs, secrets, ratelimit, errs, clock, id. Not a domain. |
+| `platform` | CORE | Config, logging, telemetry, **two** DB pools + tx, httpx, authn, jobs, secrets, ratelimit, errs, clock, id, and `tuning` — the one home of the shipped §D.1 defaults (§5.2c). Not a domain. |
 | `identity` | CORE | Orgs, users, sessions, PATs and ingest tokens → `Principal` + `TenantScope`. |
 | `sources` | CORE | Alertmanager/Prometheus registry, credentials, health; owns the AM v2 + Prom v1 clients. |
-| `ingestion` | CORE | Durably accept raw batches, normalise to Observations, run the reconciler. Nothing else. |
+| `ingestion` | CORE | Durably accept raw batches and normalise them to Observations. Nothing else — and **not** the reconciler: SPEC §I.2's tree draws `ingestion/worker/reconcile_source`, but it is implemented in `sources` (`internal/sources/service/reconcile.go`, which says so), because every collaborator it needs is owned there. |
 | `alerts` | CORE | Identity/dedup, the occurrence state machine, the append-only timeline. The heart. |
 | `grouping` | CORE | Durable groups, generations, membership, storm detection. |
 | `rules` | CORE | Fetch, content-address, version and diff rule definitions at fire time. |
@@ -152,22 +152,110 @@ Rules you must not get wrong:
 | `streaming` | CORE | `ui_events`, LISTEN/NOTIFY bridge, SSE hub with resume. |
 | `silences` | PERIPHERAL | Read-only mirror of AM silences. **No write path.** |
 | `stats` | PERIPHERAL | Alert-hygiene accounting. **Never per-person.** |
+| `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches six of them — `alerts`, `grouping`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_occurrences`, `alert_events`, `alert_groups`, `alert_group_members`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Those thirteen, plus its own `delivery_drills`, are DECLARED in `test/arch/sqltables_test.go` with their owner and how far the drill may go against each. The reads stay SQL on purpose — a port satisfied by the owning module's service would have the drill ask the code under test whether the code under test worked. |
+| `app` | WIRING | The composition root. Constructs every concrete, satisfies every port, registers the workers and routes. THE one place allowed to know every module, and deliberately outside every cross-domain rule. Not a domain. |
 | `correlation` (was `incidents`), `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz`, extra channel providers, anything AI | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. |
 | `incidents`, `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
 
-**Dependency direction (no cycles, enforced by `depguard` + an arch test):**
+### Dependency direction
+
+⚠️ **Four different mechanisms cross a module boundary and only one of them is an import.** An
+earlier version of this section drew all of them as one kind of arrow, which made it wrong about
+direction in one place and wrong about being enforced nearly everywhere. They are drawn apart now.
+
+**1. Compile-time imports — the real DAG, and the only edges anything checks.**
 
 ```
-ingestion ──► alerts ──► grouping ──► notification ──► channels
-                │           │              │
-                ▼           ▼              ▼
-           enrichment    streaming      silences
-                │
-              rules ──► sources
+enrichment ──► rules ──► alerts ◄── grouping
+                          ▲   ▲
+              silences ───┘   └─── sources
 ```
 
-`alerts` **never** imports `notification`. It appends events and enqueues jobs. This is what lets
-oto run with notifications entirely disabled — which is how the first correctness tests run.
+⛔ **`alerts` imports no other module.** Everything it needs from `grouping`, `enrichment`,
+`notification` and `streaming` is a port it declares itself in `alerts/service/deps.go`. This is
+what lets oto run with notifications entirely disabled — which is how the first correctness tests
+run — and it is why `alerts` is the sink of this graph, not its source.
+
+⚠️ **`alerts ──► grouping` was drawn here for a long time and it is BACKWARDS.**
+`grouping/service` and `grouping/api` import `alerts/service`; `alerts` imports neither. The one
+thing that knows both is `internal/app/adapters.go`'s `alertObserver` — *"THE INGEST
+ORCHESTRATOR: the one place that may know both `alerts` and `grouping`"* — and it lives in the
+composition root exactly so that neither module has to name the other. A contributor who trusted
+the old arrow would have written the import that this arrangement exists to prevent.
+
+Two cross-module imports are **not** module dependencies and are drawn nowhere above:
+
+- **RULE K** — every module may import `alerts/domain`, the shared domain kernel (§5.2b).
+  `ingestion`, `grouping`, `rules`, `silences`, `sources` and `notification` all do.
+- **RULE V** — `notification` may import `channels/domain`, because §F.2 has
+  `notification/service` **build** `channels/domain.NotificationView` and hand it to a `Renderer`
+  whose concrete it never names. `channels/service` is injected.
+
+**2. Ports — the consumer declares the interface, `internal/app/container.go` satisfies it.**
+No import exists in either direction, and nothing enforces the arrow:
+
+| Consumer declares | Satisfied from | Wired at |
+|---|---|---|
+| `ingestion/service.AlertObserver` | `alerts` **and** `grouping` | `app.alertObserver` (adapters.go) |
+| `alerts/service.EnrichmentReader` | `enrichment` | container.go |
+| `alerts/service.NotificationReader` | `notification` | container.go |
+| `alerts/service.GroupVersionReader` | `grouping` | container.go |
+| `alerts`/`grouping` `service.StreamAppender` | `streaming` | adapters.go |
+| `notification/service.ChannelRegistry` | `channels` | container.go |
+| `rules/service.RuleLookup` | `sources/service.ResolveRule` | adapters.go |
+| `silences/service.SilenceSource`, `silences/api.SourceBaseURLs` | `sources` | `app/silencesource.go` |
+
+**3. River job enqueues — a STRING in `internal/platform/jobs/kinds.go`, not a call.** The
+producer never names the consumer, so there is nothing to enforce at all:
+
+| Producer | Kind | Handled by |
+|---|---|---|
+| `alerts`, `grouping`, `enrichment` | `notify.evaluate` | `notification` |
+| `alerts`, `enrichment` | `enrich.run` | `enrichment` |
+
+**4. Table names in SQL — no Go edge whatsoever.** `drill` reads six other modules' tables by
+name (see its row above); `notification/repository/snapshot.go` joins `alert_sources` to learn a
+source's kind so it can decide whether an Alertmanager silence URL is one oto can vouch for.
+No compiler, no depguard rule and no import graph can see either one — `test/arch/arch_test.go`
+says so itself: *"COMPILE-TIME EDGES ONLY."*
+
+`test/arch/sqltables_test.go` is the gate that reads the SQL instead, and it covers **`drill`
+only**. Every table `internal/drill/**` names is declared there with its owning module and its
+permitted access: a fourteenth table fails CI the way a new import does, a declared table nothing
+names any more fails as stale, a SELECT that grows into a DELETE fails even though the table was
+already declared, and a table its owner renames fails on the OWNER's side rather than at runtime on
+the drill path. It also holds `dispose.go`'s two stated invariants — every DELETE scoped by an id
+and not merely by `org_id` and a predicate, and `AND synthetic` still on `alerts` and
+`alert_groups` — which were argued in a comment on a file nothing in the build system knew was
+special.
+
+⚠️ `notification`'s `alert_sources` join and `stats`' ten borrowed tables are **not** declared
+anywhere. For those a rename still breaks at runtime, and gating them means writing their claims.
+
+⛔ `notification ──► silences` used to be drawn and is **not a relationship**: `notification`
+neither imports `silences`, nor declares a port onto it, nor enqueues to it. The silence links it
+renders point at Alertmanager's own console, from the source kind read in (4). The real silence
+edges point the other way — `silences ──► alerts` (import) and `silences ──► sources` (port).
+
+### What actually enforces this
+
+- **`test/arch/arch_test.go` is the only gate on direction.** It reads the real import graph,
+  fails on any cross-module edge diagram (1) does not draw, fails on a declared edge the code no
+  longer has, and **refuses an allow-list containing a cycle** — so the cheap fix of adding the
+  offending line back does not work either.
+- **`.golangci.yml`'s `<module>-must-not-reach-into-other-domains` rules are symmetric.** Each
+  one re-allows *every* other module's `/service`, so they enforce **layering** (you may reach
+  only `<other>/service`, never its `api`/`repository`/`domain`) and say nothing about which way
+  an edge points. The only directional depguard rule is `dependency-direction-alerts-and-ingestion`
+  — `alerts` and `ingestion` may not import `notification` or `channels` (SPEC §I.1).
+  `platform-must-not-import-domains` keeps `platform` out of the graph entirely.
+- **`test/arch/sqltables_test.go` is the only gate on TABLE OWNERSHIP**, and only over `drill`.
+  It reads string literals, not imports, so it is the one check in this repo that can see a
+  module reaching across a boundary without an edge to reach it with.
+- **All three skip `_test.go`.** Test files do cross module lines on purpose, and a fixture that
+  seeds another module's table to set a test up is not the module reaching across a boundary.
+- **Mechanisms 2 and 3 are enforced by nothing, and mechanism 4 only for `drill`.** That is the
+  price of the decoupling, and it is the reason they are listed rather than drawn as arrows.
 
 ---
 
@@ -189,6 +277,21 @@ internal/<domain>/
    cross-domain `domain` import: it owns `LabelSet`, `AlertKey`, `GroupKey`, `RuleFingerprint`,
    `IdempotencyKey`, `ClusterKey`, `SlackTS`, `Severity`, `State`, `AckState`. It must import no
    other domain package. `pkg/alertkey` does not exist — `pkg/` is reserved for `otoclient`.
+   It is the only *kernel* but not the only exception: depguard's RULE V also lets
+   **`notification` import `channels/domain`**, because §F.2 has `notification/service` BUILD
+   `channels/domain.NotificationView` (§4, mechanism 1). That grant is one module, one package,
+   view types only. There are exactly two such imports in the tree and a third needs an ADR.
+2c. **`internal/platform/tuning` is the ONE home of the shipped §D.1 tuning defaults.** It is
+   constants and nothing else — no types, no behaviour, no import but `time`. `identity/domain`
+   still OWNS the tenant's tuning (the keys, the bounds, the provenance, the `Settings` struct);
+   what moved is only the shipped NUMBER, because `alerts/domain`, `grouping/domain`,
+   `alerts/service` and `platform/config` all need it and rule 4 forbids every one of them
+   importing identity. They used to keep copies with a ⚠️ comment each, ADR 0026 moved three
+   defaults at once and two copies were missed, and the miss is silent — a stale fallback is what
+   an org gets when its settings row fails to load. Every declaration outside this package is now
+   a REFERENCE to it, which the compiler keeps honest; a default only one package reads stays
+   where it lives. This is not a general dumping ground: platform may import no domain (rule 7),
+   so nothing with a domain type in it can come here.
 3. `service` imports `domain` and its own port interfaces. Concretes are injected by
    `internal/app/container.go`.
 4. Cross-domain calls are **service → service**, through an interface declared by the
@@ -209,7 +312,7 @@ internal/<domain>/
 | # | Layer | Library | Failure |
 |---|---|---|---|
 | 1 | API DTOs | `go-playground/validator/v10` via `httpx.Bind[T]` **only** | 422 + `violations[]` |
-| 2 | Untrusted inbound (webhook, reconciler) | hand-written bounds B1–B17 | `ingest_rejections` row, **still 202** |
+| 2 | Untrusted inbound (webhook, reconciler) | hand-written bounds B1–B19 | `ingest_rejections` row, **still 202** |
 | 3 | Domain invariants | value objects + `New…() (T, error)` | typed error; a bug |
 | 4 | Provider config | `santhosh-tekuri/jsonschema/v6` | 422 mapped from schema errors |
 | 5 | Outbound render | 18 Block Kit checks (V1–V18) | `dead` delivery, payload persisted |
@@ -252,10 +355,18 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 
 - Colour is never the only channel — every state carries ≥2 of {colour, icon, text label}.
 - Severity → **icon**. State → **colour**. Dark mode is the default. No flashing, ever.
+- **Colour is not the only axis with a vocabulary any more (§M.8, ADR 0029).** Type is six steps —
+  `text-micro` 10 / `text-meta` 11 / `text-body` 12 / `text-item` 13 / `text-title` 14 / `text-page`
+  18 — and radius is three: `rounded-chip` 3 (inline things), `rounded-control` 4 (things you
+  operate), `rounded-surface` 6 (things that hold controls). Both were read off 342 existing
+  bracket literals rather than drawn, which is why they are that short. **A size written at a call
+  site is a violation, not a shortcut** — bracket, Tailwind's own `text-sm`/`rounded-md` ladder, or
+  a raw declaration in a stylesheet alike; `web/src/design/scales.test.ts` is the gate.
 - **The Slack palette (§H.2, Grafana OnCall hexes) is a SEPARATE, UNCHANGED system — do not
   harmonise it.** Different substrate, different contrast contract, and those values are the
   best-tested alert palette that exists. A renderer must not read a `--oto-*` token; a stylesheet
-  must not contain a Slack hex.
+  must not contain a Slack hex. **Both halves are gates** — `test/design/boundary_test.go`, plus
+  `TestSlackPaletteUnchanged`, which pins the six hexes to §H.2 itself rather than to `palette.go`.
 
 ## 6. Conventions
 
@@ -316,7 +427,11 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 - Ack identity IS stored (operationally necessary). **No per-person response-time metrics,
   leaderboards or aggregates.** A feature you do not build cannot be misused.
 - Label redaction runs **before** the raw payload is persisted. Never log full payloads at info
-  level. Retention: raw 14 days, events 13 months, configurable.
+  level. Retention: raw 30 days, events 13 months, configurable — and it deletes the
+  **narrative**, never the **record** (ADR 0024). `alerts`, `alert_occurrences`,
+  `rule_snapshots`, `notifications`, `notification_deliveries` and `channel_threads`
+  have no reaper. What dies at 13 months is the timeline, including human comments,
+  which live nowhere else.
 - Surface alert hygiene. **The best alert is the one that no longer exists.**
 
 ---
@@ -330,7 +445,7 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 | `alerts` | SPEC §A, §B, §C.2–C.3, §C.8, §D.4; ADRs 0003, 0004 |
 | `grouping` | SPEC §C.4, §B.6, §D.5; ADR 0005 |
 | `rules` | SPEC §C.6, §D.6, §F.4; ADR 0009 |
-| `notification` + `channels` | SPEC §F.1–F.2, §G.5–G.7, §H in full; ADR 0008 |
+| `notification` + `channels` | SPEC §F.1–F.2, §G.5–G.7, §H in full; ADRs 0008, 0023 |
 | `streaming` | SPEC §E.4, §D.10; ADR 0010 |
 | HTTP API | SPEC §E in full, §L.1–L.2, §L.9, §J |
 | The SolidJS UI | SPEC §E, §L.8, **§M in full**; ADR 0012 |

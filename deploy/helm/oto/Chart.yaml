@@ -1,0 +1,42 @@
+apiVersion: v2
+name: oto
+description: >-
+  oto — the alert history layer a Prometheus stack does not have. Self-hosted,
+  Postgres-only, no second datastore (SPEC R7, ADR 0014, ADR 0015).
+type: application
+
+# The CHART version. Bump on every change to the templates or the default values.
+version: 0.1.0
+
+# The oto version this chart deploys by default. `image.tag` falls back to this,
+# so a chart release and an application release move together unless the operator
+# pins otherwise.
+appVersion: "0.1.0"
+
+# oto needs nothing newer than a stock cluster: apps/v1, batch/v1 and
+# networking.k8s.io/v1 Ingress with ingressClassName (1.19+) and pathType.
+kubeVersion: ">=1.23.0-0"
+
+home: https://github.com/thulasi-ram/oto
+sources:
+  - https://github.com/thulasi-ram/oto
+
+keywords:
+  - alerting
+  - prometheus
+  - alertmanager
+  - slack
+  - observability
+
+maintainers:
+  - name: oto maintainers
+    url: https://github.com/thulasi-ram/oto
+
+annotations:
+  # ⛔ THERE IS NO POSTGRES SUBCHART, AND THERE WILL NOT BE ONE. ADR 0014 makes
+  # Postgres the sole datastore and ADR 0015 refuses a stream processor on the
+  # grounds that the deployment stays ONE chart plus a database URL. Bundling a
+  # StatefulSet Postgres would make this chart the owner of somebody's alert
+  # history durability, which is a promise a single-replica dev database cannot
+  # keep. Point `config.db.url` at a database you back up.
+  artifacthub.io/prerelease: "true"

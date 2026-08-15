@@ -54,6 +54,10 @@ var ddlOf = map[string][]string{
 var noDDL = map[string]string{
 	"PatternLabelName": "label names live in a JSONB document, so Postgres has nothing to CHECK; " +
 		"the ingest normaliser and the domain LabelSet are the only enforcement points",
+	"PatternOperatorLinkURL": "a runbook or dashboard link lives inside an enrichment payload's JSONB, " +
+		"so there is no column and no CHECK to mirror; it is deliberately LOOSER than PatternHTTPURL " +
+		"(query, fragment, trailing slash and an uppercase scheme are all legal in a link and all " +
+		"illegal in alert_sources.base_url) and must never be pointed at that column",
 }
 
 // literalPredicates are patterns that are not regexes and so are matched as a

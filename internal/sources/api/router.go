@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -34,16 +33,23 @@ const (
 // Options are the Router's dependencies. Everything is a port, so the whole
 // surface is exercisable with fakes and an httptest.Server.
 type Options struct {
-	Sources   SourceReader
-	Registry  SourceRegistry
-	Clusters  ClusterRegistry
-	Creds     CredentialWriter
-	Tokens    IngestTokenIssuer
-	Reconcile Reconciler
-	// Tx makes a source and its ingest token one commit. A nil Tx degrades to
-	// two commits, which is what this endpoint used to do and what left orphan
-	// sources behind; production always wires it.
-	Tx UnitOfWork
+	Sources SourceReader
+	// Registry is the module's write facade. It owns the transaction, the
+	// credential and ingest-token orchestration and the `Idempotency-Key` claim;
+	// this layer supplies a bound request and renders what comes back.
+	Registry SourceRegistry
+	Clusters ClusterRegistry
+	// ClusterWrites registers a cluster. It is a DIFFERENT collaborator from
+	// Clusters — the service rather than the repository — because the
+	// `Idempotency-Key` claim has to join the insert's transaction, and the
+	// transaction boundary is not an HTTP concern. Nil is a declared `503` on
+	// `createCluster` and nothing at all to the cluster reads.
+	ClusterWrites ClusterCreator
+	Reconcile     Reconciler
+	// Feeds is the ingestion module's read half: the per-source rejection feed
+	// and the failed-batch list. Nil means this deployment cannot answer "why did
+	// my alert never appear", which is a declared 503 rather than a panic.
+	Feeds IngestFeeds
 	// Guard refuses a base or Prometheus URL that resolves somewhere oto must not
 	// dial. Nil means no configuration-time feedback — the dialer still refuses.
 	Guard AddressGuard
@@ -66,10 +72,9 @@ type Router struct {
 	sources     SourceReader
 	registry    SourceRegistry
 	clusters    ClusterRegistry
-	creds       CredentialWriter
-	tokens      IngestTokenIssuer
+	clusterW    ClusterCreator
 	reconcile   Reconciler
-	tx          UnitOfWork
+	feeds       IngestFeeds
 	guard       AddressGuard
 	allowNoTLSV bool
 	clk         clock.Clock
@@ -86,24 +91,14 @@ func NewRouter(o Options) *Router {
 		sources:     o.Sources,
 		registry:    o.Registry,
 		clusters:    o.Clusters,
-		creds:       o.Creds,
-		tokens:      o.Tokens,
+		clusterW:    o.ClusterWrites,
 		reconcile:   o.Reconcile,
-		tx:          o.Tx,
+		feeds:       o.Feeds,
 		guard:       o.Guard,
 		allowNoTLSV: o.AllowInsecureTLS,
 		clk:         clk,
 		baseURL:     strings.TrimRight(o.BaseURL, "/"),
 	}
-}
-
-// inTx runs fn in one transaction when a unit of work is wired, and inline
-// otherwise.
-func (rt *Router) inTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	if rt.tx == nil {
-		return fn(ctx)
-	}
-	return rt.tx.InTx(ctx, fn)
 }
 
 // Register mounts every route this package owns onto r, which `internal/app` has
@@ -120,6 +115,13 @@ func (rt *Router) Register(r chi.Router) {
 			r.Post("/rotate-token", rt.rotateSourceIngestToken)
 			r.Post("/reconcile", rt.reconcileSource)
 			r.Get("/health", rt.getSourceHealth)
+			// The two ingestion feeds. They hang off `/sources/{id}` rather than
+			// off the ingest surface because the ingest router is mounted with NO
+			// middleware at all — no session, no body cap, no timeout — so a UI
+			// read cannot live there, and because the question they answer is
+			// asked while looking at the source.
+			r.Get("/rejections", rt.listSourceRejections)
+			r.Get("/failed-batches", rt.listSourceFailedBatches)
 		})
 	})
 

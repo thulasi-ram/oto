@@ -45,13 +45,20 @@ type AlertService interface {
 	LabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]domain.LabelCount, error)
 	Acknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Occurrence, error)
 	Unacknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Occurrence, error)
-	Comment(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, body string) (domain.Event, error)
+	// ⭐ COMMENT AND SNOOZE CARRY THE CALLER'S `Idempotency-Key` INTENT AND ACK AND
+	// UNACK DO NOT, and that asymmetry is the ruling rather than an oversight. Ack
+	// and unack are idempotent by state machine — the state after N calls equals
+	// the state after one — so a keyed retry meets `already_acked` / `not_acked`,
+	// which is a settled answer and not a duplicated side effect. A comment is an
+	// APPEND and a snooze SUPERSEDES its own incumbent; those two are the ones that
+	// acted twice (ticket a6cc834). The second result is "this was a replay".
+	Comment(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, body string, idem service.Idempotency) (domain.Event, bool, error)
 
 	// ⛔ THE THIRD HUMAN VERB (§E.1.1, §B.8). Snooze writes NOTIFICATION state,
 	// never signal state: the alert stays firing, stays whatever severity it was,
 	// and every surface keeps rendering it that way. There is still no Resolve,
 	// no Close and no Dismiss on this interface, and there never will be.
-	Snooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, until time.Time, note string) (domain.Snooze, error)
+	Snooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, until time.Time, note string, idem service.Idempotency) (domain.Snooze, bool, error)
 	Unsnooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Snooze, error)
 	SnoozeHistory(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Snooze, error)
 	// ActiveSnoozes is the ORG-WIDE §B.8.6 view: everything oto is currently

@@ -218,13 +218,17 @@ func DeliverQueueFor(channelType string) string {
 // IDEMPOTENCY KEY: none needed at the job level — the sweep is a query, and the
 // reminder it may mint is a Notification, unique on `(org_id, idempotency_key)`
 // and fired AT MOST ONCE PER GROUP GENERATION by §G.9. Job-level uniqueness is
-// by kind and period so two pods cannot both run the same tick.
+// by kind, ARGS and period, and TenantFanOut is what makes that per-tenant: each
+// org's sweep gets its own once-a-minute slot instead of every org sharing the
+// tick's one, and a tenant whose policies are broken retries and dead-letters
+// alone instead of being a log line inside everybody else's execution.
 //
 // THERE IS EXACTLY ONE STAGE, FOREVER (SPEC §G.9.1, BINDING, PERMANENT). This
 // job must never gain a stage index, a target other than the policy's existing
 // channels, or any awareness of who is on call.
 type NotifyUnackedReminderArgs struct {
 	Payload
+	TenantFanOut
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
@@ -306,16 +310,39 @@ func (SlackInteractionArgs) InsertOpts() river.InsertOpts {
 // source (SPEC §G.8). It is the ONLY producer of `suppressed`, and its
 // divergence count is the canary for every correctness bug in the system.
 //
-// Queue: reconcile · Priority: normal · Retry: retryable (12) · Payload v1
+// Queue: reconcile · Priority: normal · Retry: retryable (12) on the per-source
+// shape, periodic (3) on the two fan-out shapes · Payload v1
 //
 // IDEMPOTENCY KEY: (SourceID, tick). The reconciler is a pure read-and-observe
 // pass whose Observations feed the same state machine as ingestion, and that
 // state machine is idempotent by `alert_event_keys UNIQUE (org_id, dedupe_key)`
 // (SPEC §C.8). Running it twice therefore costs two HTTP calls and changes
 // nothing. Tick uniqueness is enforced by River over (kind, args, period) so a
-// slow run does not stack up behind itself.
+// slow run does not stack up behind itself, and TenantFanOut is what makes that
+// per-tenant: each org's fan-out gets its own thirty-second slot instead of every
+// org sharing the tick's one.
+//
+// ⭐ THE PAYLOAD NOW HAS THREE SHAPES, NOT TWO, AND THE THIRD IS THE ONE THIS KIND
+// LENT EVERYBODY ELSE. `TenantFanOut` was modelled on this args struct's own
+// no-source-id-means-expand-me trick; the kind that invented it was the last one
+// still walking every tenant inside a single execution, so it now carries the
+// embeddable it inspired:
+//
+//   - No source id, no org id → THE FAN-OUT TICK. Page the tenants, enqueue one
+//     of these per tenant, and — at the ceiling — one continuation.
+//   - No source id, an org id → ONE TENANT'S source fan-out: `ListDue` bounded by
+//     `FanOutLimit`, and the reconcile/silences pair per due source.
+//   - A source id → ONE PASS against that source. Both TenantFanOut fields are
+//     ZERO on it — not nil; they are `uuid.UUID` values and always present on the
+//     wire — because the source id already names the tenant by way of
+//     `alert_sources`.
+//
+// ⚠️ A SOURCE ID AND AN ORG ID TOGETHER ARE NOT A SHAPE. Nothing enqueues one and
+// the handler reads the source id first, so such a payload is one pass and the org
+// id is ignored — never authority, exactly as TenantFanOut says.
 type SourceReconcileArgs struct {
 	Payload
+	TenantFanOut
 	SourceID uuid.UUID `json:"source_id"`
 }
 
@@ -323,9 +350,37 @@ type SourceReconcileArgs struct {
 func (SourceReconcileArgs) Kind() string { return KindSourceReconcile }
 
 // InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
-func (SourceReconcileArgs) InsertOpts() river.InsertOpts {
+//
+// ⭐⭐ THE RETRY BUDGET IS PER SHAPE, AND ONLY THE PER-SOURCE PASS KEEPS THE
+// RETRYABLE ONE. `periodicOpts` already hands back `MaxAttemptsPeriodic`, so the
+// fan-out tick, a continuation and one tenant's pass all fall to three attempts;
+// the override below applies to the shape that names a SOURCE and to nothing else.
+//
+// ⛔ THE ARITHMETIC IS WHY, AND IT IS ABOUT ROWS RATHER THAN TASTE. At thirteen
+// attempts the backoff sum is roughly 1710 s — about 28.5 minutes — while the tick
+// that created the row runs again every 30 s and creates another. A tenant whose
+// `ListDue` is persistently failing therefore accumulates on the order of 57
+// retryable rows at once, against about 0.2 at three attempts. The sharpest case
+// is the CONTINUATION: a retried one replays a cursor that may be 28 minutes
+// stale, re-walking a page of the tenant table that has already been walked, and
+// `ByPeriod` will not dedupe it because its `After` makes it a distinct unique key.
+//
+// ⚠️ AND THE SURFACE THAT CAN EVEN REACH A RETRY IS NARROW, which is what makes
+// three enough. An unreachable upstream is not a job failure — `Reconcile` records
+// it in `source_health` and returns nil — and a tenant that departed between the
+// tick and its pass returns nil through `jobs.ForTenant`. What is left is a
+// `ListDue` or an `EnqueueMany` that faulted, i.e. the database or the queue, and a
+// tick thirty seconds behind is a better answer to that than thirteen attempts.
+//
+// ⛔ IT MUST NOT BECOME A BLANKET `MaxAttemptsPeriodic`. The per-source pass is the
+// MANDATORY reconciler (ADR 0006) and the only producer of `suppressed`; cutting
+// its budget to three would give up on a source over a blip that the retryable
+// ladder is sized to ride out.
+func (a SourceReconcileArgs) InsertOpts() river.InsertOpts {
 	o := periodicOpts(QueueReconcile, PriorityNormal, 30*time.Second)
-	o.MaxAttempts = MaxAttemptsRetryable
+	if a.SourceID != uuid.Nil {
+		o.MaxAttempts = MaxAttemptsRetryable
+	}
 	return o
 }
 
@@ -360,13 +415,18 @@ func (SilencesSyncArgs) InsertOpts() river.InsertOpts {
 // Queue: lifecycle · Priority: normal · Retry: periodic (3) · Payload v1
 //
 // IDEMPOTENCY KEY: none needed — the sweep selects candidates by state and time
-// and every transition it writes is deduped by `alert_event_keys`. Tick
-// uniqueness by kind and period.
+// and every transition it writes is deduped by `alert_event_keys` (§C.8). Running
+// one tenant's reap twice reaps the same candidates and appends nothing the
+// second time; the snooze expiry that rides the same tick is a compare-and-set on
+// an episode that is already unsnoozed. Tick uniqueness is by kind, ARGS and
+// period, and TenantFanOut is what makes that per-tenant: each org gets its own
+// once-a-minute slot instead of every org sharing one.
 //
 // THE REAPER IS BLOCKED while `source_health.status != 'healthy'`. Losing sight
 // of an alert is not the alert resolving, and `expired` is never `resolved`.
 type OccurrenceReapArgs struct {
 	Payload
+	TenantFanOut
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
@@ -385,9 +445,11 @@ func (OccurrenceReapArgs) InsertOpts() river.InsertOpts {
 // Queue: lifecycle · Priority: normal · Retry: periodic (3) · Payload v1
 //
 // IDEMPOTENCY KEY: none needed — closing a closed group and advancing an already
-// advanced sequence are both no-ops under the thread advisory lock.
+// advanced sequence are both no-ops under the thread advisory lock, so a
+// re-delivered per-tenant pass converges rather than double-applying.
 type GroupCloseArgs struct {
 	Payload
+	TenantFanOut
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
@@ -403,9 +465,11 @@ func (GroupCloseArgs) InsertOpts() river.InsertOpts {
 // Queue: lifecycle · Priority: background · Retry: periodic (3) · Payload v1
 //
 // IDEMPOTENCY KEY: none needed — the score is a pure function of the event
-// history, written with SetFlap, so recomputation is convergent.
+// history, written with SetFlap, so recomputation is convergent and a per-tenant
+// pass that runs twice writes the same score twice.
 type FlapScoreArgs struct {
 	Payload
+	TenantFanOut
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
@@ -444,9 +508,24 @@ func (PartitionsManageArgs) InsertOpts() river.InsertOpts {
 //
 // Queue: maintenance · Priority: background · Retry: periodic (3) · Payload v1
 //
-// IDEMPOTENCY KEY: none needed — pruning is convergent.
+// ⭐ IT IS THE ONE KIND HERE WHOSE TWO SHAPES DO DIFFERENT WORK, because its body
+// is genuinely mixed and forcing all of it into a per-tenant shape would be a
+// lie. The fan-out shape does the GLOBAL prunes — `ingest_dedup`,
+// `idempotency_claims`, `alert_event_keys`, expired sessions — which are
+// unpartitioned, globally-unique tables with no tenant to loop over; the
+// per-tenant shape does the drill sweep, which is the only per-org work in the
+// job. Splitting the org loop out of a body that also guards webhook replay is
+// what the ticket asked for; giving it a second job kind would have bought a new
+// queue, a new retry policy and a new metric to express "the same hourly sweep".
+//
+// IDEMPOTENCY KEY: none needed — pruning is convergent in both shapes. Every
+// global prune is a bounded DELETE by a time predicate, so a second run deletes
+// what the first one left and nothing else; the per-tenant drill sweep settles
+// drills whose window has closed and disposes rows already marked disposable, and
+// a re-run finds them settled and disposed.
 type RetentionPruneArgs struct {
 	Payload
+	TenantFanOut
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
@@ -461,15 +540,24 @@ func (RetentionPruneArgs) InsertOpts() river.InsertOpts {
 //
 // Queue: maintenance · Priority: background · Retry: periodic (3) · Payload v1
 //
-// IDEMPOTENCY KEY: Day. The rollup is a full recomputation of one day upserted on
-// `(org_id, day, cluster_key, alertname)`, so re-running any day converges. Day
-// is a string in RFC 3339 date form ("2026-08-07") rather than a time.Time so the
+// IDEMPOTENCY KEY: (OrgID, Day). The rollup is a full recomputation of one day
+// upserted on `(org_id, day, cluster_key, alertname)`, so re-running any day for
+// any tenant converges — it REPLACES the stored counters rather than accumulating
+// onto them, which is the only safe shape under an at-least-once queue. Day is a
+// string in RFC 3339 date form ("2026-08-07") rather than a time.Time so the
 // payload is stable under timezone handling — a rollup keyed by an instant that
 // re-serialises differently would silently produce two rows.
+//
+// ⚠️ THE DAY TRAVELS ON BOTH SHAPES. The fan-out tick is what reads the clock, and
+// it copies its own Day onto every per-tenant job it queues, so a fan-out that
+// straddles midnight UTC still rolls up ONE day for every tenant rather than
+// giving the tenants at the end of the walk a different one from the tenants at
+// the start.
 //
 // alert_quality_daily carries NO user column, by construction. NEVER PER-PERSON (R8).
 type StatsRollupArgs struct {
 	Payload
+	TenantFanOut
 	Day string `json:"day"`
 }
 

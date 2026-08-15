@@ -5,6 +5,7 @@ import (
 
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
 
 // listClusters serves GET /api/v1/clusters.
@@ -59,6 +60,15 @@ func (rt *Router) listClusters(w http.ResponseWriter, r *http.Request) {
 // afterwards: the same label set in two clusters is two different alerts, which
 // is correct because they have different blast radii. Choosing it is therefore a
 // decision, and this is the only endpoint that lets anyone make it.
+//
+// ⭐⭐ A RETRY CARRYING THE SAME `Idempotency-Key` IS ANSWERED WITH THE ORIGINAL
+// `201`. This endpoint declared the header and read it nowhere, and was safe only
+// by accident — `clusters_key_uniq (org_id, cluster_key)` refused a second create
+// under the same key with a `409` that named nothing, so a client that never
+// received its response could not even learn the id of the cluster it had already
+// made. The write now goes through `sources/service`, which takes the claim in
+// the same transaction as the insert; see ClusterCreator for why it does not go
+// through the repository any more.
 func (rt *Router) createCluster(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -67,7 +77,7 @@ func (rt *Router) createCluster(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if err := requireDependency(rt.clusters != nil, "clusters_unavailable",
+	if err := requireDependency(rt.clusterW != nil, "clusters_unavailable",
 		"the cluster registry is not configured in this deployment"); err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -77,13 +87,26 @@ func (rt *Router) createCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The RAW bytes, before Bind consumes the stream: "the same body" is decided
+	// by the sha256 of what the caller actually sent, not by a re-encoding of the
+	// DTO it parsed into.
+	raw, err := httpx.ReadBody(w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	dto, err := httpx.Bind[CreateClusterRequest](w, r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+	idem, err := rt.idempotencyIntent(r, idempotency.HashRequest(raw))
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 
-	c, err := rt.clusters.Create(r.Context(), scope, dto.ClusterKey, dto.DisplayName)
+	c, err := rt.clusterW.CreateCluster(r.Context(), scope, dto.ClusterKey, dto.DisplayName, idem)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return

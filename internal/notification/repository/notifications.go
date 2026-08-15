@@ -173,9 +173,18 @@ func (r *NotificationRepository) Get(
 	return row.toDomain(), nil
 }
 
+// ⭐ GREATEST KEEPS `updated_at` MONOTONIC, and that is a correctness guard, not
+// a nicety. Both timestamps come from the application — Insert above names them
+// from the caller's clock — but "the application" is N pods with N clocks, and
+// the aggregate status is folded by a DISPATCH worker, never by the pod that
+// recorded the intent. A few milliseconds of lag between them would otherwise
+// write an `updated_at` BELOW `created_at` and fail `notifications_time_ck` with
+// a 23514. That is the worst place in the module to take it: the delivery has
+// already gone OUT and only the bookkeeping fails, so the job retries, sends
+// again, and a human gets a duplicate at 3am for a clock reason.
 const setNotificationStatusSQL = `
 UPDATE notifications
-   SET status = $3, updated_at = $4
+   SET status = $3, updated_at = GREATEST(updated_at, $4)
  WHERE org_id = $1 AND id = $2 AND status IS DISTINCT FROM $3`
 
 // SetStatus updates the aggregate status of one notification.

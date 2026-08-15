@@ -25,8 +25,7 @@
 import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
-import { listLabelNames } from "~/api/endpoints";
-import { qk } from "~/api/keys";
+import { labelNamesQuery } from "~/api/queries";
 import { Input, cx } from "~/components/ui/primitives";
 import { count as fmtCount } from "~/lib/format";
 import {
@@ -56,11 +55,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
   const parsed = createMemo(() => parseMatchers(text()));
   const compiled = createMemo(() => compileMatchers(parsed().matchers));
 
-  const names = useQuery(() => ({
-    queryKey: qk.labels.names(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listLabelNames({ signal }),
-    staleTime: 5 * 60_000,
-  }));
+  const names = useQuery(() => labelNamesQuery());
 
   const hasProblem = (): boolean =>
     parsed().errors.length > 0 || compiled().rejected.length > 0;
@@ -132,7 +127,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
           <ul class="mt-1 space-y-0.5">
             <For each={parsed().errors}>
               {(err) => (
-                <li class="flex items-start gap-1.5 text-[11px] leading-snug text-ink">
+                <li class="flex items-start gap-1.5 text-meta leading-snug text-ink">
                   <MarkGlyph />
                   <span>
                     <span class="text-ink-subtle">at {err.at}:</span> {err.message}
@@ -147,7 +142,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
           <ul class="mt-1 space-y-1">
             <For each={compiled().rejected}>
               {(r) => (
-                <li class="flex items-start gap-1.5 text-[11px] leading-snug text-ink">
+                <li class="flex items-start gap-1.5 text-meta leading-snug text-ink">
                   <MarkGlyph />
                   <span>
                     <code class="font-mono text-ink">
@@ -164,7 +159,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
         </Show>
 
         <Show when={!hasProblem() && parsed().matchers.length > 0 && focused()}>
-          <p class="mt-1 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-1 text-meta leading-snug text-ink-subtle">
             {describe(parsed().matchers)} · press Enter to apply
           </p>
         </Show>
@@ -173,7 +168,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
           <ul class="mt-1 space-y-0.5">
             <For each={MATCHER_EXAMPLES}>
               {(ex) => (
-                <li class="flex flex-wrap items-baseline gap-x-2 text-[11px] leading-snug">
+                <li class="flex flex-wrap items-baseline gap-x-2 text-meta leading-snug">
                   <code
                     class={cx(
                       "font-mono",

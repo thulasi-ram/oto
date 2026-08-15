@@ -47,6 +47,7 @@ type alertRow struct {
 	totalOccurrences  int32
 	flapScore         float32
 	isFlapping        bool
+	synthetic         bool
 }
 
 // alertColumnList is the projection every alert query selects, in scan order.
@@ -57,7 +58,7 @@ var alertColumnList = []string{
 	"id", "org_id", "cluster_id", "alert_key", "source_fingerprint", "alertname", "severity",
 	"namespace", "service", "cluster_key", "labels", "annotations", "generator_url", "state",
 	"current_occurrence_id", "ack_state", "snoozed_until", "first_seen_at", "last_seen_at",
-	"last_state_change_at", "total_occurrences", "flap_score", "is_flapping",
+	"last_state_change_at", "total_occurrences", "flap_score", "is_flapping", "synthetic",
 }
 
 // alertColumns is alertColumnList rendered for hand-written SQL.
@@ -69,6 +70,7 @@ func (r *alertRow) scanDest() []any {
 		&r.namespace, &r.service, &r.clusterKey, &r.labels, &r.annotations, &r.generatorURL,
 		&r.state, &r.currentOccurrenceID, &r.ackState, &r.snoozedUntil, &r.firstSeenAt,
 		&r.lastSeenAt, &r.lastStateChangeAt, &r.totalOccurrences, &r.flapScore, &r.isFlapping,
+		&r.synthetic,
 	}
 }
 
@@ -133,6 +135,7 @@ func (r *alertRow) toDomain() (domain.Alert, error) {
 		TotalOccurrences:    int(r.totalOccurrences),
 		FlapScore:           r.flapScore,
 		IsFlapping:          r.isFlapping,
+		Synthetic:           r.synthetic,
 	})
 	if err != nil {
 		return domain.Alert{}, errs.Internal("alert_row_invalid", err)
@@ -170,18 +173,60 @@ func (r *AlertRepository) db(ctx context.Context) db.Querier { return db.FromCon
 
 // ------------------------------------------------------------------- upsert
 
+// ⭐ THE UPSERT IS ALSO THE ONLY WRITER OF THE LABEL PROJECTION, which is why it
+// grew a tail. `alerts.labels` is written here and nowhere else in this tree —
+// the three other UPDATEs on `alerts` touch flap_score, snoozed_until and the
+// occurrence projection — so 00045's `alert_labels` and `alert_label_names` are
+// maintained in this statement, inside the same transaction, while
+// `Service.observe` holds the alert's row lock. A projection maintained anywhere
+// else is a projection that can be observed disagreeing with its source.
+//
+// It stays ONE round trip (§D.12c): the upsert becomes a data-modifying CTE and
+// the maintenance hangs off its RETURNING.
+//
+//	want   the label set each upserted alert SHOULD have, synthetics excluded
+//	gone   the alert_labels rows it no longer has  → −1 to that name's count
+//	put    the rows it does, upserted by value     → +1 only where a row is NEW
+//	delta  the two folded together, per name, zero-sum entries dropped
+//	bump   the delta applied to names already counted
+//	mint   the delta applied to names that were not
+//
+// ⛔ `gone`/`put` REPLACE ONE ALERT'S SET RATHER THAN APPLYING A DIFFERENCE, and
+// that is what makes them safe: a replacement does not need to know the old
+// labels, so it cannot be wrong about them. The COUNT cannot be replaced that
+// way — it is shared between alerts — so it takes a delta, and the delta is read
+// out of the RETURNING of those two statements rather than out of a re-read of
+// `alerts`. Both RETURNINGs are produced under row locks, and READ COMMITTED
+// re-reads a locked row before applying, so the arithmetic is exact under
+// concurrency rather than nearly exact.
+//
+// ⚠️ A NO-OP OBSERVATION WRITES NOTHING, which is the whole reason this is
+// affordable on the ingest path: `put`'s `WHERE label_value IS DISTINCT FROM`
+// declines the update, `gone` deletes nothing, `delta` is empty, and the cost is
+// N × L index probes with no dead tuples. That is the overwhelmingly common
+// case, since a re-observation almost never changes a label set.
+//
+// ⚠️ `mint` IS SPLIT FROM `bump` FOR A REASON THAT LOOKS LIKE A TYPO. Postgres
+// evaluates CHECK constraints on the proposed tuple BEFORE ON CONFLICT
+// arbitration, so a single `INSERT … ON CONFLICT DO UPDATE SET count = count +
+// EXCLUDED.count` carrying a −1 fails `alert_label_names_count_ck` on a row that
+// was only ever going to be updated. `bump` therefore takes every name that
+// already has a row, and `mint` inserts only the strictly positive remainder —
+// which is every name it can be, because a −1 exists only where a row was
+// deleted, and a row exists only where it was once counted.
 var upsertAlertsSQL = `
+WITH up AS (
 INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname, severity,
                     namespace, service, cluster_key, labels, annotations, generator_url,
-                    state, first_seen_at, last_seen_at, last_state_change_at)
+                    state, first_seen_at, last_seen_at, last_state_change_at, synthetic)
 SELECT u.id, $1, u.cluster_id, u.alert_key, u.fingerprint, u.alertname, u.severity,
        u.namespace, u.service, u.cluster_key, u.labels, u.annotations, u.generator_url,
-       u.state, u.seen_at, u.seen_at, u.seen_at
+       u.state, u.seen_at, u.seen_at, u.seen_at, u.synthetic
   FROM unnest($2::uuid[], $3::uuid[], $4::text[], $5::text[], $6::text[], $7::text[],
               $8::text[], $9::text[], $10::text[], $11::jsonb[], $12::jsonb[], $13::text[],
-              $14::text[], $15::timestamptz[])
+              $14::text[], $15::timestamptz[], $16::boolean[])
     AS u(id, cluster_id, alert_key, fingerprint, alertname, severity, namespace, service,
-         cluster_key, labels, annotations, generator_url, state, seen_at)
+         cluster_key, labels, annotations, generator_url, state, seen_at, synthetic)
 ON CONFLICT (org_id, alert_key) DO UPDATE SET
     last_seen_at       = GREATEST(alerts.last_seen_at, EXCLUDED.last_seen_at),
     labels             = EXCLUDED.labels,
@@ -192,7 +237,52 @@ ON CONFLICT (org_id, alert_key) DO UPDATE SET
     generator_url      = EXCLUDED.generator_url,
     source_fingerprint = EXCLUDED.source_fingerprint,
     updated_at         = now()
-RETURNING ` + alertColumns + `, (xmax = 0) AS was_inserted`
+RETURNING ` + alertColumns + `, (xmax = 0) AS was_inserted
+),
+want AS (
+    SELECT u.id AS alert_id, e.key AS label_name, coalesce(e.value, '') AS label_value
+      FROM up u, LATERAL jsonb_each_text(u.labels) AS e(key, value)
+     WHERE NOT u.synthetic
+),
+gone AS (
+    DELETE FROM alert_labels l
+     USING up u
+     WHERE l.org_id = $1 AND l.alert_id = u.id
+       AND NOT EXISTS (SELECT 1 FROM want w
+                        WHERE w.alert_id = l.alert_id AND w.label_name = l.label_name)
+    RETURNING l.label_name
+),
+put AS (
+    INSERT INTO alert_labels (org_id, alert_id, label_name, label_value)
+    SELECT $1, w.alert_id, w.label_name, w.label_value FROM want w
+        ON CONFLICT ON CONSTRAINT alert_labels_pk DO UPDATE
+       SET label_value = EXCLUDED.label_value
+     WHERE alert_labels.label_value IS DISTINCT FROM EXCLUDED.label_value
+    RETURNING label_name, (xmax = 0) AS was_inserted
+),
+delta AS (
+    SELECT label_name, sum(d) AS d
+      FROM (SELECT label_name, -1 AS d FROM gone
+             UNION ALL
+            SELECT label_name,  1 AS d FROM put WHERE was_inserted) x
+     GROUP BY label_name
+    HAVING sum(d) <> 0
+),
+bump AS (
+    UPDATE alert_label_names n
+       SET alert_count = n.alert_count + d.d
+      FROM delta d
+     WHERE n.org_id = $1 AND n.label_name = d.label_name
+    RETURNING n.label_name
+),
+mint AS (
+    INSERT INTO alert_label_names (org_id, label_name, alert_count)
+    SELECT $1, d.label_name, d.d FROM delta d
+     WHERE d.d > 0 AND NOT EXISTS (SELECT 1 FROM bump b WHERE b.label_name = d.label_name)
+        ON CONFLICT ON CONSTRAINT alert_label_names_pk DO UPDATE
+       SET alert_count = alert_label_names.alert_count + EXCLUDED.alert_count
+)
+SELECT ` + alertColumns + `, was_inserted FROM up`
 
 // UpsertBatch writes one webhook's worth of alerts in ONE round trip (§D.12c).
 //
@@ -209,7 +299,7 @@ RETURNING ` + alertColumns + `, (xmax = 0) AS was_inserted`
 func (r *AlertRepository) UpsertBatch(
 	ctx context.Context, s db.TenantScope, in []domain.AlertUpsert,
 ) ([]domain.AlertUpsertResult, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(in) == 0 {
@@ -244,13 +334,14 @@ func (r *AlertRepository) UpsertBatch(
 	urls := make([]*string, n)
 	states := make([]string, n)
 	seenAt := make([]time.Time, n)
+	synthetic := make([]bool, n)
 
 	for i, k := range order {
 		u := winner[k]
-		if err := requireID("alert id", u.ID); err != nil {
+		if err := db.RequireID("alert id", u.ID); err != nil {
 			return nil, err
 		}
-		if err := requireID("cluster_id", u.ClusterID); err != nil {
+		if err := db.RequireID("cluster_id", u.ClusterID); err != nil {
 			return nil, err
 		}
 		if u.AlertKey.IsZero() || u.Fingerprint.IsZero() || u.ClusterKey.IsZero() {
@@ -290,10 +381,12 @@ func (r *AlertRepository) UpsertBatch(
 		urls[i] = nilIfEmpty(u.GeneratorURL)
 		states[i] = u.State.String()
 		seenAt[i] = u.SeenAt.UTC()
+		synthetic[i] = u.Synthetic
 	}
 
 	rows, err := r.db(ctx).Query(ctx, upsertAlertsSQL, s.OrgID(), ids, clusterIDs, keys, fps, names,
-		sevs, namespaces, services, clusterKeys, labels, annotations, urls, states, seenAt)
+		sevs, namespaces, services, clusterKeys, labels, annotations, urls, states, seenAt,
+		synthetic)
 	if err != nil {
 		return nil, mapErr(err, "upsert alerts")
 	}
@@ -339,7 +432,7 @@ func (r *AlertRepository) UpsertBatch(
 
 // GetByID reads one Alert within the caller's org.
 func (r *AlertRepository) GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Alert, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Alert{}, err
 	}
 	return r.getOne(ctx, `SELECT `+alertColumns+` FROM alerts WHERE org_id = $1 AND id = $2`,
@@ -348,7 +441,7 @@ func (r *AlertRepository) GetByID(ctx context.Context, s db.TenantScope, id uuid
 
 // GetByAlertKey reads one Alert by its §C.2 identity key.
 func (r *AlertRepository) GetByAlertKey(ctx context.Context, s db.TenantScope, alertKey string) (domain.Alert, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Alert{}, err
 	}
 	return r.getOne(ctx, `SELECT `+alertColumns+` FROM alerts WHERE org_id = $1 AND alert_key = $2`,
@@ -363,7 +456,7 @@ func (r *AlertRepository) GetByAlertKey(ctx context.Context, s db.TenantScope, a
 func (r *AlertRepository) GetByAlertKeys(
 	ctx context.Context, s db.TenantScope, alertKeys []string,
 ) (map[string]domain.Alert, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(alertKeys) == 0 {
@@ -428,7 +521,7 @@ func (r *AlertRepository) List(
 func (r *AlertRepository) ListSorted(
 	ctx context.Context, s db.TenantScope, f domain.AlertFilter, sort string, p db.Keyset,
 ) ([]domain.Alert, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
 
@@ -442,7 +535,7 @@ func (r *AlertRepository) ListSorted(
 			"sort must be one of: -last_seen_at, -first_seen_at")
 	}
 
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	q := r.sb.Select(alertColumnList...).
 		From("alerts").
@@ -495,7 +588,7 @@ func (r *AlertRepository) ListSorted(
 		return nil, db.Cursor{}, mapErr(err, "read alerts")
 	}
 
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	out := make([]domain.Alert, len(page))
 	for i, e := range page {
 		out[i] = e.alert
@@ -503,7 +596,7 @@ func (r *AlertRepository) ListSorted(
 	var cur db.Cursor
 	if len(page) > 0 {
 		last := page[len(page)-1]
-		cur = nextCursor(last.sort, last.alert.ID(), f.FilterHash, hasMore)
+		cur = db.NextCursor(last.sort, last.alert.ID(), f.FilterHash, hasMore)
 	} else {
 		cur = db.Cursor{Hash: f.FilterHash}
 	}
@@ -514,6 +607,23 @@ func (r *AlertRepository) ListSorted(
 // a nil or empty value means "no constraint", which is what makes the default
 // list the whole open world rather than an accidental subset.
 func applyAlertFilter(q sq.SelectBuilder, f domain.AlertFilter, now time.Time) (sq.SelectBuilder, error) {
+	// ⭐⭐ SYNTHETICS ARE EXCLUDED BY DEFAULT, and this is the OPPOSITE default
+	// from `Snoozed` two dimensions down. The reason is that they answer opposite
+	// questions. A snoozed alert is a real thing happening in a real cluster and
+	// hiding it is how an incident is lost (§B.8.6). A synthetic alert is
+	// something oto manufactured for a delivery drill; nothing in the cluster
+	// fired, and counting it as history would make the product lie about the
+	// customer's estate. `?synthetic=true` is the explicit, visible way to see
+	// one — normally reached from a drill's own result screen, never a chip an
+	// operator is expected to know about.
+	//
+	// ⛔ This is ONE of the reads that had to change. The complete list is on the
+	// `alerts.synthetic` column comment in 00039_delivery_drills.sql.
+	if f.Synthetic == nil {
+		q = q.Where(sq.Expr("NOT synthetic"))
+	} else {
+		q = q.Where(sq.Eq{"synthetic": *f.Synthetic})
+	}
 	if len(f.States) > 0 {
 		states := make([]string, len(f.States))
 		for i, st := range f.States {
@@ -662,7 +772,7 @@ func (r *AlertRepository) Rollup(
 	ctx context.Context, s db.TenantScope, f domain.AlertFilter, key domain.RollupKey,
 	after string, limit int,
 ) ([]domain.AlertRollup, bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, false, err
 	}
 	expr, ok := rollupKeyExpr[key.String()]
@@ -670,7 +780,7 @@ func (r *AlertRepository) Rollup(
 		return nil, false, errs.Validation("group_by_invalid",
 			"group_by must be one of: alertname, namespace, fingerprint")
 	}
-	n := clampLimit(limit)
+	n := db.ClampLimit(limit)
 	now := r.clock.Now().UTC()
 
 	// The inner SELECT carries the ORDINARY alert-list filter, unchanged and
@@ -755,23 +865,27 @@ SELECT bucket,
 		return nil, false, mapErr(err, "read alert rollups")
 	}
 
-	page, hasMore := pageOf(out, n)
+	page, hasMore := db.PageOf(out, n)
 	return page, hasMore, nil
 }
 
 // ------------------------------------------------------------------ writes
 
-const setProjectionSQL = `
-UPDATE alerts SET
-    state                 = $3,
-    current_occurrence_id = $4,
-    ack_state             = $5,
-    snoozed_until         = $6,
-    last_seen_at          = GREATEST(last_seen_at, $7),
-    last_state_change_at  = GREATEST(first_seen_at, $8),
-    total_occurrences     = $9,
+const setProjectionBatchSQL = `
+UPDATE alerts a SET
+    state                 = p.state,
+    current_occurrence_id = p.current_occurrence_id,
+    ack_state             = p.ack_state,
+    snoozed_until         = p.snoozed_until,
+    last_seen_at          = GREATEST(a.last_seen_at, p.last_seen_at),
+    last_state_change_at  = GREATEST(a.first_seen_at, p.last_state_change_at),
+    total_occurrences     = p.total_occurrences,
     updated_at            = now()
-WHERE org_id = $1 AND id = $2`
+  FROM unnest($2::uuid[], $3::text[], $4::uuid[], $5::text[], $6::timestamptz[],
+              $7::timestamptz[], $8::timestamptz[], $9::int[])
+       AS p(alert_id, state, current_occurrence_id, ack_state, snoozed_until,
+            last_seen_at, last_state_change_at, total_occurrences)
+ WHERE a.org_id = $1 AND a.id = p.alert_id`
 
 // SetProjection writes the denormalised current-state summary onto `alerts`.
 //
@@ -802,30 +916,78 @@ WHERE org_id = $1 AND id = $2`
 func (r *AlertRepository) SetProjection(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, p domain.AlertProjection,
 ) error {
-	if err := requireScope(s); err != nil {
+	return r.SetProjectionBatch(ctx, s, []domain.AlertProjectionWrite{
+		{AlertID: alertID, Projection: p},
+	})
+}
+
+// SetProjectionBatch is SetProjection for a whole observe batch in ONE
+// statement — the same columns, the same GREATEST clamps, through one shared
+// UPDATE so the two writes cannot drift apart. `unnest` produces its rows in
+// array order, but order is immaterial here: each alert appears once, so there
+// is no earlier write for a later one to shadow.
+//
+// ⛔ A DUPLICATE ALERT ID IS REFUSED. `UPDATE ... FROM` applies AT MOST ONE
+// join row per target row and Postgres does not say which, so a batch carrying
+// two projections for one alert would leave the surviving write to the planner.
+// The caller collapses to the last write per alert BEFORE it gets here.
+func (r *AlertRepository) SetProjectionBatch(
+	ctx context.Context, s db.TenantScope, in []domain.AlertProjectionWrite,
+) error {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("alert_id", alertID); err != nil {
-		return err
-	}
-	if !p.State.IsOpen() && !p.State.IsTerminal() {
-		return errs.Internal("alert_projection_invalid", errsMissing("state is required"))
-	}
-	ack := p.AckState
-	if ack.IsZero() {
-		ack = domain.AckStateUnacked
-	}
-	if p.TotalOccurrences < 0 {
-		return errs.Internal("alert_projection_invalid", errsMissing("total_occurrences must be >= 0"))
+	if len(in) == 0 {
+		return nil
 	}
 
-	tag, err := r.db(ctx).Exec(ctx, setProjectionSQL, s.OrgID(), alertID,
-		p.State.String(), p.CurrentOccurrenceID, ack.String(), p.SnoozedUntil,
-		p.LastSeenAt.UTC(), p.LastStateChangeAt.UTC(), p.TotalOccurrences)
+	n := len(in)
+	ids := make([]uuid.UUID, n)
+	states := make([]string, n)
+	currentOccs := make([]*uuid.UUID, n)
+	acks := make([]string, n)
+	snoozed := make([]*time.Time, n)
+	lastSeen := make([]time.Time, n)
+	lastChange := make([]time.Time, n)
+	totals := make([]int32, n)
+
+	seen := make(map[uuid.UUID]struct{}, n)
+	for i, w := range in {
+		if err := db.RequireID("alert_id", w.AlertID); err != nil {
+			return err
+		}
+		if _, dup := seen[w.AlertID]; dup {
+			return errs.Internal("alert_projection_invalid",
+				errsMissing("each alert may carry at most one projection per batch"))
+		}
+		seen[w.AlertID] = struct{}{}
+		p := w.Projection
+		if !p.State.IsOpen() && !p.State.IsTerminal() {
+			return errs.Internal("alert_projection_invalid", errsMissing("state is required"))
+		}
+		ack := p.AckState
+		if ack.IsZero() {
+			ack = domain.AckStateUnacked
+		}
+		if p.TotalOccurrences < 0 {
+			return errs.Internal("alert_projection_invalid", errsMissing("total_occurrences must be >= 0"))
+		}
+		ids[i] = w.AlertID
+		states[i] = p.State.String()
+		currentOccs[i] = p.CurrentOccurrenceID
+		acks[i] = ack.String()
+		snoozed[i] = p.SnoozedUntil
+		lastSeen[i] = p.LastSeenAt.UTC()
+		lastChange[i] = p.LastStateChangeAt.UTC()
+		totals[i] = int32(p.TotalOccurrences)
+	}
+
+	tag, err := r.db(ctx).Exec(ctx, setProjectionBatchSQL, s.OrgID(), ids, states,
+		currentOccs, acks, snoozed, lastSeen, lastChange, totals)
 	if err != nil {
 		return mapErr(err, "write alert projection")
 	}
-	if tag.RowsAffected() == 0 {
+	if int(tag.RowsAffected()) != n {
 		return errs.NotFound("alert_not_found", "no such alert")
 	}
 	return nil
@@ -837,10 +999,10 @@ func (r *AlertRepository) SetProjection(
 func (r *AlertRepository) SetFlap(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, score float32, flapping bool,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("alert_id", alertID); err != nil {
+	if err := db.RequireID("alert_id", alertID); err != nil {
 		return err
 	}
 	if score < 0 {
@@ -865,10 +1027,10 @@ func (r *AlertRepository) SetFlap(
 func (r *AlertRepository) SetSnoozedUntil(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, until *time.Time,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("alert_id", alertID); err != nil {
+	if err := db.RequireID("alert_id", alertID); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx,
@@ -885,12 +1047,25 @@ func (r *AlertRepository) SetSnoozedUntil(
 
 // ------------------------------------------------------------------ discovery
 
+// ⛔ BOTH TYPEAHEADS EXCLUDE SYNTHETICS, AND NEITHER QUERY SAYS SO ANY MORE.
+// A drill writes an `oto_drill` label carrying a uuid, and a label typeahead that
+// offered it — with a count of one, forever — would be advertising oto's own
+// plumbing as if it were the customer's estate. Since 00045 the exclusion is
+// applied where the projection is WRITTEN (`want` in `upsertAlertsSQL` skips
+// synthetic rows), so a synthetic alert has no rows to read here. These are
+// still two of the reads listed on the `alerts.synthetic` column comment in
+// 00039_delivery_drills.sql; the predicate moved upstream, it did not go away.
+//
+// ⭐ NEITHER READ TOUCHES `alerts`. That is the point of 00045 and the property
+// the plan test asserts: `alerts` is on ADR 0024's never-reaped list, so any
+// per-keystroke read of it grows without bound for the life of the install.
 const distinctLabelNamesSQL = `
-SELECT k, count(*) AS n
-  FROM alerts a, LATERAL jsonb_object_keys(a.labels) AS k
- WHERE a.org_id = $1 AND ($2 = '' OR k LIKE $2 || '%')
- GROUP BY k
- ORDER BY n DESC, k ASC
+SELECT n.label_name, n.alert_count
+  FROM alert_label_names n
+ WHERE n.org_id = $1
+   AND n.alert_count > 0
+   AND n.label_name LIKE $2 || '%'
+ ORDER BY n.alert_count DESC, n.label_name ASC
  LIMIT $3`
 
 // DistinctLabelNames feeds the filter bar's label typeahead, WITH the count of
@@ -901,19 +1076,29 @@ SELECT k, count(*) AS n
 // one minute of an incident that matters most. Ordering by it puts the useful
 // labels first, with the name as a deterministic tiebreak.
 //
-// NOTE (planner): no index serves this. alerts_labels_gin is jsonb_path_ops,
-// which supports containment only; key ENUMERATION is a scan of the org's
-// alerts. Aggregating adds no scan — the rows were already being read to be
-// DISTINCTed. It is a discovery endpoint, not a hot path, and it is bounded by
-// `limit`; an expression index over jsonb_object_keys would be a migration this
-// module does not own.
+// NOTE (planner): `alert_label_names_rank_idx` (00045) serves this WHOLE
+// statement — `(org_id, alert_count DESC, label_name) WHERE alert_count > 0`
+// matches the filter and the ORDER BY, so the LIMIT terminates an Index Only
+// Scan instead of a Sort having to read every name first. The work is bounded by
+// the org's LABEL cardinality, not by its alert count.
+//
+// ⛔ WHAT THIS NOTE USED TO SAY, because it was wrong in a way worth keeping
+// visible. It said no index served the query, that it was "bounded by `limit`",
+// that it was "a discovery endpoint, not a hot path", and that the fix "would be
+// a migration this module does not own". LIMIT bounds rows RETURNED — the
+// GROUP BY above it had to aggregate the entire tenant before it could know
+// which twenty-five they were. The endpoint is the filter bar of the incident
+// view. And the ownership clause was answering the wrong question: an expression
+// index over `jsonb_object_keys` is not unowned, it is IMPOSSIBLE — Postgres
+// refuses a set-returning function in an index expression in every opclass. That
+// is why 00045 is a projection and not an index on `alerts`.
 func (r *AlertRepository) DistinctLabelNames(
 	ctx context.Context, s db.TenantScope, prefix string, limit int,
 ) ([]domain.LabelCount, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, distinctLabelNamesSQL, s.OrgID(), prefix, clampLimit(limit))
+	rows, err := r.db(ctx).Query(ctx, distinctLabelNamesSQL, s.OrgID(), prefix, db.ClampLimit(limit))
 	if err != nil {
 		return nil, mapErr(err, "list label names")
 	}
@@ -921,31 +1106,66 @@ func (r *AlertRepository) DistinctLabelNames(
 	return collectLabelCounts(rows, "label name")
 }
 
+// ⛔ THE OCTET_LENGTH PREDICATE IS NOT A FILTER THE CALLER ASKED FOR, IT IS HOW
+// THE INDEX IS REACHED. `alert_labels_value_idx` (00045) is PARTIAL on the
+// identical expression, because B5 admits a 4096-byte label value, a btree tuple
+// is capped at 2704, and an over-long entry ERRORS the INSERT rather than
+// skipping the index — which on the ingest path, where 00045 writes this table,
+// is an outage. Repeating the predicate VERBATIM is what lets the planner prove
+// the partial index applies.
+//
+// ⛔ BOTH CONJUNCTS ARE LOAD-BEARING AND SO IS THE UNIT, and an earlier version
+// of this file had both wrong. It said `length(l.label_value) <= 512`:
+//
+//	`length()` counts CHARACTERS and the btree cap is BYTES. 512 astral code
+//	points are 2048 bytes, so a character-based predicate does not EXCLUDE the
+//	row that overflows the index — it ADMITS it, and the INSERT fails with
+//	`index row size 3104 exceeds btree version 4 maximum 2704`.
+//
+//	And `label_name` is part of the index row, so bounding the value alone can
+//	never be enough however it is measured: the value alone cannot reach 2704,
+//	and what overflows is the SUM of the two columns.
+//
+// Dropping either conjunct here also silently costs the index, because a query
+// carrying only one of them does not IMPLY the index's predicate and the planner
+// will not use a partial index it cannot prove applies. This must stay
+// character-for-character identical to the migration; the plan test is what
+// notices if it does not.
 const distinctLabelValuesSQL = `
-SELECT a.labels ->> $2 AS v, count(*) AS n
-  FROM alerts a
- WHERE a.org_id = $1
-   AND a.labels ->> $2 IS NOT NULL
-   AND ($3 = '' OR a.labels ->> $2 LIKE $3 || '%')
- GROUP BY 1
- ORDER BY n DESC, v ASC
+SELECT l.label_value, count(*) AS n
+  FROM alert_labels l
+ WHERE l.org_id = $1
+   AND l.label_name = $2
+   AND l.label_value LIKE $3 || '%'
+   AND octet_length(l.label_name) <= 1024 AND octet_length(l.label_value) <= 512
+ GROUP BY l.label_value
+ ORDER BY n DESC, l.label_value ASC
  LIMIT $4`
 
 // DistinctLabelValues feeds the value typeahead for one label name, with the
 // same per-value alert count.
 //
-// NOTE (planner): same as DistinctLabelNames — a bounded scan, not an index
-// lookup.
+// NOTE (planner): `alert_labels_value_idx` (00045) drives this — `(org_id,
+// label_name)` are equalities and `label_value` is a PREFIX RANGE under
+// `text_pattern_ops`, so a longer prefix narrows the WORK and not merely the
+// result. That is the specific thing the old statement could not do: it read
+// `a.labels ->> $2` off every alert in the org and applied the prefix afterwards.
+//
+// ⛔ AND IT COULD NEVER HAVE BEEN FIXED WITH AN INDEX. The label name arrives as
+// a runtime parameter, and an index expression is fixed at CREATE INDEX time, so
+// there was no `labels ->> $2` to index — one index per label name an operator
+// might type is not a schema. `alerts_labels_gin` is jsonb_path_ops and answers
+// containment, which needs the value this query exists to discover.
 func (r *AlertRepository) DistinctLabelValues(
 	ctx context.Context, s db.TenantScope, name, prefix string, limit int,
 ) ([]domain.LabelCount, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(name) == "" {
 		return nil, errs.Validation("label_name_required", "a label name is required")
 	}
-	rows, err := r.db(ctx).Query(ctx, distinctLabelValuesSQL, s.OrgID(), name, prefix, clampLimit(limit))
+	rows, err := r.db(ctx).Query(ctx, distinctLabelValuesSQL, s.OrgID(), name, prefix, db.ClampLimit(limit))
 	if err != nil {
 		return nil, mapErr(err, "list label values")
 	}

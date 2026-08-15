@@ -16,9 +16,10 @@ import (
 // test substitute an in-memory double without a database.
 //
 // Every method takes a db.TenantScope except the four resolvers, which are the
-// queries that PRODUCE a scope and therefore cannot consume one. They are named
+// queries that PRODUCE a scope and therefore cannot consume one — they are named
 // `Resolve…` uniformly so that "is this org-scoped?" is answerable from the call
-// site alone.
+// site alone — and `OrgReader.ListLive`, the one maintenance walk, which
+// produces no scope at all (see its own comment).
 
 // OrgReader reads the tenant root.
 //
@@ -29,6 +30,29 @@ import (
 type OrgReader interface {
 	Get(ctx context.Context, s db.TenantScope) (domain.Org, error)
 	UpdateSettings(ctx context.Context, s db.TenantScope, p domain.SettingsPatch) (domain.Org, error)
+
+	// ListLive reads ONE keyset page of LIVE orgs, walking the primary key from
+	// `after`.
+	//
+	// ⚠️ It is the one read on this port that sees more than the caller's own
+	// org, and it is not a resolver either: nothing external chooses its input
+	// and no scope comes out of it. It exists for exactly one caller —
+	// MaxRetention — whose question, "the widest window ANY tenant asked for",
+	// is a whole-population reduce that no TenantScope could ask.
+	ListLive(ctx context.Context, after uuid.UUID, limit int) ([]domain.Org, error)
+}
+
+// TxRunner runs a unit of work inside ONE transaction, satisfied by
+// `identity/repository.TxRunner`.
+//
+// It exists for the ingest-token rotation: the mint and the revocation sweep
+// beside it must commit together or not at all (see IssueIngestToken). It is a
+// port rather than a pool because a service that names pgx has stopped being
+// testable without a database — and because the transaction travels in the
+// context, a caller that already opened one (the sources service wraps a
+// rotation in its own unit of work) is joined rather than nested.
+type TxRunner interface {
+	InTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
 // UserReader reads `users`.

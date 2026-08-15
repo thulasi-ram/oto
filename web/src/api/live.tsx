@@ -71,7 +71,12 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
         void queryClient.invalidateQueries({ queryKey: qk.groups.all() });
         break;
       case "delivery.updated":
-        void queryClient.invalidateQueries({ queryKey: qk.deliveries.all() });
+        // `["alerts"]` and nothing else, because that is where a delivery is
+        // read: the notification list on the alert detail screen is
+        // `qk.alerts.notifications(id)`, and `DeliveryPanel` renders what that
+        // query already holds. There was a `["deliveries"]` invalidation here
+        // and no query anywhere under that prefix — a line that named a
+        // resource oto does not cache and updated nothing.
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
         break;
       case "source.health":

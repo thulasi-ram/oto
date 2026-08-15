@@ -1262,7 +1262,23 @@ func TestMergePayload(t *testing.T) {
 }
 
 func TestLifecycleDefaults(t *testing.T) {
-	assert.Equal(t, 10*time.Minute, DefaultRefireGrace)
+	// These two are the lifecycle machine's FALLBACK copies, used only when no
+	// SettingsReader is wired; `identity/domain` owns the real numbers and
+	// `identity/domain/defaults_derivation_test.go` pins the mirrors equal. So the
+	// value below is not a preference — it is whatever the derivation produced.
+	//
+	// 20m, not the 10m this test used to transcribe: `refire_grace` is
+	// `for + group_interval` for the MODAL real rule, 15m + 5m (ADR 0026). The
+	// clock starts at the occurrence's `ended_at`, which T5 takes from the
+	// UPSTREAM `EndsAt`, so a re-fire has to pay the rule's whole `for:` dwell
+	// again INSIDE the window and Alertmanager then batches on top. At 10m the T8
+	// reopen was unreachable for 76% of a 155-rule corpus: every re-fire took T7
+	// instead, opening a new episode, a new generation and a new Slack root card.
+	assert.Equal(t, 20*time.Minute, DefaultRefireGrace)
+	// `resolve_grace` was NOT part of that derivation and did not move. It answers
+	// a different question — how long past `source_ends_at` the reaper waits
+	// before an occurrence may expire (§B.4) — and shares no arithmetic with the
+	// re-fire window.
 	assert.Equal(t, 5*time.Minute, DefaultResolveGrace)
 }
 

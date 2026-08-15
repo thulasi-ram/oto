@@ -31,15 +31,12 @@ func TestNewHistoryNumbersOldestFirst(t *testing.T) {
 	require.Equal(t, 3, h.Len())
 	assert.Equal(t, validKey(), h.Key)
 
-	assert.Equal(t, 1, h.Versions[0].Number)
 	assert.Equal(t, "a > 1", h.Versions[0].Snapshot.Expr)
 	assert.Equal(t, 2, h.Versions[0].SupersededBy)
 
-	assert.Equal(t, 2, h.Versions[1].Number)
 	assert.Equal(t, "a > 2", h.Versions[1].Snapshot.Expr)
 	assert.Equal(t, 3, h.Versions[1].SupersededBy)
 
-	assert.Equal(t, 3, h.Versions[2].Number)
 	assert.Equal(t, "a > 3", h.Versions[2].Snapshot.Expr)
 	assert.Equal(t, 0, h.Versions[2].SupersededBy, "the newest version is superseded by nothing")
 }
@@ -107,7 +104,6 @@ func TestHistoryLatest(t *testing.T) {
 
 	v, ok := h.Latest()
 	require.True(t, ok)
-	assert.Equal(t, 2, v.Number)
 	assert.Equal(t, "a > 2", v.Snapshot.Expr)
 }
 
@@ -140,7 +136,6 @@ func TestHistoryAt(t *testing.T) {
 			v, ok := h.At(tc.number)
 			assert.Equal(t, tc.ok, ok)
 			if tc.ok {
-				assert.Equal(t, tc.number, v.Number)
 				assert.Equal(t, tc.expr, v.Snapshot.Expr)
 			} else {
 				assert.Equal(t, domain.Version{}, v)
@@ -160,11 +155,11 @@ func TestHistoryByFingerprint(t *testing.T) {
 
 	v, ok := h.ByFingerprint(s1.Fingerprint)
 	require.True(t, ok)
-	assert.Equal(t, 1, v.Number)
+	assert.Equal(t, s1.Fingerprint, v.Snapshot.Fingerprint)
 
 	v, ok = h.ByFingerprint(s2.Fingerprint)
 	require.True(t, ok)
-	assert.Equal(t, 2, v.Number)
+	assert.Equal(t, s2.Fingerprint, v.Snapshot.Fingerprint)
 
 	_, ok = h.ByFingerprint("deadbeef")
 	assert.False(t, ok)
@@ -252,9 +247,10 @@ func TestHistoryDiffVersions(t *testing.T) {
 	})
 }
 
-// TestVersionNumberingSurvivesDeduplication: rule_snapshots is deduplicated by
-// content, so the rows for one key already are its distinct texts. Numbering
-// them at read time is what keeps the number in step with the rows.
+// TestVersionNumberingIsContiguous: rule_snapshots is deduplicated by content,
+// so the rows for one key already are its distinct texts, and At addresses
+// them by their 1-based position in History.Versions. SupersededBy points at
+// that same position for every version but the newest.
 func TestVersionNumberingIsContiguous(t *testing.T) {
 	t.Parallel()
 
@@ -266,14 +262,78 @@ func TestVersionNumberingIsContiguous(t *testing.T) {
 
 	require.Equal(t, 10, h.Len())
 	for i, v := range h.Versions {
-		assert.Equal(t, i+1, v.Number)
-		if i+1 < h.Len() {
-			assert.Equal(t, i+2, v.SupersededBy)
+		number := i + 1
+		if number < h.Len() {
+			assert.Equal(t, number+1, v.SupersededBy)
 		} else {
 			assert.Equal(t, 0, v.SupersededBy)
 		}
-		got, ok := h.At(v.Number)
+		got, ok := h.At(number)
 		require.True(t, ok)
 		assert.Equal(t, v, got)
 	}
+}
+
+// TestHistoryLatestDefinitionStepsOverAnOutage.
+//
+// ⭐ AN `unavailable` CAPTURE IS A VERSION AND NOT A COMPARISON. It belongs in
+// the list an operator reads — "oto looked at 03:00 and could not see it" is a
+// fact — and it is not a rule anything can be compared against. Latest and
+// LatestDefinition therefore disagree by design, and every question of the form
+// "...compared to now" asks the second one.
+func TestHistoryLatestDefinitionStepsOverAnOutage(t *testing.T) {
+	t.Parallel()
+
+	real1 := snapAt("a > 1", capturedAt)
+	real2 := snapAt("a > 2", capturedAt.Add(time.Hour))
+	outage := unavailableSnap()
+	outage.CapturedAt = capturedAt.Add(2 * time.Hour)
+
+	h := domain.NewHistory(validKey(), []domain.Snapshot{real1, real2, outage})
+	require.Equal(t, 3, h.Len(), "the outage is a version and is not hidden")
+
+	newest, ok := h.Latest()
+	require.True(t, ok)
+	assert.Equal(t, outage.Fingerprint, newest.Snapshot.Fingerprint)
+	assert.False(t, newest.Snapshot.Available())
+
+	def, ok := h.LatestDefinition()
+	require.True(t, ok)
+	assert.Equal(t, real2.Fingerprint, def.Snapshot.Fingerprint, "the newest capture that actually holds a rule")
+
+	// ⛔ And therefore the alert card does not claim an edit against an empty
+	// expression: the occurrence bound to the newest real text has not drifted,
+	// and the one bound to the text before it has.
+	assert.False(t, h.Drifted(real2.Fingerprint),
+		"an outage after this alert fired is not somebody editing the rule")
+	assert.True(t, h.Drifted(real1.Fingerprint),
+		"...and a real edit before the outage is still reported")
+
+	// A history that holds nothing but outages can answer no comparison at all.
+	only := domain.NewHistory(validKey(), []domain.Snapshot{outage})
+	_, ok = only.LatestDefinition()
+	assert.False(t, ok)
+	assert.False(t, only.Drifted(outage.Fingerprint))
+}
+
+// TestHistoryDriftedAcrossRecoveryPaths: the same rule seen through g0.expr and
+// through /api/v1/rules has two content addresses and one text, and the alert
+// card must not read the difference as an edit. See domain.Drifted.
+func TestHistoryDriftedAcrossRecoveryPaths(t *testing.T) {
+	t.Parallel()
+
+	gen := viaGeneratorURLSnap("a > 1")
+	gen.CapturedAt = capturedAt
+	api := snap("a > 1", 300, 0, nil, nil)
+	api.CapturedAt = capturedAt.Add(time.Hour)
+	require.NotEqual(t, gen.Fingerprint, api.Fingerprint)
+
+	h := domain.NewHistory(validKey(), []domain.Snapshot{gen, api})
+	assert.False(t, h.Drifted(gen.Fingerprint),
+		"oto learned the `for:` it could never see through g0.expr; nobody edited the rule")
+
+	// An expression edit through the same promotion IS reported.
+	edited := snap("a > 2", 300, 0, nil, nil)
+	edited.CapturedAt = capturedAt.Add(2 * time.Hour)
+	assert.True(t, domain.NewHistory(validKey(), []domain.Snapshot{gen, edited}).Drifted(gen.Fingerprint))
 }

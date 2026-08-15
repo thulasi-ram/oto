@@ -9,6 +9,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 	"github.com/thulasiram/oto/internal/rules/domain"
+	"github.com/thulasiram/oto/internal/rules/service"
 )
 
 // listRuleSnapshots is `GET /api/v1/rule-snapshots` — the version history for one
@@ -85,6 +86,57 @@ func (rt *Router) getRuleSnapshot(w http.ResponseWriter, r *http.Request) {
 	httpx.Data(w, r, http.StatusOK, snapshotDTO(snap), started)
 }
 
+// batchGetRuleSnapshots is `GET /api/v1/rule-snapshots/batch?id=…` — **what lets
+// the alert list say what the rule said** (ADR 0025).
+//
+// ⭐ IT EXISTS BECAUSE `include=rule` ON THE ALERT LIST CARRIES AN ID AND
+// NOTHING MORE. That is not an oversight: `alerts/api` may not name
+// `rules/domain` (CONTEXT.md §5.4), and embedding a fifteen-field copy of
+// `RuleSnapshotDTO` in every row would put `expr` — up to 64 KiB of it — on a
+// two-hundred-row page. So the list answers "which snapshot" and this answers
+// "what did it say", for the whole page in one call. Two requests, not fifty-one.
+//
+// Content addressing is what makes the batch small: a rule that has not changed
+// is ONE row however many alerts fired under it, so the answer is routinely a
+// fraction of the ids asked about.
+//
+// ⛔ AN UNKNOWN ID IS ABSENT FROM THE RESULT, NOT A 404. `rule_snapshots` is
+// append-only, so the only ways to miss are an id belonging to another org or one
+// a caller invented — and failing the whole request for either would blank the
+// rule column of a page that is otherwise entirely answerable. The caller joins
+// by id and renders a miss as unknown, which is the honest rendering: "we have
+// no snapshot" and "the rule said nothing" are different facts, and neither is
+// "the list is broken".
+func (rt *Router) batchGetRuleSnapshots(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, err := scopeOf(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	ids, err := parseBatchSnapshots(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	snaps, err := rt.svc.GetMany(r.Context(), scope, ids)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	out := make([]RuleSnapshotDTO, 0, len(snaps))
+	for _, s := range snaps {
+		out = append(out, snapshotDTO(s))
+	}
+	// ⛔ NOT httpx.List. There is no page here and there must be no `page`
+	// object: a keyset envelope over a bag the caller enumerated itself would
+	// invite a client to follow a `next_cursor` that can never exist.
+	httpx.Data(w, r, http.StatusOK, out, started)
+}
+
 // getAlertRuleHistory is `GET /api/v1/alerts/{id}/rule` — **the differentiator**.
 //
 // It returns the rule as it was WHEN THIS EPISODE FIRED, every version oto has
@@ -120,7 +172,7 @@ func (rt *Router) getAlertRuleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bound, err := rt.boundSnapshot(r, scope, id)
+	bound, episode, err := rt.boundSnapshot(r, scope, id)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -132,26 +184,103 @@ func (rt *Router) getAlertRuleHistory(w http.ResponseWriter, r *http.Request) {
 		out.Current = &dto
 	}
 
-	history, err := rt.svc.History(r.Context(), scope, bound.Key)
-	if err != nil {
-		httpx.WriteProblem(w, r, err)
-		return
-	}
-	for _, v := range newestFirst(history) {
-		if len(out.Versions) == limit {
-			break
+	// ⛔ THE HISTORY IS ONLY ASKED FOR WHEN THE KEY CAN ADDRESS ONE, AND AN
+	// ALERT WITH NO SNAPSHOT HAS NO SUCH KEY.
+	//
+	// `boundSnapshot` falls back to `keyOf(alert)` — the alertname and nothing
+	// else — when no snapshot was ever bound to the episode. That key names no
+	// AlertSource, and `rule_snapshots` is addressed on `(org_id, source_id,
+	// rule_name, …)`, so the repository refused it with a VALIDATION error:
+	// `422 rules_invalid_id`, "a rule key's source id must be a UUID". The alert
+	// detail page rendered that as "Validation failed" with a Try again button,
+	// for the four alerts in five whose generatorURL carries no `g0.expr` — a
+	// Grafana-sourced alert, a hand-fired one, an Alertmanager whose Prometheus
+	// is unreachable. None of those is a client mistake, none of them is
+	// retryable, and telling an operator their request was invalid when the
+	// truth is "oto captured no rule for this alert" is the headline promise
+	// failing in the exact place the README points at.
+	//
+	// So the answer stays a 200 carrying `current: null` and `versions: []`,
+	// which is what the contract already declares (`RuleHistoryDTO.current` is
+	// `oneOf [RuleSnapshotDTO, null]`) and what the alert LIST already renders
+	// as a plain em-dash. A 404 was the alternative and is wrong here: this
+	// operation already spends its 404 on "no such alert", and collapsing "the
+	// alert is not there" into "the alert has no rule" would make a page that
+	// plainly exists look deleted. `/occurrences/{id}/rule` answers a single
+	// snapshot and has no 200 spelling for absence, which is why IT is a 404 —
+	// different shape, different answer, both honest.
+	if service.Addressable(bound.Key) {
+		history, err := rt.svc.History(r.Context(), scope, bound.Key)
+		if err != nil {
+			httpx.WriteProblem(w, r, err)
+			return
 		}
-		out.Versions = append(out.Versions, snapshotDTO(v))
+		for _, v := range newestFirst(history) {
+			if len(out.Versions) == limit {
+				break
+			}
+			out.Versions = append(out.Versions, snapshotDTO(v))
+		}
 	}
 
-	if bound.Fingerprint != "" {
-		if diff, changed, err := rt.svc.DiffSince(r.Context(), scope, bound.Key, bound.Fingerprint); err == nil && changed {
+	if bound.ID != "" && episode != nil {
+		if diff, changed := rt.changeSincePreviousEpisode(r, scope, *episode, bound); changed {
 			c := changeDTO(diff)
 			out.Change = &c
 		}
 	}
 
 	httpx.Data(w, r, http.StatusOK, out, started)
+}
+
+// changeSincePreviousEpisode builds `RuleHistoryDTO.change`: the diff between the
+// snapshot the PREVIOUS episode of this alert fired under and the one this
+// episode fired under.
+//
+// ⭐ THE TWO OPERANDS ARE TWO FIRES, NOT TWO ROWS OF A VERSION LIST. The question
+// an operator asks of this panel is "did somebody change this rule between the
+// last time it woke me and now" — so the older side is the rule the previous
+// episode was BOUND to, and the newer side is the rule THIS episode was bound to.
+// Both are texts the alert actually fired under.
+//
+// ⛔ IT USED TO BE A `DiffSince(bound.Fingerprint)` — this episode's snapshot
+// against the newest version captured for the rule key, a service method that no
+// longer exists because this was its last caller — and that answers a
+// different question in a way that reads as an answer to this one. It named this
+// episode's own row as `previous_*`, put a text the alert never fired under in
+// `new_expr`, and returned no change at all in the case the panel exists for: a
+// rule edited and THEN fired is a rule whose bound snapshot already is the newest
+// one, so the diff was empty exactly when the edit was worth reporting.
+//
+// An error resolving either side degrades to "no change reported" and never to a
+// failed request. This is one panel of the rule tab; a predecessor that cannot be
+// read must not take "the rule as it was when this fired" off the screen with it.
+func (rt *Router) changeSincePreviousEpisode(
+	r *http.Request, scope db.TenantScope, episode alertdomain.Occurrence, bound domain.Snapshot,
+) (domain.Diff, bool) {
+	previous, ok, err := rt.alerts.PreviousOccurrenceWithRule(
+		r.Context(), scope, episode.AlertID(), episode.Seq())
+	if err != nil || !ok {
+		return domain.Diff{}, false
+	}
+
+	snap, err := rt.svc.Get(r.Context(), scope, previous.RuleSnapshotID())
+	if err != nil {
+		return domain.Diff{}, false
+	}
+	// Two gates, and they refuse different things. `Drifted` decides whether this
+	// is an EDIT — an `unavailable` capture on either side saw nothing to compare,
+	// and a change of recovery path is oto looking through a different window
+	// rather than somebody changing the rule. The key comparison decides whether
+	// the two rows are the same RULE at all: a definition that moved file or group
+	// is a new RuleKey, the `versions` list beside this diff is per key, and the
+	// contract's `change` is a diff within one.
+	if !domain.Drifted(snap, bound) || snap.Key != bound.Key {
+		return domain.Diff{}, false
+	}
+	// Oldest first: `Compare` is signed, and the previous episode is the older
+	// side by construction.
+	return domain.Compare(snap, bound), true
 }
 
 // getOccurrenceRule is `GET /api/v1/occurrences/{id}/rule`.
@@ -201,19 +330,25 @@ func (rt *Router) getOccurrenceRule(w http.ResponseWriter, r *http.Request) {
 	httpx.Data(w, r, http.StatusOK, snapshotDTO(snap), started)
 }
 
-// boundSnapshot resolves the snapshot bound to an alert's current episode.
+// boundSnapshot resolves the snapshot bound to an alert's current episode, and
+// the episode it is bound to.
 //
 // It is the CURRENT occurrence's snapshot and never the newest one upstream: the
 // whole point is what the rule said when this alert fired.
+//
+// The EPISODE comes back beside the snapshot because the diff needs to know which
+// fire it is looking at: "what changed since last time" is measured from the
+// episode before this one, and an episode can only be named by another episode.
+// It is nil only when this alert has never had one.
 func (rt *Router) boundSnapshot(
 	r *http.Request, scope db.TenantScope, alertID uuid.UUID,
-) (domain.Snapshot, error) {
+) (domain.Snapshot, *alertdomain.Occurrence, error) {
 	if rt.alerts == nil {
-		return domain.Snapshot{}, notFound("alert")
+		return domain.Snapshot{}, nil, notFound("alert")
 	}
 	detail, err := rt.alerts.Get(r.Context(), scope, alertID)
 	if err != nil {
-		return domain.Snapshot{}, err
+		return domain.Snapshot{}, nil, err
 	}
 
 	occ := detail.CurrentOccurrence
@@ -221,17 +356,25 @@ func (rt *Router) boundSnapshot(
 		occ = detail.LatestOccurrence
 	}
 	if occ == nil || occ.RuleSnapshotID() == uuid.Nil {
-		// No snapshot was ever bound. The key is still answerable from the
-		// alert itself, so the caller gets an empty history rather than a 404 —
-		// "we have never captured this rule" is a fact worth returning.
-		return domain.Snapshot{Key: keyOf(detail.Alert)}, nil
+		// No snapshot was ever bound. The key is still NAMEABLE from the alert
+		// itself, so the caller gets an empty history rather than a 404 — "we
+		// have never captured this rule" is a fact worth returning.
+		//
+		// ⛔ Nameable is not the same as ADDRESSABLE. This key carries the
+		// alertname and no source id, so it can be rendered but it cannot be
+		// queried; the caller must check `service.Addressable` before handing it
+		// to a read, which is the whole of the fix described in
+		// getAlertRuleHistory.
+		return domain.Snapshot{Key: keyOf(detail.Alert)}, occ, nil
 	}
 
 	snap, err := rt.svc.Get(r.Context(), scope, occ.RuleSnapshotID())
 	if err != nil {
-		return domain.Snapshot{Key: keyOf(detail.Alert)}, nil //nolint:nilerr // a missing snapshot is an empty history, not an error
+		// Same fallback, same caveat: the key that comes back is nameable and
+		// not addressable.
+		return domain.Snapshot{Key: keyOf(detail.Alert)}, occ, nil //nolint:nilerr // a missing snapshot is an empty history, not an error
 	}
-	return snap, nil
+	return snap, occ, nil
 }
 
 // keyOf derives the RuleKey oto can name from the alert alone: the alertname is

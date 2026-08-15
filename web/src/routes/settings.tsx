@@ -45,7 +45,7 @@ const SettingsRoute: Component = () => {
                 href={`/settings/${section.id}`}
                 aria-current={params.section === section.id ? "page" : undefined}
                 class={cx(
-                  "-mb-px border-b-2 px-2.5 py-1.5 text-[13px] transition-colors duration-100",
+                  "-mb-px border-b-2 px-2.5 py-1.5 text-item transition-colors duration-100",
                   params.section === section.id
                     ? "border-accent font-medium text-ink"
                     : "border-transparent text-ink-muted hover:text-ink",

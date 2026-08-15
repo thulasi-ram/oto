@@ -167,7 +167,7 @@ in this domain.
 | T5 | `firing`\|`suppressed` | `resolved` | Per-alert `status == "resolved"` | Ingest | Set `ended_at = max(occurred_at, started_at)` **(clamped — see B.3.2)**, `resolve_reason='upstream'`; emit `occurrence.resolved`; enqueue `notify.evaluate(reason=all_resolved\|some_resolved)` |
 | T6 | `firing`\|`suppressed` | `expired` | `now > source_ends_at + resolve_grace` AND `source_health.status = 'healthy'` | Reaper | Set `ended_at = now`, `resolve_reason='timeout'`; emit `occurrence.expired`; enqueue `notify.evaluate(reason=expired)` |
 | T7 | `resolved`\|`expired` | *(new occurrence `firing`)* | Same `alert_key` fires again **after** `refire_grace` | Ingest | New occurrence `seq+1`; **new AlertGroup generation** if the group was closed → **new Slack root message**; emit `occurrence.opened` with `reopen_of`; `alerts.total_occurrences += 1`; recompute `flap_score` |
-| T8 | `resolved`\|`expired` | `firing` *(same occurrence)* | Same `alert_key` fires again **within** `refire_grace` (default 10m) | Ingest | Clear `ended_at`, `reopen_count += 1`; emit `occurrence.reopened`; enqueue `notify.evaluate(reason=refired)`; **reuse the existing thread** |
+| T8 | `resolved`\|`expired` | `firing` *(same occurrence)* | Same `alert_key` fires again **within** `refire_grace` (default 20m) | Ingest | Clear `ended_at`, `reopen_count += 1`; emit `occurrence.reopened`; enqueue `notify.evaluate(reason=refired)`; **reuse the existing thread** |
 | T9 | any | `ack_state = acked` | Human via `POST /alerts/{id}/ack`, `POST /alert-groups/{id}/ack`, or Slack `oto.ack` button | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `occurrence.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
 | T10 | `acked` | `unacked` | Human unack, **or** a new occurrence opens (T7) | Human, Ingest | Emit `occurrence.unacknowledged` with `reason ∈ {manual, new_occurrence}`; enqueue `notify.evaluate(reason=unacked)` |
 | T11 | any | *(no state change)* | An Enricher completes | Enrichment worker | Emit `enrichment.completed` \| `enrichment.failed`; enqueue `notify.evaluate(reason=enriched)` (debounced 10s) |
@@ -212,14 +212,14 @@ surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`) and T
 
 ### B.5 Re-fire policy (stated plainly)
 
-> A re-fire after resolve is a **NEW `AlertOccurrence` on the SAME `Alert`** — unless it happens within `refire_grace` (default 10 minutes), in which case it **REOPENS the existing occurrence**.
+> A re-fire after resolve is a **NEW `AlertOccurrence` on the SAME `Alert`** — unless it happens within `refire_grace` (default 20 minutes — ADR 0026), in which case it **REOPENS the existing occurrence**.
 >
 > A **NEW Slack root message** is posted only when a **new AlertGroup generation** opens. Reopening an occurrence, or a new occurrence joining a still-open group generation, produces a `chat.update` (+ optional thread reply), never a new root.
 
 ### B.6 Flapping and storm damping (on by default)
 
 - `flap_score` = EWMA of state transitions per hour, recomputed on every transition and by the `flap.score` job.
-- Above `flap_threshold` (default 5 transitions in 30 minutes) the Alert is marked flapping: occurrences still open and close normally, but `notify.evaluate` switches to **update-only** mode (no thread replies) and emits one coalesced summary reply per `flap_digest_interval` (default 15m).
+- Above `flap_threshold` (default 5 transitions in **2 hours** — ADR 0026) the Alert is marked flapping: occurrences still open and close normally, but `notify.evaluate` switches to **update-only** mode (no thread replies) and emits one coalesced summary reply per `flap_digest_interval` (default 15m).
 - **Storm collapse:** if more than `storm_threshold` (default 25) distinct alerts join one AlertGroup generation within `storm_window` (default 60s), the group enters `storm_mode`. In storm mode the group posts/updates exactly ONE root message with a count and a link, and suppresses all per-alert thread replies. Storm mode ends after `storm_cooldown` (default 10m) without new members.
 - Flapping and storm mode are **visible UI states**, never silent.
 
@@ -473,6 +473,19 @@ serialised. It is rejected at the boundary with `invalid_label_value`. A `0x00` 
 label *name* is already impossible under the name charset. Nothing else is stripped,
 replaced or normalised.
 
+**Two doors, one function.** `alerts/domain.Labels.Canonical(ignore)` takes a label set
+oto accepted at its own boundary and is what §C.2 and §C.4 hash.
+`alerts/domain.CanonMap(map[string]string)` takes labels oto did NOT accept — a rule
+definition recovered from Prometheus (§C.6), whose names are Prometheus's business and
+need not satisfy oto's charset — and returns the same bytes for every input the first
+one accepts, because it *is* the first one, reached without the constructor.
+
+`CanonMap` returns bytes, never a `Labels`. A lenient `Labels` constructor would let an
+unbounded, uncharsetted label set become an `alert_key`; a `[]byte` cannot be mistaken
+for a validated value object. There is **no third spelling of `canon`** anywhere in the
+tree, and a new one is a defect however locally convenient — that is what §C.6's ruling
+is about.
+
 ### C.2 `alert_key` — the identity of an Alert (PRIMARY dedup key)
 
 ```
@@ -546,14 +559,52 @@ rule_fingerprint := hex( sha256(
 ) )
 ```
 
+`for_seconds` and `keep_firing_for_seconds` are SECONDS as a float, rendered
+`strconv.FormatFloat(f, 'f', -1, 64)` — the shortest form that round-trips. `600` and
+`600.0` are therefore one rule, and `for: 1s500ms` is a different rule from `for: 1s`.
+This rendering is **not free to choose**: it is what every stored `rule_fingerprint`
+was computed with, and Prometheus's `/api/v1/rules` reports `duration` as exactly this
+number. Truncating to whole seconds re-keys every snapshot.
+
 `rule_key := (source_id, rule_file, rule_group, rule_name)`. Drift is *"the newest snapshot for this `rule_key` has a different `rule_fingerprint` than the one bound to the previous occurrence."*
 
-> **⛔ THIS CLAUSE HAS TWO IMPLEMENTATIONS AND THEY MUST AGREE BYTE FOR BYTE.**
-> `internal/alerts/domain` (over a `LabelSet`) and `internal/rules/domain.Fingerprint`
-> (over a raw map, because a recovered rule's labels never passed `NewLabels` and may
-> not satisfy the label-name charset). They agreed only by luck until
-> `TestFingerprintAgreesWithTheKernel` was written; it cross-checks them over 400 input
-> tuples. Edit one and you must edit the other.
+> **⭐ RULING (issue 0988640): ONE IMPLEMENTATION, IN THE KERNEL, TAKING RAW MAPS.**
+>
+> `internal/alerts/domain.ComputeRuleFingerprint` is the only implementation.
+> `internal/rules/domain.Fingerprint` calls it and adds nothing;
+> `internal/rules/domain.Canon` calls `alerts/domain.CanonMap` and adds nothing.
+>
+> There used to be two, and the constraint that produced them is REAL and has not
+> gone away: a recovered rule's labels are a raw `map[string]string` that has never
+> passed `NewLabels` and need not satisfy oto's label-name charset, because they are
+> Prometheus's data and not oto's. What was wrong was the conclusion. The constraint
+> argues for **the kernel accepting the lenient input**, not for a second copy of the
+> format outside it — so §C.1 now has a raw-map door, `alerts/domain.CanonMap`, which
+> is `Labels.Canonical` reached without the constructor.
+>
+> `CanonMap` returns BYTES and not a `Labels` on purpose. An unchecked `Labels`
+> constructor would be a hole straight through validation layer 3: `Labels` is the
+> substrate of `alert_key` and `group_key`, and an unbounded, uncharsetted label set
+> must never be able to become an Alert identity. Bytes cannot be mistaken for a
+> validated value object, and bytes are all §C.6 needs.
+>
+> **The two copies did not merely risk disagreeing — they DID disagree.** The kernel's
+> took a `time.Duration` and truncated to whole seconds; the live one took float
+> seconds and rendered the shortest round-trip. `for: 1s500ms` had two content
+> addresses. `TestFingerprintAgreesWithTheKernel` could not see it, because its corpus
+> was whole seconds — the only inputs both spellings could express. That is the
+> general lesson: a cross-check over the INTERSECTION of two domains proves agreement
+> only on the intersection.
+>
+> No stored value moved. Every `rule_fingerprint` in the database was computed by
+> `NewSnapshot` → `rules/domain.Fingerprint`, which is byte-for-byte what the surviving
+> implementation computes. The kernel's spelling was the one that changed, and it had
+> no production caller to change anything for.
+>
+> `TestFingerprintAgreesWithTheKernel` survives, now over fractional seconds and
+> NUL-carrying labels too. It reads as a tautology and stays anyway: what it guards is
+> somebody re-inlining the digest in `rules/domain` "to avoid the import", which is
+> how the pair arose the first time.
 
 ### C.7 `notification.idempotency_key`
 
@@ -568,11 +619,22 @@ idempotency_key := hex( sha256(
 
 `UNIQUE (org_id, idempotency_key)`. `alert_groups.state_version` increments on every material group change. "all_resolved at state_version 7" can therefore exist exactly once.
 
-> **⛔ THIS CLAUSE ALSO HAS TWO IMPLEMENTATIONS**, and the live one is **NOT** the
-> kernel's. `internal/notification/domain.IdempotencyKey` is what `notify.go` calls;
-> `internal/alerts/domain.ComputeIdempotencyKey` has no production caller at all. They
-> are cross-checked by `TestIdempotencyKeyAgreesWithTheKernel`. Collapsing the pair is
-> tracked separately — until then, edit one and you must edit the other.
+> **⭐ RULING (issue 0988640): ONE IMPLEMENTATION, IN THE KERNEL.**
+>
+> `internal/alerts/domain.ComputeIdempotencyKey` is the only implementation.
+> `internal/notification/domain.IdempotencyKey` is a three-line adapter over it and is
+> still what `notify.go` calls — its signature and its call site are unchanged.
+>
+> The adapter is not redundancy. `SubjectKind` and `Reason` are `notification`'s closed
+> enums, and the kernel may import no other domain package (§C.9), so the TYPES stop at
+> the adapter and the BYTES are the kernel's. That is the whole of the division.
+>
+> This one collapsed for free: the two were already byte-identical, so **no stored
+> `idempotency_key` moved**, and `UNIQUE (org_id, idempotency_key)` keeps meaning
+> exactly what it meant. What changed is that the copy a reader assumes canonical is no
+> longer the dead one.
+>
+> `TestIdempotencyKeyAgreesWithTheKernel` survives, for the same reason as §C.6's.
 
 ### C.8 `alert_events` idempotency
 
@@ -599,6 +661,22 @@ Zero rows affected ⇒ the event already exists ⇒ skip the `alert_events` inse
 **Conventions.**
 - Primary keys are UUIDv7 generated in Go (`platform/id.New()`). Never `gen_random_uuid()` — we need time-ordered index locality.
 - All timestamps are `TIMESTAMPTZ`. There are no naive timestamps anywhere.
+- **Writers own time; timestamp columns carry no `DEFAULT now()`.** The repository names every
+  timestamp from the injected Go clock (CONTEXT.md §6, `internal/platform/clock`), so all of a row's
+  instants come from one clock instead of splitting between the pod and Postgres. A default on a
+  column the repository always supplies is not a safety net: it lets a future writer omit the column,
+  succeed, and plant a row stamped from the database's clock, which surfaces later as somebody
+  else's `<table>_time_ck` failure. Advancing `updated_at` monotonically —
+  `GREATEST(updated_at, $n)` — is likewise a **writer obligation**, not something the schema can
+  enforce; without it a lagging pod pushes `updated_at` back past `created_at` and trips that CHECK.
+  **Named exceptions**, which keep the default and must:
+  `alerts.created_at/updated_at`, `alert_occurrences.created_at/updated_at`,
+  `alert_groups.created_at/updated_at`, `alert_event_keys.created_at`, `alert_snoozes.created_at`,
+  `ui_events.at`. On each of these a live writer omits the column today, so dropping the default
+  would break a production path immediately rather than protect a future one; the alerts family is
+  internally consistent on the database's clock, which is the property that matters, and moving it
+  is a separate change that has to move the INSERTs and the UPDATEs together
+  (`db/migrations/00034_app_clock_remaining.sql`).
 - Enums are `TEXT` + `CHECK`. No Postgres `ENUM` types (migration friction).
 - Every composite index starts with `org_id`.
 - Migrations are goose `.sql` files under `db/migrations/`, embedded via `embed.FS`.
@@ -641,12 +719,13 @@ CREATE TABLE orgs (
   slug         CITEXT      NOT NULL UNIQUE,
   name         TEXT        NOT NULL,
   settings     JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    -- keys: refire_grace_s(600), resolve_grace_s(300), group_close_delay_s(300),
-    --       flap_threshold(5), flap_window_s(1800), flap_digest_interval_s(900),
+    -- keys: refire_grace_s(1200), resolve_grace_s(300), group_close_delay_s(1200), -- ADR 0026
+    --       flap_threshold(5), flap_window_s(7200), flap_digest_interval_s(900),  -- ADR 0026
     --       storm_threshold(25), storm_window_s(60), storm_cooldown_s(600),
-    --       raw_retention_days(14), event_retention_months(13)
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    --       raw_retention_days(30), event_retention_months(13)   -- ADR 0024
+  -- no DEFAULT now() (§D conventions); `app.Bootstrap` and `OrgRepository.UpdateSettings` stamp them.
+  created_at   TIMESTAMPTZ NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL,
   deleted_at   TIMESTAMPTZ,
   CONSTRAINT orgs_slug_ck     CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,62}$'),
   CONSTRAINT orgs_name_ck     CHECK (length(btrim(name)) BETWEEN 1 AND 200),
@@ -660,8 +739,9 @@ CREATE TABLE users (
   email          CITEXT      NOT NULL,
   display_name   TEXT        NOT NULL,
   password_hash  TEXT,                            -- argon2id; NULL disables password login
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `app.Bootstrap`, the only writer, stamps both.
+  created_at     TIMESTAMPTZ NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL,
   disabled_at    TIMESTAMPTZ,
   CONSTRAINT users_email_uniq UNIQUE (org_id, email),
   CONSTRAINT users_email_ck   CHECK (email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' AND length(email) <= 254),
@@ -682,7 +762,8 @@ CREATE TABLE api_tokens (
   source_id    UUID,                               -- REQUIRED for kind='ingest'; FK added in 00003
   last_used_at TIMESTAMPTZ,
   expires_at   TIMESTAMPTZ,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `APITokenRepository.Insert` stamps it.
+  created_at   TIMESTAMPTZ NOT NULL,
   revoked_at   TIMESTAMPTZ,
   CONSTRAINT api_tokens_ingest_scope CHECK (kind <> 'ingest' OR source_id IS NOT NULL),
   CONSTRAINT api_tokens_pat_user     CHECK (kind <> 'pat'    OR user_id  IS NOT NULL),
@@ -701,7 +782,8 @@ CREATE TABLE sessions (
   user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash  BYTEA       NOT NULL,
   user_agent  TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SessionRepository.Insert` stamps it.
+  created_at  TIMESTAMPTZ NOT NULL,
   expires_at  TIMESTAMPTZ NOT NULL,
   revoked_at  TIMESTAMPTZ,
   CONSTRAINT sessions_hash_ck   CHECK (octet_length(token_hash) = 32),
@@ -719,7 +801,8 @@ CREATE TABLE slack_identities (
   slack_handle TEXT,
   user_id      UUID        REFERENCES users(id) ON DELETE SET NULL,  -- NULL = unlinked
   linked_at    TIMESTAMPTZ,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SlackIdentityRepository.Upsert` stamps it.
+  created_at   TIMESTAMPTZ NOT NULL,
   CONSTRAINT slack_identities_uniq UNIQUE (org_id, team_id, slack_user_id),
   CONSTRAINT slack_identities_team_ck CHECK (team_id ~ '^T[A-Z0-9]{2,}$'),
   CONSTRAINT slack_identities_user_ck CHECK (slack_user_id ~ '^[UW][A-Z0-9]{2,}$'),
@@ -737,8 +820,9 @@ CREATE TABLE clusters (
   org_id       UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   cluster_key  TEXT        NOT NULL,               -- participates in alert identity (C.2)
   display_name TEXT        NOT NULL,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `ClusterRepository.Create`/`UpdateDisplayName` stamp them.
+  created_at   TIMESTAMPTZ NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL,
   deleted_at   TIMESTAMPTZ,
   CONSTRAINT clusters_key_uniq UNIQUE (org_id, cluster_key),
   CONSTRAINT clusters_key_ck   CHECK (cluster_key ~ '^[a-z0-9][a-z0-9._-]{0,62}$'),
@@ -761,10 +845,13 @@ CREATE TABLE alert_sources (
   redact_labels      TEXT[]      NOT NULL DEFAULT '{}',
   redact_annotations TEXT[]      NOT NULL DEFAULT '{}',
   push_enabled       BOOLEAN     NOT NULL DEFAULT true,
-  reconcile_enabled  BOOLEAN     NOT NULL DEFAULT true,
+  -- ⛔ There is NO reconcile_enabled. 00004 had one and 00038 dropped it: the
+  -- reconciler runs for every source (ADR 0006 + its second amendment). The
+  -- interval below is the whole of the reconciliation tuning surface.
   reconcile_interval_s INT       NOT NULL DEFAULT 30 CHECK (reconcile_interval_s >= 10),
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SourceRepository.Create`/`Update`/`SoftDelete` stamp them.
+  created_at         TIMESTAMPTZ NOT NULL,
+  updated_at         TIMESTAMPTZ NOT NULL,
   deleted_at         TIMESTAMPTZ,
   CONSTRAINT alert_sources_name_uniq UNIQUE (org_id, name),
   CONSTRAINT alert_sources_name_ck    CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
@@ -799,7 +886,8 @@ CREATE TABLE source_health (
   clock_skew_ms         BIGINT      NOT NULL DEFAULT 0,   -- observed_at - source_ts, EWMA
   divergence_count      INT         NOT NULL DEFAULT 0,   -- reconciler disagreements last run
   warnings              JSONB       NOT NULL DEFAULT '[]'::jsonb,
-  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SourceRepository.SaveHealth`/`TouchPush` stamp it.
+  updated_at            TIMESTAMPTZ NOT NULL,
   CONSTRAINT source_health_fail_ck  CHECK (consecutive_failures >= 0),
   CONSTRAINT source_health_div_ck   CHECK (divergence_count >= 0),
   CONSTRAINT source_health_warn_ck  CHECK (jsonb_typeof(warnings) = 'array'),
@@ -859,14 +947,18 @@ CREATE TABLE ingest_rejections (
   received_at  TIMESTAMPTZ NOT NULL,
   reason       TEXT        NOT NULL,               -- too_many_labels | label_value_too_large |
                                                    -- labelset_too_large | missing_alertname |
+                                                   -- invalid_label_value | annotation_unstorable |
                                                    -- undecodable | unknown_source
   detail       TEXT,
   raw          JSONB       NOT NULL,
   PRIMARY KEY (id, received_at),
+  -- 00035 widened this with the two STORABILITY reasons. The member order matches
+  -- ingestion/domain's const block; nothing generates one from the other.
   CONSTRAINT ingest_rejections_reason_ck CHECK (reason IN
     ('too_many_labels','label_value_too_large','label_name_too_large','labelset_too_large',
-     'too_many_annotations','annotation_too_large','missing_alertname','invalid_label_name',
-     'timestamp_out_of_window','too_many_alerts','body_too_large','undecodable','unknown_source'))
+     'too_many_annotations','annotation_too_large','annotation_unstorable','missing_alertname',
+     'invalid_label_name','invalid_label_value','timestamp_out_of_window','too_many_alerts',
+     'body_too_large','undecodable','unknown_source'))
 ) PARTITION BY RANGE (received_at);
 CREATE INDEX ingest_rejections_source_idx ON ingest_rejections (org_id, source_id, received_at DESC);
 
@@ -875,14 +967,18 @@ CREATE TABLE ingest_dedup (
   source_id  UUID        NOT NULL,
   dedup_key  TEXT        NOT NULL,
   batch_id   UUID        NOT NULL,
-  seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `DedupRepository.Claim` stamps it, from the same
+  -- clock `DedupRepository.Prune` computes its cutoff from.
+  seen_at    TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (source_id, dedup_key),
   CONSTRAINT ingest_dedup_key_ck CHECK (dedup_key ~ '^[0-9a-f]{64}$')
 );
 CREATE INDEX ingest_dedup_prune_idx ON ingest_dedup (seen_at);
 ```
 
-Partitions: **DAILY** on `received_at` for `ingest_batches` and `ingest_rejections`. `partitions.manage` pre-creates 7 days ahead and detaches+drops beyond `orgs.settings.raw_retention_days` (default 14). `ingest_dedup` is pruned at `seen_at < now() - interval '10 minutes'`.
+Partitions: **DAILY** on `received_at` for `ingest_batches` and `ingest_rejections`. `partitions.manage` pre-creates 7 days ahead and detaches+drops beyond `orgs.settings.raw_retention_days` (default **30**, ADR 0024 — derived from the `alert_event_keys` idempotency horizon below, because past that horizon acceptance criterion 36's replay would append the timeline twice; the two numbers move together). `ingest_dedup` is pruned at `seen_at < now() - interval '10 minutes'`.
+
+Retention is a **floor, never a ceiling** (ADR 0024). A partition holds every tenant's rows, so `partitions.manage` drops at the MAXIMUM of the deployment's configured window and every org's `orgs.settings` value. "Shortest wins" is forbidden: it would delete data an org configured itself to keep.
 
 ### D.4 Alerts, occurrences, events
 
@@ -1097,7 +1193,9 @@ CREATE TABLE alert_event_keys (
 CREATE INDEX alert_event_keys_prune_idx ON alert_event_keys (created_at);
 ```
 
-Partitions: **MONTHLY** on `recorded_at`. Pre-create 3 months ahead; detach + drop beyond `event_retention_months` (default 13). `alert_event_keys` is pruned at `created_at < now() - interval '30 days'`.
+Partitions: **MONTHLY** on `recorded_at`. Pre-create 3 months ahead; detach + drop beyond `event_retention_months` (default 13 — the longest default that keeps one org inside ADR 0014's scale envelope, ADR 0024). `alert_event_keys` is pruned by row, by `retention.prune`, at `created_at` older than **the wider of 30 days and the longest `raw_retention_days` any tenant has configured** — the same window `partitions.manage` drops raw partitions on (ADR 0024 Amendment 1). The 30 is the FLOOR and it is the primary number: `raw_retention_days` is derived from it, not the other way round, because a stored batch stays replayable only while its keys are still claimed (acceptance criterion 36). The widening is what stops the two disagreeing when an org keeps payloads for longer than the floor; the floor is what stops an org that keeps them for a day unclaiming the keys of episodes that are still open.
+
+⚠️ **Dropping an `alert_events` partition destroys `comment.added` and the note on `occurrence.unacknowledged`, which exist nowhere else in the schema.** Everything else the README promises — the alert, every occurrence with its ack and outcome, the rule snapshot, the notification and delivery record, the thread handle — lives in tables with no reaper and survives indefinitely. Retention deletes the narrative, never the record (ADR 0024). There is no cold-storage export; it is scoped and unbuilt.
 
 #### D.4.1 `alert_events.type` — the closed enum
 
@@ -1222,7 +1320,7 @@ CREATE TABLE rule_snapshots (
                                 CHECK (match_confidence IN ('exact','probable','ambiguous','none')),
   candidate_count   INT         NOT NULL DEFAULT 1,
   captured_at       TIMESTAMPTZ NOT NULL,
-  CONSTRAINT rule_snapshots_content_uniq UNIQUE (org_id, source_id, rule_fingerprint),
+  CONSTRAINT rule_snapshots_content_uniq UNIQUE (org_id, source_id, rule_name, rule_group, rule_file, rule_fingerprint),
   CONSTRAINT rule_snapshots_fp_ck     CHECK (rule_fingerprint ~ '^[0-9a-f]{64}$'),
   CONSTRAINT rule_snapshots_name_ck   CHECK (length(btrim(rule_name)) BETWEEN 1 AND 1024),
   CONSTRAINT rule_snapshots_expr_ck   CHECK ((origin = 'unavailable') = (length(btrim(expr)) = 0)),
@@ -1303,7 +1401,9 @@ CREATE TABLE channel_credentials (
                                                    -- slack_signing_secret | basic | bearer | none
   sealed      BYTEA       NOT NULL,                -- AES-256-GCM, key from platform/secrets keyring
   key_version INT         NOT NULL DEFAULT 1,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `CredentialRepository.Create` stamps it, and `Rotate`
+  -- advances `rotated_at` from the same clock, GREATEST(created_at, rotated_at, $n).
+  created_at  TIMESTAMPTZ NOT NULL,
   rotated_at  TIMESTAMPTZ,
   CONSTRAINT channel_credentials_kind_ck CHECK (kind IN
     ('slack_bot_token','slack_app_token','slack_signing_secret','basic','bearer','none')),
@@ -1333,8 +1433,16 @@ CREATE TABLE channels (
                                 CHECK (health_status IN ('healthy','degraded','auth_failed','config_invalid','unknown')),
   health_error      TEXT,
   health_checked_at TIMESTAMPTZ,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions). 00032 dropped it here first, and this table is why
+  -- the rule exists. `created_at` came from the database's clock while every writer of
+  -- `updated_at` stamped it from the Go process's, so on an app server running behind
+  -- Postgres the first health write on a freshly created channel produced an `updated_at`
+  -- earlier than `created_at` and failed `channels_time_ck` — surfacing as
+  -- `internal_error/channels_time_ck` on the first delivery with nothing actually wrong.
+  -- `ChannelRepository.Create` now stamps both from the injected Go clock, and `Update`
+  -- and `SetHealth` advance `updated_at` monotonically, GREATEST(updated_at, $n).
+  created_at        TIMESTAMPTZ NOT NULL,
+  updated_at        TIMESTAMPTZ NOT NULL,
   deleted_at        TIMESTAMPTZ,
   CONSTRAINT channels_name_uniq UNIQUE (org_id, name),
   CONSTRAINT channels_name_ck   CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
@@ -1360,20 +1468,29 @@ CREATE TABLE notification_policies (
   enabled       BOOLEAN     NOT NULL DEFAULT true,
   matchers      JSONB       NOT NULL DEFAULT '[]'::jsonb,
                 -- [{"name":"severity","op":"=","value":"critical"}, …]  op ∈ = != =~ !~
-  reasons       TEXT[]      NOT NULL,              -- subset of §H.6 Reason values
+  reasons       TEXT[]      NOT NULL,              -- a SET drawn from §H.6 Reason values
   channel_ids   UUID[]      NOT NULL,
   throttle      JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- {"max":N,"window_s":S} per subject
   unacked_reminder_after_s INT,                    -- NULL = no reminder; else unacked-for seconds.
                                                    -- SCALAR. ONE STAGE, FOREVER. Never an array (§G.9.1).
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `ConfigRepository.CreatePolicy`/`UpdatePolicy`/
+  -- `SoftDeletePolicy` stamp them.
+  created_at    TIMESTAMPTZ NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL,
   deleted_at    TIMESTAMPTZ,
   CONSTRAINT policies_name_uniq UNIQUE (org_id, name),
   CONSTRAINT policies_name_ck     CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
   CONSTRAINT policies_prio_ck     CHECK (priority BETWEEN 0 AND 10000),
   CONSTRAINT policies_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
-  CONSTRAINT policies_reasons_ck  CHECK (array_length(reasons, 1) BETWEEN 1 AND 32
-                                         AND array_position(reasons, NULL) IS NULL),
+  -- 00046: a SET, and bounded by the enum rather than by a round number. 18 is the
+  -- size of the §H.6 Reason enum, so it is the most a set drawn from it can hold,
+  -- and it is the same number the DTO tag and domain.MaxPolicyReasons carry.
+  -- `oto_array_is_set` is the uniqueness half: the contract publishes uniqueItems
+  -- on the RESPONSE, so a duplicate reaching this column comes back on a read as a
+  -- row the generated frontend client refuses.
+  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 18
+                                         AND array_position(reasons, NULL) IS NULL
+                                         AND oto_array_is_set(reasons)),
   CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
                                          AND array_position(channel_ids, NULL) IS NULL),
   CONSTRAINT policies_throttle_ck CHECK (jsonb_typeof(throttle) = 'object'),
@@ -1400,8 +1517,10 @@ CREATE TABLE channel_threads (
   dead_reason              TEXT,                   -- channel_not_found | is_archived | message_not_found |
                                                    -- not_in_channel | token_revoked | account_inactive |
                                                    -- edit_window_closed | cannot_reply_to_message
-  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `ThreadRepository.Ensure` stamps both, and every
+  -- later writer advances `updated_at` monotonically, GREATEST(updated_at, $n).
+  created_at               TIMESTAMPTZ NOT NULL,
+  updated_at               TIMESTAMPTZ NOT NULL,
   CONSTRAINT threads_subject_uniq UNIQUE (channel_id, subject_kind, subject_id),
   CONSTRAINT threads_seq_ck    CHECK (next_seq >= 1 AND last_sent_seq >= 0 AND last_sent_seq < next_seq),
   CONSTRAINT threads_reply_ck  CHECK (reply_count >= 0),
@@ -1434,8 +1553,9 @@ CREATE TABLE notifications (
   suppressed_reason TEXT,                          -- no_policy | throttled | storm | flapping | snoozed |
                                                    -- verbosity | channel_disabled | duplicate_render
                                                    -- precedence order is fixed: see B.8.2
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `NotificationRepository.Insert` and `SetStatus` stamp them.
+  created_at      TIMESTAMPTZ NOT NULL,
+  updated_at      TIMESTAMPTZ NOT NULL,
   CONSTRAINT notifications_idem_uniq UNIQUE (org_id, idempotency_key),
   CONSTRAINT notifications_reason_ck CHECK (reason IN
     ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
@@ -1477,8 +1597,10 @@ CREATE TABLE notification_deliveries (
                                   ('retryable','rate_limited','permanent','config_invalid','auth_expired')),
   ambiguous           BOOLEAN     NOT NULL DEFAULT false,   -- §G.5
   sent_at             TIMESTAMPTZ,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `DeliveryRepository.Create` stamps them. `updated_at` is
+  -- also the claim lease the dispatcher reads, so the monotonic advance matters twice here.
+  created_at          TIMESTAMPTZ NOT NULL,
+  updated_at          TIMESTAMPTZ NOT NULL,
   CONSTRAINT deliveries_fanout_uniq UNIQUE (notification_id, channel_id),
   CONSTRAINT deliveries_attempts_ck CHECK (attempts >= 0 AND attempts <= 32),
   CONSTRAINT deliveries_seq_ck      CHECK (thread_seq IS NULL OR thread_seq >= 1),
@@ -1570,7 +1692,8 @@ CREATE TABLE silences (
   annotations   JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- AM >= 0.32.0
   state         TEXT        NOT NULL CHECK (state IN ('active','pending','expired')),
   source_updated_at TIMESTAMPTZ,
-  mirrored_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- no DEFAULT now() (§D conventions); `SilenceRepository.UpsertBatch` stamps it.
+  mirrored_at   TIMESTAMPTZ NOT NULL,
   CONSTRAINT silences_source_uniq UNIQUE (source_id, source_silence_id),
   CONSTRAINT silences_srcid_ck    CHECK (length(btrim(source_silence_id)) BETWEEN 1 AND 128),
   CONSTRAINT silences_match_ck    CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) >= 1),
@@ -1782,6 +1905,7 @@ RETURNING *, (xmax = 0) AS was_inserted;
 | **Rules** | | | | | |
 | GET | `/api/v1/rule-snapshots/{id}` | One captured rule definition | — | `RuleSnapshotDTO` | `session\|pat` |
 | GET | `/api/v1/rule-snapshots` | Version history for a RuleKey | `RuleHistoryQuery` | `[]RuleSnapshotDTO` | `session\|pat` |
+| GET | `/api/v1/rule-snapshots/batch` | Resolve many snapshot ids at once — the second half of `include=rule`, so the alert list can show `expr` without a request per row. Unknown ids are **absent**, never a 404; no page object. ADR 0025 | `id` (≤100 uuids, duplicates allowed) | `[]RuleSnapshotDTO` | `session\|pat` |
 | **Sources** | | | | | |
 | GET | `/api/v1/sources` | List sources | `PageQuery` | `[]SourceDTO` | `session\|pat` |
 | POST | `/api/v1/sources` | Create a source (returns the ingest token ONCE) | `CreateSourceRequest` | `SourceCreatedDTO` | `session\|pat` |
@@ -2862,7 +2986,7 @@ One transaction per batch:
 8. `river.InsertTx` for `enrich.run` and `notify.evaluate`.
 9. `UPDATE ingest_batches SET status='processed', processed_at=now()`.
 
-Transaction size guard: a batch with more than 2 000 alerts is split into chunks of 500, each its own transaction, with the batch marked `partial` until the last chunk commits.
+Transaction size guard: a batch is split into chunks of 500, each its own transaction, **unconditionally** — 500 is a cap on how much work one transaction may hold, not a target to grow into. A batch of more than 2 000 alerts is additionally marked `partial` until the last chunk commits, so `ChunkThreshold` governs the marking and never the number of transactions. The chunk is one statement against the ingest pool's 2 s `statement_timeout` (§G.10), and crossing that ceiling rolls back the whole transaction and retries it at the same size; at 500 a slow database loses one chunk of four, and the committed ones stay committed because every write beneath is idempotent (§G.5).
 
 ### G.5 Idempotency and the ambiguous send
 
@@ -2908,38 +3032,125 @@ Slack rate limiting is handled **reactively**, by the `rate_limited` row above: 
 **Guaranteed:** within one `ChannelThread`, the root message lands first and replies appear in lifecycle order.
 **Not guaranteed and not desired:** ordering across threads. Parallelism across threads is the point.
 
+> ⚠️ **AMENDED — [ADR 0023](../adr/0023-terminal-states-first-and-the-three-phase-send.md).** This section used to print an ordering switch that tested *"the root has not landed"* **before** *"the thread is dead"*, and a send whose provider call sat in the same transaction as the sequence advance. Both were wrong in the way that costs a destination its voice for a week. The first wedges the exact case §G.7.3 exists to rescue: a root delivery that dies terminally leaves the thread with no `provider_thread_id`, so every delivery behind it matched case 1 and snoozed at 0.5 Hz — forever, consuming no attempt, reaching no dead-letter, raising nothing. The second re-posted the message whenever the COMMIT after `chat.postMessage` failed. What follows is what the code does; ADR 0023 records why.
+
 Mechanism — per-thread sequence gating with a Postgres advisory lock. No global serialisation, no per-thread queue:
 
-1. When a delivery is created, it takes `thread_seq = channel_threads.next_seq++` **inside the creating transaction**. Sequence assignment is therefore totally ordered by the causal order of domain events.
-2. The `deliver.dispatch` worker:
+**§G.7.1 Sequence allocation.** When a delivery is created, it takes `thread_seq = channel_threads.next_seq++` **inside the creating transaction**. Sequence assignment is therefore totally ordered by the causal order of domain events, and the sequence is contiguous from 1. `last_sent_seq` advances by exactly one per **resolved** slot, where resolved means `sent`, `dead` or `skipped`.
+
+**§G.7.2 The `deliver.dispatch` worker.** Three phases, with the provider call deliberately **between two transactions**, and an ordering switch that tests **the terminal states first**. Two rules it depends on, both binding:
+
+- **The mode the gate is asked about is the mode the sender uses.** It is re-derived against the thread as it actually stands (§H.6) exactly once, before the decision. A gate fed the mode stored on the row blocks on the very condition the sender already knows how to repair.
+- **A snooze consumes no attempt**, by design: an item waiting its turn has not failed, and eroding its retry budget while it queues would kill exactly the messages a busy thread is trying hardest to deliver. The consequence is that **no retry ceiling can ever end a wait.** `MaxWait` is the only thing that can, and every `recover_thread` path must reach a terminal outcome rather than snoozing again.
 
 ```go
-// serialise all sends for this thread across all worker pods
+// ── TX 1 — decide, claim, render. THE PROVIDER IS NOT CALLED IN HERE. ────────
+// serialise all sends for this thread across all worker pods; COMMIT releases it
 if err := db.AdvisoryXactLock(ctx, tx, hashThread(d.ThreadID)); err != nil { return err }
 
-th, err := threads.Get(ctx, scope, d.ThreadID)
+th := threads.Get(ctx, scope, d.ThreadID)          // read UNDER the lock
+mode := effectiveMode(d, th, channel)              // RE-DERIVED (§H.6); the only mode there is
+
 switch {
-case d.Mode != domain.ModePostRoot && th.ProviderThreadID == "":
-    return river.JobSnooze(2 * time.Second)          // root has not landed yet
+case th.State == "dead":                           // ── TERMINAL STATES FIRST ──
+    return recoverThread(ctx, d, th)               // §G.7.3 / §H.9 — never a snooze
+case th.State == "frozen":
+    return abandon(ctx, d, "thread_frozen")        // status='skipped'
+
+case d.ThreadSeq <= 0:
+    return abandon(ctx, d, "unsequenced")          // it never joined the thread's order
+case d.ThreadSeq <= th.LastSentSeq:
+    return nil                                     // already_resolved: duplicate worker; exit quietly
+
+case mode.NeedsRoot() && !th.RootLanded() && d.ThreadSeq == th.LastSentSeq+1:
+    // THIS ITEM IS THE HEAD AND THERE IS NO ROOT. Every earlier slot is resolved,
+    // so nothing left in this thread will ever post one. Recover NOW, not in
+    // fifteen minutes: waiting here is waiting for a message nobody will send.
+    return recoverThread(ctx, d, th)               // reason root_never_landed
+case mode.NeedsRoot() && !th.RootLanded():
+    if now.Sub(d.CreatedAt) > MaxWait { return recoverThread(ctx, d, th) }
+    return river.JobSnooze(2 * time.Second)        // awaiting_root
 case d.ThreadSeq != th.LastSentSeq+1:
-    return river.JobSnooze(1 * time.Second)          // an earlier delivery is still in flight
-case th.State == "dead":
-    return recoverThread(ctx, d, th)                 // §H.9
+    if now.Sub(d.CreatedAt) > MaxWait { return recoverThread(ctx, d, th) }
+    if gapRecover(ctx, gate, d.ThreadID) > 0 { return redecide(ctx, d) }  // eager sweep
+    return river.JobSnooze(1 * time.Second)        // awaiting_predecessor
 }
 
-view := views.Build(ctx, scope, d)                   // C11: render at CLAIM time
-msg, err := renderer.Render(ctx, view, opts)
-if msg.Hash == th.LastRenderedHash && d.Mode == domain.ModeUpdateRoot {
-    return markSkipped(ctx, d, "duplicate_render")   // stops a flapping alert producing 40 identical updates
+d = claim(ctx, d)                                  // status='sending', attempts+1 (§G.5)
+if !channel.Live() {                               // disabled between fan-out and now
+    return abandon(ctx, d, "channel_disabled")
 }
-persistRendered(ctx, d, msg)                          // BEFORE the network call
+view := views.Build(ctx, scope, d)                 // C11: render at CLAIM time
+msg := renderer.Render(ctx, view, opts)
+if mode == domain.ModeUpdateRoot && msg.Hash == lastRootHash(ctx, d.ThreadID) {
+    return abandon(ctx, d, "duplicate_render")     // §G.7.4
+}
+persistRendered(ctx, d, msg)                       // BEFORE the network call, always
+// COMMIT. THE CLAIM IS NOW DURABLE: a crash after this leaves a row saying
+// "this may have been sent", which is what §G.5's lease and `ambiguous` key on.
 
-ref, err := channel.Deliver(ctx, req)
-// same tx: update delivery (provider ids, sent_at) + channel_threads.last_sent_seq = d.ThreadSeq
+// ── the provider call: no transaction, no pooled connection, no lock held ────
+ref, sendErr := channel.Deliver(ctx, req)          // exactly one call, for exactly one mode
+
+// ── TX 2 — record what the provider said. context.WithoutCancel, 30 s budget. ─
+db.AdvisoryXactLock(ctx, tx, hashThread(d.ThreadID))
+if sendErr != nil { return fail(ctx, d, sendErr) } // §G.6 classification, §H.9 transitions
+if !markSent(ctx, d, ref) {                        // guard: WHERE status='sending'
+    metrics.ClaimLost.Inc()                        // the claim was lost mid-call: record NOTHING
+    return nil
+}
+threads.RecordRoot / RecordReply / AdvanceSent(ctx, d.ThreadID, d.ThreadSeq)
+// last_sent_seq = GREATEST(last_sent_seq, d.ThreadSeq) — the head moves HERE and nowhere else
 ```
 
-3. **Gap recovery.** A delivery that goes `dead` causes `lifecycle` to advance `last_sent_seq` past it and to append a `delivery.skipped` event. **A poisoned message can never wedge a thread forever.**
-4. **Coalescing.** A `ModeUpdateRoot` whose `rendered_hash` equals the thread's last hash is skipped as a no-op.
+The gate's verdicts, in evaluation order. The vocabulary is closed; every verdict is a label on `oto_thread_order_decisions_total{action,reason}`:
+
+| Condition | Verdict | Worker behaviour |
+|---|---|---|
+| `state='dead'` | `recover_thread` / `thread_dead` | §H.9 transition. **Never a snooze** |
+| `state='frozen'` | `abandon` / `thread_frozen` | `skipped` + `delivery.skipped` |
+| `thread_seq <= 0` | `abandon` / `unsequenced` | `skipped`; a bug in the creating transaction, not a wait |
+| `thread_seq <= last_sent_seq` | `out_of_order` / `already_resolved` | exit quietly — duplicate worker, or recovery already moved past |
+| needs a root, none landed, **and this item is the head** | `recover_thread` / `root_never_landed` | recover immediately; `MaxWait` is not waited out |
+| needs a root, none landed, behind the head | `wait_for_root` / `awaiting_root` | snooze **2 s**, until `MaxWait` |
+| `thread_seq != last_sent_seq + 1` | `wait_for_predecessor` / `awaiting_predecessor` | eager gap sweep, then snooze **1 s**, until `MaxWait` |
+| otherwise | `proceed` / `in_order` | claim, render, send |
+
+**`MaxWait` is 15 minutes**, measured from `notification_deliveries.created_at` and observed on `oto_thread_head_wait_seconds`. Past it the two waiting verdicts become `recover_thread` with reason `root_never_landed` or `head_of_line_stalled`. Fifteen minutes is chosen against Alertmanager's `repeat_interval` floor: an item still stuck after that will be superseded by a fresher notification anyway, so continuing to wait preserves nothing and delays everything behind it. A delivery with an unknown `created_at` counts as having waited zero — unknown must never be read as "forever", which would recover a healthy thread.
+
+**Why the call is between the transactions, not inside one.** A network call and a database write are not committable together, and pretending otherwise inverts the failure mode: a cancelled context or a failed COMMIT between `chat.postMessage` and the delivery update rolled the claim back to `pending`, un-incremented `attempts`, and let the job **re-post the message** — while erasing the `sending` status that is the only thing §G.5's ambiguity latch keys on. Ordering survives the shorter lock because ordering was never the lock's job: `last_sent_seq` does not move until TX 2, so every item behind this one still sees itself out of turn and waits. The lock serialises **deciding**, not sending.
+
+| Phase fails | Outcome |
+|---|---|
+| TX 1 rolls back | nothing was claimed and nothing was sent. The job retries; no message exists |
+| the provider call fails or times out | TX 2 records §G.6's classification and, for a thread-pointer error, §H.9's transition. The head has not moved |
+| the process dies between the COMMIT and TX 2 | the row stays `sending` with no `provider_message_id`. §G.5's 120 s lease reclaims it, `ambiguous` latches on `post_root`, and the card carries the visible marker |
+| TX 2's `markSent` guard matches zero rows | the lease expired while the provider was answering and another worker took the row. **Record nothing, advance nothing**: writing the root handle from a claim we no longer hold overwrites a newer truth, and erroring would re-send a message that landed. `oto_delivery_claim_lost_total` is the alert and the provider id is in the log |
+
+**§G.7.3 Gap recovery, and the terminal outcome that bounds it.** Sequence gating alone deadlocks the moment one delivery can never complete. Recovery walks forward from `last_sent_seq + 1` under the same advisory lock and advances the head past every finished-but-unsent slot, appending a `delivery.skipped` event for each and counting it on `oto_thread_gap_recovered_total{reason}`:
+
+| Slot | Reason | Advance? |
+|---|---|---|
+| the thread itself is `dead` | `thread_dead` | yes — every remaining slot, so the backlog becomes visibly skipped rather than invisibly pending |
+| no delivery row holds the seq (the allocating tx rolled back after `next_seq++`) | `missing_delivery` | yes — nothing can ever fill it |
+| `sent` | `already_sent` | yes, but this is **not a skip**: no `delivery.skipped` event and no `oto_thread_gap_recovered_total` increment. The head is catching up with a message the destination is currently displaying |
+| `skipped` | `skipped_delivery` | yes |
+| `dead` | `dead_delivery` | yes |
+| `sending` within the 120 s claim lease | — | **no.** Somebody is working it |
+| `pending`, `failed`, or a claim past its lease | — | **no.** A pending item will run; an expired claim is §G.5's ambiguous case, which is re-sent with `ambiguous = true` rather than skipped |
+
+Recovery never skips a slot that is still in play — doing so would send a reply before the message it replies to — so it **names** the delivery that owns the head, and the worker re-enqueues that delivery. The commonest stall is a `pending` row whose job is simply gone: discarded past its ceiling, cancelled, or lost with the pod that held it.
+
+`recover_thread` then resolves, in this order and with **no path that snoozes without having made progress**:
+
+1. Read the thread first. If it is `dead`, run §H.9: a **recoverable** `dead_reason` (`message_not_found`, `cannot_reply_to_message`, `edit_window_closed`, `restricted_action_thread_locked`) clears `provider_thread_id`, re-points this delivery to `post_root` with `ambiguous = true`, and re-enqueues it. A **non-recoverable** one (`channel_not_found`, `is_archived`, `not_in_channel`, `token_revoked`, `account_inactive`) sweeps the whole backlog and marks this delivery `dead`/`permanent`. The thread is read **before** anything is swept, because a sweep on a dead thread would skip the very slot the fresh root is about to occupy.
+2. Otherwise sweep, re-enqueue whatever owns the head, then re-decide against the state the sweep produced — including the re-derived mode, which turns a reply with no root into the fresh root that repairs the thread. `proceed` sends; `abandon` skips; `out_of_order` exits.
+3. If the head moved, **or** a real delivery owns it and now has a job, snooze 2 s. Progress is bounded: the head can only advance as far as `next_seq`, and the slot ahead resolves or dies on its own attempt ceiling.
+4. If **nothing moved and nothing owns the head**, there is no state left another pass could find, and another snooze would be the wedge wearing liveness as a costume. The delivery is **dead-lettered**: `status='dead'`, `error_class='permanent'`, error text *"the thread could not make progress and recovery had nothing to advance (`<reason>`)"*, the head is advanced past its slot, a `delivery.dead` event is appended and the notification's aggregate status is recomputed. An operator reading "oto gave up" on the alert page is the whole point of §H.9, and it is strictly better than a destination that has been silently quiet for a week.
+
+**A poisoned message can never wedge a thread forever.** That sentence is binding, and §G.7.2's terminal-states-first order, `MaxWait`, and this dead-letter are jointly what make it true.
+
+**§G.7.4 Coalescing.** A `ModeUpdateRoot` whose `rendered_hash` equals the thread's last root hash is skipped as a no-op — this is what turns a flapping alert's forty identical updates into one send and thirty-nine visible `skipped` rows.
 
 Why not a per-thread FIFO queue: thread count is unbounded (one per group generation) and no queue system handles millions of ephemeral ordered partitions well. Advisory locks make ordering a property of the write, cost one hash, and need no new infrastructure.
 
@@ -3360,11 +3571,11 @@ Use `slack.NewSecretsVerifier`. **Do not hand-roll this.** Pin `github.com/slack
 | `message_not_found`, `cannot_reply_to_message`, `restricted_action_thread_locked` | `permanent` | Thread pointer is gone. **Clear `provider_thread_id`, post a fresh root** with a `continued` marker, re-point the thread. |
 | `edit_window_closed` | `permanent` | Same recovery as above — the workspace disallows the edit. |
 | `token_revoked`, `token_expired`, `account_inactive`, `missing_scope`, `no_permission` | `auth_expired` | `channels.health_status='auth_failed'`; raise a UI banner. **Do not retry.** |
-| `invalid_blocks`, `invalid_blocks_format`, `block_mismatch`, `msg_too_long`, `too_many_attachments`, `metadata_too_large` | `config_invalid` | `dead`. This is an oto bug — alert on it (`oto_render_invalid_total`). |
+| `invalid_blocks`, `invalid_blocks_format`, `block_mismatch`, `msg_too_long`, `too_many_attachments`, `metadata_too_large` | `config_invalid` | `dead`. This is an oto bug — alert on it via `oto_jobs_dead_total`, then read `notification_deliveries.error_class='config_invalid'` for the offending deliveries. |
 | HTTP 5xx, timeout, connection reset | `retryable` | Exponential backoff (§G.6). |
 | anything else | `retryable` | Backoff, cap 12 attempts. |
 
-**Head-of-line blocking is the real killer.** A `dead` delivery causes `lifecycle` to advance `last_sent_seq` past it (§G.7.3) and appends a `delivery.skipped` event. **The UI must show delivery state per alert** — oto's silence must never be indistinguishable from "no alert".
+**Head-of-line blocking is the real killer.** A `dead` delivery has its slot advanced past by `deliver.dispatch` itself — under the thread's advisory lock, in the same transaction that records the death, and by gap recovery on any later pass (§G.7.3) — and a `delivery.skipped` event is appended. **The UI must show delivery state per alert** — oto's silence must never be indistinguishable from "no alert".
 
 ### H.10 Generic webhook channel (the abstraction proof — R5)
 
@@ -3651,7 +3862,31 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 31. `helm install oto` with a Postgres URL and a Slack token is the entire install. No Redis, no Kafka, no second datastore.
 32. `oto migrate up` is idempotent, and a rolling deploy of N and N+1 does not corrupt in-flight jobs (payload versions are explicit and unknown versions are parked).
 33. Raw payloads age out at the configured retention by `DROP PARTITION`, never by `DELETE`, and label redaction is applied **before** the raw persist.
-34. `GET /metrics` exposes at minimum: `oto_ingest_accepted_total`, `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`, `oto_reconcile_divergence`, `oto_source_degraded_holds_total`, `oto_notification_suppressed_total{reason}`, `oto_delivery_attempts_total{class}`, `oto_delivery_dead_total`, `oto_thread_recovered_total`, `oto_clock_skew_seconds`, `oto_render_invalid_total`.
+34. `GET /metrics` exposes at minimum: `oto_ingest_accepted_total`,
+    `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`, `oto_clock_skew_seconds`,
+    `oto_thread_order_decisions_total{action,reason}`, `oto_thread_gap_recovered_total{reason}`,
+    `oto_thread_head_wait_seconds` and `oto_delivery_claim_lost_total{mode}`. Every name in this
+    list is constructed by a collector in the tree and has a page in `docs/runbooks/`.
+
+    **Facts that are deliberately not metrics.** Earlier drafts of this criterion promised seven
+    further counters. None was ever built, and a name on `/metrics` that never produces a series
+    is worse than no promise at all: an alert rule written against it never fires, and a rule that
+    never fires is indistinguishable from a healthy system. They are struck from the minimum list
+    and recorded here with the fact that answers the question instead. `docs/runbooks/README.md`
+    carries the same table and is the maintained copy.
+
+    | Struck name | What answers the question instead |
+    |---|---|
+    | `oto_reconcile_divergence` | `source_health.divergence_count`, served by `GET /api/v1/sources/{id}/health` and summed by `GET /api/v1/stats/*`; plus the `sources: reconcile divergence` INFO log (`internal/sources/service/reconcile.go`) |
+    | `oto_source_degraded_holds_total` | `source_health.status`. While it is not `healthy` the reaper is blocked (§B.4) — the hold is a *state you can read*, not a rate you must integrate |
+    | `oto_notification_suppressed_total{reason}` | `notifications.suppressed_reason`, the closed set in `internal/notification/domain/suppression.go`. §B.6 requires every suppression to be a row with a place in the UI, so the durable record is the primary artefact and a counter would only be its shadow |
+    | `oto_delivery_attempts_total{class}` | `notification_deliveries.attempts` and `.error_class`; the per-job rate is already on `oto_jobs_failed_total{class}` |
+    | `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'` with `error_class`; the per-job rate is already on `oto_jobs_dead_total`, which is alertable and paged |
+    | `oto_render_invalid_total{check}` | The delivery itself: `status='dead'`, `error_class='config_invalid'`, the offending payload kept in `notification_deliveries.rendered` and retrievable via `GET /api/v1/deliveries/{id}`. `internal/channels/render/slack/validate.go` names the failing check; `oto_jobs_dead_total` carries the rate |
+    | `oto_check_violation_total{constraint}` | A `23514` is mapped to `errs.KindInternal` with the **constraint name as the error `Code`** (§L.9, `internal/*/repository/errors.go`), so it surfaces as a 500 naming the constraint, in the log line and — on a job path — in `oto_jobs_failed_total{class="internal"}` |
+
+    `oto_thread_recovered_total` was the eighth name here. It is not missing: it **shipped** as
+    `oto_thread_gap_recovered_total`, and this criterion now uses the registered name.
 35. `GET /api/v1/stats/alert-quality` answers *"this rule fired 47 times this month, cost 47 notifications, and was acknowledged 0 times"* — and contains **no per-person data anywhere** (R8).
 36. Replaying a stored `ingest_batch` after a parser fix reproduces the same state without duplicate Slack messages.
 
@@ -3669,10 +3904,14 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
     field-level message derived from the provider's JSON Schema, and the settings form renders and
     pre-validates from that **same** schema with no channel-specific UI code.
 41. A rendered Slack payload that would exceed 50 blocks or 3 000 chars in a section is **never
-    sent**: the delivery goes `dead` with `config_invalid`, the offending payload is retrievable
-    via `GET /api/v1/deliveries/{id}`, and `oto_render_invalid_total` fires.
-42. `oto_check_violation_total` is **zero** across the full integration suite — every DB CHECK is
-    unreachable because layers 1–3 already hold.
+    sent**: the delivery goes `dead` with `config_invalid`, `notification_deliveries.error` names
+    the failing check (`slack render invalid (<check>): …`), and the offending payload is
+    retrievable via `GET /api/v1/deliveries/{id}` — so the bug is diagnosable from the delivery
+    record alone.
+42. **No `23514` reaches the Go layer** across the full integration suite — every DB CHECK is
+    unreachable because layers 1–3 already hold. Asserted against the mapped error (a
+    `KindInternal` whose `Code` is the constraint name, §L.9), not against a counter: a counter
+    that is never constructed reads zero whether or not the property holds.
 43. Adding a field to a Go DTO without updating `api/openapi/` fails CI; regenerating the TS types
     or valibot validators produces no diff.
 
@@ -3685,7 +3924,9 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 46. Every alert state is legible without colour: each row carries a state icon and a text label,
     verified by a greyscale screenshot test.
 47. No saturated Tier-B hue appears anywhere in the product chrome or in a chart series; the only
-    urgency motion is the unacked-critical pulse, which disappears under `prefers-reduced-motion`.
+    **urgency** motion is the unacked-critical pulse (U4); every other animation in the product is
+    non-urgency motion permitted by U9; and **all** of it — the pulse and every U9 animation alike
+    — disappears under `prefers-reduced-motion`.
 48. The six Slack state hex values are byte-identical to §H.2 and appear nowhere in `web/`.
 
 **Scope boundary (§I.1.1, ADR 0013)**
@@ -3793,7 +4034,7 @@ type Error struct {
 	Kind       Kind
 	Code       string       // stable machine code, e.g. "alert_not_found", "occurrence_terminal"
 	Message    string       // human, safe to show; NEVER contains a secret or a raw payload
-	Violations []Violation  // populated only for KindValidation
+	Violations []Violation  // ALWAYS on KindValidation; on another Kind only when the refusal names a request member
 	Retryable  bool
 	RetryAfter time.Duration
 	Cause      error
@@ -3815,8 +4056,20 @@ type Violation struct {
   **409 conflict**. A unique-violation on a key *oto* computed (`alert_key`, `idempotency_key`) is
   **not an error at all** — it is the idempotency mechanism, swallowed by `ON CONFLICT`.
 - A `CHECK` violation reaching the HTTP layer is **500 + an alert**. It means layers 1–3 have a
-  hole. `oto_check_violation_total{constraint}` is exported and must be zero in steady state.
+  hole. The mapped error carries **the constraint name as its `Code`** (§L.9), so the 500 and its
+  log line name the violated constraint; there is no `oto_check_violation_total` counter (AC-34).
 - Upstream failures NEVER become the caller's fault. A dead Alertmanager is 502, never 400.
+- **`Violations` is about NAMING A MEMBER OF THE REQUEST, not about a status code.** Every
+  `KindValidation` error carries it. Another Kind carries it *only* when the refusal is about an
+  identifiable member of the request the caller can act on: `unknown_parameter` and
+  `source_id_required` are `KindMalformed` (400) and name the query parameter,
+  `setting_managed_by_config` is `KindConflict` (409) and names the setting the deployment owns. A
+  400 is a request that never parsed, and *which* parameter was wrong is precisely the part a form
+  can highlight — the `field`-path rules of L.2.2 apply verbatim (a query parameter uses its bare
+  name). It is NEVER present on a refusal that is not about a member of the request:
+  `KindUnauthorized`, `KindForbidden`, `KindNotFound`, `KindPrecondition`, `KindTooLarge`,
+  `KindUnsupported`, `KindRateLimited` and every 5xx. **A client therefore branches on `Code`,
+  never on the presence of `violations[]`.**
 
 ### L.2 Layer 1 — Transport / API DTOs
 
@@ -4107,7 +4360,9 @@ type CreateSourceRequest struct {
 | B14 | `generatorURL` length | **8 192 bytes** | truncate; keep the alert |
 | B15 | `receiver` / `groupKey` length | **4 096 bytes** each | truncate; keep the batch |
 | B16 | JSON nesting depth | **32** | `undecodable`, 202 |
-| B17 | Chunk size for processing | **500 alerts per transaction** (batches > 2 000 are split) | — |
+| B17 | Chunk size for processing | **500 alerts per transaction, always.** Every batch is sliced by 500 — 501 alerts is 2 transactions, 2 000 is 4. The 2 000 threshold splits nothing; it is the point above which the batch is additionally marked `partial` while its chunks run | — |
+| B18 | Label value **storability** | no `U+0000`; valid UTF-8 | reject that alert, `invalid_label_value`, 202 |
+| B19 | Annotation name/value **storability** | no `U+0000`; valid UTF-8 | **keep the alert.** Replace the offending code points of a *value* with `U+FFFD`; **drop** an annotation whose *name* is unstorable. Record `annotation_unstorable`, 202 |
 
 **The governing rule:** *a bound violation is recorded, never fatal to the batch, and never 4xx.*
 The only 4xx on this path are 401 (bad token), 413 (B1), and 400 (B16/undecodable) — all three
@@ -4116,14 +4371,57 @@ genuinely permanent, all three recorded in `ingest_rejections`.
 Sanity windows exist because a broken upstream clock (§C12) can otherwise poison partition
 routing: an alert claiming `startsAt: 2087` would create a partition 60 years out.
 
+> ## ⛔ L.3.2a THE STORABILITY RULE (B18/B19) — BINDING, AND NOT TO BE RE-LITIGATED
+>
+> **Postgres in a UTF8 database cannot store `U+0000` in `text` or `jsonb`, and cannot store an
+> invalid UTF-8 byte sequence anywhere.** Prometheus label values and annotation values are
+> arbitrary bytes, `label_replace` over exporter- or log-derived text reaches both, and a JSON
+> unicode escape decodes straight through the ingest path. Such a value is therefore fatal at
+> **layer 6, the INSERT** — a 23514/22021 where an alert belongs. B18 and B19 move that decision to
+> layer 2, where it is a *recorded rejection* instead of a 500.
+>
+> The predicate is **one function** (`alerts/domain.UnstorableReason`). The verdict is **two
+> opposite things, decided by what the string is FOR:**
+>
+> | | Label value (B18) | Annotation name/value (B19) |
+> |---|---|---|
+> | What it is | **Identity.** `alert_key` hashes the label set (§C.1, §C.2). | **Prose.** Explicitly not part of any identity (§C.9.3). |
+> | Verdict | **Reject the alert.** | **Keep the alert.** Sanitise the value; drop the annotation if its *name* is unstorable. |
+> | Why | Rewriting a byte changes **which Alert this is** and files an observation under a key the upstream never sent. That corrupts a timeline and is undetectable afterwards. Losing one observation is recoverable; silently merging two Alerts is not. | Ingest policy for annotations is already **truncate-and-keep** (B7, B8). Rejecting an alert over a bad byte in its `description` would contradict that policy and throw away the signal underneath the prose. |
+>
+> Corollaries, all binding:
+>
+> - **A label value is never sanitised.** oto stores what the upstream said, verbatim, or it stores
+>   nothing and says so. There is no escaping layer and no normalisation pass (this is the same
+>   ruling as §C.1's length-prefix framing: *escaping would mean oto editing an operator's bytes in
+>   order to store them, and oto is a flight recorder*).
+> - **An annotation NAME is never sanitised, only dropped.** A name is a `jsonb` key. Two different
+>   unstorable names sanitise to one string, and the second would silently overwrite the first —
+>   trading a visible drop for an invisible one.
+> - **A sanitised annotation is always recorded.** `annotation_unstorable` on a kept alert is how an
+>   operator learns oto edited the text. Editing without recording would be the silent suppression
+>   §C.9.1 exists to forbid.
+> - **`annotation_unstorable` and `invalid_label_value` are separate enum members and must stay
+>   separate.** One means *an alert is missing from the timeline*; the other means *an alert is
+>   present with one altered sentence*. They are triaged differently and alerted on differently.
+> - **Neither is `undecodable`.** `undecodable` means the body was not a webhook payload at all
+>   (B16, §L.3.1). Reporting a storability failure as `undecodable` sends an operator hunting for
+>   malformed JSON that does not exist; that was the defect these two members were added to fix.
+> - **`U+FFFD` is the substitute** because it is what every UTF-8 decoder already emits for these
+>   bytes. Note it is *three* bytes where the byte it replaced was one, so B19 runs **before** B8.
+> - An unstorable label *name* needs no rule: B9's charset (`^[a-zA-Z_][a-zA-Z0-9_]*$`) already
+>   admits no NUL and no non-ASCII byte, and rejects with `invalid_label_name`. A second check for
+>   the same bytes would be an unreachable branch.
+
 #### L.3.3 Order of operations (binding)
 
 ```
-1. auth (401)                          6. per-alert bounds B3–B14  -> ingest_rejections rows
-2. body size B1 (413)                  7. label redaction  <-- BEFORE the raw persist
-3. decode leniently B16 (400)          8. checksum + batch_dedup_key
-4. batch bounds B2, B15                9. persist ingest_batches + enqueue
-5. timestamp sanity B12–B13           10. 202
+1. auth (401)                          6. per-alert bounds B3–B14, B18–B19
+2. body size B1 (413)                     -> ingest_rejections rows
+3. decode leniently B16 (400)          7. label redaction  <-- BEFORE the raw persist
+4. batch bounds B2, B15                8. checksum + batch_dedup_key
+5. timestamp sanity B12–B13            9. persist ingest_batches + enqueue
+                                      10. 202
 ```
 
 **Redaction precedes persistence.** `redact_labels` / `redact_annotations` glob patterns are
@@ -4132,8 +4430,8 @@ annotation never lands on disk. Never log the payload at info level.
 
 #### L.3.4 The reconciler is layer 2 too
 
-`GET /api/v2/alerts` responses pass through the **same** bounds B3–B14 and the same normaliser.
-An upstream is untrusted regardless of which direction the bytes travelled.
+`GET /api/v2/alerts` responses pass through the **same** bounds B3–B14 and B18–B19 and the same
+normaliser. An upstream is untrusted regardless of which direction the bytes travelled.
 
 ### L.4 Layer 3 — Domain invariants
 
@@ -4152,7 +4450,8 @@ type LabelSet struct{ m map[string]string }
 
 func NewLabelSet(in map[string]string) (LabelSet, error)
 // invariants: <=64 entries; every name matches ^[a-zA-Z_][a-zA-Z0-9_]*$;
-// every value <=4096 bytes; total serialised size <=16384; "alertname" present and non-empty.
+// every value <=4096 bytes and STORABLE (B18: no U+0000, valid UTF-8);
+// total serialised size <=16384; "alertname" present and non-empty.
 
 func (l LabelSet) Get(name string) (string, bool)
 func (l LabelSet) Sorted() []Label          // deterministic order, the input to every hash
@@ -4405,9 +4704,15 @@ before `notification_deliveries.rendered` is persisted. Checks, in order:
 | V18 | total payload size | `<= 100 000` bytes | `render_invalid` |
 
 **On failure the delivery goes straight to `status='dead'`, `error_class='config_invalid'`, with
-the offending payload persisted in `notification_deliveries.rendered` and an
-`oto_render_invalid_total{check}` counter incremented.** It is never silently truncated and never
-sent. This is an oto bug and oto alerts on itself for it (`deploy/prometheus/oto-rules.yaml`).
+the offending payload persisted in `notification_deliveries.rendered` and the failing check named
+in `notification_deliveries.error`** (`slack.Error.Check`, rendered as
+`slack render invalid (<check>): …`). It is never silently truncated and never sent.
+
+This is an oto bug, and the alert on it is `oto_jobs_dead_total`
+(`deploy/prometheus/oto-rules.yaml`) — the deliver job dies, so the death is already counted.
+There is **no** `oto_render_invalid_total{check}` counter; earlier drafts promised one and no
+collector was ever built (AC-34). `Check` is the label such a counter *would* carry, and it is
+kept as a stable, closed vocabulary so the delivery records stay greppable by check name.
 
 Renderers additionally have golden files (`testdata/*.golden.json`), and the CI golden test runs
 `Validate` over every golden file — so a limit violation is caught at build time, not in production.
@@ -4433,8 +4738,9 @@ Fully specified as literal DDL in **§D**. The rules governing it:
    `status='sent'` implies `provider_message_id IS NOT NULL`; `state='dead'` implies
    `dead_reason IS NOT NULL`; `ack_state='acked'` implies `acked_at IS NOT NULL`.
 6. **FKs are declared everywhere a relationship exists**, with an explicit `ON DELETE` action.
-7. `CHECK` violations are **bugs**, not user errors: they map to 500 and increment
-   `oto_check_violation_total{constraint}`, which must be zero in steady state.
+7. `CHECK` violations are **bugs**, not user errors: they map to a 500 whose error `Code` is the
+   violated constraint's name (§L.9). Reaching one is never acceptable in steady state — which is
+   asserted against the mapped error in the integration suite (AC-42), not against a counter.
 
 ### L.8 Layer 7 — Frontend
 
@@ -4544,7 +4850,7 @@ service's job, and duplicating it in SQL produces two subtly different rulebooks
 | `23505` unique_violation on a **user-supplied** key | duplicate name/slug | `KindConflict` + the constraint name as `Code` |
 | `23505` on an **oto-computed** key | idempotency working as designed | swallowed by `ON CONFLICT`; reaching Go is `KindInternal` |
 | `23503` foreign_key_violation | referenced row missing or in use | `KindConflict` (`Code` = constraint name) |
-| `23514` check_violation | a hole in layers 1–3 | `KindInternal` + `oto_check_violation_total{constraint}` |
+| `23514` check_violation | a hole in layers 1–3 | `KindInternal`, `Code` = the constraint name |
 | `23502` not_null_violation | mapper bug | `KindInternal` |
 | `40001` serialization_failure / `40P01` deadlock | transient | `KindConflict`, `Retryable: true` |
 | `57014` query_canceled (statement_timeout) | overload | `KindUnavailable`, `Retryable: true` |
@@ -4625,6 +4931,23 @@ a distance, unmistakable at a glance, and legible for everyone.
 | U6 | Density is a first-class concern: the alert table is a dense operational surface. Pastel must not mean airy — row height 36 px comfortable / 28 px compact. |
 | U7 | Focus is always visible: `--oto-focus` ring, 2 px, 2 px offset, ≥ 3:1 against both the control and its background. Never `outline: none`. |
 | U8 | Severity (`critical`/`warning`/`info`) is carried by the **icon**; state (`firing`/`acked`/`suppressed`/`resolved`/`expired`) is carried by the **colour**. This is the same split as the Slack card, and it is the only thing the two systems share. |
+| U9 | **Non-urgency motion comes in exactly two kinds** (ADR 0028). **(a) One-shot:** triggered by a discrete event (a mount, an open, a commit), ≤ 200 ms, animating `opacity` and `transform` only, never looping — and a *purely decorative* one-shot (brand motion, carrying no fact) fires **at most once per document**. **(b) Indeterminate-activity:** a loop is permitted only while something is genuinely pending (loading, connecting, in flight), must stop when the pending thing does, and is limited to an opacity cycle of period ≥ 1 s or a uniform rotation. Both kinds: no luminance oscillation beyond U4's prohibition, never the sole carrier of a state fact (U1), and **absent under `prefers-reduced-motion: reduce`**. **No animation announces a connection-state change.** A (b) loop may run *while* the connection is pending, beside the label that says so; nothing may mark the transition itself. Connection health is a labelled Tier-A fact, and a silent channel for it violates U1. **A colour transition is not motion, and is therefore neither kind.** A control settling from one Tier-A token to another on hover, focus or `aria-current` displaces nothing and repeats nothing; U9 binds it only with bounds — colour properties alone (`transition-colors`: never `all`, never a length, never a layout property), **≤ 150 ms**, and **between Tier-A tokens only**, because U5 already reserves saturated hue for state. That is the feedback U7 and Tier A already require, written in CSS rather than in two class names, and the reduced-motion sweep flattens it regardless. |
+| U10 | **Every font size and every corner radius comes from the §M.8 scales** (ADR 0029). `text-micro`…`text-page` and `rounded-chip`/`-control`/`-surface` are the whole vocabulary for those two axes: no bracket at a call site (`text-[13px]`, `rounded-[4px]`), no use of Tailwind's own `text-sm`/`rounded-md` ladder beside them, no raw `font-size`/`border-radius` in a stylesheet. A value that is genuinely not on a scale is an amendment (§N), not a bracket — the scales were derived from 342 hand-written literals precisely because nothing could tell a deliberate size from a typo, and the reason they are only six and three steps is that they were read off the product rather than drawn for it. `rounded-full`/`rounded-none` are shapes, not steps, and stay available. |
+
+> **U9 does not qualify U4.** U4's *"No flashing, no blinking, ever"* stays absolute and keeps its
+> single urgency animation. U9 governs a different class of motion: the button spinner, the skeleton
+> rows, the `connecting` dot, the dialog's 140 ms entrance, and the fūrin's 180 ms greeting on the
+> header mark's first mount in a document. The first four predate ADR 0028 and are classified
+> there; the fifth is its consequence, and the ADR records why the researched 1400 ms swing and the
+> `connecting → live` trigger were both rejected.
+>
+> **The `transition-colors duration-100` on buttons, primary nav, settings tabs and filter chips is
+> deliberately not in that list.** Five call sites carry it — `primitives.tsx:42` and `:315`,
+> `AppShell.tsx:218` and `:278`, `settings.tsx:48` — all of them older than ADR 0028, none of them
+> classified by it. U9's first draft said *"`opacity` and `transform` only"* without saying what it
+> was scoped to, which outlawed every one of them on the day it was written. The clause above is the
+> correction, and ADR 0028 §5 records it: a rule that quietly makes the shipping product illegal is
+> not a rule.
 
 ### M.4 Light palette (CSS custom properties, with measured contrast)
 
@@ -4690,30 +5013,38 @@ a distance, unmistakable at a glance, and legible for everyone.
 ```
 
 **Measured contrast ratios (light).** Computed with the WCAG 2.x relative-luminance formula.
-CI asserts each of these (M.7).
+CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real gate now (§M.7).
+
+> ⚠️ **Thirteen of the thirty-nine ratios in this table and in §M.5 were wrong, and were corrected
+> when that gate was written.** They disagreed with the formula named above by up to 0.68:
+> `--oto-state-expired-solid` on `--oto-bg` was published as 4.3:1 and is 5.0:1; `--oto-text` on
+> `--oto-bg` (dark) was published as 16.4:1 and is 15.6:1. Every one of them still cleared its
+> requirement, which is why the error survived — a number that changes no decision is a number
+> nobody re-derives. The table is no longer hand-measured: the test recomputes each row from the
+> hex the row quotes, and asserts that hex is what `tokens.css` declares for that token.
 
 | Foreground | Background | Ratio | Requirement | Pass |
 |---|---|---|---|---|
 | `--oto-text` `#1E1B2E` | `--oto-surface` `#FFFFFF` | **16.8:1** | 4.5 | ✅ |
 | `--oto-text` `#1E1B2E` | `--oto-bg` `#FBFAFF` | **16.2:1** | 4.5 | ✅ |
-| `--oto-text` `#1E1B2E` | `--oto-surface-raised` `#F5F3FD` | **15.8:1** | 4.5 | ✅ |
+| `--oto-text` `#1E1B2E` | `--oto-surface-raised` `#F5F3FD` | **15.3:1** | 4.5 | ✅ |
 | `--oto-text-muted` `#5A5473` | `#FFFFFF` | **7.1:1** | 4.5 | ✅ |
 | `--oto-text-muted` `#5A5473` | `#F5F3FD` | **6.5:1** | 4.5 | ✅ |
 | `--oto-text-subtle` `#78718F` | `#FFFFFF` | **4.6:1** | 4.5 | ✅ |
 | `--oto-accent` `#5B54D6` | `#FFFFFF` | **5.7:1** | 4.5 (link text) | ✅ |
 | `--oto-text-inverse` `#FFFFFF` | `--oto-accent` `#5B54D6` | **5.7:1** | 4.5 (button label) | ✅ |
 | `--oto-state-firing-text` `#8C1D18` | `--oto-state-firing-fill` `#FFEBEA` | **8.0:1** | 4.5 | ✅ |
-| `--oto-state-firing-solid` `#D7332B` | `--oto-bg` `#FBFAFF` | **4.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-firing-solid` `#D7332B` | `--oto-bg` `#FBFAFF` | **4.6:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#7A4A00` | `--oto-state-acked-fill` `#FFF4E0` | **6.9:1** | 4.5 | ✅ |
-| `--oto-state-acked-solid` `#C97A00` | `--oto-bg` `#FBFAFF` | **3.3:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-acked-solid` `#C97A00` | `--oto-bg` `#FBFAFF` | **3.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-suppressed-text` `#4A4560` | `--oto-state-suppressed-fill` `#F1F0F6` | **8.0:1** | 4.5 | ✅ |
-| `--oto-state-suppressed-solid` `#6E6786` | `--oto-bg` `#FBFAFF` | **5.5:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-suppressed-solid` `#6E6786` | `--oto-bg` `#FBFAFF` | **5.1:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-resolved-text` `#12592F` | `--oto-state-resolved-fill` `#E7F5EC` | **7.5:1** | 4.5 | ✅ |
-| `--oto-state-resolved-solid` `#17794A` | `--oto-bg` `#FBFAFF` | **5.3:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-resolved-solid` `#17794A` | `--oto-bg` `#FBFAFF` | **5.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-expired-text` `#57493A` | `--oto-state-expired-fill` `#F4F1EC` | **7.7:1** | 4.5 | ✅ |
-| `--oto-state-expired-solid` `#7D6A54` | `--oto-bg` `#FBFAFF` | **4.3:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-expired-solid` `#7D6A54` | `--oto-bg` `#FBFAFF` | **5.0:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-info-text` `#0B4A9B` | `--oto-state-info-fill` `#E9F1FE` | **7.5:1** | 4.5 | ✅ |
-| `--oto-state-info-solid` `#1A6FD4` | `--oto-bg` `#FBFAFF` | **4.8:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-info-solid` `#1A6FD4` | `--oto-bg` `#FBFAFF` | **4.7:1** | 3.0 (non-text) | ✅ |
 | `--oto-border-strong` `#C9C4E4` | `--oto-surface` `#FFFFFF` | **1.7:1** | — (decorative hairline only) | n/a |
 
 > `--oto-border` and `--oto-border-strong` are **decorative** and are never the sole carrier of
@@ -4779,28 +5110,29 @@ CI asserts each of these (M.7).
 }
 ```
 
-**Measured contrast ratios (dark).**
+**Measured contrast ratios (dark).** Same formula, same gate, and the same correction: see the
+note under §M.4's table.
 
 | Foreground | Background | Ratio | Requirement | Pass |
 |---|---|---|---|---|
 | `--oto-text` `#EDEBF7` | `--oto-surface` `#1B1A26` | **14.6:1** | 4.5 | ✅ |
-| `--oto-text` `#EDEBF7` | `--oto-bg` `#14131C` | **16.4:1** | 4.5 | ✅ |
+| `--oto-text` `#EDEBF7` | `--oto-bg` `#14131C` | **15.6:1** | 4.5 | ✅ |
 | `--oto-text-muted` `#B4AECB` | `#1B1A26` | **8.1:1** | 4.5 | ✅ |
 | `--oto-text-subtle` `#8B84A6` | `#1B1A26` | **4.9:1** | 4.5 | ✅ |
 | `--oto-accent` `#A6A0FF` | `#1B1A26` | **7.4:1** | 4.5 | ✅ |
-| `--oto-text-inverse` `#14131C` | `--oto-accent` `#A6A0FF` | **7.9:1** | 4.5 (button label) | ✅ |
+| `--oto-text-inverse` `#14131C` | `--oto-accent` `#A6A0FF` | **8.0:1** | 4.5 (button label) | ✅ |
 | `--oto-state-firing-text` `#FFB4AE` | `--oto-state-firing-fill` `#331A19` | **9.5:1** | 4.5 | ✅ |
 | `--oto-state-firing-solid` `#FF6B60` | `--oto-bg` `#14131C` | **6.6:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#FFD08A` | `--oto-state-acked-fill` `#33260F` | **10.3:1** | 4.5 | ✅ |
-| `--oto-state-acked-solid` `#F0A93C` | `--oto-bg` `#14131C` | **8.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-acked-solid` `#F0A93C` | `--oto-bg` `#14131C` | **9.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-suppressed-text` `#C0BAD4` | `--oto-state-suppressed-fill` `#242231` | **8.3:1** | 4.5 | ✅ |
-| `--oto-state-suppressed-solid` `#837CA0` | `--oto-bg` `#14131C` | **4.6:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-suppressed-solid` `#837CA0` | `--oto-bg` `#14131C` | **4.7:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-resolved-text` `#96E0B4` | `--oto-state-resolved-fill` `#102E1E` | **9.5:1** | 4.5 | ✅ |
 | `--oto-state-resolved-solid` `#35A96C` | `--oto-bg` `#14131C` | **6.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-expired-text` `#D6C7B0` | `--oto-state-expired-fill` `#2B2620` | **9.0:1** | 4.5 | ✅ |
-| `--oto-state-expired-solid` `#9A8869` | `--oto-bg` `#14131C` | **5.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-expired-solid` `#9A8869` | `--oto-bg` `#14131C` | **5.4:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-info-text` `#A8CDFF` | `--oto-state-info-fill` `#142A44` | **8.9:1** | 4.5 | ✅ |
-| `--oto-state-info-solid` `#5B9CF0` | `--oto-bg` `#14131C` | **6.9:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-info-solid` `#5B9CF0` | `--oto-bg` `#14131C` | **6.5:1** | 3.0 (non-text) | ✅ |
 
 ### M.6 The Slack palette is a SEPARATE, UNCHANGED system
 
@@ -4823,19 +5155,108 @@ Why they must stay separate:
    aesthetic would be trading correctness for coherence — the wrong trade in this product.
 
 A renderer MUST NOT read a `--oto-*` token. A stylesheet MUST NOT reference an `#a30200`-family
-hex. `TestSlackPaletteUnchanged` pins the six Slack hex values, and a lint rule forbids Slack hex
-literals in `web/`.
+hex. **Both prohibitions are enforced**, and neither was until git-bug `c49baaa`:
+
+- `TestSlackPaletteUnchanged` (`internal/channels/render/slack/palette_test.go`) pins each of the
+  six card colours — and its emoji — to §H.2's table, read off this page rather than restated in
+  the test, and fails on a hex in `palette.go` that §H.2 does not sanction.
+- `test/design/boundary_test.go` walks `web/src` for the six §H.2 literals and `internal/channels/
+  render` for a `--oto-*` string. `web/src/design/tokens.css` stated the first of those as a
+  comment for as long as it existed, which is not a rule.
 
 ### M.7 Enforcement
 
-| Test | Asserts |
-|---|---|
-| `web/src/design/contrast.test.ts` | every pair in M.4 and M.5 computes to the stated ratio ±0.05 and meets its requirement |
-| `web/src/design/tokens.test.ts` | light and dark define exactly the same token names; no token is defined in one theme only |
-| `TestNoStateHueInChrome` (lint) | no component stylesheet uses a `--oto-state-*` token outside a state badge, row-status or timeline-marker component |
-| `TestSlackPaletteUnchanged` (Go) | the six §H.2 hex values are byte-identical to the constants in `render/slack/palette.go` |
-| Playwright `a11y.spec.ts` | axe-core reports zero contrast violations on the alert list, alert detail and timeline, in **both** themes |
-| `prefers-reduced-motion` snapshot | the unacked-critical pulse is absent when the media query is set |
+> **Eight of these nine rows are gates. The ninth is an intention, and is marked as such.**
+> **RUNS** means the named test exists and `.github/workflows/ci.yml` invokes it — the `go-test`
+> job (`go test -race ./...`) or the `ui` job (`npm run test`), both of which pick these up by
+> pattern, so no row here depends on somebody having remembered to add a step. **UNWRITTEN** means
+> it does not exist in this tree, under that name or any other, and nothing equivalent runs in its
+> place except where the row says so.
+>
+> This column exists because a reader who greps for `contrast.test.ts`, finds the §M.7 row and
+> stops looking is the exact harm a table of names causes when the names are aspirations. Six of
+> these rows were aspirations until git-bug `c49baaa`; five are now written, and the sixth — the
+> `prefers-reduced-motion` snapshot — was **retired rather than written**, because the structural
+> assertion in `index.css.test.ts` proves strictly more than a snapshot could and needs no browser.
+> Its clause moved into that row. What is left is one row that genuinely needs a browser, and it
+> may not sit here indefinitely: either a Playwright job lands or the row leaves through §N.
+
+| Test | Status | Asserts |
+|---|---|---|
+| `web/src/design/contrast.test.ts` | **RUNS.** `npm run test`, `ui` job | every pair in §M.4 and §M.5 computes to the stated ratio ±0.05 and meets its requirement; the hex each row quotes is the one `tokens.css` declares for that token, in that theme; and every row that looks like a measurement parsed as one. ⚠️ It found **thirteen** of the thirty-nine published ratios wrong when it was written (see the note under §M.4's table) |
+| `web/src/design/tokens.test.ts` | **RUNS.** Same job | light and dark define exactly the same token names — no token is defined in one theme only, where it would resolve to nothing rather than to a fallback — and every token's value is byte-identical to the CSS block §M.4/§M.5 quote |
+| `TestNoStateHueInChrome` (`test/design`) | **RUNS.** `go test -race ./...`, `go-test` job | no file under `web/src` uses a Tier-B state colour outside a state badge, row-status or timeline-marker component. The banned set is read out of `index.css`'s `@theme` block (every `--color-*` fed by an `--oto-state-*` token), so a new state colour is watched from the moment it exists; the permitted files are an explicit list with a reason per entry, and an entry that stops matching fails too |
+| `TestSlackPaletteUnchanged` (`internal/channels/render/slack`) | **RUNS.** Same job | the six §H.2 hex values *and* their emoji are byte-identical to what `palette.go` returns, read off §H.2 rather than restated — a fixture copied out of the code would agree with any edit made to the code. Also fails on a hex in `palette.go` that §H.2 does not sanction. ⚠️ The golden corpus is NOT this gate: it carries five of the six literals (`expired` has no capture) and asserts only that the six are distinct, so a coordinated edit to `palette.go` and the captures passes it |
+| `TestNoSlackHexAppearsInTheWebTree`, `TestNoOtoTokenReachesTheSlackRenderer` (`test/design`) | **RUNS.** Same job | §M.6's two prohibitions, which were stated for months and enforced by nothing: no §H.2 literal anywhere under `web/src`, and no `--oto-*` string in `internal/channels/render`. The second reads string literals rather than source text, so the comments that explain the rule do not trip it |
+| Playwright `a11y.spec.ts` | **UNWRITTEN.** `web/e2e/` holds one 0-byte `.gitkeep`; neither `playwright` nor `axe` appears in `web/package.json`, which declares no e2e script for a spec to run in and no CI job that would invoke one. ⚠️ This is the **only** row here that cannot be done in-process: it needs a browser, a served build and a CI job, which is why it did not land with the other five | axe-core reports zero contrast violations on the alert list, alert detail and timeline, in **both** themes. Its residual scope is now narrower than it was: `contrast.test.ts` proves every pair the SPEC tabulates, so what is left is the pairs the SPEC does *not* tabulate — two verified tokens composed into an unverified pair by a component, which only rendered DOM can see |
+| `web/src/index.css.test.ts` | **RUNS.** `npm run test`, `ui` job | every first-party utility is declared with `@utility` (so variants of it compile); the reduced-motion guard suppresses motion by sweeping `*` rather than by naming class names, so it cannot fall behind the next animation added; the guard sits in `@layer base`, which is what lets it beat an important-flagged utility, and nothing else in that layer carries `!important` on a motion property; and no animation is driven from JavaScript or an inline style, where the media query cannot reach it. **This is the row that carries U4/U9's reduced-motion clause** — a snapshot would have proved one tree at one moment, this proves the guard reaches every animation including the ones not yet written |
+| `web/src/components/ui/Chime.test.tsx` | **RUNS.** Same job | the fūrin's swing fires on the header mark's first mount in a document, at most once per document, never on a connection transition (neither a reload holding a resume point nor a quiet install's endless reconnects can change whether it fires), and carries the `motion-safe:` guard |
+| `web/src/design/scales.test.ts` | **RUNS.** Same job | U10 and §M.8: no font size and no corner radius is written at a call site — not as a bracket (`text-[13px]`, `rounded-[4px]`, `[font-size:13px]`), not through Tailwind's own ladder (`text-sm`, `rounded-md`, bare `rounded`), and not as a raw `font-size`/`border-radius` declaration in a stylesheet. It also asserts §M.8's CSS block declares the same steps, with the same values, as `tokens.css` — the parity §M.4/§M.5 get from `tokens.test.ts` — and that every step the scale declares has a call site — a scale may not grow ahead of the product. The steps are read out of `index.css`, so a new one is permitted the moment it is declared, and comments are stripped before scanning so the prose that names the banned forms does not trip it |
+
+### M.8 Type and radius scales (ADR 0029)
+
+§M.4–§M.7 legislate one axis. Until ADR 0029 the other two had no vocabulary at all: no `--text-*`
+and no `--radius-*` existed, so every component invented a px literal in a bracket, and **342** of
+them accumulated — 285 `text-[Npx]` across 32 files and 57 `rounded-[Npx]` at the time the ticket
+was filed, 309 and 59 by the time it was implemented, which is the growth rate an unenforced axis
+has.
+
+**The scales below were derived from that census, not designed.** Both are the histogram with the
+one- and two-occurrence values folded into a neighbour:
+
+| Axis | In use before | Steps after | Folded away |
+|---|---|---|---|
+| font size | 10 px ×20, 11 px ×183, 12 px ×75, 13 px ×23, 14 px ×4, 15 px ×2, 18 px ×2 | six | `15px` → `title`. The wordmark and the login heading were the only two, and neither is a size the other 307 knew about |
+| radius | 2 px ×1, 3 px ×26, 4 px ×28, 6 px ×3, 8 px ×1 | three | `2px` → `chip` (one icon button inside a chip); `8px` → `surface` (the dialog, the only one of its size — a modal and a panel are the same kind of corner) |
+
+The 3 px/4 px split, which looked like one tier written two ways, is two: **3 px is on inline things
+that sit inside a line of text** (badges, chips, code spans, skeleton bars) and **4 px is on things
+you operate or that hold something** (buttons, inputs, wells, nav items, bordered boxes). Every one
+of the 54 call sites was on the correct side of that line already; what was missing was the name.
+
+```css
+:root {
+  /* Type. Four of the six steps are below 14 px, because the operational
+     surfaces are tables and chips (U6). */
+  --oto-type-micro: 10px;
+  --oto-type-meta: 11px;
+  --oto-type-body: 12px;
+  --oto-type-item: 13px;
+  --oto-type-title: 14px;
+  --oto-type-page: 18px;
+
+  /* Radius. The tier is chosen by what the corner belongs to, not by how big
+     it looks. */
+  --oto-radius-chip: 3px;
+  --oto-radius-control: 4px;
+  --oto-radius-surface: 6px;
+}
+```
+
+| Utility | Step | What it is for |
+|---|---|---|
+| `text-micro` | 10 px | mono config keys, footnotes, secondary badge text |
+| `text-meta` | 11 px | the dense default — table cells, chips, inline labels |
+| `text-body` | 12 px | prose — help text, descriptions, form labels |
+| `text-item` | 13 px | a named thing or a control — row titles, nav, tabs, buttons |
+| `text-title` | 14 px | dialog and section titles |
+| `text-page` | 18 px | the page heading, and nothing else |
+| `rounded-chip` | 3 px | inline — badges, chips, code spans, skeletons |
+| `rounded-control` | 4 px | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
+| `rounded-surface` | 6 px | panels and dialogs — anything that holds controls |
+
+`rounded-full` and `rounded-none` remain available and are not steps: they are shapes, and a status
+dot is a circle at any radius the scale could name.
+
+> **These are NOT theme tokens, and are deliberately outside every `[data-theme]` block.** A palette
+> is a property of the theme; a type step is not, and asking dark mode for its own 11 px would be
+> asking the wrong question. `tokens.test.ts` reads only the theme-prefixed rules, so nothing here
+> is required to have a dark counterpart — the same arrangement `--oto-row-h` has had since U6.
+>
+> **§M.3 U2's contrast tiers are unaffected.** U2 sets its 3:1 boundary at *"≥ 24 px / ≥ 19 px-bold"*
+> and every step above is below both, so all text in this product is body text for contrast
+> purposes and owes 4.5:1 — which is what §M.4/§M.5 already measure. The scale does not create an
+> exemption and must not be read as one.
 ---
 
 ## N. Amendment procedure

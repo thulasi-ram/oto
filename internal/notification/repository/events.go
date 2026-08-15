@@ -8,24 +8,30 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 )
 
-// The `alert_events.type` values this module is allowed to write. The enum is
-// CLOSED (§D.4.1) and implementers must not invent types: adding one is a SPEC
-// amendment, because the timeline is the one surface every other surface is a
-// projection of.
-const (
-	eventNotificationCreated    = "notification.created"
-	eventNotificationSuppressed = "notification.suppressed"
-	eventDeliverySent           = "delivery.sent"
-	eventDeliveryUpdated        = "delivery.updated"
-	eventDeliveryFailed         = "delivery.failed"
-	eventDeliverySkipped        = "delivery.skipped"
-	eventDeliveryDead           = "delivery.dead"
-)
+// ⛔ THE SEVEN `alert_events.type` STRING CONSTANTS THAT USED TO BE HERE ARE GONE.
+//
+// They were `eventNotificationCreated = "notification.created"` and six siblings —
+// a second Go spelling of `alerts/domain.EventNotificationCreated` and its six, so
+// the "closed" enum was closed over only one of the two ways to say each value.
+// This file now names the kernel's values directly. RULE K (§5.2b,
+// `.golangci.yml`, and `exemptReason` in `test/arch/arch_test.go`) grants every
+// module `internal/alerts/domain`, and this module already took it in
+// `notification/domain/idempotency.go`.
+//
+// ⚠️ THE KERNEL TYPE IS ALL THIS FILE BORROWS, AND IT DOES NOT MAKE THE SECOND
+// WRITER LEGITIMATE. This repository still INSERTs into `alert_events` itself,
+// with its own §C.8 key claim and without going through `domain.NewEvent`, so the
+// §D.4 invariants that constructor enforces are still not enforced on this path —
+// only the type is now proved. `alerts/service/seam.go` says the same thing from
+// the other side. Routing this writer through the seam would need a
+// `notification ──► alerts` module edge CONTEXT.md §4 does not draw; that is a
+// separate decision and a separate change.
 
 // actorNotifier is this module's `alert_events.actor_kind`. Every row it writes
 // is caused by oto's own notification machinery, never by a human, even when the
@@ -57,7 +63,10 @@ func (r *EventRepository) db(ctx context.Context) db.Querier { return db.FromCon
 
 // Event is one timeline row this module writes.
 type Event struct {
-	Type         string
+	// Type is the closed §D.4.1 enum, not a string: the value reaching the INSERT
+	// can only have come from `alerts/domain`, which is the one property this
+	// second writer can offer without being folded into the seam.
+	Type         kernel.EventType
 	AlertID      *uuid.UUID
 	OccurrenceID *uuid.UUID
 	GroupID      *uuid.UUID
@@ -90,7 +99,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12)`
 // and the entire point is to suppress a second write at a DIFFERENT time.
 func (r *EventRepository) Append(ctx context.Context, s db.TenantScope, e Event) error {
 	if e.Summary == "" {
-		e.Summary = e.Type
+		e.Summary = e.Type.String()
 	}
 	if e.At.IsZero() {
 		return mapErr(errNoEventTime, "event_not_found", "append a timeline event")
@@ -122,7 +131,11 @@ func (r *EventRepository) Append(ctx context.Context, s db.TenantScope, e Event)
 	}
 
 	_, err := q.Exec(ctx, insertEventSQL,
-		id, s.OrgID(), e.AlertID, e.OccurrenceID, e.GroupID, e.Type, e.At,
+		// `.String()` is the ONE place the value object becomes a `TEXT` bind
+		// parameter, which is what CONTEXT.md §6 means by "TEXT + CHECK in SQL,
+		// closed value-object types in Go": the string exists at the driver
+		// boundary and nowhere above it.
+		id, s.OrgID(), e.AlertID, e.OccurrenceID, e.GroupID, e.Type.String(), e.At,
 		actorNotifier, "oto", truncate(e.Summary, 500), payload, key,
 	)
 	return mapErr(err, "event_not_found", "append a timeline event")
@@ -134,7 +147,7 @@ func (r *EventRepository) AppendNotificationCreated(
 ) error {
 	groupID := n.GroupID
 	return r.Append(ctx, s, Event{
-		Type:         eventNotificationCreated,
+		Type:         kernel.EventNotificationCreated,
 		AlertID:      n.AlertID,
 		OccurrenceID: n.OccurrenceID,
 		GroupID:      &groupID,
@@ -167,7 +180,7 @@ func (r *EventRepository) AppendNotificationSuppressed(
 	}
 	groupID := n.GroupID
 	return r.Append(ctx, s, Event{
-		Type:         eventNotificationSuppressed,
+		Type:         kernel.EventNotificationSuppressed,
 		AlertID:      n.AlertID,
 		OccurrenceID: n.OccurrenceID,
 		GroupID:      &groupID,
@@ -196,28 +209,28 @@ func (r *EventRepository) AppendDeliveryOutcome(
 	d domain.Delivery, groupID uuid.UUID, alertID *uuid.UUID, detail string, at time.Time,
 ) error {
 	var (
-		kind    string
+		kind    kernel.EventType
 		summary string
 		dedupe  string
 	)
 	switch d.Status {
 	case domain.DeliverySent:
 		if d.Mode == domain.ModeUpdateRoot {
-			kind, summary = eventDeliveryUpdated, "oto updated the card in place"
+			kind, summary = kernel.EventDeliveryUpdated, "oto updated the card in place"
 		} else {
-			kind, summary = eventDeliverySent, "oto delivered a message"
+			kind, summary = kernel.EventDeliverySent, "oto delivered a message"
 		}
 		dedupe = "del:" + d.ID.String() + ":sent"
 	case domain.DeliveryDead:
-		kind, summary = eventDeliveryDead, "oto gave up delivering: "+detail
+		kind, summary = kernel.EventDeliveryDead, "oto gave up delivering: "+detail
 		dedupe = "del:" + d.ID.String() + ":dead"
 	case domain.DeliverySkipped:
-		kind, summary = eventDeliverySkipped, "oto skipped a delivery: "+detail
+		kind, summary = kernel.EventDeliverySkipped, "oto skipped a delivery: "+detail
 		dedupe = "del:" + d.ID.String() + ":skipped"
 	case domain.DeliveryFailed:
 		// Deliberately NOT deduped: every failed attempt is its own fact, and
 		// collapsing them would hide a channel that has been failing for an hour.
-		kind, summary = eventDeliveryFailed, "a delivery attempt failed: "+detail
+		kind, summary = kernel.EventDeliveryFailed, "a delivery attempt failed: "+detail
 	default:
 		return nil
 	}
@@ -267,7 +280,7 @@ func (r *EventRepository) AppendThreadSkip(
 	}
 
 	return r.Append(ctx, s, Event{
-		Type:      eventDeliverySkipped,
+		Type:      kernel.EventDeliverySkipped,
 		GroupID:   &groupID,
 		Summary:   "oto advanced past an unsent message in this thread (" + reason + ")",
 		Payload:   payload,

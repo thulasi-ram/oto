@@ -217,16 +217,30 @@ func (e *Enricher) Enrich(_ context.Context, s *domain.Subject) (domain.Result, 
 		}
 	}
 
+	// ⛔ THE ORDER OF THESE TWO BRANCHES IS LOAD-BEARING, and it used to be the
+	// other way round: `len(links) == 0` overwrote the `partial` unconditionally,
+	// which is exactly the case the report exists for — the alert's ONLY link
+	// annotation was the broken one, so of course the list is empty.
+	//
+	// `skipped` is documented as "Applicable said no". Applicable said yes here:
+	// the enricher looked, found a broken annotation and named it. Filing that as
+	// `skipped` is not cosmetic — Status.Succeeded() and Enrichment.Reusable are
+	// both false for it, so a run that produced a real finding is recorded
+	// identically to one that never ran, and the finding never reaches anyone who
+	// could fix the rule file. Both sibling enrichers use the other convention:
+	// alerthistory and promrule report `partial` with a warning whenever they
+	// looked and produced less than they wanted.
 	status := domain.StatusOK
 	var warnings []string
+	if len(links) == 0 {
+		// Nothing found and nothing wrong: a declined enrichment, not a failed one.
+		status = domain.StatusSkipped
+	}
 	if len(rejected) > 0 {
 		// A malformed runbook_url is a real, fixable problem in somebody's rule
 		// file. Reporting it is more useful than hiding it.
 		status = domain.StatusPartial
 		warnings = append(warnings, "unusable_link_annotations")
-	}
-	if len(links) == 0 {
-		status = domain.StatusSkipped
 	}
 
 	return domain.Result{
@@ -270,8 +284,17 @@ func kindRank(kind string) int {
 	}
 }
 
+// looksLikeURL is the cheap pre-filter that decides whether an annotation oto
+// has no name for is worth treating as a link at all.
+//
+// ⭐ THE COMPARISON IS CASE-INSENSITIVE. RFC 3986 §3.1 makes a scheme
+// case-insensitive, so `HTTPS://wiki.example/runbook` is the same link as the
+// lowercase spelling. This used to be a case-sensitive HasPrefix, which meant an
+// annotation written by somebody whose editor capitalised the scheme was filed
+// as "unusable" and the operator was blamed for a good link.
 func looksLikeURL(v string) bool {
-	return strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://")
+	lower := strings.ToLower(v)
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
 // normalise validates and canonicalises one link.
@@ -281,10 +304,20 @@ func looksLikeURL(v string) bool {
 // than repaired:
 //
 //   - absolute http(s) only — no scheme-relative, no javascript:, no file:;
+//   - the scheme is matched case-insensitively (RFC 3986 §3.1) and lowercased;
 //   - no embedded credentials, which would print a secret into Slack;
+//   - no unresolved `{placeholder}`, see below;
 //   - length-bounded;
 //   - the fragment and query are preserved verbatim, because a dashboard link
 //     without its time range is a link to the wrong thing.
+//
+// ⛔ THE PREDICATE IS validate.IsOperatorLinkURL, NEVER validate.IsAbsoluteHTTPURL.
+// The latter is the `alert_sources.base_url` rule: a base URL is a PREFIX oto
+// concatenates API paths onto, so it refuses a query string, a fragment and a
+// trailing slash. Pointed at an operator's link it refused
+// `?from=now-1h&to=now`, `#step-2` and `https://wiki.example/runbooks/` — most
+// of the real annotations there are — while the list above promised the exact
+// opposite. The two predicates guard different columns and must stay apart.
 func normalise(raw string) (string, bool) {
 	v := strings.TrimSpace(raw)
 	v = strings.Trim(v, "<>\"'")
@@ -294,7 +327,24 @@ func normalise(raw string) (string, bool) {
 	if !looksLikeURL(v) {
 		return "", false
 	}
-	if !validate.IsAbsoluteHTTPURL(v) {
+	if strings.ContainsAny(v, "{}") {
+		// ⛔ AN UNRESOLVED ORG-TEMPLATE PLACEHOLDER DIES HERE, and it has to die
+		// here rather than later: `url.URL.String` percent-encodes a literal brace
+		// into `%7B`/`%7D`, which turns `https://wiki.example/org/{region}/runbook`
+		// into a URL that VALIDATES PERFECTLY and 404s on somebody's wiki. Getting
+		// hoisted into Payload.Runbook, it becomes the button on the Slack card
+		// (SPEC §F.2) — a field that looks populated and is wrong, shown to a human
+		// deciding whether to act at 3am. That is worse than no button.
+		//
+		// A brace is unambiguous evidence of an unfilled placeholder: `expand`
+		// substitutes every label through url.PathEscape, which encodes `{` and `}`
+		// to `%7B`/`%7D`, so a label value legitimately containing a brace never
+		// reaches this check as a literal one. (An unencoded brace is not a legal
+		// URI character under RFC 3986 anyway, so a hand-written annotation
+		// carrying one is also correctly refused.)
+		return "", false
+	}
+	if !validate.IsOperatorLinkURL(v) {
 		return "", false
 	}
 	u, err := url.Parse(v)
@@ -314,7 +364,10 @@ func normalise(raw string) (string, bool) {
 //
 // An unresolved placeholder leaves the template unexpanded, which then fails
 // normalisation and is reported as rejected — better than emitting a link with
-// a literal `{namespace}` in the path and letting somebody click it.
+// a literal `{namespace}` in the path and letting somebody click it. That is
+// enforced by the brace check in `normalise`; it is stated here because this is
+// the function that can leave a brace behind, and the two halves of the rule
+// have to be read together.
 func expand(tmpl string, labels map[string]string) string {
 	if !strings.Contains(tmpl, "{") {
 		return tmpl

@@ -16,10 +16,10 @@ import (
 // time-dependent assertion is expressed relative to this.
 var baseTime = time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 
-// validEnrichment is the provenanced baseline every Validate case mutates one
-// field of: one typed result, from one named, versioned Enricher (CONTEXT §3).
-func validEnrichment() domain.Enrichment {
-	return domain.Enrichment{
+// validParams is the provenanced baseline every case below mutates one field
+// of: one typed result, from one named, versioned Enricher (CONTEXT §3).
+func validParams() domain.EnrichmentParams {
+	return domain.EnrichmentParams{
 		ID:          "0198c0de-0000-7000-8000-000000000001",
 		OrgID:       "0198c0de-0000-7000-8000-0000000000aa",
 		SubjectKind: domain.SubjectOccurrence,
@@ -32,6 +32,21 @@ func validEnrichment() domain.Enrichment {
 		ComputedAt:  baseTime,
 		ExpiresAt:   baseTime.Add(time.Hour),
 	}
+}
+
+// enrichment builds the baseline with one thing changed. Every fixture goes
+// through the constructor because there is no other way in: a result the table
+// would refuse is not representable, so a test cannot assemble one either.
+func enrichment(t *testing.T, with func(p *domain.EnrichmentParams)) domain.Enrichment {
+	t.Helper()
+
+	p := validParams()
+	if with != nil {
+		with(&p)
+	}
+	e, err := domain.NewEnrichment(p)
+	require.NoError(t, err)
+	return e
 }
 
 // requireValidationCode asserts err is a validation-kind errs.Error carrying the
@@ -214,209 +229,265 @@ func TestExactlyFiveStorableStatuses(t *testing.T) {
 		"the wire values are enrichments_status_ck and may not drift")
 }
 
-// ------------------------------------------------------- Enrichment.Validate
+// ---------------------------------------------------- NewEnrichment
 
-func TestEnrichmentValidate(t *testing.T) {
+// TestNewEnrichmentRefusesWhatTheTableWouldRefuse restates every CHECK on
+// `enrichments` in Go, at the only door into the type. The DDL is the backstop;
+// a constraint violation surfacing from the driver means the domain let
+// something through it should have named.
+func TestNewEnrichmentRefusesWhatTheTableWouldRefuse(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		mutate   func(e *domain.Enrichment)
+		with     func(p *domain.EnrichmentParams)
 		wantCode string // "" => must be accepted
 	}{
-		{name: "the provenanced baseline", mutate: func(*domain.Enrichment) {}},
+		{name: "the provenanced baseline", with: func(*domain.EnrichmentParams) {}},
 
 		// Provenance: an enrichment that cannot say who it belongs to.
 		{
 			name:     "no org is not storable",
-			mutate:   func(e *domain.Enrichment) { e.OrgID = "" },
+			with:     func(p *domain.EnrichmentParams) { p.OrgID = "" },
 			wantCode: "enrichment_no_org",
 		},
 		{
 			name:     "no subject is not storable",
-			mutate:   func(e *domain.Enrichment) { e.SubjectID = "" },
+			with:     func(p *domain.EnrichmentParams) { p.SubjectID = "" },
 			wantCode: "enrichment_no_subject",
 		},
 
 		// subject_kind — enrichments_subjkind_ck.
-		{name: "subject alert", mutate: func(e *domain.Enrichment) { e.SubjectKind = domain.SubjectAlert }},
-		{name: "subject occurrence", mutate: func(e *domain.Enrichment) { e.SubjectKind = domain.SubjectOccurrence }},
-		{name: "subject group", mutate: func(e *domain.Enrichment) { e.SubjectKind = domain.SubjectGroup }},
+		{name: "subject alert", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectAlert }},
+		{name: "subject occurrence", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectOccurrence }},
+		{name: "subject group", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectGroup }},
 		{
 			name:     "empty subject kind",
-			mutate:   func(e *domain.Enrichment) { e.SubjectKind = "" },
+			with:     func(p *domain.EnrichmentParams) { p.SubjectKind = "" },
 			wantCode: "enrichment_bad_subject_kind",
 		},
 		{
 			name:     "subject kind is case sensitive",
-			mutate:   func(e *domain.Enrichment) { e.SubjectKind = "Occurrence" },
+			with:     func(p *domain.EnrichmentParams) { p.SubjectKind = "Occurrence" },
 			wantCode: "enrichment_bad_subject_kind",
 		},
 		{
 			name:     "a kind outside the closed set",
-			mutate:   func(e *domain.Enrichment) { e.SubjectKind = "cluster" },
+			with:     func(p *domain.EnrichmentParams) { p.SubjectKind = "cluster" },
 			wantCode: "enrichment_bad_subject_kind",
 		},
 
 		// enricher name — enrichments_name_ck. The dot is mandatory.
 		{
 			name:     "an anonymous enricher is not storable",
-			mutate:   func(e *domain.Enrichment) { e.Enricher = "" },
+			with:     func(p *domain.EnrichmentParams) { p.Enricher = "" },
 			wantCode: "enrichment_bad_enricher_name",
 		},
 		{
 			name:     "a bare name has no namespace",
-			mutate:   func(e *domain.Enrichment) { e.Enricher = "runbook" },
+			with:     func(p *domain.EnrichmentParams) { p.Enricher = "runbook" },
 			wantCode: "enrichment_bad_enricher_name",
 		},
 
 		// enricher_version — enrichments_ver_ck, and the invalidation mechanism.
-		{name: "version 1 is the floor", mutate: func(e *domain.Enrichment) { e.Version = 1 }},
+		{name: "version 1 is the floor", with: func(p *domain.EnrichmentParams) { p.Version = 1 }},
 		{
 			name:     "version zero",
-			mutate:   func(e *domain.Enrichment) { e.Version = 0 },
+			with:     func(p *domain.EnrichmentParams) { p.Version = 0 },
 			wantCode: "enrichment_bad_version",
 		},
 		{
 			name:     "version negative",
-			mutate:   func(e *domain.Enrichment) { e.Version = -1 },
+			with:     func(p *domain.EnrichmentParams) { p.Version = -1 },
 			wantCode: "enrichment_bad_version",
 		},
 
 		// phase — enrichments_phase_ck.
-		{name: "phase async", mutate: func(e *domain.Enrichment) { e.Phase = domain.PhaseAsync }},
+		{name: "phase async", with: func(p *domain.EnrichmentParams) { p.Phase = domain.PhaseAsync }},
 		{
 			name:     "phase zero value",
-			mutate:   func(e *domain.Enrichment) { e.Phase = domain.Phase(0) },
+			with:     func(p *domain.EnrichmentParams) { p.Phase = domain.Phase(0) },
 			wantCode: "enrichment_bad_phase",
 		},
 		{
 			name:     "phase one over",
-			mutate:   func(e *domain.Enrichment) { e.Phase = domain.Phase(3) },
+			with:     func(p *domain.EnrichmentParams) { p.Phase = domain.Phase(3) },
 			wantCode: "enrichment_bad_phase",
 		},
 
 		// status — enrichments_status_ck.
 		{
 			name:     "empty status",
-			mutate:   func(e *domain.Enrichment) { e.Status = "" },
+			with:     func(p *domain.EnrichmentParams) { p.Status = "" },
 			wantCode: "enrichment_bad_status",
 		},
 		{
 			name:     "status outside the closed set",
-			mutate:   func(e *domain.Enrichment) { e.Status = "cancelled" },
+			with:     func(p *domain.EnrichmentParams) { p.Status = "cancelled" },
 			wantCode: "enrichment_bad_status",
 		},
 
 		// enrichments_err_ck — a failure that cannot say why is a rumour.
 		{
 			name:     "failed with no reason",
-			mutate:   func(e *domain.Enrichment) { e.Status = domain.StatusFailed },
+			with:     func(p *domain.EnrichmentParams) { p.Status = domain.StatusFailed },
 			wantCode: "enrichment_missing_error",
 		},
 		{
 			name: "failed with a whitespace reason is still no reason",
-			mutate: func(e *domain.Enrichment) {
-				e.Status = domain.StatusFailed
-				e.Error = "   \t\n"
+			with: func(p *domain.EnrichmentParams) {
+				p.Status = domain.StatusFailed
+				p.Error = "   \t\n"
 			},
 			wantCode: "enrichment_missing_error",
 		},
 		{
 			name:     "timeout with no reason",
-			mutate:   func(e *domain.Enrichment) { e.Status = domain.StatusTimeout },
+			with:     func(p *domain.EnrichmentParams) { p.Status = domain.StatusTimeout },
 			wantCode: "enrichment_missing_error",
 		},
 		{
 			name: "failed with a reason is recorded, never discarded",
-			mutate: func(e *domain.Enrichment) {
-				e.Status = domain.StatusFailed
-				e.Error = "dial tcp: connection refused"
+			with: func(p *domain.EnrichmentParams) {
+				p.Status = domain.StatusFailed
+				p.Error = "dial tcp: connection refused"
 			},
 		},
 		{
 			name: "timeout with a reason",
-			mutate: func(e *domain.Enrichment) {
-				e.Status = domain.StatusTimeout
-				e.Error = "exceeded 500ms budget"
+			with: func(p *domain.EnrichmentParams) {
+				p.Status = domain.StatusTimeout
+				p.Error = "exceeded 500ms budget"
 			},
 		},
 		{
 			name: "skipped needs no reason",
-			mutate: func(e *domain.Enrichment) {
-				e.Status = domain.StatusSkipped
-				e.Error = ""
+			with: func(p *domain.EnrichmentParams) {
+				p.Status = domain.StatusSkipped
+				p.Error = ""
 			},
 		},
 		{
 			name: "a succeeding enrichment may still carry an error string",
-			mutate: func(e *domain.Enrichment) {
-				e.Status = domain.StatusPartial
-				e.Error = "one of three lookups failed"
+			with: func(p *domain.EnrichmentParams) {
+				p.Status = domain.StatusPartial
+				p.Error = "one of three lookups failed"
 			},
 		},
 
 		// duration_ms — enrichments_dur_ck. Recorded even on failure.
-		{name: "zero duration is the floor", mutate: func(e *domain.Enrichment) { e.Duration = 0 }},
+		{name: "zero duration is the floor", with: func(p *domain.EnrichmentParams) { p.Duration = 0 }},
 		{
 			name:     "negative duration",
-			mutate:   func(e *domain.Enrichment) { e.Duration = -time.Nanosecond },
+			with:     func(p *domain.EnrichmentParams) { p.Duration = -time.Nanosecond },
 			wantCode: "enrichment_negative_duration",
 		},
 
 		// expires_at — enrichments_exp_ck: NULL or strictly after computed_at.
+		// This one IS nullable, unlike the cache's: a recorded failure has nothing
+		// to go stale.
 		{
-			name:   "no expiry means it never goes stale on its own",
-			mutate: func(e *domain.Enrichment) { e.ExpiresAt = time.Time{} },
+			name: "no expiry means it never goes stale on its own",
+			with: func(p *domain.EnrichmentParams) { p.ExpiresAt = time.Time{} },
 		},
 		{
-			name:   "one nanosecond of life is still life",
-			mutate: func(e *domain.Enrichment) { e.ExpiresAt = e.ComputedAt.Add(time.Nanosecond) },
+			name: "one nanosecond of life is still life",
+			with: func(p *domain.EnrichmentParams) { p.ExpiresAt = p.ComputedAt.Add(time.Nanosecond) },
 		},
 		{
 			name:     "expiry equal to computed_at is not strictly after",
-			mutate:   func(e *domain.Enrichment) { e.ExpiresAt = e.ComputedAt },
+			with:     func(p *domain.EnrichmentParams) { p.ExpiresAt = p.ComputedAt },
 			wantCode: "enrichment_bad_expiry",
 		},
 		{
 			name:     "expiry before computed_at",
-			mutate:   func(e *domain.Enrichment) { e.ExpiresAt = e.ComputedAt.Add(-time.Nanosecond) },
+			with:     func(p *domain.EnrichmentParams) { p.ExpiresAt = p.ComputedAt.Add(-time.Nanosecond) },
 			wantCode: "enrichment_bad_expiry",
 		},
 
 		// Provenance is not weakened by a cache hit.
-		{name: "a cached result is still a full record", mutate: func(e *domain.Enrichment) { e.FromCache = true }},
+		{name: "a cached result is still a full record", with: func(p *domain.EnrichmentParams) { p.FromCache = true }},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			e := validEnrichment()
-			tc.mutate(&e)
+			p := validParams()
+			tc.with(&p)
 
-			err := e.Validate()
+			e, err := domain.NewEnrichment(p)
 			if tc.wantCode == "" {
 				require.NoError(t, err)
 				return
 			}
 			requireValidationCode(t, err, tc.wantCode)
+			assert.Equal(t, domain.Enrichment{}, e, "a refused result is never half-built")
 		})
 	}
 }
 
-// TestEnrichmentValidateRejectsEveryBadEnricherName drives the name rule through
-// Validate as well as through the predicate, so the two cannot drift.
-func TestEnrichmentValidateRejectsEveryBadEnricherName(t *testing.T) {
+// TestNewEnrichmentRejectsEveryBadEnricherName drives the name rule through the
+// constructor as well as through the predicate, so the two cannot drift.
+func TestNewEnrichmentRejectsEveryBadEnricherName(t *testing.T) {
 	t.Parallel()
 
 	for _, bad := range []string{"", "runbook", "Prom.rule", "prom..rule", ".prom", "prom.", "1prom.rule", "prom rule"} {
-		e := validEnrichment()
-		e.Enricher = bad
+		p := validParams()
+		p.Enricher = bad
 
-		err := e.Validate()
+		_, err := domain.NewEnrichment(p)
 		requireValidationCode(t, err, "enrichment_bad_enricher_name")
 	}
+}
+
+// TestANilPayloadBecomesAnObject. enrichments_payload_ck requires a JSON
+// OBJECT, and `null` is not one — so "the enricher produced nothing" is
+// answered here, on the one path every result passes through.
+func TestANilPayloadBecomesAnObject(t *testing.T) {
+	t.Parallel()
+
+	e := enrichment(t, func(p *domain.EnrichmentParams) { p.Payload = nil })
+	assert.Equal(t, map[string]any{}, e.Payload())
+}
+
+// TestAnEnrichmentCannotBeEditedAfterItIsBuilt. Warnings are cloned on ingress
+// and on egress: a result a caller can edit in place is no longer one the
+// constructor vouched for.
+func TestAnEnrichmentCannotBeEditedAfterItIsBuilt(t *testing.T) {
+	t.Parallel()
+
+	warnings := []string{"ambiguous_rule_match"}
+	e := enrichment(t, func(p *domain.EnrichmentParams) { p.Warnings = warnings })
+
+	warnings[0] = "MUTATED"
+	assert.Equal(t, []string{"ambiguous_rule_match"}, e.Warnings(),
+		"editing the caller's slice does not reach inside")
+
+	got := e.Warnings()
+	got[0] = "MUTATED"
+	assert.Equal(t, []string{"ambiguous_rule_match"}, e.Warnings(),
+		"and neither does editing what was handed back")
+}
+
+// TestEveryTimestampLeavesTheDomainInUTC. A record whose timestamps carry a
+// caller's location compares differently depending on who built it.
+func TestEveryTimestampLeavesTheDomainInUTC(t *testing.T) {
+	t.Parallel()
+
+	tokyo := time.FixedZone("JST", 9*60*60)
+	e := enrichment(t, func(p *domain.EnrichmentParams) {
+		p.ComputedAt = baseTime.In(tokyo)
+		p.ExpiresAt = baseTime.Add(time.Hour).In(tokyo)
+	})
+
+	assert.Equal(t, time.UTC, e.ComputedAt().Location())
+	assert.Equal(t, time.UTC, e.ExpiresAt().Location())
+	assert.True(t, e.ComputedAt().Equal(baseTime), "and the instant itself does not move")
+
+	// The zero expiry stays zero rather than becoming an instant in 1 CE.
+	never := enrichment(t, func(p *domain.EnrichmentParams) { p.ExpiresAt = time.Time{} })
+	assert.True(t, never.ExpiresAt().IsZero())
 }
 
 // -------------------------------------------------------- ValidEnricherName
@@ -494,8 +565,13 @@ func TestEnrichmentFresh(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			e := validEnrichment()
-			e.ExpiresAt = tc.expiresAt
+			e := enrichment(t, func(p *domain.EnrichmentParams) {
+				// Computed an hour before every expiry under test: enrichments_exp_ck
+				// means an expiry at or before the computation is not a state this
+				// type can be in, so the baseline has to make room for one at baseTime.
+				p.ComputedAt = baseTime.Add(-time.Hour)
+				p.ExpiresAt = tc.expiresAt
+			})
 			assert.Equal(t, tc.want, e.Fresh(tc.now))
 		})
 	}
@@ -506,57 +582,57 @@ func TestEnrichmentReusable(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		mutate  func(e *domain.Enrichment)
+		with    func(p *domain.EnrichmentParams)
 		version int
 		now     time.Time
 		want    bool
 	}{
 		{
 			name:    "ok, same version, fresh — the retry pays nothing",
-			mutate:  func(e *domain.Enrichment) { e.Status = domain.StatusOK },
+			with:    func(p *domain.EnrichmentParams) { p.Status = domain.StatusOK },
 			version: 1, now: baseTime, want: true,
 		},
 		{
-			name:   "partial counts as an answer",
-			mutate: func(e *domain.Enrichment) { e.Status = domain.StatusPartial }, version: 1, now: baseTime, want: true,
+			name: "partial counts as an answer",
+			with: func(p *domain.EnrichmentParams) { p.Status = domain.StatusPartial }, version: 1, now: baseTime, want: true,
 		},
 		{
 			// SPEC §F.3: a version bump IS the invalidation mechanism.
-			name:   "a version bump invalidates",
-			mutate: func(e *domain.Enrichment) { e.Version = 1 }, version: 2, now: baseTime, want: false,
+			name: "a version bump invalidates",
+			with: func(p *domain.EnrichmentParams) { p.Version = 1 }, version: 2, now: baseTime, want: false,
 		},
 		{
-			name:   "an older stored version is not reused either",
-			mutate: func(e *domain.Enrichment) { e.Version = 3 }, version: 2, now: baseTime, want: false,
+			name: "an older stored version is not reused either",
+			with: func(p *domain.EnrichmentParams) { p.Version = 3 }, version: 2, now: baseTime, want: false,
 		},
 		{
-			name:   "skipped produced no answer",
-			mutate: func(e *domain.Enrichment) { e.Status = domain.StatusSkipped }, version: 1, now: baseTime, want: false,
+			name: "skipped produced no answer",
+			with: func(p *domain.EnrichmentParams) { p.Status = domain.StatusSkipped }, version: 1, now: baseTime, want: false,
 		},
 		{
 			name: "failed is recorded but never reused",
-			mutate: func(e *domain.Enrichment) {
-				e.Status = domain.StatusFailed
-				e.Error = "boom"
+			with: func(p *domain.EnrichmentParams) {
+				p.Status = domain.StatusFailed
+				p.Error = "boom"
 			},
 			version: 1, now: baseTime, want: false,
 		},
 		{
 			name: "a timeout earns a second pass, so it is not reusable",
-			mutate: func(e *domain.Enrichment) {
-				e.Status = domain.StatusTimeout
-				e.Error = "budget exceeded"
+			with: func(p *domain.EnrichmentParams) {
+				p.Status = domain.StatusTimeout
+				p.Error = "budget exceeded"
 			},
 			version: 1, now: baseTime, want: false,
 		},
 		{
 			name:    "stale is not reusable however good the status",
-			mutate:  func(e *domain.Enrichment) { e.ExpiresAt = baseTime },
+			with:    func(p *domain.EnrichmentParams) { p.ExpiresAt = baseTime },
 			version: 1, now: baseTime.Add(time.Nanosecond), want: false,
 		},
 		{
 			name:    "no expiry stays reusable",
-			mutate:  func(e *domain.Enrichment) { e.ExpiresAt = time.Time{} },
+			with:    func(p *domain.EnrichmentParams) { p.ExpiresAt = time.Time{} },
 			version: 1, now: baseTime.Add(365 * 24 * time.Hour), want: true,
 		},
 	}
@@ -565,8 +641,12 @@ func TestEnrichmentReusable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			e := validEnrichment()
-			tc.mutate(&e)
+			e := enrichment(t, func(p *domain.EnrichmentParams) {
+				// Same room as TestEnrichmentFresh: a case that expires AT baseTime
+				// must still have been computed before it.
+				p.ComputedAt = baseTime.Add(-time.Hour)
+				tc.with(p)
+			})
 			assert.Equal(t, tc.want, e.Reusable(tc.version, tc.now))
 		})
 	}
@@ -577,6 +657,9 @@ func TestEnrichmentReusable(t *testing.T) {
 func TestCacheEntryExpired(t *testing.T) {
 	t.Parallel()
 
+	// There is no "zero expiry" case: unlike enrichments_exp_ck, the cache's
+	// expiry is NOT nullable, and NewCacheEntry refuses one — so "an entry that
+	// never goes stale" is not a state this type can be in.
 	tests := []struct {
 		name      string
 		expiresAt time.Time
@@ -586,17 +669,134 @@ func TestCacheEntryExpired(t *testing.T) {
 		{name: "before expiry it is served", expiresAt: baseTime.Add(time.Second), now: baseTime, want: false},
 		{name: "exactly at expiry it is not served", expiresAt: baseTime, now: baseTime, want: true},
 		{name: "past expiry", expiresAt: baseTime, now: baseTime.Add(time.Nanosecond), want: true},
-		{name: "the zero expiry is already past", expiresAt: time.Time{}, now: baseTime, want: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := domain.CacheEntry{Key: "e:prom.rule:v1:org:abc", ExpiresAt: tc.expiresAt}
+			c, err := domain.NewCacheEntry(domain.CacheEntryParams{
+				Key:        "e:prom.rule:v1:org:abc",
+				OrgID:      orgA,
+				ComputedAt: tc.expiresAt.Add(-time.Hour),
+				ExpiresAt:  tc.expiresAt,
+			})
+			require.NoError(t, err)
 			assert.Equal(t, tc.want, c.Expired(tc.now))
 		})
 	}
+}
+
+// TestNewCacheEntryRefusesWhatTheTableWouldRefuse restates `enrichment_cache`'s
+// two CHECK constraints in Go, at the only door into the type. The DDL is the
+// backstop; a constraint violation surfacing from the driver means the domain
+// let something through it should have named.
+func TestNewCacheEntryRefusesWhatTheTableWouldRefuse(t *testing.T) {
+	t.Parallel()
+
+	valid := domain.CacheEntryParams{
+		Key:        "e:prom.rule:v1:org:abc",
+		OrgID:      orgA,
+		Payload:    []byte(`{"expr":"up == 0"}`),
+		ComputedAt: baseTime,
+		ExpiresAt:  baseTime.Add(time.Minute),
+	}
+
+	tests := []struct {
+		name string
+		code string
+		with func(p *domain.CacheEntryParams)
+	}{
+		{
+			name: "an empty key (enrichment_cache_key_ck)",
+			code: "enrichment_bad_cache_key",
+			with: func(p *domain.CacheEntryParams) { p.Key = "" },
+		},
+		{
+			name: "a key the column cannot hold (enrichment_cache_key_ck)",
+			code: "enrichment_bad_cache_key",
+			with: func(p *domain.CacheEntryParams) { p.Key = string(make([]byte, domain.MaxCacheKeyBytes+1)) },
+		},
+		{
+			name: "no org: one global primary key makes an unscoped entry a cross-tenant read",
+			code: "enrichment_no_cache_org",
+			with: func(p *domain.CacheEntryParams) { p.OrgID = "" },
+		},
+		{
+			name: "no expiry at all: this column is NOT nullable",
+			code: "enrichment_bad_cache_expiry",
+			with: func(p *domain.CacheEntryParams) { p.ExpiresAt = time.Time{} },
+		},
+		{
+			name: "expiry before computation (enrichment_cache_exp_ck)",
+			code: "enrichment_bad_cache_expiry",
+			with: func(p *domain.CacheEntryParams) { p.ExpiresAt = p.ComputedAt.Add(-time.Second) },
+		},
+		{
+			name: "expiry equal to computation: strictly after, not at",
+			code: "enrichment_bad_cache_expiry",
+			with: func(p *domain.CacheEntryParams) { p.ExpiresAt = p.ComputedAt },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := valid
+			tc.with(&p)
+
+			c, err := domain.NewCacheEntry(p)
+			require.Error(t, err)
+			assert.Equal(t, errs.KindValidation, errs.KindOf(err))
+			assert.Equal(t, tc.code, errs.CodeOf(err))
+			assert.Equal(t, domain.CacheEntry{}, c, "a refused entry is never half-built")
+		})
+	}
+}
+
+// TestAnEmptyCachePayloadBecomesAnObject. `enrichment_cache.payload` is JSONB
+// NOT NULL with no jsonb_typeof check, so "the enricher answered, and the answer
+// was nothing" is worth caching — but empty BYTES are not JSON and would fail
+// the ::jsonb cast, so the constructor supplies the object.
+func TestAnEmptyCachePayloadBecomesAnObject(t *testing.T) {
+	t.Parallel()
+
+	for _, payload := range [][]byte{nil, {}} {
+		c, err := domain.NewCacheEntry(domain.CacheEntryParams{
+			Key:        "e:prom.rule:v1:org:abc",
+			OrgID:      orgA,
+			Payload:    payload,
+			ComputedAt: baseTime,
+			ExpiresAt:  baseTime.Add(time.Minute),
+		})
+		require.NoError(t, err)
+		assert.JSONEq(t, `{}`, string(c.Payload()))
+	}
+}
+
+// TestACacheEntryCannotBeEditedAfterItIsBuilt. The payload is cloned on ingress
+// and on egress: an entry a caller can edit in place is no longer one the
+// constructor vouched for.
+func TestACacheEntryCannotBeEditedAfterItIsBuilt(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"count":1}`)
+	c, err := domain.NewCacheEntry(domain.CacheEntryParams{
+		Key:        "e:prom.rule:v1:org:abc",
+		OrgID:      orgA,
+		Payload:    body,
+		ComputedAt: baseTime,
+		ExpiresAt:  baseTime.Add(time.Minute),
+	})
+	require.NoError(t, err)
+
+	body[2] = 'X'
+	assert.JSONEq(t, `{"count":1}`, string(c.Payload()), "editing the caller's slice does not reach inside")
+
+	got := c.Payload()
+	got[2] = 'X'
+	assert.JSONEq(t, `{"count":1}`, string(c.Payload()), "and neither does editing what was handed back")
 }
 
 // ---------------------------------------------------------------- CacheKey
@@ -779,26 +979,36 @@ func TestBudgetsBound(t *testing.T) {
 	assert.Equal(t, 32, domain.MaxWarnings, "the warnings column is not a log")
 }
 
-// ---------------------------------------------------------------- known bug
+// ------------------------------------------------------- the closed door
 
-// TestBUG_EnrichmentIsConstructibleWhileInvalid demonstrates that
-// internal/enrichment/domain has no `New…() (T, error)` constructor at all: the
-// only invariant enforcement is an optional Enrichment.Validate() that any
-// caller may forget to call, and CacheEntry has no enforcement whatsoever.
+// TestAnInvalidEnrichmentIsNotConstructible is the inversion of a bug this
+// package used to carry: `internal/enrichment/domain` had no `New…() (T, error)`
+// at all, so the zero value of Enrichment was fully constructible while
+// violating six DDL CHECKs at once, and the only enforcement was an optional
+// Validate() any caller could forget.
 //
 // CONTEXT.md §5b: "No optional Validate() in domain. If you can construct it, it
 // is valid." CONTEXT.md §5 layer table: "Domain invariants | value objects +
-// New…() (T, error)".
-//
-// The zero value below is a fully constructible Enrichment that violates six
-// DDL CHECKs at once, and nothing in the type system stops it reaching a
-// repository. This is the invariant hole, not a behaviour defect in Validate.
-func TestBUG_EnrichmentIsConstructibleWhileInvalid(t *testing.T) {
-	t.Skip("BUG: internal/enrichment/domain has no New* constructor; Enrichment relies on an optional Validate(), which CONTEXT.md §5b forbids (enrichment.go:159). CacheEntry has no invariant enforcement at all — enrichment_cache_key_ck and enrichment_cache_exp_ck are re-checked in internal/enrichment/repository/cache.go instead of in the domain.")
+// New…() (T, error)". Both types now have exactly one door, and the zero value
+// is behind it rather than beside it.
+func TestAnInvalidEnrichmentIsNotConstructible(t *testing.T) {
+	t.Parallel()
 
-	var e domain.Enrichment
-	require.Error(t, e.Validate(), "the zero value is invalid, yet it constructed")
+	// The empty params are the old zero value, and they are now an error rather
+	// than a record: it is refused at the FIRST invariant it breaks, and the
+	// caller is told which.
+	e, err := domain.NewEnrichment(domain.EnrichmentParams{})
+	requireValidationCode(t, err, "enrichment_no_org")
+	assert.Equal(t, domain.Enrichment{}, e)
+
+	// And the zero value itself is unreachable as a record: with every field
+	// unexported it cannot be filled in from outside this package, so what it
+	// reports is nothing at all rather than something the table would refuse.
+	var zero domain.Enrichment
+	assert.Empty(t, zero.OrgID(), "a zero value cannot claim a tenant")
+	assert.Empty(t, zero.Enricher(), "nor a name enrichments_name_ck would accept")
+	assert.False(t, zero.Status().Valid(), "nor a storable status")
 
 	var c domain.CacheEntry
-	assert.Empty(t, c.Key, "an empty key violates enrichment_cache_key_ck and the domain cannot say so")
+	assert.Empty(t, c.Key(), "the same is true next door")
 }

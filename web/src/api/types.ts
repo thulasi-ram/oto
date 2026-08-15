@@ -59,6 +59,11 @@ export type ReminderMentionSeverity = S["ReminderMentionSeverity"];
 export type ChannelHealthStatus = S["ChannelHealthStatus"];
 export type SourceKind = S["SourceKind"];
 export type SourceHealthStatus = S["SourceHealthStatus"];
+/** Why oto refused one element. Closed, and the only vocabulary the feed may use. */
+export type RejectionReason = S["RejectionReason"];
+/** `failed` (it stopped by deciding) or `partial` (it stopped by dying). */
+export type FailedBatchStatus = S["FailedBatchStatus"];
+export type IngestBatchMode = S["IngestBatchMode"];
 export type RuleOrigin = S["RuleOrigin"];
 export type MatchConfidence = S["MatchConfidence"];
 export type EnrichmentStatus = S["EnrichmentStatus"];
@@ -73,6 +78,14 @@ export type AlertRef = S["AlertRefDTO"];
 /** One server-side roll-up bucket. **Not** an AlertGroup — it has no row and no thread. */
 export type AlertRollup = S["AlertRollupDTO"];
 export type Snooze = S["SnoozeDTO"];
+/**
+ * One row of the org-wide active-snooze list (§B.8.6).
+ *
+ * `alert` is nullable and the row is listed anyway — a hold whose subject cannot
+ * be read is still a hold somebody has to know about, and dropping it would hide
+ * exactly what the endpoint exists to surface.
+ */
+export type ActiveSnooze = S["ActiveSnoozeDTO"];
 export type SnoozeHistoryEntry = S["SnoozeHistoryDTO"];
 export type SnoozeEndReason = S["SnoozeEndReason"];
 export type Occurrence = S["OccurrenceDTO"];
@@ -103,12 +116,28 @@ export type SourceCreated = S["SourceCreatedDTO"];
 export type SourceHealth = S["SourceHealthDTO"];
 /**
  * What governs one Alertmanager's batching, and **how oto knows** — the three
- * top-level route timings, each with its provenance. Read from the source's
- * published configuration; never typed in.
+ * timings in force, each with its provenance, plus the whole resolved route tree
+ * they came out of. Read from the source's published configuration; never typed
+ * in.
  */
 export type RouteTimings = S["RouteTimingsDTO"];
 /** One route timing plus where its number came from. */
 export type RouteTiming = S["RouteTimingDTO"];
+/**
+ * One route that DELIVERS to a receiver, resolved: its inherited receiver, its
+ * inherited timings, its matcher path, and whether it reaches oto.
+ */
+export type ReceiverRoute = S["ReceiverRouteDTO"];
+/** One route on the path from the top-level route down to a delivering one. */
+export type RouteStep = S["RouteStepDTO"];
+/** One per-route timing, with the depth on the path that stated it. */
+export type InheritedTiming = S["InheritedTimingDTO"];
+/**
+ * How oto decided which receiver is its own. It is an INFERENCE, never a
+ * reading: Alertmanager redacts `webhook_config.url` as `<secret>`, so the URL
+ * that carries oto's own source id never reaches oto.
+ */
+export type ReceiverBasis = S["ReceiverBasis"];
 /**
  * `observed` (the source's config states it), `default_applies` (the config is
  * silent, so Alertmanager's documented default governs) or `unknown` (oto could
@@ -117,6 +146,29 @@ export type RouteTiming = S["RouteTimingDTO"];
  */
 export type TimingProvenance = S["TimingProvenance"];
 export type SourceTest = S["SourceTestDTO"];
+/**
+ * One element oto refused, kept so that nothing disappears without a trace.
+ *
+ * `labels` is deliberately **not** a `LabelMap`: it is the set oto refused, so it
+ * is precisely the one that may break `LabelMap`'s bounds — a `too_many_labels`
+ * rejection carries more than 64 entries. It is stored already redacted, so a
+ * value reading `[redacted]` here reads `[redacted]` on disk; there is no
+ * plaintext behind it to ask for.
+ */
+export type Rejection = S["RejectionDTO"];
+/** One batch whose alerts are durably on disk and never reached the product. */
+export type FailedBatch = S["FailedBatchDTO"];
+/**
+ * One delivery drill: a synthetic alert oto pushed through the REAL pipeline,
+ * with a per-stage verdict. `failed_stage` is the field the screen exists for —
+ * not "it did not work" but "the policy matched nothing".
+ */
+export type DeliveryDrill = S["DeliveryDrillDTO"];
+export type DrillStage = S["DrillStageDTO"];
+export type DrillStageName = S["DrillStageName"];
+export type DrillStageStatus = S["DrillStageStatus"];
+export type DrillStatus = S["DrillStatus"];
+export type DrillDestination = S["DrillDestinationDTO"];
 export type ReconcileResult = S["ReconcileResultDTO"];
 export type ChannelTypeDescriptor = S["ChannelTypeDTO"];
 export type Channel = S["ChannelDTO"];
@@ -206,6 +258,12 @@ export type NotificationListQuery = NonNullable<
 export type DeliveryListQuery = NonNullable<operations["listDeliveries"]["parameters"]["query"]>;
 export type SilenceListQuery = NonNullable<operations["listSilences"]["parameters"]["query"]>;
 export type LabelValueQuery = NonNullable<operations["listLabelValues"]["parameters"]["query"]>;
+export type RejectionListQuery = NonNullable<
+  operations["listSourceRejections"]["parameters"]["query"]
+>;
+export type FailedBatchListQuery = NonNullable<
+  operations["listSourceFailedBatches"]["parameters"]["query"]
+>;
 export type StreamQuery = NonNullable<operations["streamEvents"]["parameters"]["query"]>;
 
 export type { components, operations };

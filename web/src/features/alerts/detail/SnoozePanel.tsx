@@ -39,7 +39,7 @@ export const SnoozePanel: Component<SnoozePanelProps> = (props) => (
   <Panel>
     <PanelHeader>
       <PanelTitle>Quiet periods</PanelTitle>
-      <span class="text-[11px] text-ink-subtle">oto's notifications, not the signal</span>
+      <span class="text-meta text-ink-subtle">oto's notifications, not the signal</span>
     </PanelHeader>
 
     <Switch>
@@ -80,21 +80,21 @@ const SnoozeRow: Component<{ readonly row: SnoozeHistoryEntry }> = (props) => {
             in force
           </Chip>
         </Show>
-        <span class="text-[12px] font-medium text-ink">{r().snoozed_by_label}</span>
-        <span class="text-[12px] text-ink-muted">
+        <span class="text-body font-medium text-ink">{r().snoozed_by_label}</span>
+        <span class="text-body text-ink-muted">
           asked for quiet until{" "}
           <span title={absoluteTime(r().snoozed_until)}>
             <RelativeTime value={r().snoozed_until} label="Notifications resume" />
           </span>
         </span>
-        <span class="ml-auto text-[11px] text-ink-subtle" title={absoluteTime(r().snoozed_at)}>
+        <span class="ml-auto text-meta text-ink-subtle" title={absoluteTime(r().snoozed_at)}>
           started <RelativeTime value={r().snoozed_at} label="Snooze started" /> ago
         </span>
       </div>
 
       <Show when={r().note}>
         {(note) => (
-          <p class="mt-0.5 border-l-2 border-line-strong pl-2 text-[12px] leading-snug text-ink">
+          <p class="mt-0.5 border-l-2 border-line-strong pl-2 text-body leading-snug text-ink">
             {note()}
           </p>
         )}
@@ -102,7 +102,7 @@ const SnoozeRow: Component<{ readonly row: SnoozeHistoryEntry }> = (props) => {
 
       <Show when={r().ended_reason}>
         {(reason) => (
-          <p class="mt-0.5 text-[11px] leading-snug text-ink-subtle">
+          <p class="mt-0.5 text-meta leading-snug text-ink-subtle">
             Ended — {END_REASON[reason()] ?? reason()}
             {r().ended_by_label ? `, by ${r().ended_by_label}` : ""}.
           </p>

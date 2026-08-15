@@ -8,8 +8,9 @@ import (
 
 // ⚠️ WHY THE WRITE COMMANDS LIVE IN `domain` AND NOT IN `repository`.
 //
-// `internal/sources/api` declares the port it needs and `internal/sources/
-// repository` satisfies it, and neither may import the other (CONTEXT.md §5.1).
+// `internal/sources/service` declares the port it needs and `internal/sources/
+// repository` satisfies it, and neither may import the other (CONTEXT.md §5.1);
+// `internal/sources/api` names the same command types when it binds a request.
 // The command types therefore have to live in the one package both are permitted
 // to name. That is this one, and it is also where they belong: a `SourceDraft` is
 // a statement about the DOMAIN — which fields make an upstream registerable —
@@ -84,8 +85,10 @@ type SourceDraft struct {
 	RedactLabels      []string
 	RedactAnnotations []string
 
-	PushEnabled       bool
-	ReconcileEnabled  bool
+	PushEnabled bool
+	// ReconcileInterval is the only reconciliation setting a create carries: the
+	// reconciler runs for every source (ADR 0006), and there is no field here that
+	// could ask for it not to.
 	ReconcileInterval time.Duration
 }
 
@@ -116,8 +119,8 @@ type SourcePatch struct {
 	RedactLabels      *[]string
 	RedactAnnotations *[]string
 
-	PushEnabled       *bool
-	ReconcileEnabled  *bool
+	PushEnabled *bool
+	// ReconcileInterval is tunable; whether the reconciler runs at all is not.
 	ReconcileInterval *time.Duration
 }
 
@@ -126,7 +129,7 @@ func (p SourcePatch) IsEmpty() bool {
 	return p.ClusterID == nil && p.Name == nil && p.BaseURL == nil &&
 		p.PrometheusURL == nil && p.AuthCredentialID == nil && p.TLSSkipVerify == nil &&
 		p.InjectLabels == nil && p.IgnoreLabels == nil && p.RedactLabels == nil &&
-		p.RedactAnnotations == nil && p.PushEnabled == nil && p.ReconcileEnabled == nil &&
+		p.RedactAnnotations == nil && p.PushEnabled == nil &&
 		p.ReconcileInterval == nil
 }
 

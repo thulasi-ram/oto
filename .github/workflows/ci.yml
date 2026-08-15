@@ -76,8 +76,61 @@ jobs:
       # mocked databases lie about SQL semantics.
       - run: go test -race -count=1 ./...
 
+  # Gate G1 of SPEC §L.8.1 — Go DTO → OpenAPI.
+  #
+  # It reflects every `*DTO`/`*Request`/`*Query` struct in internal/**/api and
+  # diffs the derived schema against api/openapi/openapi.yaml: json tags,
+  # required/optional, types, enums, nullability and the `validate` bounds. It is
+  # a separate job from `go / test` because it is pure reflection over YAML —
+  # seconds, no Docker — and a contract failure should not wait behind
+  # `go test -race ./...`.
+  #
+  # The same package carries the RATCHET: an operation declared in the contract
+  # and named by no test fails here on the day it is added.
+  contract-dto:
+    name: contract / gate G1 (Go DTO -> OpenAPI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go test -count=1 ./test/contract/
+
+  # Gate G2 of SPEC §L.8.1 — RUNNING SERVER → OpenAPI.
+  #
+  # It assembles the real composition root over a real, fully migrated Postgres
+  # (testcontainers), mounts the real route tree on a real HTTP server, mints a
+  # real credential through the real `oto bootstrap` path, and calls every
+  # declared operation. For each response it asserts the status is one the
+  # contract declares, the Content-Type is one the contract declares, and the
+  # BYTES the handler wrote validate against that media type's schema.
+  #
+  # ⚠️ It DEVIATES from the SPEC, which names `schemathesis`. The argument is in
+  # test/contract/server/doc.go: schemathesis is Python, this repository's CI
+  # installs Go and Node, and oto's server cannot be started without the Go test
+  # harness — so the Python would buy a request generator at the price of a third
+  # toolchain and a second way to stand the product up. Exhaustiveness is
+  # recovered by a ratchet instead: an operation the contract declares and the
+  # probe table does not drive fails the gate.
+  contract-server:
+    name: contract / gate G2 (running server -> OpenAPI)
+    runs-on: ubuntu-latest
+    needs: [go-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      # Docker is preinstalled on ubuntu-latest; testcontainers finds it on the
+      # default socket, so no DOCKER_HOST is set here (unlike `just server-check`,
+      # which has to cope with colima on a contributor's laptop).
+      - run: go test -count=1 ./test/contract/server/
+
   ui:
-    name: ui / gate G3 + lint + build + test
+    name: ui / gates G3 + G4 + lint + build + test
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -99,6 +152,18 @@ jobs:
       # not in a browser.
       - name: gate G3 — openapi -> ts client is not stale
         run: npm run generate:check
+
+      # Gate G4 (SPEC §L.8.1): the same trick one layer down. `gen-validators.mjs`
+      # emits one valibot schema per component schema into
+      # src/api/generated/validators.ts, which is CHECKED IN; this regenerates it
+      # and fails on any diff. G3 protects the TYPES, which vanish at build time;
+      # G4 protects the RUNTIME check, which is the only thing that can notice a
+      # server whose body no longer matches the contract. It is also what makes
+      # §L.8's "no hand-written valibot schema may describe an API response"
+      # enforceable — a form schema must `v.pipe` into the generated request
+      # schema, and there is now one to pipe into.
+      - name: gate G4 — openapi -> valibot validators are not stale
+        run: npm run gen:validators:check
 
       - run: npm run typecheck
       - run: npm run build
@@ -125,6 +190,47 @@ jobs:
       # person-subject columns. Known debt is enumerated in
       # tools/lintvocab/baseline.txt and can only shrink.
       - run: go run ./tools/lintvocab
+
+  # The chart gate. deploy/helm/oto is 1,131 lines of templates over a 570-line
+  # values.yaml, and until this job existed NOTHING executed any of it: `helm
+  # lint`, `helm template` and `helm package` appeared in no file in the tree, so
+  # the correctness of the artifact a customer touches first was asserted by
+  # review alone while every other contract here had a gate.
+  #
+  # ⭐ IT BELONGS HERE AND NOT IN release.yml. A chart defect found when a tag is
+  # pushed is found after the commit is immutable and after review said yes;
+  # release.yml also installs no helm and deliberately runs no checks, because
+  # the commit it builds has already been through this workflow. Per-PR is the
+  # only place this answer is worth anything.
+  #
+  # The matrix lives in deploy/helm/check.sh rather than in this file, so that
+  # `just helm-check` and this job cannot be two different gates (README.md).
+  helm:
+    name: chart / lint + render + kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠️ INSTALLED EXPLICITLY AND PINNED. Neither tool is on ubuntu-latest,
+      # and an unpinned one is a gate whose meaning changes without a commit —
+      # helm 4 already changed what `helm lint` does with a template `fail`
+      # (it logs and exits 0), which is precisely why check.sh asserts through
+      # `helm template` instead. v4.1.1 is the version the gate was written and
+      # verified against.
+      - name: install helm and kubeconform
+        run: |
+          HELM_VERSION=v4.1.1
+          KUBECONFORM_VERSION=v0.7.0
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp linux-amd64/helm
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+          helm version
+          kubeconform -v
+
+      - run: bash deploy/helm/check.sh
 
   reachability:
     name: scope / reachability

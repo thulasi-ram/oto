@@ -143,7 +143,9 @@ const observeMaxAttempts = 3
 // touching one alert serialise here, so neither can read a stale occurrence — the
 // compare-and-set below is contended almost exclusively by the reaper.
 //
-//nolint:gocyclo // this IS the §B.3 table's driver; splitting it would scatter one decision across files.
+// The §B.3 decision itself is NOT here. `domain.Decide` names the row and
+// `observeOne` applies what it named: this method is the batch — the reads that
+// happen once, the loop, and the writes that happen once at the end.
 func (s *Service) observe(
 	ctx context.Context, scope db.TenantScope, obs []domain.Observation,
 	opt ObserveOptions, cfg Settings,
@@ -182,216 +184,17 @@ func (s *Service) observe(
 		return ObserveResult{}, err
 	}
 
-	var (
-		events     []domain.Event
-		notifies   []notifyRequest
-		enrichIDs  []uuid.UUID
-		outcomes   = make([]ObserveOutcome, 0, len(obs))
-		newEpisode = map[uuid.UUID]int{}
-	)
+	acc := &observeAccum{
+		latest:     latest,
+		newEpisode: map[uuid.UUID]int{},
+		outcomes:   make([]ObserveOutcome, 0, len(obs)),
+	}
 
 	for i, o := range obs {
-		alert := results[i].Alert
-		out := ObserveOutcome{
-			AlertID:      alert.ID(),
-			AlertKey:     alert.Key().String(),
-			AlertCreated: results[i].WasInserted,
-		}
-
-		at, err := observationTime(o, s.Now())
-		if err != nil {
+		if err := s.observeOne(ctx, scope, o, results[i],
+			prior[results[i].Alert.Key().String()], opt, cfg, acc); err != nil {
 			return ObserveResult{}, err
 		}
-		actor, err := actorFor(o.Source)
-		if err != nil {
-			return ObserveResult{}, err
-		}
-
-		if results[i].WasInserted {
-			ev, err := alertCreatedEvent(alert, at, actor)
-			if err != nil {
-				return ObserveResult{}, err
-			}
-			events = append(events, ev)
-		}
-
-		trigger := triggerFor(o.Status)
-		current, has := latest[alert.ID()]
-
-		var (
-			occ          domain.Occurrence
-			haveOcc      bool
-			stateChanged bool
-		)
-
-		switch {
-		case !has || (!current.IsOpen() && shouldOpenFresh(current, trigger, at, cfg)):
-			// T1 (no episode yet) and T7 (a re-fire beyond refire_grace) both open
-			// a NEW episode. A non-firing observation with no open episode
-			// transitions nothing: a `resolved` for an Alert oto has never seen
-			// firing resolves nothing, and inventing an episode to close would be
-			// fabricating history.
-			if trigger != domain.TriggerObserveFiring {
-				outcomes = append(outcomes, out)
-				continue
-			}
-			seq := 1
-			reopenOf := uuid.Nil
-			if has {
-				seq = current.Seq() + 1
-				reopenOf = current.ID()
-			}
-			opened, evs, err := s.openEpisode(ctx, scope, alert, o, at, actor, opt, seq, reopenOf)
-			if err != nil {
-				return ObserveResult{}, err
-			}
-			occ, haveOcc, stateChanged = opened, true, true
-			events = append(events, evs...)
-			enrichIDs = append(enrichIDs, opened.ID())
-			newEpisode[alert.ID()]++
-			out.OccurrenceOpened = true
-			out.Transition = transitionName(has)
-			out.From, out.To = "", opened.State().String()
-
-			// T10: an acknowledgement does NOT survive into a new episode. The
-			// previous occurrence keeps its ack in the record — rewriting a
-			// terminal episode's attribution would be rewriting history — and the
-			// fact that the ack no longer applies is recorded on the NEW episode.
-			if has && current.AckState().IsAcked() {
-				ev, err := autoUnackEvent(opened, at)
-				if err != nil {
-					return ObserveResult{}, err
-				}
-				events = append(events, ev)
-				notifies = append(notifies, notifyRequest{
-					groupID:      groupOf(opt, opened),
-					reason:       reasonUnacked,
-					alertID:      ptr(alert.ID()),
-					occurrenceID: ptr(opened.ID()),
-					actor:        actor.Kind().String(),
-				})
-			}
-			notifies = append(notifies, notifyRequest{
-				groupID:      groupOf(opt, opened),
-				reason:       reasonFired,
-				alertID:      ptr(alert.ID()),
-				occurrenceID: ptr(opened.ID()),
-				actor:        actor.Kind().String(),
-			})
-
-		default:
-			cmd, err := s.transitionCommand(o, at, actor, trigger, cfg, prior[alert.Key().String()], alert)
-			if err != nil {
-				return ObserveResult{}, err
-			}
-			r, err := domain.Apply(current, cmd)
-			if err != nil {
-				// A precondition failure is the machine saying "no §B.3 row
-				// permits this from here". That is a normal outcome for a noisy
-				// upstream — a duplicate `resolved`, say — and must not fail the
-				// batch and cost every other alert in it.
-				if errs.IsKind(err, errs.KindPrecondition) {
-					s.log.DebugContext(ctx, "alerts: observation makes no legal transition",
-						"alert_key", alert.Key().String(), "state", current.State().String(),
-						"trigger", trigger.String())
-					outcomes = append(outcomes, out)
-					continue
-				}
-				return ObserveResult{}, err
-			}
-
-			if r.OpensNewOccurrence {
-				opened, evs, err := s.openEpisode(ctx, scope, alert, o, at, actor, opt,
-					current.Seq()+1, current.ID())
-				if err != nil {
-					return ObserveResult{}, err
-				}
-				occ, haveOcc, stateChanged = opened, true, true
-				events = append(events, evs...)
-				enrichIDs = append(enrichIDs, opened.ID())
-				newEpisode[alert.ID()]++
-				out.OccurrenceOpened = true
-				out.Transition = r.ID.String()
-				out.From, out.To = r.From.String(), opened.State().String()
-				if current.AckState().IsAcked() {
-					ev, err := autoUnackEvent(opened, at)
-					if err != nil {
-						return ObserveResult{}, err
-					}
-					events = append(events, ev)
-				}
-				notifies = append(notifies, notifyRequest{
-					groupID:      groupOf(opt, opened),
-					reason:       reasonFired,
-					alertID:      ptr(alert.ID()),
-					occurrenceID: ptr(opened.ID()),
-					actor:        actor.Kind().String(),
-				})
-			} else {
-				if err := s.persistTransition(ctx, scope, r, o); err != nil {
-					return ObserveResult{}, err
-				}
-				occ, haveOcc = r.Occurrence, true
-				stateChanged = r.From != r.To
-				events = append(events, r.Events...)
-				out.Transition = r.ID.String()
-				out.From, out.To = r.From.String(), r.To.String()
-				out.Clamped, out.ClampSkew = r.Clamped, r.ClampSkew
-				if reason := reasonFor(r.ID); reason != "" {
-					notifies = append(notifies, notifyRequest{
-						groupID:      groupOf(opt, occ),
-						reason:       reason,
-						alertID:      ptr(alert.ID()),
-						occurrenceID: ptr(occ.ID()),
-						actor:        actor.Kind().String(),
-					})
-				}
-			}
-		}
-
-		// ⛔ NO `severity_raised` NOTIFICATION IS EMITTED HERE, AND THE CODE THAT
-		// ONCE DID WAS UNREACHABLE.
-		//
-		// It read the pre-upsert snapshot, compared `was.Severity()` with
-		// `alert.Severity()` under `!WasInserted`, and could never be true: the
-		// lookup is by `alert.Key()`, and `severity` is hashed INTO that key
-		// (§C.2), so a changed severity is a changed key — a MISS in `prior` and a
-		// fresh insert, never an update. Two severities of one rule are two Alerts.
-		// ADR 0020 records the finding; `test/integration/alert_identity_test.go`
-		// proves it against a real database.
-
-		if haveOcc {
-			latest[alert.ID()] = occ
-			out.OccurrenceID = occ.ID()
-			if err := s.projectFromOccurrence(ctx, scope, alert, occ, at, stateChanged,
-				newEpisode[alert.ID()]); err != nil {
-				return ObserveResult{}, err
-			}
-			if err := s.publishOccurrence(ctx, scope, occ); err != nil {
-				return ObserveResult{}, err
-			}
-		} else if results[i].WasInserted {
-			// An Alert that exists but has no episode still has a projection: its
-			// identity was recorded and the list must show it.
-			if err := s.alerts.SetProjection(ctx, scope, alert.ID(), domain.AlertProjection{
-				State:             alert.State(),
-				AckState:          domain.AckStateUnacked,
-				SnoozedUntil:      nilTime(alert.SnoozedUntil()),
-				LastSeenAt:        at.RecordedAt(),
-				LastStateChangeAt: at.RecordedAt(),
-				TotalOccurrences:  alert.TotalOccurrences(),
-			}); err != nil {
-				return ObserveResult{}, err
-			}
-		}
-
-		if err := s.publishAlert(ctx, scope, alert.ID(), map[string]any{
-			"alert_key": alert.Key().String(),
-			"state":     alert.State().String(),
-		}); err != nil {
-			return ObserveResult{}, err
-		}
-		outcomes = append(outcomes, out)
 	}
 
 	// A batch that changed nothing about any alert can still be a fact about the
@@ -400,18 +203,29 @@ func (s *Service) observe(
 	// is the largest noise reduction available to oto and it is the one Reason no
 	// per-alert transition can produce, because nothing transitioned.
 	if opt.GroupReason != "" && opt.GroupID != nil && *opt.GroupID != uuid.Nil {
-		notifies = append(notifies, notifyRequest{
+		acc.notifies = append(acc.notifies, notifyRequest{
 			groupID: *opt.GroupID,
 			reason:  opt.GroupReason,
 			actor:   string(domain.ActorIngest.String()),
 		})
 	}
 
-	written, err := s.appendEvents(ctx, scope, events)
+	// 4. The batch's writes, ONE round trip each, mirroring the reads above
+	//    (§G.4): the projections collapsed to the last write per alert, the
+	//    timeline entries, then every UI frame the loop queued — occurrence and
+	//    alert frames in observation order first, event frames after, which is
+	//    the order the per-item appends used to produce.
+	if err := s.flushProjections(ctx, scope, acc); err != nil {
+		return ObserveResult{}, err
+	}
+	written, err := s.appendEventsBatched(ctx, scope, acc)
 	if err != nil {
 		return ObserveResult{}, err
 	}
-	enrichN, err := s.enqueueEnrich(ctx, enrichIDs)
+	if err := s.flushFrames(ctx, scope, acc.frames); err != nil {
+		return ObserveResult{}, err
+	}
+	enrichN, err := s.enqueueEnrich(ctx, acc.enrichIDs)
 	if err != nil {
 		return ObserveResult{}, err
 	}
@@ -423,20 +237,318 @@ func (s *Service) observe(
 	// enqueueNotify.
 	deferred := map[uuid.UUID]struct{}{}
 	if enrichN > 0 {
-		for _, occID := range enrichIDs {
+		for _, occID := range acc.enrichIDs {
 			deferred[occID] = struct{}{}
 		}
 	}
-	notifyN, err := s.enqueueNotify(ctx, scope, notifies, deferred)
+	notifyN, err := s.enqueueNotify(ctx, scope, acc.notifies, deferred)
 	if err != nil {
 		return ObserveResult{}, err
 	}
 
 	return ObserveResult{
-		Outcomes:      outcomes,
+		Outcomes:      acc.outcomes,
 		EventsWritten: written,
 		JobsEnqueued:  enrichN + notifyN,
 	}, nil
+}
+
+// observeAccum is what a batch builds up as it decides one observation at a time.
+//
+// It exists so that `observeOne` can be a method with ONE mutable argument
+// instead of six named accumulators closed over by a loop body: everything below
+// is either written once for the whole batch at the end (§F.3's phase ordering
+// depends on the events and the jobs being batched) or is per-alert state the
+// NEXT observation of the same alert must see.
+type observeAccum struct {
+	// latest is the batch's view of each Alert's current episode. It starts as the
+	// one round trip in step 3 and is UPDATED IN PLACE, so a second observation of
+	// the same alert inside one batch decides against what the first one did
+	// rather than against a stale read.
+	latest map[uuid.UUID]domain.Occurrence
+	// newEpisode counts the episodes opened per Alert IN THIS BATCH, which is what
+	// the projection adds to total_occurrences.
+	newEpisode map[uuid.UUID]int
+
+	// projections is the batch's pending `alerts` summary per alert, and
+	// projectionOrder is first-staged order so the flush is deterministic. M
+	// observations of one alert stage M times and FLUSH ONCE: only the last
+	// write could survive anyway, so the earlier round trips bought nothing.
+	projections     map[uuid.UUID]domain.AlertProjection
+	projectionOrder []uuid.UUID
+	// frames is every §E.4 change notice the batch queued, in the order the
+	// per-item appends used to publish them; it is flushed in ONE round trip.
+	frames []StreamFrame
+
+	events    []domain.Event
+	notifies  []notifyRequest
+	enrichIDs []uuid.UUID
+	outcomes  []ObserveOutcome
+}
+
+// stageProjection records the projection an observation decided, collapsing to
+// one write per alert.
+//
+// Last write wins for every field EXCEPT LastSeenAt, which keeps the maximum
+// staged: SetProjection's SQL folds each write through
+// GREATEST(last_seen_at, $7), so M sequential writes left max(all M) behind, and
+// a collapse that kept only the last observation's clock reading would let an
+// out-of-order pair inside one batch rewind what the sequential code preserved.
+// Every other column was a plain overwrite (last_state_change_at's GREATEST is
+// against first_seen_at, which no write here moves), so for those the last
+// staged value IS the sequential result.
+func (a *observeAccum) stageProjection(alertID uuid.UUID, p domain.AlertProjection) {
+	if a.projections == nil {
+		a.projections = map[uuid.UUID]domain.AlertProjection{}
+	}
+	prev, seen := a.projections[alertID]
+	if !seen {
+		a.projectionOrder = append(a.projectionOrder, alertID)
+		a.projections[alertID] = p
+		return
+	}
+	if prev.LastSeenAt.After(p.LastSeenAt) {
+		p.LastSeenAt = prev.LastSeenAt
+	}
+	a.projections[alertID] = p
+}
+
+// observeOne runs SPEC §B.3 over ONE observation and applies what it decided.
+//
+// ⭐ THE DECISION IS `domain.Decide` AND THE EFFECTS ARE HERE. That split is the
+// point of this method. `Decide` is a pure function of the observation and the
+// episode it lands on, so every row of the table is drivable from a test with no
+// database; and there is exactly ONE place — `applyOpen` — that turns "open a new
+// episode" into writes. There used to be two, forty lines apart inside a 294-line
+// function, and they had already drifted apart on whether T10 notifies.
+func (s *Service) observeOne(
+	ctx context.Context, scope db.TenantScope, o domain.Observation,
+	up domain.AlertUpsertResult, prior domain.Alert, opt ObserveOptions, cfg Settings,
+	acc *observeAccum,
+) error {
+	alert := up.Alert
+	out := ObserveOutcome{
+		AlertID:      alert.ID(),
+		AlertKey:     alert.Key().String(),
+		AlertCreated: up.WasInserted,
+	}
+
+	at, err := observationTime(o, s.Now())
+	if err != nil {
+		return err
+	}
+	actor, err := actorFor(o.Source)
+	if err != nil {
+		return err
+	}
+	if up.WasInserted {
+		ev, err := alertCreatedEvent(alert, at, actor)
+		if err != nil {
+			return err
+		}
+		acc.events = append(acc.events, ev)
+	}
+
+	// The Alert's latest episode, or the ZERO Occurrence when it has none — which
+	// is StateNone, the state T1's row comes from. `Decide` needs no second
+	// argument to be told the difference.
+	current := acc.latest[alert.ID()]
+	trigger := triggerFor(o.Status)
+
+	d, err := domain.Decide(current, routingCommand(trigger, actor, at, cfg))
+	if err != nil {
+		if errs.IsKind(err, errs.KindPrecondition) {
+			s.noTransition(ctx, alert, current, trigger, out, acc)
+			return nil
+		}
+		return err
+	}
+
+	var (
+		occ          domain.Occurrence
+		stateChanged bool
+	)
+	if d.OpensEpisode {
+		// A new episode is always a state change: there was no state before it.
+		occ, err = s.applyOpen(ctx, scope, alert, o, at, actor, opt, d, &out, acc)
+		if err != nil {
+			return err
+		}
+		stateChanged = true
+	} else {
+		// ⛔ THE FALLIBLE HALF OF THE COMMAND IS ASSEMBLED HERE AND NOT BEFORE
+		// `Decide`. Naming the Alertmanager witness that suppressed an observation
+		// can fail, and an unwitnessed `suppressed` observation for an Alert with no
+		// episode runs no row at all — asking the question early would cost the
+		// whole batch for an observation that changes nothing.
+		cmd, err := s.edgeCommand(o, at, actor, trigger, cfg, prior, alert)
+		if err != nil {
+			return err
+		}
+		r, err := domain.Apply(current, cmd)
+		if err != nil {
+			// A precondition failure is the machine saying "no §B.3 row permits this
+			// from here". That is a normal outcome for a noisy upstream — a duplicate
+			// `resolved`, say — and must not fail the batch and cost every other alert
+			// in it.
+			if errs.IsKind(err, errs.KindPrecondition) {
+				s.noTransition(ctx, alert, current, trigger, out, acc)
+				return nil
+			}
+			return err
+		}
+		occ, stateChanged, err = s.applyEdge(ctx, scope, alert, o, r, actor, opt, &out, acc)
+		if err != nil {
+			return err
+		}
+	}
+
+	// ⛔ NO `severity_raised` NOTIFICATION IS EMITTED HERE, AND THE CODE THAT ONCE
+	// DID WAS UNREACHABLE.
+	//
+	// It read the pre-upsert snapshot, compared `was.Severity()` with
+	// `alert.Severity()` under `!WasInserted`, and could never be true: the lookup
+	// is by `alert.Key()`, and `severity` is hashed INTO that key (§C.2), so a
+	// changed severity is a changed key — a MISS in `prior` and a fresh insert,
+	// never an update. Two severities of one rule are two Alerts. ADR 0020 records
+	// the finding; `test/integration/alert_identity_test.go` proves it against a
+	// real database.
+
+	acc.latest[alert.ID()] = occ
+	out.OccurrenceID = occ.ID()
+	// The projection and the two frames are STAGED, not written: the batch
+	// flushes them once at the end (§G.4), inside the same transaction, so an
+	// event and its projection still commit together or not at all.
+	acc.stageProjection(alert.ID(), projectionFor(alert, occ, at, stateChanged,
+		acc.newEpisode[alert.ID()]))
+	if err := s.queueFrame(acc, StreamOccurrenceUpserted, occ.ID(),
+		occurrenceFramePayload(occ)); err != nil {
+		return err
+	}
+	if err := s.queueFrame(acc, StreamAlertUpserted, alert.ID(), map[string]any{
+		"alert_key": alert.Key().String(),
+		"state":     alert.State().String(),
+	}); err != nil {
+		return err
+	}
+	acc.outcomes = append(acc.outcomes, out)
+	return nil
+}
+
+// noTransition records an observation that ran no §B.3 row.
+//
+// The Alert row and its `alert.created` event are already in the transaction, so
+// the identity is never lost; what does not happen is a projection write and a
+// stream frame. ⛔ THAT IS THIS PATH'S LONG-STANDING BEHAVIOUR AND IT IS NOT THIS
+// REFACTOR'S TO CHANGE: the branch that used to sit under the loop's `haveOcc`
+// test to project such an Alert was unreachable, because both give-up paths
+// `continue`d above it. It is also very nearly harmless — the upsert's INSERT
+// already writes `state`, `last_seen_at` and `last_state_change_at` for a
+// first-ever sighting, which is exactly what that branch re-wrote.
+func (s *Service) noTransition(
+	ctx context.Context, alert domain.Alert, current domain.Occurrence,
+	trigger domain.Trigger, out ObserveOutcome, acc *observeAccum,
+) {
+	s.log.DebugContext(ctx, "alerts: observation makes no legal transition",
+		"alert_key", alert.Key().String(), "state", current.State().String(),
+		"trigger", trigger.String())
+	acc.outcomes = append(acc.outcomes, out)
+}
+
+// applyOpen opens the episode a Decision asked for, AND IS THE ONLY PLACE THAT
+// DOES.
+//
+// T1 (the Alert's first episode) and T7 (a re-fire beyond refire_grace) differ in
+// exactly two values — the sequence number and the episode being succeeded — and
+// `Decide` has already computed both from the table. Everything else about them
+// is identical, which is why they are one function and not two branches.
+func (s *Service) applyOpen(
+	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
+	at domain.ObservationTime, actor domain.Actor, opt ObserveOptions, d domain.Decision,
+	out *ObserveOutcome, acc *observeAccum,
+) (domain.Occurrence, error) {
+	opened, evs, err := s.openEpisode(ctx, scope, alert, o, at, actor, opt, d.Seq, d.ReopenOf)
+	if err != nil {
+		return domain.Occurrence{}, err
+	}
+	acc.events = append(acc.events, evs...)
+	acc.enrichIDs = append(acc.enrichIDs, opened.ID())
+	acc.newEpisode[alert.ID()]++
+
+	out.OccurrenceOpened = true
+	out.Transition = d.ID.String()
+	// ⭐ `From` IS THE STATE THE EPISODE CAME FROM, and for T7 that is `resolved`
+	// or `expired`, never the empty string. It is empty for T1 alone, where
+	// StateNone is the honest answer: there was no episode. The two branches this
+	// replaced disagreed about exactly this, and the one that reported "" for a
+	// re-fire was describing a first sighting that had not happened.
+	out.From, out.To = d.From.String(), opened.State().String()
+
+	// T10: an acknowledgement does NOT survive into a new episode. The previous
+	// occurrence keeps its ack in the record — rewriting a terminal episode's
+	// attribution would be rewriting history — and the fact that the ack no longer
+	// applies is recorded on the NEW episode.
+	if d.DropsAck {
+		ev, err := autoUnackEvent(opened, at)
+		if err != nil {
+			return domain.Occurrence{}, err
+		}
+		acc.events = append(acc.events, ev)
+		// ⭐ AND IT NOTIFIES, which is the half the two branches disagreed about.
+		// SPEC §B.3 T10 is explicit — "Emit `occurrence.unacknowledged` … enqueue
+		// `notify.evaluate(reason=unacked)`" — and §H.5's `unack` block has a
+		// rendering for precisely this road: "*Un-acknowledged* — new occurrence
+		// opened". `unacked` is a root UPDATE with no reply (§H.6), so it costs a
+		// card edit and never a repost, and without it the only witness that a
+		// human's acknowledgement stopped applying is a timeline entry nobody is
+		// told about.
+		acc.notifies = append(acc.notifies, notifyRequest{
+			groupID:      groupOf(opt, opened),
+			reason:       reasonUnacked,
+			alertID:      ptr(alert.ID()),
+			occurrenceID: ptr(opened.ID()),
+			actor:        actor.Kind().String(),
+		})
+	}
+	acc.notifies = append(acc.notifies, notifyRequest{
+		groupID:      groupOf(opt, opened),
+		reason:       reasonFired,
+		alertID:      ptr(alert.ID()),
+		occurrenceID: ptr(opened.ID()),
+		actor:        actor.Kind().String(),
+	})
+	return opened, nil
+}
+
+// applyEdge persists an edge that MOVED the episode it was decided against, and
+// reports whether the move was a state change.
+//
+// ⛔ T7 CANNOT REACH HERE. `Decide` and `Apply` read the same row from the same
+// table for the same command, so an edge that opens an episode has already been
+// routed to `applyOpen`.
+func (s *Service) applyEdge(
+	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
+	r domain.TransitionResult, actor domain.Actor, opt ObserveOptions,
+	out *ObserveOutcome, acc *observeAccum,
+) (domain.Occurrence, bool, error) {
+	if err := s.persistTransition(ctx, scope, r, o); err != nil {
+		return domain.Occurrence{}, false, err
+	}
+	occ := r.Occurrence
+	acc.events = append(acc.events, r.Events...)
+	out.Transition = r.ID.String()
+	out.From, out.To = r.From.String(), r.To.String()
+	out.Clamped, out.ClampSkew = r.Clamped, r.ClampSkew
+	if reason := reasonFor(r.ID); reason != "" {
+		acc.notifies = append(acc.notifies, notifyRequest{
+			groupID:      groupOf(opt, occ),
+			reason:       reason,
+			alertID:      ptr(alert.ID()),
+			occurrenceID: ptr(occ.ID()),
+			actor:        actor.Kind().String(),
+		})
+	}
+	return occ, r.From != r.To, nil
 }
 
 // openEpisode opens a new AlertOccurrence and returns it with its
@@ -587,15 +699,26 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 }
 
 // projectFromOccurrence writes `alerts`' denormalised summary in the SAME
-// transaction as the transition that caused it.
-//
-// SnoozedUntil is carried through UNCHANGED. Snooze is the third orthogonal axis
-// (§B.1): a state transition must never wake an alert up, and this is the line of
-// code where that would otherwise quietly happen.
+// transaction as the transition that caused it. The observe path does not come
+// through here — it stages projectionFor's result and flushes the batch in one
+// statement — this is the per-item write the sweep still makes.
 func (s *Service) projectFromOccurrence(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, occ domain.Occurrence,
 	at domain.ObservationTime, stateChanged bool, newEpisodes int,
 ) error {
+	return s.alerts.SetProjection(ctx, scope, alert.ID(),
+		projectionFor(alert, occ, at, stateChanged, newEpisodes))
+}
+
+// projectionFor derives the `alerts` summary one occurrence state implies.
+//
+// SnoozedUntil is carried through UNCHANGED. Snooze is the third orthogonal axis
+// (§B.1): a state transition must never wake an alert up, and this is the line of
+// code where that would otherwise quietly happen.
+func projectionFor(
+	alert domain.Alert, occ domain.Occurrence, at domain.ObservationTime,
+	stateChanged bool, newEpisodes int,
+) domain.AlertProjection {
 	lastChange := alert.LastStateChangeAt()
 	if stateChanged || lastChange.IsZero() {
 		lastChange = at.RecordedAt()
@@ -604,7 +727,7 @@ func (s *Service) projectFromOccurrence(
 	if occ.IsOpen() {
 		currentOcc = ptr(occ.ID())
 	}
-	return s.alerts.SetProjection(ctx, scope, alert.ID(), domain.AlertProjection{
+	return domain.AlertProjection{
 		State:               occ.State(),
 		CurrentOccurrenceID: currentOcc,
 		AckState:            occ.AckState(),
@@ -612,7 +735,28 @@ func (s *Service) projectFromOccurrence(
 		LastSeenAt:          at.RecordedAt(),
 		LastStateChangeAt:   lastChange,
 		TotalOccurrences:    alert.TotalOccurrences() + newEpisodes,
-	})
+	}
+}
+
+// flushProjections writes the batch's collapsed projections in ONE statement.
+//
+// It runs inside the batch's transaction, whose UpsertBatch already holds every
+// target row's lock, so the batched UPDATE re-locks rows this transaction owns
+// and the `alerts`-before-`alert_occurrences` lock order documented on `observe`
+// is unchanged. A missing alert fails the transaction exactly as the per-item
+// SetProjection's NotFound did.
+func (s *Service) flushProjections(ctx context.Context, scope db.TenantScope, acc *observeAccum) error {
+	if len(acc.projectionOrder) == 0 {
+		return nil
+	}
+	writes := make([]domain.AlertProjectionWrite, 0, len(acc.projectionOrder))
+	for _, alertID := range acc.projectionOrder {
+		writes = append(writes, domain.AlertProjectionWrite{
+			AlertID:    alertID,
+			Projection: acc.projections[alertID],
+		})
+	}
+	return s.alerts.SetProjectionBatch(ctx, scope, writes)
 }
 
 // ------------------------------------------------------------------ helpers
@@ -669,24 +813,39 @@ func (s *Service) latestOccurrences(
 	return out, nil
 }
 
-// transitionCommand assembles the machine's input. It never decides an edge —
-// selectRule does — it only supplies the facts the table needs.
-func (s *Service) transitionCommand(
+// routingCommand carries the facts that NAME a §B.3 row: the trigger, the two
+// clock readings and the re-fire grace that resolves T7 against T8. It cannot
+// fail, which is why the routing question can be asked of every observation.
+//
+// ⛔ THE GRACE IS PASSED, NOT RE-ASKED. This service used to answer "is this
+// re-fire beyond refire_grace?" itself, with its own default handling, next to a
+// machine that answers it again from the same table. One of the two would
+// eventually have moved.
+func routingCommand(
+	trigger domain.Trigger, actor domain.Actor, at domain.ObservationTime, cfg Settings,
+) domain.TransitionCommand {
+	return domain.TransitionCommand{
+		Trigger:      trigger,
+		Actor:        actor,
+		At:           at,
+		RefireGrace:  cfg.RefireGrace,
+		ResolveGrace: cfg.ResolveGrace,
+	}
+}
+
+// edgeCommand completes the machine's input for an edge that is about to be
+// applied. It never decides an edge — selectRule does — it only supplies the
+// facts the table needs.
+func (s *Service) edgeCommand(
 	o domain.Observation, at domain.ObservationTime, actor domain.Actor,
 	trigger domain.Trigger, cfg Settings, prior domain.Alert, current domain.Alert,
 ) (domain.TransitionCommand, error) {
-	cmd := domain.TransitionCommand{
-		Trigger:         trigger,
-		Actor:           actor,
-		At:              at,
-		EventID:         id.New(),
-		RefireGrace:     cfg.RefireGrace,
-		ResolveGrace:    cfg.ResolveGrace,
-		SourceEndsAt:    o.SourceEndsAt,
-		SourceUpdatedAt: o.SourceUpdatedAt,
-		Value:           o.Value,
-		ObservedSkew:    time.Duration(o.SkewMS) * time.Millisecond,
-	}
+	cmd := routingCommand(trigger, actor, at, cfg)
+	cmd.EventID = id.New()
+	cmd.SourceEndsAt = o.SourceEndsAt
+	cmd.SourceUpdatedAt = o.SourceUpdatedAt
+	cmd.Value = o.Value
+	cmd.ObservedSkew = time.Duration(o.SkewMS) * time.Millisecond
 	if trigger == domain.TriggerObserveSuppressed {
 		reason, err := suppressionReasonOf(o)
 		if err != nil {
@@ -768,6 +927,8 @@ func buildUpserts(obs []domain.Observation) ([]domain.AlertUpsert, error) {
 			GeneratorURL: strPtr(o.GeneratorURL),
 			State:        state,
 			SeenAt:       seenAt,
+			// Carried from the batch's mode, never read out of the labels.
+			Synthetic: o.Synthetic,
 		})
 	}
 	return out, nil
@@ -832,24 +993,6 @@ func kindOf(t domain.TransitionID) domain.TransitionKind {
 	default:
 		return domain.TransitionObserve
 	}
-}
-
-// shouldOpenFresh reports whether a terminal occurrence is beyond refire_grace,
-// which is the T7-versus-T8 question (§B.5). It is asked only to decide whether
-// the machine can be run at all; the machine itself asks it again, and both use
-// the same grace.
-func shouldOpenFresh(current domain.Occurrence, trigger domain.Trigger, at domain.ObservationTime, cfg Settings) bool {
-	if trigger != domain.TriggerObserveFiring || current.EndedAt().IsZero() {
-		return false
-	}
-	return at.RecordedAt().After(current.EndedAt().Add(cfg.RefireGrace))
-}
-
-func transitionName(hadPrevious bool) string {
-	if hadPrevious {
-		return domain.TransitionT7.String()
-	}
-	return domain.TransitionT1.String()
 }
 
 func groupOf(opt ObserveOptions, o domain.Occurrence) uuid.UUID {

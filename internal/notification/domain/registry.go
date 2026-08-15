@@ -26,6 +26,15 @@ import (
 // zero value — a policy created silently disabled would notify nobody and look
 // fine.
 type PolicyDraft struct {
+	// ID lets the caller NAME the row before it exists. Zero means the repository
+	// mints one.
+	//
+	// ⭐ IT EXISTS FOR THE `Idempotency-Key` CLAIM, which has to record the id of
+	// what a create made in the SAME transaction as the insert — and therefore
+	// before the insert, because a retry that inserted first would hit
+	// `policies_name_uniq` and be answered with a name conflict rather than with
+	// the policy the caller already created (ticket a6cc834).
+	ID   uuid.UUID
 	Name string
 	// Priority orders evaluation, LOWER FIRST. Nil means the DDL default of 100.
 	Priority *int

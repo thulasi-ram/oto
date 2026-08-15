@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	channelsrepo "github.com/thulasiram/oto/internal/channels/repository"
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
@@ -101,6 +102,24 @@ func dispatchUnsealer(k *secrets.Keyring) notifservice.CredentialUnsealer {
 		return nil
 	}
 	return k
+}
+
+// retentionCeiling is the ONE read `foldRetention` makes: the widest retention
+// window any live tenant has asked for, evaluated by `identity/service.MaxRetention`
+// — inside identity, where the declarative overlay is applied, because the
+// effective retention exists only on the far side of `Org.WithDeclarative`. An
+// aggregate this package wrote over the raw `orgs.settings` column would skip
+// that overlay and compute a maximum over numbers nobody is using.
+//
+// ⛔ IT IS A PORT BECAUSE IT IS ITS FAILURE THAT HAS TO BE PINNED, not because
+// anything here needs a second implementation. The concrete is
+// `identity.Service`, which cannot be asked to return an error from a test.
+// `effectiveRetention`'s rule is that EVERY failure widens the window,
+// retention is the one setting pair whose wrong value is unrecoverable, and a
+// rule about failures that no test can reach is a comment: both of the fold's
+// old failure paths were in fact narrowing when the ports were introduced.
+type retentionCeiling interface {
+	MaxRetention(ctx context.Context) (raw, event time.Duration, err error)
 }
 
 // ⭐ THE PORT-DRIFT ASSERTIONS.

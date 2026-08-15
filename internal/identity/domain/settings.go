@@ -142,20 +142,48 @@ var settingBounds = map[SettingKey]Bound{
 	// silently re-close the gap; `TestTheReplayWindowIsStrictlyInsideRefireGrace`
 	// pins the relationship. Zero remains forbidden outright: it is a Slack thread
 	// per transition. See docs/setup/tuning.md.
+	//
+	// ⭐ THE FLOOR IS NOT THE DEFAULT, AND IT USED TO BE. `DefaultRefireGrace` sat
+	// exactly ON this floor, which meant oto shipped the lowest value it was
+	// willing to accept and called it a recommendation. It is now 1200 (ADR 0026),
+	// derived from the RULES rather than from the transport: the grace clock starts
+	// at the upstream `ended_at`, so a re-fire must pay the rule's whole `for:`
+	// dwell before oto can see it, and the modal real rule's `for:` is 15m. This
+	// bound is untouched — it is a statement about what oto can physically observe,
+	// and a real cluster with a 30s `group_interval` still cannot use a grace below
+	// it, because the §C.5 replay window is a property of Alertmanager's retry
+	// budget rather than of anybody's route timing.
 	KeyRefireGrace: {Min: MinRefireGraceSeconds, Max: 86400,
 		Why: "seconds, 600..86400: the floor is twice the §C.5 ingest replay window, because a re-fire inside that window is dropped as a duplicate delivery and the grace can never be reached; above a day two separate incidents merge into one occurrence and the history lies"},
 	KeyResolveGrace: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: must exceed the EndsAt lease Prometheus refreshes (typically 3-4 minutes) or one missed scrape looks like an expiry"},
+	// The SECOND relationship, and the one the shipped defaults used to break:
+	// keep it at or above `refire_grace`. Closing a generation freezes its thread,
+	// so a re-fire that oto classified as "the same problem coming back" still gets
+	// a brand-new root card when the generation closed first — the grace reopens
+	// the occurrence and buys nothing visible. It is not enforced as a cross-key
+	// bound because a cross-key bound would reject a legal partial PATCH that
+	// merely arrives in the wrong order; the settings screen warns instead.
 	KeyGroupCloseDelay: {Min: 60, Max: 86400,
-		Why: "seconds, 60..86400: keep at or above group_interval, or a generation closes between two batches of the same incident"},
+		Why: "seconds, 60..86400: keep at or above group_interval, or a generation closes between two batches of the same incident, and at or above refire_grace, or a re-fire inside the grace finds a closed generation and gets a new root message anyway"},
 
 	// Below 3, one ordinary rolling deploy looks like flapping and a healthy
 	// alert is labelled noisy in the UI. Above 100 the threshold is unreachable
 	// for any real rule and the damper is dead code that looks configured.
 	KeyFlapThreshold: {Min: 3, Max: 100,
 		Why: "transitions, 3..100: below 3 a single deploy is mislabelled as flapping; above 100 the damper can never engage"},
+	// ⚠️ 300 IS KEPT DELIBERATELY, THOUGH IT IS INERT AT THE COMMONEST
+	// `group_interval`. One observable fire→resolve→fire cycle costs
+	// `group_interval + max(group_interval, for)` and yields two counted
+	// transitions, so at the ecosystem's 5m `group_interval` a 300s window can hold
+	// none of them. Raising the floor to match would be the wrong fix: the compose
+	// capture in `sources/client/alertmanager/testdata` runs `group_interval: 30s`,
+	// where a 300s window holds five whole cycles and is exactly right. A bound
+	// that excluded it would exclude a value a real cluster needs. The arithmetic
+	// belongs in the settings screen, which knows that cluster's own numbers; this
+	// table only knows what is universally impossible.
 	KeyFlapWindow: {Min: 300, Max: 86400,
-		Why: "seconds, 300..86400: a window shorter than one group_interval cannot contain two transitions oto is able to observe"},
+		Why: "seconds, 300..86400: a window shorter than one group_interval cannot contain two transitions oto is able to observe. Whether it is long ENOUGH depends on your group_interval and your rules' for:, which this bound cannot see — the settings screen does that arithmetic against your own Alertmanager"},
 	KeyFlapDigestInterval: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: a digest more often than once a minute is not a digest"},
 
@@ -168,10 +196,23 @@ var settingBounds = map[SettingKey]Bound{
 	KeyStormCooldown: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: below a minute storm mode flickers on and off across consecutive Alertmanager batches"},
 
+	// ⛔ RETENTION IS THE ONLY SETTING PAIR HERE WHOSE WRONG VALUE IS
+	// UNRECOVERABLE. Every other knob above changes when something fires; these two
+	// decide when a partition is DROPPED, and a dropped partition is gone. Both
+	// bounds are therefore documented by what is LOST at the boundary, not by what
+	// is stored — an operator lowering a number needs to know what stops being
+	// answerable. ADR 0024 is the full ledger.
+	//
+	// The 30-day shipped default is DERIVED: it is the `alert_event_keys`
+	// idempotency horizon, past which a stored batch can no longer be replayed
+	// without duplicating the timeline (§C.8, §D.4, SPEC acceptance criterion 36).
 	KeyRawRetention: {Min: 1, Max: 365,
-		Why: "days, 1..365: raw payloads age out by dropping whole partitions"},
+		Why: "days, 1..365: raw payloads age out by dropping whole daily partitions. The shipped 30 is the alert_event_keys idempotency horizon — a batch older than that cannot be replayed after a parser fix without appending the timeline twice. Below it you lose the ability to reproduce an ingestion bug from the bytes that caused it; nothing an alert page shows depends on this"},
+	// 13 months is a CEILING, not a preference: ADR 0014 puts one org's pessimistic
+	// ceiling at 10M events/month and names 50–100M rows as where Postgres-only
+	// hurts, so 13 months is the longest default that stays inside it.
 	KeyEventRetention: {Min: 1, Max: 120,
-		Why: "months, 1..120: 13 is the shipped default so year-on-year comparisons work"},
+		Why: "months, 1..120: dropping a monthly partition of alert_events destroys the instant-by-instant timeline for that month — every human comment, every unack note, the ordered narrative and the actor on each transition. What survives is the projection: the alert, every episode with its ack and its outcome, the rule text, and who was told on which channel. 13 is the longest default that keeps one org inside ADR 0014's scale envelope; raise it to 120 if you must keep timelines for years, and expect ADR 0014's revisit triggers"},
 
 	// ⚠️ THIS RANGE IS `policies_reminder_ck`, VERBATIM. The org-level value is the
 	// default a policy inherits when it sets none, so a value this table accepted

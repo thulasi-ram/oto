@@ -18,7 +18,7 @@ import (
 
 // TxRunner is the unit-of-work port.
 type TxRunner interface {
-	Tx(ctx context.Context, fn func(ctx context.Context) error) error
+	InTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
 // Intent is one fact worth communicating, as `notify.evaluate` receives it.
@@ -233,7 +233,7 @@ func (s *NotificationService) Evaluate(
 	}
 
 	var out Result
-	err := s.txr.Tx(ctx, func(ctx context.Context) error {
+	err := s.txr.InTx(ctx, func(ctx context.Context) error {
 		var err error
 		out, err = s.evaluate(ctx, scope, in)
 		return err

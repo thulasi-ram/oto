@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/tuning"
 	"github.com/thulasiram/oto/internal/platform/validate"
 )
 
@@ -166,18 +167,82 @@ type Settings struct {
 // The defaults of SPEC §D.1, restated as the values a brand-new org boots with.
 // They are the numbers that decide how noisy Slack is; changing one is a product
 // decision, not a tuning tweak.
+//
+// ⛔⛔ THE SHARED ONES ARE NOT WRITTEN HERE ANY MORE, AND THAT IS THE POINT.
+//
+// `identity/domain` owns the tenant's tuning — the keys, the bounds, the
+// provenance and this struct — but it is not the only package that needs the
+// SHIPPED number. `alerts/domain`, `grouping/domain` and `alerts/service` each
+// keep a fallback for the case where no SettingsReader is wired, and CONTEXT.md
+// §5.4 forbids any of them importing this package: a domain reaches another
+// domain only through `<other>/service`, and `.golangci.yml` enforces it. So they
+// used to COPY the numbers, with a ⚠️ comment in each copy asking the next person
+// to remember, and when ADR 0026 moved three of them at once two copies were
+// missed and only a test noticed.
+//
+// The numbers therefore live in `platform/tuning`, the layer every module may
+// import and that may import none, and every SHARED default below is a REFERENCE
+// to that one home rather than a literal. Two packages can no longer disagree
+// about a value neither of them writes. The names stay here because this is where
+// the settings vocabulary lives and where every caller already looks for them.
+//
+// The defaults NOBODY ELSE READS keep their values here, where the types they use
+// also live: `unacked_reminder_*`, the mention policy and the channel verbosity
+// are identity's alone, and moving them down would drag domain types into
+// platform and invert the direction the split exists to protect.
+//
+// ⭐ THE FOUR TIMING DEFAULTS ARE DERIVED FROM A MEASURED CORPUS, NOT CHOSEN
+// (ADR 0026). The two numbers everything hangs off are:
+//
+//   - `group_interval: 5m` — Alertmanager's own `dispatch.DefaultRouteOpts`, and
+//     the value shipped unchanged by kube-prometheus-stack, kube-prometheus,
+//     OpenShift's cluster-monitoring-operator and Grafana Alerting. It is the one
+//     Alertmanager number the ecosystem does NOT override.
+//   - `for: 15m` — the MODE and the MEDIAN of the 155 alerting rules
+//     kube-prometheus-stack 88.2.0 ships (69 of 155, 44.5%). `15m`, `10m` and
+//     `5m` together are 75.5% of every rule in that corpus.
+//
+// Each derivation is stated where the constant now lives, restated in
+// docs/setup/tuning.md, and RECOMPUTED by `defaults_derivation_test.go` so a
+// default cannot drift away from the arithmetic that produced it.
 const (
-	DefaultRefireGrace        = 600 * time.Second
-	DefaultResolveGrace       = 300 * time.Second
-	DefaultGroupCloseDelay    = 300 * time.Second
-	DefaultFlapThreshold      = 5
-	DefaultFlapWindow         = 1800 * time.Second
-	DefaultFlapDigestInterval = 900 * time.Second
-	DefaultStormThreshold     = 25
-	DefaultStormWindow        = 60 * time.Second
-	DefaultStormCooldown      = 600 * time.Second
-	DefaultRawRetention       = 14 * 24 * time.Hour
-	DefaultEventRetention     = 13 * 30 * 24 * time.Hour
+	// DefaultRefireGrace decides T7 from T8: a re-fire inside this window reopens
+	// the existing occurrence, a re-fire after it opens a new episode (§B.5).
+	DefaultRefireGrace = tuning.DefaultRefireGrace
+	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
+	// before an occurrence may expire (§B.4).
+	DefaultResolveGrace = tuning.DefaultResolveGrace
+	// DefaultGroupCloseDelay is pinned EQUAL to DefaultRefireGrace, and the
+	// equality is the whole point rather than a coincidence: a generation that
+	// closes first hands a re-fire oto classified as "the same problem coming
+	// back" a brand-new Slack root anyway. See the derivation in platform/tuning.
+	DefaultGroupCloseDelay = tuning.DefaultGroupCloseDelay
+	// DefaultFlapThreshold is the transition count above which an Alert is marked
+	// flapping — a VISIBLE state, never silent suppression (§B.6).
+	DefaultFlapThreshold = tuning.DefaultFlapThreshold
+	// DefaultFlapWindow is the window DefaultFlapThreshold is counted over. It is
+	// 2h and not 30m because the transport floor capped a 30-minute window at six
+	// observable transitions, which made a threshold of 5 unreachable for every
+	// rule shape in the corpus.
+	DefaultFlapWindow = tuning.DefaultFlapWindow
+	// DefaultFlapDigestInterval is how often a flapping alert's digest is posted.
+	DefaultFlapDigestInterval = tuning.DefaultFlapDigestInterval
+	// DefaultStormThreshold is how many DISTINCT alerts must join one generation
+	// inside DefaultStormWindow before it collapses to a single message.
+	DefaultStormThreshold = tuning.DefaultStormThreshold
+	// DefaultStormWindow is the window those joins are counted over.
+	DefaultStormWindow = tuning.DefaultStormWindow
+	// DefaultStormCooldown is how long a generation must go WITHOUT a new member
+	// before storm mode ends.
+	DefaultStormCooldown = tuning.DefaultStormCooldown
+	// DefaultRawRetention is 30 DAYS and it is DERIVED, not chosen: it is the
+	// `alert_event_keys` idempotency horizon (SPEC §D.4), past which a replay
+	// appends the timeline a second time instead of reproducing it (ADR 0024).
+	DefaultRawRetention = tuning.DefaultRawRetention
+	// DefaultEventRetention is 13 MONTHS, and the reason is a CEILING rather than
+	// a preference: it is the longest window that keeps one org inside ADR 0014's
+	// own scale envelope of 50–100M rows.
+	DefaultEventRetention = tuning.DefaultEventRetention
 	// DefaultUnackedReminderAfter is ZERO, and the zero is the decision: oto ships
 	// no org-level reminder default, so a notification policy that names no delay
 	// still produces no reminder. Anything else would turn reminders on for every

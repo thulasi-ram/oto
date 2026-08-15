@@ -37,7 +37,7 @@ export const SchemaForm: Component<SchemaFormProps> = (props) => (
     <Show
       when={props.fields.length > 0}
       fallback={
-        <p class="text-[12px] text-ink-muted">
+        <p class="text-body text-ink-muted">
           This provider declares no configuration. That is the schema's statement, not a loading
           state.
         </p>
@@ -98,10 +98,10 @@ const SchemaFieldControl: Component<{
           label={<span class="font-medium">{f().title}</span>}
         />
         <Show when={hint()}>
-          <p class="pl-5 text-[11px] leading-snug text-ink-subtle">{hint()}</p>
+          <p class="pl-5 text-meta leading-snug text-ink-subtle">{hint()}</p>
         </Show>
         <Show when={props.error}>
-          <p class="pl-5 text-[11px] font-medium text-ink" role="alert">
+          <p class="pl-5 text-meta font-medium text-ink" role="alert">
             {props.error}
           </p>
         </Show>
@@ -217,7 +217,7 @@ const SchemaFieldControl: Component<{
               so it says what it does not understand and takes raw JSON. */}
           <Show when={f().kind === "unsupported"}>
             <div class="flex flex-col gap-1">
-              <p class="text-[11px] leading-snug text-ink-muted">
+              <p class="text-meta leading-snug text-ink-muted">
                 This form does not render {f().reason ?? "this shape"}, so it will not pretend to.
                 Enter the value as JSON — the server validates it against the same schema either way.
               </p>

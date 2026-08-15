@@ -39,6 +39,12 @@ type ParsedConfig struct {
 	// repeat_interval, as the source itself reports them. See
 	// `sources/domain.RouteTimings` for why every field is a pointer.
 	Timings domain.RouteTimings
+	// Routes is the WHOLE route tree resolved: every delivering route with its
+	// receiver, its inherited timings and its matcher path, plus oto's best
+	// identification of its own receiver. See amroutes.go — the top-level route
+	// above is what governs alerts matching nothing more specific, and this is
+	// what governs the rest.
+	Routes domain.RouteResolution
 }
 
 // sendResolvedDefaults are Alertmanager's per-integration defaults for
@@ -81,6 +87,7 @@ func parseConfig(original string) (ParsedConfig, error) {
 	}
 
 	out.Timings = routeTimings(doc.Route)
+	out.Routes = resolveRoutes(doc.Route, doc.Receivers)
 
 	out.SendResolved = make(map[string]bool, len(doc.Receivers))
 	for _, r := range doc.Receivers {
@@ -101,15 +108,19 @@ var timingFields = []string{"group_wait", "group_interval", "repeat_interval"}
 // routeTimings reads the top-level route's three timings and counts how many
 // descendants set their own.
 //
-// ⛔ IT READS THE TOP-LEVEL ROUTE, AND THAT IS A DELIBERATE v1 BOUNDARY.
-// Resolving the value that governs a PARTICULAR alert would mean evaluating
-// Alertmanager's matcher tree — regex matchers, `continue: true`, mute time
-// intervals and inheritance — against that alert's labels, which is a second
-// implementation of somebody else's routing engine and would be wrong in a way
-// nobody could see. The top-level route is the value in force for every alert
-// that matches no more specific route, it is exactly what the tuning guide tells
-// an operator to read, and `ChildrenWithTimings` says out loud when it is not the
-// whole picture.
+// ⚠️ IT READS THE TOP-LEVEL ROUTE, AND IT IS NO LONGER THE ONLY ANSWER. The
+// top-level route is what governs every alert matching nothing more specific, and
+// it stays here as the FALLBACK — the answer oto gives when it cannot identify
+// which receiver is its own (see `identifyReceiver`: Alertmanager redacts the
+// webhook URL that would say so). `resolveRoutes` in amroutes.go walks the whole
+// tree with inheritance, `continue` and shadowing, and where it can name oto's
+// receiver those routes are the numbers actually in force.
+//
+// ⛔ NEITHER ONE EVALUATES A MATCHER AGAINST A LABEL SET, and neither may.
+// Deciding which route a PARTICULAR alert takes needs that alert's labels and
+// would be a second, invisible implementation of somebody else's routing engine.
+// `ChildRoutes` / `ChildrenWithTimings` remain what they always were: the caveat
+// on THIS number, made countable.
 func routeTimings(route map[string]any) domain.RouteTimings {
 	var out domain.RouteTimings
 	if len(route) == 0 {

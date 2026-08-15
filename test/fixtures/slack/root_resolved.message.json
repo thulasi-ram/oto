@@ -1,0 +1,173 @@
+{
+  "text": ":white_check_mark: [RESOLVED] CheckoutErrorRateHigh — 5xx rate on checkout-api is 11.4% over the last five minutes, against a 5% threshold. Severity critical, team payments, resolved at 18:17 UTC. Runbook: https://runbooks.example.com/checkout-error-rate",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "metadata": {
+    "event_type": "oto_alert_group",
+    "event_payload": {
+      "generation": 1,
+      "group_id": "019fe297-d84f-7599-b5b2-1f231749104a",
+      "reason": "all_resolved"
+    }
+  },
+  "attachments": [
+    {
+      "color": "#2eb886",
+      "fallback": "[RESOLVED] CheckoutErrorRateHigh on eu-west-1",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_title_19267386c7",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":white_check_mark: *<https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a|CheckoutErrorRateHigh>*  ·  `eu-west-1`\n_5xx rate on checkout-api is 11.4% over the last five minutes, against a 5% threshold._"
+          }
+        },
+        {
+          "type": "section",
+          "block_id": "oto_body_19267386c7",
+          "text": {
+            "type": "mrkdwn",
+            "text": "Requests to POST /v2/checkout are failing upstream of the payment provider. The error budget for the month is 38% spent."
+          }
+        },
+        {
+          "type": "section",
+          "block_id": "oto_fields_19267386c7",
+          "fields": [
+            {
+              "type": "mrkdwn",
+              "text": "*Status*\n:white_check_mark: ~Acked~ → Resolved"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Severity*\n:rotating_light: critical"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Service*\n`checkout-api`"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Namespace*\n`checkout`"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Started*\n<!date^1786125369^{time}|17:56 UTC>"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Duration*\n21m 10s"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Resolved*\n<!date^1786126639^{time}|18:17 UTC>"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Instances affected*\n2 instances"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Notifications*\n4 sent"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Acknowledged*\n:eyes: yes — `ram@example.com`, <!date^1786125549^{time}|17:59 UTC>"
+            }
+          ]
+        },
+        {
+          "type": "section",
+          "block_id": "oto_members_19267386c7",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*Affected instances*\n• `checkout-api-7d9f-b2` — 0.11\n• `checkout-api-7d9f-a1` — 0.09"
+          }
+        },
+        {
+          "type": "context",
+          "block_id": "oto_trail_19267386c7",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": ":red_circle: <!date^1786125369^{time}|17:56 UTC> fired  →  :eyes: <!date^1786125549^{time}|17:59 UTC> acked by `ram@example.com`  →  :white_check_mark: <!date^1786126639^{time}|18:17 UTC> resolved  ·  total 21m 10s"
+            }
+          ]
+        },
+        {
+          "type": "context",
+          "block_id": "oto_rule_19267386c7",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": ":mag: `sum(rate(http_requests_total{job=\"checkout-api\",code=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"checkout-api\"}[5m])) &gt; 0.05`   `for: 5m`"
+            }
+          ]
+        },
+        {
+          "type": "actions",
+          "block_id": "oto_actions_19267386c7",
+          "elements": [
+            {
+              "type": "overflow",
+              "action_id": "oto.more",
+              "options": [
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":blue_book: Show timeline",
+                    "emoji": true
+                  },
+                  "url": "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":chart_with_upwards_trend: Open in Prometheus",
+                    "emoji": true
+                  },
+                  "url": "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":bell: Open in Alertmanager",
+                    "emoji": true
+                  },
+                  "url": "https://am.example.com/#/alerts?filter=%7Balertname%3D%22CheckoutErrorRateHigh%22%7D"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":scroll: Rule history",
+                    "emoji": true
+                  },
+                  "url": "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":label: Show all labels",
+                    "emoji": true
+                  },
+                  "value": "labels|019fe297-d84f-7599-b5b2-1f231749104a"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "context",
+          "block_id": "oto_footer_19267386c7",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": "oto  ·  `gk_4vbuj1c49jbpf`  ·  receiver `platform-critical`  ·  _all alerts resolved_  ·  oto first saw it <!date^1786126629^{time}|18:17 UTC> (21m later)  ·  updated <!date^1786126641^{time}|18:17 UTC>"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

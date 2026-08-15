@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/enrichment/domain"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -34,13 +35,21 @@ const (
 	CodeNoOccurrence = "enrichment_no_occurrence"
 )
 
-// The alert timeline types this service appends (SPEC §D.4.1, transition T11).
-const (
-	// EventCompleted records that a phase produced results.
-	EventCompleted = "enrichment.completed"
-	// EventFailed records that a phase produced none.
-	EventFailed = "enrichment.failed"
-)
+// ⛔ THE TWO `enrichment.*` STRING CONSTANTS THAT USED TO BE HERE ARE GONE.
+//
+// `EventCompleted = "enrichment.completed"` and `EventFailed = "enrichment.failed"`
+// were a second Go spelling of `alerts/domain.EventEnrichmentCompleted` and
+// `EventEnrichmentFailed` — which left the "closed" enum closed over only one of
+// the two ways to say each value. This package names the kernel's values directly
+// now, and no local alias replaces them: `EventType` is a struct, so an alias could
+// only be a MUTABLE package var.
+//
+// ⚠️ THIS IS NOT AN `enrichment ──► alerts` EDGE — CONTEXT.md §4 draws none, and
+// this change does not add one. RULE K (§5.2b, `.golangci.yml`, and `exemptReason`
+// in `test/arch/arch_test.go`) grants every domain `internal/alerts/domain`
+// uniformly. The append is still the `EventRecorder` port this package declares and
+// `internal/app/adapters.go` satisfies. A value object crossed; a dependency did
+// not.
 
 // Options are the Service's dependencies. Everything is a port, so the whole
 // pipeline runs against fakes with no Postgres, no Prometheus and no clock.
@@ -158,7 +167,7 @@ type RunResult struct {
 func (r RunResult) Succeeded() int {
 	n := 0
 	for _, e := range r.Results {
-		if e.Status.Succeeded() {
+		if e.Status().Succeeded() {
 			n++
 		}
 	}
@@ -168,10 +177,12 @@ func (r RunResult) Succeeded() int {
 // Run executes one phase of the pipeline for one occurrence.
 //
 // It returns an error ONLY for the things that make the run meaningless: an
-// unloadable subject and a storage failure. An enricher that panics, times out,
-// returns garbage or cannot reach its upstream produces a RECORDED result with
-// the reason attached, and the phase carries on. That asymmetry is the design:
-// partial enrichment is the expected steady state, not an exception path.
+// unloadable subject, a storage failure, and a result the domain refuses to
+// build — the last being a bug in this package rather than a degraded upstream.
+// An enricher that panics, times out, returns garbage or cannot reach its
+// upstream produces a RECORDED result with the reason attached, and the phase
+// carries on. That asymmetry is the design: partial enrichment is the expected
+// steady state, not an exception path.
 func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest) (RunResult, error) {
 	started := s.clk.Now()
 
@@ -209,11 +220,11 @@ func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest)
 	byName := make(map[string]domain.Enrichment, len(existing))
 	prior := make(map[string]domain.Result, len(existing))
 	for _, e := range existing {
-		byName[e.Enricher] = e
-		prior[e.Enricher] = domain.Result{
-			Status:   e.Status,
-			Payload:  e.Payload,
-			Warnings: e.Warnings,
+		byName[e.Enricher()] = e
+		prior[e.Enricher()] = domain.Result{
+			Status:   e.Status(),
+			Payload:  e.Payload(),
+			Warnings: e.Warnings(),
 		}
 	}
 	subject.Prior = prior
@@ -236,6 +247,10 @@ func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest)
 		enricher domain.Enricher
 		result   domain.Enrichment
 		ran      bool
+		// buildErr is the domain refusing to build this slot's row. It is the one
+		// error runOne can return, and it is kept per-slot rather than acted on in
+		// the goroutine so that one enricher's bug cannot cut another's short.
+		buildErr error
 	}
 	slots := make([]slot, 0, len(selected))
 	for _, e := range selected {
@@ -251,7 +266,25 @@ func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest)
 		wg.Add(1)
 		go func(sl *slot) {
 			defer wg.Done()
-			sl.result = s.runOne(phaseCtx, scope, sl.enricher, subject, phase, budget)
+			rec, err := s.runOne(phaseCtx, scope, sl.enricher, subject, phase, budget)
+			if err != nil {
+				// A row the domain refuses is recorded here and FAILS THE RUN below.
+				//
+				// It is logged at ERROR rather than WARN because, unlike a cache that
+				// is down or a deferral that could not be enqueued, it cannot happen
+				// from the outside: the registry proves the enricher's name and version
+				// at boot, Run fills in the subject's coordinates, and every branch of
+				// runOne produces a status the table accepts. If this fires it is a bug
+				// in oto, not a bad Tuesday upstream. A recorded-failure fallback would
+				// be dead code for the same reason: whatever made these params
+				// unbuildable is identity, which is the same for every branch, so the
+				// fallback would be refused too.
+				s.log.ErrorContext(phaseCtx, "enrichment: refusing to record an invalid result",
+					"enricher", sl.enricher.Name(), "error", err)
+				sl.buildErr = err
+				return
+			}
+			sl.result = rec
 			sl.ran = true
 		}(&slots[i])
 	}
@@ -265,8 +298,26 @@ func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest)
 	// Registry order is already deterministic; sorting by name again makes the
 	// guarantee independent of how Select was asked.
 	sort.SliceStable(out.Results, func(i, j int) bool {
-		return out.Results[i].Enricher < out.Results[j].Enricher
+		return out.Results[i].Enricher() < out.Results[j].Enricher()
 	})
+
+	// A CONSTRUCTION failure is a bug in oto, and it must not be laundered into a
+	// successful run. runOne turns every way an ENRICHER can misbehave into a
+	// provenanced row, so the only error it returns is the domain refusing to
+	// build one — which means this branch is not the "one enricher failing must
+	// not fail the others" case, it is the "we would have written a row the table
+	// refuses" case. Before the constructor moved in front of the write, these
+	// params reached UpsertMany, which refused the WHOLE batch and failed the run,
+	// so the job retried and somebody saw it. Returning the first one restores
+	// exactly that signal — and returning it BEFORE the write for the same reason
+	// UpsertMany refused the batch: a phase never lands half-written on a bug
+	// nobody has diagnosed yet. Slot order is the registry's, so which one is
+	// "first" is deterministic.
+	for i := range slots {
+		if slots[i].buildErr != nil {
+			return out, slots[i].buildErr
+		}
+	}
 
 	if len(out.Results) > 0 {
 		if err := s.repo.UpsertMany(ctx, scope, out.Results); err != nil {
@@ -306,9 +357,12 @@ func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest)
 // runOne executes a single enricher under its own timeout, and converts every
 // possible way it can misbehave into a provenanced row.
 //
-// There is no path out of this function that is an error. That is deliberate:
-// the caller is a fan-out with a budget, and an enricher that can fail the
-// phase is an enricher that can delay a notification.
+// No way an ENRICHER can end produces an error here. That is deliberate: the
+// caller is a fan-out with a budget, and an enricher that can fail the phase is
+// an enricher that can delay a notification. The one error this returns is the
+// domain refusing to build the row at all — see the branches below, each of
+// which completes `base` into a whole EnrichmentParams and calls NewEnrichment
+// exactly once. A result is decided in one place or it is not decided at all.
 func (s *Service) runOne(
 	ctx context.Context,
 	scope db.TenantScope,
@@ -316,9 +370,12 @@ func (s *Service) runOne(
 	subject domain.Subject,
 	phase domain.Phase,
 	budget time.Duration,
-) domain.Enrichment {
+) (domain.Enrichment, error) {
 	started := s.clk.Now()
-	rec := domain.Enrichment{
+
+	// Identity and provenance are the same however the enricher ends; only the
+	// outcome differs. Each branch copies this and fills in the rest.
+	base := domain.EnrichmentParams{
 		ID:          id.NewString(),
 		OrgID:       subject.OrgID,
 		SubjectKind: subject.SubjectKind,
@@ -335,10 +392,11 @@ func (s *Service) runOne(
 	local := subject
 
 	if !e.Applicable(&local) {
-		rec.Status = domain.StatusSkipped
-		rec.Payload = map[string]any{}
-		rec.Duration = s.clk.Since(started)
-		return rec
+		p := base
+		p.Status = domain.StatusSkipped
+		p.Payload = map[string]any{}
+		p.Duration = s.clk.Since(started)
+		return domain.NewEnrichment(p)
 	}
 
 	// Layer one: the shared cache. Only enrichers that can name their inputs up
@@ -348,19 +406,22 @@ func (s *Service) runOne(
 		seed = seeder.CacheSeed(&local)
 	}
 	if hit, ok := s.cacheGet(ctx, scope, e, seed); ok {
-		rec.Status = domain.StatusOK
-		rec.Payload = hit.Payload
-		rec.FromCache = true
-		rec.ExpiresAt = hit.ExpiresAt
-		rec.Duration = s.clk.Since(started)
-		return rec
+		p := base
+		p.Status = domain.StatusOK
+		p.Payload = hit.Payload()
+		p.FromCache = true
+		p.ExpiresAt = hit.ExpiresAt()
+		p.Duration = s.clk.Since(started)
+		return domain.NewEnrichment(p)
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, timeoutOf(e, budget))
 	defer cancel()
 
 	res, err := s.invoke(callCtx, e, &local)
-	rec.Duration = s.clk.Since(started)
+	// Measured here, once, for every branch below: wall time is what feeds the
+	// budget, and it is recorded whether the call succeeded or not.
+	duration := s.clk.Since(started)
 
 	// A deadline is either the enricher's own timeout or the phase budget
 	// expiring underneath it; both arrive here as DeadlineExceeded, and both
@@ -373,50 +434,60 @@ func (s *Service) runOne(
 		// A timeout is not a failure of the enricher, it is a failure of the
 		// budget, and the two want different remedies: a failure is retried by
 		// the job's own retry policy, a timeout is deferred to the slow phase.
-		rec.Status = domain.StatusTimeout
-		rec.Error = fmt.Sprintf("exceeded its %s budget", timeoutOf(e, budget))
-		rec.Payload = map[string]any{}
-		return rec
+		p := base
+		p.Status = domain.StatusTimeout
+		p.Error = fmt.Sprintf("exceeded its %s budget", timeoutOf(e, budget))
+		p.Payload = map[string]any{}
+		p.Duration = duration
+		return domain.NewEnrichment(p)
+
+	case err != nil && res.Payload != nil && res.Status == domain.StatusPartial:
+		// A partial answer alongside an error is still worth keeping. The
+		// enricher itself must have labelled it `partial`: a payload presented as
+		// complete when the call errored would render as a fact.
+		p := base
+		p.Status = domain.StatusPartial
+		p.Payload = res.Payload
+		p.Warnings = clampWarnings(append(res.Warnings, truncate(err.Error(), 200)))
+		p.Duration = duration
+		return domain.NewEnrichment(p)
 
 	case err != nil:
-		rec.Status = domain.StatusFailed
-		rec.Error = truncate(err.Error(), 2000)
-		rec.Payload = map[string]any{}
-		// A partial answer alongside an error is still worth keeping.
-		if res.Payload != nil && res.Status == domain.StatusPartial {
-			rec.Status = domain.StatusPartial
-			rec.Payload = res.Payload
-			rec.Warnings = clampWarnings(append(res.Warnings, truncate(err.Error(), 200)))
-			rec.Error = ""
-		}
-		return rec
+		p := base
+		p.Status = domain.StatusFailed
+		p.Error = truncate(err.Error(), 2000)
+		p.Payload = map[string]any{}
+		p.Duration = duration
+		return domain.NewEnrichment(p)
 	}
 
-	rec.Status = res.Status
-	if !rec.Status.Valid() {
-		rec.Status = domain.StatusOK
+	p := base
+	p.Duration = duration
+	p.Status = res.Status
+	if !p.Status.Valid() {
+		p.Status = domain.StatusOK
 	}
-	rec.Payload = res.Payload
-	if rec.Payload == nil {
-		rec.Payload = map[string]any{}
+	p.Payload = res.Payload
+	if p.Payload == nil {
+		p.Payload = map[string]any{}
 	}
-	rec.Warnings = clampWarnings(res.Warnings)
-	if rec.Status.NeedsError() && rec.Error == "" {
-		rec.Error = "the enricher reported " + string(rec.Status) + " without a reason"
+	p.Warnings = clampWarnings(res.Warnings)
+	if p.Status.NeedsError() {
+		p.Error = "the enricher reported " + string(p.Status) + " without a reason"
 	}
 
 	// Layer two: write back. The enricher's own key wins over the seed, because
 	// it may know more after the call than it did before.
 	ttl := domain.ClampTTL(res.TTL)
-	if ttl > 0 && rec.Status.Succeeded() {
-		rec.ExpiresAt = started.Add(ttl)
+	if ttl > 0 && p.Status.Succeeded() {
+		p.ExpiresAt = started.Add(ttl)
 		key := res.CacheKey
 		if key == "" {
 			key = seed
 		}
-		s.cachePut(ctx, scope, e, key, rec.Payload, started, ttl)
+		s.cachePut(ctx, scope, e, key, p.Payload, started, ttl)
 	}
-	return rec
+	return domain.NewEnrichment(p)
 }
 
 // invoke calls the enricher with a panic guard.
@@ -479,13 +550,21 @@ func (s *Service) cachePut(
 	if err != nil {
 		return
 	}
-	if err := s.cache.Put(ctx, scope, domain.CacheEntry{
+	entry, err := domain.NewCacheEntry(domain.CacheEntryParams{
 		Key:        key,
 		OrgID:      scope.OrgID().String(),
 		Payload:    body,
 		ComputedAt: computedAt,
 		ExpiresAt:  computedAt.Add(ttl),
-	}); err != nil {
+	})
+	if err != nil {
+		// An entry the domain refuses is not cacheable, and a cache is never
+		// allowed to be the reason a pipeline fails.
+		s.log.WarnContext(ctx, "enrichment: refusing to cache an invalid entry",
+			"enricher", e.Name(), "error", err)
+		return
+	}
+	if err := s.cache.Put(ctx, scope, entry); err != nil {
 		s.log.WarnContext(ctx, "enrichment: cache write failed",
 			"enricher", e.Name(), "error", err)
 	}
@@ -500,8 +579,8 @@ func (s *Service) cachePut(
 func (s *Service) deferStragglers(ctx context.Context, occurrenceID uuid.UUID, results []domain.Enrichment) []string {
 	var names []string
 	for _, r := range results {
-		if r.Status == domain.StatusTimeout {
-			names = append(names, r.Enricher)
+		if r.Status() == domain.StatusTimeout {
+			names = append(names, r.Enricher())
 		}
 	}
 	if len(names) == 0 || s.enqueuer == nil {
@@ -535,8 +614,8 @@ func (s *Service) announce(ctx context.Context, scope db.TenantScope, loaded Loa
 
 	var names []string
 	for _, r := range results {
-		if r.Status.Succeeded() {
-			names = append(names, r.Enricher)
+		if r.Status().Succeeded() {
+			names = append(names, r.Enricher())
 		}
 	}
 	if len(names) == 0 {
@@ -609,23 +688,23 @@ func (s *Service) narrate(ctx context.Context, scope db.TenantScope, loaded Load
 	detail := make(map[string]any, len(results))
 	ok, failed := 0, 0
 	for _, r := range results {
-		detail[r.Enricher] = map[string]any{
-			"status":      string(r.Status),
-			"version":     r.Version,
-			"duration_ms": r.Duration.Milliseconds(),
-			"from_cache":  r.FromCache,
+		detail[r.Enricher()] = map[string]any{
+			"status":      string(r.Status()),
+			"version":     r.Version(),
+			"duration_ms": r.Duration().Milliseconds(),
+			"from_cache":  r.FromCache(),
 		}
-		if r.Status.Succeeded() {
+		if r.Status().Succeeded() {
 			ok++
-		} else if r.Status == domain.StatusFailed || r.Status == domain.StatusTimeout {
+		} else if r.Status() == domain.StatusFailed || r.Status() == domain.StatusTimeout {
 			failed++
 		}
 	}
 
-	typ := EventCompleted
+	typ := kernel.EventEnrichmentCompleted
 	summary := fmt.Sprintf("%s enrichment: %d of %d enrichers produced context", phase, ok, len(results))
 	if ok == 0 && failed > 0 {
-		typ = EventFailed
+		typ = kernel.EventEnrichmentFailed
 		summary = fmt.Sprintf("%s enrichment: no context could be produced (%d failed)", phase, failed)
 	}
 

@@ -19,6 +19,32 @@ const (
 	MaxDedupeKeyBytes = 200
 )
 
+// DedupeKeyRetention is how long a claimed C.8 key stays claimed in
+// `alert_event_keys` — the horizon SPEC §D.4 and the table's own comment have
+// always named, and which nothing enforced until `retention.prune` did.
+//
+// ⭐ IT IS THE PRIMARY NUMBER, NOT A DERIVED ONE, and the direction matters
+// because five places state the coupling the other way round.
+// `tuning.DefaultRawRetention` is 30 days BECAUSE THIS IS: SPEC acceptance
+// criterion 36 says replaying a stored `ingest_batch` after a parser fix must
+// reproduce the same state without duplicate Slack messages, and that replay is
+// idempotent only while the batch's event keys are still claimed here. A raw
+// payload kept past this horizon is a payload that can no longer be used for the
+// one thing it is kept for. Move this and `DefaultRawRetention` moves with it —
+// ADR 0024 says so in as many words.
+//
+// ⛔ IT IS A FLOOR, AND THE SWEEP MAY ONLY WIDEN IT. `raw_retention_days` is a
+// per-org setting bounded 1..365, and `partitions.manage` already drops raw
+// partitions at the LONGEST window any tenant asked for (ADR 0024, "retention is
+// a floor, never a ceiling"). So `retention.prune` deletes a key at the wider of
+// this constant and that window: a tenant holding replayable payloads for a year
+// must keep for a year the keys that make them replayable, or its every replay
+// appends the timeline a second time and reports success while doing it. The
+// floor is what stops the reverse — an operator who lowers raw retention to a day
+// must not thereby unclaim the keys of episodes that are still open, whose
+// transitions the reconciler re-applies and which nothing but this table dedupes.
+const DedupeKeyRetention = 30 * 24 * time.Hour
+
 // EventType is the closed enum of alert_events.type (SPEC §D.4.1).
 //
 // Adding a type requires a SPEC amendment. Implementers MUST NOT invent types:
@@ -125,8 +151,22 @@ func init() {
 	}
 }
 
-// AllEventTypes returns the closed enum in declaration order. The timeline
-// renderer and the DDL CHECK are both generated from this list.
+// AllEventTypes returns the closed enum in declaration order.
+//
+// ⛔ THE DDL IS NOT A SECOND COPY OF THIS LIST, AND MUST NOT BE MISTAKEN FOR
+// ONE. `ev_type_ck` is `CHECK (type ~ '^[a-z_]+\.[a-z_]+$')` — a SHAPE, not a
+// vocabulary. It admits any `<subject>.<fact>` string, so a value added here and
+// nowhere else reaches the database, the timeline and the wire without one
+// constraint objecting.
+//
+// The one other enumeration of these values is `components.schemas.AlertEventType`
+// in `api/openapi/openapi.yaml`, which is what every generated client knows.
+// Adding a type here means adding it there in the same commit, and both
+// `?type=` ceilings — the contract's `maxItems` and the `validate:"max=N"` tags
+// on `alerts/api.TimelineQuery` and `grouping/api.TimelineQuery` — are the size
+// of this set. `TestContractEnumsMatchTheirDomainEnum` in `test/contract` is
+// what fails if the two lists drift; without it the first thing to notice is
+// somebody else's generated client refusing a value oto already writes.
 func AllEventTypes() []EventType {
 	return []EventType{
 		EventAlertCreated, EventAlertMutated, EventAlertFlappingStarted, EventAlertFlappingEnded,
@@ -157,6 +197,32 @@ func NewEventType(s string) (EventType, error) {
 
 // String renders the event type.
 func (t EventType) String() string { return t.s }
+
+// MarshalText renders the event type as the string it IS, for every encoder that
+// is not `fmt`.
+//
+// ⛔ WITHOUT THIS, A LOG LINE SAYS `"type":{}`. `EventType`'s only field is
+// unexported, and `String()` does not help outside `fmt`: `fmt` consults
+// `Stringer`, `encoding/json` does not. So the production JSON handler — which
+// hands an `any` attribute to `encoding/json` — encoded a struct with no exported
+// fields and emitted an empty object. `rules/service`'s "could not record rule
+// event" warning stopped naming WHICH fact was lost the day this became a struct,
+// and nothing failed: a blanked log line is invisible to the compiler, to the
+// linters and to every test in the tree.
+//
+// ⚠️ IT IS `MarshalText` AND NOT `MarshalJSON`, ONCE, FOR ALL FOUR CALLERS.
+// `slog`'s TextHandler asks for `encoding.TextMarshaler` directly; its JSONHandler
+// goes through `encoding/json`, which asks for `json.Marshaler` and then for this;
+// `json.Marshal` on any DTO carrying the value does the same and renders it as a
+// JSON string. A `MarshalJSON` would have to re-quote and re-escape by hand what
+// `encoding/json` already does correctly from these bytes.
+//
+// ⚠️ THERE IS DELIBERATELY NO `UnmarshalText`. Rendering a closed value is safe;
+// PARSING one is `NewEventType`'s job and must stay there, because a decoder that
+// could mint an `EventType` from arbitrary wire bytes is the closed set opened
+// again — this time from outside the process. Nothing in the tree decodes one: the
+// wire and the row are `string` and are parsed at the boundary.
+func (t EventType) MarshalText() ([]byte, error) { return []byte(t.s), nil }
 
 // IsZero reports whether the event type is unset.
 func (t EventType) IsZero() bool { return t.s == "" }

@@ -12,12 +12,30 @@ import (
 	"github.com/thulasiram/oto/internal/platform/id"
 )
 
-// This file is the seam `internal/grouping` calls across.
+// This file is the seam the modules that do not own `alert_events` call across.
 //
-// ⭐ WHAT IT IS FOR. `alert_events` has exactly ONE writer, and it is in this
-// module: the C.8 idempotency claim and the closed EventType enum both live here,
-// and a second appender would be the duplication §C.9 exists to forbid. `grouping`
-// therefore records its `group.*` facts through this seam.
+// ⭐ WHAT IT IS FOR. It is the ONE appender that goes through `domain.NewEvent`,
+// and therefore the one place every §D.4 invariant is proved before a row exists.
+// The C.8 idempotency claim and the closed EventType enum both live in this
+// module. `grouping` records its `group.*` facts through this seam, and so do
+// `rules` and `enrichment` for their `rule.*` and `enrichment.*` ones.
+//
+// ⛔ IT IS NOT THE ONLY WRITER OF `alert_events`, AND SAYING SO WAS A LIE THIS
+// COMMENT TOLD FOR LONGER THAN IT SHOULD HAVE. `notification/repository/events.go`
+// inserts its own `notification.*` and `delivery.*` rows — it is a second appender,
+// with its own copy of the C.8 key claim, that never calls `NewEvent`. The
+// duplication §C.9 forbids is therefore REAL and still open; what this seam can
+// still guarantee, and now does by its signature, is that no caller may name a
+// type the closed enum does not contain. Routing that second writer through here
+// would need a `notification ──► alerts` module edge that CONTEXT.md §4 does not
+// draw, which is a separate decision and a separate change.
+//
+// ⚠️ THE THREE CALLERS DO NOT ARRIVE THE SAME WAY, and the difference is CONTEXT.md
+// §4 rather than taste. `grouping ──► alerts` is a declared module edge, so grouping
+// names `TimelineEventRequest` directly. `enrichment` has no such edge and `rules`
+// must not grow a second one for a narration, so both declare an `EventRecorder`
+// port of their own and `internal/app/adapters.go`'s timelineRecorder satisfies it
+// over this method. One writer either way; what changes is who has to know it.
 //
 // ⛔ WHAT IT IS NOT FOR. It is not a shim around the shared domain kernel. Value
 // objects and the §C identity functions live in `internal/alerts/domain`, which
@@ -27,19 +45,34 @@ import (
 // the wrapper is gone. Re-exporting a kernel function through a service is how a
 // pure identity function acquires a fake dependency on a database.
 //
-// Every signature here is deliberately built from primitives, uuid.UUID and
-// db.TenantScope, so the caller needs no type from the alerts kernel.
+// ⚠️ THE SIGNATURES ARE PRIMITIVES EXCEPT WHERE THE KERNEL IS THE POINT. Actors,
+// times and ids travel as `string`, `time.Time`, `uuid.UUID` and `db.TenantScope`
+// so a caller needs no alerts type to describe WHO or WHEN. The event TYPE is the
+// deliberate exception: it is `domain.EventType`, and that is the whole property
+// this seam exists to give. An earlier version of this comment claimed the caller
+// "needs no type from the alerts kernel" — it was never true (`grouping/service`
+// has always imported the kernel for `NewLabels` and `ComputeGroupKey`), and RULE K
+// (§5.2b, `.golangci.yml`) grants every domain that import uniformly, so pretending
+// otherwise bought nothing and cost the compile-time check below.
 
-// GroupEventRequest is one `group.*` entry for the append-only timeline.
+// TimelineEventRequest is one entry for the append-only timeline.
 //
-// The type is a closed set: group.opened, group.closed, group.member_joined,
-// group.member_left, group.storm_started, group.storm_ended. Anything else is
-// rejected by the kernel's EventType enum, because inventing a type produces a
-// timeline row the renderer shows as nothing (§D.4.1).
-type GroupEventRequest struct {
-	Type    string
+// The type is the CLOSED §D.4.1 set — `group.*` from grouping, `rule.*` from rules,
+// `enrichment.*` from enrichment.
+//
+// ⭐ IT IS `domain.EventType` AND NOT A `string`, AND THAT IS THE DIFFERENCE
+// BETWEEN A CLOSED ENUM AND AN OPEN ONE WITH EXTRA STEPS. As a string, a typo in a
+// caller was a runtime KindValidation error from `NewEventType` — found when the
+// fact it was recording had already happened, on the timeline that is the product.
+// As the kernel's value object, whose only field is unexported and whose only
+// parser is `NewEventType`, it is a compile error, and the six `group.*` constants
+// this file used to re-export as bare strings have nowhere left to be re-added.
+type TimelineEventRequest struct {
+	Type    domain.EventType
 	GroupID uuid.UUID
-	// AlertID and OccurrenceID name the member a membership event is about.
+	// AlertID and OccurrenceID name the alert or episode the fact is about; a
+	// membership event names the member. At least one of the three subjects is
+	// required (ev_subject_ck).
 	AlertID      uuid.UUID
 	OccurrenceID uuid.UUID
 	Summary      string
@@ -56,16 +89,16 @@ type GroupEventRequest struct {
 	OccurredAt time.Time
 }
 
-// AppendGroupEvent writes one group fact onto the timeline, inside the caller's
-// transaction.
+// AppendTimelineEvent writes one fact onto the timeline, inside the caller's
+// transaction when there is one.
 //
-// It exists so that `grouping` never opens `alert_events` itself. One writer, one
+// It exists so that no other module opens `alert_events` itself. One writer, one
 // idempotency mechanism, one place where an event's shape is proved.
-func (s *Service) AppendGroupEvent(ctx context.Context, scope db.TenantScope, in GroupEventRequest) error {
-	typ, err := domain.NewEventType(in.Type)
-	if err != nil {
-		return err
-	}
+func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope, in TimelineEventRequest) error {
+	// No parse of in.Type: it arrives already proved. `domain.EventType` cannot be
+	// constructed outside the kernel except through `NewEventType`, so the only
+	// value that can reach here without being one of the closed 36 is the zero
+	// value, which `NewEvent` rejects as "event type is required".
 	kindName := in.ActorKind
 	if kindName == "" {
 		kindName = domain.ActorSystem.String()
@@ -95,7 +128,7 @@ func (s *Service) AppendGroupEvent(ctx context.Context, scope db.TenantScope, in
 		AlertID:      in.AlertID,
 		OccurrenceID: in.OccurrenceID,
 		GroupID:      in.GroupID,
-		Type:         typ,
+		Type:         in.Type,
 		At:           at,
 		Actor:        actor,
 		Summary:      in.Summary,
@@ -107,56 +140,6 @@ func (s *Service) AppendGroupEvent(ctx context.Context, scope db.TenantScope, in
 	}
 	_, err = s.appendEvents(ctx, scope, []domain.Event{ev})
 	return err
-}
-
-// MemberStates is the per-occurrence state of a group's members, keyed by
-// occurrence id.
-//
-// It exists so that `grouping` can roll up `firing_count`, `acked_count` and the
-// group's own state without reading `alert_occurrences` itself.
-type MemberStates struct {
-	// State is the occurrence state: firing | suppressed | resolved | expired.
-	State map[uuid.UUID]string
-	// Acked reports which members a human has taken. Orthogonal to State: an
-	// acked alert is still firing (§B.1).
-	Acked map[uuid.UUID]bool
-	// Severity is the RAW upstream severity label of each member's Alert, kept
-	// raw because users filter on their own vocabulary (§L.4.2).
-	Severity map[uuid.UUID]string
-}
-
-// OccurrenceStates reads the current state of many episodes at once.
-func (s *Service) OccurrenceStates(
-	ctx context.Context, scope db.TenantScope, occurrenceIDs []uuid.UUID,
-) (MemberStates, error) {
-	out := MemberStates{
-		State:    map[uuid.UUID]string{},
-		Acked:    map[uuid.UUID]bool{},
-		Severity: map[uuid.UUID]string{},
-	}
-	for _, oid := range occurrenceIDs {
-		occ, err := s.occurrences.GetByID(ctx, scope, oid)
-		if err != nil {
-			if errs.IsKind(err, errs.KindNotFound) {
-				continue
-			}
-			return MemberStates{}, err
-		}
-		out.State[oid] = occ.State().String()
-		out.Acked[oid] = occ.AckState().IsAcked()
-
-		alert, err := s.alerts.GetByID(ctx, scope, occ.AlertID())
-		if err != nil {
-			if errs.IsKind(err, errs.KindNotFound) {
-				continue
-			}
-			return MemberStates{}, err
-		}
-		if raw, ok := alert.Labels().Get(domain.LabelSeverity); ok {
-			out.Severity[oid] = raw
-		}
-	}
-	return out, nil
 }
 
 // ------------------------------------------------- primitive action wrappers
@@ -185,16 +168,22 @@ func (s *Service) AcknowledgeAs(
 // which is a FAN-OUT OF THE SAME PRIMITIVE and not a new one: one snooze per
 // CURRENTLY-JOINED member alert. Alerts that join the group later are NOT
 // snoozed — a snooze is never predictive (§B.8.3).
+//
+// ⭐ THE INTENT TRAVELS WITH IT, and the second result says whether the claim
+// REPLAYED. A fan-out that ignored that answer would carry on to members two
+// through forty and grant each of them the second snooze the claim just refused
+// on member one — which is the duplication the key was sent to prevent, moved
+// one member to the right.
 func (s *Service) SnoozeAs(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
-	actorKind, actorID, actorLabel string, until time.Time, note string,
-) error {
+	actorKind, actorID, actorLabel string, until time.Time, note string, idem Idempotency,
+) (bool, error) {
 	actor, err := humanActor(actorKind, actorID, actorLabel)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.Snooze(ctx, scope, alertID, actor, until, note)
-	return err
+	_, replayed, err := s.Snooze(ctx, scope, alertID, actor, until, note, idem)
+	return replayed, err
 }
 
 // UnsnoozeAs is Unsnooze with the actor described in primitives.
@@ -217,15 +206,18 @@ func (s *Service) UnsnoozeAs(
 // answers `201` with the event it wrote, and the only place that fact is known
 // for certain is here, at the write: re-reading the timeline afterwards is a
 // second query that can return a different row.
+//
+// ⭐ THE INTENT TRAVELS WITH IT, and the third result says whether the claim
+// REPLAYED — see SnoozeAs for why a fan-out has to stop when it does.
 func (s *Service) CommentAs(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
-	actorKind, actorID, actorLabel, body string,
-) (domain.Event, error) {
+	actorKind, actorID, actorLabel, body string, idem Idempotency,
+) (domain.Event, bool, error) {
 	actor, err := humanActor(actorKind, actorID, actorLabel)
 	if err != nil {
-		return domain.Event{}, err
+		return domain.Event{}, false, err
 	}
-	return s.Comment(ctx, scope, alertID, actor, body)
+	return s.Comment(ctx, scope, alertID, actor, body, idem)
 }
 
 func humanActor(kindName, actorID, label string) (domain.Actor, error) {
@@ -243,19 +235,12 @@ func humanActor(kindName, actorID, label string) (domain.Actor, error) {
 	return domain.NewActor(kind, actorID, label)
 }
 
-// The `group.*` timeline types, re-exported as plain strings so that `grouping`
-// can name the fact it is recording without importing the kernel.
-const (
-	// GroupEventOpened records a new AlertGroup generation.
-	GroupEventOpened = "group.opened"
-	// GroupEventClosed records a generation closing after group_close_delay.
-	GroupEventClosed = "group.closed"
-	// GroupEventMemberJoined records an occurrence joining a generation.
-	GroupEventMemberJoined = "group.member_joined"
-	// GroupEventMemberLeft records an occurrence leaving a generation.
-	GroupEventMemberLeft = "group.member_left"
-	// GroupEventStormStarted records a generation entering storm mode.
-	GroupEventStormStarted = "group.storm_started"
-	// GroupEventStormEnded records storm mode ending after storm_cooldown.
-	GroupEventStormEnded = "group.storm_ended"
-)
+// ⛔ THE SIX `group.*` STRING CONSTANTS THAT USED TO BE HERE ARE GONE, AND MUST NOT
+// COME BACK. They were a second spelling of `domain.EventGroupOpened` and its five
+// siblings, re-exported "so that `grouping` can name the fact it is recording
+// without importing the kernel" — a reason that was never load-bearing, because
+// RULE K grants `grouping` that import and `grouping/service` had already taken it.
+// What the copies actually bought was a `Type string` field, and with it a class of
+// typo the compiler could not see. `grouping` now names
+// `alerts/domain.EventGroup*` directly. `test/arch/eventtype_test.go` is what
+// notices if a package re-declares one.

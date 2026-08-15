@@ -14,57 +14,165 @@ import { For, Match, Show, Switch, createMemo, createSignal, type Component } fr
 import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
+import { maxLengthOf, patternOf } from "~/api/bounds";
 import { violationsByField } from "~/api/client";
 import {
   createCluster,
   createSource,
-  listClusters,
-  listSources,
   testSource,
   updateSource,
 } from "~/api/endpoints";
+import { CreateSourceRequestSchema, SourceKindSchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
-import type { Source, SourceCreated, SourceHealthStatus, SourceKind } from "~/api/types";
+import { clustersQuery, sourcesQuery } from "~/api/queries";
+import type {
+  CreateSourceRequest,
+  Source,
+  SourceCreated,
+  SourceHealthStatus,
+  SourceKind,
+} from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Dialog, DialogBody } from "~/components/ui/Dialog";
 import { Button, Checkbox, Chip, Field, Input, Panel, PanelHeader, PanelTitle, Select, cx } from "~/components/ui/primitives";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/ui/states";
 import { idempotencyKey } from "~/lib/format";
 
-/** Tier A: an upstream's health is not an alert's state (§M.2). */
+import { DrillPanel } from "./DrillPanel";
+import { RejectionsPanel } from "./RejectionsPanel";
+
+/**
+ * Tier A: an upstream's health is not an alert's state (§M.2).
+ *
+ * Each note ends with what the status means for ENDINGS, because that is the part
+ * an operator cannot see from the badge: anything other than `healthy` holds this
+ * source's alerts in place rather than expiring them (§B.4). Reconciliation is
+ * what refreshes this — every source is polled, on its own interval, with no way
+ * to switch it off (ADR 0006), so a stale badge means oto stopped being able to
+ * look rather than being told not to.
+ */
 const HEALTH_NOTE: Record<SourceHealthStatus, string> = {
-  healthy: "Reachable, and reconciling on schedule.",
-  degraded: "Reachable but not entirely well — some reconciles are failing.",
+  healthy: "Reachable, and reconciling on schedule. Alerts oto stops hearing about can expire.",
+  degraded:
+    "Reachable but not entirely well — some reconciles are failing. Nothing from this source will be expired until it recovers.",
   unreachable:
-    "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not.",
-  unknown: "oto has not checked this source yet.",
+    "oto cannot reach this Alertmanager. Alerts pushed by webhook may still arrive; state reconciliation will not, so oto cannot see a silence here and will not expire anything from this source.",
+  unknown:
+    "oto has not checked this source yet, so nothing from it will be expired until a reconcile pass succeeds.",
 };
 
-const SourceSchema = v.object({
-  name: v.pipe(v.string(), v.trim(), v.minLength(1, "A name is required.")),
-  cluster_id: v.pipe(v.string(), v.minLength(1, "Pick a cluster.")),
-  base_url: v.pipe(
-    v.string(),
-    v.trim(),
-    v.regex(/^https?:\/\/[^\s]+$/i, "An absolute http or https URL."),
-    v.check((s) => !s.endsWith("/"), "No trailing slash."),
-  ),
-});
+/**
+ * How each upstream kind is spelled for a person.
+ *
+ * ⛔ TYPED AGAINST THE CONTRACT'S ENUM, so a kind the server starts accepting is
+ * a build failure here rather than an `<option>` reading `grafana_oncall`. The
+ * *list* comes from `SourceKindSchema`; this only supplies the capital letter.
+ */
+const KIND_LABEL: Record<SourceKind, string> = {
+  alertmanager: "Alertmanager",
+  grafana: "Grafana",
+};
+
+/*
+ * SPEC §L.8.1: the form schema stays hand-written — it carries the sentences an
+ * operator should read — but it `v.pipe`s into the **generated**
+ * `CreateSourceRequestSchema` as its final gate, so this dialog cannot build a
+ * body the API would reject. The generated schema comes from
+ * `api/openapi/openapi.yaml` via gate G4 (`npm run gen:validators`), which is
+ * also where the ceilings this form does not repeat (the 10…3600s reconcile
+ * interval) are enforced.
+ */
+
+/* -------------------------------------------------------------------------- */
+/* The contract's rules, read rather than repeated                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⛔ NEITHER THE PATTERN NOR THE CAPS ARE WRITTEN HERE. This form used to spell
+ * the base-URL rule `/^https?:\/\/[^\s]+$/i` with a separate trailing-slash
+ * `v.check` beside it — a reconstruction of one contract regex that had already
+ * drifted in two ways: the `/i` accepted `HTTP://x` the server rejects, and the
+ * 2048-character cap was simply absent. The name box was uncapped for the same
+ * reason. All three come off `CreateSourceRequestSchema`, the very schema this
+ * form is gated through below, so they cannot disagree with it by construction.
+ */
+const NAME_MAX = maxLengthOf(CreateSourceRequestSchema, "name");
+const BASE_URL_MAX = maxLengthOf(CreateSourceRequestSchema, "base_url");
+const BASE_URL_PATTERN = patternOf(CreateSourceRequestSchema, "base_url");
+
+/** What the dialog holds, before it is anything the API has a name for. */
+interface SourceForm {
+  readonly name: string;
+  readonly cluster_id: string;
+  readonly kind: SourceKind;
+  readonly base_url: string;
+  readonly prometheus_url: string;
+}
+
+/**
+ * The defaults are stated here, once, rather than at the call site: they are
+ * part of what "register an Alertmanager" means, and the generated schema
+ * checks every one of them.
+ *
+ * There is no `reconcile_enabled`: the reconciler runs for every source, and the
+ * interval is the only part of it that is a choice (ADR 0006).
+ */
+function toCreateSourceRequest(form: SourceForm): v.InferInput<typeof CreateSourceRequestSchema> {
+  const prometheus = form.prometheus_url.trim();
+  return {
+    name: form.name.trim(),
+    cluster_id: form.cluster_id,
+    kind: form.kind,
+    base_url: form.base_url.trim(),
+    ...(prometheus !== "" ? { prometheus_url: prometheus } : {}),
+    tls_skip_verify: false,
+    ignore_labels: [
+      "prometheus_replica",
+      "__replica__",
+      "monitor",
+      "replica",
+      "pod_template_hash",
+    ],
+    push_enabled: true,
+    reconcile_interval_seconds: 30,
+  };
+}
+
+const SourceFormSchema = v.pipe(
+  v.strictObject({
+    name: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, "A name is required."),
+      v.maxLength(NAME_MAX, `A name is at most ${NAME_MAX} characters.`),
+    ),
+    cluster_id: v.pipe(v.string(), v.minLength(1, "Pick a cluster.")),
+    // The contract's own picklist, not a second copy of it. The `<option>` list
+    // below is generated from the same object, so the control and the schema
+    // that gates it cannot come to disagree.
+    kind: SourceKindSchema,
+    base_url: v.pipe(
+      v.string(),
+      v.trim(),
+      v.maxLength(BASE_URL_MAX, `A URL is at most ${BASE_URL_MAX.toLocaleString("en")} characters.`),
+      // One action, because the contract states one rule: the pattern already
+      // forbids the trailing slash, and it is case-sensitive — so `HTTP://…`
+      // fails here for exactly the reason it fails at the server.
+      v.regex(BASE_URL_PATTERN, "An absolute http or https URL, with no trailing slash."),
+    ),
+    prometheus_url: v.string(),
+  }),
+  v.transform(toCreateSourceRequest),
+  CreateSourceRequestSchema, // the generated schema is the final gate
+);
 
 export const SourcesSection: Component = () => {
   const client = useQueryClient();
   const [creating, setCreating] = createSignal(false);
   const [token, setToken] = createSignal<SourceCreated | null>(null);
 
-  const sources = useQuery(() => ({
-    queryKey: qk.settings.sources(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listSources({ signal }),
-  }));
-
-  const clusters = useQuery(() => ({
-    queryKey: qk.settings.clusters(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listClusters({ signal }),
-  }));
+  const sources = useQuery(() => sourcesQuery());
+  const clusters = useQuery(() => clustersQuery());
 
   return (
     <div class="flex flex-col gap-4">
@@ -142,12 +250,12 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
   return (
     <li class="border-b border-line px-3 py-2.5 last:border-b-0">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[13px] font-medium text-ink">{s().name}</span>
+        <span class="text-item font-medium text-ink">{s().name}</span>
         <Chip>{s().kind}</Chip>
         <Show when={s().cluster_key}>{(key) => <Chip mono>{key()}</Chip>}</Show>
         <span
           class={cx(
-            "rounded-[3px] border px-1.5 text-[11px] leading-5",
+            "rounded-chip border px-1.5 text-meta leading-5",
             s().health?.status === "healthy"
               ? "border-line bg-surface text-ink-muted"
               : "border-line-strong bg-raised font-medium text-ink",
@@ -158,11 +266,24 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
         </span>
         <Show when={s().health?.last_reconcile_at}>
           {(at) => (
-            <span class="text-[11px] text-ink-subtle">
+            <span class="text-meta text-ink-subtle">
               reconciled <RelativeTime value={at()} label="Last reconcile" /> ago
             </span>
           )}
         </Show>
+        {/*
+          The cadence is shown beside the last pass because it is the only
+          reconciliation setting there is. There is no on/off switch here and
+          there is no longer one in the API: reconciliation is the only way oto
+          can see an upstream silence, so a source that is not polled would show
+          a silenced alert as firing and then let the reaper end it.
+        */}
+        <span
+          class="text-meta text-ink-subtle"
+          title="How often oto polls this Alertmanager's API v2. Every source is polled — it is the only way oto can see a silence, so it cannot be turned off."
+        >
+          every {s().reconcile_interval_seconds}s
+        </span>
 
         <div class="ml-auto flex items-center gap-2">
           <Button size="sm" busy={test.isPending} onClick={() => test.mutate()}>
@@ -171,16 +292,16 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
           <Checkbox
             checked={s().push_enabled}
             onChange={(next) => toggle.mutate(next)}
-            label={<span class="text-[11px]">accept webhooks</span>}
+            label={<span class="text-meta">accept webhooks</span>}
           />
         </div>
       </div>
 
-      <p class="mt-0.5 break-all font-mono text-[11px] text-ink-subtle">{s().base_url}</p>
+      <p class="mt-0.5 break-all font-mono text-meta text-ink-subtle">{s().base_url}</p>
 
       <Show when={s().health?.last_error}>
         {(err) => (
-          <p class="mt-1 border-l-2 border-line-strong pl-2 text-[11px] leading-snug text-ink">
+          <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
             {err()}
           </p>
         )}
@@ -190,7 +311,7 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
         {(result) => (
           <p
             class={cx(
-              "mt-1 rounded-[4px] border px-2 py-1 text-[11px] leading-snug",
+              "mt-1 rounded-control border px-2 py-1 text-meta leading-snug",
               result().ok
                 ? "border-line bg-sunken text-ink-muted"
                 : "border-line-strong bg-raised font-medium text-ink",
@@ -202,6 +323,27 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
           </p>
         )}
       </Show>
+
+      {/*
+        The drill sits UNDER the source row and not beside the Test button, and
+        the two are different questions. `Test` probes the upstream: can oto
+        reach this Alertmanager. The drill asks the question an operator actually
+        has on day one — will an alert from this source reach my channel, in a
+        thread, with the right card, and be recorded — by pushing one synthetic
+        alert through the real pipeline. Both are kept: the probe is cheap and
+        answers instantly, the drill costs a Slack message and ninety seconds.
+      */}
+      <DrillPanel sourceID={s().id} />
+
+      {/*
+        And under the drill, the question the drill cannot answer. The drill
+        proves what WOULD happen to a new alert; this says what DID happen to the
+        ones already sent — which of them oto refused, why, and with which
+        labels, plus any batch that stopped before its alerts were ever read.
+        Both are closed by default: an operator with twenty sources should not
+        pay forty requests for a screen they came to rename a cluster on.
+      */}
+      <RejectionsPanel sourceID={s().id} />
 
       <Show when={test.error !== null}>
         <ErrorBanner error={test.error} class="mt-1" />
@@ -217,10 +359,7 @@ const ClustersPanel: Component = () => {
   const [key, setKey] = createSignal("");
   const [name, setName] = createSignal("");
 
-  const clusters = useQuery(() => ({
-    queryKey: qk.settings.clusters(),
-    queryFn: ({ signal }: { signal: AbortSignal }) => listClusters({ signal }),
-  }));
+  const clusters = useQuery(() => clustersQuery());
 
   const create = useMutation(() => ({
     mutationFn: () =>
@@ -238,7 +377,7 @@ const ClustersPanel: Component = () => {
     <Panel>
       <PanelHeader>
         <PanelTitle>Clusters</PanelTitle>
-        <span class="text-[11px] text-ink-subtle">
+        <span class="text-meta text-ink-subtle">
           a cluster is an identity and failure domain, not a label
         </span>
       </PanelHeader>
@@ -248,12 +387,12 @@ const ClustersPanel: Component = () => {
           <For each={clusters.data?.data ?? []}>
             {(c) => (
               <li class="flex items-center gap-2 border-b border-line px-3 py-2 last:border-b-0">
-                <span class="text-[13px] text-ink">{c.display_name}</span>
+                <span class="text-item text-ink">{c.display_name}</span>
                 <Chip mono title="Immutable — it participates in every alert key in this cluster.">
                   {c.cluster_key}
                 </Chip>
                 <Show when={c.source_count !== undefined}>
-                  <span class="ml-auto text-[11px] text-ink-subtle">
+                  <span class="ml-auto text-meta text-ink-subtle">
                     {c.source_count} source{c.source_count === 1 ? "" : "s"}
                   </span>
                 </Show>
@@ -323,10 +462,12 @@ const CreateSourceDialog: Component<{
   const [touched, setTouched] = createSignal(false);
 
   const parsed = createMemo(() =>
-    v.safeParse(SourceSchema, {
+    v.safeParse(SourceFormSchema, {
       name: name(),
       cluster_id: clusterId(),
+      kind: kind(),
       base_url: baseUrl(),
+      prometheus_url: promUrl(),
     }),
   );
 
@@ -338,22 +479,7 @@ const CreateSourceDialog: Component<{
   };
 
   const create = useMutation(() => ({
-    mutationFn: () =>
-      createSource(
-        {
-          name: name().trim(),
-          cluster_id: clusterId(),
-          kind: kind(),
-          base_url: baseUrl().trim(),
-          ...(promUrl().trim() !== "" ? { prometheus_url: promUrl().trim() } : {}),
-          tls_skip_verify: false,
-          ignore_labels: ["prometheus_replica", "__replica__", "monitor", "replica", "pod_template_hash"],
-          push_enabled: true,
-          reconcile_enabled: true,
-          reconcile_interval_seconds: 30,
-        },
-        idempotencyKey(),
-      ),
+    mutationFn: (body: CreateSourceRequest) => createSource(body, idempotencyKey()),
     onSuccess: (created) => {
       props.onCreated(created as unknown as SourceCreated);
       props.onClose();
@@ -379,7 +505,8 @@ const CreateSourceDialog: Component<{
             busy={create.isPending}
             onClick={() => {
               setTouched(true);
-              if (parsed().success) create.mutate();
+              const result = parsed();
+              if (result.success) create.mutate(result.output);
             }}
           >
             Register
@@ -394,7 +521,7 @@ const CreateSourceDialog: Component<{
 
         <Field id="src-name" label="Name" required error={localError("name") ?? violations().get("name")}>
           {(a) => (
-            <Input {...a} value={name()} placeholder="alertmanager-prod-eu" onInput={(e) => { setTouched(true); setName(e.currentTarget.value); }} />
+            <Input {...a} value={name()} maxLength={NAME_MAX} placeholder="alertmanager-prod-eu" onInput={(e) => { setTouched(true); setName(e.currentTarget.value); }} />
           )}
         </Field>
 
@@ -410,8 +537,9 @@ const CreateSourceDialog: Component<{
         <Field id="src-kind" label="Kind" required error={violations().get("kind")}>
           {(a) => (
             <Select {...a} value={kind()} onChange={(e) => setKind(e.currentTarget.value as SourceKind)}>
-              <option value="alertmanager">Alertmanager</option>
-              <option value="grafana">Grafana</option>
+              <For each={SourceKindSchema.options}>
+                {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
+              </For>
             </Select>
           )}
         </Field>
@@ -466,8 +594,8 @@ const TokenDialog: Component<{
       <Show when={props.created}>
         {(created) => (
           <>
-            <div class="rounded-[4px] border border-line-strong bg-sunken px-2 py-2">
-              <code class="block break-all font-mono text-[12px] text-ink">
+            <div class="rounded-control border border-line-strong bg-sunken px-2 py-2">
+              <code class="block break-all font-mono text-body text-ink">
                 {created().ingest_token}
               </code>
             </div>
@@ -477,7 +605,7 @@ const TokenDialog: Component<{
             >
               Copy token
             </Button>
-            <p class="text-[12px] leading-relaxed text-ink-muted">
+            <p class="text-body leading-relaxed text-ink-muted">
               Point your Alertmanager's webhook receiver at oto's ingest URL for this source and send
               this token as its bearer credential.
             </p>

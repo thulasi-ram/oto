@@ -41,6 +41,11 @@ type Config struct {
 	// AllowPrivateWebhookTargets relaxes the webhook SSRF guard. It is off by
 	// default and comes from OTO_ALLOW_PRIVATE_WEBHOOK_TARGETS (§L.5).
 	AllowPrivateWebhookTargets bool
+	// AllowInsecureWebhookTLS lets a webhook channel's `insecure_skip_verify` take
+	// effect. It is off by default and comes from `security.allow_insecure_tls` —
+	// the SAME switch that gates `alert_sources.tls_skip_verify`, because it is the
+	// same question: which certificates does this deployment trust (§M2).
+	AllowInsecureWebhookTLS bool
 	// WebhookTransport overrides the webhook HTTP transport, for tests.
 	WebhookTransport http.RoundTripper
 }
@@ -74,6 +79,7 @@ func Default(cfg Config) *Registry {
 	r.MustRegisterProvider(webhookprovider.NewProvider(webhookprovider.Options{
 		Clock:               clk,
 		AllowPrivateTargets: cfg.AllowPrivateWebhookTargets,
+		AllowInsecureTLS:    cfg.AllowInsecureWebhookTLS,
 		Transport:           cfg.WebhookTransport,
 	}))
 

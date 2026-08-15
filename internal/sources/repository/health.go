@@ -49,6 +49,10 @@ type healthRow struct {
 	amChildRoutes      int32
 	amChildWithTimings int32
 	amRouteTimingsAt   *time.Time
+	// amRoutes is the resolved route tree (00037). NULL means NOT OBSERVED, which
+	// is the same fact `am_route_timings_at IS NULL` carries for the three above:
+	// the two are one reading of one config and move together.
+	amRoutes []byte
 
 	warnings  []byte
 	updatedAt time.Time
@@ -58,7 +62,7 @@ const healthColumns = `
 	source_id, org_id, status, last_push_at, last_reconcile_at, last_reconcile_status,
 	last_error, consecutive_failures, am_version, send_resolved, clock_skew_ms,
 	divergence_count, am_group_wait_ms, am_group_interval_ms, am_repeat_interval_ms,
-	am_child_routes, am_child_routes_with_timings, am_route_timings_at,
+	am_child_routes, am_child_routes_with_timings, am_route_timings_at, am_routes,
 	warnings, updated_at`
 
 func (r *healthRow) scanDest() []any {
@@ -67,7 +71,7 @@ func (r *healthRow) scanDest() []any {
 		&r.lastReconcileStatus, &r.lastError, &r.consecutiveFailures, &r.amVersion,
 		&r.sendResolved, &r.clockSkewMS, &r.divergenceCount,
 		&r.amGroupWaitMS, &r.amGroupIntervalMS, &r.amRepeatIntervalMS,
-		&r.amChildRoutes, &r.amChildWithTimings, &r.amRouteTimingsAt,
+		&r.amChildRoutes, &r.amChildWithTimings, &r.amRouteTimingsAt, &r.amRoutes,
 		&r.warnings, &r.updatedAt,
 	}
 }
@@ -117,6 +121,11 @@ func (r *healthRow) toDomain() (domain.SourceHealth, error) {
 		})
 	}
 
+	routes, err := decodeRoutes(r.amRoutes)
+	if err != nil {
+		return domain.SourceHealth{}, err
+	}
+
 	return domain.SourceHealth{
 		SourceID:            r.sourceID,
 		OrgID:               r.orgID,
@@ -137,6 +146,7 @@ func (r *healthRow) toDomain() (domain.SourceHealth, error) {
 			ChildRoutes:         int(r.amChildRoutes),
 			ChildrenWithTimings: int(r.amChildWithTimings),
 		},
+		Routes:         routes,
 		RouteTimingsAt: r.amRouteTimingsAt,
 		Warnings:       warnings,
 		UpdatedAt:      r.updatedAt,
@@ -155,7 +165,7 @@ const getHealthSQL = `SELECT ` + healthColumns + ` FROM source_health WHERE org_
 func (r *SourceRepository) GetHealth(
 	ctx context.Context, s db.TenantScope, sourceID uuid.UUID,
 ) (domain.SourceHealth, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.SourceHealth{}, err
 	}
 	var row healthRow
@@ -185,7 +195,7 @@ const listHealthSQL = `SELECT ` + healthColumns + `
 func (r *SourceRepository) HealthFor(
 	ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID,
 ) (map[uuid.UUID]domain.SourceHealth, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(sourceIDs) == 0 {
@@ -222,8 +232,8 @@ INSERT INTO source_health (source_id, org_id, status, last_push_at, last_reconci
                            am_version, send_resolved, clock_skew_ms, divergence_count,
                            am_group_wait_ms, am_group_interval_ms, am_repeat_interval_ms,
                            am_child_routes, am_child_routes_with_timings, am_route_timings_at,
-                           warnings, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                           am_routes, warnings, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 ON CONFLICT (source_id) DO UPDATE SET
     status                = EXCLUDED.status,
     last_push_at          = EXCLUDED.last_push_at,
@@ -241,6 +251,7 @@ ON CONFLICT (source_id) DO UPDATE SET
     am_child_routes       = EXCLUDED.am_child_routes,
     am_child_routes_with_timings = EXCLUDED.am_child_routes_with_timings,
     am_route_timings_at   = EXCLUDED.am_route_timings_at,
+    am_routes             = EXCLUDED.am_routes,
     warnings              = EXCLUDED.warnings,
     updated_at            = EXCLUDED.updated_at`
 
@@ -250,10 +261,10 @@ ON CONFLICT (source_id) DO UPDATE SET
 // table in this module that is UPDATEd rather than appended to. The upsert exists
 // because Create seeds a row and a probe may still race it on a fresh source.
 func (r *SourceRepository) SaveHealth(ctx context.Context, s db.TenantScope, h domain.SourceHealth) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("source_id", h.SourceID); err != nil {
+	if err := db.RequireID("source_id", h.SourceID); err != nil {
 		return err
 	}
 	if h.Status == "" {
@@ -282,6 +293,16 @@ func (r *SourceRepository) SaveHealth(ctx context.Context, s db.TenantScope, h d
 		return errs.Internal("jsonb_encode_failed", err)
 	}
 
+	// nil here writes SQL NULL, which is "no probe has ever read this config" —
+	// the same fact `am_route_timings_at IS NULL` carries for the three columns
+	// beside it. ApplyProbe only ever sets Routes on a probe that read the
+	// config, so a failed probe leaves the last resolution in place rather than
+	// blanking the operator's route list over one unreachable poll.
+	routes, err := encodeRoutes(h.Routes)
+	if err != nil {
+		return err
+	}
+
 	updatedAt := h.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = r.clock.Now()
@@ -306,7 +327,7 @@ func (r *SourceRepository) SaveHealth(ctx context.Context, s db.TenantScope, h d
 		durationMS(h.RouteTimings.RepeatInterval),
 		int32(childRoutes), int32(childWithTimings), //nolint:gosec // clamped above
 		timePtr(derefTime(h.RouteTimingsAt)),
-		warnings, updatedAt.UTC())
+		routes, warnings, updatedAt.UTC())
 	if err != nil {
 		return mapErr(err, "sources_not_found", "write source health")
 	}
@@ -329,7 +350,7 @@ ON CONFLICT (source_id) DO UPDATE SET
 func (r *SourceRepository) TouchPush(
 	ctx context.Context, s db.TenantScope, sourceID uuid.UUID, at time.Time,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	if at.IsZero() {

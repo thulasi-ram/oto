@@ -1,0 +1,160 @@
+{{- if .Values.migration.enabled }}
+{{- if not .Values.existingSecret }}
+{{/*
+The migration hook's own Secret. See the ⭐ block on `oto.migrationSecretName`
+for why the main Secret cannot be used here: a pre-install hook runs before the
+release's ordinary resources exist, and annotating the main Secret as a hook
+would orphan it on `helm uninstall`.
+
+Weight -10 puts it before the Job. The hook-succeeded policy removes it once the
+phase completes, so the only copy of the URL that outlives the install is the
+ordinary, release-tracked Secret.
+*/}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "oto.migrationSecretName" . }}
+  labels:
+    {{- include "oto.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  annotations:
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+type: Opaque
+stringData:
+  {{ .Values.existingSecretKeys.databaseUrl }}: {{ .Values.secrets.databaseUrl | quote }}
+---
+{{- end }}
+{{/*
+SPEC acceptance criterion 32: `oto migrate up` is idempotent, and a rolling
+deploy of N and N+1 does not corrupt in-flight jobs.
+
+⭐ THIS RUNS `oto migrate`, NOT `goose up`, AND THE DIFFERENCE IS THE WHOLE
+POINT. `oto migrate` applies BOTH migration systems in order (cmd/oto/migrate.go):
+
+  1. goose over db/migrations — oto's own schema.
+  2. River's own migrator — river_job, river_leader, river_queue and friends,
+     versioned on River's own ledger, entirely separate from goose's.
+
+Running goose alone leaves River's tables absent and every worker pod dies at
+boot. A hand-written copy of River's DDL would drift from the driver on its next
+release, and the queue's claim query is the one piece of SQL in this system where
+a subtle divergence loses an alert rather than failing to compile.
+
+⛔ HOOK WEIGHTS. -10 the Secret, -5 this Job, so the Job's credentials exist
+before it starts and both land before every ordinary resource in the release. The
+API and worker Deployments are ordinary resources, so they are only created once
+this Job has succeeded — which is what stops a fresh worker from booting against
+a database with no river_job table.
+
+⛔ DELETE POLICY. `before-hook-creation` clears the previous run's Job so an
+upgrade is not rejected by an immutable Job spec; `hook-succeeded` removes it
+when it works. A FAILED Job is deliberately left behind — `kubectl logs
+job/<name>-migrate` is the first thing anyone will want, and a hook that deletes
+its own evidence turns a bad migration into a mystery.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "oto.fullname" . }}-migrate
+  labels:
+    {{- include "oto.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  annotations:
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.migration.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "oto.selectorLabels" (dict "ctx" . "component" "migrate") | nindent 8 }}
+      {{- with .Values.migration.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      # ⛔ NO `serviceAccountName`, AND THAT IS NOT AN OVERSIGHT. This Job is a
+      # pre-install hook, so it runs BEFORE the release's ordinary resources
+      # exist — including the chart's own ServiceAccount. Naming it here makes the
+      # job-controller refuse to create the pod outright:
+      #
+      #   Error creating: pods "…-migrate-" is forbidden: error looking up
+      #   service account oto/oto: serviceaccount "oto" not found
+      #
+      # and, because the Job never produces a pod, `helm install --wait` sits at
+      # "Job in progress" until the timeout with nothing in `kubectl logs` to
+      # explain it. It runs as the namespace's `default` account, which is
+      # correct: this pod talks to Postgres and to nothing in the cluster, and the
+      # token is not mounted either way.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.migration.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migration.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migration.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "oto.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            # ⛔ THE CONFIGMAP IS NOT AVAILABLE HERE. It is an ordinary release
+            # resource and this Job runs before those exist, so the handful of
+            # settings `oto migrate` needs are inlined. Everything else falls back
+            # to config.Default(), which validates — migrate returns before the
+            # container, the telemetry setup and the pools are ever built
+            # (cmd/oto/main.go).
+            - name: OTO_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "oto.migrationSecretName" . }}
+                  key: {{ .Values.existingSecretKeys.databaseUrl }}
+            - name: OTO_ENV
+              value: {{ .Values.config.env | quote }}
+            - name: OTO_SERVICE
+              value: {{ .Values.config.service | quote }}
+            - name: OTO_LOG_LEVEL
+              value: {{ .Values.config.log.level | quote }}
+            - name: OTO_LOG_FORMAT
+              value: {{ .Values.config.log.format | quote }}
+            - name: OTO_DB_CONNECT_TIMEOUT
+              value: {{ .Values.config.db.connect_timeout | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

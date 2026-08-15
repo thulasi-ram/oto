@@ -59,7 +59,7 @@ info:
     alert is still firing.** Acking from the Slack button and acking via `POST /alerts/{id}/ack` go
     through the same service method and produce identical state.
 
-    A re-fire of the same `alert_key` **after** `refire_grace` (default 10 minutes) opens a **new
+    A re-fire of the same `alert_key` **after** `refire_grace` (default 20 minutes) opens a **new
     occurrence** on the same Alert; a re-fire **within** the grace period **reopens the existing
     occurrence** and reuses its thread. `flap_score` and `storm_mode` are derived signals, never states,
     and both are visible UI states rather than silent suppression.
@@ -76,7 +76,9 @@ info:
     - All timestamps are RFC 3339 UTC with milliseconds, e.g. `2026-08-07T09:14:22.114Z`.
     - Errors are RFC 9457 `application/problem+json`. A 422 always carries `violations[]` whose `field`
       values are `/`-separated **JSON** paths (`matchers/0/name`), never Go field names.
-    - Every mutating endpoint accepts an `Idempotency-Key` request header.
+    - Every mutating endpoint accepts an `Idempotency-Key` request header. The retention window is
+      **24 hours**, and the endpoints whose response carries a secret **refuse** a replay rather than
+      replaying it — see `IdempotencyKeyHeader` for why oto cannot return a credential twice.
     - Unknown query parameters are **rejected** with `400 unknown_parameter`, and unknown JSON body
       fields are rejected with `422`. This is how the UI and the API stay honest.
 
@@ -138,6 +140,13 @@ tags:
     description: A read-only mirror of Alertmanager silences. oto has no silence write path.
   - name: Discovery
     description: Label and enricher discovery, used to populate the filter bar and settings screens.
+  - name: Drills
+    description: |
+      Delivery drills: one synthetic alert pushed through the **real** pipeline — ingestion, alert
+      identity, grouping, the notification policy match, the rule snapshot, threading, the ordering
+      gate and the delivery record — so an operator can prove the notification path works without
+      waiting for an outage. The result names the stage that failed. A drill's alert is marked
+      synthetic, is excluded from every statistic oto reports, and is deleted automatically.
   - name: Stats
     description: |
       Alert-hygiene accounting. Team- and alert-scoped only: per-person response-time metrics,
@@ -326,7 +335,10 @@ paths:
         indexed, total ordering.
 
         **`include` avoids the N+1.** Without it the response is one row per alert; with it, the named
-        sub-resources are batch-loaded and embedded.
+        sub-resources are batch-loaded and embedded. `rule` is the one that embeds a **reference**
+        rather than the object — see `RuleSnapshotRefDTO` — and
+        `GET /api/v1/rule-snapshots/batch` resolves a whole page of those refs in one further call, so
+        showing `expr` on the list costs two requests rather than one per row (ADR 0025).
 
         **Snoozed alerts are in this list by default and that is deliberate.** A snooze suppresses oto's
         own *notifications*; it says nothing about the signal. A snoozed alert is still firing, still
@@ -459,6 +471,7 @@ paths:
           schema:
             type: boolean
         - $ref: '#/components/parameters/SnoozedParam'
+        - $ref: '#/components/parameters/SyntheticParam'
         - name: since
           in: query
           description: |
@@ -667,6 +680,7 @@ paths:
           schema:
             type: boolean
         - $ref: '#/components/parameters/SnoozedParam'
+        - $ref: '#/components/parameters/SyntheticParam'
         - name: since
           in: query
           description: Lower bound on `last_seen_at`.
@@ -798,7 +812,12 @@ paths:
           description: Comma-separated event types to include. Omit for all.
           schema:
             type: array
-            maxItems: 34
+            # The bound is the SIZE OF THE CLOSED ENUM, so "give me everything"
+            # is always expressible. It must never fall below `AlertEventType`:
+            # a ceiling under the enum it filters refuses a caller for naming a
+            # type this API already emits, and does it in the caller's own
+            # generated client.
+            maxItems: 36
             uniqueItems: true
             items:
               $ref: '#/components/schemas/AlertEventType'
@@ -913,6 +932,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RuleHistoryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1421,7 +1442,12 @@ paths:
           description: Comma-separated event types to include. Omit for all.
           schema:
             type: array
-            maxItems: 34
+            # The bound is the SIZE OF THE CLOSED ENUM, so "give me everything"
+            # is always expressible. It must never fall below `AlertEventType`:
+            # a ceiling under the enum it filters refuses a caller for naming a
+            # type this API already emits, and does it in the caller's own
+            # generated client.
+            maxItems: 36
             uniqueItems: true
             items:
               $ref: '#/components/schemas/AlertEventType'
@@ -1491,6 +1517,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RuleSnapshotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1645,6 +1673,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GroupDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1710,7 +1740,12 @@ paths:
           description: Comma-separated event types to include. Omit for all.
           schema:
             type: array
-            maxItems: 34
+            # The bound is the SIZE OF THE CLOSED ENUM, so "give me everything"
+            # is always expressible. It must never fall below `AlertEventType`:
+            # a ceiling under the enum it filters refuses a caller for naming a
+            # type this API already emits, and does it in the caller's own
+            # generated client.
+            maxItems: 36
             uniqueItems: true
             items:
               $ref: '#/components/schemas/AlertEventType'
@@ -2047,6 +2082,92 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/rule-snapshots/batch:
+    get:
+      operationId: batchGetRuleSnapshots
+      summary: Resolve many snapshot ids at once, for the alert list
+      tags: [Rules]
+      description: |
+        **The second half of `include=rule`, and what lets the alert list show what the rule said.**
+
+        `GET /api/v1/alerts?include=rule` gives each row a `RuleSnapshotRefDTO` — an id, and nothing
+        more. This turns a page of those ids into the snapshots themselves in **one** call. Two
+        requests render a list of fifty alerts with their expressions; one request per row would be
+        fifty-one, which is why the list never showed the rule at all.
+
+        ### Why the join is client-side and not an embedded object
+
+        `alerts/api` may not name the rules module's types (CONTEXT.md §5, layering rule 4/5), and a
+        hand-copied `RuleSnapshotDTO` living under `alerts` would be the second copy that drifts —
+        two answers to "what did the rule say", diverging quietly. On top of that, `expr` runs to
+        64 KiB and every snapshot carries two label maps: embedding all of it in each of two hundred
+        rows is the payload explosion `include=` exists to keep opt-in. The full reasoning, and the
+        options weighed against it, are in **ADR 0025**.
+
+        ### Content addressing makes this cheap
+
+        A snapshot is deduplicated by content, so a rule that has not been edited is **one row**
+        however many alerts fired under it. A page of fifty alerts under three distinct rules asks
+        about three snapshots, not fifty — pass the ids as they come off the rows and let the server
+        collapse them.
+
+        ### ⛔ An id with no snapshot is absent from the result, never a 404
+
+        `rule_snapshots` is append-only and nothing deletes from it, so the only ways to miss are an
+        id belonging to another org or one a caller invented. Failing the whole request for either
+        would blank the rule column of a page that is otherwise entirely answerable. Join by `id` and
+        render a miss as *unknown* — which is a different fact from a snapshot whose `origin` is
+        `unavailable`, and the two must stay distinguishable.
+
+        ### ⛔ This is not a page
+
+        There is no `page` object and no cursor: the caller enumerated the set itself, so there is
+        nothing to page through and no `next_cursor` that could ever exist.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: |
+            The snapshot ids to resolve, comma-separated (repeating the parameter is equivalent).
+
+            **Duplicates are accepted and are the normal case** — they are what a page of alert rows
+            looks like when nothing has changed upstream — and are collapsed server-side. The cap is
+            100 rather than the usual 200 because 200 UUIDs is a 7.4 KB request line, which survives
+            a default proxy header buffer only until a session cookie joins it; 100 is exactly one
+            page of the UI's alert list, and a caller paging at the contract's 200 ceiling makes two
+            calls, which is still constant in the size of the page.
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items:
+              $ref: '#/components/schemas/Uuid'
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: |
+            The snapshots among the requested ids that exist in this org, newest capture first.
+            Ids with no snapshot are **absent**; the array may be shorter than the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSnapshotBatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/rule-snapshots/{id}:
     get:
       operationId: getRuleSnapshot
@@ -2064,6 +2185,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RuleSnapshotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2309,6 +2432,11 @@ paths:
         Update the Alertmanager receiver promptly: between rotation and reconfiguration the old token is
         rejected with `401`, which Alertmanager treats as permanent, so notifications sent in that window
         are lost.
+
+        Retrying with the same `Idempotency-Key` is a `409 idempotency_key_reuse` and rotates nothing.
+        That is stricter than "act once" and deliberately so: a rotation *destroys* the credential it
+        replaces, so a blind retry after a dropped response would revoke the secret the caller may still
+        be holding from the first attempt and hand the replacement to a response that never arrived.
       parameters:
         - $ref: '#/components/parameters/IdParam'
         - $ref: '#/components/parameters/IdempotencyKeyHeader'
@@ -2327,6 +2455,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -2407,6 +2537,124 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/sources/{id}/rejections:
+    get:
+      operationId: listSourceRejections
+      summary: Why this source's alerts never appeared
+      tags: [Sources]
+      description: |
+        Every element oto refused to normalise, newest first, with the reason it was refused and the
+        label set it carried.
+
+        **This is the answer to "my alert never showed up".** oto never silently drops: an alert that
+        breaks a bound is recorded here with a reason and a metric, and a `202` for a partially bad
+        payload is only honest because this record exists. Before this endpoint the record was
+        reachable from `psql` and nowhere else.
+
+        Not every rejection names an alert. A body oto could not decode, a body over the 8 MiB cap and
+        a batch for an unknown source are recorded against the source with no element to point at, and
+        `too_many_alerts` is about the payload rather than about any one alert in it. Those rows carry
+        an **empty** `labels`, and `reason` plus `detail` are the whole answer.
+
+        Records age out with `raw_retention_days` (14 by default). A rejection older than that is gone,
+        which is a retention decision rather than a filter.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - name: reason
+          in: query
+          description: Comma-separated rejection reasons. Absent means every reason.
+          schema:
+            type: array
+            maxItems: 15
+            uniqueItems: true
+            items:
+              $ref: '#/components/schemas/RejectionReason'
+          style: form
+          explode: false
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of rejections, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/sources/{id}/failed-batches:
+    get:
+      operationId: listSourceFailedBatches
+      summary: Batches this source delivered that never became alerts
+      tags: [Sources]
+      description: |
+        The batch-level half of the same question the rejection feed answers per alert. A rejection
+        says oto refused one element; this says oto took the whole body, answered `202`, and then could
+        not turn it into alerts.
+
+        Only the two troubled states are listable. `failed` gave up and carries an `error`; `partial`
+        stopped mid-chunking, which is the state a batch is left in when a worker dies between chunks,
+        and usually carries no error because it stopped by dying rather than by deciding. `pending` is
+        excluded on purpose — every accepted batch passes through it, so listing it would drown the
+        answer in the normal case.
+
+        `alert_count` is how many alerts are sitting in that payload unprocessed, which is what the
+        failure actually cost. The payload itself is deliberately **not** on this list: it is up to
+        8 MiB per row.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - name: status
+          in: query
+          description: Comma-separated batch statuses. Absent means both.
+          schema:
+            type: array
+            maxItems: 2
+            uniqueItems: true
+            items:
+              $ref: '#/components/schemas/FailedBatchStatus'
+          style: form
+          explode: false
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of failed batches, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FailedBatchListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -2555,6 +2803,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelTypeListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2652,6 +2902,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2726,6 +2978,8 @@ paths:
       responses:
         '204':
           $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2754,6 +3008,14 @@ paths:
         If the rendered payload fails outbound validation it is **never sent**: the attempt is reported
         as failed with `config_invalid` and the offending payload is retained for inspection. oto does
         not silently truncate a message to make it fit.
+
+        **This is the cheap check, and it is deliberately not the whole answer.** It is scoped to one
+        destination and costs one API call: *is this token still good, does this conversation exist,
+        does my payload validate*. It does not touch ingestion, alert identity, grouping, the
+        notification policy match, threading, the ordering gate or the delivery record — so it cannot
+        say whether an alert would ever be routed here. For that, run a delivery drill
+        (`POST /api/v1/drills`), which pushes one synthetic alert through all of it and names the
+        stage that fails. The two are complementary and both are kept.
       parameters:
         - $ref: '#/components/parameters/IdParam'
         - $ref: '#/components/parameters/IdempotencyKeyHeader'
@@ -2766,6 +3028,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3003,7 +3267,7 @@ paths:
           description: Comma-separated reasons.
           schema:
             type: array
-            maxItems: 16
+            maxItems: 18
             uniqueItems: true
             items:
               $ref: '#/components/schemas/NotificationReason'
@@ -3463,10 +3727,179 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EnricherListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # =================================================================================================
+  # Delivery drills
+  # =================================================================================================
+
+  /api/v1/drills:
+    post:
+      operationId: startDeliveryDrill
+      summary: Push one synthetic alert through the real pipeline
+      tags: [Drills]
+      description: |
+        Manufacture one alert and accept it **through the same ingest endpoint an Alertmanager posts
+        to**, then report, stage by stage, what the real pipeline did with it.
+
+        This is deliberately not `POST /channels/{id}/test`, which renders a card and hands it to the
+        provider. That answers "does my token work". This answers the question an operator actually
+        has on day one — *will an alert reach my channel, in a thread, with the right card, and be
+        recorded?* — because it runs the stages the channel test skips, and every failure mode oto has
+        lives in one of them.
+
+        **The alert is synthetic and disposable.** It is marked from the provenance of the batch that
+        carried it, never from a label — a label is forgeable by any upstream and participates in
+        `alert_key`, so marking one would change the alert's identity. Every aggregate excludes it:
+        the daily hygiene rollup, the dashboard overview, the alert list and roll-up defaults, and the
+        label typeaheads. Its signal rows are deleted a day after the drill settles; the drill's own
+        receipt, with the frozen staged result, is kept.
+
+        Answers `202`: the pipeline is asynchronous by contract, so the honest answer now is "it
+        started". Poll `GET /api/v1/drills/{id}`. At most one drill per source may be in flight.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartDrillRequest'
+      responses:
+        '202':
+          description: |
+            The drill was started. Every stage is reported, most of them still `pending`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryDrillResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    get:
+      operationId: listDeliveryDrills
+      summary: Recent delivery drills for one source
+      tags: [Drills]
+      description: |
+        The last few drills run against one source, newest first. Deliberately uncursored: a drill is
+        one operator pressing one button, and a source with more than a handful is already a story.
+      parameters:
+        - name: source_id
+          in: query
+          required: true
+          description: The AlertSource whose drills to list.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          description: The source's recent drills.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryDrillListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/drills/{id}:
+    get:
+      operationId: getDeliveryDrill
+      summary: The staged result of one delivery drill
+      tags: [Drills]
+      description: |
+        Poll this while `status` is `running`. Every stage is recomputed from the **live rows the real
+        pipeline wrote** — nothing in the pipeline reports itself, so a stage that stops writing its
+        row is a stage the drill notices.
+
+        Once the drill settles the result is frozen and this returns those bytes verbatim, which is
+        what lets the synthetic rows be deleted while the answer survives.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The drill and its staged result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryDrillResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      operationId: disposeDeliveryDrill
+      summary: Delete a drill's synthetic alert now
+      tags: [Drills]
+      description: |
+        Delete the synthetic Alert, occurrence, group, notification, delivery and thread rows this
+        drill created, without waiting for the automatic sweep.
+
+        **The receipt survives.** This answers `200` with the drill and its frozen result rather than
+        `204`: "deleted" here means the fake alert is gone, and the record that a drill ran — and what
+        it found — is not something an operator can erase, by the same rule the timeline lives by.
+
+        Refuses a drill that has not settled: deleting the rows a running drill is still being judged
+        from would make it report failures that never happened.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: The drill, with `disposed_at` set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryDrillResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -4104,7 +4537,14 @@ paths:
       tags: [Identity]
       security:
         - sessionCookie: []
-      description: Revocation takes effect within the credential cache TTL, at most 60 seconds.
+      description: |
+        Revocation takes effect within the credential cache TTL, at most 60 seconds.
+
+        Revoking is idempotent by construction: repeating it succeeds and does not move the revocation
+        timestamp, which is *when the credential stopped working*. Repeating it **with the same
+        `Idempotency-Key`** is a `409 idempotency_key_reuse` instead — one key names one request, and
+        this endpoint answers the header by the same rule as the two that mint a secret. A caller that
+        means a second, separate revoke sends a second key.
       parameters:
         - $ref: '#/components/parameters/IdParam'
         - $ref: '#/components/parameters/IdempotencyKeyHeader'
@@ -4117,6 +4557,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -4266,13 +4710,19 @@ paths:
       description: |
         Standard Prometheus text exposition. Among the metrics oto guarantees are
         `oto_ingest_accepted_total`, `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`,
-        `oto_reconcile_divergence`, `oto_source_degraded_holds_total`,
-        `oto_notification_suppressed_total{reason}`, `oto_delivery_attempts_total{class}`,
-        `oto_delivery_dead_total`, `oto_thread_recovered_total`, `oto_clock_skew_seconds`,
-        `oto_render_invalid_total` and `oto_check_violation_total`.
+        `oto_clock_skew_seconds`, `oto_thread_order_decisions_total{action,reason}`,
+        `oto_thread_gap_recovered_total{reason}`, `oto_thread_head_wait_seconds` and
+        `oto_delivery_claim_lost_total{mode}`. Every name listed here is constructed by a collector in
+        the tree and documented in `docs/runbooks/`.
 
-        The last one should be **zero at all times**: a database constraint violation reaching runtime
-        means the validation layers above it have a hole.
+        Do not write alert rules against names that are not exposed: a rule whose series never appears
+        never fires, which is indistinguishable from a healthy system. Several counters promised by
+        earlier drafts of this contract — `oto_reconcile_divergence`, `oto_source_degraded_holds_total`,
+        `oto_notification_suppressed_total`, `oto_delivery_attempts_total`, `oto_delivery_dead_total`,
+        `oto_render_invalid_total` and `oto_check_violation_total` — were never built. SPEC AC-34 and
+        `docs/runbooks/README.md` record which durable fact answers each of those questions instead
+        (mostly a column on `source_health`, `notifications` or `notification_deliveries`).
+        `oto_thread_recovered_total` was renamed: it ships as `oto_thread_gap_recovered_total`.
       responses:
         '200':
           description: Metrics in Prometheus text exposition format.
@@ -4519,6 +4969,23 @@ components:
       schema:
         type: boolean
 
+    SyntheticParam:
+      name: synthetic
+      in: query
+      required: false
+      description: |
+        Restrict to alerts oto manufactured for a **delivery drill**, or exclude them.
+
+        **Omitting it EXCLUDES them, which is the opposite default from `snoozed` and is deliberate.**
+        A snoozed alert is a real thing happening in a real cluster, so hiding it by default is how an
+        incident is lost. A synthetic alert is a rehearsal: nothing fired anywhere, and letting one
+        into a default list would put oto's own plumbing into the customer's history and into every
+        number derived from it.
+
+        `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
+      schema:
+        type: boolean
+
     IdempotencyKeyHeader:
       name: Idempotency-Key
       in: header
@@ -4527,6 +4994,58 @@ components:
         Client-generated key that makes a retried mutation safe. Replaying the same key with the same
         body within the retention window returns the original result rather than acting twice; replaying
         it with a *different* body is a `409`.
+
+        **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+        an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+        after a network outage, an operator returning to a half-finished page — and no wider, because a
+        claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+        forgotten and re-sending it acts again.
+
+        A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+        the operationId**, so one member's key never refuses another's request and one key can be used
+        once per endpoint.
+
+        ### The carve-out: endpoints whose response carries a secret
+
+        `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+        replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+        the original result" is impossible to honour honestly here: the original result of a create or a
+        rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+        only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+        addressed by a string the client chose, which is a worse exposure than the retry it protects
+        against; minting a fresh one would hand out a second live credential whose secret went to a
+        response that may never have arrived.
+
+        So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+        what it created, and the secret cannot be produced again. A caller that never received it
+        revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+        ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+        endpoints answer the header one way rather than three; it remains idempotent for callers that
+        send no key at all.
+
+        The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+        request by the resource in its path as well as by the key, so one key spent on two *different*
+        targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+
+        The problem body names an `id`, and only when the first call created something. **It never
+        contains a secret, and never a token prefix.**
+
+        ### The second carve-out: endpoints that are idempotent by state machine
+
+        `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+        a key, because the state after N calls equals the state after one. They are therefore **not**
+        given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+        whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+        `delivery_not_dead` — rather than a replay of the original response.
+
+        **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+        "the thing you asked for is already true", which is what a replayed `200` would have told you.
+
+        Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+        that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+        would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+        ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+        a withdrawal that a later, deliberate re-acknowledgement has since undone.
       schema:
         type: string
         minLength: 1
@@ -4597,8 +5116,16 @@ components:
         `409 conflict` — a unique violation on a key **the caller supplied** (an org slug, a channel
         name, a policy name, a cluster key), or a concurrent update. The caller must re-read and retry.
 
-        A unique violation on a key *oto* computed (`alert_key`, `group_key`, `idempotency_key`) is
-        never an error — it is the idempotency mechanism, and it is swallowed silently.
+        A unique violation on a key *oto* computed (`alert_key`, `group_key`, the notification
+        `idempotency_key` of §C.7) is never an error — it is the idempotency mechanism, and it is
+        swallowed silently. Nothing below changes that: oto computed those keys, so a collision means
+        oto already did the work and the caller was never asking a second question.
+
+        A collision on a key **the client supplied** in the `Idempotency-Key` header is the opposite
+        case, and on the endpoints that mint or revoke a credential it is answered `409` with
+        `code: idempotency_key_reuse` rather than swallowed. The caller *did* ask a second time, and it
+        is entitled to know that its first attempt already succeeded — see `IdempotencyKeyHeader` for
+        why those responses cannot simply be replayed.
       content:
         application/problem+json:
           schema:
@@ -4606,6 +5133,8 @@ components:
           examples:
             duplicate_name:
               $ref: '#/components/examples/ProblemConflict'
+            idempotency_key_reuse:
+              $ref: '#/components/examples/ProblemIdempotencyKeyReuse'
 
     PreconditionFailed:
       description: |
@@ -5152,6 +5681,54 @@ components:
         current state** and can never be expired — losing sight of an alert is not the alert resolving.
       examples: [healthy]
 
+    RejectionReason:
+      type: string
+      enum:
+        - too_many_labels
+        - label_value_too_large
+        - label_name_too_large
+        - labelset_too_large
+        - too_many_annotations
+        - annotation_too_large
+        - annotation_unstorable
+        - missing_alertname
+        - invalid_label_name
+        - invalid_label_value
+        - timestamp_out_of_window
+        - too_many_alerts
+        - body_too_large
+        - undecodable
+        - unknown_source
+      description: |
+        Why oto refused to normalise an element. The same closed set as the `ingest_rejections.reason`
+        CHECK and the `reason` label of `oto_ingest_rejected_total`; adding a member takes a migration.
+
+        Three of them do **not** mean the alert was dropped. `too_many_annotations` drops the excess
+        and keeps the alert, `annotation_too_large` truncates the value and keeps it, and
+        `timestamp_out_of_window` may clamp the timestamp rather than refuse the alert. The row is
+        recorded either way, because a value oto quietly changed is a fact an operator is owed.
+
+        `undecodable` means these bytes were not a webhook payload at all. It is deliberately never
+        used for a payload that decoded and then failed a bound — `invalid_label_value` exists because
+        that fallback once sent operators hunting for malformed JSON that was never there.
+      examples: [label_value_too_large]
+
+    FailedBatchStatus:
+      type: string
+      enum: [failed, partial]
+      description: |
+        The two states in which a batch's alerts are on disk and not in the product. `failed` gave up
+        and carries an `error`; `partial` is mid-chunking and is resumable in principle.
+      examples: [failed]
+
+    IngestBatchMode:
+      type: string
+      enum: [push, reconcile, synthetic]
+      description: |
+        Which code path accepted the batch. It appears in no request body, so no upstream can forge
+        one — which is why `synthetic`, the delivery-drill mark, is a mode rather than a label.
+      examples: [push]
+
     RuleOrigin:
       type: string
       enum: [prometheus_api, generator_url, unavailable]
@@ -5325,7 +5902,8 @@ components:
             `payload_too_large` (413), `unsupported_media_type` (415), `rate_limited` (429),
             `internal_error` (500), `upstream_unavailable` (502), `unavailable` (503),
             `upstream_timeout` (504). More specific codes (`alert_not_found`, `occurrence_terminal`,
-            `cursor_filter_mismatch`, `unknown_parameter`) refine these without changing the status.
+            `cursor_filter_mismatch`, `unknown_parameter`, `idempotency_key_reuse`) refine these
+            without changing the status.
           examples: [validation_failed]
         request_id:
           type: string
@@ -5336,7 +5914,21 @@ components:
           maxItems: 200
           items:
             $ref: '#/components/schemas/Violation'
-          description: Populated **only** for `validation_failed`. Never present on any other code.
+          description: |
+            The members of the request the refusal is about, so a client can put the message on the
+            control that produced it instead of printing prose. **Always** present on
+            `validation_failed` (422).
+
+            It is present on another code only when that refusal can name a member of the request:
+            `unknown_parameter` and `source_id_required` (400) name the query parameter, and
+            `setting_managed_by_config` (409) names the setting this deployment owns. A 400 is a
+            request that never parsed, and *which* parameter was wrong is exactly the part a form
+            can act on — withholding it there would leave the caller with prose for the plainest
+            mistake there is.
+
+            It is **never** present on a refusal that is not about a member of the request at all:
+            401, 403, 404, 412, 413, 415, 429 and every 5xx. Its presence therefore never implies
+            422, and a client must branch on `code`, not on this field.
         retry_after_seconds:
           type: integer
           format: int32
@@ -5374,6 +5966,7 @@ components:
         - total_occurrences
         - flap_score
         - is_flapping
+        - synthetic
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -5440,9 +6033,25 @@ components:
         is_flapping:
           type: boolean
           description: |
-            True once `flap_score` crosses the org's threshold (default 5 transitions in 30 minutes).
+            True once `flap_score` crosses the org's threshold (default 5 transitions in 2 hours).
             Flapping is a **visible** state that switches notification to update-only with a periodic
             digest — never a silent drop.
+          examples: [false]
+        synthetic:
+          type: boolean
+          description: |
+            True for an alert oto manufactured for a **delivery drill** — a rehearsal of the
+            notification path that an operator started by pressing a button. Nothing fired in any
+            cluster.
+
+            It is carried from the provenance of the ingest batch, never from a label: a label is
+            forgeable by any upstream, and it participates in `alert_key`, so marking an alert with
+            one would change its identity.
+
+            **Every default read excludes these**, including this list, the roll-ups, the label
+            typeaheads, the dashboard overview and the daily hygiene rollup — so an ordinary caller
+            will only ever see `false`. Pass `?synthetic=true` to look at one, which is what a drill's
+            result screen links to. The rows are deleted automatically a day after the drill settles.
           examples: [false]
         snooze:
           oneOf:
@@ -5479,7 +6088,9 @@ components:
             - type: 'null'
           description: |
             Present only when the request asked for `include=rule`, and a REFERENCE — see
-            `RuleSnapshotRefDTO`. `GET /api/v1/alerts/{id}/rule` serves the snapshot whole.
+            `RuleSnapshotRefDTO`. It is a **join key**, not a dead end: pass the page's ids to
+            `GET /api/v1/rule-snapshots/batch` and the whole list can render `expr` and `for` in one
+            further call. `GET /api/v1/alerts/{id}/rule` serves one snapshot whole, with its history.
       description: |
         An Alert — the **identity of a label set** within an org and cluster, not a single firing. It is
         created on first sight and survives every resolution; `state` and `ack_state` here are
@@ -5489,7 +6100,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/AlertDTO'
         - type: object
-          required: [delivery_summary]
+          required: [delivery_summary, enrichment_summary]
           properties:
             current_occurrence:
               oneOf:
@@ -5504,9 +6115,13 @@ components:
               description: One row per enricher that has run against the current occurrence.
             rule:
               oneOf:
-                - $ref: '#/components/schemas/RuleSnapshotDTO'
+                - $ref: '#/components/schemas/RuleSnapshotRefDTO'
                 - type: 'null'
-              description: The rule snapshot bound to the current occurrence, as captured at fire time.
+              description: |
+                A REFERENCE to the rule snapshot bound to the current occurrence, exactly as on
+                `AlertDTO` — ADR 0025 makes it a join key, not a dead end. `GET
+                /api/v1/alerts/{id}/rule` serves the snapshot whole, with its history, and
+                `GET /api/v1/rule-snapshots/batch` resolves a page of ids in one call.
             source:
               oneOf:
                 - $ref: '#/components/schemas/SourceRefDTO'
@@ -5536,6 +6151,7 @@ components:
         - last_observed_at
         - source_starts_at
         - reopen_count
+        - observed_skew_ms
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -5629,7 +6245,7 @@ components:
           minimum: 0
           description: |
             How many times this same episode was reopened by a re-fire inside `refire_grace`
-            (default 10 minutes). A re-fire *after* the grace period opens a new occurrence instead.
+            (default 20 minutes). A re-fire *after* the grace period opens a new occurrence instead.
           examples: [1]
         reopen_of:
           oneOf:
@@ -5662,7 +6278,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/OccurrenceDTO'
         - type: object
-          required: [delivery_summary]
+          required: [delivery_summary, enrichments]
           properties:
             alert:
               $ref: '#/components/schemas/AlertRefDTO'
@@ -5791,6 +6407,7 @@ components:
         - status
         - payload
         - from_cache
+        - duration_ms
         - computed_at
       properties:
         id:
@@ -6377,7 +6994,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/GroupDTO'
         - type: object
-          required: [delivery_summary]
+          required: [delivery_summary, severity_counts, top_alerts]
           properties:
             source:
               oneOf:
@@ -6456,8 +7073,13 @@ components:
         hand-copied fifteen-field duplicate of `RuleSnapshotDTO` living in `alerts/api` would be the
         second copy that drifts.
 
-        `GET /api/v1/alerts/{id}/rule` serves the snapshot whole — with its **history**, which is the
-        richer answer this API is actually for.
+        **This is a join key and the list is not stuck with it.** `GET /api/v1/rule-snapshots/batch`
+        takes a page's worth of these ids and returns the snapshots in **one** call, which is how the
+        alert list renders `expr` and `for` without a request per row. ADR 0025 records the choice and
+        the option rejected against it.
+
+        `GET /api/v1/alerts/{id}/rule` serves one snapshot whole — with its **history**, which is the
+        richer answer that endpoint is for.
 
     RuleSnapshotDTO:
       type: object
@@ -6775,7 +7397,7 @@ components:
 
     ClusterDTO:
       type: object
-      required: [id, cluster_key, display_name, created_at, updated_at]
+      required: [id, cluster_key, display_name, source_count, created_at, updated_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -6812,7 +7434,6 @@ components:
         - redact_labels
         - redact_annotations
         - push_enabled
-        - reconcile_enabled
         - reconcile_interval_seconds
         - ingest_path
         - created_at
@@ -6886,29 +7507,23 @@ components:
           type: boolean
           default: true
           description: Whether the webhook endpoint accepts batches for this source.
-        reconcile_enabled:
-          type: boolean
-          default: true
-          description: |
-            Whether the API v2 reconciler runs (ADR 0006, amended). Defaults to `true` and should
-            stay on.
-
-            Turning it off is a DOCUMENTED, PERMANENT DEGRADATION of this source: Alertmanager's
-            mute stage drops silenced and inhibited alerts before any webhook fires, so
-            reconciliation is the only way oto can ever observe suppression. With it off, oto will
-            show an alert that is silenced upstream as `firing`, indefinitely, with no way to learn
-            otherwise; divergence accounting and `send_resolved` discovery stop as well. The source
-            then carries a standing `reconcile_disabled` warning on its health.
-
-            The switch exists because oto cannot always reach an Alertmanager's API - the reverse
-            direction is not implied by the webhook working - and a source that fails every
-            reconcile would be marked `unreachable`, which blocks expiry for its alerts forever.
         reconcile_interval_seconds:
           type: integer
           format: int32
           minimum: 10
           maximum: 3600
           default: 30
+          description: |
+            How often the API v2 reconciler polls this source, in seconds.
+
+            There is no companion `reconcile_enabled`: the reconciler runs for every source (ADR
+            0006 and its second amendment; migration 00038 dropped the column). It is the only
+            producer of `suppressed` AND the only thing that keeps `source_health` fresh, so a
+            source with it switched off kept a frozen `healthy` verdict that the reaper went on
+            trusting - and ended episodes, as `expired` / `resolve_reason=timeout`, for alerts that
+            were merely silenced upstream. Poll a slow or distant Alertmanager gently by raising
+            this number, up to an hour; a source oto genuinely cannot reach becomes `unreachable`,
+            which blocks expiry for its alerts and is the honest answer.
         ingest_path:
           type: string
           description: The exact path to configure in this source's Alertmanager `webhook_config`.
@@ -7054,6 +7669,13 @@ components:
               message:
                 type: string
                 maxLength: 500
+              subject:
+                type: string
+                maxLength: 256
+                description: |
+                  What the warning is about — a receiver name, a channel, a route — when the warning
+                  is about one thing rather than the source as a whole.
+                examples: [oto-webhook]
               since:
                 $ref: '#/components/schemas/Timestamp'
           description: Standing, non-fatal problems that an operator should see in the UI.
@@ -7116,6 +7738,12 @@ components:
         - route
         - child_routes
         - child_routes_with_timings
+        - receiver
+        - receiver_basis
+        - webhook_receivers
+        - routes
+        - routes_agree
+        - routes_dropped
         - defaults_from_version
         - defaults_verified
         - observed_at
@@ -7129,11 +7757,17 @@ components:
           $ref: '#/components/schemas/RouteTimingDTO'
         route:
           type: string
-          enum: [top_level]
+          enum: [top_level, oto_receiver]
           description: |
-            Which route the three durations above describe. `top_level` is the only value in v1; the field
-            exists so that a client rendering it need not change if a later version resolves per-route
-            values.
+            Which route the three durations above describe.
+
+            - `oto_receiver` — oto identified its own receiver **and** every route delivering to it agrees
+              on all three, so these are the numbers actually in force for the alerts oto is sent. This is
+              the answer its tuning arithmetic should use.
+            - `top_level` — the **fallback**. What governs every alert matching nothing more specific,
+              reported when oto could not name its own receiver (`receiver_basis` says why) or when the
+              routes reaching it disagree (`routes_agree` is false). ⛔ It is a real answer about a real
+              route and it is frequently *not* oto's, so a client must not render it as though it were.
         child_routes:
           type: integer
           format: int32
@@ -7145,10 +7779,55 @@ components:
           minimum: 0
           description: |
             How many of those descendants state a `group_wait`, `group_interval` or `repeat_interval` of
-            their own. **A non-zero value here means the three durations above do not govern every alert**:
+            their own. **A non-zero value here means the top-level route does not govern every alert**:
             these settings are per-route and inherited, so the values that actually apply depend on which
-            route matched. Show this caveat wherever the numbers are shown, and say plainly that only the
-            top-level route is evaluated in v1.
+            route matched. `routes` below is that shape in full — this pair is the one-line summary of it.
+        receiver:
+          type: ['string', 'null']
+          maxLength: 256
+          description: |
+            The receiver oto believes is **its own**, or null when it could not tell. `receiver_basis` says
+            how it was decided.
+          examples: ['oto']
+        receiver_basis:
+          $ref: '#/components/schemas/ReceiverBasis'
+        webhook_receivers:
+          type: array
+          maxItems: 256
+          items:
+            type: string
+            maxLength: 256
+          description: |
+            Every receiver in the configuration with a `webhook_configs` integration, in declaration order.
+            With `receiver_basis: ambiguous` this is the **candidate list**, and it is what makes the
+            ambiguity actionable instead of a shrug.
+        routes:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/ReceiverRouteDTO'
+          description: |
+            **Every delivering route in the tree**, in the order Alertmanager evaluates them, each with its
+            inherited receiver, its inherited timings, its matcher path and whether it reaches oto.
+
+            ⭐ **It is a list because the answer is a set.** `continue: true` lets several routes deliver to
+            one receiver under different matchers with different timings, so there may be no single triple.
+            A client must be able to say *"these two routes reach oto and disagree"* rather than silently
+            picking one — see `routes_agree`.
+        routes_agree:
+          type: boolean
+          description: |
+            Whether every route reaching oto's receiver resolves to the same three durations. True when
+            there is nothing to disagree — no identified receiver, or exactly one reaching route — so it is
+            only ever false when there is a real conflict to show. **When it is false the three durations
+            above are the top-level route's and describe none of the reaching routes.**
+        routes_dropped:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How many delivering routes the parser's cap (64 routes, 16 levels deep) discarded. Non-zero
+            means `routes` is incomplete and must be rendered as such rather than as the whole picture.
         defaults_from_version:
           type: ['string', 'null']
           maxLength: 64
@@ -7183,11 +7862,172 @@ components:
         by hand produced an answer that was unshared, unvalidated, and silently wrong the moment somebody
         edited `alertmanager.yml`.
 
-        ⚠️ **Per-route limitation.** oto reports the **top-level route** — what governs every alert
-        matching no more specific route, and exactly what `docs/setup/tuning.md` tells an operator to read.
-        Resolving the value for a *particular* alert would mean re-implementing Alertmanager's matcher
-        tree, including `continue: true` and regex matchers, and being wrong in a way nobody could see.
-        `child_routes_with_timings` is how that limitation is made countable rather than buried.
+        ⚠️ **These settings are per-route and inherited**, so the numbers governing the alerts *oto* is sent
+        are the ones on the route delivering to oto's own receiver — usually not the top-level route on any
+        Alertmanager that overrides anything. oto walks the whole tree (`routes`) with Alertmanager's own
+        semantics: inheritance from the nearest ancestor that states a value, `dispatch.Route.Match`'s rule
+        that a route delivers only when no child matched, evaluation order with `continue: true`, and the
+        shadowing a matcher-less sibling causes. The three durations above are that route's whenever
+        `route` is `oto_receiver`.
+
+        ⛔ **Nothing here evaluates a matcher against a label set, and nothing may.** Deciding which route a
+        *particular* alert takes needs that alert's labels and would be a second, invisible implementation
+        of somebody else's routing engine. Everything reported is **structural** — true for every alert.
+        Where structure cannot decide, the answer stays a set and is shown as one.
+
+    ReceiverBasis:
+      type: string
+      enum: [sole_webhook, ambiguous, no_webhook, unknown]
+      description: |
+        **How oto decided which receiver is its own** — an inference, and labelled as one.
+
+        ⛔ **The obvious method is closed, and it is worth knowing why.** oto's ingest path is
+        `/api/v1/ingest/alertmanager/{source_id}`, so the webhook URL in an operator's config literally
+        contains the id of the source oto is probing; it would identify oto's receiver exactly. It is
+        unavailable: `webhook_config.url` is a `SecretURL` and `config.original` is the *marshalled* config,
+        so every secret arrives as the literal string `<secret>`. This is verified rather than assumed — the
+        checked-in `internal/sources/client/alertmanager/testdata/compose_v0.28.1.yaml` is a real capture of
+        oto's own compose Alertmanager and reads `url: <secret>`.
+
+        - `sole_webhook` — exactly one receiver in the whole configuration has a webhook integration, so
+          that receiver is oto's. This is the shape the setup guide produces (the receiver block is the
+          entire Alertmanager change oto requires), so the common install is answered exactly.
+        - `ambiguous` — several receivers have webhook integrations and the URLs that would tell them apart
+          are redacted. oto reports **every** route and names the candidates in `webhook_receivers` rather
+          than picking one; picking would be a coin toss presented as a reading.
+        - `no_webhook` — no receiver has a webhook integration at all, so nothing in this configuration can
+          push to oto. That is a real finding about a source, not a parser shortfall.
+        - `unknown` — the configuration has never been read, so there is not even a receiver list to reason
+          about. This is the same condition that makes `observed_at` null.
+      examples: [sole_webhook]
+
+    RouteStepDTO:
+      type: object
+      required: [matchers, deprecated, continue]
+      additionalProperties: false
+      properties:
+        matchers:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+          description: |
+            This route's **own** matchers, normalised into Alertmanager's current `matchers` spelling and
+            sorted, so they can be pasted into `amtool`. **Empty means the route states none**, and
+            therefore takes everything its parent gives it — which is the one structural fact that decides
+            reachability.
+          examples: [['severity="critical"']]
+        deprecated:
+          type: boolean
+          description: |
+            Whether the route spelled its matchers with the deprecated `match` / `match_re`. Both still
+            route production traffic, so oto reads them; it renders the current spelling and says where it
+            came from rather than quietly rewriting the operator's file in the display.
+        continue:
+          type: boolean
+          description: |
+            This route's `continue`. **It is the reason several routes can reach one receiver**: evaluation
+            does not stop at a match that sets it, so later siblings are still considered.
+      description: One route on the path from the top-level route, as an operator would recognise it.
+
+    InheritedTimingDTO:
+      type: object
+      required: [provenance, value_ms, from_depth]
+      additionalProperties: false
+      properties:
+        provenance:
+          $ref: '#/components/schemas/TimingProvenance'
+        value_ms:
+          type: ['integer', 'null']
+          format: int64
+          minimum: 0
+          description: The duration in force for this route, in milliseconds.
+          examples: [300000]
+        from_depth:
+          type: ['integer', 'null']
+          format: int32
+          minimum: 0
+          description: |
+            The index into this route's `path` of the route that **stated** the value, or null when no
+            route on the path states it (`provenance` is then `default_applies`).
+
+            ⭐ **Not decoration.** `group_interval: 5m` inherited from the top-level route and
+            `group_interval: 5m` stated on this route send an operator to two different lines of their own
+            file, and only the second survives them editing the child. `from_depth == len(path) - 1` means
+            "this route states it itself".
+          examples: [0]
+      description: |
+        One route timing with its provenance **and** the route on the path that stated it. `provenance` is
+        never `unknown` here: a route appears in the list only because oto read the configuration that
+        declares it, so "we could not look" cannot arise.
+
+    ReceiverRouteDTO:
+      type: object
+      required:
+        - receiver
+        - path
+        - group_wait
+        - group_interval
+        - repeat_interval
+        - group_by
+        - group_by_all
+        - reaches_oto
+        - unreachable
+      additionalProperties: false
+      properties:
+        receiver:
+          type: string
+          maxLength: 256
+          description: The receiver this route delivers to, after inheritance.
+          examples: ['oto']
+        path:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/RouteStepDTO'
+          description: |
+            The route chain from the top-level route (index 0) down to this one. Never empty — the top-level
+            route is itself a path of length one.
+        group_wait:
+          $ref: '#/components/schemas/InheritedTimingDTO'
+        group_interval:
+          $ref: '#/components/schemas/InheritedTimingDTO'
+        repeat_interval:
+          $ref: '#/components/schemas/InheritedTimingDTO'
+        group_by:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 256
+          description: The effective grouping labels for this route, inherited.
+        group_by_all:
+          type: boolean
+          description: |
+            The `group_by: ['...']` form. Worth surfacing beside the numbers because **no number captures
+            it**: grouping by every label means no group ever accumulates a second member, so storm collapse
+            is unreachable at any threshold.
+        reaches_oto:
+          type: boolean
+          description: |
+            Whether this route delivers to the receiver oto believes is its own. **False for every route
+            when oto could not identify one** — which is exactly when a client should show the whole list
+            and say why.
+        unreachable:
+          type: boolean
+          description: |
+            Whether an earlier matcher-less sibling without `continue` consumes everything before this route
+            is evaluated, so it can never fire. It is the only unreachability provable without labels, and
+            it is a real misconfiguration rather than a display detail.
+      description: |
+        One route that **delivers** to a receiver, fully resolved.
+
+        "Delivers" is Alertmanager's own rule from `dispatch.Route.Match`: a route is the answer only when
+        **no child of it matched**, so a route with a matcher-less child never delivers anything itself.
+        Nothing here evaluates a matcher against a label set — every field is structural and therefore true
+        for every alert.
 
     SourceTestDTO:
       type: object
@@ -7237,7 +8077,8 @@ components:
 
     ReconcileResultDTO:
       type: object
-      required: [source_id, ok, started_at, finished_at, observed, divergence_count]
+      required: [source_id, ok, started_at, finished_at, observed, missing_upstream,
+                 suppressed_observed, recovered, divergence_count]
       properties:
         source_id:
           $ref: '#/components/schemas/Uuid'
@@ -7287,6 +8128,98 @@ components:
         produces observations that feed the same state machine, and there is exactly one write path into
         alerts.
 
+    RejectionDTO:
+      type: object
+      required: [id, source_id, received_at, reason, detail, labels]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        source_id:
+          $ref: '#/components/schemas/Uuid'
+        batch_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: |
+            The batch this element came from. `null` when no batch row exists — an undecodable body, a
+            body over the size cap, or a batch for a source oto cannot serve.
+        received_at:
+          $ref: '#/components/schemas/Timestamp'
+        reason:
+          $ref: '#/components/schemas/RejectionReason'
+        detail:
+          type: string
+          maxLength: 2000
+          description: |
+            Human-readable specifics: which label exceeded which cap. Written **after** redaction, so
+            it never carries a secret. Empty when the reason is the whole story.
+          examples: ['label value for `password` is 5121 bytes, over the 4096 cap']
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            The rejected alert's label set, exactly as it was stored — that is, already redacted per
+            the source's `redact_labels`, so a matched value reads `[redacted]` here because it reads
+            `[redacted]` on disk. There is no plaintext behind this field to ask for.
+
+            Deliberately **not** a `LabelMap`: this is the set oto refused, so it is precisely the one
+            that may break `LabelMap`'s bounds — a `too_many_labels` rejection carries more than 64
+            entries, and `label_value_too_large` carries a value over 4096 bytes. Bounding the evidence
+            by the rule it violated would make the evidence unrenderable.
+
+            **Empty, never absent**, for the rejections that name no alert.
+          examples:
+            - alertname: HighErrorRate
+              cluster: prod-eu
+              severity: critical
+      description: |
+        One element oto refused to normalise, kept so that nothing disappears without a trace.
+
+    FailedBatchDTO:
+      type: object
+      required: [id, source_id, mode, received_at, status, error, alert_count, truncated_alerts]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        source_id:
+          $ref: '#/components/schemas/Uuid'
+        mode:
+          $ref: '#/components/schemas/IngestBatchMode'
+        received_at:
+          $ref: '#/components/schemas/Timestamp'
+        status:
+          $ref: '#/components/schemas/FailedBatchStatus'
+        processed_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: When the batch stopped.
+        error:
+          type: string
+          maxLength: 2000
+          description: |
+            Why it stopped. Always present for `failed`, and usually empty for `partial`, which stopped
+            by dying rather than by deciding.
+          examples: ['alert upsert failed: context deadline exceeded']
+        alert_count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: How many alerts are sitting in that payload unprocessed — what the failure cost.
+          examples: [37]
+        truncated_alerts:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How many alerts were dropped from the payload at accept time for exceeding the per-batch
+            cap. Each one is also a `too_many_alerts` rejection.
+          examples: [0]
+      description: |
+        One batch whose alerts are durably on disk and never reached the product. The `payload` column
+        is deliberately absent: it holds up to 8 MiB per row.
+
     # ---------------------------------------------------------------------------------------------
     # Channels
     # ---------------------------------------------------------------------------------------------
@@ -7310,16 +8243,21 @@ components:
             These are the same bytes the server validates against on every create and update, and the
             same bytes the settings form renders and pre-validates itself from. There is no second copy
             of these rules anywhere — which is why adding a provider needs no UI code at all.
+
+            A schema may OMIT a control the deployment will not honour, so read it fresh rather than
+            caching it across installs. The webhook provider drops `insecure_skip_verify` unless the
+            operator set `security.allow_insecure_tls`: a form must never offer a control the server
+            is going to refuse with a 422.
         credential_kinds:
           type: array
-          maxItems: 16
+          maxItems: 6
           items:
             type: string
             enum: [slack_bot_token, slack_app_token, slack_signing_secret, basic, bearer, none]
           description: Which credential kinds this provider accepts. Secrets are write-only everywhere in this API.
         capabilities:
           type: array
-          maxItems: 16
+          maxItems: 6
           uniqueItems: true
           items:
             type: string
@@ -7329,7 +8267,7 @@ components:
             asserted by a provider at send time.
         renderers:
           type: array
-          maxItems: 8
+          maxItems: 3
           items:
             $ref: '#/components/schemas/RendererId'
         rate_limit_class:
@@ -7522,7 +8460,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 32
+          maxItems: 18
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -7909,6 +8847,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/SilenceDTO'
         - type: object
+          required: [matched_alerts, matched_count]
           properties:
             matched_alerts:
               type: array
@@ -7932,7 +8871,7 @@ components:
 
     LabelNameDTO:
       type: object
-      required: [name, alert_count]
+      required: [name, alert_count, promoted]
       properties:
         name:
           $ref: '#/components/schemas/LabelName'
@@ -8126,6 +9065,7 @@ components:
               minimum: 0
         channels:
           type: object
+          required: [healthy, degraded, auth_failed, config_invalid]
           properties:
             healthy:
               type: integer
@@ -8145,6 +9085,7 @@ components:
               minimum: 0
         window:
           type: object
+          required: [since, until]
           properties:
             since:
               $ref: '#/components/schemas/Timestamp'
@@ -8158,7 +9099,8 @@ components:
 
     AlertQualityDTO:
       type: object
-      required: [alertname, cluster_key, occurrences, notifications, deliveries, acked_occurrences, ack_rate]
+      required: [alertname, cluster_key, occurrences, notifications, deliveries, acked_occurrences,
+                 ack_rate, auto_resolved, expired, total_firing_seconds, flap_transitions, flap_score]
       properties:
         alertname:
           type: string
@@ -8263,15 +9205,46 @@ components:
 
     OrgSettingsDTO:
       type: object
+      required:
+        - refire_grace_s
+        - resolve_grace_s
+        - group_close_delay_s
+        - flap_threshold
+        - flap_window_s
+        - flap_digest_interval_s
+        - storm_threshold
+        - storm_window_s
+        - storm_cooldown_s
+        - raw_retention_days
+        - event_retention_months
+        - unacked_reminder_after_s
+        - default_verbosity
+        - broadcast_on_resolved
+        - unacked_reminder_mention
+        - unacked_reminder_mention_list
+        - unacked_reminder_mention_min_severity
       properties:
         refire_grace_s:
           type: integer
           format: int32
           minimum: 600
           maximum: 86400
-          default: 600
+          default: 1200
           description: |
             A re-fire inside this window reopens the existing occurrence instead of opening a new one.
+
+            **The default is 1200 and it is derived from real rules (ADR 0026): `for` + `group_interval`
+            for the modal rule in the wild.** The clock starts at the occurrence's `ended_at`, which is
+            taken from the UPSTREAM `EndsAt` — when Prometheus stopped considering the rule firing, not
+            when oto heard about it — so the same alert must hold its condition for the rule's whole
+            `for:` all over again before it can fire, and Alertmanager then batches the notification.
+            `for: 15m` is the mode and median of the 155 rules kube-prometheus-stack ships, and
+            `group_interval: 5m` is the one Alertmanager number the ecosystem does not override, so the
+            earliest re-fire oto can observe lands 15–20 minutes after `ended_at`. The previous default
+            of 600 was unreachable for 76% of those rules.
+
+            **Keep `group_close_delay_s` at or above this value.** A closed generation freezes its Slack
+            thread, so a shorter close delay reopens the occurrence and posts a new root card anyway.
 
             **The floor is 600, and it is derived rather than chosen: it is twice oto's ingest replay
             window.** A replayed webhook batch — an HA Alertmanager sibling, a retry after a 5xx — is
@@ -8297,8 +9270,13 @@ components:
           format: int32
           minimum: 60
           maximum: 86400
-          default: 300
-          description: Keep at or above `group_interval`, or a generation closes between two batches of one incident.
+          default: 1200
+          description: |
+            Keep at or above `group_interval`, or a generation closes between two batches of one
+            incident — and at or above `refire_grace_s`, or a re-fire oto classified as the same
+            problem coming back finds a closed generation and gets a brand-new Slack root message
+            anyway, which is the whole thing the grace exists to prevent. The default equals
+            `refire_grace_s` for that reason (ADR 0026).
         flap_threshold:
           type: integer
           format: int32
@@ -8314,8 +9292,15 @@ components:
           format: int32
           minimum: 300
           maximum: 86400
-          default: 1800
-          description: A window shorter than one `group_interval` cannot contain two transitions oto is able to observe.
+          default: 7200
+          description: |
+            A window shorter than one `group_interval` cannot contain two transitions oto is able to
+            observe. Whether it is long ENOUGH is arithmetic this bound cannot do: one observable
+            fire → resolve → fire cycle costs `group_interval + max(group_interval, for)` and yields two
+            counted transitions, so a window holds about `2 × floor(W / cycle)` of them. The default of
+            7200 is `flap_threshold × cycle` for the modal real rule (5 × 20m, rounded up); the previous
+            1800 held at most 6 transitions for ANY rule shape at `group_interval: 5m`, which made a
+            threshold of 5 unreachable and the damper dead code. See ADR 0026.
         flap_digest_interval_s:
           type: integer
           format: int32
@@ -8352,14 +9337,38 @@ components:
           format: int32
           minimum: 1
           maximum: 365
-          default: 14
-          description: Raw ingested payloads age out by dropping whole partitions, never by deleting rows.
+          default: 30
+          description: |
+            How long raw webhook bodies and rejection records are kept. They age out by dropping whole
+            daily partitions, never by deleting rows, and a dropped partition is unrecoverable.
+
+            **The default 30 is derived, not chosen:** it is the `alert_event_keys` idempotency
+            horizon. Past it, replaying a stored batch after a parser fix would append the timeline a
+            second time, so a payload kept longer cannot be used for the one thing it is kept for.
+
+            Nothing an alert page shows is served from here — no operation in this contract reads
+            `ingest_batches` or `ingest_rejections`. Lowering it costs reproducibility of an ingestion
+            bug, not history. See ADR 0024.
         event_retention_months:
           type: integer
           format: int32
           minimum: 1
           maximum: 120
           default: 13
+          description: |
+            How long `alert_events` are kept. Monthly partitions are dropped whole and permanently.
+
+            **This is the only setting here that destroys something oto cannot rebuild.** Past the
+            boundary `GET /alerts/{id}/events`, `GET /occurrences/{id}/events` and the group timeline
+            return nothing — including every human comment and unack note, which live nowhere else.
+
+            What survives at any value: the alert and its labels, every occurrence with its ack and
+            outcome, the rule snapshot bound at fire time, the notification and delivery record, and
+            the daily rollups. None of those are ever reaped.
+
+            13 is the longest default that keeps one org inside ADR 0014's scale envelope. Raise it to
+            120 (10 years) if an audit requires it, and expect ADR 0014's revisit triggers at volume.
+            There is no cold-storage export: an aged-out month is not archived anywhere. See ADR 0024.
         unacked_reminder_after_s:
           type: integer
           format: int32
@@ -8658,7 +9667,7 @@ components:
 
     IngestAcceptedDTO:
       type: object
-      required: [batch_id, alert_count, duplicate]
+      required: [batch_id, alert_count, rejected_alerts, truncated_alerts, duplicate]
       properties:
         batch_id:
           $ref: '#/components/schemas/Uuid'
@@ -8720,7 +9729,7 @@ components:
 
     StreamFrame:
       type: object
-      required: [seq, kind, at, data]
+      required: [seq, kind, org_id, at, data]
       properties:
         seq:
           type: integer
@@ -8999,8 +10008,234 @@ components:
       description: Build and schema identification. Unauthenticated, so a deployment can be identified before login.
 
     # ---------------------------------------------------------------------------------------------
+    # Delivery drills
+    # ---------------------------------------------------------------------------------------------
+
+    DrillStatus:
+      type: string
+      enum: [running, passed, failed, timed_out]
+      description: |
+        `timed_out` is a **different verdict from `failed`** on purpose. "Slack rejected the card" and
+        "nothing has picked the job up in ninety seconds" send an operator to completely different
+        places — the second usually means no worker is running, which no per-stage error could say.
+
+    DrillStageName:
+      type: string
+      enum:
+        - accept
+        - process
+        - identity
+        - occurrence
+        - group
+        - rule_snapshot
+        - policy
+        - thread
+        - ordering
+        - delivery
+      description: |
+        One link in the chain a real alert travels, in causal order. Each one is a row some part of
+        oto writes, and a drill reports its status by **looking at that row** rather than by being
+        told — so a stage that stops writing its row is a stage the drill notices.
+
+    DrillStageStatus:
+      type: string
+      enum: [pending, passed, failed, skipped]
+      description: |
+        `skipped` is not a failure and never sets `failed_stage`. Only `rule_snapshot` uses it: a
+        drill's alert matches no Prometheus rule, because oto did not write one in anybody's cluster,
+        so there is nothing to capture and saying so is more honest than a green tick.
+
+    DrillStageDTO:
+      type: object
+      required: [name, status, detail]
+      additionalProperties: false
+      properties:
+        name:
+          $ref: '#/components/schemas/DrillStageName'
+        status:
+          $ref: '#/components/schemas/DrillStageStatus'
+        detail:
+          type: string
+          maxLength: 2000
+          description: |
+            One sentence an operator can act on. It names the provider's own error code where there is
+            one (`slack: not_in_channel`) and never the underlying error string, which can carry a
+            request URL and therefore a token.
+          examples: ['no notification policy matched this group''s labels, so nothing was sent.']
+        facts:
+          type: object
+          additionalProperties:
+            type: string
+            maxLength: 1000
+          description: |
+            Small pieces of evidence shown beside the stage — an `alert_key`, a group `generation`, a
+            Slack `thread_ts`, a `policy` name. Keys are stable and snake_case. A display surface, not
+            a second API: do not parse behaviour out of it.
+      description: One reported link of the pipeline chain.
+
+    DrillDestinationDTO:
+      type: object
+      required: [channel_id, channel_name, status, mode, broadcast]
+      additionalProperties: false
+      properties:
+        channel_id:
+          $ref: '#/components/schemas/Uuid'
+        channel_name:
+          type: string
+          maxLength: 200
+          examples: ['#sre-alerts']
+        status:
+          $ref: '#/components/schemas/DeliveryStatus'
+        mode:
+          $ref: '#/components/schemas/DeliveryMode'
+        thread_id:
+          type: ['string', 'null']
+          maxLength: 64
+          description: The Slack thread root `ts`. A string, never a float.
+        provider_message_id:
+          type: ['string', 'null']
+          maxLength: 64
+        broadcast:
+          type: boolean
+          description: |
+            Whether this delivery went out as a channel-visible broadcast reply rather than a thread
+            reply. On a drill it is expected to be `false` — a first notification posts a root — and it
+            is reported anyway so an operator can see the decision was taken rather than skipped.
+        error:
+          type: ['string', 'null']
+          maxLength: 2000
+        error_class:
+          # `DeliveryErrorClass` is ALREADY `type: ['string','null']`, so wrapping
+          # it in `oneOf: [$ref, null]` made `null` match BOTH branches — and
+          # `oneOf` demands exactly one. Every successful destination renders
+          # `error_class: null`, so the only shape a PASSING drill can produce was
+          # rejected by its own published contract. The four other uses of this
+          # schema `$ref` it directly; this was the outlier.
+          $ref: '#/components/schemas/DeliveryErrorClass'
+      description: One channel the drill's card reached, and what happened there.
+
+    DeliveryDrillDTO:
+      type: object
+      required:
+        - id
+        - source_id
+        - severity
+        - status
+        - stages
+        - destinations
+        - started_by_label
+        - started_at
+        - deadline_at
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        source_id:
+          $ref: '#/components/schemas/Uuid'
+        severity:
+          type: string
+          maxLength: 64
+          description: The raw severity label the synthetic alert fired at.
+          examples: [warning]
+        status:
+          $ref: '#/components/schemas/DrillStatus'
+        failed_stage:
+          oneOf:
+            - $ref: '#/components/schemas/DrillStageName'
+            - type: 'null'
+          description: |
+            The **first** stage that failed, or `null`. This single field is the operator-facing point
+            of the whole feature: not "it did not work" but "the policy matched nothing". Later stages
+            are left `pending` rather than reported as cascading failures.
+        stages:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/DrillStageDTO'
+          description: |
+            **Always every stage**, including the ones that never started. How far it got is half of
+            what the screen is read for.
+        destinations:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/DrillDestinationDTO'
+        alert_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+          description: The synthetic Alert, once identity resolved. Fetch it with `?synthetic=true`.
+        occurrence_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        group_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        notification_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        batch_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        started_by_label:
+          type: string
+          maxLength: 200
+          description: |
+            Who ran it, frozen at write time so the receipt stays readable after the user is gone.
+            Past-tense attribution in the `acked_by` mould — **actor, never subject**. No per-person
+            metric is derived from it.
+          examples: ['Ada Lovelace']
+        started_at:
+          $ref: '#/components/schemas/Timestamp'
+        deadline_at:
+          $ref: '#/components/schemas/Timestamp'
+        finished_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: When the verdict was frozen. Non-null means `status` will never change again.
+        disposed_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: |
+            When the synthetic signal rows were deleted. A non-null value alongside a non-null
+            `finished_at` is the normal, healthy end state of a drill: the receipt survives, the fake
+            alert does not.
+      description: |
+        One end-to-end rehearsal of the notification path, driven by a synthetic Alert oto
+        manufactured and pushed through the **real** ingest endpoint.
+
+    # ---------------------------------------------------------------------------------------------
     # Request bodies
     # ---------------------------------------------------------------------------------------------
+
+    StartDrillRequest:
+      type: object
+      required: [source_id]
+      additionalProperties: false
+      properties:
+        source_id:
+          $ref: '#/components/schemas/Uuid'
+        severity:
+          type: string
+          maxLength: 64
+          description: |
+            The raw severity label the synthetic alert fires at. Defaults to `warning`.
+
+            It is the **one** knob, because severity is what a notification policy most often matches
+            on: an operator whose only policy routes `severity=critical` would otherwise get
+            `no_policy` from every drill and conclude oto was broken when it is working exactly as
+            configured. Every further knob is a way for the drill to stop resembling a real alert.
+          examples: [critical]
+      description: |
+        Start one delivery drill against one AlertSource. The payload is accepted **as if** it had
+        arrived on that source's webhook, so it picks up the source's cluster identity, its
+        `inject_labels`, its `ignore_labels` and its redaction — which is most of what makes the
+        answer mean anything.
 
     AckRequest:
       type: object
@@ -9119,20 +10354,16 @@ components:
         push_enabled:
           type: boolean
           default: true
-        reconcile_enabled:
-          type: boolean
-          default: true
-          description: |
-            Leave this on. Turning it off means oto can never observe a silenced or inhibited alert
-            for this source and will show upstream-muted alerts as firing indefinitely (ADR 0006,
-            amended). The source carries a standing `reconcile_disabled` health warning while it is
-            off.
         reconcile_interval_seconds:
           type: integer
           format: int32
           minimum: 10
           maximum: 3600
           default: 30
+          description: |
+            How often the API v2 reconciler polls this source, in seconds. There is no
+            `reconcile_enabled` to accompany it - the reconciler runs for every source (ADR 0006).
+            `additionalProperties: false`, so sending one is refused by name rather than ignored.
         credential:
           $ref: '#/components/schemas/CredentialInput'
       description: |
@@ -9184,18 +10415,20 @@ components:
             maxLength: 256
         push_enabled:
           type: boolean
-        reconcile_enabled:
-          type: boolean
-          description: |
-            Setting this to `false` is a permanent, documented degradation: oto can never observe a
-            silenced or inhibited alert for this source afterwards and will show upstream-muted
-            alerts as firing indefinitely (ADR 0006, amended). The source carries a standing
-            `reconcile_disabled` health warning while it is off.
         reconcile_interval_seconds:
           type: integer
           format: int32
           minimum: 10
           maximum: 3600
+          description: |
+            How often the API v2 reconciler polls this source, in seconds.
+
+            ⛔ `reconcile_enabled` IS GONE AND CANNOT BE SENT. `PATCH {"reconcile_enabled": false}`
+            used to return 200 and persist, switching off the component ADR 0006 calls mandatory
+            for that source forever, with nothing on any screen to say so. Because this body is
+            `additionalProperties: false`, sending it now fails validation naming the field rather
+            than being ignored - a client that still has it in a runbook finds out. How often oto
+            polls is tunable here; whether it polls is not.
         credential:
           $ref: '#/components/schemas/CredentialInput'
       description: |
@@ -9328,7 +10561,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 32
+          maxItems: 18
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -9372,7 +10605,7 @@ components:
         reasons:
           type: array
           minItems: 1
-          maxItems: 32
+          maxItems: 18
           uniqueItems: true
           items:
             $ref: '#/components/schemas/NotificationReason'
@@ -9459,6 +10692,28 @@ components:
     # Response envelopes. Every collection is `{data, page, meta}`; every single resource is
     # `{data, meta}`. Defined once per payload type so no operation carries an inline duplicate.
     # ---------------------------------------------------------------------------------------------
+
+    DeliveryDrillResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/DeliveryDrillDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    DeliveryDrillListResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryDrillDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
 
     AlertListResponse:
       type: object
@@ -9615,6 +10870,26 @@ components:
         meta:
           $ref: '#/components/schemas/Meta'
 
+    RuleSnapshotBatchResponse:
+      type: object
+      required: [data, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/RuleSnapshotDTO'
+          description: |
+            The snapshots that exist among the ids asked for. **Shorter than the request whenever an
+            id resolved to nothing** — and shorter again whenever two rows shared a snapshot, which
+            content addressing makes the common case. Join by `id`; do not join by position.
+        meta:
+          $ref: '#/components/schemas/Meta'
+      description: |
+        A bag of snapshots, not a page. There is deliberately no `page` object: the caller
+        enumerated the set, so there is nothing to page through.
+
     RuleSnapshotListResponse:
       type: object
       required: [data, page, meta]
@@ -9714,6 +10989,34 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/ReconcileResultDTO'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    RejectionListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RejectionDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    FailedBatchListResponse:
+      type: object
+      required: [data, page, meta]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/FailedBatchDTO'
+        page:
+          $ref: '#/components/schemas/PageInfo'
         meta:
           $ref: '#/components/schemas/Meta'
 
@@ -10350,10 +11653,11 @@ components:
     ProblemValidationFailed:
       summary: 422 — three fields failed validation
       description: |
-        The canonical validation failure. `violations[]` is present only on this code, every `field` is
-        a `/`-separated path in **JSON** names, and every `code` comes from a closed set — so the UI can
-        map each violation onto the exact form control that produced it without any per-endpoint
-        knowledge.
+        The canonical validation failure. `violations[]` is always present on this code, every `field`
+        is a `/`-separated path in **JSON** names, and every `code` comes from a closed set — so the UI
+        can map each violation onto the exact form control that produced it without any per-endpoint
+        knowledge. A few other codes carry `violations[]` too when they can name the parameter or
+        setting at fault; see the `Problem` schema.
       value:
         type: https://oto.dev/errors/validation_failed
         title: Validation failed
@@ -10400,9 +11704,9 @@ components:
       summary: 409 — a name the caller chose is already taken
       description: |
         A unique violation on a key **the caller supplied**. Re-read and retry with a different value.
-        Contrast this with a unique violation on a key oto computed (`alert_key`, `group_key`,
-        `idempotency_key`), which is not an error at all — it is the idempotency mechanism, and it never
-        reaches the caller.
+        Contrast this with a unique violation on a key oto computed (`alert_key`, `group_key`, the
+        notification `idempotency_key`), which is not an error at all — it is the idempotency
+        mechanism, and it never reaches the caller.
       value:
         type: https://oto.dev/errors/conflict
         title: Conflict
@@ -10411,6 +11715,25 @@ components:
         instance: /api/v1/channels
         code: channel_name_taken
         request_id: 01JD8Z2K7M3TQB
+
+    ProblemIdempotencyKeyReuse:
+      summary: 409 — this Idempotency-Key was already used, and it worked
+      description: |
+        The caller retried a credential-minting request with a key it had already spent. **The first
+        attempt succeeded**, so nothing was minted a second time; `detail` names what that attempt
+        created so the caller can act on it. The secret is not repeated — it never can be. See
+        `IdempotencyKeyHeader`.
+      value:
+        type: https://oto.dev/errors/conflict
+        title: Conflict
+        status: 409
+        detail: >-
+          This Idempotency-Key was already used, and that request created
+          0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b77; its secret was returned to that request and oto cannot
+          return it a second time. If you never received it, revoke that id and retry with a new key.
+        instance: /api/v1/api-tokens
+        code: idempotency_key_reuse
+        request_id: 01JD8Z2K7M3TQF
 
     ProblemPrecondition:
       summary: 412 — the entity is in the wrong state

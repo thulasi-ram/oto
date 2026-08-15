@@ -7,9 +7,15 @@
  *   Tier B — state only. Saturated colour on screen means exactly one thing:
  *            "this is the state of an alert". Scarcity is what makes it loud.
  *
- * Do not add a token here without a measured contrast pair in §M.4/§M.5.
- * The Slack palette (§H.2) is a SEPARATE system and must never appear here
- * (§M.6): no `#a30200`-family literal may exist anywhere under web/.
+ * Do not add a token here without a measured contrast pair in §M.4/§M.5 —
+ * `contrast.test.ts` recomputes every one of them and fails on a pair the SPEC
+ * does not tabulate.
+ *
+ * The Slack palette (§H.2) is a SEPARATE system and must never appear anywhere
+ * under web/ (§M.6). That sentence used to be the whole enforcement, and quoted
+ * one of the six hexes as an example; both are now the job of
+ * `test/design/boundary_test.go`, which reads the six values out of §H.2 and
+ * fails on any of them appearing here.
  * ------------------------------------------------------------------------- */
 
 :root,
@@ -141,4 +147,41 @@
 }
 [data-density="compact"] {
   --oto-row-h: 28px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Type and radius — SPEC §M.8. The other two axes the design system owns.
+ *
+ * ⭐ THESE WERE DERIVED, NOT DESIGNED. Every step below is a size the product was
+ * already spelling out in a bracket: 309 `text-[Npx]` collapsed to seven values
+ * and 59 `rounded-[Npx]` to five, and §M.8 tabulates the census. Six type steps
+ * and three radius steps is what survived after the four values that appeared
+ * once or twice each were resolved into a neighbour — a scale invented ahead of
+ * its call sites would have had a `2xl` nobody needed and would have missed the
+ * 11 px that 183 of them use.
+ *
+ * ⛔ THEY ARE NOT IN A `[data-theme]` BLOCK, AND THAT IS THE POINT. A palette is
+ * a property of the theme; a type step is not. `tokens.test.ts` reads only the
+ * rules whose prelude names a theme, so nothing here is asked to have a dark
+ * counterpart — the same reason `--oto-row-h` sits outside those blocks.
+ *
+ * `index.css` republishes each one into Tailwind's `--text-*` / `--radius-*`
+ * namespaces, which is what makes `text-meta` and `rounded-chip` exist as
+ * utilities. `scales.test.ts` fails on a call site that reaches past them.
+ * ------------------------------------------------------------------------- */
+:root {
+  /* Type. The ladder is dense on purpose (U6): four of the six steps are below
+     14 px, because the operational surfaces are tables and chips. */
+  --oto-type-micro: 10px; /* mono keys, footnotes, secondary badge text */
+  --oto-type-meta: 11px; /* the dense default: table cells, chips, inline labels */
+  --oto-type-body: 12px; /* prose: help text, descriptions, form labels */
+  --oto-type-item: 13px; /* a named thing or a control: row titles, nav, tabs, buttons */
+  --oto-type-title: 14px; /* dialog and section titles */
+  --oto-type-page: 18px; /* the page heading, and nothing else */
+
+  /* Radius. Three tiers, and the tier is chosen by what the corner belongs to,
+     not by how big it looks: inline things, controls, surfaces. */
+  --oto-radius-chip: 3px; /* inline: badges, chips, code spans, skeletons */
+  --oto-radius-control: 4px; /* buttons, inputs, wells, nav items, bordered boxes */
+  --oto-radius-surface: 6px; /* panels, dialogs — anything that holds controls */
 }

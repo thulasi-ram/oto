@@ -11,6 +11,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
+	"github.com/thulasiram/oto/internal/platform/idempotency"
 	"github.com/thulasiram/oto/internal/platform/validate"
 )
 
@@ -110,6 +111,29 @@ func (rt *Router) action(r *http.Request) (db.TenantScope, domain.Actor, uuid.UU
 		return db.TenantScope{}, domain.Actor{}, uuid.Nil, err
 	}
 	return scope, actor, id, nil
+}
+
+// idempotencyIntent reads the caller's `Idempotency-Key` into the intent the
+// verb acts on (see idempotency.IntentFromRequest for the seam's rules).
+//
+// ⛔ THE SUBJECT IS FOLDED INTO THE HASH. Both verbs are addressed by `{id}` and
+// the alert is not part of the claim tuple, so a client that mints one key per
+// gesture — which oto's own frontend does — and snoozes alert A then alert B under
+// one key would be told "that request already succeeded" about a request it never
+// made. `HashTargetedRequest` makes the two the different requests they are.
+//
+// The operation is filled HERE because it is this layer's fact: `Snooze` and
+// `Comment` each serve two contract operations, and only the layer that received
+// the request knows which one the caller's key belongs to.
+func idempotencyIntent(
+	r *http.Request, op idempotency.Operation, subject uuid.UUID, body []byte,
+) (service.Idempotency, error) {
+	in, err := idempotency.IntentFromRequest(r, idempotency.HashTargetedRequest(subject, body))
+	if err != nil || !in.Keyed {
+		return in, err
+	}
+	in.Operation = op
+	return in, nil
 }
 
 // resolveAlert reads an alert by UUID, falling back to the §C.2 alert_key.

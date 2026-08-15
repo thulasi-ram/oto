@@ -1,0 +1,186 @@
+name: release
+
+# The other half of deploy/helm/oto. The chart's `image.repository` names a GHCR
+# path, and until this workflow existed nothing in the repository ever wrote to
+# it: `buildx`, `docker/build-push-action` and `packages: write` appeared
+# nowhere, so `helm install oto deploy/helm/oto` left the pre-install
+# `oto migrate` hook in ImagePullBackOff and SPEC acceptance criterion 31
+# ("`helm install oto` with a Postgres URL and a Slack token is the entire
+# install") could not be met by anyone who had not built the image themselves.
+#
+# ⭐ THE GIT TAG IS THE INPUT AND THE ONLY INPUT. Every tag published here is
+# derived from the tag being pushed, which is why there is no
+# `workflow_dispatch` (ci.yml has one; this workflow must not). Dispatched from a
+# branch, `github.ref_name` is a branch name, `docker/metadata-action` derives no
+# version from it, and the run would publish an artifact with no name anyone
+# could pin — or fail confusingly at the push. A release is a tag.
+#
+# ⚠️ THIS WORKFLOW RUNS NO TESTS, AND THAT IS THE INTENT. `ci` triggers on
+# pushes to main and on pull requests, so the commit a tag points at has already
+# been through all eight jobs. Re-running them here would double the wall clock
+# to re-answer a question already answered, and would tempt a tag onto a commit
+# that had never seen a pull request.
+
+on:
+  push:
+    tags:
+      # The trailing `*` admits `v0.1.0-rc.1` without a second workflow.
+      # metadata-action recognises a prerelease and withholds the moving `X.Y`
+      # tag from it on its own, so an rc never becomes what `0.1` resolves to.
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+# ⚠️ NOT `cancel-in-progress`, unlike ci.yml. Cancelling a half-finished
+# multi-architecture push can leave a manifest list pointing at blobs that never
+# finished uploading, and a tag is pushed once — there is no later run on the
+# same ref to correct it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  # ⭐ DERIVED, NOT TYPED. `github.repository` is `<owner>/oto`, and GHCR accepts
+  # the built-in GITHUB_TOKEN for a package under this repository's own owner and
+  # nowhere else — so the one path this workflow is able to publish to is the one
+  # it computes. A hand-written namespace is a namespace that can silently stop
+  # matching the repository, which is exactly the defect this workflow closes:
+  # the chart's default used to name an owner this repository is not under.
+  # metadata-action lower-cases it before use.
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  image:
+    name: image / build + push (ghcr)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push the image to GHCR under this repository's owner
+      id-token: write # mint the OIDC token the provenance attestation is signed with
+      attestations: write # write that attestation back to the registry
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⭐ NO QEMU STEP, DELIBERATELY. The Dockerfile pins its build stage to
+      # $BUILDPLATFORM and cross-compiles with GOARCH=$TARGETARCH, and the
+      # runtime stage is a COPY onto distroless/static — no arm64 instruction is
+      # ever EXECUTED on this amd64 runner, so there is nothing to emulate.
+      # Emulating the Go compiler under QEMU costs minutes per architecture to
+      # produce the same bytes. This is only correct because CGO is off.
+      #
+      # No `cache-from: type=gha` either: this workflow runs a handful of times a
+      # year, on a ref that has no warm cache to read, and ci.yml builds no
+      # image to populate one.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        name: derive the tags the chart and an incident both need
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # ⛔ `latest=false` IS LOAD-BEARING, NOT TIDINESS. metadata-action
+          # defaults to `latest=auto`, which publishes `latest` for any semver
+          # tag. values.yaml argues in the chart's own voice that a floating tag
+          # makes "which build is this" unanswerable, and Chart.yaml marks the
+          # chart `artifacthub.io/prerelease: "true"`. Publishing a `latest`
+          # nothing references, while telling operators not to use one, is a
+          # contradiction; it can be added at 1.0 when it means something.
+          flavor: latest=false
+          tags: |
+            # ⭐ `{{version}}` DROPS THE LEADING `v`, and that is the tag the
+            # chart resolves to: _helpers.tpl falls back to `.Chart.AppVersion`
+            # verbatim and Chart.yaml carries `"0.1.0"`, no `v`. A workflow that
+            # published only `v0.1.0` would leave the chart's own default
+            # broken, which is the bug this file exists to fix.
+            type=semver,pattern={{version}}
+            # The moving minor line, for an operator who tracks patches.
+            # Withheld automatically from a prerelease tag.
+            type=semver,pattern={{major}}.{{minor}}
+            # The `v`-prefixed alias, so the image tag and the git tag can be
+            # named with the same string.
+            type=ref,event=tag
+            # Incident forensics: the digest answers "which commit", but only if
+            # someone can get from a commit back to an image without a release
+            # note.
+            type=sha,format=long
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Both are genuinely reachable: CGO is off, nothing in the build stage
+          # is host-specific, and gcr.io/distroless/static-debian12 publishes
+          # both architectures. arm64 is not decoration — it is what a Graviton
+          # or Ampere node pool pulls.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # ⭐ THE THREE LINKER STAMPS ARE THE POINT. The Dockerfile has declared
+          # these ARGs all along and nothing has ever passed them, so every
+          # artifact this repository produced answered `oto dev` — the one
+          # question GET /api/v1/version exists to answer, unanswerable.
+          #
+          # VERSION keeps the leading `v`: cmd/oto/version.go prints it verbatim
+          # ("oto %s"), and `oto v0.1.0` is what a release is called.
+          # BUILD_DATE is metadata-action's own RFC3339 timestamp, so the stamp
+          # and the org.opencontainers.image.created label cannot disagree.
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          # buildx would otherwise attach its own provenance, which adds
+          # `unknown/unknown` entries to the manifest list and duplicates the
+          # attestation the next step writes — the GitHub-signed one, which
+          # `gh attestation verify` can actually check.
+          provenance: false
+
+      # "Which commit produced this digest", answerable without trusting a
+      # release note. One step and an OIDC token; an SBOM is worth less here,
+      # because the runtime layer ships no packages and the module graph of the
+      # single static binary is already reported by `go version -m`.
+      - name: attest the provenance of the digest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # ⭐ THE ASSERTION THAT WOULD HAVE CAUGHT THE ORIGINAL DEFECT. ci.yml runs
+      # `./bin/oto -version` straight after `go build` for the same reason, and
+      # it answers `oto dev` there because nothing passes the flags. Here the
+      # published image is pulled back by digest (linux/amd64 on this runner) and
+      # made to say which build it is; an unstamped image fails the release.
+      - name: the published image knows which build it is
+        run: |
+          ref='${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}'
+          printed="$(docker run --rm "$ref" version)"
+          echo "$printed"
+          case "$printed" in
+            "oto ${{ github.ref_name }} (commit ${{ github.sha }}, built "*) ;;
+            *) echo "::error::the version stamp is wrong: $printed"; exit 1 ;;
+          esac
+
+      # A manifest that lists one architecture is an image that ImagePullBackOffs
+      # on half the clusters it was promised to — the same failure this workflow
+      # was written to end, one layer down.
+      - name: the manifest lists both architectures
+        run: |
+          ref='${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}'
+          platforms="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' \
+            | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"')"
+          echo "$platforms"
+          for want in linux/amd64 linux/arm64; do
+            case "$platforms" in
+              *"$want"*) ;;
+              *) echo "::error::the manifest list is missing $want"; exit 1 ;;
+            esac
+          done

@@ -235,10 +235,14 @@ func seedSuppressed(t *testing.T, e *env) suppressedSeed {
 		}
 	}
 
-	exec(`INSERT INTO clusters (id, org_id, cluster_key, display_name) VALUES ($1,$2,'prod','prod')`,
-		clusterID, orgID)
-	exec(`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url)
-	      VALUES ($1,$2,$3,'am','alertmanager','http://am.test')`, sourceID, orgID, clusterID)
+	// `created_at`/`updated_at` are NAMED on both: 00034 removed their DEFAULT
+	// now(), because these tables' timestamps come from the application.
+	exec(`INSERT INTO clusters (id, org_id, cluster_key, display_name, created_at, updated_at)
+	      VALUES ($1,$2,'prod','prod',$3,$3)`, clusterID, orgID, now)
+	exec(`INSERT INTO alert_sources (id, org_id, cluster_id, name, kind, base_url,
+	         created_at, updated_at)
+	      VALUES ($1,$2,$3,'am','alertmanager','http://am.test',$4,$4)`,
+		sourceID, orgID, clusterID, now)
 
 	exec(`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
 	         severity, cluster_key, labels, state,

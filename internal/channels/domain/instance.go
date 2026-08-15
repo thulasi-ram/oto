@@ -170,6 +170,15 @@ func (i Instance) ToChannelConfig() ChannelConfig {
 // timestamps, health — and a create that accepted those would let a caller
 // assert them.
 type NewInstance struct {
+	// ID lets the caller NAME the row before it exists. It is zero for every
+	// caller that does not care, and the repository mints one.
+	//
+	// ⭐ IT EXISTS FOR THE `Idempotency-Key` CLAIM, which has to record the id of
+	// what a create made in the SAME transaction as the insert — and therefore
+	// before the insert, because a retry that inserted first would hit
+	// `channels_name_uniq` and be answered with a name conflict rather than with
+	// the channel the caller already created (ticket a6cc834).
+	ID     uuid.UUID
 	Type   Type
 	Name   string
 	Config json.RawMessage
@@ -226,7 +235,11 @@ type TestResult struct {
 	OK                     bool
 	ProviderConversationID string
 	ProviderMessageID      string
-	Permalink              string
+	// Permalink is a URL a human can click, and `ChannelTestDTO.permalink` is
+	// `format: uri` in the contract.
+	//
+	//oto:reachable-ok no provider can produce one yet, and the value that used to be put here — MessageRef.ProviderKey, which is documented as opaque and is `channel:ts` for Slack and a UUID for webhook — is not a URL, so every successful channel test answered 200 with a body its own contract rejected (found by gate G2). Null is the honest answer until Slack's chat.getPermalink is called; the member stays because the contract publishes it.
+	Permalink string
 	// Error is the human, always-safe-to-render failure. Never a raw payload and
 	// never a credential.
 	Error string

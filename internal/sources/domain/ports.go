@@ -36,8 +36,13 @@ type AMStatus struct {
 	// ServerTime is the upstream clock, for skew measurement (C12).
 	ServerTime time.Time
 	// RouteTimings are the source's OWN group_wait, group_interval and
-	// repeat_interval, read off its running configuration.
+	// repeat_interval, read off its running configuration. They are the
+	// TOP-LEVEL route's.
 	RouteTimings RouteTimings
+	// Routes is the whole route tree resolved: every delivering route with its
+	// receiver, its inherited timings and its matcher path (routes.go). It is
+	// what makes RouteTimings above a fallback rather than the only answer.
+	Routes RouteResolution
 }
 
 // RouteTimings is what an Alertmanager's OWN configuration says about how it
@@ -85,16 +90,18 @@ type RouteTimings struct {
 	// ChildrenWithTimings is how many of those descendants state at least one of
 	// the three for themselves.
 	//
-	// ⚠️ IT IS THE LIMITATION, MADE COUNTABLE. All three settings are per-route
-	// and inherited, so the values that actually govern a given alert are the ones
-	// on the route that MATCHED it — which depends on that alert's labels. oto
-	// reports the TOP-LEVEL route, which is what governs everything matching no
-	// more specific route and is exactly what the tuning guide tells an operator
-	// to read; resolving per alert would mean re-implementing Alertmanager's
-	// matcher tree, including `continue: true` and regex matchers, and being
-	// wrong in a way nobody could see. This count is how a reader is TOLD that
-	// the top-level number is not the whole story, rather than left to assume it
-	// is.
+	// ⚠️ IT IS THE SHAPE OF THE TREE IN ONE NUMBER. All three settings are
+	// per-route and inherited, so the values that actually govern a given alert
+	// are the ones on the route that MATCHED it. The three above are the
+	// TOP-LEVEL route's — what governs everything matching nothing more specific
+	// — and a non-zero count here says out loud that they do not govern
+	// everything.
+	//
+	// It is no longer the whole answer. `RouteResolution` (routes.go) walks the
+	// tree properly and resolves the route(s) delivering to oto's own receiver,
+	// which is what the tuning arithmetic argues from where it exists. This pair
+	// stays because it is the summary a reader can take in at a glance, and
+	// because it is what remains when oto cannot name its own receiver.
 	ChildrenWithTimings int
 }
 

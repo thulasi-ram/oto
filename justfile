@@ -30,11 +30,17 @@ up: infra migrate
     (cd {{web_dir}} && npm run dev) &
     wait
 
-# Start Postgres and Alertmanager, blocking until both are healthy.
+# Start Postgres, Alertmanager and Prometheus, blocking until all are healthy.
+#
+# Prometheus is named explicitly like the other two rather than left to a bare
+# `up`, because `--wait` only waits for the services it is given. It carries the
+# always-true rule in deploy/prometheus/oto-rules.yaml, so an alert reaches
+# Alertmanager within a minute of this returning — that, and not a hand-written
+# config, is what makes "bring the stack up and watch an alert arrive" true.
 [group('run')]
 infra:
-    docker compose up -d --wait postgres alertmanager
-    @echo "postgres :5432   alertmanager http://localhost:9093"
+    docker compose up -d --wait postgres alertmanager prometheus
+    @echo "postgres :5432   alertmanager http://localhost:9093   prometheus http://localhost:9090"
 
 # Stop the containers, keeping the data volume.
 [group('run')]
@@ -234,11 +240,47 @@ generate:
     go generate ./...
     cd {{web_dir}} && npm run generate
 
+# Gate G1 (SPEC §L.8.1): Go DTO → OpenAPI. Reflects every `*DTO`/`*Request`/
+# `*Query` struct and diffs the derived schema against api/openapi/openapi.yaml.
+# It reads YAML and runs the reflector; it needs no Docker and takes a second.
+[group('check')]
+dto-check:
+    go test -count=1 ./test/contract/
+
+# Gate G2 (SPEC §L.8.1): running server → OpenAPI. Assembles the REAL container
+# over a REAL migrated Postgres, drives every declared operation over HTTP, and
+# validates the bytes each handler actually wrote against the schema the contract
+# declares for that operation, status and media type.
+#
+# It DEVIATES from the SPEC's `schemathesis`, and test/contract/server/doc.go
+# carries the argument: a Python runtime for one check, in a Go+Node repository
+# whose server cannot be started without the Go test harness, costs more than it
+# closes. Needs Docker.
+[group('check')]
+server-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "${DOCKER_HOST:-}" ] && [ -S "$HOME/.colima/default/docker.sock" ]; then
+      export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+      export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+      echo "→ colima detected — DOCKER_HOST=$DOCKER_HOST"
+    fi
+    go test -count=1 ./test/contract/server/
+
 # Gate G3 (SPEC §L.8.1): the checked-in TS client must match the contract byte
 # for byte. A Go DTO that drifts from openapi.yaml fails here, not in a browser.
 [group('check')]
 generate-check:
     cd {{web_dir}} && npm run generate:check
+
+# Gate G4 (SPEC §L.8.1): OpenAPI → valibot. `web/src/api/generated/validators.ts`
+# is generated from the contract and CHECKED IN; this regenerates it and fails on
+# any diff, exactly as G3 does for the TS types. It is what makes the §L.8 rule
+# — no hand-written valibot schema may describe an API response — enforceable
+# rather than aspirational.
+[group('check')]
+validators-check:
+    cd {{web_dir}} && npm run gen:validators:check
 
 # SCOPE-BOUNDARY AC-49 (SPEC §P-18): the banned vocabulary and the forbidden
 # person-subject columns, over internal/, web/src/ and db/migrations/. Known debt
@@ -258,18 +300,78 @@ lint-vocabulary:
 lint-reachability:
     go run ./tools/lintreach
 
+# The chart gate: `helm lint`, then `helm template` across the value
+# combinations that matter, then `kubeconform` over every rendered manifest.
+#
+# deploy/helm/oto/ is the artifact a customer touches FIRST and was the only
+# contract in this repository with no gate at all — 1,131 lines of templates and
+# eight `fail` guard rails, asserted by review only. Each of the eight is now
+# fed the input it exists to reject and must fail with its own sentence: a guard
+# whose `.Values` path was renamed out from under it stops firing silently,
+# which is the tools/lintreach defect class one layer out.
+#
+# Needs `helm` and `kubeconform`; `just setup` installs both, pinned to the
+# versions CI installs. Neither is optional — a check that skips when its checker
+# is absent reports success, which is worse than no check — so check.sh exits
+# non-zero and names `just setup` rather than passing.
+[group('check')]
+helm-check:
+    bash deploy/helm/check.sh
+
 # Everything CI runs, in the order CI runs it. Keep this list and
 # .github/workflows/ci.yml in step -- a contributor's green must be CI's green.
+#
+# The four drift gates of SPEC §L.8.1 run BEFORE `test`: they are the cheapest
+# failures in the list and the ones whose message points straight at the fix, and
+# a contract failure buried behind a full `go test -race ./...` is a contract
+# failure found ten minutes late.
 [group('check')]
-ci: lint lint-vocabulary lint-reachability generate-check test ui-build ui-test
+ci: lint lint-vocabulary lint-reachability helm-check dto-check server-check generate-check validators-check test ui-build ui-test
 
 # Install the toolchain this repo expects.
 [group('check')]
 setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gobin="$(go env GOPATH)/bin"
+    mkdir -p "$gobin"
+
     go mod download
-    cd {{web_dir}} && npm install
+    (cd {{web_dir}} && npm install)
+
     # Tested by absolute path, not `command -v`: a wrapper on PATH answers for a
     # binary that is not there, which is how the tree ran without a layering
     # gate at all. See the note in `just lint`.
-    @test -x "$(go env GOPATH)/bin/golangci-lint" || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-    @echo "✓ ready — now run: just up"
+    test -x "$gobin/golangci-lint" || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+    # `just helm-check` renders the chart and validates the manifests as
+    # Kubernetes, and `just ci` runs it. kubeconform is a Go binary, so it
+    # installs the way golangci-lint does.
+    test -x "$gobin/kubeconform" || go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
+
+    # ⭐ helm IS INSTALLED HERE, NOT WARNED ABOUT. `just ci` depends on
+    # `just helm-check`, so a tool this recipe could only print a sentence about
+    # is a fresh checkout whose first `just ci` fails — which reads as a broken
+    # repository rather than as a missing dependency. It is not a Go binary, but
+    # it does not need to be: the release archive is one static executable, it
+    # lands in the same GOPATH/bin as the other two, and so this needs neither
+    # sudo nor Homebrew and is the same three lines on macOS and Linux.
+    #
+    # ⚠️ PINNED TO THE VERSION .github/workflows/ci.yml INSTALLS. A contributor's
+    # green must be CI's green, and helm is a tool where that is not pedantry:
+    # helm 4 changed what `helm lint` does with a template `fail` (it logs and
+    # exits 0), which is the whole reason deploy/helm/check.sh asserts through
+    # `helm template` instead. check.sh looks in GOPATH/bin before PATH, so this
+    # copy is the one the gate runs even where a package manager left another.
+    helm_version=v4.1.1
+    if [ ! -x "$gobin/helm" ]; then
+      os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+      arch="$(uname -m)"
+      case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+      echo "→ helm $helm_version → $gobin/helm"
+      curl -fsSL "https://get.helm.sh/helm-${helm_version}-${os}-${arch}.tar.gz" \
+        | tar -xzO "${os}-${arch}/helm" > "$gobin/helm"
+      chmod +x "$gobin/helm"
+    fi
+
+    echo "✓ ready — now run: just up"

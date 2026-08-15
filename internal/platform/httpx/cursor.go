@@ -15,13 +15,16 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// Page limits from SPEC §E.1. There is no `total` on an unbounded collection and
-// there is no OFFSET anywhere in this codebase.
+// Page limits from SPEC §E.1, under the names this layer has always used. The
+// numbers are `platform/db`'s — the package that owns keyset pagination and the
+// `Keyset.Limit` field these bound — so these are references, not a second
+// spelling. There is no `total` on an unbounded collection and there is no OFFSET
+// anywhere in this codebase.
 const (
 	// DefaultPageLimit is the page size a caller gets for asking for nothing.
-	DefaultPageLimit = 50
+	DefaultPageLimit = db.DefaultPageLimit
 	// MaxPageLimit is the ceiling. A caller wanting more is going to page anyway.
-	MaxPageLimit = 200
+	MaxPageLimit = db.MaxPageLimit
 )
 
 // cursorPayload is the wire form of a keyset position (SPEC §E.1):
@@ -80,13 +83,7 @@ func DecodeCursor(token, filterHash string) (db.Cursor, error) {
 
 // Keyset assembles the pagination request a repository takes.
 func Keyset(limit int, cursor db.Cursor) db.Keyset {
-	if limit <= 0 {
-		limit = DefaultPageLimit
-	}
-	if limit > MaxPageLimit {
-		limit = MaxPageLimit
-	}
-	return db.Keyset{Limit: limit, Cursor: cursor}
+	return db.Keyset{Limit: db.ClampLimit(limit), Cursor: cursor}
 }
 
 // PageOf renders the page envelope for a returned cursor.

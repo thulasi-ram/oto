@@ -2,22 +2,23 @@ package api
 
 import (
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/google/uuid"
 
 	alerts "github.com/thulasiram/oto/internal/alerts/service"
-	"github.com/thulasiram/oto/internal/grouping/domain"
 	"github.com/thulasiram/oto/internal/grouping/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 )
 
-// maxTopAlerts bounds the member preview on the detail view. The full list is
-// `/alert-groups/{id}/alerts`.
-const maxTopAlerts = 20
+// ⛔ NO BOUND IS DECLARED OR APPLIED IN THIS PACKAGE. `top_alerts` is
+// `maxItems: 20` in the contract, and the ONE number behind that is
+// `grouping/domain.MemberPreviewLimit`, applied exactly once as the SQL LIMIT of
+// the preview read in `service.Get`. `detailDTO` renders the rows that read
+// returned and cuts nothing, so a constant here could only ever be a second copy
+// of a ceiling this side of the boundary does not enforce.
 
 // listAlertGroups is `GET /api/v1/alert-groups` — the default UI landing view.
 func (rt *Router) listAlertGroups(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +102,23 @@ func (rt *Router) ackAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if res.Applied == 0 {
+	// ⚠️ THE GATE ASKS ABOUT OPEN MEMBERS, BECAUSE THAT IS WHAT THE 412 SAYS. The
+	// contract's precondition is "a group with no open members at all", so the
+	// only evidence that settles it is the REFUSAL CODE: `no_open_occurrence` is a
+	// member whose episode has ended, and it is the one refusal that means there
+	// was nothing to acknowledge. `already_acked` is the opposite — that member is
+	// open, somebody simply got there first — and answering it with
+	// `no_open_occurrence` would be oto naming the wrong nothing.
+	//
+	// ⛔ IT IS DELIBERATELY NOT `Complete()`. Gating on reach made a 5 000-member
+	// group whose episodes have ALL ended answer 200 with group detail, which is a
+	// documented 412 quietly dropped. Reach is a different question and it is not
+	// this one: `Unreached` counts current members beyond domain.FanOutLimit, not
+	// open ones. The case that gating was reaching for — a storm whose oldest 500
+	// members are already acked and whose remaining thousands are not — is already
+	// excluded here by its `already_acked` refusals, and is excluded whether or
+	// not the fan-out hit its ceiling.
+	if res.Applied == 0 && res.SkippedCodes["no_open_occurrence"] == res.Skipped() {
 		httpx.WriteProblem(w, r, errs.Precondition("no_open_occurrence",
 			"this group has no open member occurrence to acknowledge"))
 		return
@@ -133,7 +150,19 @@ func (rt *Router) commentOnAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+	// The RAW bytes, before Bind consumes the stream: "the same body" is decided
+	// by the sha256 of what the caller actually sent.
+	raw, err := httpx.ReadBody(w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	body, err := httpx.Bind[CommentRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	idem, err := idempotencyIntent(r, alerts.OpCommentOnAlertGroup, id, raw)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -142,8 +171,9 @@ func (rt *Router) commentOnAlertGroup(w http.ResponseWriter, r *http.Request) {
 	// The service returns the event it appended. Re-reading the timeline to find
 	// it — which this handler used to do — is a second query that can legitimately
 	// hand back somebody else's comment, appended a millisecond later, as if it
-	// were the caller's own.
-	res, err := rt.svc.Comment(r.Context(), scope, id, kind, actorID, label, body.Body)
+	// were the caller's own. A KEYED retry returns the event the FIRST attempt
+	// appended, and annotates nobody a second time.
+	res, err := rt.svc.Comment(r.Context(), scope, id, kind, actorID, label, body.Body, idem)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -174,6 +204,11 @@ func (rt *Router) snoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
+	raw, err := httpx.ReadBody(w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
 	body, err := httpx.Bind[SnoozeRequest](w, r)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
@@ -184,13 +219,21 @@ func (rt *Router) snoozeAlertGroup(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-
-	res, err := rt.svc.Snooze(r.Context(), scope, id, kind, actorID, label, until, body.Note)
+	idem, err := idempotencyIntent(r, alerts.OpSnoozeAlertGroup, id, raw)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	if res.Members == 0 {
+
+	res, err := rt.svc.Snooze(r.Context(), scope, id, kind, actorID, label, until, body.Note, idem)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	// ⛔ `Replayed` IS CHECKED FIRST. A replayed fan-out applied nothing by
+	// definition, and reading that as "this group has no members" would answer a
+	// perfectly successful retry with a `412` naming a condition that never held.
+	if res.Members == 0 && !res.Replayed {
 		httpx.WriteProblem(w, r, errs.Precondition("no_group_members",
 			"this group has no currently-joined member alert to snooze"))
 		return
@@ -421,10 +464,17 @@ func (rt *Router) detailDTO(
 		return GroupDetailDTO{}, err
 	}
 	dto.DeliverySummary = deliverySummaryDTO(rollup)
-	for _, m := range sortedMembers(d.Members) {
-		if len(dto.TopAlerts) >= maxTopAlerts {
-			break
-		}
+	// ⭐ NO SORT AND NO BREAK. `d.Members` arrives newest join first and already
+	// cut to domain.MemberPreviewLimit rows by SQL, so there is nothing here to
+	// order and nothing to discard. This loop used to copy the ENTIRE membership,
+	// sort the copy and stop at the twentieth — a storm of five thousand members
+	// rendered as twenty, at the price of five thousand.
+	//
+	// A member whose alert cannot be read still leaves the preview one row
+	// shorter rather than reaching for a twenty-first: the rows past the LIMIT
+	// are not here to reach for, and a card that is short is better than a card
+	// that pays a second query to stay exactly twenty long.
+	for _, m := range d.Members {
 		a, ok := rt.alert(r, scope, m.AlertID())
 		if !ok {
 			continue
@@ -491,20 +541,4 @@ func (rt *Router) alert(r *http.Request, scope db.TenantScope, alertID uuid.UUID
 		return alerts.AlertDetail{}, false
 	}
 	return detail, true
-}
-
-// sortedMembers orders membership newest join first, with the occurrence id as a
-// deterministic tiebreak so two identical requests produce the same preview.
-//
-// It survives for `detailDTO`'s BOUNDED preview only, over a slice the service
-// already holds. The paginated list is SQL's job — see listAlertGroupAlerts.
-func sortedMembers(in []domain.Member) []domain.Member {
-	out := append([]domain.Member(nil), in...)
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].JoinedAt().Equal(out[j].JoinedAt()) {
-			return out[i].OccurrenceID().String() > out[j].OccurrenceID().String()
-		}
-		return out[i].JoinedAt().After(out[j].JoinedAt())
-	})
-	return out
 }
