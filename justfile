@@ -8,6 +8,7 @@ set dotenv-load := true
 set dotenv-filename := ".env"
 
 web_dir    := "web"
+docs_dir   := "docs-site"
 migrations := "db/migrations"
 db_url     := env_var_or_default("OTO_DB_URL", "postgres://oto:oto@localhost:5432/oto?sslmode=disable")
 addr       := env_var_or_default("OTO_HTTP_ADDR", ":8080")
@@ -61,6 +62,12 @@ worker:
 [group('run')]
 ui:
     cd {{web_dir}} && npm run dev
+
+# Run the Starlight docs site. Syncs docs/, README.md and CONTEXT.md into
+# docs-site/src/content/docs on every start — see docs-site/scripts/sync-docs.mjs.
+[group('run')]
+docs:
+    cd {{docs_dir}} && npm run dev
 
 # Tail container logs.
 [group('run')]

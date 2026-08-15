@@ -1,0 +1,40 @@
+---
+title: oto
+description: The alert history layer your Prometheus stack does not have.
+template: splash
+hero:
+  tagline: The alert history layer your Prometheus stack does not have — self-hosted, with a UI, without adopting an AIOps platform or a paid SaaS.
+  actions:
+    - text: Read the introduction
+      link: /guides/overview/
+      icon: right-arrow
+    - text: Architecture
+      link: /architecture/
+      icon: document
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Where to start
+
+<CardGrid stagger>
+	<Card title="Introduction" icon="rocket">
+		What oto is, what it is not, and how to run the whole stack locally.
+	</Card>
+	<Card title="Architecture" icon="setting">
+		The module map, layering rules, and domain language — `CONTEXT.md`.
+	</Card>
+	<Card title="Design" icon="pencil">
+		The binding SPEC, scope boundary, and the research behind it.
+	</Card>
+	<Card title="ADRs" icon="open-book">
+		Every architectural decision, in the order it was made.
+	</Card>
+	<Card title="Setup" icon="add-document">
+		Connecting Slack and tuning flap/storm thresholds for your own rules.
+	</Card>
+	<Card title="Runbooks" icon="information">
+		One page per metric oto registers: what it counts, what to do about it.
+	</Card>
+</CardGrid>

@@ -1,5 +1,6 @@
-# oto
-
+---
+title: oto
+---
 **The alert history layer your Prometheus stack does not have — self-hosted, with a UI, without
 adopting an AIOps platform or a paid SaaS.** For every alert that has ever fired, oto shows: when
 it first appeared, every episode since, *what the rule said at that moment*, who was told, on
@@ -72,7 +73,6 @@ just helm-check       render the Helm chart and prove its guard rails still fire
 just ci               everything the GitHub workflow runs, in the same order
 just status           which migrations have been applied
 just reset            destroy the dev volume and start clean
-just docs             Starlight docs site (docs-site/) on :4321, synced from docs/
 ```
 
 `just` is the only task runner (ADR 0021). There was a Makefile alongside it and the two diverged —
@@ -142,7 +142,7 @@ not have. What CI runs today, and therefore what will stop a bad change:
 | Module **direction** (CONTEXT.md §4) | `test/arch/arch_test.go`, `go-test` job | **enforced** — the real import graph is diffed against the declared edge list; a new cross-module edge fails, a declared edge the code has dropped fails, and an edge list with a cycle in it fails |
 | gofmt / `go mod tidy` clean | `go-lint` job | **enforced** |
 | `go build` + `go vet` | `go-build` job | **enforced** |
-| `go test -race ./...` | `go-test` job | **enforced.** Every domain now has tests; the service and repository tiers largely do not. A green means the domain logic holds, not that a feature works end to end — that gap is what [ADR 0021](docs/adr/0021-correctness-and-testing-strategy.md) §3–§4 exist to close |
+| `go test -race ./...` | `go-test` job | **enforced.** Every domain now has tests; the service and repository tiers largely do not. A green means the domain logic holds, not that a feature works end to end — that gap is what [ADR 0021](/adr/0021-correctness-and-testing-strategy/) §3–§4 exist to close |
 | G1: Go DTO → OpenAPI | `contract-dto` job, `go test ./test/contract/` (`just dto-check`) | **enforced** — reflects every `*DTO`/`*Request`/`*Query` struct and diffs json tags, required/optional, types, enums, nullability and `validate` bounds against the contract. Known debt is enumerated in the test and can only shrink |
 | G2: running server → OpenAPI | `contract-server` job, `go test ./test/contract/server/` (`just server-check`) | **enforced** — the real container over a real Postgres, every declared operation called over HTTP, every response's status, Content-Type and BYTES validated against the contract. ⚠️ Go-native, not `schemathesis`; the argument is in `test/contract/server/doc.go` |
 | G3: openapi.yaml → TS client is not stale | `ui` job, `npm run generate:check` (`just generate-check`) | **enforced** |
@@ -196,13 +196,13 @@ express direction or acyclicity.
 - `docs/setup/tuning.md` — `refire_grace`, the flap and storm thresholds, and how the right value
   for each is derived from your own `alertmanager.yml` and your rules' `for:` durations.
 - `docs/runbooks/` — one page per `oto_*` metric: what it counts, what a sustained value means,
-  what to check and what to do. [The index](docs/runbooks/README.md) says which metrics are worth
+  what to check and what to do. [The index](/runbooks/) says which metrics are worth
   paging on and which are purely informational, and lists the metrics the SPEC names that no
   collector builds yet. `just metrics` dumps the live values.
 
 ## Licence
 
-MIT — see `LICENSE` and [ADR 0019](docs/adr/0019-mit-licence.md). No `ee/` directory, no feature
+MIT — see `LICENSE` and [ADR 0019](/adr/0019-mit-licence/). No `ee/` directory, no feature
 behind a licence key, no CLA.
 
 Issue tracking lives in the repository itself via [`git-bug`](https://github.com/git-bug/git-bug):

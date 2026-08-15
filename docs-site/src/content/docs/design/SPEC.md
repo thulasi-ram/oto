@@ -1,0 +1,5335 @@
+---
+title: oto — BINDING SPECIFICATION v1
+---
+> **Status:** BINDING. This document supersedes `architect-proposal.md` wherever they differ.
+> **Precedence:** `SPEC.md` > `domain-research.md` (ground truth for upstream facts) > `red-team-memo.md` > `architect-proposal.md`.
+> **Audience:** implementation agents. Implement what is written here, literally. Where this document says MUST, it is not negotiable. Where it is silent, ask — do not invent.
+> **Go module path:** `github.com/thulasiram/oto`
+> **Go version:** 1.24. **PostgreSQL:** 16+.
+
+---
+
+## 0. Binding preamble
+
+### 0.1 What oto is
+
+> The alert history layer your Prometheus stack does not have — self-hosted, with a UI, without adopting an AIOps platform or a paid SaaS.
+
+For every alert that has ever fired, oto can show: when it first appeared, every episode since, **what the rule said at that moment**, who was told, on which channel, in which thread, who acknowledged it, and how it ended — as one continuous timeline.
+
+### 0.2 Owner constraints (cannot be overruled)
+
+1. Go backend, SolidJS frontend, PostgreSQL as system of record.
+2. API-first. The UI consumes only public HTTP APIs. A second UI must be boltable.
+3. Domain-first layout, API → Service → Repository layering, three distinct model sets (DTO / domain / row).
+4. Slack behind a generic `Channel` interface. Block Kit. Threads and replies required.
+5. UI shows alerts, groups by name/namespace/fingerprint, and a Sentry-style lifecycle timeline.
+6. Fetching the alert's rule definition is a product requirement.
+7. Minimum **Lovable** Product, architecturally sound. Not a rushed MVP.
+8. Core platform modules vs peripheral modules are distinguished.
+
+### 0.3 Standing rulings (binding, do not re-litigate)
+
+| # | Ruling |
+|---|---|
+| R1 | Layout is `internal/<domain>/{api,service,repository,domain}`. Deviation from the literal `src/` is deliberate: `internal/` is compiler-enforced encapsulation. The innermost package is named `domain`, not `model`. |
+| R2 | `org_id` is on every tenant table from day one. **No RBAC, no roles, no SSO/OIDC in v1.** Auth is a session cookie (local password) or a bearer PAT. Every authenticated principal has full access to its own org. |
+| R3 | **Silences are a READ-ONLY mirror of Alertmanager silences in v1.** oto has NO write path into the cluster. The Slack "Silence" affordance is a **deep-link URL button** into the Alertmanager UI (zero API calls, zero state). Rationale: a silence write path is safety-critical — a bug suppresses a real incident. **R3 is an H-3 (safety) refusal, NOT an FR-1 (scope) refusal: it is *earnable*.** A future write path is "create upstream, then mirror" — never "create locally and reconcile"; the `silences` table is already keyed by `source_silence_id` to keep that door open. Do not confuse R3 with the permanent refusals in §I.1.1. |
+| R4 | **No AI/LLM features in v1.** Determinism and auditability are a positioning stance. |
+| R5 | Exactly **two** channel providers ship in v1: `slack` (full) and `webhook` (trivial, generic JSON POST). The webhook provider exists to prove the abstraction holds and MUST NOT be given Slack-specific affordances. |
+| R6 | Rule definitions MUST be **snapshotted and versioned at fire time**. This is the defensible differentiator. |
+| R7 | No second datastore. No Redis, no Kafka, no ClickHouse, no Loki, no TimescaleDB. Postgres only. One `helm install`. |
+| R8 | No per-person response-time metrics, leaderboards, or per-individual aggregates — not in the API, not in the DB rollups. Acknowledgement identity IS stored (operationally necessary). Aggregates are team- or alert-scoped only. |
+| R9 | **Validation is a seven-layer concern, fully specified in §L.** Trusted user input and untrusted upstream payloads MUST NOT share rules. Every layer validates; no layer is skipped because another one "already did it". Bounds declared in a DTO `validate` tag, a domain constructor and a DDL `CHECK` MUST be identical, and CI asserts it. |
+| R10 | **Brand: `oto` (音) = a chime. The UI is a light pastel foundation, calm by default.** Saturated colour is reserved *exclusively* for alert state (§M). The Slack Block Kit state palette (§H.2) is a **separate, unchanged system** and MUST NOT be harmonised with the UI tokens. |
+| R11 | **oto is alert-first PERMANENTLY, and the boundary is the Flight Recorder Test.** `docs/design/SCOPE-BOUNDARY.md` and ADR 0013 are BINDING. **FR-1: complete "this row is a fact about ___". A signal → IN. A person, team, rota, responsibility, response effort, ticket or customer-facing statement → OUT.** In one line: **actor, never subject.** Human actions are IN only as timestamped annotations on a signal's timeline carrying an actor as *metadata*. The permanent exclusions are enumerated in §I.1.1; the column ban is §D.4.0; the one-stage clause is §G.9.1; the no-human-state rule is §E.1.1. |
+| R12 | **`snooze` ships in v1** (§B.8). Suppressing *oto's own* notifications for an `alert_key` until T is a fact about a signal's notification, stored only in oto, changing nothing in the cluster, auto-expiring, attributed and visible as a state. It passes FR-1, H-1, H-2 and H-3 cleanly and is nearer to `channels.verbosity` than to a silence. **A product whose ethic is "default to quiet" that ships no quiet button is inconsistent with itself.** Snooze is NOT a silence and MUST NOT be presented as one (§B.8.4). |
+
+### 0.4 Conflict rulings (research overrides architect)
+
+| # | Conflict | Ruling |
+|---|---|---|
+| C1 | Architect enters `suppressed` from webhook ingest. Research: suppressed alerts are dropped by `MuteStage` and **never reach a webhook**; `alerts[].status` is only `firing\|resolved`. | `suppressed` is set **only** by the API v2 reconciler (`status.state == "suppressed"`) or by an oto-observed silence match. Ingest MUST NOT produce `suppressed`. The reconciler is CORE, not optional. |
+| C2 | Architect treats absence-from-Alertmanager as resolution. | Absence produces `expired`, never `resolved`. `resolved` requires an explicit per-alert `status="resolved"` observation. |
+| C3 | Architect derives group identity from an oto "grouping rule" engine. Research: `groupKey` embeds route config and changes on `alertmanager.yml` reload. | Durable `group_key = H(org_id, source_id, receiver, sorted groupLabels)`. AM's `groupKey` is stored as `source_group_key` for observability only and MUST NOT be parsed. The configurable grouping-rule engine is CUT. |
+| C4 | Architect returns 202 but never specifies failure codes. Research: 4xx/429 = permanent, silent loss; only 5xx is retried. | Ingest returns **202** on durable accept, **503 + `Retry-After`** for any transient condition (overload, pool exhaustion, Postgres slow). **NEVER 429. NEVER 4xx for anything transient.** 401 (bad token) and 413 (oversize) are the only permitted 4xx and both are genuinely permanent. |
+| C5 | Architect never mentions `notification_reason`. | `notification_reason` is persisted on every batch and drives the post-vs-update decision table (§H.6). Empty (AM < 0.32.0) falls back to fingerprint-set diffing. |
+| C6 | Architect uses a Block Kit `header` block for the title. Research: `header` is `plain_text` only — no bold, no links. | Title is a **`section`** with a bold mrkdwn link. `header` MUST NOT be used. The `alert` block MUST NOT be used (modals only). |
+| C7 | Architect implies colour without specifying the mechanism. Research: colour has no Block Kit equivalent. | Exactly **one** attachment wraps **all** blocks, carrying `color`. **Colour encodes STATE, severity encodes as a leading emoji.** |
+| C8 | Architect: new thread per occurrence, root amend on state change, reply per lifecycle fact. Research: `chat.postMessage` ≈ 1/s/channel; `chat.update` is Tier 3 (50/min) and not per-channel limited. | **`chat.update` in place is the primary mechanism. Thread replies are the exception**, governed by §H.6 and per-channel verbosity. The Slack root message belongs to an **AlertGroup generation**, not to an occurrence. |
+| C9 | Architect recovers from crash-after-send by calling `conversations.history`. Research: never depend on reading Slack back; distributed apps are throttled to 1 req/min / 15 objects. | **DROP.** oto never reads Slack to reconstruct its own state. Ambiguous sends are handled by §G.5. |
+| C10 | Architect justifies its own dedup key by 64-bit collision risk (overstated). | Keep the oto-owned key, but the justification is **tenant/cluster scoping and identity policy**, not collisions. oto additionally **recomputes** AM's FNV-1a fingerprint locally and records a mismatch rather than trusting the wire value. |
+| C11 | Architect persists `RenderedMessage` at enqueue time. Red team: queued notifications must be re-evaluated at send time. | Render at **claim** time. If `attempts == 0`, render fresh from current state and persist. If `attempts > 0`, re-send the persisted bytes (transport retry). Both properties satisfied. |
+| C12 | Architect has one timestamp per event. Red team: upstream clock vs ours. | Every event carries **`occurred_at`** (upstream claim) and **`recorded_at`** (oto clock). Timelines ORDER BY `(recorded_at, id)`. UI DISPLAYS `occurred_at`. Skew is measured and surfaced. |
+| C13 | Architect assumes an HTTP endpoint for Slack interactivity. Research: Slack recommends HTTP for production but Socket Mode removes the public-ingress requirement. | Ship **both** transports behind one handler. **Socket Mode is the default** for self-hosted. HTTP mode is a config flag. |
+| C14 | Architect proposes unique indexes for idempotency on partitioned tables (`alert_events`, `ingest_batches`). Postgres requires a unique index on a partitioned table to include the partition key — so these do not actually dedupe. | Idempotency moves to two small **unpartitioned** side tables: `alert_event_keys` and `ingest_dedup`. |
+| C15 | Architect ignores `send_resolved: false`. | On source registration and on every reconcile, oto reads `GET /api/v2/status`, and raises a persistent `source_health` warning if the receiver has `send_resolved: false`. |
+| C16 | Red team proposes a normalised `label_sets` table. | **REJECTED.** Label sets are stored once per `Alert` identity, never per event. The de-duplication win does not exist in this schema. |
+| C17 | Red team proposes an on-disk spool ahead of Postgres. | **REJECTED for v1.** Alertmanager retries for `max(group_interval,10s) + peer_wait` (~5 min default). Returning 503 is a designed, sufficient backpressure channel. |
+| C18 | Red team proposes cutting the pull path entirely. | **PARTIALLY REJECTED.** The pull path ships, but strictly as a **reconciler** (§F.4), never as a second ingestion mode. There is exactly one write path into `alerts`. |
+| C19 | Architect uses sqlc + squirrel. | **sqlc is CUT.** Repositories use hand-written SQL over `pgx/v5` (+ `squirrel` for the alert-list filter builder only). Removes a codegen coordination dependency between independent agents. |
+| C20 | Architect: OpenAPI spec-first with `oapi-codegen` for Go. | Go DTOs are **hand-written** exactly as specified in §E. The OpenAPI 3.1 document is hand-maintained and is the published contract; the **TypeScript** client is generated from it. A CI contract test asserts the running server matches the spec. |
+
+---
+
+## A. Ubiquitous language
+
+These names are binding on Go types, table names, JSON fields, API paths and UI copy. Do not introduce synonyms.
+
+| Term | Go type | Table | Definition |
+|---|---|---|---|
+| **Org** | `identity.Org` | `orgs` | Tenant boundary. Every domain row carries `org_id`. |
+| **User** | `identity.User` | `users` | A human principal. Global; bound to an Org by `orgs`-scoped membership implicit in v1 (one org per user). |
+| **ApiToken** | `identity.ApiToken` | `api_tokens` | A hashed bearer credential. Two namespaces: `oto_pat_*` (read/write API) and `oto_ingest_*` (scoped to exactly one AlertSource's ingest endpoint; can never read an alert). |
+| **Cluster** | `sources.Cluster` | `clusters` | A logical identity/failure domain. Owns `cluster_key`, which participates in alert identity. |
+| **AlertSource** | `sources.AlertSource` | `alert_sources` | One configured upstream: an Alertmanager base URL, optionally its paired Prometheus URL. All replicas of an HA Alertmanager MUST be registered against the same Cluster. |
+| **SourceHealth** | `sources.SourceHealth` | `source_health` | Liveness, lag, error rate and warnings for one AlertSource. Gates the reaper (§B.4). |
+| **IngestBatch** | `ingestion.Batch` | `ingest_batches` | One durably persisted raw webhook body plus its metadata. The replay artefact. |
+| **Observation** | `ingestion.Observation` | *(none — transient)* | One normalised `alerts[]` element from one batch, or one `gettableAlert` from the reconciler. The unit fed to the lifecycle machine. |
+| **Alert** | `alerts.Alert` | `alerts` | **The identity of a label set** within `(org, cluster)`. Created on first sight, survives resolution forever. oto's answer to Sentry's *Issue*. Keyed by `alert_key`. |
+| **AlertOccurrence** | `alerts.Occurrence` | `alert_occurrences` | **One contiguous firing episode** of an Alert. `(alert_id, seq)`. Carries state, ack, timings and the rule snapshot. This is what you acknowledge and whose **firing duration** is measured — never "MTTR" (a banned acronym: §A.1). |
+| **AlertEvent** | `alerts.Event` | `alert_events` | **An immutable record of one thing that happened at one instant.** Never updated, never deleted (aged out by partition). This is the timeline. |
+| **AlertGroup** | `grouping.Group` | `alert_groups` | **One generation of one Alertmanager notification group.** Derived from `(source, receiver, groupLabels)`. **Owns exactly one Slack thread.** |
+| **AlertGroupMember** | `grouping.Member` | `alert_group_members` | Binding of an AlertOccurrence to an AlertGroup generation. |
+| **RuleSnapshot** | `rules.Snapshot` | `rule_snapshots` | A content-addressed capture of a Prometheus alerting rule (`expr`, `for`, `keep_firing_for`, labels, annotations) at a point in time. |
+| **RuleKey** | `rules.Key` | *(column)* | `(source_id, rule_file, rule_group, rule_name)` — the identity across which drift is detected. |
+| **Enricher** | `enrichment.Enricher` | *(registry)* | A named, versioned producer of derived context. |
+| **Enrichment** | `enrichment.Enrichment` | `enrichments` | One typed, provenanced result from one Enricher about one subject. |
+| **Channel** | `channels.Channel` | `channels` | A **configured destination instance** ("Slack workspace T123, channel #sre-alerts"). Not a channel *type*. |
+| **Provider** | `channels.Provider` | *(registry)* | The code that mints Channels of one type from stored config. |
+| **Renderer** | `channels.Renderer` | *(registry)* | A pure function `NotificationView -> RenderedMessage`. |
+| **NotificationPolicy** | `notification.Policy` | `notification_policies` | matchers → channels → reasons. Decides *whether* and *where*. |
+| **Notification** | `notification.Notification` | `notifications` | **The channel-agnostic intent to communicate one fact about one subject.** Idempotent. |
+| **NotificationDelivery** | `notification.Delivery` | `notification_deliveries` | **One materialisation of a Notification on one Channel.** Owns retry state, provider ids, thread sequence, rendered bytes. |
+| **ChannelThread** | `notification.Thread` | `channel_threads` | Persisted binding of an AlertGroup to a provider conversation anchor (Slack `channel_id` + root `ts`). |
+| **Silence** | `silences.Silence` | `silences` | A **read-only mirror** of an Alertmanager silence. |
+| **UIEvent** | `streaming.UIEvent` | `ui_events` | A monotonic, replayable envelope for the SSE stream. |
+| **Reason** | `notification.Reason` | *(column)* | Why a Notification exists. Enum in §H.6. |
+| **NotificationReason** | `ingestion.NotificationReason` | *(column)* | Alertmanager's `notification_reason` wire string. Distinct from `Reason`. |
+
+### A.1 Words that are BANNED
+
+**Ambiguity bans.** `event` (unqualified — always `AlertEvent` or `UIEvent`), `issue`, `notification`
+used to mean a Slack message (that is a `NotificationDelivery`), `group` used to mean a UI grouping
+(that is a *view*), `alert` used to mean an occurrence or a Slack message.
+
+**Scope bans** (SCOPE-BOUNDARY §3 — vocabulary is enforcement). These words MUST NOT appear in a Go
+identifier, a table or column name, a JSON field, an API path, or UI copy:
+
+`incident` · `escalation` · `escalation policy` · `on-call` / `oncall` · `rota` · `schedule` ·
+`assignee` / `assign` / `assigned_to` · `owner` / `owner_id` · `responder` · `triage` · `postmortem` ·
+`war room` · `SLA` · `MTTA` · `MTTR` · `severity override` · `close` (of an alert) · `merge` ·
+`dismiss` · `watcher` / `subscriber`
+
+A pull request introducing one of these is **presumed over the line until argued otherwise against
+FR-1 by name** (SCOPE-BOUNDARY §1). AC-49 enforces this with a lint rule, because a vocabulary ban
+that is not mechanically enforced decays in a quarter.
+
+*Permitted uses:* `docs/`, this list, SCOPE-BOUNDARY cross-references, and `river.JobSnooze`
+(a third-party API name, unrelated to §B.8 snooze).
+
+---
+
+## B. Alert lifecycle state machine
+
+The authoritative machine runs on **AlertOccurrence**. `Alert.state` and `AlertGroup.state` are projections.
+
+### B.1 Two orthogonal axes
+
+- `occurrence.state` — *what the world is doing.* Owned by ingestion and the reconciler. `firing | suppressed | resolved | expired`.
+- `occurrence.ack_state` — *what humans have done.* Owned by the API. `unacked | acked`. An acked alert is still firing.
+- **snooze** (§B.8) — *whether oto is notifying.* Owned by the API, stored in `alert_snoozes`, projected onto `alerts.snoozed_until`. **A snoozed alert is still firing and is still rendered as firing.** Snooze is never a `state` and never a `suppression_reason`.
+- `alert.flap_score` — a derived signal, **never** a state.
+
+**All three axes are independent.** An alert can be `firing` + `acked` + snoozed simultaneously, and
+each fact is displayed. Collapsing any two of them into one enum is the most common modelling error
+in this domain.
+
+### B.2 States
+
+| State | Terminal | Meaning | Set by |
+|---|---|---|---|
+| `firing` | no | Alertmanager reports this label set active and not suppressed. | Ingest (webhook), Reconciler |
+| `suppressed` | no | Active but suppressed **upstream**. `suppression_reason ∈ {silence, inhibition, mute_time_interval, active_time_interval}` — Alertmanager's four reasons and no others. **Never observable via webhook (C1); `snoozed` is NOT one of these (§B.8.2).** | **Entered:** reconciler only. **Left:** reconciler *or* ingest (§B.3.1) |
+| `resolved` | yes | An explicit per-alert `status="resolved"` observation was received. | Ingest only |
+| `expired` | yes | oto stopped hearing about it: `now > source_ends_at + resolve_grace` **and** the AlertSource is healthy. Means *"Prometheus or Alertmanager went away"*, not *"the problem went away"*. | Reaper job |
+
+`alert.state` = state of the current open occurrence; if none is open, the state of the most recent occurrence.
+`alert_group.state` = `open` if ≥1 member occurrence is `firing` or `suppressed`, else `closed` after `group_close_delay` (default 5m).
+
+### B.3 Transition table
+
+| # | From | To | Trigger | Actor | Side effects (all in ONE transaction) |
+|---|---|---|---|---|---|
+| T1 | *(none)* | `firing` | First observation of an `alert_key`, or a `firing` observation with no open occurrence | Ingest, Reconciler | Upsert `Alert` (emit `alert.created` if inserted); open occurrence `seq = prev+1`; join/create AlertGroup generation; emit `occurrence.opened`; enqueue `enrich.run`; enqueue `notify.evaluate(reason=fired)` |
+| T2 | `firing` | `firing` | Repeat observation | Ingest, Reconciler | Update `last_observed_at`, `annotations`, `value`, `source_ends_at`. **Emit NO event** unless a *material* field changed (`severity`, any annotation, `generator_url`, `rule_fingerprint`) → then emit `alert.mutated` |
+| T3 | `firing` | `suppressed` | Reconciler observes `status.state == "suppressed"` | Reconciler | Set `suppression_reason` from `silencedBy`/`inhibitedBy`/`mutedBy`; emit `occurrence.suppressed`; enqueue `notify.evaluate(reason=suppressed)` |
+| T4 | `suppressed` | `firing` | **(a)** Reconciler observes `status.state == "active"`, **OR** **(b)** ANY ingest observation with `status == "firing"` arrives for this occurrence | **Reconciler AND Ingest** | Clear `suppression_reason` and `suppressed_by`; emit `occurrence.unsuppressed` with `detected_by ∈ {reconciler, webhook}`; enqueue `notify.evaluate(reason=unsuppressed)` |
+| T5 | `firing`\|`suppressed` | `resolved` | Per-alert `status == "resolved"` | Ingest | Set `ended_at = max(occurred_at, started_at)` **(clamped — see B.3.2)**, `resolve_reason='upstream'`; emit `occurrence.resolved`; enqueue `notify.evaluate(reason=all_resolved\|some_resolved)` |
+| T6 | `firing`\|`suppressed` | `expired` | `now > source_ends_at + resolve_grace` AND `source_health.status = 'healthy'` | Reaper | Set `ended_at = now`, `resolve_reason='timeout'`; emit `occurrence.expired`; enqueue `notify.evaluate(reason=expired)` |
+| T7 | `resolved`\|`expired` | *(new occurrence `firing`)* | Same `alert_key` fires again **after** `refire_grace` | Ingest | New occurrence `seq+1`; **new AlertGroup generation** if the group was closed → **new Slack root message**; emit `occurrence.opened` with `reopen_of`; `alerts.total_occurrences += 1`; recompute `flap_score` |
+| T8 | `resolved`\|`expired` | `firing` *(same occurrence)* | Same `alert_key` fires again **within** `refire_grace` (default 20m) | Ingest | Clear `ended_at`, `reopen_count += 1`; emit `occurrence.reopened`; enqueue `notify.evaluate(reason=refired)`; **reuse the existing thread** |
+| T9 | any | `ack_state = acked` | Human via `POST /alerts/{id}/ack`, `POST /alert-groups/{id}/ack`, or Slack `oto.ack` button | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `occurrence.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
+| T10 | `acked` | `unacked` | Human unack, **or** a new occurrence opens (T7) | Human, Ingest | Emit `occurrence.unacknowledged` with `reason ∈ {manual, new_occurrence}`; enqueue `notify.evaluate(reason=unacked)` |
+| T11 | any | *(no state change)* | An Enricher completes | Enrichment worker | Emit `enrichment.completed` \| `enrichment.failed`; enqueue `notify.evaluate(reason=enriched)` (debounced 10s) |
+| T12 | any | *(no state change)* | `rule_fingerprint` for this occurrence differs from the previous occurrence's for the same `RuleKey` | Rules service | Emit `rule.definition_changed` with a structured diff; enqueue `notify.evaluate(reason=rule_changed)` |
+| T13 | any | *(no state change)* | Notification / delivery progresses | Notify, Deliver workers | Emit `notification.created`, `delivery.sent`, `delivery.failed`, `delivery.skipped`, `delivery.dead` |
+| T14 | any | *(no state change)* | Human comment | Human | Emit `comment.added`; enqueue `notify.evaluate(reason=comment)` |
+| T15 | any | *(no state change)* | Human snooze / unsnooze, or snooze expiry (§B.8.3) | Human, Reaper | Write/close `alert_snoozes`; update the `alerts.snoozed_until` projection; emit `alert.snoozed` \| `alert.unsnoozed`; enqueue `notify.evaluate(reason=snoozed\|unsnoozed)` |
+
+#### B.3.1 ⭐ T4 is triggered by ingest as well as the reconciler — and why
+
+A webhook observation is **positive proof of non-suppression.** Alertmanager's `MuteStage` runs
+*before* `RetryStage` and **drops** suppressed alerts from the slice that continues down the
+pipeline (research A6). Therefore an alert that reaches oto's webhook **cannot** be suppressed at
+that instant — if it were, it would never have been sent.
+
+Specifying T4 as reconciler-only left an occurrence stuck in `suppressed` for up to a full
+reconcile interval after a silence expired, even though a webhook had already proved it was firing
+again. Worse, in the common case where the group's `group_interval` is shorter than the reconcile
+interval, oto would render a live firing alert as "silenced by @ram" — a visible lie of exactly the
+kind §B.4 exists to prevent.
+
+**T3 remains reconciler-only.** The asymmetry is real and correct: ingest can *never* observe
+suppression (suppressed alerts do not arrive), but it *can* observe its end (arrival is the proof).
+
+#### B.3.2 ⭐ `ended_at` is clamped to `started_at`
+
+Upstream clocks skew, sometimes backwards. A `resolved` observation whose `occurred_at` precedes
+the occurrence's `started_at` would violate `occ_order_ck` and abort the ingest transaction —
+turning a customer's NTP problem into oto dropping a batch.
+
+**Binding:** `ended_at = max(occurred_at, started_at)`. The unmodified upstream value is preserved
+on the `occurrence.resolved` event's `occurred_at` and in `payload.source_ends_at`, the clamp is
+recorded as `payload.clamped = true`, and the skew is accumulated into
+`source_health.clock_skew_ms` and exported as `oto_clock_skew_seconds`. **The skew is measured and
+surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`) and T8 (reopen).
+
+### B.4 Reaper guard (highest-value correctness rule in the system)
+
+> **Losing sight of an alert is NOT the same as the alert resolving.**
+
+`occurrence.reap` MUST, for each candidate occurrence, load `source_health` for the owning AlertSource. If `status != 'healthy'`, the occurrence is **held in its current state** and a single `source.unreachable` banner is raised for the source. It MUST NOT be expired. A `source_degraded_holds` counter is exported.
+
+### B.5 Re-fire policy (stated plainly)
+
+> A re-fire after resolve is a **NEW `AlertOccurrence` on the SAME `Alert`** — unless it happens within `refire_grace` (default 20 minutes — ADR 0026), in which case it **REOPENS the existing occurrence**.
+>
+> A **NEW Slack root message** is posted only when a **new AlertGroup generation** opens. Reopening an occurrence, or a new occurrence joining a still-open group generation, produces a `chat.update` (+ optional thread reply), never a new root.
+
+### B.6 Flapping and storm damping (on by default)
+
+- `flap_score` = EWMA of state transitions per hour, recomputed on every transition and by the `flap.score` job.
+- Above `flap_threshold` (default 5 transitions in **2 hours** — ADR 0026) the Alert is marked flapping: occurrences still open and close normally, but `notify.evaluate` switches to **update-only** mode (no thread replies) and emits one coalesced summary reply per `flap_digest_interval` (default 15m).
+- **Storm collapse:** if more than `storm_threshold` (default 25) distinct alerts join one AlertGroup generation within `storm_window` (default 60s), the group enters `storm_mode`. In storm mode the group posts/updates exactly ONE root message with a count and a link, and suppresses all per-alert thread replies. Storm mode ends after `storm_cooldown` (default 10m) without new members.
+- Flapping and storm mode are **visible UI states**, never silent.
+
+### B.7 Mermaid diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> firing : T1 first observation
+
+    firing --> firing : T2 repeat observation
+    firing --> suppressed : T3 reconciler sees suppressed (ONLY)
+    suppressed --> firing : T4 reconciler sees active OR any webhook arrival
+    firing --> resolved : T5 status=resolved
+    suppressed --> resolved : T5 status=resolved
+    firing --> expired : T6 reaper (source healthy)
+    suppressed --> expired : T6 reaper (source healthy)
+
+    resolved --> firing : T8 refire within refire_grace (same occurrence)
+    expired --> firing : T8 refire within refire_grace (same occurrence)
+
+    resolved --> [*] : T7 refire after grace -> new occurrence
+    expired --> [*] : T7 refire after grace -> new occurrence
+
+    note right of expired
+        expired != resolved.
+        Reaper is BLOCKED while
+        source_health != healthy.
+    end note
+```
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "ack_state (orthogonal axis 2)" as A {
+        unacked --> acked : T9 human / Slack button
+        acked --> unacked : T10 manual or new occurrence
+    }
+```
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "snooze (orthogonal axis 3)" as S {
+        awake --> snoozed : T15 human snooze (5m..30d)
+        snoozed --> awake : T15 unsnooze, expiry, or superseded
+    }
+    note right of snoozed
+        Suppresses oto's NOTIFICATIONS only.
+        Never a state, never a suppression_reason.
+        A snoozed critical still renders as critical.
+    end note
+```
+
+---
+
+### B.8 Snooze — oto's quiet button (R12)
+
+> **Snooze suppresses *oto's own notifications* for one `alert_key` until a fixed time T.**
+> It changes nothing in the cluster, nothing upstream, and nothing about the signal's state.
+
+Storm collapse (§B.6) and flap damping are oto's **automatic** defences against its own noise.
+Snooze is the **manual** one. Without it the only quiet button a user has is muting the Slack
+channel — which also hides the real incident, the failure mode the red team calls fatal.
+
+#### B.8.1 What snooze is, and is NOT
+
+| Snooze **IS** | Snooze **IS NOT** |
+|---|---|
+| A fact about **oto's notification behaviour** for one signal | A fact about a person |
+| Stored only in oto's database | A write into Alertmanager |
+| Auto-expiring, always, with a hard maximum | An indefinite mute |
+| Attributed and visible in the UI and in Slack | A silent suppression |
+| Nearer to `channels.verbosity` than to a silence | An Alertmanager silence, an inhibition, or a mute time interval |
+| Scoped to an `alert_key` | Scoped to an occurrence (too narrow — a re-fire restores the noise) or to a group (too broad — it mutes alerts nobody has seen) |
+
+**Snooze is NOT a `state`.** It is a third orthogonal axis alongside `occurrence.state` and
+`occurrence.ack_state`. A snoozed critical alert is **still critical and still firing**, and every
+surface MUST continue to render it that way (§B.8.6). Colouring a snoozed alert calm would be the
+same lie §E.1.1 exists to prevent.
+
+#### B.8.2 Composition with the reconciler-owned `suppressed` state — exactly how, and which wins
+
+These are two different facts about two different systems. **Neither overrides the other; both are
+recorded and both are displayed.**
+
+| | `occurrence.state = 'suppressed'` | snooze |
+|---|---|---|
+| Owner | **Reconciler only** (C1) | A human, via oto's API or the Slack button |
+| Means | *Alertmanager is not delivering this* | *oto is not notifying about this* |
+| Source of truth | `GET /api/v2/alerts` → `status.state` | `alert_snoozes` |
+| Reason vocabulary | `alert_occurrences.suppression_reason ∈ {silence, inhibition, mute_time_interval, active_time_interval}` | — |
+| Ends when | Alertmanager says `active` again | `snoozed_until` passes, or a human unsnoozes |
+| Affects observation? | Yes — suppressed alerts stop arriving at the webhook entirely | **No.** Ingestion, the state machine, events and the timeline are untouched |
+
+> #### ⛔ BINDING: `snoozed` is NOT a `suppression_reason`
+>
+> `alert_occurrences.suppression_reason` mirrors **Alertmanager's four suppression reasons** and
+> nothing else. **`snoozed` MUST NEVER be added to that enum**, and `occurrence.state` MUST NEVER
+> take the value `snoozed`. Conflating them would mean oto reports *"Alertmanager is suppressing
+> this"* when the truth is *"a human asked oto to be quiet"* — a lie about the world, in the one
+> table whose job is to mirror the world.
+>
+> Snooze records itself as **`notifications.suppressed_reason = 'snoozed'`** — oto's own
+> notification-suppression enum, alongside `throttled`, `flapping`, `storm` and `verbosity`, which
+> is exactly the company it keeps.
+
+**Which wins, per concern:**
+
+| Concern | Winner | Rule |
+|---|---|---|
+| Observation and timeline | **Neither** | Both proceed unchanged. Snooze never suppresses an `AlertEvent`. |
+| Whether a notification is created | **Snooze** | `notify.evaluate` records the intent with `status='suppressed'`, `suppressed_reason='snoozed'`, and creates **no deliveries**. The audit trail is complete. |
+| The recorded `suppressed_reason` when several apply | **First match, in this order** | `channel_disabled` → `no_policy` → **`snoozed`** → `storm` → `flapping` → `throttled` → `verbosity` → `duplicate_render`. Snooze outranks the automatic dampers because it is a deliberate human act and therefore the most actionable explanation. |
+| What the Slack card shows | **Both** | Colour and status field follow `occurrence.state` (the world). A separate `*Notifications*` field shows the snooze. |
+| What the UI shows | **Both** | State chip from `occurrence.state`; a `:zzz:` badge with a countdown from the snooze. |
+
+#### B.8.3 Operations
+
+| Operation | Effect |
+|---|---|
+| `snooze(alert_id, until, note)` | Closes any active snooze on that alert as `superseded`; inserts a new `alert_snoozes` row; sets the `alerts.snoozed_until` projection; emits **`alert.snoozed`**; enqueues `notify.evaluate(reason=snoozed)` so the channel is **told it is going quiet**. |
+| `unsnooze(alert_id)` | Sets `ended_at`, `ended_reason='manual'`; clears the projection; emits **`alert.unsnoozed`**; enqueues `notify.evaluate(reason=unsnoozed)`. |
+| `snooze` on an AlertGroup | **Fan-out of the same primitive, not a new one.** Creates one snooze per *currently-joined member* `alert_id`. Alerts joining the group later are NOT snoozed — a snooze is never predictive. |
+| Expiry (`snooze.expire`, every 60 s) | Sets `ended_at = now`, `ended_reason='expired'`; clears the projection; emits `alert.unsnoozed` with `reason='expired'`; if the alert's occurrence is still open, enqueues `notify.evaluate(reason=unsnoozed)`. |
+
+**Bounds (binding).** `snoozed_until` is **NOT NULL**. Minimum **5 minutes**, maximum **30 days**.
+**There is no indefinite snooze** — an unexpiring snooze is a mute, and mutes are how channels die.
+Slack and UI presets: 30 m · 1 h · 4 h · 24 h · 7 d.
+
+**Exactly one active snooze per alert**, enforced by a partial unique index, not by application code.
+
+#### B.8.4 What snooze suppresses
+
+Snooze suppresses **every** notification `Reason` for that `alert_key` — including `rule_changed`,
+which is otherwise never gated. A partial mute is a confusing mute.
+
+**The two exceptions, and they are necessary:** `Reason='snoozed'` and `Reason='unsnoozed'` are
+themselves exempt. Snooze must be able to announce its own beginning and end, or it becomes the
+silent suppression that §B.6 forbids.
+
+Because deliveries are rendered at **claim** time (C11), the wake-up notification reflects the
+alert's state *now*, not a replay of what was suppressed. An alert that fired and resolved entirely
+inside a snooze window produces no stale card.
+
+#### B.8.5 Events
+
+Two new `alert_events.type` values, added to the closed enum in §D.4.1:
+
+| Type | `payload` | Actor |
+|---|---|---|
+| `alert.snoozed` | `{snooze_id, until, note, duration_seconds}` | `user` |
+| `alert.unsnoozed` | `{snooze_id, reason: "manual"\|"expired"\|"superseded"}` | `user` (manual/superseded) or `system` (expired) |
+
+#### B.8.6 What the surfaces show
+
+**Slack root card, while snoozed:**
+- **Colour and leading emoji are UNCHANGED.** They follow `occurrence.state`. A snoozed firing
+  critical stays `#a30200` / `:rotating_light:`.
+- A field is added: `*Notifications*\n:zzz: Snoozed by <@UA8RXUSPL> until <!date^1786468800^{time}|17:00 UTC>`
+- The `Snooze` action becomes `:bell: Unsnooze` (`oto.unsnooze`). Buttons are never no-ops (S10/§H.1).
+- A `snoozed` thread reply is posted once (§H.5), and an `unsnoozed` reply when it ends.
+
+**UI:**
+- A `:zzz:` badge with a live countdown on the row and in the header.
+- **Snoozed alerts are NOT hidden from the default list.** Hiding them is how an incident is lost.
+  `?snoozed=true|false` is an explicit filter; the default includes both.
+- A persistent, dismissible banner enumerates every active snooze in the org with its expiry, so a
+  snooze cannot be forgotten. This is the counterweight that makes the feature safe.
+
+#### B.8.7 Scope justification (FR-1)
+
+*"This row is a fact about ______."* → **a signal's notification behaviour.** Subject = the Alert.
+The human is the actor, recorded as attribution on a separate `alert_snoozes` row, never as a
+present-tense column on a signal row (§D.4.0). Passes **H-1** (no obligation on anyone), **H-2**
+(dies with the alert), **H-3** (no write outside oto's DB). SCOPE-BOUNDARY §4.19, §8.
+
+---
+
+## C. Deduplication and identity rules
+
+> **⭐ RULING (kernel finding C.9): the identity functions live in `internal/alerts/domain`, and
+> `pkg/alertkey` is DELETED.**
+>
+> An earlier draft split them: §C.1 said `pkg/alertkey`, §L.4 said `alerts/domain`. It shipped in
+> `alerts/domain` and that is now binding.
+>
+> **`internal/alerts/domain` is the SHARED DOMAIN KERNEL** — the single sanctioned cross-domain
+> `domain` import. `grouping/domain`, `rules/domain`, `notification/domain` and `ingestion/domain`
+> MAY import it for `LabelSet`, `AlertKey`, `GroupKey`, `RuleFingerprint`, `IdempotencyKey`,
+> `ClusterKey`, `SlackTS`, `Severity`, `State` and `AckState`. **No other cross-domain `domain`
+> import is permitted**, and `alerts/domain` MUST NOT import any other domain package (that would
+> be a cycle). `depguard` encodes exactly this allowance and nothing wider.
+>
+> `pkg/alertkey` is removed from the tree. An importable package is a **public API surface with
+> compatibility obligations**, and oto has no external Go importer: the handoff contract
+> (SCOPE-BOUNDARY §7, H-1) publishes `alert_key` and `group_key` over the **HTTP API**, not by
+> importing Go. Reintroduce `pkg/` only when a real external Go consumer exists, as a thin
+> re-export. `pkg/otoclient` (the generated Go API client) is the one thing `pkg/` is reserved for.
+
+All hashing helpers are pure functions with no I/O.
+
+### C.0 `field()` — how every identity pre-image is framed
+
+Every pre-image in §C is a sequence of **length-prefixed** fields:
+
+```
+field(x) := uint32be(len(x)) || x        -- len() counts BYTES, not runes
+```
+
+Four bytes, big-endian, fixed width. Nothing is escaped and **no byte is reserved.**
+
+> **⛔ THIS REPLACED NUL TERMINATION, AND IT MUST NOT BE "SIMPLIFIED" BACK.**
+>
+> Every §C key used to separate its fields with `0x00`. That is injective **only if no
+> field can contain a `0x00`** — and three of them can. `receiver` comes from the
+> operator's `alertmanager.yml`, `expr` is arbitrary PromQL, and Alertmanager's own
+> `groupKey` is documented in §C.4 as unescaped and unbounded. A field carrying the
+> separator forged the framing, so **two different field splits produced one digest**:
+> two unrelated alerts became one Alert with one timeline and one Slack thread, and in
+> §C.5 a genuine notification was suppressed as a replay.
+>
+> Length prefixing is injective because the encoding is **uniquely decodable** — read
+> four bytes as `n`, take exactly `n` bytes, repeat — which gives it an explicit left
+> inverse. Escaping the separators would work too, and was rejected: escaping means oto
+> **editing an operator's bytes** in order to store them, and oto is a flight recorder.
+>
+> The cost is 8 bytes per label instead of 2, at most 384 bytes against the 16 KiB cap.
+
+**The tail rule.** Each key writes N framed fields and then **one final field raw**,
+because it is the remainder and needs no prefix to be found. Decoding is still total:
+take the N prefixed fields, and everything left is the tail. Where the tail is itself a
+§C.1 serialisation it is self-delimiting in turn, so the two layers never interact.
+**Do not "fix" this asymmetry** — making the tail prefixed re-keys everything for nothing.
+
+A canonical blob that is *not* last must be framed like any other field. §C.6 is the one
+place that happens.
+
+### C.1 Canonical label serialisation
+
+```
+canon(labels, ignore) :=
+    for each (name, value) in labels, where name NOT IN ignore, sorted by name ASC (byte order):
+        write(field(name)); write(field(value))
+```
+
+Label names and values are used verbatim (UTF-8, no case folding). `ignore` is `alert_sources.ignore_labels` (default `["prometheus_replica","__replica__","monitor","replica","pod_template_hash"]`).
+
+A label **value** may not contain `0x00`. That is a storability bound, not sanitisation:
+Postgres `text` cannot hold U+0000 at all, so such a value fails at INSERT however it is
+serialised. It is rejected at the boundary with `invalid_label_value`. A `0x00` in a
+label *name* is already impossible under the name charset. Nothing else is stripped,
+replaced or normalised.
+
+**Two doors, one function.** `alerts/domain.Labels.Canonical(ignore)` takes a label set
+oto accepted at its own boundary and is what §C.2 and §C.4 hash.
+`alerts/domain.CanonMap(map[string]string)` takes labels oto did NOT accept — a rule
+definition recovered from Prometheus (§C.6), whose names are Prometheus's business and
+need not satisfy oto's charset — and returns the same bytes for every input the first
+one accepts, because it *is* the first one, reached without the constructor.
+
+`CanonMap` returns bytes, never a `Labels`. A lenient `Labels` constructor would let an
+unbounded, uncharsetted label set become an `alert_key`; a `[]byte` cannot be mistaken
+for a validated value object. There is **no third spelling of `canon`** anywhere in the
+tree, and a new one is a defect however locally convenient — that is what §C.6's ruling
+is about.
+
+### C.2 `alert_key` — the identity of an Alert (PRIMARY dedup key)
+
+```
+alert_key := "ak_" || base32hexLower( sha256(
+      field(org_id_bytes(16))
+   || field(cluster_key)
+   || canon(labels, source.ignore_labels)     -- tail, raw
+)[0:16] )
+```
+
+- 128 bits, 26 lowercase base32hex characters after the prefix. URL-safe, human-copyable.
+- Scoped by `(org, cluster_key)`: identical `KubePodCrashLooping{namespace="prod",pod="api-0"}` in `prod-eu` and `prod-us` are **different Alerts**. This is correct — different blast radii.
+- Ignored labels are **still stored** in `alerts.labels`; they are merely not hashed.
+- **UNIQUE `(org_id, alert_key)`** in the DB. Dedup is enforced by the constraint, never by a read-then-write check.
+- Changing `ignore_labels` on a source does **not** re-key existing alerts in v1. New identities are created. This is documented behaviour.
+
+### C.3 `source_fingerprint` — Alertmanager's fingerprint, recomputed not trusted
+
+```go
+// internal/alerts/domain  (the shared kernel — §C.1)
+// Exactly reproduces prometheus/common/model.LabelSet.Fingerprint().String():
+// FNV-1a 64 over sorted labels, name||0xFF||value||0xFF, rendered "%016x".
+func ComputeSourceFingerprint(ls LabelSet) SourceFingerprint
+```
+
+- Computed over the **FULL** label set (nothing ignored).
+- If the wire payload carries `fingerprint` and it differs from ours, we store **ours**, and emit an `ingest.fingerprint_mismatch` metric plus a `fingerprint_mismatch` entry on the batch. We never fail the ingest on this.
+- Purpose: the join key for `/api/v2/alerts` reconciliation and for debugging against upstream. **Never** the product identity.
+
+### C.4 `group_key` — the durable notification group identity
+
+```
+group_key := "gk_" || base32hexLower( sha256(
+      field(org_id_bytes(16))
+   || field(source_id_bytes(16))
+   || field(receiver)
+   || canon(groupLabels, {})                  -- tail, raw
+)[0:16] )
+```
+
+- **Stable across `alertmanager.yml` route edits.** AM's `groupKey` is stored verbatim as `source_group_key` for observability **and MUST NOT be parsed** (it is unescaped and unbounded).
+- For a reconciler-sourced observation with no groupLabels, `receiver` is `""` and `groupLabels` is the AM alert group's `labels`.
+- A `(org_id, group_key, generation)` tuple is UNIQUE. Generation increments when a closed group re-opens.
+
+### C.5 `batch_dedup_key` — webhook replay suppression
+
+```
+batch_dedup_key := hex( sha256(
+      field(source_id_bytes(16))
+   || field(groupKey)
+   || field(receiver)
+   || field(notification_reason)
+   || join(sorted("<fingerprint>:<status>" for each alert), 0x1F)   -- tail, raw
+) )
+```
+
+- Inserted into the unpartitioned `ingest_dedup` table with `UNIQUE (source_id, dedup_key)`. On conflict, the handler returns **202 with the original `batch_id`** and does nothing else.
+- Rows are pruned after **10 minutes** (≥ `n_peers × cluster.peer-timeout`; 45s for a 3-node cluster, with generous margin for retries within the ~5m budget).
+- Rationale: Alertmanager HA is at-least-once by design; a partition guarantees duplicates.
+- **`groupKey` is why §C.0 exists.** §C.4 says AM's own key is unescaped and unbounded, so it is
+  the least constrained input oto takes — and here a collision is not a merged alert but a **LOST
+  BATCH**: a genuine notification suppressed as a replay. Framing is load-bearing on this key.
+
+### C.6 `rule_fingerprint` — content address of a rule definition
+
+```
+rule_fingerprint := hex( sha256(
+      field(expr) || field(for_seconds) || field(keep_firing_for_seconds)
+   || field(canon(rule_labels, {}))           -- FRAMED: it is not last
+   || canon(rule_annotations, {})             -- tail, raw
+) )
+```
+
+`for_seconds` and `keep_firing_for_seconds` are SECONDS as a float, rendered
+`strconv.FormatFloat(f, 'f', -1, 64)` — the shortest form that round-trips. `600` and
+`600.0` are therefore one rule, and `for: 1s500ms` is a different rule from `for: 1s`.
+This rendering is **not free to choose**: it is what every stored `rule_fingerprint`
+was computed with, and Prometheus's `/api/v1/rules` reports `duration` as exactly this
+number. Truncating to whole seconds re-keys every snapshot.
+
+`rule_key := (source_id, rule_file, rule_group, rule_name)`. Drift is *"the newest snapshot for this `rule_key` has a different `rule_fingerprint` than the one bound to the previous occurrence."*
+
+> **⭐ RULING (issue 0988640): ONE IMPLEMENTATION, IN THE KERNEL, TAKING RAW MAPS.**
+>
+> `internal/alerts/domain.ComputeRuleFingerprint` is the only implementation.
+> `internal/rules/domain.Fingerprint` calls it and adds nothing;
+> `internal/rules/domain.Canon` calls `alerts/domain.CanonMap` and adds nothing.
+>
+> There used to be two, and the constraint that produced them is REAL and has not
+> gone away: a recovered rule's labels are a raw `map[string]string` that has never
+> passed `NewLabels` and need not satisfy oto's label-name charset, because they are
+> Prometheus's data and not oto's. What was wrong was the conclusion. The constraint
+> argues for **the kernel accepting the lenient input**, not for a second copy of the
+> format outside it — so §C.1 now has a raw-map door, `alerts/domain.CanonMap`, which
+> is `Labels.Canonical` reached without the constructor.
+>
+> `CanonMap` returns BYTES and not a `Labels` on purpose. An unchecked `Labels`
+> constructor would be a hole straight through validation layer 3: `Labels` is the
+> substrate of `alert_key` and `group_key`, and an unbounded, uncharsetted label set
+> must never be able to become an Alert identity. Bytes cannot be mistaken for a
+> validated value object, and bytes are all §C.6 needs.
+>
+> **The two copies did not merely risk disagreeing — they DID disagree.** The kernel's
+> took a `time.Duration` and truncated to whole seconds; the live one took float
+> seconds and rendered the shortest round-trip. `for: 1s500ms` had two content
+> addresses. `TestFingerprintAgreesWithTheKernel` could not see it, because its corpus
+> was whole seconds — the only inputs both spellings could express. That is the
+> general lesson: a cross-check over the INTERSECTION of two domains proves agreement
+> only on the intersection.
+>
+> No stored value moved. Every `rule_fingerprint` in the database was computed by
+> `NewSnapshot` → `rules/domain.Fingerprint`, which is byte-for-byte what the surviving
+> implementation computes. The kernel's spelling was the one that changed, and it had
+> no production caller to change anything for.
+>
+> `TestFingerprintAgreesWithTheKernel` survives, now over fractional seconds and
+> NUL-carrying labels too. It reads as a tautology and stays anyway: what it guards is
+> somebody re-inlining the digest in `rules/domain` "to avoid the import", which is
+> how the pair arose the first time.
+
+### C.7 `notification.idempotency_key`
+
+```
+idempotency_key := hex( sha256(
+      field(org_id_bytes(16))
+   || field(subject_kind) || field(subject_id_bytes(16))
+   || field(reason)
+   || itoa(state_version)                     -- tail, raw
+) )
+```
+
+`UNIQUE (org_id, idempotency_key)`. `alert_groups.state_version` increments on every material group change. "all_resolved at state_version 7" can therefore exist exactly once.
+
+> **⭐ RULING (issue 0988640): ONE IMPLEMENTATION, IN THE KERNEL.**
+>
+> `internal/alerts/domain.ComputeIdempotencyKey` is the only implementation.
+> `internal/notification/domain.IdempotencyKey` is a three-line adapter over it and is
+> still what `notify.go` calls — its signature and its call site are unchanged.
+>
+> The adapter is not redundancy. `SubjectKind` and `Reason` are `notification`'s closed
+> enums, and the kernel may import no other domain package (§C.9), so the TYPES stop at
+> the adapter and the BYTES are the kernel's. That is the whole of the division.
+>
+> This one collapsed for free: the two were already byte-identical, so **no stored
+> `idempotency_key` moved**, and `UNIQUE (org_id, idempotency_key)` keeps meaning
+> exactly what it meant. What changed is that the copy a reader assumes canonical is no
+> longer the dead one.
+>
+> `TestIdempotencyKeyAgreesWithTheKernel` survives, for the same reason as §C.6's.
+
+### C.8 `alert_events` idempotency
+
+Every event write MAY carry a `dedupe_key` (e.g. `occ:{occurrence_id}:opened`, `occ:{id}:reopened:{n}`). The writer inserts into the unpartitioned `alert_event_keys` first:
+
+```sql
+INSERT INTO alert_event_keys (org_id, dedupe_key, event_id, created_at)
+VALUES ($1,$2,$3,now()) ON CONFLICT DO NOTHING;
+```
+
+Zero rows affected ⇒ the event already exists ⇒ skip the `alert_events` insert. Both statements are in the same transaction.
+
+### C.9 Cardinality defences (applied in this order at normalisation)
+
+1. **Hard caps.** `> 64` labels, any label value `> 4 KiB`, or total serialised label set `> 16 KiB` ⇒ the observation is written to `ingest_rejections` with a reason and the raw element, and `oto_ingest_rejected_total{reason}` increments. **We never silently drop.**
+2. **Redaction.** `alert_sources.redact_labels` and `redact_annotations` (glob patterns) are applied **before** the raw batch is persisted, so sensitive values never land.
+3. **Promoted columns.** `alertname`, `severity`, `namespace`, `service`, `cluster_key` are extracted into btree-indexed columns. Everything else lives in `labels JSONB` behind a `jsonb_path_ops` GIN index.
+4. Series budget / quarantine is **DEFERRED-POST-V1**.
+
+---
+
+## D. PostgreSQL schema (complete, literal DDL)
+
+**Conventions.**
+- Primary keys are UUIDv7 generated in Go (`platform/id.New()`). Never `gen_random_uuid()` — we need time-ordered index locality.
+- All timestamps are `TIMESTAMPTZ`. There are no naive timestamps anywhere.
+- **Writers own time; timestamp columns carry no `DEFAULT now()`.** The repository names every
+  timestamp from the injected Go clock (CONTEXT.md §6, `internal/platform/clock`), so all of a row's
+  instants come from one clock instead of splitting between the pod and Postgres. A default on a
+  column the repository always supplies is not a safety net: it lets a future writer omit the column,
+  succeed, and plant a row stamped from the database's clock, which surfaces later as somebody
+  else's `<table>_time_ck` failure. Advancing `updated_at` monotonically —
+  `GREATEST(updated_at, $n)` — is likewise a **writer obligation**, not something the schema can
+  enforce; without it a lagging pod pushes `updated_at` back past `created_at` and trips that CHECK.
+  **Named exceptions**, which keep the default and must:
+  `alerts.created_at/updated_at`, `alert_occurrences.created_at/updated_at`,
+  `alert_groups.created_at/updated_at`, `alert_event_keys.created_at`, `alert_snoozes.created_at`,
+  `ui_events.at`. On each of these a live writer omits the column today, so dropping the default
+  would break a production path immediately rather than protect a future one; the alerts family is
+  internally consistent on the database's clock, which is the property that matters, and moving it
+  is a separate change that has to move the INSERTs and the UPDATEs together
+  (`db/migrations/00034_app_clock_remaining.sql`).
+- Enums are `TEXT` + `CHECK`. No Postgres `ENUM` types (migration friction).
+- Every composite index starts with `org_id`.
+- Migrations are goose `.sql` files under `db/migrations/`, embedded via `embed.FS`.
+- **Expand/contract only.** Never a destructive migration in one release.
+- **⭐ Constraint and index names in this document are BINDING IDENTIFIERS, not suggestions**
+  (kernel finding C.10). §L.9 returns the constraint name as `errs.Error.Code` on SQLSTATE 23505 and
+  23503, so the name is a **runtime contract** consumed by the API and by the UI. Renaming
+  `alerts_key_uniq` to `uq_alerts_key` would be a breaking API change.
+  **Naming rule:** `<table>_<purpose>_ck` for CHECK, `<table>_<purpose>_uniq` for UNIQUE,
+  `<table>_<purpose>_idx` or the historical short form (`alerts_list_idx`, `occ_one_open_idx`) for
+  indexes, `<table>_<column>_fk` for foreign keys. **A `ck_` / `ix_` / `uq_` *prefix* convention is
+  explicitly rejected** and MUST NOT be introduced. **Every constraint is named**; no inline
+  anonymous `CHECK` may ship, because Postgres would generate a name the API contract cannot rely on.
+
+### D.0 Extensions and helpers
+
+```sql
+-- db/migrations/00002_extensions.sql
+--   ⭐ Numbered 00002, not 00001: River owns 00001 (`river migrate-up`), and `citext` must exist
+--   before 00003 creates the first CITEXT column. Extensions are created in their own migration so
+--   a restricted-privilege deploy can run them separately.
+CREATE EXTENSION IF NOT EXISTS citext;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+```
+
+> Migration numbering as realised: `00001` River · `00002` extensions · `00003` identity ·
+> `00004` sources · `00005` ingestion · `00006` alerts · `00007` grouping · `00008` rules ·
+> `00009` enrichment · `00010` notification · `00011` silences · `00012` platform ·
+> `00013` snooze (§D.8b, pending — §P-1). The `-- db/migrations/000NN_*.sql` comments in the DDL
+> blocks below retain their original ordinal for readability; **the file names in the repository are
+> authoritative.**
+
+### D.1 Tenancy and identity
+
+```sql
+-- db/migrations/00002_identity.sql
+
+CREATE TABLE orgs (
+  id           UUID        PRIMARY KEY,
+  slug         CITEXT      NOT NULL UNIQUE,
+  name         TEXT        NOT NULL,
+  settings     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    -- keys: refire_grace_s(1200), resolve_grace_s(300), group_close_delay_s(1200), -- ADR 0026
+    --       flap_threshold(5), flap_window_s(7200), flap_digest_interval_s(900),  -- ADR 0026
+    --       storm_threshold(25), storm_window_s(60), storm_cooldown_s(600),
+    --       raw_retention_days(30), event_retention_months(13)   -- ADR 0024
+  -- no DEFAULT now() (§D conventions); `app.Bootstrap` and `OrgRepository.UpdateSettings` stamp them.
+  created_at   TIMESTAMPTZ NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL,
+  deleted_at   TIMESTAMPTZ,
+  CONSTRAINT orgs_slug_ck     CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,62}$'),
+  CONSTRAINT orgs_name_ck     CHECK (length(btrim(name)) BETWEEN 1 AND 200),
+  CONSTRAINT orgs_settings_ck CHECK (jsonb_typeof(settings) = 'object'),
+  CONSTRAINT orgs_time_ck     CHECK (updated_at >= created_at)
+);
+
+CREATE TABLE users (
+  id             UUID        PRIMARY KEY,
+  org_id         UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  email          CITEXT      NOT NULL,
+  display_name   TEXT        NOT NULL,
+  password_hash  TEXT,                            -- argon2id; NULL disables password login
+  -- no DEFAULT now() (§D conventions); `app.Bootstrap`, the only writer, stamps both.
+  created_at     TIMESTAMPTZ NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL,
+  disabled_at    TIMESTAMPTZ,
+  CONSTRAINT users_email_uniq UNIQUE (org_id, email),
+  CONSTRAINT users_email_ck   CHECK (email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' AND length(email) <= 254),
+  CONSTRAINT users_name_ck    CHECK (length(btrim(display_name)) BETWEEN 1 AND 120),
+  CONSTRAINT users_pw_ck      CHECK (password_hash IS NULL OR password_hash LIKE '$argon2id$%'),
+  CONSTRAINT users_time_ck    CHECK (updated_at >= created_at)
+);
+CREATE INDEX users_org_idx ON users (org_id) WHERE disabled_at IS NULL;
+
+CREATE TABLE api_tokens (
+  id           UUID        PRIMARY KEY,
+  org_id       UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id      UUID        REFERENCES users(id) ON DELETE CASCADE,  -- NULL for ingest tokens
+  kind         TEXT        NOT NULL CHECK (kind IN ('pat','ingest')),
+  name         TEXT        NOT NULL,
+  token_hash   BYTEA       NOT NULL,               -- sha256 of the presented secret
+  prefix       TEXT        NOT NULL,               -- first 12 chars, for display: "oto_pat_AbCd"
+  source_id    UUID,                               -- REQUIRED for kind='ingest'; FK added in 00003
+  last_used_at TIMESTAMPTZ,
+  expires_at   TIMESTAMPTZ,
+  -- no DEFAULT now() (§D conventions); `APITokenRepository.Insert` stamps it.
+  created_at   TIMESTAMPTZ NOT NULL,
+  revoked_at   TIMESTAMPTZ,
+  CONSTRAINT api_tokens_ingest_scope CHECK (kind <> 'ingest' OR source_id IS NOT NULL),
+  CONSTRAINT api_tokens_pat_user     CHECK (kind <> 'pat'    OR user_id  IS NOT NULL),
+  CONSTRAINT api_tokens_name_ck      CHECK (length(btrim(name)) BETWEEN 1 AND 120),
+  CONSTRAINT api_tokens_hash_ck      CHECK (octet_length(token_hash) = 32),
+  CONSTRAINT api_tokens_prefix_ck    CHECK (prefix ~ '^oto_(pat|ingest)_[A-Za-z0-9]{4}$'),
+  CONSTRAINT api_tokens_expiry_ck    CHECK (expires_at IS NULL OR expires_at > created_at),
+  CONSTRAINT api_tokens_revoke_ck    CHECK (revoked_at IS NULL OR revoked_at >= created_at)
+);
+CREATE UNIQUE INDEX api_tokens_hash_idx ON api_tokens (token_hash);
+CREATE INDEX api_tokens_org_idx ON api_tokens (org_id, kind) WHERE revoked_at IS NULL;
+
+CREATE TABLE sessions (
+  id          UUID        PRIMARY KEY,
+  org_id      UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash  BYTEA       NOT NULL,
+  user_agent  TEXT,
+  -- no DEFAULT now() (§D conventions); `SessionRepository.Insert` stamps it.
+  created_at  TIMESTAMPTZ NOT NULL,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  revoked_at  TIMESTAMPTZ,
+  CONSTRAINT sessions_hash_ck   CHECK (octet_length(token_hash) = 32),
+  CONSTRAINT sessions_expiry_ck CHECK (expires_at > created_at),
+  CONSTRAINT sessions_revoke_ck CHECK (revoked_at IS NULL OR revoked_at >= created_at)
+);
+CREATE UNIQUE INDEX sessions_hash_idx ON sessions (token_hash);
+CREATE INDEX sessions_expiry_idx ON sessions (expires_at) WHERE revoked_at IS NULL;
+
+CREATE TABLE slack_identities (
+  id           UUID        PRIMARY KEY,
+  org_id       UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  team_id      TEXT        NOT NULL,               -- Slack workspace T…
+  slack_user_id TEXT       NOT NULL,               -- U…
+  slack_handle TEXT,
+  user_id      UUID        REFERENCES users(id) ON DELETE SET NULL,  -- NULL = unlinked
+  linked_at    TIMESTAMPTZ,
+  -- no DEFAULT now() (§D conventions); `SlackIdentityRepository.Upsert` stamps it.
+  created_at   TIMESTAMPTZ NOT NULL,
+  CONSTRAINT slack_identities_uniq UNIQUE (org_id, team_id, slack_user_id),
+  CONSTRAINT slack_identities_team_ck CHECK (team_id ~ '^T[A-Z0-9]{2,}$'),
+  CONSTRAINT slack_identities_user_ck CHECK (slack_user_id ~ '^[UW][A-Z0-9]{2,}$'),
+  CONSTRAINT slack_identities_link_ck CHECK ((user_id IS NULL) = (linked_at IS NULL))
+);
+```
+
+### D.2 Clusters and sources
+
+```sql
+-- db/migrations/00003_sources.sql
+
+CREATE TABLE clusters (
+  id           UUID        PRIMARY KEY,
+  org_id       UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  cluster_key  TEXT        NOT NULL,               -- participates in alert identity (C.2)
+  display_name TEXT        NOT NULL,
+  -- no DEFAULT now() (§D conventions); `ClusterRepository.Create`/`UpdateDisplayName` stamp them.
+  created_at   TIMESTAMPTZ NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL,
+  deleted_at   TIMESTAMPTZ,
+  CONSTRAINT clusters_key_uniq UNIQUE (org_id, cluster_key),
+  CONSTRAINT clusters_key_ck   CHECK (cluster_key ~ '^[a-z0-9][a-z0-9._-]{0,62}$'),
+  CONSTRAINT clusters_name_ck  CHECK (length(btrim(display_name)) BETWEEN 1 AND 120),
+  CONSTRAINT clusters_time_ck  CHECK (updated_at >= created_at)
+);
+
+CREATE TABLE alert_sources (
+  id                 UUID        PRIMARY KEY,
+  org_id             UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  cluster_id         UUID        NOT NULL REFERENCES clusters(id),
+  name               CITEXT      NOT NULL,
+  kind               TEXT        NOT NULL CHECK (kind IN ('alertmanager','grafana')),
+  base_url           TEXT        NOT NULL,         -- Alertmanager root, no trailing slash
+  prometheus_url     TEXT,                          -- optional; enables rule snapshots
+  auth_credential_id UUID,                          -- FK added in 00007 (channel_credentials reused)
+  tls_skip_verify    BOOLEAN     NOT NULL DEFAULT false,
+  inject_labels      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  ignore_labels      TEXT[]      NOT NULL DEFAULT ARRAY['prometheus_replica','__replica__','monitor','replica','pod_template_hash'],
+  redact_labels      TEXT[]      NOT NULL DEFAULT '{}',
+  redact_annotations TEXT[]      NOT NULL DEFAULT '{}',
+  push_enabled       BOOLEAN     NOT NULL DEFAULT true,
+  -- ⛔ There is NO reconcile_enabled. 00004 had one and 00038 dropped it: the
+  -- reconciler runs for every source (ADR 0006 + its second amendment). The
+  -- interval below is the whole of the reconciliation tuning surface.
+  reconcile_interval_s INT       NOT NULL DEFAULT 30 CHECK (reconcile_interval_s >= 10),
+  -- no DEFAULT now() (§D conventions); `SourceRepository.Create`/`Update`/`SoftDelete` stamp them.
+  created_at         TIMESTAMPTZ NOT NULL,
+  updated_at         TIMESTAMPTZ NOT NULL,
+  deleted_at         TIMESTAMPTZ,
+  CONSTRAINT alert_sources_name_uniq UNIQUE (org_id, name),
+  CONSTRAINT alert_sources_name_ck    CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
+  CONSTRAINT alert_sources_base_ck    CHECK (base_url ~ '^https?://[^[:space:]]+$' AND base_url NOT LIKE '%/'),
+  CONSTRAINT alert_sources_prom_ck    CHECK (prometheus_url IS NULL OR
+                                             (prometheus_url ~ '^https?://[^[:space:]]+$' AND prometheus_url NOT LIKE '%/')),
+  CONSTRAINT alert_sources_inject_ck  CHECK (jsonb_typeof(inject_labels) = 'object'),
+  CONSTRAINT alert_sources_ignore_ck  CHECK (array_position(ignore_labels, NULL) IS NULL
+                                             AND coalesce(array_length(ignore_labels, 1), 0) <= 64),
+  CONSTRAINT alert_sources_redactl_ck CHECK (coalesce(array_length(redact_labels, 1), 0) <= 64),
+  CONSTRAINT alert_sources_redacta_ck CHECK (coalesce(array_length(redact_annotations, 1), 0) <= 64),
+  CONSTRAINT alert_sources_ivl_ck     CHECK (reconcile_interval_s <= 3600),
+  CONSTRAINT alert_sources_time_ck    CHECK (updated_at >= created_at)
+);
+CREATE INDEX alert_sources_cluster_idx ON alert_sources (org_id, cluster_id) WHERE deleted_at IS NULL;
+
+ALTER TABLE api_tokens
+  ADD CONSTRAINT api_tokens_source_fk FOREIGN KEY (source_id) REFERENCES alert_sources(id) ON DELETE CASCADE;
+
+CREATE TABLE source_health (
+  source_id             UUID        PRIMARY KEY REFERENCES alert_sources(id) ON DELETE CASCADE,
+  org_id                UUID        NOT NULL,
+  status                TEXT        NOT NULL DEFAULT 'unknown'
+                                    CHECK (status IN ('healthy','degraded','unreachable','unknown')),
+  last_push_at          TIMESTAMPTZ,
+  last_reconcile_at     TIMESTAMPTZ,
+  last_reconcile_status TEXT,
+  last_error            TEXT,
+  consecutive_failures  INT         NOT NULL DEFAULT 0,
+  am_version            TEXT,
+  send_resolved         BOOLEAN,                    -- from GET /api/v2/status; NULL = unknown
+  clock_skew_ms         BIGINT      NOT NULL DEFAULT 0,   -- observed_at - source_ts, EWMA
+  divergence_count      INT         NOT NULL DEFAULT 0,   -- reconciler disagreements last run
+  warnings              JSONB       NOT NULL DEFAULT '[]'::jsonb,
+  -- no DEFAULT now() (§D conventions); `SourceRepository.SaveHealth`/`TouchPush` stamp it.
+  updated_at            TIMESTAMPTZ NOT NULL,
+  CONSTRAINT source_health_fail_ck  CHECK (consecutive_failures >= 0),
+  CONSTRAINT source_health_div_ck   CHECK (divergence_count >= 0),
+  CONSTRAINT source_health_warn_ck  CHECK (jsonb_typeof(warnings) = 'array'),
+  CONSTRAINT source_health_error_ck CHECK (status <> 'unreachable' OR last_error IS NOT NULL)
+);
+CREATE INDEX source_health_status_idx ON source_health (org_id, status);
+```
+
+### D.3 Ingestion (raw, partitioned, short retention)
+
+```sql
+-- db/migrations/00004_ingestion.sql
+
+CREATE TABLE ingest_batches (
+  id                  UUID        NOT NULL,
+  org_id              UUID        NOT NULL,
+  source_id           UUID        NOT NULL,
+  mode                TEXT        NOT NULL CHECK (mode IN ('push','reconcile')),
+  received_at         TIMESTAMPTZ NOT NULL,
+  body_bytes          INT         NOT NULL,
+  checksum            BYTEA       NOT NULL,        -- sha256 of the raw body
+  dedup_key           TEXT        NOT NULL,        -- C.5
+  am_version          TEXT,                        -- payload "version" field, literal "4"
+  group_key           TEXT,                        -- AM's raw groupKey, opaque
+  receiver            TEXT,
+  notification_reason TEXT,                        -- AM >= 0.32.0; "" when absent
+  status_top          TEXT,                        -- firing | resolved
+  alert_count         INT         NOT NULL,
+  truncated_alerts    INT         NOT NULL DEFAULT 0,
+  payload             JSONB       NOT NULL,        -- REDACTED per source config
+  status              TEXT        NOT NULL DEFAULT 'pending'
+                                  CHECK (status IN ('pending','processed','partial','failed')),
+  processed_at        TIMESTAMPTZ,
+  error               TEXT,
+  PRIMARY KEY (id, received_at),
+  CONSTRAINT ingest_batches_bytes_ck    CHECK (body_bytes > 0 AND body_bytes <= 8388608),
+  CONSTRAINT ingest_batches_checksum_ck CHECK (octet_length(checksum) = 32),
+  CONSTRAINT ingest_batches_dedup_ck    CHECK (dedup_key ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT ingest_batches_count_ck    CHECK (alert_count >= 0 AND alert_count <= 10000),
+  CONSTRAINT ingest_batches_trunc_ck    CHECK (truncated_alerts >= 0),
+  CONSTRAINT ingest_batches_status_ck   CHECK (status_top IS NULL OR status_top IN ('firing','resolved')),
+  CONSTRAINT ingest_batches_payload_ck  CHECK (jsonb_typeof(payload) = 'object'),
+  CONSTRAINT ingest_batches_proc_ck     CHECK ((status IN ('processed','partial','failed')) = (processed_at IS NOT NULL)),
+  CONSTRAINT ingest_batches_procts_ck   CHECK (processed_at IS NULL OR processed_at >= received_at),
+  CONSTRAINT ingest_batches_err_ck      CHECK (status <> 'failed' OR error IS NOT NULL)
+) PARTITION BY RANGE (received_at);
+
+CREATE INDEX ingest_batches_status_idx ON ingest_batches (status, received_at)
+  WHERE status IN ('pending','failed','partial');
+CREATE INDEX ingest_batches_source_idx ON ingest_batches (org_id, source_id, received_at DESC);
+
+CREATE TABLE ingest_rejections (
+  id           UUID        NOT NULL,
+  org_id       UUID        NOT NULL,
+  source_id    UUID        NOT NULL,
+  batch_id     UUID,
+  received_at  TIMESTAMPTZ NOT NULL,
+  reason       TEXT        NOT NULL,               -- too_many_labels | label_value_too_large |
+                                                   -- labelset_too_large | missing_alertname |
+                                                   -- invalid_label_value | annotation_unstorable |
+                                                   -- undecodable | unknown_source
+  detail       TEXT,
+  raw          JSONB       NOT NULL,
+  PRIMARY KEY (id, received_at),
+  -- 00035 widened this with the two STORABILITY reasons. The member order matches
+  -- ingestion/domain's const block; nothing generates one from the other.
+  CONSTRAINT ingest_rejections_reason_ck CHECK (reason IN
+    ('too_many_labels','label_value_too_large','label_name_too_large','labelset_too_large',
+     'too_many_annotations','annotation_too_large','annotation_unstorable','missing_alertname',
+     'invalid_label_name','invalid_label_value','timestamp_out_of_window','too_many_alerts',
+     'body_too_large','undecodable','unknown_source'))
+) PARTITION BY RANGE (received_at);
+CREATE INDEX ingest_rejections_source_idx ON ingest_rejections (org_id, source_id, received_at DESC);
+
+-- UNPARTITIONED. This is where webhook replay suppression actually works (C14).
+CREATE TABLE ingest_dedup (
+  source_id  UUID        NOT NULL,
+  dedup_key  TEXT        NOT NULL,
+  batch_id   UUID        NOT NULL,
+  -- no DEFAULT now() (§D conventions); `DedupRepository.Claim` stamps it, from the same
+  -- clock `DedupRepository.Prune` computes its cutoff from.
+  seen_at    TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (source_id, dedup_key),
+  CONSTRAINT ingest_dedup_key_ck CHECK (dedup_key ~ '^[0-9a-f]{64}$')
+);
+CREATE INDEX ingest_dedup_prune_idx ON ingest_dedup (seen_at);
+```
+
+Partitions: **DAILY** on `received_at` for `ingest_batches` and `ingest_rejections`. `partitions.manage` pre-creates 7 days ahead and detaches+drops beyond `orgs.settings.raw_retention_days` (default **30**, ADR 0024 — derived from the `alert_event_keys` idempotency horizon below, because past that horizon acceptance criterion 36's replay would append the timeline twice; the two numbers move together). `ingest_dedup` is pruned at `seen_at < now() - interval '10 minutes'`.
+
+Retention is a **floor, never a ceiling** (ADR 0024). A partition holds every tenant's rows, so `partitions.manage` drops at the MAXIMUM of the deployment's configured window and every org's `orgs.settings` value. "Shortest wins" is forbidden: it would delete data an org configured itself to keep.
+
+### D.4 Alerts, occurrences, events
+
+> ## ⛔ D.4.0 THE COLUMN BAN (BINDING, PERMANENT)
+>
+> **`alerts`, `alert_occurrences` and `alert_groups` MUST NEVER gain `assigned_to`, `assignee_id`,
+> `owner_id`, `owner_team_id`, `watchers`, `subscriber_ids`, `incident_id`, `ticket_id`,
+> `status_page_id`, human-set `priority`, `sla_due_at`, or ANY nullable person-reference with a
+> present-tense meaning.**
+>
+> **`acked_by` is past-tense attribution and is the ONLY person reference permitted on a signal row.**
+>
+> This single clause is worth more than the rest of the scope doctrine combined, because it is the
+> door that every slippery-slope feature must walk through. `occurrence.acked_by = alice` is a fact
+> about the occurrence — *it was acknowledged, by whom*. `occurrence.assigned_to = alice` is a fact
+> about Alice — *she owes work*. **Identical columns; opposite products** (SCOPE-BOUNDARY §1, FR-1).
+>
+> The temptation is precise and will recur: a person is already stored on this row, so adding
+> "assign" looks like one nullable column. What it drags in is an assignee lifecycle → notification
+> *to the assignee* → a "my alerts" view → workload balancing → a rota to pick the default assignee.
+> That is Opsgenie, arrived at in five reasonable pull requests (SCOPE-BOUNDARY §6 SS-1).
+>
+> The sanctioned answer to *"who is looking at this?"* is **ephemeral presence** — derived live from
+> open SSE connections, never persisted, gone when the tab closes. It is a `streaming` feature.
+>
+> **This comment MUST be reproduced verbatim in `db/migrations/00005_alerts.sql` and
+> `00006_grouping.sql`** so it is read by whoever is about to add the column, not only by whoever
+> reads the spec. See §P-9.
+
+```sql
+-- db/migrations/00005_alerts.sql
+
+CREATE TABLE alerts (
+  id                    UUID        PRIMARY KEY,
+  org_id                UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  cluster_id            UUID        NOT NULL REFERENCES clusters(id),
+  alert_key             TEXT        NOT NULL,      -- C.2, the identity
+  source_fingerprint    TEXT        NOT NULL,      -- C.3, recomputed FNV-1a, 16 hex chars
+
+  -- promoted labels (hot filters)
+  alertname             TEXT        NOT NULL,
+  severity              TEXT,
+  namespace             TEXT,
+  service               TEXT,
+  cluster_key           TEXT        NOT NULL,
+
+  -- full data
+  labels                JSONB       NOT NULL,
+  annotations           JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  generator_url         TEXT,
+
+  -- projection of the current/latest occurrence
+  state                 TEXT        NOT NULL CHECK (state IN ('firing','suppressed','resolved','expired')),
+  current_occurrence_id UUID,
+  ack_state             TEXT        NOT NULL DEFAULT 'unacked' CHECK (ack_state IN ('unacked','acked')),
+  snoozed_until         TIMESTAMPTZ,               -- projection of the active alert_snoozes row (B.8)
+
+  -- history
+  first_seen_at         TIMESTAMPTZ NOT NULL,
+  last_seen_at          TIMESTAMPTZ NOT NULL,
+  last_state_change_at  TIMESTAMPTZ NOT NULL,
+  total_occurrences     INT         NOT NULL DEFAULT 0,
+  flap_score            REAL        NOT NULL DEFAULT 0,
+  is_flapping           BOOLEAN     NOT NULL DEFAULT false,
+
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT alerts_key_uniq    UNIQUE (org_id, alert_key),
+  CONSTRAINT alerts_key_ck      CHECK (alert_key ~ '^ak_[0-9a-v]{26}$'),
+  CONSTRAINT alerts_srcfp_ck    CHECK (source_fingerprint ~ '^[0-9a-f]{16}$'),
+  CONSTRAINT alerts_name_ck     CHECK (length(alertname) BETWEEN 1 AND 1024),
+  -- severity stores the RAW label value (users filter on their own vocabulary: sev1, P1, page).
+  -- It is deliberately NOT an enum here; normalisation happens in the domain (C7 / L.4.1).
+  CONSTRAINT alerts_sev_ck      CHECK (severity IS NULL OR length(severity) BETWEEN 1 AND 256),
+  CONSTRAINT alerts_clusterk_ck CHECK (length(btrim(cluster_key)) > 0),
+  CONSTRAINT alerts_labels_ck   CHECK (jsonb_typeof(labels) = 'object'),
+  CONSTRAINT alerts_annot_ck    CHECK (jsonb_typeof(annotations) = 'object'),
+  CONSTRAINT alerts_occ_ck      CHECK (total_occurrences >= 0),
+  CONSTRAINT alerts_flap_ck     CHECK (flap_score >= 0),
+  CONSTRAINT alerts_seen_ck     CHECK (last_seen_at >= first_seen_at),
+  CONSTRAINT alerts_change_ck   CHECK (last_state_change_at >= first_seen_at),
+  CONSTRAINT alerts_time_ck     CHECK (updated_at >= created_at)
+);
+
+CREATE INDEX alerts_list_idx   ON alerts (org_id, state, last_seen_at DESC, id DESC);
+CREATE INDEX alerts_open_idx   ON alerts (org_id, last_seen_at DESC, id DESC)
+                                WHERE state IN ('firing','suppressed');
+CREATE INDEX alerts_name_idx   ON alerts (org_id, alertname, last_seen_at DESC);
+CREATE INDEX alerts_ns_idx     ON alerts (org_id, cluster_key, namespace, state);
+CREATE INDEX alerts_sev_idx    ON alerts (org_id, severity, state, last_seen_at DESC);
+CREATE INDEX alerts_srcfp_idx  ON alerts (org_id, cluster_key, source_fingerprint);
+CREATE INDEX alerts_snooze_idx ON alerts (org_id, snoozed_until) WHERE snoozed_until IS NOT NULL;
+CREATE INDEX alerts_labels_gin ON alerts USING GIN (labels jsonb_path_ops);
+CREATE INDEX alerts_text_idx   ON alerts USING GIN (
+    to_tsvector('simple', alertname || ' ' || coalesce(annotations->>'summary','')
+                                    || ' ' || coalesce(annotations->>'description','')));
+
+CREATE TABLE alert_occurrences (
+  id                 UUID        PRIMARY KEY,
+  org_id             UUID        NOT NULL,
+  alert_id           UUID        NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+  group_id           UUID,                          -- FK added in 00006
+  seq                INT         NOT NULL,          -- 1,2,3… per alert
+
+  state              TEXT        NOT NULL CHECK (state IN ('firing','suppressed','resolved','expired')),
+  suppression_reason TEXT        CHECK (suppression_reason IS NULL OR suppression_reason IN
+                                  ('silence','inhibition','mute_time_interval','active_time_interval')),
+  suppressed_by      JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- {silencedBy:[],inhibitedBy:[],mutedBy:[]}
+
+  -- oto clock
+  started_at         TIMESTAMPTZ NOT NULL,
+  ended_at           TIMESTAMPTZ,
+  last_observed_at   TIMESTAMPTZ NOT NULL,
+  -- upstream clock
+  source_starts_at   TIMESTAMPTZ NOT NULL,
+  source_ends_at     TIMESTAMPTZ,
+  source_updated_at  TIMESTAMPTZ,
+
+  resolve_reason     TEXT        CHECK (resolve_reason IS NULL OR resolve_reason IN ('upstream','timeout')),
+  reopen_count       INT         NOT NULL DEFAULT 0,
+  reopen_of          UUID,                          -- previous occurrence when T7 followed a close
+
+  ack_state          TEXT        NOT NULL DEFAULT 'unacked' CHECK (ack_state IN ('unacked','acked')),
+  acked_by           UUID        REFERENCES users(id) ON DELETE SET NULL,
+  acked_by_label     TEXT,                          -- denormalised, immutable display name
+  acked_at           TIMESTAMPTZ,
+  ack_note           TEXT,
+
+  rule_snapshot_id   UUID,                          -- FK added in 00007
+  value              DOUBLE PRECISION,
+  observed_skew_ms   BIGINT      NOT NULL DEFAULT 0,
+
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT occ_seq_uniq       UNIQUE (alert_id, seq),
+  CONSTRAINT occ_terminal_ended CHECK ((state IN ('resolved','expired')) = (ended_at IS NOT NULL)),
+  CONSTRAINT occ_seq_ck         CHECK (seq >= 1),
+  CONSTRAINT occ_reopen_ck      CHECK (reopen_count >= 0),
+  CONSTRAINT occ_order_ck       CHECK (ended_at IS NULL OR ended_at >= started_at),
+  CONSTRAINT occ_obs_ck         CHECK (last_observed_at >= started_at),
+  CONSTRAINT occ_src_order_ck   CHECK (source_ends_at IS NULL OR source_ends_at >= source_starts_at),
+  -- suppression_reason and suppressed_by exist ONLY while suppressed (C1: reconciler-only)
+  CONSTRAINT occ_suppress_ck    CHECK ((state = 'suppressed') = (suppression_reason IS NOT NULL)),
+  CONSTRAINT occ_suppby_ck      CHECK (jsonb_typeof(suppressed_by) = 'object'),
+  -- resolve_reason exists ONLY on a terminal state, and matches it
+  CONSTRAINT occ_resolve_ck     CHECK ((state IN ('resolved','expired')) = (resolve_reason IS NOT NULL)),
+  CONSTRAINT occ_resolve_map_ck CHECK (resolve_reason IS NULL
+                                       OR (state = 'resolved' AND resolve_reason = 'upstream')
+                                       OR (state = 'expired'  AND resolve_reason = 'timeout')),
+  -- ack fields are all-or-nothing
+  CONSTRAINT occ_ack_ck         CHECK ((ack_state = 'acked') = (acked_at IS NOT NULL)),
+  CONSTRAINT occ_acklabel_ck    CHECK ((acked_at IS NULL) = (acked_by_label IS NULL)),
+  CONSTRAINT occ_ackorder_ck    CHECK (acked_at IS NULL OR acked_at >= started_at),
+  CONSTRAINT occ_acknote_ck     CHECK (ack_note IS NULL OR length(ack_note) <= 2000),
+  CONSTRAINT occ_reopenof_ck    CHECK (reopen_of IS NULL OR reopen_of <> id),
+  CONSTRAINT occ_time_ck        CHECK (updated_at >= created_at)
+);
+
+-- INVARIANT: at most one open occurrence per alert. Enforced in the DB, not in Go.
+CREATE UNIQUE INDEX occ_one_open_idx ON alert_occurrences (alert_id) WHERE ended_at IS NULL;
+CREATE INDEX occ_alert_idx  ON alert_occurrences (org_id, alert_id, seq DESC);
+CREATE INDEX occ_group_idx  ON alert_occurrences (org_id, group_id, started_at DESC);
+CREATE INDEX occ_reap_idx   ON alert_occurrences (source_ends_at)
+                             WHERE ended_at IS NULL AND source_ends_at IS NOT NULL;
+CREATE INDEX occ_ack_idx    ON alert_occurrences (org_id, ack_state, started_at DESC)
+                             WHERE ended_at IS NULL;
+
+ALTER TABLE alerts ADD CONSTRAINT alerts_current_occ_fk
+  FOREIGN KEY (current_occurrence_id) REFERENCES alert_occurrences(id) ON DELETE SET NULL;
+
+CREATE TABLE alert_events (
+  id            UUID        NOT NULL,               -- uuidv7 => time-sortable tiebreak
+  org_id        UUID        NOT NULL,
+  alert_id      UUID,
+  occurrence_id UUID,
+  group_id      UUID,
+  type          TEXT        NOT NULL,               -- §D.4.1
+  occurred_at   TIMESTAMPTZ NOT NULL,               -- UPSTREAM clock (display)
+  recorded_at   TIMESTAMPTZ NOT NULL,               -- OTO clock (ordering)  -- PARTITION KEY
+  actor_kind    TEXT        NOT NULL CHECK (actor_kind IN
+                            ('system','ingest','reconciler','reaper','enricher','notifier','user','slack')),
+  actor_id      TEXT,
+  actor_label   TEXT,                               -- denormalised, immutable
+  summary       TEXT        NOT NULL,               -- pre-rendered one-liner for the timeline
+  payload       JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  dedupe_key    TEXT,
+  PRIMARY KEY (id, recorded_at),
+  CONSTRAINT ev_type_ck    CHECK (type ~ '^[a-z_]+\.[a-z_]+$'),
+  CONSTRAINT ev_summary_ck CHECK (length(btrim(summary)) BETWEEN 1 AND 500),
+  CONSTRAINT ev_payload_ck CHECK (jsonb_typeof(payload) = 'object'),
+  CONSTRAINT ev_actor_ck   CHECK (actor_kind <> 'user' OR (actor_id IS NOT NULL AND actor_label IS NOT NULL)),
+  CONSTRAINT ev_subject_ck CHECK (alert_id IS NOT NULL OR occurrence_id IS NOT NULL OR group_id IS NOT NULL),
+  -- NOTE: there is deliberately NO (recorded_at >= occurred_at) check. Upstream clock skew is
+  -- real and is measured, not rejected (C12). Ordering uses recorded_at; display uses occurred_at.
+  CONSTRAINT ev_dedupe_ck  CHECK (dedupe_key IS NULL OR length(dedupe_key) BETWEEN 1 AND 200)
+) PARTITION BY RANGE (recorded_at);
+
+CREATE INDEX ev_alert_idx ON alert_events (org_id, alert_id,      recorded_at DESC, id DESC);
+CREATE INDEX ev_occ_idx   ON alert_events (org_id, occurrence_id, recorded_at DESC, id DESC);
+CREATE INDEX ev_group_idx ON alert_events (org_id, group_id,      recorded_at DESC, id DESC);
+CREATE INDEX ev_type_idx  ON alert_events (org_id, type,          recorded_at DESC);
+
+-- UNPARTITIONED. This is where event idempotency actually works (C14).
+CREATE TABLE alert_event_keys (
+  org_id     UUID        NOT NULL,
+  dedupe_key TEXT        NOT NULL,
+  event_id   UUID        NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (org_id, dedupe_key),
+  CONSTRAINT alert_event_keys_ck CHECK (length(dedupe_key) BETWEEN 1 AND 200)
+);
+CREATE INDEX alert_event_keys_prune_idx ON alert_event_keys (created_at);
+```
+
+Partitions: **MONTHLY** on `recorded_at`. Pre-create 3 months ahead; detach + drop beyond `event_retention_months` (default 13 — the longest default that keeps one org inside ADR 0014's scale envelope, ADR 0024). `alert_event_keys` is pruned by row, by `retention.prune`, at `created_at` older than **the wider of 30 days and the longest `raw_retention_days` any tenant has configured** — the same window `partitions.manage` drops raw partitions on (ADR 0024 Amendment 1). The 30 is the FLOOR and it is the primary number: `raw_retention_days` is derived from it, not the other way round, because a stored batch stays replayable only while its keys are still claimed (acceptance criterion 36). The widening is what stops the two disagreeing when an org keeps payloads for longer than the floor; the floor is what stops an org that keeps them for a day unclaiming the keys of episodes that are still open.
+
+⚠️ **Dropping an `alert_events` partition destroys `comment.added` and the note on `occurrence.unacknowledged`, which exist nowhere else in the schema.** Everything else the README promises — the alert, every occurrence with its ack and outcome, the rule snapshot, the notification and delivery record, the thread handle — lives in tables with no reaper and survives indefinitely. Retention deletes the narrative, never the record (ADR 0024). There is no cold-storage export; it is scoped and unbuilt.
+
+#### D.4.1 `alert_events.type` — the closed enum
+
+```
+alert.created                 alert.mutated                 alert.flapping_started
+alert.flapping_ended
+occurrence.opened             occurrence.reopened           occurrence.suppressed
+occurrence.unsuppressed       occurrence.resolved           occurrence.expired
+occurrence.acknowledged       occurrence.unacknowledged
+alert.snoozed                 alert.unsnoozed
+group.opened                  group.closed                  group.member_joined
+group.member_left             group.storm_started           group.storm_ended
+rule.snapshot_captured        rule.definition_changed       rule.lookup_failed
+enrichment.completed          enrichment.failed
+notification.created          notification.suppressed
+delivery.sent                 delivery.updated              delivery.failed
+delivery.skipped              delivery.dead
+comment.added
+source.unreachable            source.recovered              source.clock_skew
+```
+
+Adding a type requires a SPEC amendment. Implementers MUST NOT invent types.
+
+### D.5 Groups
+
+```sql
+-- db/migrations/00006_grouping.sql
+
+CREATE TABLE alert_groups (
+  id                  UUID        PRIMARY KEY,
+  org_id              UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  source_id           UUID        NOT NULL REFERENCES alert_sources(id) ON DELETE CASCADE,
+  cluster_id          UUID        NOT NULL REFERENCES clusters(id),
+  group_key           TEXT        NOT NULL,        -- C.4, stable across AM config edits
+  generation          INT         NOT NULL DEFAULT 1,
+  source_group_key    TEXT,                        -- AM's raw groupKey. OPAQUE. NEVER PARSED.
+  receiver            TEXT        NOT NULL DEFAULT '',
+  group_labels        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  title               TEXT        NOT NULL,
+
+  state               TEXT        NOT NULL CHECK (state IN ('open','closed')),
+  severity            TEXT,                        -- max member severity
+  state_version       INT         NOT NULL DEFAULT 1,
+
+  firing_count        INT         NOT NULL DEFAULT 0,
+  suppressed_count    INT         NOT NULL DEFAULT 0,
+  resolved_count      INT         NOT NULL DEFAULT 0,
+  expired_count       INT         NOT NULL DEFAULT 0,
+  total_count         INT         NOT NULL DEFAULT 0,
+  acked_count         INT         NOT NULL DEFAULT 0,
+
+  storm_mode          BOOLEAN     NOT NULL DEFAULT false,
+  storm_since         TIMESTAMPTZ,
+  last_notification_reason TEXT,                   -- AM's notification_reason, last seen
+
+  first_seen_at       TIMESTAMPTZ NOT NULL,
+  last_activity_at    TIMESTAMPTZ NOT NULL,
+  closed_at           TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT groups_key_gen_uniq UNIQUE (org_id, group_key, generation),
+  CONSTRAINT groups_key_ck    CHECK (group_key ~ '^gk_[0-9a-v]{26}$'),
+  CONSTRAINT groups_gen_ck    CHECK (generation >= 1),
+  CONSTRAINT groups_title_ck  CHECK (length(btrim(title)) BETWEEN 1 AND 500),
+  CONSTRAINT groups_labels_ck CHECK (jsonb_typeof(group_labels) = 'object'),
+  CONSTRAINT groups_sver_ck   CHECK (state_version >= 1),
+  CONSTRAINT groups_counts_ck CHECK (firing_count >= 0 AND suppressed_count >= 0 AND resolved_count >= 0
+                                     AND expired_count >= 0 AND total_count >= 0 AND acked_count >= 0),
+  CONSTRAINT groups_acked_ck  CHECK (acked_count <= total_count),
+  CONSTRAINT groups_closed_ck CHECK ((state = 'closed') = (closed_at IS NOT NULL)),
+  CONSTRAINT groups_corder_ck CHECK (closed_at IS NULL OR closed_at >= first_seen_at),
+  CONSTRAINT groups_act_ck    CHECK (last_activity_at >= first_seen_at),
+  CONSTRAINT groups_storm_ck  CHECK (storm_mode = (storm_since IS NOT NULL)),
+  CONSTRAINT groups_time_ck   CHECK (updated_at >= created_at)
+);
+CREATE INDEX grp_list_idx ON alert_groups (org_id, state, last_activity_at DESC, id DESC);
+CREATE INDEX grp_open_idx ON alert_groups (org_id, group_key) WHERE state = 'open';
+CREATE INDEX grp_close_idx ON alert_groups (org_id, last_activity_at)
+  WHERE state = 'open';
+
+CREATE TABLE alert_group_members (
+  group_id      UUID        NOT NULL REFERENCES alert_groups(id) ON DELETE CASCADE,
+  occurrence_id UUID        NOT NULL REFERENCES alert_occurrences(id) ON DELETE CASCADE,
+  org_id        UUID        NOT NULL,
+  alert_id      UUID        NOT NULL,
+  joined_at     TIMESTAMPTZ NOT NULL,
+  left_at       TIMESTAMPTZ,
+  PRIMARY KEY (group_id, occurrence_id),
+  CONSTRAINT gm_order_ck CHECK (left_at IS NULL OR left_at >= joined_at)
+);
+CREATE INDEX gm_alert_idx ON alert_group_members (org_id, alert_id, joined_at DESC);
+CREATE INDEX gm_occ_idx   ON alert_group_members (occurrence_id);
+
+ALTER TABLE alert_occurrences ADD CONSTRAINT occ_group_fk
+  FOREIGN KEY (group_id) REFERENCES alert_groups(id) ON DELETE SET NULL;
+```
+
+### D.6 Rule snapshots (the differentiator)
+
+```sql
+-- db/migrations/00007_rules.sql
+
+CREATE TABLE rule_snapshots (
+  id                UUID        PRIMARY KEY,
+  org_id            UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  source_id         UUID        NOT NULL REFERENCES alert_sources(id) ON DELETE CASCADE,
+  rule_fingerprint  TEXT        NOT NULL,          -- C.6, content address
+  -- RuleKey
+  rule_file         TEXT        NOT NULL DEFAULT '',
+  rule_group        TEXT        NOT NULL DEFAULT '',
+  rule_name         TEXT        NOT NULL,          -- == alertname
+  -- definition
+  expr              TEXT        NOT NULL,
+  for_seconds       DOUBLE PRECISION NOT NULL DEFAULT 0,
+  keep_firing_for_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+  rule_labels       JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  rule_annotations  JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  -- provenance
+  origin            TEXT        NOT NULL CHECK (origin IN ('prometheus_api','generator_url','unavailable')),
+  prometheus_url    TEXT,
+  match_confidence  TEXT        NOT NULL DEFAULT 'exact'
+                                CHECK (match_confidence IN ('exact','probable','ambiguous','none')),
+  candidate_count   INT         NOT NULL DEFAULT 1,
+  captured_at       TIMESTAMPTZ NOT NULL,
+  CONSTRAINT rule_snapshots_content_uniq UNIQUE (org_id, source_id, rule_name, rule_group, rule_file, rule_fingerprint),
+  CONSTRAINT rule_snapshots_fp_ck     CHECK (rule_fingerprint ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT rule_snapshots_name_ck   CHECK (length(btrim(rule_name)) BETWEEN 1 AND 1024),
+  CONSTRAINT rule_snapshots_expr_ck   CHECK ((origin = 'unavailable') = (length(btrim(expr)) = 0)),
+  CONSTRAINT rule_snapshots_exprlen_ck CHECK (length(expr) <= 65536),
+  CONSTRAINT rule_snapshots_for_ck    CHECK (for_seconds >= 0 AND keep_firing_for_seconds >= 0),
+  CONSTRAINT rule_snapshots_labels_ck CHECK (jsonb_typeof(rule_labels) = 'object'
+                                             AND jsonb_typeof(rule_annotations) = 'object'),
+  CONSTRAINT rule_snapshots_cand_ck   CHECK (candidate_count >= 0),
+  -- match_confidence and candidate_count must agree
+  CONSTRAINT rule_snapshots_conf_ck   CHECK (
+      (match_confidence = 'none'      AND candidate_count = 0) OR
+      (match_confidence = 'exact'     AND candidate_count = 1) OR
+      (match_confidence = 'probable'  AND candidate_count >= 1) OR
+      (match_confidence = 'ambiguous' AND candidate_count >= 2)),
+  CONSTRAINT rule_snapshots_promurl_ck CHECK (origin <> 'prometheus_api' OR prometheus_url IS NOT NULL)
+);
+CREATE INDEX rule_snapshots_key_idx ON rule_snapshots
+  (org_id, source_id, rule_name, rule_group, rule_file, captured_at DESC);
+
+ALTER TABLE alert_occurrences ADD CONSTRAINT occ_rule_fk
+  FOREIGN KEY (rule_snapshot_id) REFERENCES rule_snapshots(id) ON DELETE SET NULL;
+```
+
+**Binding rule:** `origin='generator_url'` means the `expr` was recovered by decoding `g0.expr` from `generatorURL` with zero API calls (the robust primary path per research A7). `origin='prometheus_api'` adds `for`, `keep_firing_for`, raw labels and annotations. `match_confidence='ambiguous'` MUST be surfaced in the UI and in Slack, never hidden.
+
+### D.7 Enrichment
+
+```sql
+-- db/migrations/00008_enrichment.sql
+
+CREATE TABLE enrichments (
+  id               UUID        PRIMARY KEY,
+  org_id           UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  subject_kind     TEXT        NOT NULL CHECK (subject_kind IN ('alert','occurrence','group')),
+  subject_id       UUID        NOT NULL,
+  enricher         TEXT        NOT NULL,
+  enricher_version INT         NOT NULL,
+  phase            SMALLINT    NOT NULL CHECK (phase IN (1,2)),
+  status           TEXT        NOT NULL CHECK (status IN ('ok','partial','skipped','failed','timeout')),
+  payload          JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  warnings         TEXT[]      NOT NULL DEFAULT '{}',
+  error            TEXT,
+  duration_ms      INT         NOT NULL DEFAULT 0,
+  from_cache       BOOLEAN     NOT NULL DEFAULT false,
+  computed_at      TIMESTAMPTZ NOT NULL,
+  expires_at       TIMESTAMPTZ,
+  CONSTRAINT enrichments_subject_uniq UNIQUE (subject_kind, subject_id, enricher),
+  CONSTRAINT enrichments_name_ck    CHECK (enricher ~ '^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$'),
+  CONSTRAINT enrichments_ver_ck     CHECK (enricher_version >= 1),
+  CONSTRAINT enrichments_dur_ck     CHECK (duration_ms >= 0),
+  CONSTRAINT enrichments_payload_ck CHECK (jsonb_typeof(payload) = 'object'),
+  CONSTRAINT enrichments_err_ck     CHECK (status NOT IN ('failed','timeout') OR error IS NOT NULL),
+  CONSTRAINT enrichments_exp_ck     CHECK (expires_at IS NULL OR expires_at > computed_at)
+);
+CREATE INDEX enr_subject_idx ON enrichments (org_id, subject_kind, subject_id);
+
+CREATE TABLE enrichment_cache (
+  cache_key   TEXT        PRIMARY KEY,
+  org_id      UUID        NOT NULL,
+  payload     JSONB       NOT NULL,
+  computed_at TIMESTAMPTZ NOT NULL,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  CONSTRAINT enrichment_cache_key_ck CHECK (length(cache_key) BETWEEN 1 AND 512),
+  CONSTRAINT enrichment_cache_exp_ck CHECK (expires_at > computed_at)
+);
+CREATE INDEX enr_cache_exp_idx ON enrichment_cache (expires_at);
+```
+
+### D.8 Channels, policies, notifications, deliveries, threads
+
+```sql
+-- db/migrations/00009_notification.sql
+
+CREATE TABLE channel_credentials (
+  id          UUID        PRIMARY KEY,
+  org_id      UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  kind        TEXT        NOT NULL,                -- slack_bot_token | slack_app_token |
+                                                   -- slack_signing_secret | basic | bearer | none
+  sealed      BYTEA       NOT NULL,                -- AES-256-GCM, key from platform/secrets keyring
+  key_version INT         NOT NULL DEFAULT 1,
+  -- no DEFAULT now() (§D conventions); `CredentialRepository.Create` stamps it, and `Rotate`
+  -- advances `rotated_at` from the same clock, GREATEST(created_at, rotated_at, $n).
+  created_at  TIMESTAMPTZ NOT NULL,
+  rotated_at  TIMESTAMPTZ,
+  CONSTRAINT channel_credentials_kind_ck CHECK (kind IN
+    ('slack_bot_token','slack_app_token','slack_signing_secret','basic','bearer','none')),
+  CONSTRAINT channel_credentials_seal_ck CHECK (octet_length(sealed) BETWEEN 29 AND 65536),
+  CONSTRAINT channel_credentials_ver_ck  CHECK (key_version >= 1),
+  CONSTRAINT channel_credentials_rot_ck  CHECK (rotated_at IS NULL OR rotated_at >= created_at)
+);
+
+ALTER TABLE alert_sources ADD CONSTRAINT alert_sources_cred_fk
+  FOREIGN KEY (auth_credential_id) REFERENCES channel_credentials(id) ON DELETE SET NULL;
+
+CREATE TABLE channels (
+  id                UUID        PRIMARY KEY,
+  org_id            UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  type              TEXT        NOT NULL CHECK (type IN ('slack','webhook')),
+  name              CITEXT      NOT NULL,
+  config            JSONB       NOT NULL,          -- validated against Provider.ConfigSchema
+  credential_id     UUID        REFERENCES channel_credentials(id) ON DELETE SET NULL,
+  capabilities      BIGINT      NOT NULL DEFAULT 0,
+  renderer          TEXT        NOT NULL DEFAULT 'default',
+  verbosity         TEXT        NOT NULL DEFAULT 'status_changes'
+                                CHECK (verbosity IN ('all','status_changes','firing_and_resolved','firing_only')),
+  thread_updates    BOOLEAN     NOT NULL DEFAULT true,   -- false => update-in-place only
+  show_field_emoji  BOOLEAN     NOT NULL DEFAULT true,
+  enabled           BOOLEAN     NOT NULL DEFAULT true,
+  health_status     TEXT        NOT NULL DEFAULT 'unknown'
+                                CHECK (health_status IN ('healthy','degraded','auth_failed','config_invalid','unknown')),
+  health_error      TEXT,
+  health_checked_at TIMESTAMPTZ,
+  -- no DEFAULT now() (§D conventions). 00032 dropped it here first, and this table is why
+  -- the rule exists. `created_at` came from the database's clock while every writer of
+  -- `updated_at` stamped it from the Go process's, so on an app server running behind
+  -- Postgres the first health write on a freshly created channel produced an `updated_at`
+  -- earlier than `created_at` and failed `channels_time_ck` — surfacing as
+  -- `internal_error/channels_time_ck` on the first delivery with nothing actually wrong.
+  -- `ChannelRepository.Create` now stamps both from the injected Go clock, and `Update`
+  -- and `SetHealth` advance `updated_at` monotonically, GREATEST(updated_at, $n).
+  created_at        TIMESTAMPTZ NOT NULL,
+  updated_at        TIMESTAMPTZ NOT NULL,
+  deleted_at        TIMESTAMPTZ,
+  CONSTRAINT channels_name_uniq UNIQUE (org_id, name),
+  CONSTRAINT channels_name_ck   CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
+  CONSTRAINT channels_config_ck CHECK (jsonb_typeof(config) = 'object'),
+  CONSTRAINT channels_caps_ck   CHECK (capabilities >= 0),
+  CONSTRAINT channels_rend_ck   CHECK (renderer IN ('default','slack.default','webhook.json')),
+  -- a slack channel MUST carry a credential; the webhook provider may not
+  CONSTRAINT channels_cred_ck   CHECK (type <> 'slack' OR credential_id IS NOT NULL),
+  CONSTRAINT channels_health_ck CHECK (health_status IN ('healthy','unknown') OR health_error IS NOT NULL),
+  CONSTRAINT channels_time_ck   CHECK (updated_at >= created_at)
+);
+CREATE INDEX channels_enabled_idx ON channels (org_id, type) WHERE enabled AND deleted_at IS NULL;
+
+-- ⛔ BINDING (SCOPE-BOUNDARY §5.3): `channel_ids` references `channels` and NOTHING ELSE.
+-- `notification_policies` MUST NEVER gain `user_ids`, `team_ids`, `schedule_id`, `rotation`,
+-- `time_of_day`, `days_of_week`, `timezone`, or a second reminder stage (§G.9.1).
+-- A policy routes a fact to a DESTINATION. A policy that routes to a PERSON is a rota.
+CREATE TABLE notification_policies (
+  id            UUID        PRIMARY KEY,
+  org_id        UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name          CITEXT      NOT NULL,
+  priority      INT         NOT NULL DEFAULT 100,  -- lower = evaluated first
+  enabled       BOOLEAN     NOT NULL DEFAULT true,
+  matchers      JSONB       NOT NULL DEFAULT '[]'::jsonb,
+                -- [{"name":"severity","op":"=","value":"critical"}, …]  op ∈ = != =~ !~
+  reasons       TEXT[]      NOT NULL,              -- a SET drawn from §H.6 Reason values
+  channel_ids   UUID[]      NOT NULL,
+  throttle      JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- {"max":N,"window_s":S} per subject
+  unacked_reminder_after_s INT,                    -- NULL = no reminder; else unacked-for seconds.
+                                                   -- SCALAR. ONE STAGE, FOREVER. Never an array (§G.9.1).
+  -- no DEFAULT now() (§D conventions); `ConfigRepository.CreatePolicy`/`UpdatePolicy`/
+  -- `SoftDeletePolicy` stamp them.
+  created_at    TIMESTAMPTZ NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL,
+  deleted_at    TIMESTAMPTZ,
+  CONSTRAINT policies_name_uniq UNIQUE (org_id, name),
+  CONSTRAINT policies_name_ck     CHECK (length(btrim(name::text)) BETWEEN 1 AND 120),
+  CONSTRAINT policies_prio_ck     CHECK (priority BETWEEN 0 AND 10000),
+  CONSTRAINT policies_matchers_ck CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) <= 32),
+  -- 00046: a SET, and bounded by the enum rather than by a round number. 18 is the
+  -- size of the §H.6 Reason enum, so it is the most a set drawn from it can hold,
+  -- and it is the same number the DTO tag and domain.MaxPolicyReasons carry.
+  -- `oto_array_is_set` is the uniqueness half: the contract publishes uniqueItems
+  -- on the RESPONSE, so a duplicate reaching this column comes back on a read as a
+  -- row the generated frontend client refuses.
+  CONSTRAINT policies_reasons_ck  CHECK (cardinality(reasons) BETWEEN 1 AND 18
+                                         AND array_position(reasons, NULL) IS NULL
+                                         AND oto_array_is_set(reasons)),
+  CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
+                                         AND array_position(channel_ids, NULL) IS NULL),
+  CONSTRAINT policies_throttle_ck CHECK (jsonb_typeof(throttle) = 'object'),
+  CONSTRAINT policies_reminder_ck      CHECK (unacked_reminder_after_s IS NULL OR unacked_reminder_after_s BETWEEN 60 AND 86400),
+  CONSTRAINT policies_time_ck     CHECK (updated_at >= created_at)
+);
+CREATE INDEX policies_eval_idx ON notification_policies (org_id, priority)
+  WHERE enabled AND deleted_at IS NULL;
+
+CREATE TABLE channel_threads (
+  id                       UUID        PRIMARY KEY,
+  org_id                   UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  channel_id               UUID        NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  subject_kind             TEXT        NOT NULL CHECK (subject_kind IN ('alert_group')),
+  subject_id               UUID        NOT NULL,   -- alert_groups.id (one generation)
+  provider_conversation_id TEXT,                   -- Slack channel id C…, from the API RESPONSE
+  provider_thread_id       TEXT,                   -- Slack root ts. STRING. NEVER A FLOAT.
+  root_delivery_id         UUID,
+  reply_count              INT         NOT NULL DEFAULT 0,
+  last_sent_seq            INT         NOT NULL DEFAULT 0,   -- ordering gate
+  next_seq                 INT         NOT NULL DEFAULT 1,   -- allocator
+  state                    TEXT        NOT NULL DEFAULT 'opening'
+                                       CHECK (state IN ('opening','open','frozen','dead')),
+  dead_reason              TEXT,                   -- channel_not_found | is_archived | message_not_found |
+                                                   -- not_in_channel | token_revoked | account_inactive |
+                                                   -- edit_window_closed | cannot_reply_to_message
+  -- no DEFAULT now() (§D conventions); `ThreadRepository.Ensure` stamps both, and every
+  -- later writer advances `updated_at` monotonically, GREATEST(updated_at, $n).
+  created_at               TIMESTAMPTZ NOT NULL,
+  updated_at               TIMESTAMPTZ NOT NULL,
+  CONSTRAINT threads_subject_uniq UNIQUE (channel_id, subject_kind, subject_id),
+  CONSTRAINT threads_seq_ck    CHECK (next_seq >= 1 AND last_sent_seq >= 0 AND last_sent_seq < next_seq),
+  CONSTRAINT threads_reply_ck  CHECK (reply_count >= 0),
+  -- an OPEN thread must have both halves of the provider handle; ts is TEXT, never a float (S7)
+  CONSTRAINT threads_open_ck   CHECK (state <> 'open' OR
+                                      (provider_conversation_id IS NOT NULL AND provider_thread_id IS NOT NULL)),
+  CONSTRAINT threads_ts_ck     CHECK (provider_thread_id IS NULL OR provider_thread_id ~ '^[0-9]{10}\.[0-9]{6}$'),
+  CONSTRAINT threads_dead_ck   CHECK ((state = 'dead') = (dead_reason IS NOT NULL)),
+  CONSTRAINT threads_deadmap_ck CHECK (dead_reason IS NULL OR dead_reason IN
+    ('channel_not_found','is_archived','message_not_found','not_in_channel','token_revoked',
+     'account_inactive','edit_window_closed','cannot_reply_to_message','restricted_action_thread_locked')),
+  CONSTRAINT threads_time_ck   CHECK (updated_at >= created_at)
+);
+CREATE INDEX threads_open_idx ON channel_threads (org_id, state) WHERE state IN ('opening','open');
+
+CREATE TABLE notifications (
+  id              UUID        PRIMARY KEY,
+  org_id          UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  subject_kind    TEXT        NOT NULL CHECK (subject_kind IN ('alert_group')),
+  subject_id      UUID        NOT NULL,
+  group_id        UUID        NOT NULL REFERENCES alert_groups(id) ON DELETE CASCADE,
+  alert_id        UUID,                            -- set when the fact is about one alert
+  occurrence_id   UUID,
+  reason          TEXT        NOT NULL,            -- §H.6 Reason enum
+  policy_id       UUID        REFERENCES notification_policies(id) ON DELETE SET NULL,
+  state_version   INT         NOT NULL,
+  idempotency_key TEXT        NOT NULL,            -- C.7
+  status          TEXT        NOT NULL DEFAULT 'pending'
+                              CHECK (status IN ('pending','dispatched','partial','delivered','failed','suppressed')),
+  suppressed_reason TEXT,                          -- no_policy | throttled | storm | flapping | snoozed |
+                                                   -- verbosity | channel_disabled | duplicate_render
+                                                   -- precedence order is fixed: see B.8.2
+  -- no DEFAULT now() (§D conventions); `NotificationRepository.Insert` and `SetStatus` stamp them.
+  created_at      TIMESTAMPTZ NOT NULL,
+  updated_at      TIMESTAMPTZ NOT NULL,
+  CONSTRAINT notifications_idem_uniq UNIQUE (org_id, idempotency_key),
+  CONSTRAINT notifications_reason_ck CHECK (reason IN
+    ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
+     'expired','refired','acked','unacked','snoozed','unsnoozed','enriched','rule_changed',
+     'comment','unacked_reminder','storm')),
+  CONSTRAINT notifications_sver_ck   CHECK (state_version >= 1),
+  CONSTRAINT notifications_idem_ck   CHECK (idempotency_key ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT notifications_supp_ck   CHECK ((status = 'suppressed') = (suppressed_reason IS NOT NULL)),
+  CONSTRAINT notifications_suppmap_ck CHECK (suppressed_reason IS NULL OR suppressed_reason IN
+    ('no_policy','throttled','storm','flapping','snoozed','verbosity','channel_disabled','duplicate_render')),
+  -- alert-scoped reasons must name the alert they are about
+  CONSTRAINT notifications_focus_ck  CHECK (reason NOT IN ('acked','unacked','refired','rule_changed')
+                                            OR alert_id IS NOT NULL),
+  CONSTRAINT notifications_time_ck   CHECK (updated_at >= created_at)
+);
+CREATE INDEX notif_subject_idx ON notifications (org_id, subject_kind, subject_id, created_at DESC);
+CREATE INDEX notif_alert_idx   ON notifications (org_id, alert_id, created_at DESC);
+
+CREATE TABLE notification_deliveries (
+  id                  UUID        PRIMARY KEY,
+  org_id              UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  notification_id     UUID        NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+  channel_id          UUID        NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  thread_id           UUID        REFERENCES channel_threads(id) ON DELETE SET NULL,
+  thread_seq          INT,                         -- FIFO position within the thread
+  mode                TEXT        NOT NULL CHECK (mode IN ('post_root','update_root','thread_reply','broadcast_reply')),
+  status              TEXT        NOT NULL DEFAULT 'pending'
+                                  CHECK (status IN ('pending','sending','sent','failed','dead','skipped')),
+  attempts            INT         NOT NULL DEFAULT 0,
+  next_attempt_at     TIMESTAMPTZ,
+  rendered            JSONB,                       -- persisted at CLAIM time, attempts==0 (C11)
+  rendered_hash       TEXT,                        -- sha256 of rendered; skips no-op updates
+  rendered_fallback   TEXT,                        -- top-level `text`
+  provider_message_id TEXT,                        -- Slack ts of THIS message
+  provider_conversation_id TEXT,                   -- Slack channel id from the RESPONSE
+  provider_response   JSONB,
+  error               TEXT,
+  error_class         TEXT        CHECK (error_class IS NULL OR error_class IN
+                                  ('retryable','rate_limited','permanent','config_invalid','auth_expired')),
+  ambiguous           BOOLEAN     NOT NULL DEFAULT false,   -- §G.5
+  sent_at             TIMESTAMPTZ,
+  -- no DEFAULT now() (§D conventions); `DeliveryRepository.Create` stamps them. `updated_at` is
+  -- also the claim lease the dispatcher reads, so the monotonic advance matters twice here.
+  created_at          TIMESTAMPTZ NOT NULL,
+  updated_at          TIMESTAMPTZ NOT NULL,
+  CONSTRAINT deliveries_fanout_uniq UNIQUE (notification_id, channel_id),
+  CONSTRAINT deliveries_attempts_ck CHECK (attempts >= 0 AND attempts <= 32),
+  CONSTRAINT deliveries_seq_ck      CHECK (thread_seq IS NULL OR thread_seq >= 1),
+  -- every mode except post_root needs a thread to attach to
+  CONSTRAINT deliveries_thread_ck   CHECK (mode = 'post_root' OR thread_id IS NOT NULL),
+  CONSTRAINT deliveries_render_ck   CHECK ((rendered IS NULL) = (rendered_hash IS NULL)),
+  CONSTRAINT deliveries_hash_ck     CHECK (rendered_hash IS NULL OR rendered_hash ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT deliveries_fb_ck       CHECK (rendered IS NULL OR length(coalesce(rendered_fallback,'')) > 0),
+  -- a SENT delivery must carry the provider handle and a timestamp
+  CONSTRAINT deliveries_sent_ck     CHECK (status <> 'sent' OR
+                                           (provider_message_id IS NOT NULL AND sent_at IS NOT NULL)),
+  CONSTRAINT deliveries_err_ck      CHECK (status NOT IN ('failed','dead') OR
+                                           (error IS NOT NULL AND error_class IS NOT NULL)),
+  CONSTRAINT deliveries_retry_ck    CHECK (status <> 'pending' OR attempts = 0 OR next_attempt_at IS NOT NULL),
+  CONSTRAINT deliveries_time_ck     CHECK (updated_at >= created_at)
+);
+CREATE INDEX del_thread_seq_idx ON notification_deliveries (thread_id, thread_seq)
+  WHERE status IN ('pending','sending');
+CREATE INDEX del_retry_idx  ON notification_deliveries (next_attempt_at)
+  WHERE status IN ('pending','failed');
+CREATE INDEX del_dead_idx   ON notification_deliveries (org_id, created_at DESC) WHERE status = 'dead';
+CREATE INDEX del_notif_idx  ON notification_deliveries (notification_id);
+```
+
+### D.8b Snooze (§B.8) — NEW, migration `00013_snooze.sql`
+
+> **A separate table, deliberately.** Putting `snoozed_by` / `snooze_note` on `alerts` would place a
+> second person reference on a signal row and weaken §D.4.0, which is the strongest clause in this
+> spec. A side table keeps the column ban absolute **and** gives snooze history for free.
+> `alerts.snoozed_until` is a bare timestamp projection and is not a person reference.
+
+```sql
+-- db/migrations/00013_snooze.sql   (see §P-1)
+
+CREATE TABLE alert_snoozes (
+  id               UUID        PRIMARY KEY,
+  org_id           UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  alert_id         UUID        NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+  alert_key        TEXT        NOT NULL,           -- denormalised; survives for audit
+  snoozed_at       TIMESTAMPTZ NOT NULL,
+  snoozed_until    TIMESTAMPTZ NOT NULL,           -- NOT NULL: there is no indefinite snooze
+  snoozed_by       UUID        REFERENCES users(id) ON DELETE SET NULL,
+  snoozed_by_label TEXT        NOT NULL,           -- denormalised, immutable attribution
+  note             TEXT,
+  ended_at         TIMESTAMPTZ,
+  ended_reason     TEXT,                           -- expired | manual | superseded
+  ended_by         UUID        REFERENCES users(id) ON DELETE SET NULL,
+  ended_by_label   TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT alert_snoozes_key_ck      CHECK (alert_key ~ '^ak_[0-9a-v]{26}$'),
+  CONSTRAINT alert_snoozes_order_ck    CHECK (snoozed_until > snoozed_at),
+  CONSTRAINT alert_snoozes_min_ck      CHECK (snoozed_until >= snoozed_at + interval '5 minutes'),
+  CONSTRAINT alert_snoozes_max_ck      CHECK (snoozed_until <= snoozed_at + interval '30 days'),
+  CONSTRAINT alert_snoozes_label_ck    CHECK (length(btrim(snoozed_by_label)) BETWEEN 1 AND 120),
+  CONSTRAINT alert_snoozes_note_ck     CHECK (note IS NULL OR length(note) <= 2000),
+  CONSTRAINT alert_snoozes_end_ck      CHECK ((ended_at IS NULL) = (ended_reason IS NULL)),
+  CONSTRAINT alert_snoozes_endmap_ck   CHECK (ended_reason IS NULL OR
+                                              ended_reason IN ('expired','manual','superseded')),
+  CONSTRAINT alert_snoozes_endorder_ck CHECK (ended_at IS NULL OR ended_at >= snoozed_at),
+  CONSTRAINT alert_snoozes_endby_ck    CHECK ((ended_by IS NULL) OR (ended_by_label IS NOT NULL))
+);
+
+-- INVARIANT: at most one ACTIVE snooze per alert. Enforced in the DB, not in Go.
+CREATE UNIQUE INDEX alert_snoozes_active_idx ON alert_snoozes (alert_id) WHERE ended_at IS NULL;
+CREATE INDEX alert_snoozes_expiry_idx ON alert_snoozes (snoozed_until) WHERE ended_at IS NULL;
+CREATE INDEX alert_snoozes_org_idx    ON alert_snoozes (org_id, alert_id, snoozed_at DESC);
+```
+
+> ⛔ **`alert_snoozes` MUST NEVER gain `assigned_to`, a recurrence rule, `days_of_week`,
+> `time_of_day`, or a NULL `snoozed_until`.** A recurring snooze is a maintenance calendar; an
+> unexpiring snooze is a mute. Both are how a channel dies. Maintenance windows, if ever built, are
+> a separate feature with their own scope review (SCOPE-BOUNDARY §4.40).
+
+### D.9 Silences (read-only mirror)
+
+```sql
+-- db/migrations/00010_silences.sql
+
+CREATE TABLE silences (
+  id            UUID        PRIMARY KEY,
+  org_id        UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  source_id     UUID        NOT NULL REFERENCES alert_sources(id) ON DELETE CASCADE,
+  source_silence_id TEXT    NOT NULL,              -- Alertmanager's silence UUID
+  matchers      JSONB       NOT NULL,              -- [{name,value,isRegex,isEqual}]
+  starts_at     TIMESTAMPTZ NOT NULL,
+  ends_at       TIMESTAMPTZ NOT NULL,
+  created_by    TEXT        NOT NULL,
+  comment       TEXT        NOT NULL,
+  annotations   JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- AM >= 0.32.0
+  state         TEXT        NOT NULL CHECK (state IN ('active','pending','expired')),
+  source_updated_at TIMESTAMPTZ,
+  -- no DEFAULT now() (§D conventions); `SilenceRepository.UpsertBatch` stamps it.
+  mirrored_at   TIMESTAMPTZ NOT NULL,
+  CONSTRAINT silences_source_uniq UNIQUE (source_id, source_silence_id),
+  CONSTRAINT silences_srcid_ck    CHECK (length(btrim(source_silence_id)) BETWEEN 1 AND 128),
+  CONSTRAINT silences_match_ck    CHECK (jsonb_typeof(matchers) = 'array' AND jsonb_array_length(matchers) >= 1),
+  CONSTRAINT silences_annot_ck    CHECK (jsonb_typeof(annotations) = 'object'),
+  CONSTRAINT silences_order_ck    CHECK (ends_at > starts_at),
+  CONSTRAINT silences_by_ck       CHECK (length(btrim(created_by)) > 0)
+);
+CREATE INDEX silences_active_idx ON silences (org_id, state, ends_at) WHERE state IN ('active','pending');
+```
+
+### D.10 Streaming, rate limiting, stats
+
+```sql
+-- db/migrations/00011_platform.sql
+
+CREATE TABLE ui_events (
+  seq         BIGSERIAL   NOT NULL,                -- monotonic; the SSE Last-Event-ID
+  org_id      UUID        NOT NULL,
+  kind        TEXT        NOT NULL,                -- §E.4
+  resource    TEXT        NOT NULL,
+  resource_id UUID        NOT NULL,
+  payload     JSONB       NOT NULL,                -- SMALL envelope; client re-reads for detail
+  at          TIMESTAMPTZ NOT NULL DEFAULT now(),  -- PARTITION KEY
+  PRIMARY KEY (seq, at),
+  CONSTRAINT ui_events_kind_ck    CHECK (kind IN
+    ('alert.upserted','occurrence.upserted','group.upserted','event.appended',
+     'delivery.updated','source.health')),
+  CONSTRAINT ui_events_res_ck     CHECK (resource IN
+    ('alert','occurrence','group','alert_event','delivery','source')),
+  CONSTRAINT ui_events_payload_ck CHECK (jsonb_typeof(payload) = 'object'
+                                         AND pg_column_size(payload) <= 4096)
+) PARTITION BY RANGE (at);
+CREATE INDEX ui_ev_org_idx ON ui_events (org_id, seq);
+
+-- There was a `rate_limit_buckets` table here. It was created by 00014_ops.sql,
+-- described in §G.6 as the pre-call gate on Slack sends, and read or written by
+-- no code at any point. It is dropped in 00030_drop_rate_limit_buckets.sql; see
+-- §G.6 for why the reactive Retry-After path is the answer instead.
+
+-- Alert-hygiene accounting. TEAM/ALERT SCOPED ONLY. NEVER PER-PERSON (R8).
+CREATE TABLE alert_quality_daily (
+  org_id            UUID        NOT NULL,
+  day               DATE        NOT NULL,
+  cluster_key       TEXT        NOT NULL,
+  alertname         TEXT        NOT NULL,
+  occurrences       INT         NOT NULL DEFAULT 0,
+  notifications     INT         NOT NULL DEFAULT 0,
+  deliveries        INT         NOT NULL DEFAULT 0,
+  acked_occurrences INT         NOT NULL DEFAULT 0,
+  auto_resolved     INT         NOT NULL DEFAULT 0,
+  expired           INT         NOT NULL DEFAULT 0,
+  total_firing_seconds BIGINT   NOT NULL DEFAULT 0,
+  flap_transitions  INT         NOT NULL DEFAULT 0,
+  PRIMARY KEY (org_id, day, cluster_key, alertname),
+  CONSTRAINT alert_quality_nonneg_ck CHECK (
+      occurrences >= 0 AND notifications >= 0 AND deliveries >= 0 AND acked_occurrences >= 0
+      AND auto_resolved >= 0 AND expired >= 0 AND total_firing_seconds >= 0 AND flap_transitions >= 0),
+  CONSTRAINT alert_quality_acked_ck  CHECK (acked_occurrences <= occurrences),
+  CONSTRAINT alert_quality_name_ck   CHECK (length(alertname) BETWEEN 1 AND 1024)
+);
+
+-- NOTE: `alert_quality_daily` is deliberately keyed by (day, cluster, alertname) and carries NO
+-- user column. Per-person response metrics are unrepresentable in this schema by construction (R8).
+--
+-- ⛔ BINDING: `alert_quality_daily` MUST NEVER gain `time_to_ack_seconds`, `acked_seconds`,
+-- `ack_latency_p50`, `mtta_seconds`, or ANY column measuring the interval between a machine event
+-- and a human action. That interval is a measure of PEOPLE (SCOPE-BOUNDARY §4.14, R8).
+--
+-- `acked_occurrences` is permitted and is NOT a human metric: the ack RATE per alertname answers
+-- "did anyone ever care about this rule?" — a fact about the alert. `total_firing_seconds` is the
+-- only legitimate duration metric and is called FIRING DURATION, never MTTR.
+```
+
+Partitions: **HOURLY** on `ui_events.at`, 24-hour retention.
+River creates and owns `river_job`, `river_leader`, `river_queue`, `river_client*`. Do not hand-write them; run `river migrate-up` as part of `oto migrate up`.
+
+### D.11 Partition management (binding)
+
+`partitions.manage` runs hourly and MUST:
+- Ensure `ui_events` partitions exist for the current hour and the next 6 hours.
+- Ensure `ingest_batches`/`ingest_rejections` partitions exist for today and the next 7 days.
+- Ensure `alert_events` partitions exist for this month and the next 3 months.
+- `DETACH` + `DROP` partitions older than the configured retention.
+- Never `DELETE FROM` a partitioned event table. Retention is `DROP TABLE`, always.
+
+Naming: `<parent>_p<YYYYMMDDHH|YYYYMMDD|YYYYMM>`. Example: `alert_events_p202608`.
+
+### D.12 Hot query patterns (the planner contract)
+
+```sql
+-- (a) Alert list — the single hottest query. KEYSET, never OFFSET.
+SELECT a.* FROM alerts a
+WHERE a.org_id = $1
+  AND ($2::text[]  IS NULL OR a.state     = ANY($2))
+  AND ($3::text[]  IS NULL OR a.severity  = ANY($3))
+  AND ($4::text[]  IS NULL OR a.namespace = ANY($4))
+  AND ($5::text[]  IS NULL OR a.cluster_key = ANY($5))
+  AND ($6::text    IS NULL OR a.alertname = $6)
+  AND ($7::jsonb   = '{}'::jsonb OR a.labels @> $7)
+  AND ($8::timestamptz IS NULL OR (a.last_seen_at, a.id) < ($8, $9))
+ORDER BY a.last_seen_at DESC, a.id DESC
+LIMIT $10;
+
+-- (b) Group timeline — the signature UI view. ALWAYS time-bounded (partition pruning).
+SELECT e.* FROM alert_events e
+WHERE e.org_id = $1 AND e.group_id = $2
+  AND e.recorded_at >= $3
+  AND ($4::timestamptz IS NULL OR (e.recorded_at, e.id) < ($4, $5))
+ORDER BY e.recorded_at DESC, e.id DESC
+LIMIT $6;
+
+-- (c) Dedupe upsert on ingest — the hottest write-path read. No read-then-write race.
+INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname, severity,
+                    namespace, service, cluster_key, labels, annotations, generator_url,
+                    state, first_seen_at, last_seen_at, last_state_change_at)
+SELECT * FROM unnest($1::uuid[], …)                -- batched: one webhook = one round trip
+ON CONFLICT (org_id, alert_key) DO UPDATE SET
+    last_seen_at = GREATEST(alerts.last_seen_at, EXCLUDED.last_seen_at),
+    annotations  = EXCLUDED.annotations,
+    labels       = EXCLUDED.labels,
+    severity     = EXCLUDED.severity,
+    generator_url= EXCLUDED.generator_url,
+    updated_at   = now()
+RETURNING *, (xmax = 0) AS was_inserted;
+```
+
+`(b)` MUST always receive a lower time bound; the API defaults it to `group.first_seen_at`. Totals are served from `alert_quality_daily`, **never** `COUNT(*)` on `alerts` or `alert_events`.
+
+---
+
+## E. Public HTTP API
+
+### E.1 Principles (binding)
+
+- Prefix `/api/v1`. Additive-only evolution. Nothing outside `/api/v1` and the ops surface is public.
+- **The UI has ZERO private endpoints.** If the UI needs it, it is in this table.
+- Every collection response is enveloped:
+  ```jsonc
+  { "data": [ … ],
+    "page": { "next_cursor": "eyJ0IjoiMjAyNi0…", "has_more": true, "limit": 50 },
+    "meta": { "request_id": "01JD…", "elapsed_ms": 14 } }
+  ```
+  Single-resource responses are `{ "data": {…}, "meta": {…} }`.
+- Errors are RFC 9457 `application/problem+json`:
+  ```jsonc
+  { "type": "https://oto.dev/errors/validation_failed", "title": "Validation failed",
+    "status": 422, "detail": "severity must be one of …", "instance": "/api/v1/alerts",
+    "request_id": "01JD…", "errors": [ { "field": "severity", "code": "enum" } ] }
+  ```
+- **Pagination is keyset only.** Cursor = base64url of `{"k":<sort key>,"id":"<uuid>","h":"<filter hash>"}`. A cursor whose `h` does not match the current filter set is rejected `400 cursor_filter_mismatch`. `limit` default 50, max 200. There is **no `total`** on unbounded collections.
+- Every mutating endpoint accepts `Idempotency-Key`.
+
+#### E.1.1 ⛔ No human writes a signal's state (BINDING, PERMANENT)
+
+> **There is no endpoint by which a human sets a signal's `state`.** `state` is owned by Alertmanager
+> and mirrored by oto (C2). **`ack_state` is the only state axis a human may write.**
+>
+> **There is no `POST /api/v1/alerts/{id}/resolve`, ever.** Nor `/close`, `/merge`, `/dismiss`,
+> `/reopen`, `/ignore`, or any other triage verb. This was previously true by omission, and omission
+> is not enforcement.
+>
+> A human declaring a signal resolved is the exact lie §B.2 and C2 exist to prevent: oto would be
+> reporting a human's *belief* about the world instead of the world, and the system-of-record claim —
+> the entire product — would be dead. The same rule binds inbound integrations: an incident tool
+> marking its own incident resolved MUST NOT resolve oto's alert (SCOPE-BOUNDARY §7).
+>
+> **Exactly two inbound human verbs exist: `ack`/`unack` (a receipt) and `comment` (an annotation).**
+> Both are actor-metadata on a signal, never a state change to it. §B.8 `snooze` is a third verb but
+> it writes *notification* state, not signal state — see §B.8.4.
+>
+> **Ack is a receipt, not a claim.** UI copy, API docs and Slack labels MUST NOT present ack as
+> "take ownership", "I'm on it", or "assign to me". It says *a human has seen this*, not *this is
+> mine* and not *this is over*.
+- All timestamps in JSON are RFC 3339 UTC with milliseconds: `2026-08-07T09:14:22.114Z`.
+- Auth column values: `session|pat` = either a session cookie `oto_session` or `Authorization: Bearer oto_pat_…`; `ingest` = `Authorization: Bearer oto_ingest_…` scoped to that exact `source_id`; `slack_sig` = Slack HMAC signature verification (§H.8); `none` = unauthenticated ops surface.
+
+### E.2 Endpoint table
+
+| Method | Path | Purpose | Request DTO | Response DTO | Auth |
+|---|---|---|---|---|---|
+| **Ingest** | | | | | |
+| POST | `/api/v1/ingest/alertmanager/{source_id}` | Alertmanager/Grafana webhook receiver. Durably persists + enqueues. **202 or 503 only** (C4). | *(raw AM v4 body)* | `IngestAcceptedDTO` | `ingest` |
+| **Alerts** | | | | | |
+| GET | `/api/v1/alerts` | List/filter/search alerts | `AlertListQuery` | `[]AlertDTO` | `session\|pat` |
+| GET | `/api/v1/alerts/{id}` | One alert + current occurrence + enrichment summary | — | `AlertDetailDTO` | `session\|pat` |
+| GET | `/api/v1/alerts/{id}/occurrences` | Episode history | `PageQuery` | `[]OccurrenceDTO` | `session\|pat` |
+| GET | `/api/v1/alerts/{id}/events` | Alert-scoped timeline | `TimelineQuery` | `[]AlertEventDTO` | `session\|pat` |
+| GET | `/api/v1/alerts/{id}/enrichments` | All enrichment results with provenance | — | `[]EnrichmentDTO` | `session\|pat` |
+| GET | `/api/v1/alerts/{id}/rule` | **Rule snapshot bound to the current occurrence + full version history** | `RuleHistoryQuery` | `RuleHistoryDTO` | `session\|pat` |
+| GET | `/api/v1/alerts/{id}/notifications` | Notifications + deliveries for this alert | `PageQuery` | `[]NotificationDTO` | `session\|pat` |
+| POST | `/api/v1/alerts/{id}/ack` | Ack the current occurrence (T9) | `AckRequest` | `OccurrenceDTO` | `session\|pat` |
+| POST | `/api/v1/alerts/{id}/unack` | Unack (T10) | `UnackRequest` | `OccurrenceDTO` | `session\|pat` |
+| POST | `/api/v1/alerts/{id}/comments` | Add a human note to the timeline (T14) | `CommentRequest` | `AlertEventDTO` | `session\|pat` |
+| POST | `/api/v1/alerts/{id}/snooze` | **Suppress oto's own notifications for this alert until T** (§B.8). Does not touch the cluster. | `SnoozeRequest` | `AlertDetailDTO` | `session\|pat` |
+| POST | `/api/v1/alerts/{id}/unsnooze` | End an active snooze early | — | `AlertDetailDTO` | `session\|pat` |
+| **Occurrences** | | | | | |
+| GET | `/api/v1/occurrences/{id}` | Episode detail | — | `OccurrenceDetailDTO` | `session\|pat` |
+| GET | `/api/v1/occurrences/{id}/events` | Episode timeline | `TimelineQuery` | `[]AlertEventDTO` | `session\|pat` |
+| GET | `/api/v1/occurrences/{id}/rule` | Rule snapshot as of this episode's fire time | — | `RuleSnapshotDTO` | `session\|pat` |
+| **Groups** | | | | | |
+| GET | `/api/v1/alert-groups` | List groups — the default UI landing view | `GroupListQuery` | `[]GroupDTO` | `session\|pat` |
+| GET | `/api/v1/alert-groups/{id}` | Group detail + rollup counts | — | `GroupDetailDTO` | `session\|pat` |
+| GET | `/api/v1/alert-groups/{id}/alerts` | Member alerts | `PageQuery` | `[]AlertDTO` | `session\|pat` |
+| GET | `/api/v1/alert-groups/{id}/timeline` | **Merged, ordered lifecycle timeline** — the signature view | `TimelineQuery` | `[]AlertEventDTO` | `session\|pat` |
+| POST | `/api/v1/alert-groups/{id}/ack` | Ack every open member occurrence | `AckRequest` | `GroupDetailDTO` | `session\|pat` |
+| POST | `/api/v1/alert-groups/{id}/comments` | Note on the group timeline | `CommentRequest` | `AlertEventDTO` | `session\|pat` |
+| POST | `/api/v1/alert-groups/{id}/snooze` | Fan-out: snooze every **currently-joined** member alert (§B.8.3). Not predictive. | `SnoozeRequest` | `GroupDetailDTO` | `session\|pat` |
+| POST | `/api/v1/alert-groups/{id}/unsnooze` | Fan-out: end snoozes on currently-joined members | — | `GroupDetailDTO` | `session\|pat` |
+| **Rules** | | | | | |
+| GET | `/api/v1/rule-snapshots/{id}` | One captured rule definition | — | `RuleSnapshotDTO` | `session\|pat` |
+| GET | `/api/v1/rule-snapshots` | Version history for a RuleKey | `RuleHistoryQuery` | `[]RuleSnapshotDTO` | `session\|pat` |
+| GET | `/api/v1/rule-snapshots/batch` | Resolve many snapshot ids at once — the second half of `include=rule`, so the alert list can show `expr` without a request per row. Unknown ids are **absent**, never a 404; no page object. ADR 0025 | `id` (≤100 uuids, duplicates allowed) | `[]RuleSnapshotDTO` | `session\|pat` |
+| **Sources** | | | | | |
+| GET | `/api/v1/sources` | List sources | `PageQuery` | `[]SourceDTO` | `session\|pat` |
+| POST | `/api/v1/sources` | Create a source (returns the ingest token ONCE) | `CreateSourceRequest` | `SourceCreatedDTO` | `session\|pat` |
+| GET | `/api/v1/sources/{id}` | Source detail | — | `SourceDTO` | `session\|pat` |
+| PATCH | `/api/v1/sources/{id}` | Update | `UpdateSourceRequest` | `SourceDTO` | `session\|pat` |
+| DELETE | `/api/v1/sources/{id}` | Soft delete | — | *(204)* | `session\|pat` |
+| POST | `/api/v1/sources/{id}/test` | Probe `/api/v2/status`, report version + `send_resolved` | — | `SourceTestDTO` | `session\|pat` |
+| POST | `/api/v1/sources/{id}/rotate-token` | Rotate the ingest token | — | `SourceCreatedDTO` | `session\|pat` |
+| POST | `/api/v1/sources/{id}/reconcile` | Force one reconcile pass now | — | `ReconcileResultDTO` | `session\|pat` |
+| GET | `/api/v1/sources/{id}/health` | Health, lag, skew, divergence, warnings | — | `SourceHealthDTO` | `session\|pat` |
+| GET | `/api/v1/clusters` | List clusters | `PageQuery` | `[]ClusterDTO` | `session\|pat` |
+| POST | `/api/v1/clusters` | Create a cluster | `CreateClusterRequest` | `ClusterDTO` | `session\|pat` |
+| PATCH | `/api/v1/clusters/{id}` | Update | `UpdateClusterRequest` | `ClusterDTO` | `session\|pat` |
+| **Channels** | | | | | |
+| GET | `/api/v1/channel-types` | Provider descriptors: capabilities + config JSON Schema (drives dynamic forms) | — | `[]ChannelTypeDTO` | `session\|pat` |
+| GET | `/api/v1/channels` | List channels | `PageQuery` | `[]ChannelDTO` | `session\|pat` |
+| POST | `/api/v1/channels` | Create | `CreateChannelRequest` | `ChannelDTO` | `session\|pat` |
+| GET | `/api/v1/channels/{id}` | Detail | — | `ChannelDTO` | `session\|pat` |
+| PATCH | `/api/v1/channels/{id}` | Update | `UpdateChannelRequest` | `ChannelDTO` | `session\|pat` |
+| DELETE | `/api/v1/channels/{id}` | Soft delete | — | *(204)* | `session\|pat` |
+| POST | `/api/v1/channels/{id}/test` | Send a synthetic alert card | — | `ChannelTestDTO` | `session\|pat` |
+| **Notification** | | | | | |
+| GET | `/api/v1/notification-policies` | List | `PageQuery` | `[]PolicyDTO` | `session\|pat` |
+| POST | `/api/v1/notification-policies` | Create | `CreatePolicyRequest` | `PolicyDTO` | `session\|pat` |
+| PATCH | `/api/v1/notification-policies/{id}` | Update | `UpdatePolicyRequest` | `PolicyDTO` | `session\|pat` |
+| DELETE | `/api/v1/notification-policies/{id}` | Soft delete | — | *(204)* | `session\|pat` |
+| POST | `/api/v1/notification-policies/preview` | **Dry run.** "Given this alert, who is told, where, rendered how." NO SEND. | `PolicyPreviewRequest` | `PolicyPreviewDTO` | `session\|pat` |
+| GET | `/api/v1/notifications` | Audit of intents | `NotificationListQuery` | `[]NotificationDTO` | `session\|pat` |
+| GET | `/api/v1/notifications/{id}` | Intent + its deliveries | — | `NotificationDetailDTO` | `session\|pat` |
+| GET | `/api/v1/deliveries` | Delivery attempts, errors, provider responses | `DeliveryListQuery` | `[]DeliveryDTO` | `session\|pat` |
+| GET | `/api/v1/deliveries/{id}` | One delivery incl. rendered payload | — | `DeliveryDetailDTO` | `session\|pat` |
+| POST | `/api/v1/deliveries/{id}/retry` | Manual retry of a dead delivery | — | `DeliveryDTO` | `session\|pat` |
+| **Silences (READ ONLY — R3)** | | | | | |
+| GET | `/api/v1/silences` | Mirrored Alertmanager silences | `SilenceListQuery` | `[]SilenceDTO` | `session\|pat` |
+| GET | `/api/v1/silences/{id}` | One silence + the alerts it matches | — | `SilenceDetailDTO` | `session\|pat` |
+| **Discovery / stats** | | | | | |
+| GET | `/api/v1/labels` | Distinct label names, for the filter bar | `LabelQuery` | `[]LabelNameDTO` | `session\|pat` |
+| GET | `/api/v1/labels/{name}/values` | Typeahead values | `LabelValueQuery` | `[]LabelValueDTO` | `session\|pat` |
+| GET | `/api/v1/enrichers` | Registered enrichers: phase, version, health, hit rate | — | `[]EnricherDTO` | `session\|pat` |
+| GET | `/api/v1/stats/overview` | Open/firing/acked counts, delivery health, source health | `StatsQuery` | `StatsOverviewDTO` | `session\|pat` |
+| GET | `/api/v1/stats/alert-quality` | **Alert hygiene.** Per alertname: occurrences, notifications, ack rate, flap score. **No per-person data (R8).** | `StatsQuery` | `[]AlertQualityDTO` | `session\|pat` |
+| **Real-time** | | | | | |
+| GET | `/api/v1/stream` | SSE live event stream (§E.4) | `StreamQuery` | *(text/event-stream)* | `session\|pat` |
+| **Identity** | | | | | |
+| POST | `/api/v1/auth/login` | Local password login, sets `oto_session` | `LoginRequest` | `MeDTO` | `none` |
+| POST | `/api/v1/auth/logout` | Revoke the session | — | *(204)* | `session` |
+| GET | `/api/v1/me` | Current principal + org + settings | — | `MeDTO` | `session\|pat` |
+| GET | `/api/v1/api-tokens` | List PATs (never the secret) | `PageQuery` | `[]ApiTokenDTO` | `session` |
+| POST | `/api/v1/api-tokens` | Create a PAT (returns the secret ONCE) | `CreateTokenRequest` | `ApiTokenCreatedDTO` | `session` |
+| DELETE | `/api/v1/api-tokens/{id}` | Revoke | — | *(204)* | `session` |
+| **Inbound Slack (HTTP transport only; unused in Socket Mode)** | | | | | |
+| POST | `/api/v1/integrations/slack/interactions` | Block actions from the alert card | *(form-encoded `payload`)* | *(200, empty)* | `slack_sig` |
+| **Ops (unversioned)** | | | | | |
+| GET | `/healthz` | Liveness | — | `{"status":"ok"}` | `none` |
+| GET | `/readyz` | Readiness (DB reachable, migrations applied) | — | `ReadyDTO` | `none` |
+| GET | `/metrics` | Prometheus exposition | — | *(text)* | `none` |
+| GET | `/openapi.json` | The published contract | — | *(OpenAPI 3.1)* | `none` |
+| GET | `/api/v1/version` | Build version, commit, schema version | — | `VersionDTO` | `none` |
+
+### E.3 Filtering contract for `GET /api/v1/alerts`
+
+```
+?state=firing,suppressed
+&severity=critical,warning
+&cluster=prod-eu
+&namespace=payments,checkout
+&alertname=KubePodCrashLooping
+&label[team]=core            -> labels @> '{"team":"core"}'
+&label[team]=core,platform   -> labels @> '{"team":"core"}' OR labels @> '{"team":"platform"}'
+&label[!tier]=canary         -> NOT (labels @> '{"tier":"canary"}')
+&ack=unacked                 -> ack_state
+&flapping=true
+&snoozed=true                -- explicit filter; the DEFAULT LIST INCLUDES SNOOZED ALERTS (B.8.6)
+&since=2026-08-01T00:00:00Z  -> last_seen_at >= since
+&q=oom                       -> alerts_text_idx
+&sort=-last_seen_at          -> only -last_seen_at (default) and -first_seen_at are accepted
+&include=current_occurrence,enrichments,rule    -> bounded whitelist, avoids N+1
+&limit=50&cursor=…
+```
+
+Repeated `label[k]=v` across distinct `k` ANDs. Unknown query parameters are **rejected** `400 unknown_parameter` (this is how the UI and API stay honest).
+
+### E.4 SSE stream contract (`GET /api/v1/stream`)
+
+**Request**
+
+```
+GET /api/v1/stream?resources=alerts,groups,events&group_id=<uuid>&alert_id=<uuid>
+Accept: text/event-stream
+Last-Event-ID: 918273          (sent automatically by EventSource on reconnect)
+```
+
+`resources` is a comma list from `alerts|groups|occurrences|events|deliveries|sources`. Omitted = all. `group_id`/`alert_id` narrow the interest set. Everything is additionally scoped to the principal's `org_id` server-side; a client cannot widen it.
+
+**Response headers**
+
+```
+Content-Type: text/event-stream; charset=utf-8
+Cache-Control: no-cache, no-transform
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+**Frame format**
+
+```
+id: 918274
+event: alert.upserted
+data: {"seq":918274,"kind":"alert.upserted","resource":"alert","id":"01J9…","org_id":"01J8…","at":"2026-08-07T09:20:12.443Z","data":{"state":"firing","ack_state":"unacked","severity":"critical","last_seen_at":"2026-08-07T09:20:12.443Z"}}
+
+```
+
+**`kind` enum (closed)**
+
+| kind | resource | `data` payload |
+|---|---|---|
+| `alert.upserted` | `alert` | `{state, ack_state, severity, alertname, namespace, cluster_key, last_seen_at, total_occurrences, is_flapping}` |
+| `occurrence.upserted` | `occurrence` | `{alert_id, group_id, seq, state, ack_state, started_at, ended_at}` |
+| `group.upserted` | `group` | `{state, severity, firing_count, total_count, acked_count, storm_mode, last_activity_at}` |
+| `event.appended` | `alert_event` | `{alert_id, occurrence_id, group_id, type, occurred_at, recorded_at, actor_kind, actor_label, summary}` |
+| `delivery.updated` | `delivery` | `{notification_id, channel_id, mode, status, error_class}` |
+| `source.health` | `source` | `{status, last_reconcile_at, divergence_count, warnings}` |
+| `resync` | *(none)* | `{"reason":"buffer_overflow"\|"replay_window_exceeded"}` — the client MUST refetch |
+| `heartbeat` | *(none)* | sent as a bare comment line `: ping` every **15 seconds** |
+
+**Resume semantics (binding)**
+
+1. On connect with `Last-Event-ID: N`, the server replays `ui_events WHERE org_id = $1 AND seq > N AND at >= now() - interval '24 hours'` in `seq` ASC order, then attaches to the live feed.
+2. If `now() - 24h` would have pruned events at or below the gap, or the gap exceeds **10 000** rows, the server sends a single `resync` frame instead of a replay and then attaches live.
+3. `seq` is strictly monotonic per Postgres sequence. Clients MUST NOT assume contiguity.
+
+**Fan-out mechanics (binding)**
+
+- Each API pod holds ONE dedicated `pgx` connection issuing `LISTEN oto_events`.
+- Writers, **in the same transaction** that inserted `ui_events`, issue `NOTIFY oto_events, '<org_id>:<seq>'`. The payload is deliberately tiny — the 8 kB `NOTIFY` limit is a trap.
+- The in-process hub re-reads `ui_events` for the seq range and fans out, filtered by org and by each subscriber's declared interest.
+- **Coalescing:** at most one frame per connection per 250 ms per `(kind, resource_id)`. The latest wins.
+- **Backpressure:** each connection has a bounded ring buffer (1 024 frames). On overflow, drop the buffer and send `resync`. **Never block a writer for a reader.**
+- **Polling fallback:** every stream-fed list endpoint accepts `?since_seq=<N>` for environments where a proxy kills SSE.
+
+### E.5 DTO naming convention (binding)
+
+- Request bodies: `<Verb><Noun>Request` (e.g. `CreateChannelRequest`) or `<Noun>Request` for actions (`AckRequest`).
+- Query parameter structs: `<Noun>Query` (e.g. `AlertListQuery`).
+- Response bodies: `<Noun>DTO`, `<Noun>DetailDTO` for expanded single-resource shapes, `<Noun>CreatedDTO` when a secret is returned once.
+- Every DTO lives in `internal/<domain>/api/dto.go`. Every DTO has `json` tags and `validate` tags. **No DTO may embed a domain type or a row type.**
+- Every DTO has a mapper in `internal/<domain>/api/mapper.go` with the signature `func toXxxDTO(domain.Xxx) XxxDTO` / `func (r XxxRequest) toDomain() (domain.Xxx, error)`.
+
+---
+
+## F. Ports — literal Go
+
+Every interface below is a **port**. Implementations are injected by `internal/app/container.go`. No package may depend on a concrete implementation of another domain.
+
+### F.1 Channel / Provider / Renderer — `internal/channels/domain`
+
+```go
+package domain
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// Type is the provider discriminator. v1 ships exactly two (R5).
+type Type string
+
+const (
+	TypeSlack   Type = "slack"
+	TypeWebhook Type = "webhook"
+)
+
+// Capability is a bitset negotiated centrally by DispatchService, never by a provider.
+type Capability uint32
+
+const (
+	CapThreading   Capability = 1 << iota // replies attach to a parent message
+	CapAmend                              // an already-sent message can be edited in place
+	CapRichLayout                         // structured blocks, not just text
+	CapInteractive                        // buttons that call back into oto
+	CapBroadcast                          // a thread reply can be surfaced in-channel
+	CapDedupeKey                          // provider does its own dedupe
+)
+
+// RendererID names a Renderer in the registry.
+type RendererID string
+
+const (
+	RendererSlackDefault RendererID = "slack.default"
+	RendererWebhookJSON  RendererID = "webhook.json"
+)
+
+// Descriptor is static per provider and is served by GET /api/v1/channel-types.
+type Descriptor struct {
+	Type            Type
+	DisplayName     string
+	ConfigSchema    json.RawMessage // JSON Schema draft 2020-12; drives the dynamic settings UI
+	CredentialKinds []string
+	Capabilities    Capability
+	Renderers       []RendererID
+	RateLimitClass  string // "slack" | "none"
+}
+
+// ChannelConfig is the validated, non-secret configuration of one Channel instance.
+type ChannelConfig struct {
+	ChannelID uuid.UUID
+	OrgID     uuid.UUID
+	Name      string
+	Raw       json.RawMessage
+	Renderer  RendererID
+	Verbosity Verbosity
+	ThreadUpdates  bool
+	ShowFieldEmoji bool
+}
+
+type Verbosity string
+
+const (
+	VerbosityAll               Verbosity = "all"
+	VerbosityStatusChanges     Verbosity = "status_changes" // default
+	VerbosityFiringAndResolved Verbosity = "firing_and_resolved"
+	VerbosityFiringOnly        Verbosity = "firing_only"
+)
+
+// Credential is an already-unsealed secret. It never crosses an API boundary.
+type Credential struct {
+	Kind   string
+	Values map[string]string
+}
+
+// Provider is registered once at boot and mints Channels from stored config.
+type Provider interface {
+	Descriptor() Descriptor
+	ValidateConfig(ctx context.Context, raw json.RawMessage) error
+	Open(ctx context.Context, cfg ChannelConfig, cred Credential) (Channel, error)
+}
+
+// Channel is the delivery port. It knows NOTHING about alerts.
+type Channel interface {
+	Capabilities() Capability
+	Deliver(ctx context.Context, req DeliverRequest) (DeliverResult, error)
+	Amend(ctx context.Context, ref MessageRef, msg RenderedMessage) (DeliverResult, error)
+	Probe(ctx context.Context) error
+	Close() error
+}
+
+// Mode is the decision produced by the §H.6 table.
+type Mode string
+
+const (
+	ModePostRoot       Mode = "post_root"
+	ModeUpdateRoot     Mode = "update_root"
+	ModeThreadReply    Mode = "thread_reply"
+	ModeBroadcastReply Mode = "broadcast_reply"
+)
+
+type DeliverRequest struct {
+	Message    RenderedMessage
+	Mode       Mode
+	ReplyTo    *MessageRef // required for thread_reply / broadcast_reply
+	Target     *MessageRef // required for update_root
+	DeliveryID uuid.UUID
+	DedupeKey  string // used only if CapDedupeKey
+}
+
+// MessageRef is a FOREIGN SYSTEM'S PRIMARY KEY. It is immutable and never reshaped.
+type MessageRef struct {
+	ConversationID string // Slack channel id, taken from the API RESPONSE, not the request
+	MessageID      string // Slack ts. ALWAYS A STRING. NEVER A FLOAT.
+	ThreadID       string // Slack root ts
+	ProviderKey    string // opaque, provider-defined
+}
+
+type DeliverResult struct {
+	Ref         MessageRef
+	DeliveredAt time.Time
+	Raw         json.RawMessage
+}
+
+// RenderedMessage is provider-native bytes plus the two strings every provider needs.
+type RenderedMessage struct {
+	Fallback string            // top-level plain text. Push notification + screen reader content.
+	Summary  string            // short preview
+	Payload  json.RawMessage   // channel-native (Slack: {text,attachments,unfurl_*})
+	Hash     string            // sha256 of Payload; skips no-op updates
+	Metadata map[string]string // provider metadata (Slack message metadata)
+}
+
+// ErrorClass drives retry policy. The CLASSIFICATION drives retry, never the provider.
+type ErrorClass string
+
+const (
+	ClassRetryable     ErrorClass = "retryable"
+	ClassRateLimited   ErrorClass = "rate_limited"
+	ClassPermanent     ErrorClass = "permanent"
+	ClassConfigInvalid ErrorClass = "config_invalid"
+	ClassAuthExpired   ErrorClass = "auth_expired"
+)
+
+type Error struct {
+	Class      ErrorClass
+	RetryAfter time.Duration
+	Provider   string
+	Code       string // provider error code, verbatim ("ratelimited", "channel_not_found", …)
+	Cause      error
+}
+
+func (e *Error) Error() string { return e.Provider + ": " + e.Code }
+func (e *Error) Unwrap() error { return e.Cause }
+
+// Renderer is a PURE FUNCTION. No I/O. Golden-file tested.
+type Renderer interface {
+	ID() RendererID
+	Supports(Capability) bool
+	Render(ctx context.Context, v *NotificationView, o RenderOptions) (RenderedMessage, error)
+}
+
+type RenderOptions struct {
+	Mode           Mode
+	Verbosity      Verbosity
+	ShowFieldEmoji bool
+	BaseURL        string // oto's public URL, for deep links
+	MaxInstances   int    // default 10
+}
+```
+
+### F.2 NotificationView — the channel-agnostic read model
+
+Built **once per delivery, at claim time** (C11) by `notification/service.ViewService`. It is denormalised on purpose: renderers must never query.
+
+```go
+package domain // internal/channels/domain
+
+import "time"
+
+type NotificationView struct {
+	Org        OrgRef
+	Reason     string // notification.Reason, §H.6
+	Group      GroupView
+	Alerts     []AlertView  // members, newest first, already capped by RenderOptions.MaxInstances
+	Focus      *AlertView   // set when the fact is about ONE alert (ack, refire, rule change)
+	Occurrence *OccurrenceView
+	Rule       *RuleView
+	RuleChange *RuleChangeView
+	Enrichments map[string]EnrichmentView // keyed by enricher name
+	Actor      *ActorView    // who did it, for human-caused reasons
+	Comment    string
+	Actions    []Action
+	Links      Links
+	Previous   *PreviousState // for the strikethrough trick (§H.4)
+	StormCount int            // >0 when the group is in storm mode
+	RenderedAt time.Time
+}
+
+type OrgRef struct{ ID, Slug, Name string }
+
+type GroupView struct {
+	ID, GroupKey    string
+	Generation      int
+	Title           string
+	Receiver        string
+	GroupLabels     map[string]string
+	State           string // open | closed
+	Severity        string
+	FiringCount     int
+	SuppressedCount int
+	ResolvedCount   int
+	ExpiredCount    int
+	TotalCount      int
+	AckedCount      int
+	StormMode       bool
+	FirstSeenAt     time.Time
+	LastActivityAt  time.Time
+	SourceGroupKey  string // display only, NEVER parsed
+	ClusterKey      string
+}
+
+type AlertView struct {
+	ID, AlertKey, SourceFingerprint string
+	AlertName, Severity, Namespace, Service, ClusterKey string
+	Labels, Annotations map[string]string
+	GeneratorURL string
+	State, AckState string
+	FirstSeenAt, LastSeenAt time.Time
+	TotalOccurrences int
+	IsFlapping bool
+	Value      *float64
+}
+
+type OccurrenceView struct {
+	ID string
+	Seq int
+	State, AckState, SuppressionReason, ResolveReason string
+	StartedAt time.Time
+	EndedAt   *time.Time
+	Duration  time.Duration
+	ReopenCount int
+	AckedByLabel string
+	AckedAt   *time.Time
+	AckNote   string
+}
+
+type RuleView struct {
+	SnapshotID, Fingerprint      string
+	File, Group, Name            string
+	Expr                         string
+	For, KeepFiringFor           time.Duration
+	Labels, Annotations          map[string]string
+	Origin, MatchConfidence      string
+	CapturedAt                   time.Time
+}
+
+// RuleChangeView is the headline differentiator's payload.
+type RuleChangeView struct {
+	PreviousSnapshotID   string
+	PreviousFingerprint  string
+	PreviousCapturedAt   time.Time
+	ExprChanged          bool
+	PreviousExpr, NewExpr string
+	ForChanged           bool
+	PreviousFor, NewFor  time.Duration
+	LabelDiff            map[string][2]string // name -> [old,new]; "" means absent
+	AnnotationDiff       map[string][2]string
+}
+
+type EnrichmentView struct {
+	Enricher string
+	Status   string
+	Payload  map[string]any
+	Warnings []string
+	Error    string
+	ComputedAt time.Time
+}
+
+type ActorView struct{ Kind, ID, Label string }
+
+type PreviousState struct{ State, AckState string }
+
+type Action struct {
+	ID      string // "oto.ack" | "oto.unack" | "oto.noop.runbook" | "oto.noop.silence" | …
+	Label   string
+	Style   string // "" | "primary" | "danger"
+	URL     string // set => link action; the handler still MUST ack it (§H.8)
+	Value   string // OPAQUE ID ONLY. Never a payload. Never trusted.
+	Confirm bool
+}
+
+type Links struct {
+	Group, Alert, Timeline    string // oto deep links
+	Prometheus, Alertmanager  string
+	AlertmanagerSilenceNew    string // deep link, §H.3 — v1's ONLY silence affordance (R3)
+	Runbook                   string
+	GrafanaDashboard, GrafanaPanel, GrafanaImage string // Grafana-sourced only
+}
+```
+
+### F.3 Enricher — `internal/enrichment/domain`
+
+```go
+package domain
+
+import (
+	"context"
+	"time"
+)
+
+type Phase int
+
+const (
+	PhaseInline Phase = 1 // runs inside the pre-notification budget
+	PhaseAsync  Phase = 2 // runs after the first notification; result triggers an update
+)
+
+type Status string
+
+const (
+	StatusOK      Status = "ok"
+	StatusPartial Status = "partial"
+	StatusSkipped Status = "skipped"
+	StatusFailed  Status = "failed"
+	StatusTimeout Status = "timeout"
+)
+
+// Enricher produces derived context. Registered once at boot in internal/app/enrichers.go.
+type Enricher interface {
+	Name() string        // stable id: "prom.rule", "alert.history", "silence.match", "runbook"
+	Version() int        // bump => cache invalidation + re-run on next occurrence
+	Phase() Phase
+	Timeout() time.Duration
+	Applicable(s *Subject) bool
+	Enrich(ctx context.Context, s *Subject) (Result, error)
+}
+
+type Subject struct {
+	OrgID       string
+	SubjectKind string // "alert" | "occurrence" | "group"
+	SubjectID   string
+	Alert       AlertSnapshot
+	Occurrence  OccurrenceSnapshot
+	Source      SourceRef
+	Prior       map[string]Result // results from already-completed enrichers in this run
+}
+
+type AlertSnapshot struct {
+	ID, AlertKey, SourceFingerprint  string
+	AlertName, Severity, Namespace, Service, ClusterKey string
+	Labels, Annotations map[string]string
+	GeneratorURL string
+}
+
+type OccurrenceSnapshot struct {
+	ID       string
+	Seq      int
+	State    string
+	StartedAt time.Time
+	SourceStartsAt time.Time
+}
+
+type SourceRef struct {
+	ID, ClusterID, ClusterKey string
+	BaseURL, PrometheusURL    string
+	Kind                      string
+}
+
+type Result struct {
+	Status   Status
+	Payload  any           // typed struct, marshalled to JSONB
+	CacheKey string        // "" => not cacheable
+	TTL      time.Duration
+	Warnings []string
+}
+```
+
+**v1 enricher set (exactly four).**
+
+| Enricher | Phase | Timeout | Produces |
+|---|---|---|---|
+| `prom.rule` | inline | 800 ms | Binds a `RuleSnapshot` to the occurrence. Primary path: decode `g0.expr` from `generatorURL`. Enrichment path: `GET /api/v1/rules?type=alert&rule_name[]=<alertname>&exclude_alerts=true`. Emits `rule.definition_changed` on drift. |
+| `runbook` | inline | 5 ms | Runbook URL from the `runbook_url` annotation, else an org-level `alertname → url` template. Pure. |
+| `alert.history` | inline | 200 ms | Occurrence counts 24h/7d/30d, flap score, previous resolve duration. One indexed query. |
+| `silence.match` | inline | 100 ms | Matching mirrored Alertmanager silences with creator, comment and expiry. |
+
+Phase budget: **2 000 ms total for all inline enrichers**, run concurrently. When the budget expires, stragglers are recorded `StatusTimeout` and **notification proceeds anyway** — the budget is a ceiling, never a wait. A timed-out inline enricher is re-enqueued as `enrich.run(phase=2)`, and its completion produces a `Reason=enriched` notification (an update, not a reply).
+
+No DAG in v1. `DependsOn` is deliberately absent — no v1 enricher depends on another. Do not add one without a SPEC amendment.
+
+### F.4 AlertSource clients — `internal/sources/domain`
+
+```go
+package domain
+
+import (
+	"context"
+	"time"
+)
+
+// AlertmanagerClient targets API v2 ONLY. v1 returns HTTP 410 since AM 0.27.0. There is no v3.
+type AlertmanagerClient interface {
+	// Status reads GET /api/v2/status. Used to learn the version and whether the
+	// receiver has send_resolved:false (C15).
+	Status(ctx context.Context) (AMStatus, error)
+
+	// Alerts reads GET /api/v2/alerts with active/silenced/inhibited/unprocessed=true.
+	// THIS IS THE ONLY WAY TO OBSERVE SUPPRESSION (C1).
+	Alerts(ctx context.Context, f AlertFilter) ([]GettableAlert, error)
+
+	// Silences reads GET /api/v2/silences. READ ONLY (R3).
+	Silences(ctx context.Context, f SilenceFilter) ([]GettableSilence, error)
+}
+
+type AMStatus struct {
+	Version         string
+	Uptime          time.Time
+	ClusterStatus   string
+	ClusterPeers    int
+	ResolveTimeout  time.Duration
+	SendResolved    map[string]bool // receiver name -> effective send_resolved
+	ServerTime      time.Time       // for clock-skew measurement
+}
+
+type AlertFilter struct {
+	Active, Silenced, Inhibited, Unprocessed bool // all default TRUE in the AM API
+	Filter                                   []string
+	Receiver                                 string
+}
+
+type GettableAlert struct {
+	Fingerprint  string
+	Labels       map[string]string
+	Annotations  map[string]string
+	StartsAt     time.Time
+	EndsAt       time.Time
+	UpdatedAt    time.Time
+	GeneratorURL string
+	Receivers    []string
+	Status       AlertStatus
+}
+
+// AlertStatus.State is the ONLY source of suppression truth.
+type AlertStatus struct {
+	State       string   // "unprocessed" | "active" | "suppressed"
+	SilencedBy  []string
+	InhibitedBy []string
+	MutedBy     []string
+}
+
+type SilenceFilter struct {
+	Active, Expired, Pending bool
+	Filter                   []string
+}
+
+type GettableSilence struct {
+	ID          string
+	Matchers    []Matcher
+	StartsAt    time.Time
+	EndsAt      time.Time
+	UpdatedAt   time.Time
+	CreatedBy   string
+	Comment     string
+	Annotations map[string]string
+	State       string // "active" | "pending" | "expired"
+}
+
+// Matcher encodes all four operators via (IsRegex, IsEqual):
+// "=" (false,true)  "!=" (false,false)  "=~" (true,true)  "!~" (true,false)
+type Matcher struct {
+	Name    string
+	Value   string
+	IsRegex bool
+	IsEqual bool
+}
+
+// PrometheusClient targets the v1 HTTP API.
+type PrometheusClient interface {
+	// Rules reads GET /api/v1/rules?type=alert&rule_name[]=…&exclude_alerts=true.
+	Rules(ctx context.Context, names []string) ([]RuleGroup, error)
+}
+
+type RuleGroup struct {
+	Name     string
+	File     string
+	Interval float64
+	Rules    []AlertingRule
+}
+
+// AlertingRule mirrors Prometheus's wire shape. Duration fields are FLOAT SECONDS
+// (600 means for: 10m) — not milliseconds, not Go duration strings.
+type AlertingRule struct {
+	Name                    string
+	Query                   string
+	Duration                float64 // the `for:` clause, SECONDS
+	KeepFiringFor           float64 // the `keep_firing_for:` clause, SECONDS
+	Labels, Annotations     map[string]string
+	State, Health, LastError string
+}
+```
+
+### F.5 Repository shapes
+
+Every repository interface is declared by its **consumer** in `internal/<domain>/service/ports.go` and implemented in `internal/<domain>/repository`. Every method's first parameter after `ctx` is a `db.TenantScope`, which can only be constructed from an authenticated principal — an arch test enforces this.
+
+```go
+package service // internal/alerts/service/ports.go
+
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/thulasiram/oto/internal/alerts/domain"
+	"github.com/thulasiram/oto/internal/platform/db"
+)
+
+// AlertRepository owns alerts. All writes are ON CONFLICT upserts (C.2).
+type AlertRepository interface {
+	UpsertBatch(ctx context.Context, s db.TenantScope, in []domain.AlertUpsert) ([]domain.AlertUpsertResult, error)
+	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Alert, error)
+	GetByAlertKey(ctx context.Context, s db.TenantScope, alertKey string) (domain.Alert, error)
+	List(ctx context.Context, s db.TenantScope, f domain.AlertFilter, p db.Keyset) ([]domain.Alert, db.Cursor, error)
+	SetProjection(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p domain.AlertProjection) error
+	SetFlap(ctx context.Context, s db.TenantScope, alertID uuid.UUID, score float32, flapping bool) error
+	DistinctLabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]string, error)
+	DistinctLabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]string, error)
+}
+
+type OccurrenceRepository interface {
+	OpenOccurrence(ctx context.Context, s db.TenantScope, in domain.OpenOccurrence) (domain.Occurrence, error)
+	GetOpenByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Occurrence, bool, error)
+	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Occurrence, error)
+	GetLatestByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Occurrence, bool, error)
+	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) ([]domain.Occurrence, db.Cursor, error)
+	Observe(ctx context.Context, s db.TenantScope, id uuid.UUID, o domain.Observation) error
+	Transition(ctx context.Context, s db.TenantScope, id uuid.UUID, t domain.Transition) error
+	SetAck(ctx context.Context, s db.TenantScope, id uuid.UUID, a domain.AckChange) error
+	BindRuleSnapshot(ctx context.Context, s db.TenantScope, id, snapshotID uuid.UUID) error
+	ReapCandidates(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]domain.Occurrence, error)
+}
+
+// EventRepository is APPEND ONLY. There is no Update and there is no Delete.
+type EventRepository interface {
+	Append(ctx context.Context, s db.TenantScope, e domain.Event) (domain.Event, bool, error) // bool = written (false = deduped, C.8)
+	AppendBatch(ctx context.Context, s db.TenantScope, e []domain.Event) (int, error)
+	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
+	ListByOccurrence(ctx context.Context, s db.TenantScope, occID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
+	ListByGroup(ctx context.Context, s db.TenantScope, groupID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
+}
+```
+
+The same shape applies to every other repository. The binding rules are:
+
+1. `ctx` first, `db.TenantScope` second, always.
+2. Return domain types, never row types, never `pgx` types.
+3. List methods take a `db.Keyset` and return a `db.Cursor`. There is no `OFFSET` anywhere in the codebase.
+4. No repository method calls another domain's repository. Cross-domain access is service → service, through an interface declared by the consumer.
+5. Any method that must participate in a caller's transaction takes the transaction from `ctx` via `db.FromContext(ctx)`. There are no `WithTx(tx)` variants.
+
+```go
+package db // internal/platform/db
+
+// TenantScope is unforgeable outside platform/authn: the field is unexported and the
+// only constructor takes an authenticated principal (or the system principal, for workers).
+type TenantScope struct{ orgID uuid.UUID }
+
+func (s TenantScope) OrgID() uuid.UUID { return s.orgID }
+
+type Keyset struct {
+	Limit  int
+	Cursor Cursor
+}
+
+type Cursor struct {
+	SortKey time.Time
+	ID      uuid.UUID
+	Hash    string // filter hash; a mismatched cursor is rejected
+	HasMore bool
+}
+
+type TimeWindow struct {
+	From time.Time // REQUIRED for every event query — this is what prunes partitions
+	To   time.Time // zero = now
+}
+```
+
+#### F.5.1 The job port — `internal/platform/jobs` (kernel finding C.4)
+
+> `Enqueuer` lives in `platform/jobs`, **not** `platform/db`. An earlier draft placed it in `db` and
+> referenced undefined `JobArgs`/`JobOption`. Corrected and defined literally.
+
+```go
+package jobs // internal/platform/jobs
+
+import (
+	"context"
+	"time"
+)
+
+// JobArgs is what every job payload implements. River's own args interface is satisfied
+// by the same method, so the concrete queue stays an implementation detail.
+//
+// EVERY payload struct MUST embed Version and set it (§G.3). A worker meeting a version it
+// does not understand parks the job; it never guesses.
+type JobArgs interface {
+	Kind() string // stable job type, e.g. "ingest.process_batch"
+}
+
+// Envelope is embedded in every payload struct.
+type Envelope struct {
+	Version int `json:"v"` // payload schema version. Required. Unknown => park.
+	OrgID   string `json:"org_id"`
+}
+
+type JobOption func(*JobConfig)
+
+type JobConfig struct {
+	Queue       string
+	Priority    int           // 1 (highest) .. 4 (lowest); default 2
+	ScheduledAt time.Time     // zero = now
+	MaxAttempts int           // 0 = queue default
+	UniqueKey   string        // "" = no uniqueness; else dedupes pending+running jobs
+	UniqueTTL   time.Duration
+}
+
+func Queue(name string) JobOption          { return func(c *JobConfig) { c.Queue = name } }
+func Priority(p int) JobOption             { return func(c *JobConfig) { c.Priority = p } }
+func ScheduledAt(t time.Time) JobOption    { return func(c *JobConfig) { c.ScheduledAt = t } }
+func MaxAttempts(n int) JobOption          { return func(c *JobConfig) { c.MaxAttempts = n } }
+func Unique(key string, ttl time.Duration) JobOption {
+	return func(c *JobConfig) { c.UniqueKey, c.UniqueTTL = key, ttl }
+}
+
+// Enqueuer is the job port. Workers and services never know the queue implementation.
+// Enqueue MUST participate in the caller's transaction when one is present in ctx
+// (db.FromContext) — that is what makes the transactional outbox work (ADR 0001).
+type Enqueuer interface {
+	Enqueue(ctx context.Context, args JobArgs, opts ...JobOption) error
+}
+```
+
+#### F.5.2 Repository parameter and result types (kernel finding C.4)
+
+These were referenced by the repository interfaces in §F.5 but never defined, blocking every
+implementation agent. Defined literally, in `internal/alerts/domain`.
+
+```go
+package domain // internal/alerts/domain
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// ---------------------------------------------------------------- observations
+
+// ObservationSource distinguishes the two producers. It is load-bearing:
+// only Reconciler may ENTER `suppressed` (T3); either may LEAVE it (T4, §B.3.1).
+type ObservationSource string
+
+const (
+	ObservedByIngest     ObservationSource = "ingest"
+	ObservedByReconciler ObservationSource = "reconciler"
+)
+
+// Observation is one normalised alert from one batch or one reconcile pass.
+// It is the ONLY input to the state machine. It is transient — never persisted as itself.
+type Observation struct {
+	Source            ObservationSource
+	BatchID           uuid.UUID
+	SourceID          uuid.UUID
+	ClusterID         uuid.UUID
+	ClusterKey        ClusterKey
+
+	AlertKey          AlertKey
+	SourceFingerprint SourceFingerprint
+	Labels            LabelSet
+	Annotations       map[string]string
+	GeneratorURL      string
+
+	// Upstream status. Webhook: firing|resolved only. Reconciler: adds active|suppressed.
+	Status            string
+	SuppressionReason string   // reconciler only; "" otherwise
+	SuppressedBy      SuppressedBy
+
+	SourceStartsAt    time.Time
+	SourceEndsAt      time.Time // zero time is legal and means "unknown" (B10/B13)
+	SourceUpdatedAt   time.Time
+	Value             *float64
+
+	ObservedAt        time.Time // oto's clock, at normalisation
+	SkewMS            int64     // ObservedAt - SourceStartsAt
+}
+
+type SuppressedBy struct {
+	SilencedBy  []string `json:"silencedBy"`
+	InhibitedBy []string `json:"inhibitedBy"`
+	MutedBy     []string `json:"mutedBy"`
+}
+
+// ---------------------------------------------------------------- alerts
+
+// AlertUpsert is one row of the batched ON CONFLICT upsert (§D.12c).
+type AlertUpsert struct {
+	ID           uuid.UUID // pre-generated uuidv7; used only if this is an INSERT
+	ClusterID    uuid.UUID
+	AlertKey     AlertKey
+	Fingerprint  SourceFingerprint
+	AlertName    string
+	Severity     *string // RAW upstream label value, not normalised (§L.4.2)
+	Namespace    *string
+	Service      *string
+	ClusterKey   ClusterKey
+	Labels       LabelSet
+	Annotations  map[string]string
+	GeneratorURL *string
+	State        State
+	SeenAt       time.Time
+}
+
+type AlertUpsertResult struct {
+	Alert       Alert
+	WasInserted bool // from (xmax = 0); drives whether `alert.created` is emitted
+}
+
+// AlertProjection is the denormalised current-state summary written onto `alerts`
+// in the SAME transaction as the occurrence transition that caused it.
+type AlertProjection struct {
+	State               State
+	CurrentOccurrenceID *uuid.UUID
+	AckState            AckState
+	SnoozedUntil        *time.Time // §B.8 projection of the active alert_snoozes row
+	LastSeenAt          time.Time
+	LastStateChangeAt   time.Time
+	TotalOccurrences    int
+}
+
+// AlertFilter is the compiled, validated form of the §E.3 query string.
+// Nil/empty slices mean "no constraint on this dimension".
+type AlertFilter struct {
+	States      []State
+	Severities  []string  // raw label values
+	Namespaces  []string
+	ClusterKeys []string
+	Services    []string
+	AlertNames  []string
+	AckState    *AckState
+	Flapping    *bool
+	Snoozed     *bool     // nil = INCLUDE BOTH. The default list never hides snoozed alerts (B.8.6).
+	LabelsAll   map[string]string   // AND:  labels @> …
+	LabelsAny   map[string][]string // IN:   labels @> {k:v1} OR labels @> {k:v2}
+	LabelsNone  map[string]string   // NOT:  NOT (labels @> …)
+	Since       *time.Time
+	Query       string // full-text over alerts_text_idx
+	FilterHash  string // must equal Cursor.Hash or the cursor is rejected (§E.1)
+}
+
+// ---------------------------------------------------------------- occurrences
+
+type OpenOccurrence struct {
+	ID              uuid.UUID
+	AlertID         uuid.UUID
+	GroupID         *uuid.UUID
+	Seq             int
+	StartedAt       time.Time
+	SourceStartsAt  time.Time
+	SourceEndsAt    *time.Time
+	SourceUpdatedAt *time.Time
+	ReopenOf        *uuid.UUID
+	Value           *float64
+	SkewMS          int64
+}
+
+// TransitionKind names an edge in §B.3. It is NOT a state.
+type TransitionKind string
+
+const (
+	TransitionObserve     TransitionKind = "observe"      // T2
+	TransitionSuppress    TransitionKind = "suppress"     // T3  (reconciler only)
+	TransitionUnsuppress  TransitionKind = "unsuppress"   // T4  (reconciler OR ingest, §B.3.1)
+	TransitionResolve     TransitionKind = "resolve"      // T5
+	TransitionExpire      TransitionKind = "expire"       // T6
+	TransitionReopen      TransitionKind = "reopen"       // T8
+)
+
+// Transition is the persisted effect of one edge. Produced by Occurrence.Transition,
+// never assembled by hand in a repository or a handler.
+type Transition struct {
+	Kind              TransitionKind
+	ToState           State
+	SuppressionReason *string
+	SuppressedBy      *SuppressedBy
+	ResolveReason     *string
+	EndedAt           *time.Time // ALREADY CLAMPED to >= started_at (§B.3.2)
+	LastObservedAt    time.Time
+	SourceEndsAt      *time.Time
+	SourceUpdatedAt   *time.Time
+	ReopenCount       *int
+	Value             *float64
+	DetectedBy        ObservationSource
+	Clamped           bool // true when EndedAt was clamped; surfaced on the event payload
+}
+
+// AckChange carries both directions. Ack fields are all-or-nothing (occ_ack_ck).
+type AckChange struct {
+	To      AckState
+	By      *uuid.UUID // nil for actor_kind='system' (T10 new-occurrence auto-unack)
+	ByLabel *string
+	At      time.Time
+	Note    *string
+	Reason  string // "manual" | "new_occurrence"
+}
+
+// ---------------------------------------------------------------- snooze (§B.8)
+
+type SnoozeRequest struct {
+	AlertID uuid.UUID
+	Until   time.Time // ALREADY validated to be within [now+5m, now+30d]
+	By      *uuid.UUID
+	ByLabel string
+	Note    *string
+}
+
+type SnoozeEnd struct {
+	SnoozeID uuid.UUID
+	Reason   string // "expired" | "manual" | "superseded"
+	By       *uuid.UUID
+	ByLabel  *string
+	At       time.Time
+}
+
+// SnoozeRepository — declared by alerts/service, implemented in alerts/repository.
+type SnoozeRepository interface {
+	Create(ctx context.Context, s db.TenantScope, in SnoozeRequest) (Snooze, error)
+	GetActive(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (Snooze, bool, error)
+	End(ctx context.Context, s db.TenantScope, in SnoozeEnd) (Snooze, error)
+	ExpiredCandidates(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]Snooze, error)
+}
+```
+
+---
+
+## G. Async / job model
+
+### G.1 Prime directive
+
+> **Ingestion completes in ONE short Postgres transaction that touches only `ingest_dedup`, `ingest_batches` and the job queue. Nothing on the ingest path makes an outbound network call.**
+
+```
+POST /api/v1/ingest/alertmanager/{source_id}
+  ├─ authenticate ingest token   (one indexed lookup on api_tokens.token_hash, LRU-cached 60s)
+  ├─ read body with io.LimitReader, cap 8 MiB   -> over cap: 413 + ingest_rejections row
+  ├─ decode leniently (unknown fields ignored; Grafana extras optional)
+  ├─ redact per source config
+  ├─ compute checksum + batch_dedup_key (C.5)
+  └─ BEGIN  (ingest pool, 2s statement_timeout)
+       INSERT INTO ingest_dedup … ON CONFLICT DO NOTHING RETURNING batch_id
+         -> 0 rows: SELECT the original batch_id, COMMIT, return 202 {batch_id, duplicate:true}
+       INSERT INTO ingest_batches (status='pending')
+       river.InsertTx(ctx, tx, IngestProcessBatchArgs{BatchID})   -- transactional outbox
+     COMMIT
+  └─ 202 Accepted {"batch_id": "…", "alert_count": N, "duplicate": false}
+```
+
+**Target p99 < 250 ms. Hard ceiling 5 s** (Alertmanager's retry budget floor is `max(group_interval,10s)`).
+
+### G.2 Response codes (BINDING — C4)
+
+| Condition | Status | Body / headers | Rationale |
+|---|---|---|---|
+| Durably persisted (or a duplicate) | **202** | `IngestAcceptedDTO` | 2xx is a promise; the payload is on disk. |
+| Overloaded, pool exhausted, statement timeout, Postgres slow | **503** | `Retry-After: 5` | 5xx is the ONLY retried class. This is the backpressure channel. |
+| Worker/queue insert failed | **503** | `Retry-After: 5` | Same. |
+| Missing/invalid/revoked ingest token, or token not scoped to this `source_id` | **401** | problem+json | Genuinely permanent. |
+| Body over 8 MiB | **413** | problem+json | Genuinely permanent; recorded in `ingest_rejections`. |
+| Undecodable body | **400** | problem+json | Genuinely permanent; recorded in `ingest_rejections`. |
+| **Anything transient** | **NEVER 4xx. NEVER 429.** | | 4xx and 429 are not retried by Alertmanager — the notification is silently and permanently lost. |
+
+The response **body is ignored by Alertmanager on 2xx**. There is no back-channel. Never return 2xx for a payload we failed to persist.
+
+### G.3 Queues and workers
+
+| Queue | Workers | Job type | Payload | Trigger |
+|---|---|---|---|---|
+| `ingest` | 16 | `ingest.process_batch` | `{batch_id, received_at}` | Enqueued in the ingest tx |
+| `enrich` | 8 | `enrich.run` | `{occurrence_id, phase, enrichers[]}` | T1; re-enqueued on inline timeout |
+| `notify` | 8 | `notify.evaluate` | `{group_id, reason, state_version, alert_id?, occurrence_id?, actor?}` | Every lifecycle transition |
+| `deliver_slack` | 4 | `deliver.dispatch` | `{delivery_id}` | Created by `notify.evaluate` |
+| `deliver_webhook` | 8 | `deliver.dispatch` | `{delivery_id}` | Created by `notify.evaluate` |
+| `reconcile` | 2 | `source.reconcile` | `{source_id}` | Periodic, `reconcile_interval_s` (default 30 s) |
+| `reconcile` | 2 | `silences.sync` | `{source_id}` | Periodic, 60 s |
+| `lifecycle` | 4 | `occurrence.reap` | `{}` | Periodic, 60 s |
+| `lifecycle` | 4 | `group.close` | `{}` | Periodic, 60 s |
+| `lifecycle` | 4 | `flap.score` | `{}` | Periodic, 300 s |
+| `lifecycle` | 4 | `snooze.expire` | `{}` | Periodic, 60 s |
+| `lifecycle` | 4 | `notify.unacked_reminder` | `{}` | Periodic, 60 s |
+| `maintenance` | 1 | `partitions.manage` | `{}` | Periodic, 3600 s |
+| `maintenance` | 1 | `retention.prune` | `{}` | Periodic, 3600 s |
+| `maintenance` | 1 | `stats.rollup` | `{day}` | Periodic, 900 s |
+| `maintenance` | 1 | `cache.expire` | `{}` | Periodic, 600 s |
+
+Queue implementation: **River** (`riverqueue.com`), Postgres-backed, `SELECT … FOR UPDATE SKIP LOCKED`, `river.InsertTx` inside the domain transaction. Workers reach it only through `db.Enqueuer` (F.5).
+
+**Every job payload carries `"v": <int>`.** A worker that meets a payload version it does not understand MUST park the job (`river.JobCancel` + a `job.unknown_version` metric), never guess.
+
+### G.4 What `ingest.process_batch` does (the only write path into `alerts`)
+
+One transaction per batch:
+
+1. Load the batch; if `status != 'pending'`, exit (replay-safe).
+2. Normalise each `alerts[]` element to an `Observation`: apply hard caps (C.9.1) → rejects go to `ingest_rejections`; inject `inject_labels`; compute `alert_key` (C.2) and `source_fingerprint` (C.3); record `observed_skew_ms = received_at - startsAt`.
+3. `UpsertBatch` into `alerts` with `unnest(...)` — **one round trip for a 200-alert webhook**.
+4. Resolve/create the AlertGroup generation from `group_key` (C.4).
+5. Run the state machine per observation (§B.3). Collect events.
+6. `AppendBatch` events (deduped via `alert_event_keys`).
+7. Insert `ui_events` + `NOTIFY oto_events`.
+8. `river.InsertTx` for `enrich.run` and `notify.evaluate`.
+9. `UPDATE ingest_batches SET status='processed', processed_at=now()`.
+
+Transaction size guard: a batch is split into chunks of 500, each its own transaction, **unconditionally** — 500 is a cap on how much work one transaction may hold, not a target to grow into. A batch of more than 2 000 alerts is additionally marked `partial` until the last chunk commits, so `ChunkThreshold` governs the marking and never the number of transactions. The chunk is one statement against the ingest pool's 2 s `statement_timeout` (§G.10), and crossing that ceiling rolls back the whole transaction and retries it at the same size; at 500 a slow database loses one chunk of four, and the committed ones stay committed because every write beneath is idempotent (§G.5).
+
+### G.5 Idempotency and the ambiguous send
+
+Every job is at-least-once. Every handler is idempotent by construction:
+
+| Layer | Mechanism |
+|---|---|
+| Webhook | `ingest_dedup` UNIQUE `(source_id, dedup_key)` (C.5) |
+| Alert upsert | `ON CONFLICT (org_id, alert_key) DO UPDATE` |
+| Event append | `alert_event_keys` UNIQUE `(org_id, dedupe_key)` (C.8) |
+| Notification | `notifications` UNIQUE `(org_id, idempotency_key)` (C.7) |
+| Delivery fan-out | `notification_deliveries` UNIQUE `(notification_id, channel_id)` |
+| Delivery claim | `UPDATE notification_deliveries SET status='sending', attempts=attempts+1 WHERE id=$1 AND status IN ('pending','failed') RETURNING *` — an optimistic-lock claim. A duplicate worker gets zero rows and exits. |
+
+**The genuinely hard case: crash after Slack accepted, before we recorded the `ts`.** Slack has no idempotency key, and oto **never reads Slack back** (C9).
+
+The binding resolution:
+
+1. `ModeUpdateRoot` and `ModeThreadReply` on an existing thread are naturally safe — an update is idempotent, and a duplicate reply is a cosmetic cost.
+2. `ModePostRoot` is the only genuinely at-risk operation. On recovery, a delivery in `status='sending'` with no `provider_message_id` and `updated_at` older than the claim lease (120 s) is **ambiguous**.
+3. For an ambiguous `ModePostRoot`, oto **re-sends** and sets `ambiguous = true`. The rendered card carries a `context` line: `_possible duplicate after oto recovery_`. Under-delivering a firing alert is worse than a visible, labelled duplicate.
+4. For an ambiguous `ModeThreadReply` or `ModeUpdateRoot`, oto **re-sends silently** (an update is idempotent; a duplicate informational reply is harmless).
+5. `ambiguous` deliveries are listed in the UI under Deliveries with a filter. Distributed systems do not permit exactly-once and the honest design says so.
+
+### G.6 Retry policy
+
+| `ErrorClass` | Retry | Backoff | Terminal after |
+|---|---|---|---|
+| `retryable` | yes | exponential, base 2 s, factor 2, jitter ±50 %, cap 300 s | 12 attempts → `dead` |
+| `rate_limited` | yes | **`Retry-After` header, honoured exactly**; if absent, 60 s | 20 attempts → `dead` |
+| `permanent` | **no** | — | immediately `dead`, unless it is a thread-pointer error (§H.9) |
+| `config_invalid` | **no** | — | `dead`; sets `channels.health_status='config_invalid'` and raises a UI banner |
+| `auth_expired` | **no** | — | `dead`; sets `channels.health_status='auth_failed'` and raises a UI banner |
+
+`config_invalid` and `auth_expired` never retry. They are the difference between "Slack is flaky" and "your token was revoked three days ago and nobody noticed" — the second is a product feature.
+
+Slack rate limiting is handled **reactively**, by the `rate_limited` row above: Slack's `Retry-After` is honoured exactly, and 20 attempts is the ceiling before `dead`.
+
+> ⛔ There is **no pre-emptive token bucket**. This paragraph used to specify one — a Postgres bucket in `rate_limit_buckets`, keyed `slack:{team_id}:{channel_id}`, capacity 3, refill 1/s — and the table existed, fully commented, in `00014_ops.sql`. No code ever read or wrote it, so the shared-across-pods budget it described did not exist and the only limiter in oto (`platform/ratelimit`) is in-process and per-pod. The table is dropped in `00030_drop_rate_limit_buckets.sql`; the reactive path is the one that is real, and it is distributed for free because Slack is the thing counting. A pre-emptive shared budget, if it is ever wanted, needs a dedicated store rather than a write on the delivery path into the database the alert pipeline depends on.
+
+### G.7 Ordering guarantees
+
+**Guaranteed:** within one `ChannelThread`, the root message lands first and replies appear in lifecycle order.
+**Not guaranteed and not desired:** ordering across threads. Parallelism across threads is the point.
+
+> ⚠️ **AMENDED — [ADR 0023](/adr/0023-terminal-states-first-and-the-three-phase-send/).** This section used to print an ordering switch that tested *"the root has not landed"* **before** *"the thread is dead"*, and a send whose provider call sat in the same transaction as the sequence advance. Both were wrong in the way that costs a destination its voice for a week. The first wedges the exact case §G.7.3 exists to rescue: a root delivery that dies terminally leaves the thread with no `provider_thread_id`, so every delivery behind it matched case 1 and snoozed at 0.5 Hz — forever, consuming no attempt, reaching no dead-letter, raising nothing. The second re-posted the message whenever the COMMIT after `chat.postMessage` failed. What follows is what the code does; ADR 0023 records why.
+
+Mechanism — per-thread sequence gating with a Postgres advisory lock. No global serialisation, no per-thread queue:
+
+**§G.7.1 Sequence allocation.** When a delivery is created, it takes `thread_seq = channel_threads.next_seq++` **inside the creating transaction**. Sequence assignment is therefore totally ordered by the causal order of domain events, and the sequence is contiguous from 1. `last_sent_seq` advances by exactly one per **resolved** slot, where resolved means `sent`, `dead` or `skipped`.
+
+**§G.7.2 The `deliver.dispatch` worker.** Three phases, with the provider call deliberately **between two transactions**, and an ordering switch that tests **the terminal states first**. Two rules it depends on, both binding:
+
+- **The mode the gate is asked about is the mode the sender uses.** It is re-derived against the thread as it actually stands (§H.6) exactly once, before the decision. A gate fed the mode stored on the row blocks on the very condition the sender already knows how to repair.
+- **A snooze consumes no attempt**, by design: an item waiting its turn has not failed, and eroding its retry budget while it queues would kill exactly the messages a busy thread is trying hardest to deliver. The consequence is that **no retry ceiling can ever end a wait.** `MaxWait` is the only thing that can, and every `recover_thread` path must reach a terminal outcome rather than snoozing again.
+
+```go
+// ── TX 1 — decide, claim, render. THE PROVIDER IS NOT CALLED IN HERE. ────────
+// serialise all sends for this thread across all worker pods; COMMIT releases it
+if err := db.AdvisoryXactLock(ctx, tx, hashThread(d.ThreadID)); err != nil { return err }
+
+th := threads.Get(ctx, scope, d.ThreadID)          // read UNDER the lock
+mode := effectiveMode(d, th, channel)              // RE-DERIVED (§H.6); the only mode there is
+
+switch {
+case th.State == "dead":                           // ── TERMINAL STATES FIRST ──
+    return recoverThread(ctx, d, th)               // §G.7.3 / §H.9 — never a snooze
+case th.State == "frozen":
+    return abandon(ctx, d, "thread_frozen")        // status='skipped'
+
+case d.ThreadSeq <= 0:
+    return abandon(ctx, d, "unsequenced")          // it never joined the thread's order
+case d.ThreadSeq <= th.LastSentSeq:
+    return nil                                     // already_resolved: duplicate worker; exit quietly
+
+case mode.NeedsRoot() && !th.RootLanded() && d.ThreadSeq == th.LastSentSeq+1:
+    // THIS ITEM IS THE HEAD AND THERE IS NO ROOT. Every earlier slot is resolved,
+    // so nothing left in this thread will ever post one. Recover NOW, not in
+    // fifteen minutes: waiting here is waiting for a message nobody will send.
+    return recoverThread(ctx, d, th)               // reason root_never_landed
+case mode.NeedsRoot() && !th.RootLanded():
+    if now.Sub(d.CreatedAt) > MaxWait { return recoverThread(ctx, d, th) }
+    return river.JobSnooze(2 * time.Second)        // awaiting_root
+case d.ThreadSeq != th.LastSentSeq+1:
+    if now.Sub(d.CreatedAt) > MaxWait { return recoverThread(ctx, d, th) }
+    if gapRecover(ctx, gate, d.ThreadID) > 0 { return redecide(ctx, d) }  // eager sweep
+    return river.JobSnooze(1 * time.Second)        // awaiting_predecessor
+}
+
+d = claim(ctx, d)                                  // status='sending', attempts+1 (§G.5)
+if !channel.Live() {                               // disabled between fan-out and now
+    return abandon(ctx, d, "channel_disabled")
+}
+view := views.Build(ctx, scope, d)                 // C11: render at CLAIM time
+msg := renderer.Render(ctx, view, opts)
+if mode == domain.ModeUpdateRoot && msg.Hash == lastRootHash(ctx, d.ThreadID) {
+    return abandon(ctx, d, "duplicate_render")     // §G.7.4
+}
+persistRendered(ctx, d, msg)                       // BEFORE the network call, always
+// COMMIT. THE CLAIM IS NOW DURABLE: a crash after this leaves a row saying
+// "this may have been sent", which is what §G.5's lease and `ambiguous` key on.
+
+// ── the provider call: no transaction, no pooled connection, no lock held ────
+ref, sendErr := channel.Deliver(ctx, req)          // exactly one call, for exactly one mode
+
+// ── TX 2 — record what the provider said. context.WithoutCancel, 30 s budget. ─
+db.AdvisoryXactLock(ctx, tx, hashThread(d.ThreadID))
+if sendErr != nil { return fail(ctx, d, sendErr) } // §G.6 classification, §H.9 transitions
+if !markSent(ctx, d, ref) {                        // guard: WHERE status='sending'
+    metrics.ClaimLost.Inc()                        // the claim was lost mid-call: record NOTHING
+    return nil
+}
+threads.RecordRoot / RecordReply / AdvanceSent(ctx, d.ThreadID, d.ThreadSeq)
+// last_sent_seq = GREATEST(last_sent_seq, d.ThreadSeq) — the head moves HERE and nowhere else
+```
+
+The gate's verdicts, in evaluation order. The vocabulary is closed; every verdict is a label on `oto_thread_order_decisions_total{action,reason}`:
+
+| Condition | Verdict | Worker behaviour |
+|---|---|---|
+| `state='dead'` | `recover_thread` / `thread_dead` | §H.9 transition. **Never a snooze** |
+| `state='frozen'` | `abandon` / `thread_frozen` | `skipped` + `delivery.skipped` |
+| `thread_seq <= 0` | `abandon` / `unsequenced` | `skipped`; a bug in the creating transaction, not a wait |
+| `thread_seq <= last_sent_seq` | `out_of_order` / `already_resolved` | exit quietly — duplicate worker, or recovery already moved past |
+| needs a root, none landed, **and this item is the head** | `recover_thread` / `root_never_landed` | recover immediately; `MaxWait` is not waited out |
+| needs a root, none landed, behind the head | `wait_for_root` / `awaiting_root` | snooze **2 s**, until `MaxWait` |
+| `thread_seq != last_sent_seq + 1` | `wait_for_predecessor` / `awaiting_predecessor` | eager gap sweep, then snooze **1 s**, until `MaxWait` |
+| otherwise | `proceed` / `in_order` | claim, render, send |
+
+**`MaxWait` is 15 minutes**, measured from `notification_deliveries.created_at` and observed on `oto_thread_head_wait_seconds`. Past it the two waiting verdicts become `recover_thread` with reason `root_never_landed` or `head_of_line_stalled`. Fifteen minutes is chosen against Alertmanager's `repeat_interval` floor: an item still stuck after that will be superseded by a fresher notification anyway, so continuing to wait preserves nothing and delays everything behind it. A delivery with an unknown `created_at` counts as having waited zero — unknown must never be read as "forever", which would recover a healthy thread.
+
+**Why the call is between the transactions, not inside one.** A network call and a database write are not committable together, and pretending otherwise inverts the failure mode: a cancelled context or a failed COMMIT between `chat.postMessage` and the delivery update rolled the claim back to `pending`, un-incremented `attempts`, and let the job **re-post the message** — while erasing the `sending` status that is the only thing §G.5's ambiguity latch keys on. Ordering survives the shorter lock because ordering was never the lock's job: `last_sent_seq` does not move until TX 2, so every item behind this one still sees itself out of turn and waits. The lock serialises **deciding**, not sending.
+
+| Phase fails | Outcome |
+|---|---|
+| TX 1 rolls back | nothing was claimed and nothing was sent. The job retries; no message exists |
+| the provider call fails or times out | TX 2 records §G.6's classification and, for a thread-pointer error, §H.9's transition. The head has not moved |
+| the process dies between the COMMIT and TX 2 | the row stays `sending` with no `provider_message_id`. §G.5's 120 s lease reclaims it, `ambiguous` latches on `post_root`, and the card carries the visible marker |
+| TX 2's `markSent` guard matches zero rows | the lease expired while the provider was answering and another worker took the row. **Record nothing, advance nothing**: writing the root handle from a claim we no longer hold overwrites a newer truth, and erroring would re-send a message that landed. `oto_delivery_claim_lost_total` is the alert and the provider id is in the log |
+
+**§G.7.3 Gap recovery, and the terminal outcome that bounds it.** Sequence gating alone deadlocks the moment one delivery can never complete. Recovery walks forward from `last_sent_seq + 1` under the same advisory lock and advances the head past every finished-but-unsent slot, appending a `delivery.skipped` event for each and counting it on `oto_thread_gap_recovered_total{reason}`:
+
+| Slot | Reason | Advance? |
+|---|---|---|
+| the thread itself is `dead` | `thread_dead` | yes — every remaining slot, so the backlog becomes visibly skipped rather than invisibly pending |
+| no delivery row holds the seq (the allocating tx rolled back after `next_seq++`) | `missing_delivery` | yes — nothing can ever fill it |
+| `sent` | `already_sent` | yes, but this is **not a skip**: no `delivery.skipped` event and no `oto_thread_gap_recovered_total` increment. The head is catching up with a message the destination is currently displaying |
+| `skipped` | `skipped_delivery` | yes |
+| `dead` | `dead_delivery` | yes |
+| `sending` within the 120 s claim lease | — | **no.** Somebody is working it |
+| `pending`, `failed`, or a claim past its lease | — | **no.** A pending item will run; an expired claim is §G.5's ambiguous case, which is re-sent with `ambiguous = true` rather than skipped |
+
+Recovery never skips a slot that is still in play — doing so would send a reply before the message it replies to — so it **names** the delivery that owns the head, and the worker re-enqueues that delivery. The commonest stall is a `pending` row whose job is simply gone: discarded past its ceiling, cancelled, or lost with the pod that held it.
+
+`recover_thread` then resolves, in this order and with **no path that snoozes without having made progress**:
+
+1. Read the thread first. If it is `dead`, run §H.9: a **recoverable** `dead_reason` (`message_not_found`, `cannot_reply_to_message`, `edit_window_closed`, `restricted_action_thread_locked`) clears `provider_thread_id`, re-points this delivery to `post_root` with `ambiguous = true`, and re-enqueues it. A **non-recoverable** one (`channel_not_found`, `is_archived`, `not_in_channel`, `token_revoked`, `account_inactive`) sweeps the whole backlog and marks this delivery `dead`/`permanent`. The thread is read **before** anything is swept, because a sweep on a dead thread would skip the very slot the fresh root is about to occupy.
+2. Otherwise sweep, re-enqueue whatever owns the head, then re-decide against the state the sweep produced — including the re-derived mode, which turns a reply with no root into the fresh root that repairs the thread. `proceed` sends; `abandon` skips; `out_of_order` exits.
+3. If the head moved, **or** a real delivery owns it and now has a job, snooze 2 s. Progress is bounded: the head can only advance as far as `next_seq`, and the slot ahead resolves or dies on its own attempt ceiling.
+4. If **nothing moved and nothing owns the head**, there is no state left another pass could find, and another snooze would be the wedge wearing liveness as a costume. The delivery is **dead-lettered**: `status='dead'`, `error_class='permanent'`, error text *"the thread could not make progress and recovery had nothing to advance (`<reason>`)"*, the head is advanced past its slot, a `delivery.dead` event is appended and the notification's aggregate status is recomputed. An operator reading "oto gave up" on the alert page is the whole point of §H.9, and it is strictly better than a destination that has been silently quiet for a week.
+
+**A poisoned message can never wedge a thread forever.** That sentence is binding, and §G.7.2's terminal-states-first order, `MaxWait`, and this dead-letter are jointly what make it true.
+
+**§G.7.4 Coalescing.** A `ModeUpdateRoot` whose `rendered_hash` equals the thread's last root hash is skipped as a no-op — this is what turns a flapping alert's forty identical updates into one send and thirty-nine visible `skipped` rows.
+
+Why not a per-thread FIFO queue: thread count is unbounded (one per group generation) and no queue system handles millions of ephemeral ordered partitions well. Advisory locks make ordering a property of the write, cost one hash, and need no new infrastructure.
+
+### G.8 The reconciler (`source.reconcile`) — mandatory, CORE
+
+Runs every `reconcile_interval_s` per source. It is **not** an ingestion path (C18); it produces `Observation`s that feed the same state machine, and it is the **only** producer of `suppressed`.
+
+1. `GET /api/v2/status` → record `am_version`, `send_resolved`, `clock_skew_ms` (`ServerTime` vs ours). Raise a `send_resolved_false` warning if any matching receiver has it disabled (C15).
+2. `GET /api/v2/alerts?active=true&silenced=true&inhibited=true&unprocessed=true` → the authoritative current world.
+3. For each returned alert: compute `alert_key`, feed an Observation. `status.state == "suppressed"` → T3 with `suppression_reason` from the first non-empty of `silencedBy` (→ `silence`), `inhibitedBy` (→ `inhibition`), `mutedBy` (→ `mute_time_interval`). `status.state == "active"` → T4 if currently suppressed, T2 otherwise.
+4. **Divergence check.** Compare oto's set of open occurrences for this source against the returned set:
+   - In oto, not in Alertmanager → candidate for T6 (`expired`), left to the reaper so the grace period applies.
+   - In Alertmanager, not in oto → T1 (we missed a webhook). Emit `reconciler_recovered_total`.
+   - Record `source_health.divergence_count`. **This metric is the canary for every correctness bug in the system** and MUST be on oto's own dashboard.
+5. On failure: `consecutive_failures++`; at 3, `source_health.status='unreachable'`, which **blocks the reaper** (§B.4).
+
+### G.9 Unacked reminder (`notify.unacked_reminder`)
+
+Alertmanager's `repeat_interval` default is **4 hours** — far too slow for an unacknowledged critical. oto runs its own clock. For every policy with `unacked_reminder_after_s` set, an open group whose oldest member occurrence has been `firing` and `unacked` for longer than that produces one `Reason=unacked_reminder` notification, delivered as a **thread reply with `reply_broadcast: true`** (Slack advises using broadcast sparingly, so it is gated on policy + unacked duration and fires **at most once per group generation**).
+
+> ### ⛔ G.9.1 The one-stage clause (BINDING, PERMANENT)
+>
+> **There is exactly ONE stage, forever.** `unacked_reminder_after_s` is a **scalar** and MUST NEVER
+> become an array, a ladder, or a list of stages. It MUST NEVER acquire a target other than the
+> policy's existing `channel_ids`. **A second stage is an escalation policy and is permanently OUT**
+> (SCOPE-BOUNDARY §4.7, §6 SS-2).
+>
+> This is the shortest path from oto to PagerDuty and it is four small pull requests:
+> `escalate_after_s[]` → per-stage targets → targets that are people → a rota to resolve the person →
+> telephony. The rename to `unacked_reminder` is the load-bearing part: while the word "escalation"
+> lives in the schema, stage two reads as a natural extension of the word rather than as a scope
+> violation.
+>
+> The reminder is triggered by **the signal's own unacked duration** and delivered to **the same
+> channels the policy already routes to**. It is a fact about the signal, not a routing decision about
+> a human. When a customer genuinely needs multi-stage escalation, they need PagerDuty or incident.io,
+> and oto's job is to be a clean event source for it (SCOPE-BOUNDARY §7, H-2/H-3).
+
+**Mentions.** `channels.config.mention_on_reminder` (§L.5.1) may name Slack usergroups, `!here`,
+`!channel`, **and individual users**. A cap of **10** entries applies.
+
+> **A static mention list is NOT a rota and will never gain time-awareness.** `mention_on_reminder`
+> is a fixed, per-channel audience. It MUST NEVER acquire `time_of_day`, `days_of_week`, `timezone`,
+> a rotation order, a "current" pointer, an override table, or any field that makes *which* entry is
+> mentioned depend on *when* the reminder fires. The moment the list becomes time-aware it is a
+> schedule, and schedules are permanently out (SCOPE-BOUNDARY §4.8). Individual mentions are
+> permitted because addressing a known audience is not the same as *resolving* who is responsible;
+> the resolution step is the thing that is banned.
+
+### G.10 Two connection pools (binding)
+
+`platform/db` exposes exactly two pools:
+
+| Pool | Max conns | `statement_timeout` | Used by |
+|---|---|---|---|
+| `ingest` | 25 % of total, min 4 | 2 s | The webhook handler and `ingest` queue workers only |
+| `general` | remainder | 15 s | API reads, all other workers |
+
+Acquisition timeout on `ingest` is **500 ms**; exceeding it returns 503 (§G.2). **UI queries must never be able to starve ingestion.**
+
+---
+
+## H. Slack rendering rules
+
+Implemented in `internal/channels/render/slack`. **Every renderer is a pure function with a checked-in `testdata/*.golden.json`.** A Block Kit structural validator runs in CI. We never discover a broken layout in production.
+
+### H.1 Hard rules
+
+| # | Rule | Source |
+|---|---|---|
+| S1 | The title is a **`section`** with a bold mrkdwn link. **`header` MUST NOT be used** — it is `plain_text` only, so it costs the deep link for no gain. | C6 |
+| S2 | The **`alert` block MUST NOT be used.** Despite the name it is modals-only. It may be used in a confirm modal, never in a channel message. | Research B1 |
+| S3 | **Exactly ONE attachment** wraps **all** blocks and carries `color`. Never more than one. | C7 |
+| S4 | **`color` encodes STATE. Severity encodes as a leading emoji.** The colour must always answer "do I need to act?". | C7 |
+| S5 | The top-level `text` is a **complete sentence**, written deliberately. It is the push notification, the sidebar preview, the search snippet, **and the only thing screen readers read**. | Research B8b |
+| S6 | `unfurl_links: false`, `unfurl_media: false` on every message. | Research B9 |
+| S7 | The Slack `ts` is stored as **TEXT**, never parsed as a float. The durable handle is the pair `(channel_id, ts)`, and `channel_id` is taken from the **API response**, not the request. | Research B2 |
+| S8 | Button `value` carries an **opaque UUID only**. Never a payload, never trusted. State is looked up in oto's DB. | Research B5 |
+| S9 | Every `url` button and every overflow option **still delivers an interaction payload that must be acked**. Handlers MUST have an explicit no-op branch for `oto.noop.*`, or users see "This app is not responding". | Research B9 |
+| S10 | Exactly **one** button may carry `style: "primary"`. `danger` is not used inline; destructive actions live in the overflow behind a confirm. | Research B9 |
+| S11 | Suppress zero-information fields. Do not render "1 instance", an empty team, or a count of 0. | Research B8c #9 |
+| S12 | `block_id` is regenerated on every render (`oto_<block>_<render_nonce>`), because Slack advises a new `block_id` per message iteration. | Research B1 |
+| S13 | All timestamps use `<!date^<epoch>^{time}|09:14 UTC>` so they render in each viewer's timezone. Durations are computed server-side and re-rendered on update. | Research B9 |
+| S14 | Start a **fresh root card** when a thread exceeds **30 replies** (`channel_threads.reply_count`), linking back to the previous thread. | Research B8b/Knock |
+| S15 | The title is the alert's **NAME**, never a serialised label map. `cluster` is the chip beside it, `namespace`/`service` are fields; only labels the card shows nowhere else are appended as `k=v`. A title reading `alertname=X, cluster=Y` spends the two words an operator actually reads on the string `alertname=`. | Live run |
+| S16 | **`Started` is upstream's `startsAt`, and `Firing for` is measured from it, over the GROUP.** oto's own first sighting is a different fact — it lags by `group_wait` plus ingest latency, twenty-one minutes in the first live run — and belongs in the footer, if anywhere. A duration taken from the triggering alert's occurrence describes that alert, not the outage, and reads `under a second` on a group that has been firing for eighty. | Live run |
+| S17 | Prose in the top-level `text` is cut at a **sentence or clause boundary**, and the terminator is never stacked on an ellipsis. `…no real service…. Severity critical` is what a naive rune cut plus a caller's own full stop produces, and it reads as software that ran out of something. | Live run |
+
+### H.2 Palettes (binding)
+
+**State → attachment `color`** (adopted from Grafana OnCall — the best-tested open palette):
+
+| Group state | Hex | Emoji |
+|---|---|---|
+| `firing` | `#a30200` | `:fire:` |
+| `acknowledged` (any member acked, none firing-unacked) | `#daa038` | `:eyes:` |
+| `suppressed` | `#dddddd` | `:mute:` |
+| `resolved` | `#2eb886` | `:white_check_mark:` |
+| `expired` | `#6b6b6b` | `:grey_question:` |
+| `storm` | `#7b1fa2` | `:zap:` |
+
+> `expired` and `storm` have no upstream precedent; these two values are oto originals. Everything else is the verified OnCall palette.
+
+**Severity → leading emoji** (never colour alone — Slack's accessibility guidance requires more than colour):
+
+| `severity` label | Emoji |
+|---|---|
+| `critical` / `page` | `:rotating_light:` |
+| `warning` | `:warning:` |
+| `info` / `none` | `:large_blue_circle:` |
+| anything else / absent | `:white_circle:` |
+
+### H.3 Root message — exact structure
+
+Posted once per **AlertGroup generation**. Updated in place for its entire life.
+
+```json
+{
+  "channel": "C0123456789",
+  "text": ":rotating_light: [FIRING] HighErrorRate — 3 of 12 api instances in prod-eu above 5% errors. Severity critical, team payments, firing since 09:14 UTC. Runbook: https://runbooks.example.com/HighErrorRate",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "metadata": {
+    "event_type": "oto_alert_group",
+    "event_payload": { "group_id": "01J9XQ2K7M3T", "generation": 1, "delivery_id": "01J9XQ2K8ZZZ" }
+  },
+  "attachments": [
+    {
+      "color": "#a30200",
+      "fallback": "[FIRING] HighErrorRate on prod-eu",
+      "blocks": [
+        { "type": "section", "block_id": "oto_title_1",
+          "text": { "type": "mrkdwn",
+            "text": ":rotating_light: *<https://oto.example.com/groups/01J9XQ2K7M3T|HighErrorRate>*  ·  `prod-eu`\n_Error rate above 5% for 10m_" } },
+
+        { "type": "section", "block_id": "oto_body_1",
+          "text": { "type": "mrkdwn",
+            "text": "3 of 12 `api` instances are returning >5% of requests as 5xx. Checkout and payment confirmation are affected." } },
+
+        { "type": "section", "block_id": "oto_fields_1",
+          "fields": [
+            { "type": "mrkdwn", "text": "*Status*\n:fire: Firing" },
+            { "type": "mrkdwn", "text": "*Severity*\n:rotating_light: critical" },
+            { "type": "mrkdwn", "text": "*Service*\n`api`" },
+            { "type": "mrkdwn", "text": "*Namespace*\n`payments`" },
+            { "type": "mrkdwn", "text": "*Started*\n<!date^1786439662^{time}|09:14 UTC>" },
+            { "type": "mrkdwn", "text": "*Firing for*\n21m" }
+          ] },
+
+        { "type": "section", "block_id": "oto_members_1",
+          "text": { "type": "mrkdwn",
+            "text": "*Affected instances*\n• `api-7f9c-2x4k` — 12.4%\n• `api-3b1d-9p2m` — 8.1%\n• `api-0c5e-7q1n` — 6.7%\n_… and 9 more_" } },
+
+        { "type": "context", "block_id": "oto_rule_1",
+          "elements": [ { "type": "mrkdwn",
+            "text": ":mag: `sum(rate(http_requests_total{job=\"api\",code=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"api\"}[5m])) > 0.05`   `for: 10m`" } ] },
+
+        { "type": "actions", "block_id": "oto_actions_1",
+          "elements": [
+            { "type": "button", "style": "primary",
+              "text": { "type": "plain_text", "text": ":eyes: Acknowledge", "emoji": true },
+              "action_id": "oto.ack", "value": "01J9XQ2K7M3T" },
+            { "type": "button",
+              "text": { "type": "plain_text", "text": ":book: Runbook", "emoji": true },
+              "action_id": "oto.noop.runbook", "url": "https://runbooks.example.com/HighErrorRate" },
+            { "type": "button",
+              "text": { "type": "plain_text", "text": ":mute: Silence", "emoji": true },
+              "action_id": "oto.noop.silence",
+              "url": "https://alertmanager.example.com/#/silences/new?filter=%7Balertname%3D%22HighErrorRate%22%2C%20cluster%3D%22prod-eu%22%7D" },
+            { "type": "overflow", "action_id": "oto.more",
+              "options": [
+                { "text": { "type": "plain_text", "text": ":blue_book: Show timeline" }, "url": "https://oto.example.com/groups/01J9XQ2K7M3T/timeline" },
+                { "text": { "type": "plain_text", "text": ":chart_with_upwards_trend: Open in Prometheus" }, "url": "https://prometheus.example.com/graph?g0.expr=…" },
+                { "text": { "type": "plain_text", "text": ":bell: Open in Alertmanager" }, "url": "https://alertmanager.example.com/#/alerts?filter=…" },
+                { "text": { "type": "plain_text", "text": ":scroll: Rule history" }, "url": "https://oto.example.com/rules/…" },
+                { "text": { "type": "plain_text", "text": ":label: Show all labels" }, "value": "labels|01J9XQ2K7M3T" }
+              ] }
+          ] },
+
+        { "type": "context", "block_id": "oto_footer_1",
+          "elements": [ { "type": "mrkdwn",
+            "text": "oto  ·  `3f8c1a2b9d4e5f60`  ·  receiver `oto-webhook`  ·  _new alerts added_  ·  updated <!date^1786440012^{time}|09:20 UTC>" } ] }
+      ]
+    }
+  ]
+}
+```
+
+**Block budget: 8 base blocks** (title, body, fields, members, **trail**, rule, actions, footer). Ceiling is 50. Render at most `MaxInstances` (default 10) member instances inline, then `_… and N more_`. The trail is a `context` block and is suppressed until there are at least two transitions to show (S11).
+
+**The Silence button is a URL deep link into the Alertmanager UI (R3).** It performs no API call and creates no oto state. It is `oto.noop.silence` and MUST be acked (S9).
+
+### H.4 State variants (all via `chat.update` on the same `ts`)
+
+| State | `color` | Leading emoji | Status field | Actions | Other |
+|---|---|---|---|---|---|
+| **Acknowledged** | `#daa038` | `:eyes:` | `*Status*\n:eyes: ~Firing~ → Acked by <@U…>` | primary becomes `:arrow_uturn_left: Un-acknowledge` (`oto.unack`), **no** `style` | footer appends `· acked <!date^…^{time}\|…>` |
+| **Suppressed** | `#dddddd` | `:mute:` | `*Status*\n:mute: ~Firing~ → Silenced by <@U…> until <!date^…>` | Silence link → "View silence" link | Only ever set by the reconciler (C1) |
+| **Resolved** | `#2eb886` | `:white_check_mark:` | `*Status*\n:white_check_mark: ~Firing~ → Resolved`, plus `*Duration*`, `*Resolved*`, `*Instances affected*`, `*Notifications*`, `*Acknowledged*` | **buttons** collapse (Acknowledge is meaningless once it is over); the **overflow keeps every link** | **KEEP the members section and the rule context.** See "the terminal card is a receipt" below. |
+| **Expired** | `#6b6b6b` | `:grey_question:` | `*Status*\n:grey_question: ~Firing~ → Expired — oto stopped hearing about this`, plus `*Last seen*` and the same receipt fields | buttons collapse; overflow keeps every link | Must read as *"we lost sight"*, **never** as *"resolved"* |
+| **Storm** | `#7b1fa2` | `:zap:` | `*Status*\n:zap: Storm — 214 alerts in this group in 60s` | `Show timeline` | Members section replaced by a count and a link. All per-alert replies suppressed. |
+| **Flapping** | *(current state colour)* | *(current)* | adds field `*Flapping*\n:arrows_counterclockwise: 31 transitions in 1h` | unchanged | Thread replies switch to one digest per `flap_digest_interval` |
+
+> ### ⛔ Snooze does NOT change the card's colour or emoji
+> Snooze is orthogonal to state (§B.1). A snoozed firing critical stays `#a30200` /
+> `:rotating_light:`. It gains one field —
+> `*Notifications*\n:zzz: Snoozed by <@U…> until <!date^…^{time}|17:00 UTC>` — and the `Snooze`
+> action flips to `:bell: Unsnooze`. **Colouring a snoozed critical calm would be the exact lie
+> §E.1.1 exists to prevent.** The same rule binds the UI (§B.8.6).
+
+**The strikethrough trick is binding.** On every state change the previous value is rendered struck through: `~Firing~ → Resolved`. A reader who saw the card an hour ago can tell what changed, at zero block cost.
+
+> ### ⭐ THE TERMINAL CARD IS A RECEIPT, NOT A BLANK STATE
+> **This supersedes the earlier guidance that a resolved card sheds its members and its rule
+> context.** That guidance called them "zero information once resolved". It is wrong, and the first
+> live run is where it showed:
+>
+> ADR 0008 says the root card is the CURRENT STATE and the thread is the HISTORY. That is right for a
+> reader who is *in* the thread, and it describes almost nobody. **`chat.update` is completely
+> silent** — no notification, no unread badge, no bump in the channel list — so a person scrolling
+> the channel sees a calm green card and cannot tell that anything ever happened, when it fired, or
+> for how long. The update is both silent *and* destructive. In the words of the owner watching a
+> firing card mutate into a resolved one: *"it means something happened and we don't know."*
+>
+> Shedding content made it worse: the card became **least informative at exactly the moment it
+> became the only remaining record.** A resolved card must read like a **closed ticket**, not an
+> empty one.
+>
+> **Binding, for `resolved` and `expired` alike:**
+>
+> 1. **Keep the rule snapshot.** It is the record of *why this fired*, and "was that threshold
+>    sensible?" is asked afterwards. Dropping it deleted oto's differentiator from the one message
+>    that outlives the incident.
+> 2. **Keep the affected instances**, or a faithful summary when the budget demands one (storm mode
+>    keeps its count-and-link form). "Which box was it?" is the first question the next morning.
+> 3. **State the episode** in the fields: `Started` (upstream `startsAt`), `Duration`, `Resolved` /
+>    `Last seen`, `Instances affected`, `Notifications` sent, and `Acknowledged` — including
+>    **"no — it resolved unacknowledged"**, which is a fact about the SIGNAL and one of the more
+>    useful things a receipt can carry. Attribution is ACTOR, NEVER SUBJECT (ADR 0013).
+> 4. **Render a state trail** — one `context` block, in every state, not only the terminal ones:
+>    ```
+>    :red_circle: 09:14 fired  →  :eyes: 09:17 acked by `ram@example.com`  →  :white_check_mark: 09:22 resolved  ·  total 8m
+>    ```
+>    It is built from the real `alert_events` transitions, including intermediate ones
+>    (`acked`, `suppressed`, `refired`). Consecutive duplicates collapse — twelve instances firing in
+>    one batch is one `fired`, not twelve. On a long-lived alert it **elides the MIDDLE and keeps
+>    both ends**: the first entry says when this began and the last says what it is now, and
+>    truncating the tail would throw the second one away.
+> 5. **Buttons collapse; links do not.** Acknowledge goes, because it is meaningless on something
+>    that is over. Every *place to look* — timeline, Prometheus, Alertmanager, rule history, all
+>    labels — stays in the overflow, because the moment a reader most needs to look is afterwards.
+>
+> **`chat.update` remains the primary verb.** The goal is to stop the update erasing the story, not
+> to start posting more messages; `broadcast_on_resolved` stays default-off (ADR 0020).
+> `TestTheResolvedCardIsAReceiptAndNotABlankState` and `root_resolved.golden.json` pin it.
+
+### H.5 Thread reply types — exact structure
+
+Replies are posted with `thread_ts = channel_threads.provider_thread_id` (the **root** `ts`, never a reply's `ts`). All are 1–2 blocks. All carry a deliberate top-level `text`.
+
+| Reply type | Reason | Blocks | Literal example |
+|---|---|---|---|
+| `ack` | `acked` | 1 × `section` | `":eyes: *Acknowledged* by <@UA8RXUSPL> — _\"looking at the pod restarts\"_"` |
+| `unack` | `unacked` | 1 × `section` | `":arrow_uturn_left: *Un-acknowledged* by <@UA8RXUSPL>"` (or `— new occurrence opened`) |
+| `new_alerts` | `new_alerts` | 1 × `section` | `":heavy_plus_sign: *2 more instances now firing* — \`api-9x2f\`, \`api-4k1p\` (12 total)"` |
+| `refired` | `refired` | 1 × `section` | `":repeat: *Re-fired* after 3m 12s — occurrence #4, reopen #2"` |
+| `resolved` | `all_resolved` | 1 × `section` | `":white_check_mark: *All resolved* after 21m 10s — 12 of 12 instances"` |
+| `expired` | `expired` | 1 × `section` | `":grey_question: *Expired* — oto has not heard about this since <!date^…^{time}\|09:41 UTC>. This is NOT a resolution."` |
+| `suppressed` | `suppressed` | 1 × `section` | `":mute: *Silenced* by \`ram@example.com\` until <!date^…^{time}\|14:00 UTC> — _\"maintenance window\"_"` |
+| `rule_changed` | `rule_changed` | 1 × `section` + 1 × `context` | `":scroll: *The rule changed since the last occurrence.*\n\`\`\`- ... > 0.05\n+ ... > 0.03\`\`\`\n\`for:\` 10m → 5m"` + context `_captured 2026-08-07 07:02 UTC · <link\|rule history>_` |
+| `enriched` | `enriched` | 1 × `context` | `":sparkles: +2 enrichments — rule definition, alert history"` (only when `verbosity = all`) |
+| `comment` | `comment` | 1 × `section` | `":speech_balloon: <@UA8RXUSPL>: rolling back the 14:02 deploy"` |
+| `snoozed` | `snoozed` | 1 × `section` | `":zzz: *Notifications snoozed* by <@UA8RXUSPL> until <!date^1786468800^{time}\|17:00 UTC> — _\"waiting on the node pool rollout\"_. The alert is still firing."` |
+| `unsnoozed` | `unsnoozed` | 1 × `section` | `":bell: *Snooze ended* (expired) — notifications resume. Still firing since <!date^…^{time}\|09:14 UTC>."` |
+| `unacked_reminder` | `unacked_reminder` | 1 × `section`, **`reply_broadcast: true`** | `":rotating_light: *Still unacknowledged after 15m.* <!subteam^SAZ94GDB8> — <https://oto…\|open in oto>"` |
+| `storm` | `storm` | 1 × `section` | `":zap: *Storm damping on* — 214 alerts in 60s. Individual notifications are suppressed. <link\|see them all>"` |
+| `degraded` | *(system)* | 1 × `context` | `":warning: oto could not deliver an update to this thread (\`channel_not_found\`). See Deliveries in oto."` |
+| `continued` | *(system)* | 1 × `section` | `":arrow_right: *Continued in a new message* — this thread reached 30 replies. <link\|jump>"` |
+
+`rule_changed` is the headline differentiator and is **always** delivered as a reply, regardless of verbosity, unless the group is in storm mode.
+
+### H.6 `notification_reason` → Reason → mode decision table (BINDING)
+
+Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason`, and each `Reason` maps to a delivery mode. Empty `notification_reason` (AM < 0.32.0) falls back to diffing the incoming fingerprint set against `alert_group_members`.
+
+> ### Where the wire column is applied, and what it is allowed to decide
+>
+> The table below was unimplemented until the first live run exposed it: `ReasonFromWire` had **no
+> callers**, every Reason was derived from a per-alert transition, and `new_alerts`, `all_resolved`
+> and `repeat` were therefore CHECK-constraint values nothing could write. The consequence a human
+> saw was a fully resolved card whose footer read *"some alerts resolved"*.
+>
+> The two vocabularies answer different questions and **both are needed**:
+>
+> - **oto's transitions** know WHAT CHANGED about one alert. They are the only source for `acked`,
+>   `refired`, `expired` and `suppressed` — facts Alertmanager cannot see or has no word for.
+> - **`notification_reason`** knows WHY THIS BATCH WAS DELIVERED about a whole group. It is the only
+>   source that can tell a first fire from a member joining an already-notified group, because the
+>   per-alert view of both is identical: an occurrence opened.
+>
+> So the wire value is applied at **`notify.evaluate`** — the first moment a whole group is in scope
+> — by `domain.ReconcileWithWire`, reading `alert_groups.last_notification_reason`. It is
+> deliberately narrow, and these three rules are binding:
+>
+> 1. It may only **widen** a transition-derived Reason to the group-scoped sibling describing the
+>    same delivery (`fired → new_alerts`, `some_resolved → all_resolved`). It may never contradict an
+>    observed transition: oto saw that and Alertmanager did not.
+> 2. `some_resolved → all_resolved` is decided by **oto's own membership counts**, with the wire
+>    value as corroboration. The counts are a projection of the occurrences oto recorded, so they
+>    cannot disagree with the card that renders them.
+> 3. `repeat` has no transition behind it — nothing changed — so it is emitted from the ingest
+>    orchestrator when the wire value maps to it, and nowhere else. An absent or unknown wire value
+>    changes nothing at all: an Alertmanager below 0.32.0 sends no field, and must not lose its
+>    notifications for it.
+
+| AM `notification_reason` | oto `Reason` | Mode(s) | Verbosity gate |
+|---|---|---|---|
+| `first notification` | `fired` | **`post_root`** (or `update_root` if a live thread already exists for this generation) | always |
+| `new alerts added` | `new_alerts` | `update_root` **+** `thread_reply` | reply at `all` \| `status_changes` |
+| `some alerts resolved` | `some_resolved` | **`update_root` only** — no thread noise | always |
+| `all alerts resolved` | `all_resolved` | `update_root` **+** `thread_reply` | reply at `all` \| `status_changes` \| `firing_and_resolved` |
+| `repeat interval elapsed` | `repeat` | **`update_root` ONLY. NEVER post a new message.** | always |
+| `none` | *(none)* | **suppress** — record `notification.suppressed` and stop | — |
+| `unknown` / *(empty)* | *(diff fallback)* | derive from the fingerprint-set diff, then use the row above | — |
+
+**oto-internal reasons** (no AM equivalent):
+
+| oto `Reason` | Mode(s) | Verbosity gate |
+|---|---|---|
+| `suppressed` | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
+| `unsuppressed` | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
+| `expired` | `update_root` + `thread_reply` | always (an expiry must never be silent) |
+| `refired` | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
+| `acked` | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
+| `unacked` | **`update_root` only** | always |
+| `enriched` | **`update_root` only** (+ `thread_reply` at `all`) | always |
+| `rule_changed` | `update_root` + `thread_reply` | **always — never gated** |
+| `comment` | `thread_reply` only | always |
+| `snoozed` | `update_root` + `thread_reply` | **always — exempt from snooze suppression (§B.8.4)** |
+| `unsnoozed` | `update_root` + `thread_reply` | **always — exempt from snooze suppression (§B.8.4)** |
+| `unacked_reminder` | `broadcast_reply` | always |
+| `storm` | `update_root` (or `post_root` if none exists) + `thread_reply` once | always |
+
+> **`repeat interval elapsed → update-only` is the single biggest noise reduction available to oto**, and it is exactly what stock Alertmanager and Grafana Alerting get wrong (both repost). It is also the cheapest: `chat.update` is Tier 3 (50/min) while `chat.postMessage` is ~1/s/channel.
+
+**Verbosity semantics** (`channels.verbosity`):
+
+| Value | Replies delivered |
+|---|---|
+| `all` | every reply type |
+| `status_changes` *(default)* | ack, unack, suppressed, unsuppressed, expired, refired, new_alerts, all_resolved, rule_changed, comment, snoozed, unsnoozed, unacked_reminder, storm |
+| `firing_and_resolved` | new_alerts, all_resolved, expired, rule_changed, snoozed, unsnoozed, unacked_reminder, storm |
+| `firing_only` | new_alerts, rule_changed, snoozed, unsnoozed, unacked_reminder, storm |
+
+`channels.thread_updates = false` reduces every mode to `update_root` (except `unacked_reminder`, which is always broadcast). Root updates are **never** gated by verbosity.
+
+### H.7 Character and item limits to respect (validated in the renderer, not discovered in production)
+
+| Element | Limit | Renderer behaviour on overflow |
+|---|---|---|
+| blocks per message | **50** | cap member rows; move detail to a reply |
+| `section.text` | **3 000 chars** | truncate at 2 900 + `"… <link\|see full detail in oto>"` |
+| `section.fields` | **10 items, 2 000 chars each** | drop lowest-priority fields; order is Status, Severity, Service, Namespace, Started, Firing-for, Flapping, Team |
+| `header.text` | 150 chars, `plain_text` only | **not used at all** (S1) |
+| `context.elements` | **10 items** | merge into one mrkdwn element |
+| `actions.elements` | **25 elements** | v1 renders at most 4 |
+| `button.text` | **75 chars** (visually truncates ~30) | labels are short and repetitive by design |
+| `button.url` / `image.image_url` | 3 000 chars | truncate query params, keep the base URL |
+| `button.value` | 2 000 chars | oto uses a 26-char UUID (S8) |
+| `action_id` / `block_id` | **255 chars** | fixed short names |
+| `markdown` block | 12 000 chars cumulative per payload | not used in v1 |
+| attachments | 1 (oto) / 100 (Slack hard cap) | exactly one, always (S3) |
+| top-level `text` | no documented cap; keep ≤ 300 chars | one sentence |
+| thread replies before a fresh root | **30** (oto policy) | post `continued` reply + new root (S14) |
+
+### H.8 Interactivity
+
+**Transports.** Ship both behind one handler (C13):
+
+```go
+// internal/channels/providers/slack
+func (h *InteractionHandler) Handle(ctx context.Context, cb slack.InteractionCallback) error
+```
+
+- **Socket Mode (default for self-hosted).** No public ingress, no signature verification (the socket is pre-authenticated), ack by `envelope_id`. Max 10 concurrent connections per app — ample, and it gives zero-downtime deploys.
+- **HTTP mode (config flag).** `POST /api/v1/integrations/slack/interactions`. Required for Slack Marketplace listing.
+
+**HTTP-mode signature verification (binding).** Read the raw body **once** into a buffer *before* `ParseForm`:
+
+1. Read `X-Slack-Signature` and `X-Slack-Request-Timestamp`.
+2. Reject if the timestamp is more than **5 minutes** old.
+3. Basestring `v0:<timestamp>:<raw_body>`.
+4. HMAC-SHA256 keyed by the signing secret, hex, prefixed `v0=`.
+5. **Constant-time compare** (`hmac.Equal`).
+
+Use `slack.NewSecretsVerifier`. **Do not hand-roll this.** Pin `github.com/slack-go/slack` to an exact version, floor **v0.23.1** — earlier versions accept an empty signing secret and therefore accept forged requests.
+
+**The 3-second rule.** Verify → write 200 → hand off to a worker. `trigger_id` expires in 3 seconds and is single-use, so any `views.open` happens synchronously before the ack.
+
+**Action routing.**
+
+| `action_id` | Behaviour |
+|---|---|
+| `oto.ack` | Resolve the Slack user via `slack_identities` (by `slack_user_id`, falling back to email match, else an unlinked identity recording the handle). Call **`AlertService.Ack` — the same service the REST API calls. There is exactly one ack code path.** Respond via `response_url` with `replace_original: true` for the optimistic update, then let `notify.evaluate(reason=acked)` do the durable `chat.update`. |
+| `oto.unack` | Same, inverse. |
+| `oto.more` | Overflow. If the chosen option carries a `url`, ack with 200 and do nothing else. If it carries a `value`, open a modal via `views.open` synchronously. |
+| `oto.noop.*` | **Explicit no-op branch. Ack 200. Do nothing.** Required for every URL button and every URL overflow option (S9). |
+| *(unknown)* | Ack 200, log at warn, emit `slack_unknown_action_total`. Never 4xx — Slack disables event subscriptions when >95 % of deliveries fail in a 60-minute window. |
+
+**`response_url` vs `chat.update`.** `response_url` lives **30 minutes and 5 uses** and bypasses channel posting permissions — use it *only* for the immediate optimistic response to a click. Every long-lived state change goes through `chat.update`. Never build the long-lived path on `response_url`.
+
+### H.9 Terminal Slack errors are state transitions, not retries
+
+| Slack error code | `ErrorClass` | oto behaviour |
+|---|---|---|
+| `ratelimited` (HTTP 429) | `rate_limited` | Honour `Retry-After` exactly. `river.JobSnooze`. |
+| `channel_not_found`, `is_archived`, `not_in_channel` | `permanent` | `channel_threads.state='dead'` + `dead_reason`; `channels.health_status='degraded'`; surface in the UI. **Do not retry.** |
+| `message_not_found`, `cannot_reply_to_message`, `restricted_action_thread_locked` | `permanent` | Thread pointer is gone. **Clear `provider_thread_id`, post a fresh root** with a `continued` marker, re-point the thread. |
+| `edit_window_closed` | `permanent` | Same recovery as above — the workspace disallows the edit. |
+| `token_revoked`, `token_expired`, `account_inactive`, `missing_scope`, `no_permission` | `auth_expired` | `channels.health_status='auth_failed'`; raise a UI banner. **Do not retry.** |
+| `invalid_blocks`, `invalid_blocks_format`, `block_mismatch`, `msg_too_long`, `too_many_attachments`, `metadata_too_large` | `config_invalid` | `dead`. This is an oto bug — alert on it via `oto_jobs_dead_total`, then read `notification_deliveries.error_class='config_invalid'` for the offending deliveries. |
+| HTTP 5xx, timeout, connection reset | `retryable` | Exponential backoff (§G.6). |
+| anything else | `retryable` | Backoff, cap 12 attempts. |
+
+**Head-of-line blocking is the real killer.** A `dead` delivery has its slot advanced past by `deliver.dispatch` itself — under the thread's advisory lock, in the same transaction that records the death, and by gap recovery on any later pass (§G.7.3) — and a `delivery.skipped` event is appended. **The UI must show delivery state per alert** — oto's silence must never be indistinguishable from "no alert".
+
+### H.10 Generic webhook channel (the abstraction proof — R5)
+
+`internal/channels/providers/webhook` + `internal/channels/render/webhookjson`. Config schema: `{url, method:"POST", headers:{}, timeout_ms}`. Capabilities: **`CapRichLayout` only** — no threading, no amend, no interactive. Renderer emits a stable JSON envelope:
+
+```json
+{ "schema": "oto.notification.v1", "reason": "all_resolved", "delivered_at": "…",
+  "group": { … GroupView … }, "alerts": [ … ], "occurrence": { … }, "rule": { … },
+  "links": { … } }
+```
+
+Capability negotiation (in `DispatchService`, **never** in a provider):
+
+| Situation | Capability | Behaviour |
+|---|---|---|
+| Reply on a threading channel | `CapThreading` | thread reply |
+| Reply on a non-threading channel | — | **suppress by default**; the update carries the same facts |
+| State change on an amendable channel | `CapAmend` | edit in place |
+| State change on a non-amendable channel | — | send a fresh standalone message |
+| Buttons on a non-interactive channel | — | render as links |
+
+**The webhook provider MUST NOT be given Slack-specific affordances.** If it needs one, the abstraction is wrong and the SPEC changes first.
+
+---
+
+## I. Module map and directory tree
+
+### I.1 v1 module list (BINDING)
+
+| Module | Mark | One-line responsibility |
+|---|---|---|
+| `platform` | **CORE PLATFORM** | Cross-cutting machinery: config, logging, telemetry, two DB pools + tx, httpx, authn, jobs, secrets, ratelimit, errs, clock, id, validate. Not a domain. |
+| `identity` | **CORE PLATFORM** | Orgs, users, sessions, PATs and ingest tokens; resolves every request to a `Principal` and a `TenantScope`. |
+| `sources` | **CORE PLATFORM** | Registry, credentials and health of Alertmanager/Prometheus endpoints; owns the AM v2 and Prom v1 HTTP clients. |
+| `ingestion` | **CORE PLATFORM** | Durably accept and persist raw webhook batches, normalise them into Observations, and run the API v2 reconciler. Nothing else. |
+| `alerts` | **CORE PLATFORM** | Alert identity and dedup, the occurrence lifecycle state machine, and the append-only event timeline. The heart. |
+| `grouping` | **CORE PLATFORM** | Durable notification groups, generations, membership, group lifecycle and storm detection. |
+| `rules` | **CORE PLATFORM** | Fetch, content-address, version and diff Prometheus alerting-rule definitions at fire time. The differentiator. |
+| `enrichment` | **CORE PLATFORM** | The `Enricher` port, the budgeted pipeline, the two-layer cache, and provenanced results. |
+| `notification` | **CORE PLATFORM** | Policy matching, idempotent intents, fan-out to deliveries, thread ordering, throttling and storm/flap damping. |
+| `channels` | **CORE PLATFORM** | The `Channel`/`Provider`/`Renderer` ports, the registry, credential handling, and the Slack + generic-webhook implementations. |
+| `streaming` | **CORE PLATFORM** | Durable UI event log, Postgres `LISTEN/NOTIFY` bridge, SSE hub with `Last-Event-ID` resume. |
+| `silences` | **PERIPHERAL** | Read-only mirror of Alertmanager silences and suppression matching. **No write path (R3).** |
+| `stats` | **PERIPHERAL** | Alert-hygiene accounting: per-alertname volume, notification cost, ack rate, flap leaderboard. **Never per-person (R8).** |
+| `correlation` | **DEFERRED-POST-V1** | Machine-derived groupings over multiple signals, with a **stated algorithm**. No human create endpoint, no human-set severity, no status, no owner, no lifecycle beyond open/closed. Renamed from `incidents` (SCOPE-BOUNDARY §5.5). |
+| `k8scontext` | **DEFERRED-POST-V1** | Pod/owner/node/event resolution via informers. Robusta's home turf; needs cluster RBAC; a 6-month sink. |
+| `changefeed` | **DEFERRED-POST-V1** | Deploy/change-event ingestion for correlation. A deploy is a machine event; correlating it is enrichment. |
+| `views` | **DEFERRED-POST-V1** | Saved filters and per-user UI preferences. Subject = a query. |
+| `audit` | **DEFERRED-POST-V1** | **Scoped to configuration changes only** (sources, channels, policies, tokens) — facts about oto's own configuration. Human actions on alerts stay in `alert_events` as actor metadata, never in a person-centric log. |
+| `authz` | **DEFERRED-POST-V1** | RBAC, roles, SSO/OIDC (R2). Access control is not incident management. |
+| `analytics` | **DEFERRED-POST-V1** | Signal-duration and firing-frequency distributions beyond `stats`. **Per-person and time-to-human-action metrics are permanently out** (R8, SCOPE-BOUNDARY §4.14). |
+| *(extra channel providers)* | **DEFERRED-POST-V1** | PagerDuty, MS Teams, email. A destination for a fact about a signal is IN by FR-1; R5 defers the impl, it does not exclude it. **oto pages nobody; oto tells the thing that pages.** |
+| *(AI / LLM)* | **DEFERRED-POST-V1** | Explicitly out of scope (R4). Determinism is the positioning. |
+
+### I.1.1 PERMANENTLY OUT OF SCOPE
+
+These are **not deferred**. There is no version of oto that contains them. A request to add one
+requires an ADR arguing **against FR-1 by name** (SCOPE-BOUNDARY §9); *"it's just one column"* is not
+an argument, because it is always just one column.
+
+| Module / feature | Why permanently out | Hand off to |
+|---|---|---|
+| `incidents` | Human-coordinated response objects with their own human-owned lifecycle, severity, status, roles and comms. Subject = a response effort, not a signal (FR-1). Survives the deletion of every alert (H-2). SCOPE-BOUNDARY §4.6. The legitimate part of this request is `correlation` above. | incident.io, keep, FireHydrant — SCOPE-BOUNDARY §7 |
+| `oncall` | Rotas, escalation policies, paging. Subject = people and time; exists with zero alerts (H-2). Drags in telephony vendors, 24/7 reliability obligations and compliance oto cannot meet. SCOPE-BOUNDARY §4.8–4.9. | PagerDuty, incident.io — SCOPE-BOUNDARY §7 |
+| Assignment / ownership | `assigned_to` is a fact about a person's workload, present tense (H-1). SCOPE-BOUNDARY §4.4, §6 SS-1. The sanctioned answer to "who's on it" is **ephemeral presence** derived from live SSE connections, never persisted — a `streaming` feature, not an `alerts` one. | — |
+| Multi-stage escalation | §G.9.1. One stage, forever. SCOPE-BOUNDARY §6 SS-2. | PagerDuty |
+| Paging / telephony (phone, SMS, push) | The transport of an obligation to a named human (H-1). | PagerDuty |
+| Status pages, postmortems, war rooms | Subject = a customer-facing statement / organisational learning / a conversation between humans. | — |
+| SLA targets, MTTA, per-person metrics | An obligation on humans expressed as a deadline, or a measure of human response speed, however aggregated (R8, H-1). SCOPE-BOUNDARY §4.13–4.14, §4.36. | — |
+| Manual resolve, merge, close, dismiss | Triage verbs. They make the signal a work item with a human-owned lifecycle, and a human declaring a signal resolved is the exact lie C2/§B.2 exist to prevent. §E.1.1. | — |
+| Watchers / subscriptions | A notification policy scoped to a person is a personal route to a human (H-1). The IN-shaped version is a **saved filter** (`views`) with no notification attached. SCOPE-BOUNDARY §4.32. | — |
+| Reading Slack threads / ticket state back into oto | Subject = a conversation, and it violates C9 (oto never reads Slack back). The comment mirror is one-way, oto → Slack. SCOPE-BOUNDARY §4.22, §6 SS-5. | — |
+| Auto-remediation, workflow engines | A general-purpose cluster write path; a second product; changes oto's safety class by an order of magnitude (H-3). | Robusta |
+
+**Dependency direction (enforced by `depguard` + an arch test; no cycles):**
+
+```
+ingestion ──► alerts ──► grouping ──► notification ──► channels
+                │           │              │
+                ▼           ▼              ▼
+           enrichment    streaming      silences
+                │
+              rules ──► sources
+```
+
+`alerts` never imports `notification`. It appends events and enqueues jobs; `notification` subscribes. This is what makes it possible to run oto with notifications entirely disabled — which is exactly how the first correctness tests run.
+
+### I.2 Repository tree (to package level)
+
+```
+oto/
+├── README.md  CONTEXT.md  CLAUDE.md  LICENSE
+├── go.mod  go.sum  Makefile  .golangci.yml
+├── .github/workflows/{ci.yml,release.yml,spec-drift.yml}
+│
+├── api/openapi/
+│   ├── openapi.yaml                     # published contract, hand-maintained (C20)
+│   ├── paths/{ingest,alerts,occurrences,groups,rules,sources,channels,policies,
+│   │          notifications,silences,stats,stream,identity}.yaml
+│   ├── components/{alert,occurrence,event,group,rule,enrichment,notification,
+│   │               delivery,channel,source,silence,common,errors}.yaml
+│   └── examples/
+│
+├── cmd/oto/
+│   ├── main.go  serve.go  worker.go  migrate.go  seed.go  replay.go  version.go
+│
+├── internal/
+│   ├── app/
+│   │   ├── container.go     # explicit constructor wiring — the dependency graph is READABLE
+│   │   ├── routes.go        # mounts every domain's api.Router
+│   │   ├── workers.go       # registers every river worker
+│   │   ├── periodic.go      # the periodic schedule (§G.3)
+│   │   ├── enrichers.go     # enricher registry
+│   │   └── providers.go     # channel provider registry
+│   │
+│   ├── platform/
+│   │   ├── config/          # koanf: defaults -> file -> env -> flags
+│   │   ├── log/             # log/slog + redaction (NEVER log full payloads at info)
+│   │   ├── telemetry/       # OTel traces + prometheus/client_golang metrics + health
+│   │   ├── db/              # pool.go(two pools) tx.go scope.go keyset.go listen.go
+│   │   │                    # advisory.go jsonb.go retry.go enqueuer.go
+│   │   ├── migrate/         # goose runner + embed.FS
+│   │   ├── httpx/           # server router problem render binding cursor filter sse
+│   │   │   └── middleware/  # requestid logging recover cors auth tenant timeout metrics
+│   │   ├── authn/           # principal session pat ingesttoken argon2
+│   │   ├── jobs/            # river client, queues, worker base, payload versioning
+│   │   ├── secrets/         # AES-256-GCM sealer + keyring
+│   │   ├── ratelimit/       # pgbucket token bucket
+│   │   ├── errs/            # typed codes -> problem+json, in exactly ONE place
+│   │   ├── clock/           # Clock + FakeClock
+│   │   ├── id/              # uuidv7, slug
+│   │   └── validate/
+│   │
+│   ├── identity/{api,service,repository,domain}
+│   ├── sources/
+│   │   ├── {api,service,repository,domain}
+│   │   └── client/{alertmanager,prometheus}        # AM v2 + Prom v1 HTTP clients
+│   ├── ingestion/
+│   │   ├── {api,service,repository,domain}
+│   │   ├── decode/                                 # AM webhook v4 + Grafana superset, lenient
+│   │   └── worker/{process_batch,reconcile_source}
+│   ├── alerts/
+│   │   ├── api/         # alert, occurrence, event, action handlers + dto/mapper/filter/routes
+│   │   ├── service/     # alert lifecycle timeline dedupe flap ports
+│   │   ├── repository/  # alert occurrence event mapper
+│   │   ├── domain/      # THE SHARED KERNEL (§C.1): labelset canon alertkey fingerprint groupkey
+│   │   │                #   rulekey severity state ackstate slackts clusterkey timewindow
+│   │   │                #   alert occurrence event eventtype transition snooze
+│   │   └── worker/{reap_occurrences,score_flaps,expire_snoozes}
+│   ├── grouping/{api,service,repository,domain,worker}
+│   ├── rules/{api,service,repository,domain}       # snapshot, fingerprint, diff, generator_url
+│   ├── enrichment/
+│   │   ├── {api,service,repository,domain}
+│   │   ├── enrichers/{promrule,runbook,alerthistory,silencematch}
+│   │   └── worker/run_async.go
+│   ├── notification/
+│   │   ├── {api,service,repository,domain}         # policy matcher notification dispatch
+│   │   │                                           # thread throttle view ports
+│   │   └── worker/{evaluate,dispatch,reminder}      # reminder = notify.unacked_reminder (§G.9)
+│   ├── channels/
+│   │   ├── {api,service,repository,domain}
+│   │   ├── providers/
+│   │   │   ├── slack/{provider,channel,client,socketmode,http,interactions,errors,ratelimit}
+│   │   │   └── webhook/{provider,channel}
+│   │   └── render/
+│   │       ├── slack/{renderer,blocks,root,reply,palette,limits,testdata/*.golden.json}
+│   │       └── webhookjson/{renderer,testdata}
+│   ├── streaming/{api,service,repository,domain}
+│   ├── silences/{api,service,repository,domain,worker}
+│   └── stats/{api,service,repository,domain,worker}
+│
+├── pkg/
+│   └── otoclient/                                   # generated Go API client. ADDED ONLY WHEN AN
+│                                                    # EXTERNAL GO CONSUMER EXISTS. `pkg/alertkey`
+│                                                    # is deleted — identity lives in the kernel (§C.1).
+│
+├── db/
+│   ├── migrations/00001_extensions.sql … 00011_platform.sql
+│   └── seeds/{dev.sql,demo.sql}
+│
+├── web/                                            # SolidJS + Vite 6 + TS strict
+│   ├── package.json  pnpm-lock.yaml  vite.config.ts  tailwind.config.ts
+│   ├── src/
+│   │   ├── main.tsx  App.tsx
+│   │   ├── routes/{index,alerts/[id],groups/[id],groups/[id].timeline,
+│   │   │           settings/{sources,channels,policies,tokens}}
+│   │   ├── api/{client.ts,generated/schema.d.ts,sse.ts,queries/*}   # generated TS client (C20)
+│   │   ├── features/{alert-list,alert-detail,timeline,rule-panel,channels,policies,live}
+│   │   ├── components/  design/  lib/
+│   └── e2e/{alerts.spec.ts,timeline.spec.ts,ack.spec.ts,rule-drift.spec.ts}
+│
+├── deploy/
+│   ├── helm/oto/{Chart.yaml,values.yaml,templates/}
+│   ├── compose/docker-compose.yml
+│   └── prometheus/{oto-rules.yaml,oto-dashboard.json}   # we alert on ourselves
+│
+├── test/
+│   ├── fixtures/{alertmanager,grafana,prometheus,slack}/   # REAL payloads, checked in
+│   ├── integration/{ingest,lifecycle,dedupe,refire,reconcile,notify,thread_order,storm}_test.go
+│   ├── contract/openapi_test.go                            # schemathesis against the spec
+│   ├── load/storm_test.go                                  # 5 000-alert batch — WRITE THIS FIRST
+│   └── harness/{postgres.go,fakeslack.go,fakeam.go,fakeprom.go,builders.go}
+│
+├── tools/{tools.go,generate.go}
+└── docs/
+    ├── design/{SPEC.md,architect-proposal.md,domain-research.md,red-team-memo.md}
+    ├── adr/0001-…md … 0010-…md
+    └── runbooks/
+```
+
+### I.3 Technology (binding picks)
+
+| Concern | Pick | Note |
+|---|---|---|
+| Router | `chi` v5 | `http.Handler` all the way down |
+| DB driver | `pgx` v5 (native, not `database/sql`) | needs `LISTEN/NOTIFY`, `COPY`, JSONB, batch |
+| Query layer | **hand-written SQL** (C19) + `squirrel` for the alert-list filter builder only | no sqlc |
+| Migrations | `goose`, plain `.sql`, `embed.FS`, run via `oto migrate` | expand/contract only |
+| Job queue | `river` | `InsertTx` = a free transactional outbox |
+| Config | `koanf` | layered, no global state |
+| Logging | `log/slog` + `slog-otel` | JSON in prod; redaction is mandatory |
+| Validation | `go-playground/validator` at the DTO boundary; invariants hand-written in `domain` | |
+| Errors | stdlib `errors` + `platform/errs` | mapped to problem+json in exactly one place |
+| Observability | OpenTelemetry traces + `prometheus/client_golang` | we are an alerting product; be exemplary |
+| Slack SDK | `slack-go/slack`, **pinned exactly, floor v0.23.1** | 10 minors in 4 months; read every changelog |
+| DI | explicit constructor wiring in `internal/app/container.go` | no codegen, no runtime container |
+| Testing | `testify` + `testcontainers-go` (real Postgres) + golden files + `httptest` | mocked DBs lie about SQL semantics |
+| Lint | `golangci-lint` with `depguard` layering rules + an arch test | the layering rules must be mechanically enforced or they decay in a quarter |
+| Frontend | Vite 6, `@solidjs/router`, `@tanstack/solid-query`, `@tanstack/solid-table`+`solid-virtual`, Tailwind v4, Kobalte, `uPlot`, native `EventSource` | data layer stays framework-agnostic so the UI is replaceable |
+
+---
+
+## J. v1 acceptance criteria
+
+Numbered, user-observable. v1 is not done until every one of these is demonstrable against a real Alertmanager and a real Slack workspace.
+
+**Ingestion and correctness**
+
+1. Pointing a stock Alertmanager `webhook_config` at `/api/v1/ingest/alertmanager/{source_id}` with the ingest bearer token results in alerts appearing in oto within 5 seconds of the webhook, with **no Alertmanager configuration beyond the receiver block**.
+2. The webhook returns **202 in under 250 ms at p99** for a 200-alert batch, and never performs a network call to Slack, Prometheus or Kubernetes on that path.
+3. Under induced Postgres slowness, the webhook returns **503 with `Retry-After`** — never 429, never any other 4xx — and the alerts appear once Postgres recovers, delivered by Alertmanager's own retry.
+4. Sending the identical webhook body twice (simulating an HA Alertmanager pair or a retry) produces **exactly one** Alert, one occurrence, one Slack message, and the second call returns 202 with `duplicate: true`.
+5. A 5 000-alert batch is accepted and fully processed without a timeout, without an OOM, and without emitting 5 000 Slack messages.
+6. An alert with 100 labels, or a 5 KiB label value, is **rejected into `ingest_rejections` with a visible reason and a metric** — never silently dropped, and never able to take the process down.
+7. Editing `alertmanager.yml` (adding a route, changing `group_by`) does **not** orphan an open Slack thread: the group keeps its `group_key` and the same thread continues.
+
+**Lifecycle**
+
+8. The Alertmanager UI shows an alert as silenced; within one reconcile interval oto shows it as **`suppressed`** with the silence's creator, comment and expiry, and the Slack card turns grey. (This is impossible from webhooks alone.)
+9. Killing Alertmanager does **not** cause oto to mark alerts resolved or expired. The source is shown `unreachable`, a banner appears, and occurrences are held.
+10. An alert whose `endsAt` lapses while the source is healthy becomes **`expired`**, is visibly distinguished from `resolved` in the UI and in Slack, and the copy never claims it resolved.
+11. An alert that resolves and re-fires 2 minutes later reopens the **same occurrence** and posts a thread reply. Re-firing 2 hours later creates **occurrence #N+1** and, if the group had closed, a **new root message**.
+12. Acking from the Slack button and acking from `POST /api/v1/alerts/{id}/ack` produce byte-identical state and go through the **same service method**.
+13. An alert flapping 30 times an hour produces at most one root card and one digest reply per 15 minutes, and the UI shows a **visible** "flapping — damped" state.
+14. 300 alerts arriving for one group in 30 seconds produce **one** storm card with a count, not 300 messages, and the UI shows storm mode.
+
+**The differentiator**
+
+15. Opening any alert shows the **rule `expr` and `for:` as they were at that occurrence's fire time**, with provenance (`generator_url` or `prometheus_api`) and match confidence shown honestly.
+16. When a rule's threshold changes between occurrences, the alert timeline shows **`rule.definition_changed` with a diff**, and Slack receives a `rule_changed` thread reply — regardless of channel verbosity.
+17. `GET /api/v1/alerts/{id}/rule` returns the **full version history** of that rule with capture timestamps.
+18. An ambiguous rule match (two rules with the same `alertname`) is surfaced as `ambiguous` in the UI and in the Slack card. It is never silently guessed.
+
+**Timeline and UI**
+
+19. The group timeline shows, in one continuous ordered list: opened → notified → delivered → enriched → rule-changed → acked → re-fired → resolved, each with an actor, an upstream timestamp and an oto timestamp.
+20. The timeline **never renders out of order**, even when Alertmanager's clock is skewed by minutes; the skew is measured, badged and exported as a metric.
+21. The alert list renders 10 000 alerts with filters on state, severity, namespace, cluster, alertname, arbitrary labels and full-text, all keyset-paginated, with p95 under 300 ms.
+22. Alerts can be grouped in the UI by **alertname, namespace and fingerprint**, and each grouping drills into individual alerts and their occurrences.
+23. With the browser asleep for 20 minutes, reopening the tab **replays the missed changes via `Last-Event-ID`** and the UI is correct without a manual refresh.
+24. Every alert shows its **delivery state**: which channel, which thread, sent/failed/dead, with the provider error. oto's silence is never indistinguishable from "no alert".
+
+**Slack**
+
+25. The root card renders correctly on desktop, mobile and in dark mode, with a state colour bar, a severity emoji, a working deep link in the title, and a top-level `text` that is a complete, readable sentence.
+26. `notification_reason: repeat interval elapsed` **updates the existing card and never posts a new message.**
+27. Deleting the Slack root message, or archiving the channel, does not wedge the queue: oto marks the thread dead, posts a fresh root with a `continued` marker, and every other channel keeps flowing.
+28. Revoking the Slack bot token surfaces as `auth_failed` on the channel with a UI banner within one delivery attempt, and oto stops retrying.
+29. Every URL button and overflow link is acked; no user ever sees "This app is not responding".
+30. The generic-webhook channel receives a stable `oto.notification.v1` JSON envelope for the same events, **with zero Slack-specific code in the notification domain.**
+
+**Operations and trust**
+
+31. `helm install oto` with a Postgres URL and a Slack token is the entire install. No Redis, no Kafka, no second datastore.
+32. `oto migrate up` is idempotent, and a rolling deploy of N and N+1 does not corrupt in-flight jobs (payload versions are explicit and unknown versions are parked).
+33. Raw payloads age out at the configured retention by `DROP PARTITION`, never by `DELETE`, and label redaction is applied **before** the raw persist.
+34. `GET /metrics` exposes at minimum: `oto_ingest_accepted_total`,
+    `oto_ingest_rejected_total{reason}`, `oto_ingest_duration_seconds`, `oto_clock_skew_seconds`,
+    `oto_thread_order_decisions_total{action,reason}`, `oto_thread_gap_recovered_total{reason}`,
+    `oto_thread_head_wait_seconds` and `oto_delivery_claim_lost_total{mode}`. Every name in this
+    list is constructed by a collector in the tree and has a page in `docs/runbooks/`.
+
+    **Facts that are deliberately not metrics.** Earlier drafts of this criterion promised seven
+    further counters. None was ever built, and a name on `/metrics` that never produces a series
+    is worse than no promise at all: an alert rule written against it never fires, and a rule that
+    never fires is indistinguishable from a healthy system. They are struck from the minimum list
+    and recorded here with the fact that answers the question instead. `docs/runbooks/README.md`
+    carries the same table and is the maintained copy.
+
+    | Struck name | What answers the question instead |
+    |---|---|
+    | `oto_reconcile_divergence` | `source_health.divergence_count`, served by `GET /api/v1/sources/{id}/health` and summed by `GET /api/v1/stats/*`; plus the `sources: reconcile divergence` INFO log (`internal/sources/service/reconcile.go`) |
+    | `oto_source_degraded_holds_total` | `source_health.status`. While it is not `healthy` the reaper is blocked (§B.4) — the hold is a *state you can read*, not a rate you must integrate |
+    | `oto_notification_suppressed_total{reason}` | `notifications.suppressed_reason`, the closed set in `internal/notification/domain/suppression.go`. §B.6 requires every suppression to be a row with a place in the UI, so the durable record is the primary artefact and a counter would only be its shadow |
+    | `oto_delivery_attempts_total{class}` | `notification_deliveries.attempts` and `.error_class`; the per-job rate is already on `oto_jobs_failed_total{class}` |
+    | `oto_delivery_dead_total` | `notification_deliveries.status = 'dead'` with `error_class`; the per-job rate is already on `oto_jobs_dead_total`, which is alertable and paged |
+    | `oto_render_invalid_total{check}` | The delivery itself: `status='dead'`, `error_class='config_invalid'`, the offending payload kept in `notification_deliveries.rendered` and retrievable via `GET /api/v1/deliveries/{id}`. `internal/channels/render/slack/validate.go` names the failing check; `oto_jobs_dead_total` carries the rate |
+    | `oto_check_violation_total{constraint}` | A `23514` is mapped to `errs.KindInternal` with the **constraint name as the error `Code`** (§L.9, `internal/*/repository/errors.go`), so it surfaces as a 500 naming the constraint, in the log line and — on a job path — in `oto_jobs_failed_total{class="internal"}` |
+
+    `oto_thread_recovered_total` was the eighth name here. It is not missing: it **shipped** as
+    `oto_thread_gap_recovered_total`, and this criterion now uses the registered name.
+35. `GET /api/v1/stats/alert-quality` answers *"this rule fired 47 times this month, cost 47 notifications, and was acknowledged 0 times"* — and contains **no per-person data anywhere** (R8).
+36. Replaying a stored `ingest_batch` after a parser fix reproduces the same state without duplicate Slack messages.
+
+**Validation (§L)**
+
+37. A malformed API request returns **422** with RFC 9457 `violations[]`, every `field` a JSON
+    path in JSON names, and the SolidJS form highlights the exact control that failed.
+38. A webhook containing an alert with 100 labels, an invalid label name, or a `startsAt` in 2087
+    is recorded per-alert in `ingest_rejections` with a reason, the **rest of the batch is
+    processed**, and the response is **202**. No input under 8 MiB with a valid token ever
+    produces a 4xx (asserted by a property test).
+39. A secret placed in an alert annotation and matched by `redact_annotations` is **absent** from
+    `ingest_batches.payload` on disk and from every log line.
+40. Creating a Slack channel with a `#channel-name` instead of a channel ID is rejected with a
+    field-level message derived from the provider's JSON Schema, and the settings form renders and
+    pre-validates from that **same** schema with no channel-specific UI code.
+41. A rendered Slack payload that would exceed 50 blocks or 3 000 chars in a section is **never
+    sent**: the delivery goes `dead` with `config_invalid`, `notification_deliveries.error` names
+    the failing check (`slack render invalid (<check>): …`), and the offending payload is
+    retrievable via `GET /api/v1/deliveries/{id}` — so the bug is diagnosable from the delivery
+    record alone.
+42. **No `23514` reaches the Go layer** across the full integration suite — every DB CHECK is
+    unreachable because layers 1–3 already hold. Asserted against the mapped error (a
+    `KindInternal` whose `Code` is the constraint name, §L.9), not against a counter: a counter
+    that is never constructed reads zero whether or not the property holds.
+43. Adding a field to a Go DTO without updating `api/openapi/` fails CI; regenerating the TS types
+    or valibot validators produces no diff.
+
+**Brand and accessibility (§M)**
+
+44. The UI renders in light and dark themes from one token set, defaults to dark, and honours
+    `prefers-color-scheme` on first load.
+45. axe-core reports **zero** contrast violations on the alert list, alert detail and timeline in
+    **both** themes, and every pair in §M.4/§M.5 computes to its stated ratio in CI.
+46. Every alert state is legible without colour: each row carries a state icon and a text label,
+    verified by a greyscale screenshot test.
+47. No saturated Tier-B hue appears anywhere in the product chrome or in a chart series; the only
+    **urgency** motion is the unacked-critical pulse (U4); every other animation in the product is
+    non-urgency motion permitted by U9; and **all** of it — the pulse and every U9 animation alike
+    — disappears under `prefers-reduced-motion`.
+48. The six Slack state hex values are byte-identical to §H.2 and appear nowhere in `web/`.
+
+**Scope boundary (§I.1.1, ADR 0013)**
+
+49. **A lint rule enforces the vocabulary ban.**
+    `grep -rniE '(assign(ee|ed_to)?|on.?call|rota|escalation|postmortem|incident|war.?room|\bMTTA\b|\bMTTR\b|\bSLA\b|watcher|subscriber_id|owner_id|triage)' internal/ web/src/ db/migrations/`
+    returns **no hits** outside `docs/` and explicit SCOPE-BOUNDARY cross-reference comments. It runs
+    in CI as `just lint-vocabulary` and fails the build. A vocabulary ban that is not mechanically
+    enforced decays in a quarter — the same argument §I.3 makes about layering.
+50. `alerts`, `alert_occurrences` and `alert_groups` contain no column matching
+    `assigned|owner|watcher|subscriber|incident|ticket|sla_`, asserted by a schema introspection test
+    against the live database, not by reading the migration files (§D.4.0).
+51. There is no route matching `/resolve`, `/close`, `/merge`, `/dismiss` or `/reopen` in the mounted
+    router, asserted by walking `chi`'s route tree at test time (§E.1.1).
+52. `unacked_reminder_after_s` is a scalar `*int` in every layer, and a compile-time test asserts the
+    field is not a slice or array type (§G.9.1).
+
+**Snooze (§B.8)**
+
+53. Snoozing a firing critical alert for 1 hour stops every oto notification about it, posts one
+    `snoozed` thread reply announcing the quiet, and leaves the Slack card's colour and severity
+    emoji **unchanged** — it still reads as a firing critical.
+54. A snoozed alert is **visible in the default UI list** with a `:zzz:` badge and a live countdown,
+    and a banner enumerates every active snooze in the org.
+55. When the snooze expires the alert notifies again within 60 s, with a card rendered from
+    **current** state — an alert that fired and resolved entirely inside the window produces no
+    stale card.
+56. An Alertmanager silence applied to a snoozed alert shows **both** facts: `suppressed` state with
+    the silence's creator and expiry, **and** the snooze badge. `occurrence.suppression_reason` is
+    never `snoozed`, and `occurrence.state` is never `snoozed` (§B.8.2).
+57. A suppressed occurrence returns to `firing` **on the next webhook arrival**, without waiting for
+    a reconcile pass (§B.3.1).
+58. A `resolved` observation whose upstream timestamp precedes the occurrence's `started_at` is
+    accepted, clamped, flagged `clamped: true` on the event, and counted in `oto_clock_skew_seconds`
+    — the batch is never dropped (§B.3.2).
+
+
+---
+
+## L. Validation architecture
+
+> **Principle.** Validation is not one thing done in one place. It is **seven distinct layers with
+> different trust models, different failure modes and different error shapes.** Trusted user input
+> and untrusted upstream payloads MUST NOT share rules: rejecting a malformed API request is
+> correct; rejecting a malformed Alertmanager payload deletes an alert forever (C4).
+
+### L.0 The seven layers
+
+| # | Layer | Where | Library | Trust model | Failure result |
+|---|---|---|---|---|---|
+| 1 | Transport / API DTOs | `internal/<d>/api` | `go-playground/validator/v10` | authenticated user, semi-trusted | **422** `validation_failed` + `violations[]` |
+| 2 | Inbound untrusted payloads | `internal/ingestion/decode` | hand-written bounds (no reflection) | **untrusted, hostile-by-default** | row in `ingest_rejections`, **still 202** |
+| 3 | Domain invariants | `internal/<d>/domain` | none — constructors + value objects | already-parsed data | typed `domain` error; a programming bug |
+| 4 | Channel / provider config | `internal/channels` | `santhosh-tekuri/jsonschema/v6` | authenticated user | **422** `validation_failed` mapped from schema errors |
+| 5 | Outbound render | `internal/channels/render/slack` | hand-written limit checks | our own output | `config_invalid` → `dead` delivery, payload persisted |
+| 6 | Persistence | Postgres | `CHECK` / `NOT NULL` / `UNIQUE` / `FK` | last line of defence | `23xxx` SQLSTATE → **500** (a bug) or **409** (genuine conflict) |
+| 7 | Frontend | `web/src` | `valibot` | server responses + user forms | inline field error / dev-time throw |
+
+**Non-negotiable:** every layer validates. A value that passed layer 1 is still checked at layer 3
+and layer 6. Defence in depth is not redundancy — layers 1 and 4 exist to produce a *good error
+message*, layer 3 exists to make illegal states unrepresentable, and layer 6 exists to catch the
+bug in layers 1–3.
+
+### L.1 Error taxonomy
+
+`internal/platform/errs` defines exactly one `Kind` enum. Every error crossing a service boundary
+carries one.
+
+> **⭐ RATIFIED (kernel finding C.2).** An earlier draft placed `WriteProblem` in `errs`. That is
+> wrong: `domain` packages import `errs`, and §L.4 forbids `net/http` in `domain`. The split that
+> shipped is correct and is now binding:
+>
+> - **`platform/errs`** owns `Kind`, `Error`, `Violation`, `ProblemDTO`, and
+>   **`func (k Kind) HTTPStatus() int`** — a pure integer lookup with **no I/O imports whatsoever**.
+>   It is importable from `domain`.
+> - **`platform/httpx`** owns **`func WriteProblem(w http.ResponseWriter, r *http.Request, err error)`**,
+>   the only place an error becomes bytes on a wire.
+>
+> The mapping still lives in exactly one place; that place is now split across two packages along the
+> I/O boundary, which is the point of the boundary.
+
+```go
+package errs
+
+type Kind string
+
+const (
+	KindValidation    Kind = "validation_failed"      // 422 — well-formed, semantically invalid
+	KindMalformed     Kind = "malformed_request"      // 400 — unparseable body / bad query param
+	KindUnauthorized  Kind = "unauthenticated"        // 401 — no or bad credential
+	KindForbidden     Kind = "forbidden"              // 403 — cross-org access (v1: only cause)
+	KindNotFound      Kind = "not_found"              // 404
+	KindConflict      Kind = "conflict"               // 409 — unique violation, concurrent update
+	KindPrecondition  Kind = "precondition_failed"    // 412 — illegal state transition
+	KindTooLarge      Kind = "payload_too_large"      // 413
+	KindUnsupported   Kind = "unsupported_media_type" // 415
+	KindRateLimited   Kind = "rate_limited"           // 429 — READ API ONLY. NEVER on /ingest (C4).
+	KindInternal      Kind = "internal_error"         // 500
+	KindUpstreamDown  Kind = "upstream_unavailable"   // 502 — Alertmanager/Prometheus/Slack failed
+	KindUnavailable   Kind = "unavailable"            // 503 — our backpressure (ingest, pool exhausted)
+	KindUpstreamSlow  Kind = "upstream_timeout"       // 504
+)
+
+type Error struct {
+	Kind       Kind
+	Code       string       // stable machine code, e.g. "alert_not_found", "occurrence_terminal"
+	Message    string       // human, safe to show; NEVER contains a secret or a raw payload
+	Violations []Violation  // ALWAYS on KindValidation; on another Kind only when the refusal names a request member
+	Retryable  bool
+	RetryAfter time.Duration
+	Cause      error
+}
+
+type Violation struct {
+	Field   string `json:"field"`   // JSON POINTER-ish path in JSON names: "matchers/0/name"
+	Code    string `json:"code"`    // stable, from the tag->code map (L.2.3)
+	Message string `json:"message"` // human
+}
+```
+
+**Distinguishing rules (binding):**
+
+- **validation** = the caller can fix it by changing the request. **conflict** = the caller must
+  re-read and retry. **precondition** = the request is valid but the entity is in the wrong state
+  (e.g. acking a `resolved` occurrence). **upstream-failure** = nothing the caller did is wrong.
+- A Postgres unique-violation on a key the *user* supplied (`orgs.slug`, `channels.name`) is
+  **409 conflict**. A unique-violation on a key *oto* computed (`alert_key`, `idempotency_key`) is
+  **not an error at all** — it is the idempotency mechanism, swallowed by `ON CONFLICT`.
+- A `CHECK` violation reaching the HTTP layer is **500 + an alert**. It means layers 1–3 have a
+  hole. The mapped error carries **the constraint name as its `Code`** (§L.9), so the 500 and its
+  log line name the violated constraint; there is no `oto_check_violation_total` counter (AC-34).
+- Upstream failures NEVER become the caller's fault. A dead Alertmanager is 502, never 400.
+- **`Violations` is about NAMING A MEMBER OF THE REQUEST, not about a status code.** Every
+  `KindValidation` error carries it. Another Kind carries it *only* when the refusal is about an
+  identifiable member of the request the caller can act on: `unknown_parameter` and
+  `source_id_required` are `KindMalformed` (400) and name the query parameter,
+  `setting_managed_by_config` is `KindConflict` (409) and names the setting the deployment owns. A
+  400 is a request that never parsed, and *which* parameter was wrong is precisely the part a form
+  can highlight — the `field`-path rules of L.2.2 apply verbatim (a query parameter uses its bare
+  name). It is NEVER present on a refusal that is not about a member of the request:
+  `KindUnauthorized`, `KindForbidden`, `KindNotFound`, `KindPrecondition`, `KindTooLarge`,
+  `KindUnsupported`, `KindRateLimited` and every 5xx. **A client therefore branches on `Code`,
+  never on the presence of `violations[]`.**
+
+### L.2 Layer 1 — Transport / API DTOs
+
+#### L.2.1 Library and invocation
+
+`github.com/go-playground/validator/v10`, one process-wide `*validator.Validate` built in
+`internal/platform/validate`, with `RegisterTagNameFunc` so **every reported field path is the
+JSON name, never the Go name**.
+
+```go
+package validate
+
+var v = func() *validator.Validate {
+	val := validator.New(validator.WithRequiredStructEnabled())
+	// Field paths in errors MUST be JSON names. This is not optional.
+	val.RegisterTagNameFunc(func(f reflect.StructField) string {
+		name := strings.SplitN(f.Tag.Get("json"), ",", 2)[0]
+		if name == "-" || name == "" {
+			return f.Name
+		}
+		return name
+	})
+	// oto-specific rules, registered once (L.2.4)
+	_ = val.RegisterValidation("labelname", isPrometheusLabelName)
+	_ = val.RegisterValidation("matcherop", isMatcherOp)
+	_ = val.RegisterValidation("cursor", isOpaqueCursor)
+	_ = val.RegisterValidation("notblank", isNotBlank)
+	_ = val.RegisterValidation("httpurl", isAbsoluteHTTPURL)
+	_ = val.RegisterValidation("clusterkey", isClusterKey)
+	return val
+}()
+
+// Struct validates and converts validator errors into errs.Violation, with JSON paths.
+func Struct(v any) error
+```
+
+**No handler calls `validate.Struct` directly.** Exactly one helper does it, so no handler can
+forget:
+
+```go
+package httpx
+
+// Bind decodes the JSON body into T, validates it, and returns a ready errs.Error on failure.
+// This is the ONLY sanctioned way to read a request body. An arch test asserts that no
+// internal/*/api package calls json.NewDecoder or validate.Struct directly.
+func Bind[T any](w http.ResponseWriter, r *http.Request) (T, error) {
+	var zero T
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		return zero, errs.New(errs.KindUnsupported, "unsupported_media_type", "expected application/json")
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)) // 1 MiB
+	dec.DisallowUnknownFields()      // trusted input: unknown fields are a client bug -> 422
+	var dst T
+	if err := dec.Decode(&dst); err != nil {
+		return zero, mapDecodeError(err)   // -> KindMalformed / KindTooLarge / KindValidation
+	}
+	if dec.More() {
+		return zero, errs.New(errs.KindMalformed, "trailing_content", "body contains trailing JSON")
+	}
+	if err := validate.Struct(dst); err != nil {
+		return zero, err
+	}
+	return dst, nil
+}
+
+// BindQuery does the same for a *Query struct, using `query` tags, then validate.Struct.
+// Unknown query parameters are REJECTED (E.3): 400 unknown_parameter.
+func BindQuery[T any](r *http.Request) (T, error)
+```
+
+> **Note the deliberate asymmetry with layer 2.** API bodies use `DisallowUnknownFields`;
+> Alertmanager payloads must NOT (they carry undocumented fields such as `routeLabels`, plus
+> Grafana's superset). Same JSON, opposite policy, because the trust model is opposite.
+
+#### L.2.2 Canonical validation error response
+
+RFC 9457 problem+json, with a `violations` array. This shape is **binding** and is the only shape
+a 422 ever takes.
+
+```jsonc
+// HTTP/1.1 422 Unprocessable Content
+// Content-Type: application/problem+json
+{
+  "type":     "https://oto.dev/errors/validation_failed",
+  "title":    "Validation failed",
+  "status":   422,
+  "detail":   "3 fields failed validation.",
+  "instance": "/api/v1/notification-policies",
+  "code":     "validation_failed",
+  "request_id": "01JD8Z2K7M3TQ9",
+  "violations": [
+    { "field": "name",            "code": "required",  "message": "name is required" },
+    { "field": "matchers/0/name", "code": "labelname", "message": "must be a valid Prometheus label name" },
+    { "field": "channel_ids",     "code": "min",       "message": "must contain at least 1 item" }
+  ]
+}
+```
+
+Go DTO (in `internal/platform/errs`, serialised by `WriteProblem`):
+
+```go
+type ProblemDTO struct {
+	Type       string         `json:"type"`
+	Title      string         `json:"title"`
+	Status     int            `json:"status"`
+	Detail     string         `json:"detail,omitempty"`
+	Instance   string         `json:"instance,omitempty"`
+	Code       string         `json:"code"`
+	RequestID  string         `json:"request_id"`
+	Violations []ViolationDTO `json:"violations,omitempty"`
+	RetryAfter int            `json:"retry_after_seconds,omitempty"`
+}
+
+type ViolationDTO struct {
+	Field   string `json:"field"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+```
+
+**`field` path rules (binding):** JSON names, `/`-separated, array indices as numeric segments,
+map keys verbatim. `matchers[0].name` → `matchers/0/name`. Top-level fields have no separator.
+Query parameters use the bare parameter name (`label[team]` → `label[team]`).
+
+#### L.2.3 Tag → `code` mapping (closed set)
+
+| validator tag | `violations[].code` | Message template |
+|---|---|---|
+| `required`, `required_if`, `required_with` | `required` | `{field} is required` |
+| `notblank` | `not_blank` | `{field} must not be blank` |
+| `min` (numeric) | `min` | `{field} must be >= {param}` |
+| `max` (numeric) | `max` | `{field} must be <= {param}` |
+| `min` (string/slice) | `min_length` / `min_items` | `{field} must have at least {param} …` |
+| `max` (string/slice) | `max_length` / `max_items` | `{field} must have at most {param} …` |
+| `len` | `exact_length` | `{field} must be exactly {param} long` |
+| `oneof` | `enum` | `{field} must be one of: {param}` |
+| `uuid`, `uuid7` | `uuid` | `{field} must be a UUID` |
+| `email` | `email` | `{field} must be a valid email address` |
+| `url`, `httpurl` | `url` | `{field} must be an absolute http(s) URL` |
+| `gt`, `gte`, `lt`, `lte` | `gt` / `gte` / `lt` / `lte` | `{field} must be {op} {param}` |
+| `ltefield`, `gtefield` | `field_order` | `{field} must be {op} {param}` |
+| `dive` failures | *(code of the inner tag)* | *(inner message, path includes the index)* |
+| `unique` | `duplicate_items` | `{field} must not contain duplicates` |
+| `labelname` | `labelname` | `must be a valid Prometheus label name` |
+| `matcherop` | `matcher_op` | `must be one of: =, !=, =~, !~` |
+| `clusterkey` | `cluster_key` | `must match ^[a-z0-9][a-z0-9._-]{0,62}$` |
+| `cursor` | `cursor` | `cursor is not valid for the current filter` |
+| *(anything unmapped)* | `invalid` | `{field} is invalid` |
+
+An unmapped tag producing `invalid` is a SPEC gap — CI fails if a registered tag has no entry
+(`TestEveryTagHasACode`).
+
+#### L.2.4 Custom rules
+
+```go
+// Prometheus label name: [a-zA-Z_][a-zA-Z0-9_]*   (NOT the same as a k8s label key)
+var labelNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+// Cluster key, matching the DDL CHECK exactly.
+var clusterKeyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+
+// ⭐ kernel finding C.8. `alert_sources_base_ck` is TWO predicates:
+//     base_url ~ '^https?://[^[:space:]]+$'  AND  base_url NOT LIKE '%/'
+// The validator previously mirrored only the first, so a trailing slash produced a 23514 -> 500
+// instead of a 422. `httpurl` now enforces BOTH halves, and the message names the trailing slash.
+func isAbsoluteHTTPURL(fl validator.FieldLevel) bool {
+	v := fl.Field().String()
+	if !httpURLRe.MatchString(v) {
+		return false
+	}
+	if strings.HasSuffix(v, "/") {
+		return false // matches: base_url NOT LIKE '%/'
+	}
+	u, err := url.Parse(v)
+	return err == nil && u.Fragment == "" && u.RawQuery == "" && u.Host != ""
+}
+
+var httpURLRe = regexp.MustCompile(`^https?://[^[:space:]]+$`)
+```
+
+**Defence in depth:** `CreateSourceRequest.toDomain()` and `UpdateSourceRequest.toDomain()`
+additionally strip a trailing slash before constructing the domain value, so a client that somehow
+bypasses layer 1 still cannot violate the CHECK. The 422 exists to produce a *good message*; the
+strip exists to make the 500 impossible.
+
+Every custom rule's regex MUST be byte-identical to the corresponding DDL `CHECK` (§D). A test
+(`TestValidatorMatchesDDL`) asserts this by parsing the migration files. Drift between layer 1
+and layer 6 is the classic way a 500 replaces a 422.
+
+#### L.2.5 Worked DTO examples (binding shapes)
+
+```go
+package api // internal/notification/api
+
+type CreatePolicyRequest struct {
+	Name           string          `json:"name"            validate:"required,notblank,max=120"`
+	Priority       int             `json:"priority"        validate:"gte=0,lte=10000"`
+	Enabled        bool            `json:"enabled"`
+	Matchers       []MatcherDTO    `json:"matchers"        validate:"max=32,dive"`
+	Reasons        []string        `json:"reasons"         validate:"required,min=1,max=32,unique,dive,oneof=fired new_alerts some_resolved all_resolved repeat suppressed unsuppressed expired refired acked unacked snoozed unsnoozed enriched rule_changed comment unacked_reminder storm"`
+	ChannelIDs     []uuid.UUID     `json:"channel_ids"     validate:"required,min=1,max=16,unique,dive,uuid"`
+	Throttle       *ThrottleDTO    `json:"throttle"        validate:"omitempty"`
+	UnackedReminderAfterS *int            `json:"unacked_reminder_after_seconds" validate:"omitempty,gte=60,lte=86400"`
+}
+
+type MatcherDTO struct {
+	Name  string `json:"name"  validate:"required,labelname"`
+	Op    string `json:"op"    validate:"required,matcherop"`
+	Value string `json:"value" validate:"max=4096"`
+}
+
+type ThrottleDTO struct {
+	Max      int `json:"max"                validate:"required,gte=1,lte=1000"`
+	WindowS  int `json:"window_seconds"     validate:"required,gte=60,lte=86400"`
+}
+
+type AckRequest struct {
+	Note string `json:"note" validate:"max=2000"`
+}
+
+type CommentRequest struct {
+	Body string `json:"body" validate:"required,notblank,max=10000"`
+}
+
+// SnoozeRequest — exactly one of DurationSeconds or Until must be set.
+// Bounds mirror alert_snoozes_min_ck / alert_snoozes_max_ck exactly (5 minutes .. 30 days).
+type SnoozeRequest struct {
+	DurationSeconds *int       `json:"duration_seconds" validate:"required_without=Until,omitempty,gte=300,lte=2592000"`
+	Until           *time.Time `json:"until"            validate:"required_without=DurationSeconds,omitempty"`
+	Note            string     `json:"note"             validate:"max=2000"`
+}
+
+type CreateSourceRequest struct {
+	Name              string   `json:"name"                 validate:"required,notblank,max=120"`
+	ClusterID         uuid.UUID `json:"cluster_id"          validate:"required,uuid"`
+	Kind              string   `json:"kind"                 validate:"required,oneof=alertmanager grafana"`
+	BaseURL           string   `json:"base_url"             validate:"required,httpurl,max=2048"`
+	PrometheusURL     string   `json:"prometheus_url"       validate:"omitempty,httpurl,max=2048"`
+	IgnoreLabels      []string `json:"ignore_labels"        validate:"max=64,unique,dive,labelname"`
+	RedactLabels      []string `json:"redact_labels"        validate:"max=64,dive,max=256"`
+	ReconcileInterval int      `json:"reconcile_interval_seconds" validate:"gte=10,lte=3600"`
+}
+```
+
+**Rules that bind every DTO:**
+1. Every exported field has a `json` tag and, unless it is a plain `bool`, a `validate` tag.
+2. Bounds in the `validate` tag MUST equal the DDL `CHECK` bounds. No exceptions.
+3. Enum fields use `oneof` with the same literal set as the DDL `CHECK`.
+4. Slices always carry `max` (never unbounded) and `dive` when the element needs checking.
+5. Optional fields are pointers with `omitempty` in the validate tag, so "absent" and "zero" are
+   distinguishable. A `PATCH` DTO is **all pointers**.
+
+### L.3 Layer 2 — Inbound untrusted payloads (the Alertmanager webhook)
+
+> **This layer's rules are the opposite of layer 1's. Read C4 and ADR 0007 before touching it.**
+
+#### L.3.1 Decoding policy
+
+- **Lenient.** `json.Decoder` **WITHOUT** `DisallowUnknownFields`. Alertmanager emits
+  `routeLabels`, which is absent from the published docs. Grafana Unified Alerting emits a
+  superset (`orgId`, `title`, `message`, `state`, `silenceURL`, `dashboardURL`, `panelURL`,
+  `imageURL`). Rejecting unknown fields would break on the next Alertmanager release.
+- `endsAt` may be the Go zero time `"0001-01-01T00:00:00Z"` — **not `null`, not omitted**. Treat
+  zero time as "no end time known", never as year 1.
+- `version` is the hardcoded literal string `"4"`. It is **not** a feature-detection signal; do
+  not branch on it, do not reject other values.
+- `truncatedAlerts` is a **number** despite the docs' `<int>` in a string-looking position.
+- A custom `payload:` template (Alertmanager's unsupported escape hatch) may produce any shape.
+  **Fail soft:** if the batch does not decode into the expected envelope, record `undecodable`
+  in `ingest_rejections` and **still return 202**.
+
+#### L.3.2 Hard bounds (every value literal and binding)
+
+| # | Bound | Limit | On violation |
+|---|---|---|---|
+| B1 | HTTP body size | **8 388 608 bytes (8 MiB)** | `413`, `ingest_rejections.reason='body_too_large'` |
+| B2 | Alerts per batch | **10 000** | truncate to 10 000, record `too_many_alerts` with the excess count, process the rest, 202 |
+| B3 | Labels per alert | **64** | reject **that alert**, `too_many_labels`, 202 |
+| B4 | Label name length | **1 024 bytes** | reject that alert, `label_name_too_large`, 202 |
+| B5 | Label value length | **4 096 bytes** | reject that alert, `label_value_too_large`, 202 |
+| B6 | Total serialised label set | **16 384 bytes** | reject that alert, `labelset_too_large`, 202 |
+| B7 | Annotations per alert | **32** | drop the excess annotations (keep the alert), record `too_many_annotations`, 202 |
+| B8 | Annotation value length | **16 384 bytes** | truncate the value to 16 384 with a `…` marker, record `annotation_too_large`, 202 |
+| B9 | Label name charset | `^[a-zA-Z_][a-zA-Z0-9_]*$` | reject that alert, `invalid_label_name`, 202 |
+| B10 | `alertname` present and non-empty | required | reject that alert, `missing_alertname`, 202 |
+| B11 | `alertname` length | **1 024 bytes** | reject that alert, `label_value_too_large`, 202 |
+| B12 | `startsAt` sanity window | **`now - 365d` ≤ `startsAt` ≤ `now + 24h`** | reject that alert, `timestamp_out_of_window`, 202 |
+| B13 | `endsAt` sanity window | zero time, or **`startsAt` ≤ `endsAt` ≤ `now + 365d`** | clamp to `startsAt`, record `timestamp_out_of_window`, keep the alert, 202 |
+| B14 | `generatorURL` length | **8 192 bytes** | truncate; keep the alert |
+| B15 | `receiver` / `groupKey` length | **4 096 bytes** each | truncate; keep the batch |
+| B16 | JSON nesting depth | **32** | `undecodable`, 202 |
+| B17 | Chunk size for processing | **500 alerts per transaction, always.** Every batch is sliced by 500 — 501 alerts is 2 transactions, 2 000 is 4. The 2 000 threshold splits nothing; it is the point above which the batch is additionally marked `partial` while its chunks run | — |
+| B18 | Label value **storability** | no `U+0000`; valid UTF-8 | reject that alert, `invalid_label_value`, 202 |
+| B19 | Annotation name/value **storability** | no `U+0000`; valid UTF-8 | **keep the alert.** Replace the offending code points of a *value* with `U+FFFD`; **drop** an annotation whose *name* is unstorable. Record `annotation_unstorable`, 202 |
+
+**The governing rule:** *a bound violation is recorded, never fatal to the batch, and never 4xx.*
+The only 4xx on this path are 401 (bad token), 413 (B1), and 400 (B16/undecodable) — all three
+genuinely permanent, all three recorded in `ingest_rejections`.
+
+Sanity windows exist because a broken upstream clock (§C12) can otherwise poison partition
+routing: an alert claiming `startsAt: 2087` would create a partition 60 years out.
+
+> ## ⛔ L.3.2a THE STORABILITY RULE (B18/B19) — BINDING, AND NOT TO BE RE-LITIGATED
+>
+> **Postgres in a UTF8 database cannot store `U+0000` in `text` or `jsonb`, and cannot store an
+> invalid UTF-8 byte sequence anywhere.** Prometheus label values and annotation values are
+> arbitrary bytes, `label_replace` over exporter- or log-derived text reaches both, and a JSON
+> unicode escape decodes straight through the ingest path. Such a value is therefore fatal at
+> **layer 6, the INSERT** — a 23514/22021 where an alert belongs. B18 and B19 move that decision to
+> layer 2, where it is a *recorded rejection* instead of a 500.
+>
+> The predicate is **one function** (`alerts/domain.UnstorableReason`). The verdict is **two
+> opposite things, decided by what the string is FOR:**
+>
+> | | Label value (B18) | Annotation name/value (B19) |
+> |---|---|---|
+> | What it is | **Identity.** `alert_key` hashes the label set (§C.1, §C.2). | **Prose.** Explicitly not part of any identity (§C.9.3). |
+> | Verdict | **Reject the alert.** | **Keep the alert.** Sanitise the value; drop the annotation if its *name* is unstorable. |
+> | Why | Rewriting a byte changes **which Alert this is** and files an observation under a key the upstream never sent. That corrupts a timeline and is undetectable afterwards. Losing one observation is recoverable; silently merging two Alerts is not. | Ingest policy for annotations is already **truncate-and-keep** (B7, B8). Rejecting an alert over a bad byte in its `description` would contradict that policy and throw away the signal underneath the prose. |
+>
+> Corollaries, all binding:
+>
+> - **A label value is never sanitised.** oto stores what the upstream said, verbatim, or it stores
+>   nothing and says so. There is no escaping layer and no normalisation pass (this is the same
+>   ruling as §C.1's length-prefix framing: *escaping would mean oto editing an operator's bytes in
+>   order to store them, and oto is a flight recorder*).
+> - **An annotation NAME is never sanitised, only dropped.** A name is a `jsonb` key. Two different
+>   unstorable names sanitise to one string, and the second would silently overwrite the first —
+>   trading a visible drop for an invisible one.
+> - **A sanitised annotation is always recorded.** `annotation_unstorable` on a kept alert is how an
+>   operator learns oto edited the text. Editing without recording would be the silent suppression
+>   §C.9.1 exists to forbid.
+> - **`annotation_unstorable` and `invalid_label_value` are separate enum members and must stay
+>   separate.** One means *an alert is missing from the timeline*; the other means *an alert is
+>   present with one altered sentence*. They are triaged differently and alerted on differently.
+> - **Neither is `undecodable`.** `undecodable` means the body was not a webhook payload at all
+>   (B16, §L.3.1). Reporting a storability failure as `undecodable` sends an operator hunting for
+>   malformed JSON that does not exist; that was the defect these two members were added to fix.
+> - **`U+FFFD` is the substitute** because it is what every UTF-8 decoder already emits for these
+>   bytes. Note it is *three* bytes where the byte it replaced was one, so B19 runs **before** B8.
+> - An unstorable label *name* needs no rule: B9's charset (`^[a-zA-Z_][a-zA-Z0-9_]*$`) already
+>   admits no NUL and no non-ASCII byte, and rejects with `invalid_label_name`. A second check for
+>   the same bytes would be an unreachable branch.
+
+#### L.3.3 Order of operations (binding)
+
+```
+1. auth (401)                          6. per-alert bounds B3–B14, B18–B19
+2. body size B1 (413)                     -> ingest_rejections rows
+3. decode leniently B16 (400)          7. label redaction  <-- BEFORE the raw persist
+4. batch bounds B2, B15                8. checksum + batch_dedup_key
+5. timestamp sanity B12–B13            9. persist ingest_batches + enqueue
+                                      10. 202
+```
+
+**Redaction precedes persistence.** `redact_labels` / `redact_annotations` glob patterns are
+applied to the in-memory payload *before* `ingest_batches.payload` is written, so a secret in an
+annotation never lands on disk. Never log the payload at info level.
+
+#### L.3.4 The reconciler is layer 2 too
+
+`GET /api/v2/alerts` responses pass through the **same** bounds B3–B14 and B18–B19 and the same
+normaliser. An upstream is untrusted regardless of which direction the bytes travelled.
+
+### L.4 Layer 3 — Domain invariants
+
+> **Illegal states must be unrepresentable.** There is no optional `Validate()` method anywhere in
+> `internal/*/domain`. If you can construct it, it is valid.
+
+Every value object has an unexported field, a `New…` constructor returning `(T, error)`, and no
+setters. `encoding/json` cannot construct one (no exported fields), which is exactly the point:
+a value object can only enter the system through its constructor.
+
+```go
+package domain // internal/alerts/domain
+
+// LabelSet is canonicalised and bounded at construction.
+type LabelSet struct{ m map[string]string }
+
+func NewLabelSet(in map[string]string) (LabelSet, error)
+// invariants: <=64 entries; every name matches ^[a-zA-Z_][a-zA-Z0-9_]*$;
+// every value <=4096 bytes and STORABLE (B18: no U+0000, valid UTF-8);
+// total serialised size <=16384; "alertname" present and non-empty.
+
+func (l LabelSet) Get(name string) (string, bool)
+func (l LabelSet) Sorted() []Label          // deterministic order, the input to every hash
+func (l LabelSet) Without(names []string) LabelSet
+
+// AlertKey — the product identity (C.2).
+type AlertKey struct{ s string }
+func NewAlertKey(s string) (AlertKey, error)   // ^ak_[0-9a-v]{26}$
+func ComputeAlertKey(orgID uuid.UUID, clusterKey ClusterKey, ls LabelSet, ignore []string) AlertKey
+
+// SourceFingerprint — Alertmanager's FNV-1a 64 (C.3).
+type SourceFingerprint struct{ s string }
+func NewSourceFingerprint(s string) (SourceFingerprint, error)  // ^[0-9a-f]{16}$
+func ComputeSourceFingerprint(ls LabelSet) SourceFingerprint
+
+// GroupKey (C.4), RuleFingerprint (C.6), IdempotencyKey (C.7) follow the identical pattern.
+type GroupKey struct{ s string }          // ^gk_[0-9a-v]{26}$
+type RuleFingerprint struct{ s string }   // ^[0-9a-f]{64}$
+type IdempotencyKey struct{ s string }    // ^[0-9a-f]{64}$
+
+// ClusterKey — participates in identity, so its charset is load-bearing.
+type ClusterKey struct{ s string }
+func NewClusterKey(s string) (ClusterKey, error)   // ^[a-z0-9][a-z0-9._-]{0,62}$
+
+// SlackTS — a FOREIGN SYSTEM'S PRIMARY KEY. String, never a float (S7).
+type SlackTS struct{ s string }
+func NewSlackTS(s string) (SlackTS, error)         // ^[0-9]{10}\.[0-9]{6}$
+
+// Severity, State, AckState, Reason, Mode, ErrorClass are closed string enums with
+// New…FromString(s) (T, error). There is no way to hold an out-of-range value.
+type State struct{ s string }
+var (
+	StateFiring     = State{"firing"}
+	StateSuppressed = State{"suppressed"}
+	StateResolved   = State{"resolved"}
+	StateExpired    = State{"expired"}
+)
+func NewState(s string) (State, error)
+func (s State) IsTerminal() bool { return s == StateResolved || s == StateExpired }
+
+// TimeWindow rejects an inverted range at construction.
+type TimeWindow struct{ from, to time.Time }
+func NewTimeWindow(from, to time.Time) (TimeWindow, error)   // requires !from.IsZero() && to.After(from)
+```
+
+**The state machine is a total function, not a set of `if`s.** There is exactly one place a
+transition can happen:
+
+```go
+package domain
+
+// Transition is the ONLY way an Occurrence changes state. It returns
+// errs.KindPrecondition for an illegal edge — never a panic, never a silent no-op.
+// The table it consults is exactly SPEC §B.3. Adding an edge means editing that table.
+func (o Occurrence) Transition(t TransitionKind, at ObservationTime, actor Actor) (Occurrence, []Event, error)
+```
+
+Invariants enforced inside `Transition` (each mirrored by a DDL `CHECK` in §D.4):
+1. A terminal state (`resolved`/`expired`) can only be left by T7 or T8.
+2. `suppressed` can only be entered by a `reconciler` actor (C1). An `ingest` actor attempting
+   T3 is a programming error and returns `KindInternal`.
+3. `resolved` requires `resolve_reason='upstream'`; `expired` requires `resolve_reason='timeout'`.
+4. `ended_at >= started_at`, always.
+5. Ack fields are all-or-nothing.
+6. At most one open occurrence per alert (also a partial unique index — belt and braces).
+
+#### L.4.1 ⭐ RULING (kernel finding C.3): `encoding/json` is permitted in `domain`; json TAGS are not
+
+`channels/domain` needs `json.RawMessage` for `Descriptor.ConfigSchema` and `RenderedMessage.Payload`.
+The blanket "no I/O imports" rule forbade it, which was over-broad.
+
+> **The rule is narrowed, precisely.** The prohibition is on **I/O**: no network, no disk, no clock,
+> no process state. `encoding/json` is a **serialisation** library — it performs no I/O — and
+> `json.RawMessage` is a `[]byte` carrying a documented meaning.
+>
+> **Permitted in `domain`:** `encoding/json` *types* (`json.RawMessage`) and functions.
+> **Forbidden in `domain`, unchanged:** `pgx`, `database/sql`, `net/http`, `os`, `time.Now` (use
+> `platform/clock`), `slack-go`, `client-go`, and **`json:"…"` struct tags on any domain type**.
+>
+> The tag ban is the load-bearing half: tags are what would quietly turn a domain type into a DTO
+> and collapse the three-model rule (ADR 0002). A `json.RawMessage` field cannot do that.
+
+**Rejected alternative:** changing the port to `[]byte`. It loses the meaning at every call site —
+callers would have to remember which `[]byte` is JSON and which is not — for no gain, since the
+type carries no behaviour and imports nothing.
+
+**Constructors returning errors are not decoration.** An arch test (`TestDomainHasNoIOImports`)
+asserts that no type in `internal/*/domain` has both exported mutable fields and a documented
+invariant, that no `domain` package imports any package on the forbidden list above, and that no
+`domain` struct field carries a `json` tag.
+
+#### L.4.2 ⭐ RULING (kernel finding C.7): severity is strict in the domain, lenient at the boundary
+
+The SPEC contradicted itself: §L.4 called `Severity` a closed enum, §H.2 said *"anything else /
+absent"*, and the DDL had no CHECK. All three were partly right. The shipped resolution is ratified:
+
+```go
+// Severity is a CLOSED enum. There is no way to hold an out-of-range value.
+type Severity struct{ s string }
+
+var (
+	SeverityCritical = Severity{"critical"}
+	SeverityWarning  = Severity{"warning"}
+	SeverityInfo     = Severity{"info"}
+	SeverityUnknown  = Severity{"unknown"}
+)
+
+// NewSeverity is STRICT. Use it for API input, config, and anything a human typed.
+func NewSeverity(s string) (Severity, error)
+
+// SeverityFromLabel is LENIENT and TOTAL. Use it for upstream label values, which are
+// arbitrary user strings. It never fails: unrecognised input maps to SeverityUnknown.
+//   critical|crit|fatal|page|p1|sev1 -> Critical
+//   warning|warn|p2|sev2             -> Warning
+//   info|informational|none|p3..p5   -> Info
+//   ""|anything else                 -> Unknown
+func SeverityFromLabel(raw string) Severity
+```
+
+> **`alerts.severity` stores the RAW upstream label value**, not the normalised one, bounded only by
+> `alerts_sev_ck` (1..256 chars). This is deliberate: users filter on their own vocabulary
+> (`sev1`, `P1`, `page`) and normalising at write time would destroy that. Normalisation happens at
+> **render** time via `SeverityFromLabel`, which is why §H.2's "anything else / absent → `:white_circle:`"
+> row is correct and stays. There is no severity enum CHECK on `alerts`, and adding one would be a bug.
+
+`SeverityFromLabel` is layer 2 (untrusted, lenient). `NewSeverity` is layers 1/3 (trusted, strict).
+That is the same asymmetry as `httpx.Bind` vs the webhook decoder, applied to one field.
+
+### L.5 Layer 4 — Channel / provider config (JSON Schema, one source of truth)
+
+**Library:** `github.com/santhosh-tekuri/jsonschema/v6` (draft 2020-12, no network fetching —
+schemas are compiled from `embed.FS` at boot; a schema that fails to compile is a **boot panic**).
+
+Each `Provider` publishes its schema via `Descriptor().ConfigSchema`. The **same bytes** are:
+1. compiled once at boot and used by `Provider.ValidateConfig` on every create/update;
+2. served verbatim by `GET /api/v1/channel-types`;
+3. consumed by the SolidJS settings form, which renders and validates itself from it.
+
+**There is no second copy of these rules anywhere.** Adding a provider adds a schema file and
+changes no UI code.
+
+Schema validation errors are mapped to `errs.Violation` with the JSON Pointer from
+`jsonschema.ValidationError.InstanceLocation` as `field` and the keyword as `code`
+(`required`, `type`, `pattern`, `enum`, `minimum`, `maxLength`, `additionalProperties`).
+
+#### L.5.1 `slack` config schema (literal, `internal/channels/providers/slack/schema.json`)
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oto.dev/schemas/channel/slack/v1.json",
+  "title": "Slack channel",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["team_id", "conversation_id"],
+  "properties": {
+    "team_id": {
+      "type": "string", "title": "Workspace ID",
+      "pattern": "^T[A-Z0-9]{2,}$",
+      "description": "Slack workspace id, e.g. T9TK3CUKW"
+    },
+    "conversation_id": {
+      "type": "string", "title": "Channel ID",
+      "pattern": "^[CGD][A-Z0-9]{2,}$",
+      "description": "Channel ID (not the name). Use the ID Slack returns, never a #name."
+    },
+    "conversation_name": {
+      "type": "string", "title": "Channel name (display only)",
+      "maxLength": 80, "pattern": "^[^#][a-z0-9_-]*$"
+    },
+    "transport": {
+      "type": "string", "title": "Interactivity transport",
+      "enum": ["socket_mode", "http"], "default": "socket_mode"
+    },
+    "max_instances": {
+      "type": "integer", "title": "Instances rendered inline",
+      "minimum": 1, "maximum": 20, "default": 10
+    },
+    "mention_on_reminder": {
+      "type": "array", "title": "Mention on unacked reminder",
+      "description": "A FIXED audience mentioned when an unacked reminder fires. Usergroups, individuals, !here and !channel are all permitted. This list is NOT a rota: it must never become time-aware (§G.9.1).",
+      "maxItems": 10, "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^(<!subteam\\^S[A-Z0-9]+>|<@[UW][A-Z0-9]+>|!here|!channel)$" }
+    },
+    "link_names": { "type": "boolean", "default": false }
+  }
+}
+```
+
+#### L.5.2 `webhook` config schema (literal, `internal/channels/providers/webhook/schema.json`)
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oto.dev/schemas/channel/webhook/v1.json",
+  "title": "Generic webhook",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["url"],
+  "properties": {
+    "url": {
+      "type": "string", "title": "Endpoint URL",
+      "format": "uri", "pattern": "^https?://", "maxLength": 2048
+    },
+    "method": { "type": "string", "enum": ["POST", "PUT"], "default": "POST" },
+    "headers": {
+      "type": "object", "title": "Additional headers",
+      "maxProperties": 20,
+      "propertyNames": { "pattern": "^[A-Za-z0-9-]{1,64}$" },
+      "additionalProperties": { "type": "string", "maxLength": 1024 }
+    },
+    "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000, "default": 5000 },
+    "insecure_skip_verify": { "type": "boolean", "default": false }
+  }
+}
+```
+
+**Server-side rules that a JSON Schema cannot express** live in `Provider.ValidateConfig` and
+return the same `errs.Violation` shape: reject `headers` containing `Authorization` (credentials
+belong in `channel_credentials`, not in config), and reject a `url` resolving to a link-local or
+loopback address unless `OTO_ALLOW_PRIVATE_WEBHOOK_TARGETS=true` (SSRF guard).
+
+### L.6 Layer 5 — Outbound render validation
+
+> **Never send a message we have not proved is legal.** A truncated-by-accident alert card is a
+> correctness failure, not a cosmetic one.
+
+`render/slack.Validate(payload)` runs on every rendered message, **before** the API call and
+before `notification_deliveries.rendered` is persisted. Checks, in order:
+
+| # | Check | Limit | Failure |
+|---|---|---|---|
+| V1 | exactly one attachment | `len(attachments) == 1` | `render_invalid` |
+| V2 | attachment `color` is `good`/`warning`/`danger` or `^#[0-9a-fA-F]{6}$` | — | `render_invalid` |
+| V3 | block count | `<= 50` | `render_invalid` |
+| V4 | block-type whitelist | `section`, `context`, `actions`, `divider`, `image`, `rich_text` **only**. `header` and `alert` are **forbidden** (S1, S2). | `render_invalid` |
+| V5 | `section.text` length | `<= 3000` | `render_invalid` |
+| V6 | `section.fields` | `<= 10` items, each `<= 2000` chars | `render_invalid` |
+| V7 | `context.elements` | `<= 10` | `render_invalid` |
+| V8 | `actions.elements` | `<= 25` (oto renders `<= 4`) | `render_invalid` |
+| V9 | `button.text` | `<= 75` chars, `plain_text` | `render_invalid` |
+| V10 | `button.url` / `image.image_url` | `<= 3000` chars, absolute http(s) | `render_invalid` |
+| V11 | `button.value` | `<= 2000`; oto asserts it is a bare UUID (S8) | `render_invalid` |
+| V12 | `action_id` / `block_id` | `<= 255`; `action_id` matches `^oto\.[a-z0-9._]+$` | `render_invalid` |
+| V13 | at most one `style: "primary"`; no inline `style: "danger"` (S10) | — | `render_invalid` |
+| V14 | top-level `text` non-empty and `<= 3000` | — | `render_invalid` |
+| V15 | `unfurl_links == false` and `unfurl_media == false` (S6) | — | `render_invalid` |
+| V16 | every `block_id` unique within the payload | — | `render_invalid` |
+| V17 | `metadata.event_payload` serialises to `<= 8000` bytes | — | `render_invalid` |
+| V18 | total payload size | `<= 100 000` bytes | `render_invalid` |
+
+**On failure the delivery goes straight to `status='dead'`, `error_class='config_invalid'`, with
+the offending payload persisted in `notification_deliveries.rendered` and the failing check named
+in `notification_deliveries.error`** (`slack.Error.Check`, rendered as
+`slack render invalid (<check>): …`). It is never silently truncated and never sent.
+
+This is an oto bug, and the alert on it is `oto_jobs_dead_total`
+(`deploy/prometheus/oto-rules.yaml`) — the deliver job dies, so the death is already counted.
+There is **no** `oto_render_invalid_total{check}` counter; earlier drafts promised one and no
+collector was ever built (AC-34). `Check` is the label such a counter *would* carry, and it is
+kept as a stable, closed vocabulary so the delivery records stay greppable by check name.
+
+Renderers additionally have golden files (`testdata/*.golden.json`), and the CI golden test runs
+`Validate` over every golden file — so a limit violation is caught at build time, not in production.
+
+The webhook renderer's equivalent (`render/webhookjson.Validate`) checks: the envelope matches
+`oto.notification.v1`, the payload is `<= 1 048 576` bytes, and all timestamps are RFC 3339 UTC.
+
+### L.7 Layer 6 — Persistence
+
+Fully specified as literal DDL in **§D**. The rules governing it:
+
+0. **Every constraint is NAMED** (§D conventions). The realised schema carries **201** named CHECK
+   constraints across 30 tables — the 171 written in this document plus 30 that were inline and
+   anonymous and were named to satisfy this rule. Anonymous CHECKs are forbidden because §L.9 makes
+   the constraint name a runtime contract.
+1. **Every enum is a `CHECK` with the same literal set as the Go enum and the DTO `oneof`.**
+2. **Every counter is `>= 0`.** Every paired counter has an ordering check (`acked_count <= total_count`).
+3. **Every timestamp pair is ordered** (`ended_at >= started_at`, `expires_at > created_at`,
+   `updated_at >= created_at`) — except `alert_events(recorded_at, occurred_at)`, which is
+   deliberately unconstrained because upstream clock skew is measured, not rejected (C12).
+4. **Every user-visible text column is bounded and non-blank** where blankness is meaningless.
+5. **Conditional NOT NULL is expressed as a `CHECK` implication**, not left to application code:
+   `status='sent'` implies `provider_message_id IS NOT NULL`; `state='dead'` implies
+   `dead_reason IS NOT NULL`; `ack_state='acked'` implies `acked_at IS NOT NULL`.
+6. **FKs are declared everywhere a relationship exists**, with an explicit `ON DELETE` action.
+7. `CHECK` violations are **bugs**, not user errors: they map to a 500 whose error `Code` is the
+   violated constraint's name (§L.9). Reaching one is never acceptable in steady state — which is
+   asserted against the mapped error in the integration suite (AC-42), not against a counter.
+
+### L.8 Layer 7 — Frontend
+
+**Library:** `valibot` (~1–2 kB per used validator, tree-shakeable, ~10× smaller than zod for the
+same surface). Used for **both** form input and **API response** parsing.
+
+```ts
+// web/src/api/client.ts
+import * as v from 'valibot';
+
+export async function get<S extends v.BaseSchema<any, any, any>>(
+  path: string, schema: S,
+): Promise<v.InferOutput<S>> {
+  const res = await fetch(path, { credentials: 'include' });
+  if (!res.ok) throw await parseProblem(res);        // -> ProblemSchema, typed
+  const json = await res.json();
+  const parsed = v.safeParse(schema, json);
+  if (!parsed.success) {
+    // DEV: throw loudly — a schema mismatch is a contract bug, and we want it in a test run.
+    if (import.meta.env.DEV) throw new ApiContractError(path, parsed.issues);
+    // PROD: report and degrade. A dashboard must not white-screen because a field was added.
+    reportContractDrift(path, parsed.issues);
+    return json as v.InferOutput<S>;
+  }
+  return parsed.output;
+}
+```
+
+**Response schemas use `v.looseObject`, form schemas use `v.strictObject`.** Additive server
+changes must never break a deployed UI; a typo in a form must never reach the server.
+
+#### L.8.1 Preventing Go ↔ TypeScript drift (four gates)
+
+⚠️ **STATUS, as of the phase-4 conformance audit.** This section previously read
+"four gates, all in CI". That was a specification of intent read as a description of
+fact: three of the four did not exist, and the fourth was not wired into CI and failed
+292 lines when it was finally run — during which time the UI was typed against a
+contract three features behind the server. The `Built?` column is the truth; the rest of
+the table remains the requirement. Do not delete the unbuilt rows: they are still owed.
+
+| Gate | Direction | Mechanism | Failure | Built? |
+|---|---|---|---|---|
+| G1 | Go DTO → OpenAPI | `test/contract/dto_schema_test.go` reflects every `*DTO`/`*Request`/`*Query` struct (including `validate` tags) and diffs the derived schema against `api/openapi/components/*.yaml` | CI fails on any diff | **NO** |
+| G2 | Running server → OpenAPI | `schemathesis` replays generated requests against a seeded server and asserts every response validates | CI fails | **NO** |
+| G3 | OpenAPI → TS types | `openapi-typescript` generates `web/src/api/generated/schema.d.ts`, **checked in**; CI regenerates and asserts no diff | CI fails | **YES** — `npm run generate:check`, `ui` job |
+| G4 | OpenAPI → valibot | `npm run gen:validators` emits `web/src/api/generated/validators.ts` from the OpenAPI components, **checked in**; CI regenerates and asserts no diff | CI fails | **NO** |
+
+Two further gates the same audit required, and which now exist:
+
+| Gate | Mechanism | Built? |
+|---|---|---|
+| §L.8 `TestValidatorMatchesDDL` | `internal/platform/validate/ddl_test.go` parses `db/migrations/` for the last surviving definition of each named `CHECK` and asserts every exported pattern in `internal/platform/validate` is byte-identical to it. A pattern with no DDL counterpart must say in writing why. | **YES**, `go-test` job |
+| AC-49 vocabulary lint (§P-18) | `go run ./tools/lintvocab` over `internal/`, `web/src/` and `db/migrations/`: the banned on-call vocabulary and the forbidden person-subject columns, comments excluded and SQL string literals included (a `COMMENT ON COLUMN` ships to every operator). Known debt is enumerated in `tools/lintvocab/baseline.txt` and can only shrink. | **YES**, `vocabulary` job |
+
+**Hand-written valibot schemas are forbidden for API responses** — they must come from G4.
+Until G4 exists this rule is unenforced and violated: every valibot schema in `web/src`
+today is hand-written.
+Hand-written valibot schemas are *required* for forms, and each one must `v.pipe` into the
+generated request schema so the form cannot accept something the API would reject:
+
+```ts
+// web/src/features/policies/schema.ts
+import * as v from 'valibot';
+import { CreatePolicyRequestSchema } from '~/api/generated/validators';
+
+export const PolicyFormSchema = v.pipe(
+  v.strictObject({
+    name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required'), v.maxLength(120)),
+    priority: v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(10_000)),
+    channelIds: v.pipe(v.array(v.pipe(v.string(), v.uuid())), v.minLength(1, 'Pick at least one channel')),
+    // …
+  }),
+  v.transform(toCreatePolicyRequest),
+  CreatePolicyRequestSchema,           // the generated schema is the final gate
+);
+```
+
+#### L.8.2 Server violations render on the field
+
+`violations[].field` uses JSON pointer paths in JSON names (L.2.2), and the generated TS types use
+the same JSON names, so mapping a server violation onto a form control is mechanical:
+
+```ts
+function applyViolations(form: FormStore, p: Problem) {
+  for (const vi of p.violations ?? []) setFieldError(form, vi.field.replaceAll('/', '.'), vi.message);
+}
+```
+
+A violation whose `field` does not correspond to a control is surfaced as a form-level error —
+never swallowed.
+
+### L.9 What the repository layer does and does not validate
+
+**The repository NEVER validates a business rule.** It does not decide whether an occurrence may
+be acked, whether a policy's channels exist, or whether a state transition is legal. That is the
+service's job, and duplicating it in SQL produces two subtly different rulebooks.
+
+**The repository DOES:**
+1. Reject a malformed **row model** before it reaches the driver — a `nil` required pointer, a
+   zero UUID in a NOT NULL column, a string longer than the column bound — returning
+   `errs.KindInternal` with the field name. This catches a mapper bug at the boundary rather than
+   as an opaque `23514` from Postgres.
+2. Translate SQLSTATEs into `errs.Kind` in exactly one helper:
+
+| SQLSTATE | Meaning | Maps to |
+|---|---|---|
+| `23505` unique_violation on a **user-supplied** key | duplicate name/slug | `KindConflict` + the constraint name as `Code` |
+| `23505` on an **oto-computed** key | idempotency working as designed | swallowed by `ON CONFLICT`; reaching Go is `KindInternal` |
+| `23503` foreign_key_violation | referenced row missing or in use | `KindConflict` (`Code` = constraint name) |
+| `23514` check_violation | a hole in layers 1–3 | `KindInternal`, `Code` = the constraint name |
+| `23502` not_null_violation | mapper bug | `KindInternal` |
+| `40001` serialization_failure / `40P01` deadlock | transient | `KindConflict`, `Retryable: true` |
+| `57014` query_canceled (statement_timeout) | overload | `KindUnavailable`, `Retryable: true` |
+| `53300` too_many_connections / pool acquire timeout | overload | `KindUnavailable`, `Retryable: true` |
+
+3. Never return a `pgx` type, a row struct, or a raw SQL string in an error message. Error
+   messages must be safe to render.
+
+### L.10 Testing obligations
+
+| Test | Asserts |
+|---|---|
+| `TestEveryTagHasACode` | every registered validator tag appears in the L.2.3 map |
+| `TestValidatorMatchesDDL` | every custom-rule regex is byte-identical to its DDL `CHECK` |
+| `TestEveryDTOHasValidateTags` | every exported non-bool DTO field carries a `validate` tag |
+| `TestNoDirectDecode` | no `internal/*/api` package calls `json.NewDecoder` or `validate.Struct` directly (only `httpx.Bind`) |
+| `TestDomainHasNoIOImports` | no `internal/*/domain` package imports `pgx`, `net/http`, `encoding/json` or `slack-go` |
+| `TestSchemasCompile` | every provider's `ConfigSchema` compiles under draft 2020-12 at boot |
+| `TestGoldenBlocksValidate` | every `testdata/*.golden.json` passes all of L.6 V1–V18 |
+| `TestIngestBoundsFuzz` | a Go fuzz target over `decode` never panics and never returns 4xx for a bound violation |
+| `TestIngestNever4xx` | property test: for any non-empty body under 8 MiB with a valid token, the status is 202 or 503 |
+| `TestDTOSchemaDrift` (G1) | Go DTOs match `api/openapi/components/*.yaml` |
+
+---
+
+## M. Brand, UI and colour system
+
+### M.1 The name
+
+**oto** (音) is Japanese for *sound* — a chime. The product's job is to make one clear sound at
+the right moment, not to ring constantly. That idea is binding on the interface: **calm by
+default, unmistakable when it matters.** The visual language is a soft, pastel foundation; the
+alarm is carried by state, never by the chrome.
+
+Voice: plain, precise, never breathless. Never "🎉 12 000 alerts processed!" — prefer
+"notification volume down 40 %". Copy never claims certainty it does not have: `expired` reads
+*"oto stopped hearing about this"*, never *"resolved"*.
+
+### M.2 The tension, and how it is resolved
+
+Pastels and alerting are in genuine conflict. A pastel red at 3:1 against a white surface is both
+illegible for body text and emotionally flat — exactly wrong for a critical page. Resolving it by
+"just making critical darker" would destroy the calm; resolving it by "keeping everything pastel"
+would make oto unsafe.
+
+**The resolution is a strict two-tier system.**
+
+> **Tier A — product chrome is pastel.** Backgrounds, surfaces, borders, navigation, tables,
+> panels, form controls, empty states, charts' gridlines. Low chroma, high lightness (light mode)
+> or low lightness (dark mode). Chrome NEVER uses a state colour.
+>
+> **Tier B — state is saturated, and saturated colour is reserved EXCLUSIVELY for state.** No
+> decorative accent, no chart series, no brand flourish, no hover effect may use a Tier-B hue.
+> When a saturated colour appears on screen, it means exactly one thing: *this is the state of an
+> alert.* Scarcity is what makes it loud.
+
+Each state therefore ships **four tokens**, not one:
+
+| Token | Role | Contrast obligation |
+|---|---|---|
+| `--oto-state-<s>-fill` | pastel tinted surface (row background, badge background) | — (it is a surface) |
+| `--oto-state-<s>-border` | 1 px hairline / 3 px status bar on the fill | **≥ 3:1** vs the adjacent page background |
+| `--oto-state-<s>-text` | dark (light mode) or pale (dark mode) text/icon **on that fill** | **≥ 4.5:1** vs its own fill, and ≥ 4.5:1 vs the page background |
+| `--oto-state-<s>-solid` | the saturated accent: severity dot, status bar, chart mark, badge in a dense table | **≥ 3:1** vs the page background (non-text UI component, WCAG 1.4.11) |
+
+So a critical row is a **pastel fill with a saturated 3 px left bar and dark red text** — calm at
+a distance, unmistakable at a glance, and legible for everyone.
+
+### M.3 Rules that survive the aesthetic
+
+| # | Rule |
+|---|---|
+| U1 | **Colour is never the only channel.** Every state is encoded by at least two of {colour, icon/glyph, text label}. The alert table always shows a text state label, not just a dot. |
+| U2 | All body text meets **WCAG AA 4.5:1**. All ≥ 24 px / ≥ 19 px-bold text meets **3:1**. All non-text UI (borders, dots, bars, focus rings) meets **3:1**. Measured values are in M.4/M.5 and are asserted in CI (M.7). |
+| U3 | **Dark mode is the default** for an ops tool, with an explicit light option and `prefers-color-scheme` respected on first load. |
+| U4 | **No flashing, no blinking, ever.** The only motion tied to urgency is a slow 2 s opacity pulse on the unacked-critical dot, disabled entirely under `prefers-reduced-motion: reduce`. |
+| U5 | **Saturated hues are state-only (Tier B).** Charts use the neutral/brand ramp `--oto-chart-1…6`, never state hues, unless the chart *is* plotting state. |
+| U6 | Density is a first-class concern: the alert table is a dense operational surface. Pastel must not mean airy — row height 36 px comfortable / 28 px compact. |
+| U7 | Focus is always visible: `--oto-focus` ring, 2 px, 2 px offset, ≥ 3:1 against both the control and its background. Never `outline: none`. |
+| U8 | Severity (`critical`/`warning`/`info`) is carried by the **icon**; state (`firing`/`acked`/`suppressed`/`resolved`/`expired`) is carried by the **colour**. This is the same split as the Slack card, and it is the only thing the two systems share. |
+| U9 | **Non-urgency motion comes in exactly two kinds** (ADR 0028). **(a) One-shot:** triggered by a discrete event (a mount, an open, a commit), ≤ 200 ms, animating `opacity` and `transform` only, never looping — and a *purely decorative* one-shot (brand motion, carrying no fact) fires **at most once per document**. **(b) Indeterminate-activity:** a loop is permitted only while something is genuinely pending (loading, connecting, in flight), must stop when the pending thing does, and is limited to an opacity cycle of period ≥ 1 s or a uniform rotation. Both kinds: no luminance oscillation beyond U4's prohibition, never the sole carrier of a state fact (U1), and **absent under `prefers-reduced-motion: reduce`**. **No animation announces a connection-state change.** A (b) loop may run *while* the connection is pending, beside the label that says so; nothing may mark the transition itself. Connection health is a labelled Tier-A fact, and a silent channel for it violates U1. **A colour transition is not motion, and is therefore neither kind.** A control settling from one Tier-A token to another on hover, focus or `aria-current` displaces nothing and repeats nothing; U9 binds it only with bounds — colour properties alone (`transition-colors`: never `all`, never a length, never a layout property), **≤ 150 ms**, and **between Tier-A tokens only**, because U5 already reserves saturated hue for state. That is the feedback U7 and Tier A already require, written in CSS rather than in two class names, and the reduced-motion sweep flattens it regardless. |
+| U10 | **Every font size and every corner radius comes from the §M.8 scales** (ADR 0029). `text-micro`…`text-page` and `rounded-chip`/`-control`/`-surface` are the whole vocabulary for those two axes: no bracket at a call site (`text-[13px]`, `rounded-[4px]`), no use of Tailwind's own `text-sm`/`rounded-md` ladder beside them, no raw `font-size`/`border-radius` in a stylesheet. A value that is genuinely not on a scale is an amendment (§N), not a bracket — the scales were derived from 342 hand-written literals precisely because nothing could tell a deliberate size from a typo, and the reason they are only six and three steps is that they were read off the product rather than drawn for it. `rounded-full`/`rounded-none` are shapes, not steps, and stay available. |
+
+> **U9 does not qualify U4.** U4's *"No flashing, no blinking, ever"* stays absolute and keeps its
+> single urgency animation. U9 governs a different class of motion: the button spinner, the skeleton
+> rows, the `connecting` dot, the dialog's 140 ms entrance, and the fūrin's 180 ms greeting on the
+> header mark's first mount in a document. The first four predate ADR 0028 and are classified
+> there; the fifth is its consequence, and the ADR records why the researched 1400 ms swing and the
+> `connecting → live` trigger were both rejected.
+>
+> **The `transition-colors duration-100` on buttons, primary nav, settings tabs and filter chips is
+> deliberately not in that list.** Five call sites carry it — `primitives.tsx:42` and `:315`,
+> `AppShell.tsx:218` and `:278`, `settings.tsx:48` — all of them older than ADR 0028, none of them
+> classified by it. U9's first draft said *"`opacity` and `transform` only"* without saying what it
+> was scoped to, which outlawed every one of them on the day it was written. The clause above is the
+> correction, and ADR 0028 §5 records it: a rule that quietly makes the shipping product illegal is
+> not a rule.
+
+### M.4 Light palette (CSS custom properties, with measured contrast)
+
+```css
+/* web/src/design/tokens.css */
+:root, [data-theme="light"] {
+  /* ---- Tier A: pastel chrome ---------------------------------------- */
+  --oto-bg:               #FBFAFF;  /* page */
+  --oto-surface:          #FFFFFF;  /* cards, table body */
+  --oto-surface-raised:   #F5F3FD;  /* headers, sticky rows, popovers */
+  --oto-surface-sunken:   #EFEDF8;  /* wells, code blocks, timeline gutter */
+  --oto-border:           #E2DFF0;  /* hairlines */
+  --oto-border-strong:    #C9C4E4;  /* input borders, dividers that must read */
+  --oto-text:             #1E1B2E;  /* primary */
+  --oto-text-muted:       #5A5473;  /* secondary */
+  --oto-text-subtle:      #78718F;  /* tertiary, timestamps */
+  --oto-text-inverse:     #FFFFFF;
+
+  /* brand "chime" — Tier A accent. Used for links, primary buttons, focus.
+     Deliberately a periwinkle, NOT adjacent to any state hue. */
+  --oto-accent:           #5B54D6;
+  --oto-accent-hover:     #4A43C4;
+  --oto-accent-fill:      #EEEDFD;
+  --oto-accent-border:    #C3BFF3;
+  --oto-focus:            #5B54D6;
+
+  /* ---- Tier B: state only. Never use these for chrome. --------------- */
+  --oto-state-firing-fill:      #FFEBEA;
+  --oto-state-firing-border:    #F5B5B0;
+  --oto-state-firing-text:      #8C1D18;
+  --oto-state-firing-solid:     #D7332B;
+
+  --oto-state-acked-fill:       #FFF4E0;
+  --oto-state-acked-border:     #F0C982;
+  --oto-state-acked-text:       #7A4A00;
+  --oto-state-acked-solid:      #C97A00;
+
+  --oto-state-suppressed-fill:   #F1F0F6;
+  --oto-state-suppressed-border: #CFCBDE;
+  --oto-state-suppressed-text:   #4A4560;
+  --oto-state-suppressed-solid:  #6E6786;
+
+  --oto-state-resolved-fill:    #E7F5EC;
+  --oto-state-resolved-border:  #9DD3B0;
+  --oto-state-resolved-text:    #12592F;
+  --oto-state-resolved-solid:   #17794A;
+
+  --oto-state-expired-fill:     #F4F1EC;
+  --oto-state-expired-border:   #D6CDBF;
+  --oto-state-expired-text:     #57493A;
+  --oto-state-expired-solid:    #7D6A54;
+
+  --oto-state-info-fill:        #E9F1FE;
+  --oto-state-info-border:      #A8C6F5;
+  --oto-state-info-text:        #0B4A9B;
+  --oto-state-info-solid:       #1A6FD4;
+
+  /* ---- charts: neutral/brand ramp, NEVER state hues (U5) ------------- */
+  --oto-chart-1: #6F67DD; --oto-chart-2: #48A0C9; --oto-chart-3: #7FA05C;
+  --oto-chart-4: #B98BC4; --oto-chart-5: #C9915E; --oto-chart-6: #5F7C99;
+  --oto-chart-grid: #E2DFF0;
+}
+```
+
+**Measured contrast ratios (light).** Computed with the WCAG 2.x relative-luminance formula.
+CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real gate now (§M.7).
+
+> ⚠️ **Thirteen of the thirty-nine ratios in this table and in §M.5 were wrong, and were corrected
+> when that gate was written.** They disagreed with the formula named above by up to 0.68:
+> `--oto-state-expired-solid` on `--oto-bg` was published as 4.3:1 and is 5.0:1; `--oto-text` on
+> `--oto-bg` (dark) was published as 16.4:1 and is 15.6:1. Every one of them still cleared its
+> requirement, which is why the error survived — a number that changes no decision is a number
+> nobody re-derives. The table is no longer hand-measured: the test recomputes each row from the
+> hex the row quotes, and asserts that hex is what `tokens.css` declares for that token.
+
+| Foreground | Background | Ratio | Requirement | Pass |
+|---|---|---|---|---|
+| `--oto-text` `#1E1B2E` | `--oto-surface` `#FFFFFF` | **16.8:1** | 4.5 | ✅ |
+| `--oto-text` `#1E1B2E` | `--oto-bg` `#FBFAFF` | **16.2:1** | 4.5 | ✅ |
+| `--oto-text` `#1E1B2E` | `--oto-surface-raised` `#F5F3FD` | **15.3:1** | 4.5 | ✅ |
+| `--oto-text-muted` `#5A5473` | `#FFFFFF` | **7.1:1** | 4.5 | ✅ |
+| `--oto-text-muted` `#5A5473` | `#F5F3FD` | **6.5:1** | 4.5 | ✅ |
+| `--oto-text-subtle` `#78718F` | `#FFFFFF` | **4.6:1** | 4.5 | ✅ |
+| `--oto-accent` `#5B54D6` | `#FFFFFF` | **5.7:1** | 4.5 (link text) | ✅ |
+| `--oto-text-inverse` `#FFFFFF` | `--oto-accent` `#5B54D6` | **5.7:1** | 4.5 (button label) | ✅ |
+| `--oto-state-firing-text` `#8C1D18` | `--oto-state-firing-fill` `#FFEBEA` | **8.0:1** | 4.5 | ✅ |
+| `--oto-state-firing-solid` `#D7332B` | `--oto-bg` `#FBFAFF` | **4.6:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-acked-text` `#7A4A00` | `--oto-state-acked-fill` `#FFF4E0` | **6.9:1** | 4.5 | ✅ |
+| `--oto-state-acked-solid` `#C97A00` | `--oto-bg` `#FBFAFF` | **3.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-suppressed-text` `#4A4560` | `--oto-state-suppressed-fill` `#F1F0F6` | **8.0:1** | 4.5 | ✅ |
+| `--oto-state-suppressed-solid` `#6E6786` | `--oto-bg` `#FBFAFF` | **5.1:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-resolved-text` `#12592F` | `--oto-state-resolved-fill` `#E7F5EC` | **7.5:1** | 4.5 | ✅ |
+| `--oto-state-resolved-solid` `#17794A` | `--oto-bg` `#FBFAFF` | **5.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-expired-text` `#57493A` | `--oto-state-expired-fill` `#F4F1EC` | **7.7:1** | 4.5 | ✅ |
+| `--oto-state-expired-solid` `#7D6A54` | `--oto-bg` `#FBFAFF` | **5.0:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-info-text` `#0B4A9B` | `--oto-state-info-fill` `#E9F1FE` | **7.5:1** | 4.5 | ✅ |
+| `--oto-state-info-solid` `#1A6FD4` | `--oto-bg` `#FBFAFF` | **4.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-border-strong` `#C9C4E4` | `--oto-surface` `#FFFFFF` | **1.7:1** | — (decorative hairline only) | n/a |
+
+> `--oto-border` and `--oto-border-strong` are **decorative** and are never the sole carrier of
+> meaning. Any border that *does* carry meaning is a Tier-B `-border` or `-solid` token, all of
+> which clear 3:1.
+
+### M.5 Dark palette (default theme)
+
+```css
+[data-theme="dark"] {
+  /* ---- Tier A: muted, low-chroma chrome ----------------------------- */
+  --oto-bg:               #14131C;
+  --oto-surface:          #1B1A26;
+  --oto-surface-raised:   #242232;
+  --oto-surface-sunken:   #100F17;
+  --oto-border:           #322F44;
+  --oto-border-strong:    #474360;
+  --oto-text:             #EDEBF7;
+  --oto-text-muted:       #B4AECB;
+  --oto-text-subtle:      #8B84A6;
+  --oto-text-inverse:     #14131C;
+
+  --oto-accent:           #A6A0FF;
+  --oto-accent-hover:     #BDB8FF;
+  --oto-accent-fill:      #262340;
+  --oto-accent-border:    #464070;
+  --oto-focus:            #A6A0FF;
+
+  /* ---- Tier B: state only ------------------------------------------- */
+  --oto-state-firing-fill:      #331A19;
+  --oto-state-firing-border:    #6E2E2A;
+  --oto-state-firing-text:      #FFB4AE;
+  --oto-state-firing-solid:     #FF6B60;
+
+  --oto-state-acked-fill:       #33260F;
+  --oto-state-acked-border:     #6E5320;
+  --oto-state-acked-text:       #FFD08A;
+  --oto-state-acked-solid:      #F0A93C;
+
+  --oto-state-suppressed-fill:   #242231;
+  --oto-state-suppressed-border: #423E56;
+  --oto-state-suppressed-text:   #C0BAD4;
+  --oto-state-suppressed-solid:  #837CA0;
+
+  --oto-state-resolved-fill:    #102E1E;
+  --oto-state-resolved-border:  #23593C;
+  --oto-state-resolved-text:    #96E0B4;
+  --oto-state-resolved-solid:   #35A96C;
+
+  --oto-state-expired-fill:     #2B2620;
+  --oto-state-expired-border:   #544A3C;
+  --oto-state-expired-text:     #D6C7B0;
+  --oto-state-expired-solid:    #9A8869;
+
+  --oto-state-info-fill:        #142A44;
+  --oto-state-info-border:      #26507F;
+  --oto-state-info-text:        #A8CDFF;
+  --oto-state-info-solid:       #5B9CF0;
+
+  --oto-chart-1: #9A93F5; --oto-chart-2: #6FC0E4; --oto-chart-3: #A3C57F;
+  --oto-chart-4: #D3A9DC; --oto-chart-5: #E0AF82; --oto-chart-6: #8AA6C2;
+  --oto-chart-grid: #322F44;
+}
+```
+
+**Measured contrast ratios (dark).** Same formula, same gate, and the same correction: see the
+note under §M.4's table.
+
+| Foreground | Background | Ratio | Requirement | Pass |
+|---|---|---|---|---|
+| `--oto-text` `#EDEBF7` | `--oto-surface` `#1B1A26` | **14.6:1** | 4.5 | ✅ |
+| `--oto-text` `#EDEBF7` | `--oto-bg` `#14131C` | **15.6:1** | 4.5 | ✅ |
+| `--oto-text-muted` `#B4AECB` | `#1B1A26` | **8.1:1** | 4.5 | ✅ |
+| `--oto-text-subtle` `#8B84A6` | `#1B1A26` | **4.9:1** | 4.5 | ✅ |
+| `--oto-accent` `#A6A0FF` | `#1B1A26` | **7.4:1** | 4.5 | ✅ |
+| `--oto-text-inverse` `#14131C` | `--oto-accent` `#A6A0FF` | **8.0:1** | 4.5 (button label) | ✅ |
+| `--oto-state-firing-text` `#FFB4AE` | `--oto-state-firing-fill` `#331A19` | **9.5:1** | 4.5 | ✅ |
+| `--oto-state-firing-solid` `#FF6B60` | `--oto-bg` `#14131C` | **6.6:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-acked-text` `#FFD08A` | `--oto-state-acked-fill` `#33260F` | **10.3:1** | 4.5 | ✅ |
+| `--oto-state-acked-solid` `#F0A93C` | `--oto-bg` `#14131C` | **9.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-suppressed-text` `#C0BAD4` | `--oto-state-suppressed-fill` `#242231` | **8.3:1** | 4.5 | ✅ |
+| `--oto-state-suppressed-solid` `#837CA0` | `--oto-bg` `#14131C` | **4.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-resolved-text` `#96E0B4` | `--oto-state-resolved-fill` `#102E1E` | **9.5:1** | 4.5 | ✅ |
+| `--oto-state-resolved-solid` `#35A96C` | `--oto-bg` `#14131C` | **6.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-expired-text` `#D6C7B0` | `--oto-state-expired-fill` `#2B2620` | **9.0:1** | 4.5 | ✅ |
+| `--oto-state-expired-solid` `#9A8869` | `--oto-bg` `#14131C` | **5.4:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-info-text` `#A8CDFF` | `--oto-state-info-fill` `#142A44` | **8.9:1** | 4.5 | ✅ |
+| `--oto-state-info-solid` `#5B9CF0` | `--oto-bg` `#14131C` | **6.5:1** | 3.0 (non-text) | ✅ |
+
+### M.6 The Slack palette is a SEPARATE, UNCHANGED system
+
+> **Do not harmonise the two. This is not an oversight.**
+
+The Slack card's state colours are the Grafana OnCall palette specified in **§H.2**
+(`firing #a30200`, acked `#daa038`, silenced `#dddddd`, resolved `#2eb886`, plus oto's
+`expired #6b6b6b` and `storm #7b1fa2`). They are **unchanged by anything in §M.**
+
+Why they must stay separate:
+
+1. **Different substrate.** The Slack colour is a 4 px attachment bar rendered against a channel
+   background oto does not control, in a theme oto does not control, next to dozens of other
+   apps' cards. It is tuned for peripheral recognition in that context. The oto UI colour is a
+   surface fill and text pair inside a page oto fully controls.
+2. **Different contrast contract.** The Slack bar has no text on it and no WCAG obligation oto
+   can enforce; the oto tokens are contrast-verified pairs.
+3. **Different provenance.** The OnCall palette is the best-tested open-source alert palette in
+   existence (§H.2). Replacing verified values with untested pastels to match a marketing
+   aesthetic would be trading correctness for coherence — the wrong trade in this product.
+
+A renderer MUST NOT read a `--oto-*` token. A stylesheet MUST NOT reference an `#a30200`-family
+hex. **Both prohibitions are enforced**, and neither was until git-bug `c49baaa`:
+
+- `TestSlackPaletteUnchanged` (`internal/channels/render/slack/palette_test.go`) pins each of the
+  six card colours — and its emoji — to §H.2's table, read off this page rather than restated in
+  the test, and fails on a hex in `palette.go` that §H.2 does not sanction.
+- `test/design/boundary_test.go` walks `web/src` for the six §H.2 literals and `internal/channels/
+  render` for a `--oto-*` string. `web/src/design/tokens.css` stated the first of those as a
+  comment for as long as it existed, which is not a rule.
+
+### M.7 Enforcement
+
+> **Eight of these nine rows are gates. The ninth is an intention, and is marked as such.**
+> **RUNS** means the named test exists and `.github/workflows/ci.yml` invokes it — the `go-test`
+> job (`go test -race ./...`) or the `ui` job (`npm run test`), both of which pick these up by
+> pattern, so no row here depends on somebody having remembered to add a step. **UNWRITTEN** means
+> it does not exist in this tree, under that name or any other, and nothing equivalent runs in its
+> place except where the row says so.
+>
+> This column exists because a reader who greps for `contrast.test.ts`, finds the §M.7 row and
+> stops looking is the exact harm a table of names causes when the names are aspirations. Six of
+> these rows were aspirations until git-bug `c49baaa`; five are now written, and the sixth — the
+> `prefers-reduced-motion` snapshot — was **retired rather than written**, because the structural
+> assertion in `index.css.test.ts` proves strictly more than a snapshot could and needs no browser.
+> Its clause moved into that row. What is left is one row that genuinely needs a browser, and it
+> may not sit here indefinitely: either a Playwright job lands or the row leaves through §N.
+
+| Test | Status | Asserts |
+|---|---|---|
+| `web/src/design/contrast.test.ts` | **RUNS.** `npm run test`, `ui` job | every pair in §M.4 and §M.5 computes to the stated ratio ±0.05 and meets its requirement; the hex each row quotes is the one `tokens.css` declares for that token, in that theme; and every row that looks like a measurement parsed as one. ⚠️ It found **thirteen** of the thirty-nine published ratios wrong when it was written (see the note under §M.4's table) |
+| `web/src/design/tokens.test.ts` | **RUNS.** Same job | light and dark define exactly the same token names — no token is defined in one theme only, where it would resolve to nothing rather than to a fallback — and every token's value is byte-identical to the CSS block §M.4/§M.5 quote |
+| `TestNoStateHueInChrome` (`test/design`) | **RUNS.** `go test -race ./...`, `go-test` job | no file under `web/src` uses a Tier-B state colour outside a state badge, row-status or timeline-marker component. The banned set is read out of `index.css`'s `@theme` block (every `--color-*` fed by an `--oto-state-*` token), so a new state colour is watched from the moment it exists; the permitted files are an explicit list with a reason per entry, and an entry that stops matching fails too |
+| `TestSlackPaletteUnchanged` (`internal/channels/render/slack`) | **RUNS.** Same job | the six §H.2 hex values *and* their emoji are byte-identical to what `palette.go` returns, read off §H.2 rather than restated — a fixture copied out of the code would agree with any edit made to the code. Also fails on a hex in `palette.go` that §H.2 does not sanction. ⚠️ The golden corpus is NOT this gate: it carries five of the six literals (`expired` has no capture) and asserts only that the six are distinct, so a coordinated edit to `palette.go` and the captures passes it |
+| `TestNoSlackHexAppearsInTheWebTree`, `TestNoOtoTokenReachesTheSlackRenderer` (`test/design`) | **RUNS.** Same job | §M.6's two prohibitions, which were stated for months and enforced by nothing: no §H.2 literal anywhere under `web/src`, and no `--oto-*` string in `internal/channels/render`. The second reads string literals rather than source text, so the comments that explain the rule do not trip it |
+| Playwright `a11y.spec.ts` | **UNWRITTEN.** `web/e2e/` holds one 0-byte `.gitkeep`; neither `playwright` nor `axe` appears in `web/package.json`, which declares no e2e script for a spec to run in and no CI job that would invoke one. ⚠️ This is the **only** row here that cannot be done in-process: it needs a browser, a served build and a CI job, which is why it did not land with the other five | axe-core reports zero contrast violations on the alert list, alert detail and timeline, in **both** themes. Its residual scope is now narrower than it was: `contrast.test.ts` proves every pair the SPEC tabulates, so what is left is the pairs the SPEC does *not* tabulate — two verified tokens composed into an unverified pair by a component, which only rendered DOM can see |
+| `web/src/index.css.test.ts` | **RUNS.** `npm run test`, `ui` job | every first-party utility is declared with `@utility` (so variants of it compile); the reduced-motion guard suppresses motion by sweeping `*` rather than by naming class names, so it cannot fall behind the next animation added; the guard sits in `@layer base`, which is what lets it beat an important-flagged utility, and nothing else in that layer carries `!important` on a motion property; and no animation is driven from JavaScript or an inline style, where the media query cannot reach it. **This is the row that carries U4/U9's reduced-motion clause** — a snapshot would have proved one tree at one moment, this proves the guard reaches every animation including the ones not yet written |
+| `web/src/components/ui/Chime.test.tsx` | **RUNS.** Same job | the fūrin's swing fires on the header mark's first mount in a document, at most once per document, never on a connection transition (neither a reload holding a resume point nor a quiet install's endless reconnects can change whether it fires), and carries the `motion-safe:` guard |
+| `web/src/design/scales.test.ts` | **RUNS.** Same job | U10 and §M.8: no font size and no corner radius is written at a call site — not as a bracket (`text-[13px]`, `rounded-[4px]`, `[font-size:13px]`), not through Tailwind's own ladder (`text-sm`, `rounded-md`, bare `rounded`), and not as a raw `font-size`/`border-radius` declaration in a stylesheet. It also asserts §M.8's CSS block declares the same steps, with the same values, as `tokens.css` — the parity §M.4/§M.5 get from `tokens.test.ts` — and that every step the scale declares has a call site — a scale may not grow ahead of the product. The steps are read out of `index.css`, so a new one is permitted the moment it is declared, and comments are stripped before scanning so the prose that names the banned forms does not trip it |
+
+### M.8 Type and radius scales (ADR 0029)
+
+§M.4–§M.7 legislate one axis. Until ADR 0029 the other two had no vocabulary at all: no `--text-*`
+and no `--radius-*` existed, so every component invented a px literal in a bracket, and **342** of
+them accumulated — 285 `text-[Npx]` across 32 files and 57 `rounded-[Npx]` at the time the ticket
+was filed, 309 and 59 by the time it was implemented, which is the growth rate an unenforced axis
+has.
+
+**The scales below were derived from that census, not designed.** Both are the histogram with the
+one- and two-occurrence values folded into a neighbour:
+
+| Axis | In use before | Steps after | Folded away |
+|---|---|---|---|
+| font size | 10 px ×20, 11 px ×183, 12 px ×75, 13 px ×23, 14 px ×4, 15 px ×2, 18 px ×2 | six | `15px` → `title`. The wordmark and the login heading were the only two, and neither is a size the other 307 knew about |
+| radius | 2 px ×1, 3 px ×26, 4 px ×28, 6 px ×3, 8 px ×1 | three | `2px` → `chip` (one icon button inside a chip); `8px` → `surface` (the dialog, the only one of its size — a modal and a panel are the same kind of corner) |
+
+The 3 px/4 px split, which looked like one tier written two ways, is two: **3 px is on inline things
+that sit inside a line of text** (badges, chips, code spans, skeleton bars) and **4 px is on things
+you operate or that hold something** (buttons, inputs, wells, nav items, bordered boxes). Every one
+of the 54 call sites was on the correct side of that line already; what was missing was the name.
+
+```css
+:root {
+  /* Type. Four of the six steps are below 14 px, because the operational
+     surfaces are tables and chips (U6). */
+  --oto-type-micro: 10px;
+  --oto-type-meta: 11px;
+  --oto-type-body: 12px;
+  --oto-type-item: 13px;
+  --oto-type-title: 14px;
+  --oto-type-page: 18px;
+
+  /* Radius. The tier is chosen by what the corner belongs to, not by how big
+     it looks. */
+  --oto-radius-chip: 3px;
+  --oto-radius-control: 4px;
+  --oto-radius-surface: 6px;
+}
+```
+
+| Utility | Step | What it is for |
+|---|---|---|
+| `text-micro` | 10 px | mono config keys, footnotes, secondary badge text |
+| `text-meta` | 11 px | the dense default — table cells, chips, inline labels |
+| `text-body` | 12 px | prose — help text, descriptions, form labels |
+| `text-item` | 13 px | a named thing or a control — row titles, nav, tabs, buttons |
+| `text-title` | 14 px | dialog and section titles |
+| `text-page` | 18 px | the page heading, and nothing else |
+| `rounded-chip` | 3 px | inline — badges, chips, code spans, skeletons |
+| `rounded-control` | 4 px | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
+| `rounded-surface` | 6 px | panels and dialogs — anything that holds controls |
+
+`rounded-full` and `rounded-none` remain available and are not steps: they are shapes, and a status
+dot is a circle at any radius the scale could name.
+
+> **These are NOT theme tokens, and are deliberately outside every `[data-theme]` block.** A palette
+> is a property of the theme; a type step is not, and asking dark mode for its own 11 px would be
+> asking the wrong question. `tokens.test.ts` reads only the theme-prefixed rules, so nothing here
+> is required to have a dark counterpart — the same arrangement `--oto-row-h` has had since U6.
+>
+> **§M.3 U2's contrast tiers are unaffected.** U2 sets its 3:1 boundary at *"≥ 24 px / ≥ 19 px-bold"*
+> and every step above is below both, so all text in this product is body text for contrast
+> purposes and owes 4.5:1 — which is what §M.4/§M.5 already measure. The scale does not create an
+> exemption and must not be read as one.
+---
+
+## N. Amendment procedure
+
+This SPEC is binding. To change it:
+
+1. Open an ADR in `docs/adr/` stating Context / Decision / Consequences / Alternatives rejected.
+2. Edit the affected SPEC section **in the same commit**.
+3. Update `CONTEXT.md` if the change touches the module map, the domain language or the layering rules.
+4. If the change touches a **bound** (a length, a count, an enum member, a regex), edit **all three**
+   places in the same commit — the DTO `validate` tag (§L.2), the domain constructor (§L.4) and the
+   DDL `CHECK` (§D) — or `TestValidatorMatchesDDL` will fail. This is deliberate.
+
+> **Section letters are stable.** `K` and `L`…`N` were renumbered once, on 2026-08-08, when §L
+> (Validation) and §M (Brand/UI) were inserted and the amendment procedure moved from `K` to `N`.
+> No further renumbering is permitted; new sections append.
+
+Implementers who find an ambiguity MUST raise it rather than choose. An undocumented choice made by one agent is a compile error or a silent behavioural divergence for the next four.
+
+---
+
+## P. Pending code amendments
+
+> **Status:** work list. The shared domain kernel and the 30-table schema are **implemented and
+> committed**; this section records everything the amendments in this revision imply for code that
+> already exists. It is owned by the implementing agents, not by this document.
+>
+> **This document did not edit `internal/`, `web/src/` or `db/migrations/`.** Each item names the
+> SPEC clause that is authoritative, so there is exactly one source of truth per change.
+>
+> Ordering: P-1…P-4 are migrations and gate everything else. P-5…P-12 are corrections to shipped
+> code. P-13…P-16 are the new snooze feature. P-17…P-21 are enforcement and contract updates.
+
+### Migrations (must land first, expand/contract, in this order)
+
+| # | Work | Authoritative clause |
+|---|---|---|
+| **P-1** | New migration `00013_snooze.sql`: create `alert_snoozes` **exactly** as written in §D.8b (13 columns, 9 named CHECKs, 1 partial UNIQUE index, 2 indexes); `ALTER TABLE alerts ADD COLUMN snoozed_until TIMESTAMPTZ`; `CREATE INDEX alerts_snooze_idx ON alerts (org_id, snoozed_until) WHERE snoozed_until IS NOT NULL`. Reproduce the ⛔ block from §D.8b verbatim as a SQL comment. | §D.8b, §B.8 |
+| **P-2** | Migration: `notifications_reason_ck` — **drop `'escalation'`, add `'unacked_reminder'`, `'snoozed'`, `'unsnoozed'`**. `notifications_suppressed_reason_ck` — add `'snoozed'`. Expand/contract: add the widened CHECK, backfill any `reason='escalation'` rows to `'unacked_reminder'`, then drop the old CHECK. | §D.8, §B.8.2, §H.6 |
+| **P-3** | Migration: `ALTER TABLE notification_policies RENAME COLUMN escalate_after_s TO unacked_reminder_after_s`; rename constraint `policies_esc_ck` → `policies_reminder_ck`. **The column stays `INT`. It must never become `INT[]`** (§G.9.1). Add the ⛔ comment block from §D.8 above the table. | §G.9.1, SCOPE-BOUNDARY §5.2 |
+| **P-4** | Migration: add `alerts_sev_ck CHECK (severity IS NULL OR length(severity) BETWEEN 1 AND 256)`. **Do NOT add an enum CHECK on `alerts.severity`** — it stores the raw upstream label value by design (§L.4.2). | §L.4.2 |
+
+### Corrections to shipped code
+
+| # | Work | Authoritative clause |
+|---|---|---|
+| **P-5** | Rename throughout `internal/` and `web/src/`: `escalate_after_s`→`unacked_reminder_after_s`; `escalate_after_seconds`→`unacked_reminder_after_seconds`; `EscalateAfterS`→`UnackedReminderAfterS`; job `escalation.check`→`notify.unacked_reminder`; package `notification/worker/escalate`→`notification/worker/reminder`; `Reason` constant `escalation`→`unacked_reminder`; Slack config key `mention_on_escalation`→`mention_on_reminder`. After this, `escalation` must not appear in any Go identifier, JSON field or UI string. | §G.9, §A.1 |
+| **P-6** | **⭐ Highest value.** `Occurrence.Transition` must accept `TransitionUnsuppress` from `ObservedByIngest`, not only `ObservedByReconciler`. Any ingest observation with `status="firing"` against a `suppressed` occurrence transitions it to `firing` and emits `occurrence.unsuppressed` with `payload.detected_by="webhook"`. **T3 stays reconciler-only** — the asymmetry is deliberate and must be asserted by a test. Without this, a live firing alert renders as "silenced by @ram" for up to a full reconcile interval. | §B.3.1 |
+| **P-7** | Clamp `ended_at = max(occurred_at, started_at)` in T5, T6 and T8. Set `payload.clamped = true` and preserve the raw upstream value in `payload.source_ends_at` when the clamp fires; accumulate the delta into `source_health.clock_skew_ms` and `oto_clock_skew_seconds`. A backward-skewed upstream clock must never abort an ingest transaction. | §B.3.2 |
+| **P-8** | Confirm `alerts.severity` persists the **raw** label value and that `SeverityFromLabel` is applied only at render/normalisation time. If the shipped ingest normalises before persisting, revert that — it destroys the user's own filter vocabulary (`sev1`, `P1`, `page`). | §L.4.2 |
+| **P-9** | Reproduce three ⛔ comment blocks **verbatim** in the migration files, so they are read by whoever is about to add the column rather than only by whoever reads this spec: (a) §D.4.0 the column ban → `00006_alerts.sql` and `00007_grouping.sql`; (b) the `alert_quality_daily` no-latency guard → `00012_platform.sql`; (c) the `notification_policies` no-people guard → `00010_notification.sql`. | §D.4.0, §D.10, §D.8 |
+| **P-10** | `isAbsoluteHTTPURL` must reject a trailing slash, a fragment and a query string, mirroring **both** halves of `alert_sources_base_ck`. Add the defensive trailing-slash strip in `CreateSourceRequest.toDomain()` / `UpdateSourceRequest.toDomain()`. Extend `TestValidatorMatchesDDL` to compare *predicate sets*, not just regexes — this gap existed because the test only compared the regex half. | §L.2.4 |
+| **P-11** | Delete `pkg/alertkey` if it exists. Add the `depguard` allowance: `internal/*/domain` may import `internal/alerts/domain` **and nothing else cross-domain**; `internal/alerts/domain` may import no other domain package. Add `TestKernelHasNoDomainImports`. | §C.1 |
+| **P-12** | Move `Enqueuer` from `platform/db` to `platform/jobs` and define `JobArgs`, `Envelope`, `JobOption`, `JobConfig` and the option constructors exactly as in §F.5.1. Every existing payload struct must embed `Envelope` and set `Version`. | §F.5.1 |
+| **P-13** | Define the previously-undefined repository types exactly as in §F.5.2: `Observation`, `ObservationSource`, `SuppressedBy`, `AlertUpsert`, `AlertUpsertResult`, `AlertProjection`, `AlertFilter`, `OpenOccurrence`, `TransitionKind`, `Transition`, `AckChange`. Implementation agents are blocked on these. | §F.5.2 |
+
+### New feature: snooze (§B.8, R12)
+
+| # | Work | Authoritative clause |
+|---|---|---|
+| **P-14** | `alerts` domain + service + repository: `Snooze` entity, `SnoozeRepository` (§F.5.2), `SnoozeService.Snooze/Unsnooze`, the `alerts.snoozed_until` projection write in the same transaction, and the `alert.snoozed` / `alert.unsnoozed` events. Add both to the closed `alert_events.type` enum. **`snoozed` must NOT be added to `suppression_reason`, and `State` must not gain a `snoozed` value** — assert this with a test. | §B.8.2–B.8.5 |
+| **P-15** | API: `POST /alerts/{id}/snooze`, `/unsnooze`, `POST /alert-groups/{id}/snooze`, `/unsnooze` (fan-out over currently-joined members only), `SnoozeRequest` DTO with `required_without` cross-validation and 300 s…2 592 000 s bounds matching the CHECKs. Add `?snoozed=` to `AlertListQuery`; **the default list includes snoozed alerts.** | §E.2, §B.8.6, §L.2.5 |
+| **P-16** | Worker `snooze.expire` on the `lifecycle` queue, every 60 s: end expired snoozes, clear the projection, emit `alert.unsnoozed{reason:"expired"}`, and enqueue `notify.evaluate(reason=unsnoozed)` when the occurrence is still open. Implement the `suppressed_reason` precedence chain from §B.8.2 in `notify.evaluate`, with `snoozed`/`unsnoozed` exempt from suppression. | §B.8.3–B.8.4, §G.3 |
+| **P-17** | Slack renderer: `snoozed`/`unsnoozed` reply types (§H.5); the `*Notifications*` field while snoozed; `Snooze`↔`Unsnooze` action swap; **colour and severity emoji unchanged while snoozed** — add a golden file proving a snoozed critical still renders `#a30200`. UI: `:zzz:` badge with countdown, the active-snooze banner, the snooze filter chip, and the preset durations 30 m / 1 h / 4 h / 24 h / 7 d with no "indefinite" option. | §H.4, §H.5, §B.8.6 |
+
+### Enforcement and contracts
+
+| # | Work | Authoritative clause |
+|---|---|---|
+| **P-18** | `just lint-vocabulary` + a CI job implementing AC-49's grep over `internal/`, `web/src/`, `db/migrations/`. Allowlist `docs/`, explicit SCOPE-BOUNDARY cross-reference comments, and `river.JobSnooze`. | AC-49, §A.1 |
+| **P-19** | Three structural tests: (a) schema introspection asserts no column on `alerts`/`alert_occurrences`/`alert_groups` matches `assigned\|owner\|watcher\|subscriber\|incident\|ticket\|sla_`, run against the live DB not the migration text; (b) walk the mounted `chi` route tree and assert no `/resolve`, `/close`, `/merge`, `/dismiss`, `/reopen`; (c) a compile-time assertion that `UnackedReminderAfterS` is `*int`, not a slice. | AC-50, AC-51, AC-52 |
+| **P-20** | `api/openapi/`: rename `escalate_after_seconds`→`unacked_reminder_after_seconds` (3 sites); replace *"what you time for MTTR"* with *"whose firing duration is measured"* in the `OccurrenceDTO` description and the glossary; add the four snooze operations and `SnoozeRequest`; add `snoozed`/`unsnoozed` to the reason enums; state §E.1.1 in the API description. Regenerate the TS types and valibot validators (gates G3/G4). | §E.1.1, §E.2, SCOPE-BOUNDARY §5.4 |
+| **P-21** | **Ratified, no code change — recorded so it is not "fixed" back:** (a) `errs` owns `Kind`/`Error`/`ProblemDTO`/`HTTPStatus()` with no I/O imports, `httpx.WriteProblem` does the writing (§L.1); (b) `encoding/json` is permitted in `domain`, json struct **tags** are not (§L.4.1); (c) constraint names are a runtime contract — `<table>_<purpose>_ck` stays, no `ck_`/`ix_`/`uq_` prefixes (§D conventions); (d) `citext` is migration `00002`, and the realised schema's **201** named CHECKs are correct (§L.7.0). | §L.1, §L.4.1, §D, §L.7 |
+| **P-22** | Rename any `incidents` placeholder to `correlation` and add the §I.1.1 PERMANENTLY-OUT table to `CONTEXT.md`'s module map. No code exists for either; this is a docs-and-tree change only. | §I.1, §I.1.1 |
+| **P-23** | `internal/enrichment/domain` is the one corner where an invalid value is constructible. It has **no `New*` constructor**: `Enrichment` has exported fields and an *optional* `Validate()`, so `var e domain.Enrichment` is buildable and violates six DDL CHECKs at once, and nothing forces a caller to check. `CacheEntry` is worse — it has no enforcement of its own at all, and `enrichment_cache_key_ck` (1…512) and `enrichment_cache_exp_ck` are re-checked down in `internal/enrichment/repository/cache.go:45,80`, i.e. a layer-3 invariant living at layer 6. Work: add `NewEnrichment`/`NewCacheEntry` returning `(T, error)`, unexport the fields behind accessors, delete the optional `Validate()`, and move the cache bounds up out of the repository. **The failure this prevents is an enrichment stored with no provenance** — no enricher name, no version — which makes a result in an alert's history unattributable, and provenance is the whole point of the type (§3, "one typed, provenanced result from one named, versioned Enricher"). Scheduled rather than urgent: it changes the type's shape and every construction site, unlike the four contained fixes it was triaged alongside. | §L.3, CONTEXT.md §5b |
