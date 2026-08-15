@@ -21,10 +21,12 @@
  * loudly at import, where somebody will see it, rather than silently unbounding
  * a control.
  *
- * The walk below reads valibot's own internals (`entries`, `wrapped`, `pipe`,
- * `requirement`), which is a private shape. That is deliberate and it is the
- * same walk `src/test/contract.ts` does: a valibot upgrade that moves them
- * breaks here loudly rather than quietly making every bound vanish.
+ * The walk below reads valibot's own internals (`entries`, `wrapped`, `item`,
+ * `pipe`, `requirement`, `options`), which is a private shape. That is
+ * deliberate, and this file is the only walk over it — the request-side helpers
+ * in `src/test/contract.ts` are re-exports of these accessors, not a second
+ * copy — so a valibot upgrade that moves them breaks here loudly rather than
+ * quietly making every bound vanish.
  */
 
 /** As much of valibot's internal node shape as this file walks. */
@@ -32,6 +34,7 @@ interface Node {
   readonly type?: string;
   readonly entries?: Readonly<Record<string, unknown>>;
   readonly wrapped?: unknown;
+  readonly item?: unknown;
   readonly options?: readonly unknown[];
   readonly pipe?: readonly { readonly type?: string; readonly requirement?: unknown }[];
 }
@@ -58,10 +61,20 @@ function field(objectSchema: unknown, key: string): Node {
   if (entry === undefined) {
     throw new Error(
       `oto: the generated request schema has no \`${key}\` property. The contract ` +
-        `renamed or dropped it, and a screen must not guess what replaced it.`,
+        `renamed or dropped it, and the caller must not guess what replaced it.`,
     );
   }
   return unwrap(entry, `\`${key}\``);
+}
+
+/**
+ * One property of a generated request schema, optionality peeled, as an opaque
+ * value. Opaque on purpose: the internal node shape must not leak past this
+ * file, so a caller that needs more than the accessors below casts to valibot's
+ * public `GenericSchema` and uses valibot's public API from there.
+ */
+export function fieldOf(objectSchema: unknown, key: string): unknown {
+  return field(objectSchema, key);
 }
 
 /**
@@ -154,7 +167,29 @@ type Options<E> = E extends { readonly options: readonly (infer T)[] }
   ? readonly T[]
   : E extends { readonly wrapped: infer W }
     ? Options<W>
-    : never;
+    : E extends { readonly item: infer I }
+      ? Options<I>
+      : never;
+
+/**
+ * The picklist a subject resolves to, at runtime, untyped.
+ *
+ * `reasons: v.array(v.picklist([...]))` and `verbosity: v.picklist([...])` are
+ * the same fact to a caller asking "what may the user choose", so an array is
+ * answered with its item's picklist.
+ */
+export function optionsOf(objectSchema: unknown, key?: string): readonly unknown[] {
+  const target = subject(objectSchema, key);
+  const peeled = target.type === "array" ? unwrap(target.item, `${named(key)} items`) : target;
+  if (peeled.options === undefined) {
+    throw new Error(
+      `oto: ${named(key)} is not a picklist in the generated contract. Either the contract ` +
+        `widened it to a free-form string, or gen-validators.mjs stopped emitting the ` +
+        `enum — and a control must not offer a list nobody guarantees.`,
+    );
+  }
+  return peeled.options;
+}
 
 /**
  * Every value the contract admits for one property, in the contract's own order.
@@ -169,15 +204,7 @@ export function enumValuesOf<
   S extends { readonly entries: object },
   K extends keyof S["entries"] & string,
 >(objectSchema: S, key: K): Options<S["entries"][K]> {
-  const options = field(objectSchema, key).options;
-  if (options === undefined) {
-    throw new Error(
-      `oto: \`${key}\` is not a picklist in the generated contract. Either the contract ` +
-        `widened it to a free-form string, or gen-validators.mjs stopped emitting the ` +
-        `enum — and a control must not offer a list nobody guarantees.`,
-    );
-  }
-  return options as unknown as Options<S["entries"][K]>;
+  return optionsOf(objectSchema, key) as unknown as Options<S["entries"][K]>;
 }
 
 /** Both ends of a numeric property, for the common `min={} max={}` pair. */

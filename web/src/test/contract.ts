@@ -27,6 +27,8 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fieldOf, maxLengthOf, optionsOf, rangeOf } from "~/api/bounds";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const SCHEMA_DTS = resolve(HERE, "../api/generated/schema.d.ts");
@@ -157,87 +159,33 @@ export interface Bound {
  * value sitting in memory and the honest way to assert on a form's copy of it is
  * to read the original rather than to re-type it here.
  *
- * These walk valibot's own internals (`entries`, `wrapped`, `pipe`,
- * `requirement`, `options`), which is a private shape — so every helper throws
- * with the name it was looking for. A valibot upgrade that moves them fails
- * loudly here instead of quietly returning `undefined` and making every
- * assertion vacuous.
+ * These are `~/api/bounds`' accessors under the names the tests use — the same
+ * walk over valibot's private internals the screens read their bounds through,
+ * not a second copy of it. Sharing the walker is safe precisely because the
+ * oracle side of every assertion stays separate: `enumValues`, `objectKeys` and
+ * `integerBounds` above scan the contract's *text* (schema.d.ts, openapi.yaml)
+ * with no valibot anywhere in the path, so a walker bug cannot sit on both
+ * sides of a comparison and agree with itself.
  */
-
-interface Walkable {
-  readonly type?: string;
-  readonly entries?: Record<string, unknown>;
-  readonly wrapped?: unknown;
-  readonly item?: unknown;
-  readonly options?: readonly unknown[];
-  readonly pipe?: readonly { readonly type?: string; readonly requirement?: unknown }[];
-}
-
-function walkable(schema: unknown, what: string): Walkable {
-  if (typeof schema !== "object" || schema === null) {
-    throw new Error(`oto test: ${what} is not a valibot schema`);
-  }
-  return schema as Walkable;
-}
-
-/** Peel `optional` / `exact_optional` / `nullable` / `nullish` off a schema. */
-function unwrap(schema: unknown, what: string): Walkable {
-  let node = walkable(schema, what);
-  for (let i = 0; i < 8 && node.wrapped !== undefined; i += 1) {
-    node = walkable(node.wrapped, what);
-  }
-  return node;
-}
 
 /** One property of a generated request schema, with its optionality peeled off. */
 export function requestField(objectSchema: unknown, key: string): unknown {
-  const object = walkable(objectSchema, `the schema holding \`${key}\``);
-  const entry = object.entries?.[key];
-  if (entry === undefined) {
-    throw new Error(
-      `oto test: the generated request schema has no \`${key}\` property. ` +
-        `The contract renamed or dropped it; this test must not guess what replaced it.`,
-    );
-  }
-  return unwrap(entry, `\`${key}\``);
-}
-
-function requirement(schema: unknown, action: string, what: string): unknown {
-  const node = unwrap(schema, what);
-  for (const step of node.pipe ?? []) {
-    if (step.type === action) return step.requirement;
-  }
-  throw new Error(`oto test: ${what} declares no \`${action}\` in the generated contract`);
+  return fieldOf(objectSchema, key);
 }
 
 /** The `minimum`/`maximum` the contract puts on one request property. */
 export function requestRange(objectSchema: unknown, key: string): Bound {
-  const field = requestField(objectSchema, key);
-  return {
-    min: requirement(field, "min_value", `\`${key}\``) as number,
-    max: requirement(field, "max_value", `\`${key}\``) as number,
-  };
+  return rangeOf(objectSchema, key);
 }
 
 /** The `maxLength` the contract puts on one request property. */
 export function requestMaxLength(objectSchema: unknown, key: string): number {
-  return requirement(requestField(objectSchema, key), "max_length", `\`${key}\``) as number;
+  return maxLengthOf(objectSchema, key);
 }
 
-/**
- * Every value a picklist admits — the property's own, or its array item's.
- *
- * `reasons: v.array(v.picklist([...]))` and `verbosity: v.picklist([...])` are
- * the same fact to a caller asking "what may the user choose".
- */
+/** Every value a picklist admits — the property's own, or its array item's. */
 export function requestOptions(objectSchema: unknown, key: string): readonly string[] {
-  const field = walkable(requestField(objectSchema, key), `\`${key}\``);
-  const node = field.type === "array" ? unwrap(field.item, `\`${key}\` items`) : field;
-  const options = node.options;
-  if (options === undefined) {
-    throw new Error(`oto test: \`${key}\` is not a picklist in the generated contract`);
-  }
-  return options.map(String);
+  return optionsOf(objectSchema, key).map(String);
 }
 
 /**
