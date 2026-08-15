@@ -1,0 +1,18 @@
+/*
+ * starlight-theme-black's sidebar rows (.entry-title group headings and
+ * .entry-link items) use a fixed single-line `height`. Once a label is long
+ * enough to wrap, the box doesn't grow to fit it, so the wrapped line
+ * overlaps the row below instead of pushing it down. Switch to `min-height`
+ * so the row grows with wrapped content, and let long words actually break.
+ */
+.sidebar-content .entry-title {
+	height: auto;
+	min-height: calc(var(--spacing) * 8);
+	overflow-wrap: anywhere;
+}
+
+.sidebar-content .entry-link {
+	height: auto;
+	min-height: 30px;
+	overflow-wrap: anywhere;
+}

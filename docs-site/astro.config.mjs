@@ -11,6 +11,7 @@ export default defineConfig({
 			description: 'The alert history layer your Prometheus stack does not have.',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/thulasi-ram/oto' }],
 			plugins: [starlightThemeBlack({})],
+			customCss: ['./src/styles/custom.css'],
 			sidebar: [
 				{
 					label: 'Overview',
