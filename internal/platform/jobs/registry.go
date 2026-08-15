@@ -265,10 +265,11 @@ func RegisterAll(r *Registry, h Handlers) error {
 // AND a nil org id, and both expansions happen in the handler.
 //
 // ⭐ THE PER-TENANT PERIODICS ARE STILL HERE, AND THE ZERO ARGS BELOW ARE WHY.
-// `occurrence.reap`, `group.close`, `flap.score`, `retention.prune` and
-// `stats.rollup` are all fanned out per tenant now (jobs.TenantFanOut), but their
-// SCHEDULE still needs no list: an args struct with a nil OrgID IS the fan-out
-// tick, and expanding it into one job per tenant happens in the handler, where
+// `occurrence.reap`, `group.close`, `flap.score`, `notify.unacked_reminder`,
+// `retention.prune` and `stats.rollup` are all fanned out per tenant now
+// (jobs.TenantFanOut), but their SCHEDULE still needs no list: an args struct
+// with a nil OrgID IS the fan-out tick, and expanding it into one job per
+// tenant happens in the handler, where
 // the tenant list can be read. That is the difference from the per-source pair —
 // a source job cannot even be constructed without knowing a source id, whereas
 // these can, so the schedule stays declarative and in one place.

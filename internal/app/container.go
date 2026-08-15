@@ -337,11 +337,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// idempotency claim that guards it to join. The two are one unit of work now.
 	identityTx := identityrepo.NewTxRunner(general)
 	c.Identity = identityservice.New(identityservice.Deps{
-		Orgs:        identityrepo.NewOrgRepository(general, clk),
-		Users:       identityrepo.NewUserRepository(general),
-		Tokens:      tokenRepo,
-		Sessions:    identityrepo.NewSessionRepository(general),
-		Slack:       identityrepo.NewSlackIdentityRepository(general),
+		Orgs:     identityrepo.NewOrgRepository(general, clk),
+		Users:    identityrepo.NewUserRepository(general),
+		Tokens:   tokenRepo,
+		Sessions: identityrepo.NewSessionRepository(general),
+		Slack:    identityrepo.NewSlackIdentityRepository(general),
+		// The same runner the identity API uses: it is what makes the ingest-token
+		// rotation's mint and revocation ONE commit (IssueIngestToken).
+		Tx:          identityTx,
 		Clock:       clk,
 		Logger:      logger,
 		SessionTTL:  o.Config.Security.SessionTTL,
@@ -458,8 +461,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// serves both modules, and `sources` reaches it through a plain-typed port
 		// rather than an import.
 		Sealer: credentialRepo,
-		// Tokens mints into identity's `api_tokens`, for the same reason.
-		Tokens: ingestTokenIssuer{tokens: tokenRepo, tx: sourceTx, clk: clk},
+		// Tokens is the identity service itself: the ingest mint is credential
+		// lifecycle and lives beside the PAT mint it mirrors
+		// (identity/service.IssueIngestToken). Its mint-before-revoke transaction
+		// is identity's own runner, and it JOINS the unit of work this service
+		// opens around a create or a rotation — the transaction travels in the
+		// context, so the source row, its credential and its token still commit
+		// together.
+		Tokens: c.Identity,
 		// One transaction for the source row, its credential and its ingest token.
 		// They used to be independent commits, and a source without its token can
 		// never receive a webhook.

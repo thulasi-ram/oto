@@ -92,7 +92,7 @@ func (c *Container) handlers() jobs.Handlers {
 		// `partitions.manage` is global because a partition is a property of the
 		// TABLE rather than of a row — and the window it drops at is a REDUCE over
 		// every tenant rather than a map. See effectiveRetention for why that one
-		// cannot take this shape and what should happen to it instead.
+		// cannot take this shape.
 		OccurrenceReap:   c.reapOccurrences,
 		GroupClose:       c.closeGroups,
 		FlapScore:        c.scoreFlaps,
@@ -133,8 +133,11 @@ func (c *Container) handlers() jobs.Handlers {
 	// notification fills its own three fields (notify.evaluate, deliver.dispatch,
 	// notify.unacked_reminder). It MUTATES the set rather than returning one, so
 	// composing modules is one call each and nothing has to know the full list.
+	// The reminder is the module's one per-tenant periodic, so it takes the same
+	// live-org pager and outbox every other fan-out here is handed — the tenant
+	// list is this container's to give, never a module's to read for itself.
 	if c.NotifyWorkers != nil {
-		c.NotifyWorkers.Register(&h)
+		c.NotifyWorkers.Register(&h, c.orgs, c.enqueuer)
 	}
 	return h
 }
@@ -347,42 +350,36 @@ func (c *Container) managePartitions(ctx context.Context, _ *jobs.Job[jobs.Parti
 // effectiveRetention is the widest window any tenant has asked for, floored at
 // the deployment's own configured retention.
 //
-// ⛔⛔ IT IS THE ONE SWEEP HERE THAT STILL WALKS EVERY TENANT INSIDE ONE
-// EXECUTION, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT (2d699d6). Every
-// other periodic in this file became one job per tenant. This one cannot, because
-// it is not a MAP — it is a REDUCE. There is no per-tenant unit of work to
-// enqueue: the fold produces ONE pair of numbers that drive ONE
+// ⛔⛔ IT NEVER BECAME ONE JOB PER TENANT, AND THAT IS A DECISION RATHER THAN AN
+// OVERSIGHT (2d699d6). Every other periodic in this file did. This one cannot,
+// because it is not a MAP — it is a REDUCE. There is no per-tenant unit of work
+// to enqueue: the fold produces ONE pair of numbers that drive ONE
 // `oto_partitions_manage` call, and a partition holds every tenant's rows, so
 // there is nothing for a per-tenant job to do with a per-tenant answer. Forcing
 // it into the same shape would mean N jobs writing partial maxima somewhere and
 // an N+1'th deciding they had all landed — inventing a distributed accumulator to
-// replace a `for` loop over a settings column.
+// replace a fold over a settings column.
 //
-// ⛔ AND IT MUST NOT BE BOUNDED THE WAY THE OTHERS ARE. A truncated MAP is a
-// deferral; a truncated REDUCE is a WRONG ANSWER. Stopping this walk at a ceiling
-// would return a maximum computed over some of the tenants, and a maximum that
-// missed the tenant with the longest window drops that tenant's partitions early.
-// Retention is the only setting pair in oto whose wrong value is unrecoverable.
-// So it stays a whole-population read until it is replaced by something that is
-// exact and bounded at the same time, which is an aggregate in SQL rather than a
-// fan-out.
+// ⭐ THE REDUCE IS EVALUATED INSIDE `identity`, NOT HERE. The obvious bounded
+// replacement for the tenant walk this used to be — one `max()` over
+// `orgs.settings` — is WRONG AS WRITTEN: `identity.Service` overlays the
+// deployment's Declarative onto EVERY org read and RECOMPUTES the effective
+// settings from it (`Org.WithDeclarative`), and the declarative value BEATS the
+// org's own, so an aggregate over the raw JSONB column computes a maximum over
+// numbers nobody is using. `identity/service.MaxRetention` is the reduce
+// evaluated where the overlay is applied: it walks the settings rows in bounded
+// keyset pages, applies `WithDeclarative` per row, and returns ONE exact
+// maximum — bounded per query and exact for the population, which is the pair
+// the old one-GetOrg-per-tenant walk could never be. A truncated MAP is a
+// deferral; a truncated REDUCE is a WRONG ANSWER; MaxRetention's own contract
+// is exact-or-error for precisely that reason.
 //
-// ⚠️ THE OBVIOUS BOUNDED REPLACEMENT — one `max()` over `orgs.settings` — IS
-// WRONG AS WRITTEN, and this note exists so the next author does not find that
-// out afterwards. `identity.Service` overlays the deployment's Declarative onto
-// EVERY org read and RECOMPUTES the effective settings from it
-// (`Org.WithDeclarative`), and the declarative value BEATS the org's own. An
-// aggregate over the raw JSONB column skips that overlay, so on an install where
-// configuration forces a retention key it computes a maximum over numbers nobody
-// is using. The reduce has to be evaluated where the overlay is applied — inside
-// `identity` — not in a query this package writes.
-//
-// ⛔ EVERY FAILURE WIDENS THE WINDOW RATHER THAN NARROWING IT. An unreadable org
-// row, an org list that errors, a settings lookup that times out — none of them
-// may make the dropper delete MORE than it would have. Reading a setting is not
-// allowed to cost data, and the direction of the fallback is the whole guarantee:
-// the worst outcome of a broken read is that a partition lives one hour longer
-// and the next tick drops it.
+// ⛔ EVERY FAILURE WIDENS THE WINDOW RATHER THAN NARROWING IT. An unreadable
+// settings walk, a read that times out — none of them may make the dropper
+// delete MORE than it would have. Reading a setting is not allowed to cost
+// data, and the direction of the fallback is the whole guarantee: the worst
+// outcome of a broken read is that a partition lives one hour longer and the
+// next tick drops it.
 //
 // `ui_events` is deliberately not folded in. Its 24 hours is the SSE durable
 // resume buffer (ADR 0010), a transport window rather than a record, and it is
@@ -396,16 +393,17 @@ func (c *Container) effectiveRetention(ctx context.Context) (rawDays, eventMonth
 	if c.Identity == nil {
 		return rawDays, eventMonths
 	}
-	return foldRetention(ctx, c.Logger, c.orgs, c.Identity, rawDays, eventMonths)
+	return foldRetention(ctx, c.Logger, c.Identity, rawDays, eventMonths)
 }
 
-// foldRetention is the reduce itself, lifted out of the container so that the
-// two reads it makes arrive as the `retentionTenants` and `retentionSettings`
-// ports (`ports.go`) rather than as a pool and a service — which is what makes a
-// FAILING read something a test can arrange.
+// foldRetention floors the tenants' ceiling at the deployment's own, lifted out
+// of the container so that the one read it makes arrives as the
+// `retentionCeiling` port (`ports.go`) rather than as the identity service —
+// which is what makes a FAILING read something a test can arrange.
 //
-// ⛔ BOTH OF ITS FAILURE PATHS WIDEN TO THE SETTINGS CEILING, AND THAT IS THE
-// WHOLE OF THIS FUNCTION'S CORRECTNESS. Each one used to leave the fold NARROWER
+// ⛔ ITS FAILURE PATH WIDENS TO THE SETTINGS CEILING, AND THAT IS THE WHOLE OF
+// THIS FUNCTION'S CORRECTNESS. The fold used to run here — the tenant list,
+// then one GetOrg per tenant — and BOTH of its failure paths left it NARROWER
 // than the truth in exactly the case that costs data:
 //
 //   - AN UNREADABLE TENANT LIST returned the CONFIG FLOOR — 30 days as shipped —
@@ -417,41 +415,32 @@ func (c *Container) effectiveRetention(ctx context.Context) (rawDays, eventMonth
 //     maximum. There is no second pass and no per-org retry: the tick drops on the
 //     number this returns.
 //
-// Both now widen instead, and the direction is the guarantee: `oto_partitions_manage`
-// DROPS PARTITIONS, cold-storage export is scoped rather than built (ADR 0024),
-// so a window that came back too narrow deletes rows nothing can bring back,
-// while one that came back too wide costs an hour of disk and the next tick drops
-// them anyway.
+// `identity/service.MaxRetention` collapses both into the ONE observable
+// failure handled here — its walk is exact or it is an error — and the error
+// widens instead of narrowing. The direction is the guarantee:
+// `oto_partitions_manage` DROPS PARTITIONS, cold-storage export is scoped
+// rather than built (ADR 0024), so a window that came back too narrow deletes
+// rows nothing can bring back, while one that came back too wide costs an hour
+// of disk and the next tick drops them anyway.
 func foldRetention(
 	ctx context.Context,
 	log *slog.Logger,
-	tenants retentionTenants,
-	settings retentionSettings,
+	settings retentionCeiling,
 	rawDays, eventMonths int,
 ) (int, int) {
-	scopes, err := tenants.Scopes(ctx)
+	raw, event, err := settings.MaxRetention(ctx)
 	if err != nil {
-		log.ErrorContext(ctx, "partitions.manage: could not list tenants, widening to the settings ceiling",
+		log.ErrorContext(ctx, "partitions.manage: could not read the tenants' retention, widening to the settings ceiling",
 			slog.String("error", err.Error()))
 		return widenToSettingsCeiling(rawDays, eventMonths)
 	}
-	for _, scope := range scopes {
-		org, err := settings.GetOrg(ctx, scope)
-		if err != nil {
-			log.ErrorContext(ctx, "partitions.manage: could not read one tenant's retention, widening to the settings ceiling",
-				slog.String("org_id", scope.OrgID().String()),
-				slog.String("error", err.Error()))
-			rawDays, eventMonths = widenToSettingsCeiling(rawDays, eventMonths)
-			continue
-		}
-		// Settings are already the effective, clamped values (Org.Settings), so
-		// there is no second copy of the bounds here.
-		if d := int(org.Settings.RawRetention.Hours() / 24); d > rawDays {
-			rawDays = d
-		}
-		if m := int(org.Settings.EventRetention.Hours() / 24 / 30); m > eventMonths {
-			eventMonths = m
-		}
+	// The answer is already the effective, clamped maximum (Org.Settings via
+	// WithDeclarative), so there is no second copy of the bounds here.
+	if d := int(raw.Hours() / 24); d > rawDays {
+		rawDays = d
+	}
+	if m := int(event.Hours() / 24 / 30); m > eventMonths {
+		eventMonths = m
 	}
 	return rawDays, eventMonths
 }

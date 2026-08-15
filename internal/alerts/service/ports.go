@@ -47,6 +47,11 @@ type AlertRepository interface {
 	GetByAlertKey(ctx context.Context, s db.TenantScope, alertKey string) (domain.Alert, error)
 	List(ctx context.Context, s db.TenantScope, f domain.AlertFilter, p db.Keyset) ([]domain.Alert, db.Cursor, error)
 	SetProjection(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p domain.AlertProjection) error
+	// SetProjectionBatch is SetProjection for a whole observe batch in ONE
+	// statement. Each alert may appear AT MOST ONCE: the caller has already
+	// collapsed its writes to the last one per alert, and a duplicate here would
+	// leave which projection lands to the planner.
+	SetProjectionBatch(ctx context.Context, s db.TenantScope, in []domain.AlertProjectionWrite) error
 	SetFlap(ctx context.Context, s db.TenantScope, alertID uuid.UUID, score float32, flapping bool) error
 	// The two discovery reads return the alert COUNT alongside each name and
 	// value. The contract has declared `alert_count` on both DTOs since the

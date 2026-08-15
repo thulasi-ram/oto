@@ -210,8 +210,19 @@ func (s *Service) observe(
 		})
 	}
 
-	written, err := s.appendEvents(ctx, scope, acc.events)
+	// 4. The batch's writes, ONE round trip each, mirroring the reads above
+	//    (§G.4): the projections collapsed to the last write per alert, the
+	//    timeline entries, then every UI frame the loop queued — occurrence and
+	//    alert frames in observation order first, event frames after, which is
+	//    the order the per-item appends used to produce.
+	if err := s.flushProjections(ctx, scope, acc); err != nil {
+		return ObserveResult{}, err
+	}
+	written, err := s.appendEventsBatched(ctx, scope, acc)
 	if err != nil {
+		return ObserveResult{}, err
+	}
+	if err := s.flushFrames(ctx, scope, acc.frames); err != nil {
 		return ObserveResult{}, err
 	}
 	enrichN, err := s.enqueueEnrich(ctx, acc.enrichIDs)
@@ -259,10 +270,47 @@ type observeAccum struct {
 	// the projection adds to total_occurrences.
 	newEpisode map[uuid.UUID]int
 
+	// projections is the batch's pending `alerts` summary per alert, and
+	// projectionOrder is first-staged order so the flush is deterministic. M
+	// observations of one alert stage M times and FLUSH ONCE: only the last
+	// write could survive anyway, so the earlier round trips bought nothing.
+	projections     map[uuid.UUID]domain.AlertProjection
+	projectionOrder []uuid.UUID
+	// frames is every §E.4 change notice the batch queued, in the order the
+	// per-item appends used to publish them; it is flushed in ONE round trip.
+	frames []StreamFrame
+
 	events    []domain.Event
 	notifies  []notifyRequest
 	enrichIDs []uuid.UUID
 	outcomes  []ObserveOutcome
+}
+
+// stageProjection records the projection an observation decided, collapsing to
+// one write per alert.
+//
+// Last write wins for every field EXCEPT LastSeenAt, which keeps the maximum
+// staged: SetProjection's SQL folds each write through
+// GREATEST(last_seen_at, $7), so M sequential writes left max(all M) behind, and
+// a collapse that kept only the last observation's clock reading would let an
+// out-of-order pair inside one batch rewind what the sequential code preserved.
+// Every other column was a plain overwrite (last_state_change_at's GREATEST is
+// against first_seen_at, which no write here moves), so for those the last
+// staged value IS the sequential result.
+func (a *observeAccum) stageProjection(alertID uuid.UUID, p domain.AlertProjection) {
+	if a.projections == nil {
+		a.projections = map[uuid.UUID]domain.AlertProjection{}
+	}
+	prev, seen := a.projections[alertID]
+	if !seen {
+		a.projectionOrder = append(a.projectionOrder, alertID)
+		a.projections[alertID] = p
+		return
+	}
+	if prev.LastSeenAt.After(p.LastSeenAt) {
+		p.LastSeenAt = prev.LastSeenAt
+	}
+	a.projections[alertID] = p
 }
 
 // observeOne runs SPEC §B.3 over ONE observation and applies what it decided.
@@ -368,14 +416,16 @@ func (s *Service) observeOne(
 
 	acc.latest[alert.ID()] = occ
 	out.OccurrenceID = occ.ID()
-	if err := s.projectFromOccurrence(ctx, scope, alert, occ, at, stateChanged,
-		acc.newEpisode[alert.ID()]); err != nil {
+	// The projection and the two frames are STAGED, not written: the batch
+	// flushes them once at the end (§G.4), inside the same transaction, so an
+	// event and its projection still commit together or not at all.
+	acc.stageProjection(alert.ID(), projectionFor(alert, occ, at, stateChanged,
+		acc.newEpisode[alert.ID()]))
+	if err := s.queueFrame(acc, StreamOccurrenceUpserted, occ.ID(),
+		occurrenceFramePayload(occ)); err != nil {
 		return err
 	}
-	if err := s.publishOccurrence(ctx, scope, occ); err != nil {
-		return err
-	}
-	if err := s.publishAlert(ctx, scope, alert.ID(), map[string]any{
+	if err := s.queueFrame(acc, StreamAlertUpserted, alert.ID(), map[string]any{
 		"alert_key": alert.Key().String(),
 		"state":     alert.State().String(),
 	}); err != nil {
@@ -649,15 +699,26 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 }
 
 // projectFromOccurrence writes `alerts`' denormalised summary in the SAME
-// transaction as the transition that caused it.
-//
-// SnoozedUntil is carried through UNCHANGED. Snooze is the third orthogonal axis
-// (§B.1): a state transition must never wake an alert up, and this is the line of
-// code where that would otherwise quietly happen.
+// transaction as the transition that caused it. The observe path does not come
+// through here — it stages projectionFor's result and flushes the batch in one
+// statement — this is the per-item write the sweep still makes.
 func (s *Service) projectFromOccurrence(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, occ domain.Occurrence,
 	at domain.ObservationTime, stateChanged bool, newEpisodes int,
 ) error {
+	return s.alerts.SetProjection(ctx, scope, alert.ID(),
+		projectionFor(alert, occ, at, stateChanged, newEpisodes))
+}
+
+// projectionFor derives the `alerts` summary one occurrence state implies.
+//
+// SnoozedUntil is carried through UNCHANGED. Snooze is the third orthogonal axis
+// (§B.1): a state transition must never wake an alert up, and this is the line of
+// code where that would otherwise quietly happen.
+func projectionFor(
+	alert domain.Alert, occ domain.Occurrence, at domain.ObservationTime,
+	stateChanged bool, newEpisodes int,
+) domain.AlertProjection {
 	lastChange := alert.LastStateChangeAt()
 	if stateChanged || lastChange.IsZero() {
 		lastChange = at.RecordedAt()
@@ -666,7 +727,7 @@ func (s *Service) projectFromOccurrence(
 	if occ.IsOpen() {
 		currentOcc = ptr(occ.ID())
 	}
-	return s.alerts.SetProjection(ctx, scope, alert.ID(), domain.AlertProjection{
+	return domain.AlertProjection{
 		State:               occ.State(),
 		CurrentOccurrenceID: currentOcc,
 		AckState:            occ.AckState(),
@@ -674,7 +735,28 @@ func (s *Service) projectFromOccurrence(
 		LastSeenAt:          at.RecordedAt(),
 		LastStateChangeAt:   lastChange,
 		TotalOccurrences:    alert.TotalOccurrences() + newEpisodes,
-	})
+	}
+}
+
+// flushProjections writes the batch's collapsed projections in ONE statement.
+//
+// It runs inside the batch's transaction, whose UpsertBatch already holds every
+// target row's lock, so the batched UPDATE re-locks rows this transaction owns
+// and the `alerts`-before-`alert_occurrences` lock order documented on `observe`
+// is unchanged. A missing alert fails the transaction exactly as the per-item
+// SetProjection's NotFound did.
+func (s *Service) flushProjections(ctx context.Context, scope db.TenantScope, acc *observeAccum) error {
+	if len(acc.projectionOrder) == 0 {
+		return nil
+	}
+	writes := make([]domain.AlertProjectionWrite, 0, len(acc.projectionOrder))
+	for _, alertID := range acc.projectionOrder {
+		writes = append(writes, domain.AlertProjectionWrite{
+			AlertID:    alertID,
+			Projection: acc.projections[alertID],
+		})
+	}
+	return s.alerts.SetProjectionBatch(ctx, scope, writes)
 }
 
 // ------------------------------------------------------------------ helpers

@@ -10,9 +10,34 @@ import (
 
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
+	"github.com/thulasiram/oto/internal/platform/id"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	"github.com/thulasiram/oto/test/harness"
 )
+
+func TestMain(m *testing.M) { harness.Main(m) }
+
+// seedOrgs inserts n tenants in one statement. The harness builder is one round
+// trip per org, which is the right shape for the three-org tests and the wrong
+// one for a test whose whole point is to cross a 500-row page boundary.
+//
+// The ids are still minted by platform/id, never by the database: `orgs.id` is a
+// UUIDv7 because the sweep's keyset walk orders by it — and google/uuid's
+// `getV7Time` guarantees the (millis, sequence) prefix strictly increases per
+// call, so the ids come out in ASCENDING order and the walk visits them in the
+// order they were minted.
+func seedOrgs(t *testing.T, h *harness.H, n int) []uuid.UUID {
+	t.Helper()
+
+	ids := make([]uuid.UUID, n)
+	for i := range ids {
+		ids[i] = id.New()
+	}
+	h.Exec(`INSERT INTO orgs (id, slug, name, created_at, updated_at)
+	        SELECT o.id, 'page-' || o.ord, 'Page ' || o.ord, $2, $2
+	          FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, ord)`, ids, h.Now())
+	return ids
+}
 
 // These tests are about the fan-out that replaced the tenant loop inside every
 // periodic sweep (2d699d6). They run against a real Postgres because the two

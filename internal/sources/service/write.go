@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/id"
@@ -48,7 +47,7 @@ const (
 	CodeCredentialStoreUnavailable = "sources_credential_store_unavailable"
 	// CodeIdempotencyUnavailable means the caller sent an `Idempotency-Key` this
 	// deployment cannot honour.
-	CodeIdempotencyUnavailable = "idempotency_unavailable"
+	CodeIdempotencyUnavailable = idempotency.CodeUnavailable
 	// CodeCredentialEmpty means a credential was supplied carrying no values.
 	CodeCredentialEmpty = "credential_empty"
 )
@@ -64,26 +63,13 @@ type CredentialInput struct {
 	Values map[string]string
 }
 
-// Idempotency is the caller's `Idempotency-Key` intent for one write.
-//
-// ⭐⭐ THE CLAIM IT ASKS FOR IS TAKEN INSIDE THE OPERATION'S OWN TRANSACTION, AND
-// AFTER THE ACT IT GUARDS, so a key somebody already holds rolls that act back
-// with it. That is the difference between "your retry was refused" and "your
-// retry minted a second live credential and told you it was a duplicate".
-type Idempotency struct {
-	// Keyed reports that the caller sent a key at all. False means every field
-	// below is ignored and no claim is taken.
-	Keyed bool
-	Key   idempotency.Key
-	// Principal is who sent it. A key is a client's private handle on its own
-	// retry, so a claim is keyed by the principal as well as the org: one org
-	// member's key must never be able to refuse another's request.
-	Principal authn.Principal
-	// RequestHash is what "the same request" means for an operation that carries a
-	// BODY, and is the sha256 of the bytes the caller actually sent. RotateIngestToken
-	// ignores it and digests the source it is rotating instead — see there.
-	RequestHash idempotency.RequestHash
-}
+// Idempotency is the caller's `Idempotency-Key` intent for one write — the
+// platform's own Intent under the name this module's ports cross it as.
+// RequestHash here is the sha256 of the bytes the caller actually sent for an
+// operation that carries a BODY; RotateIngestToken ignores it and digests the
+// source it is rotating instead — see there. The operation is this service's
+// fact and is filled at the claim site, not by the transport.
+type Idempotency = idempotency.Intent
 
 // IssuedIngest is a source and the ingest credential it was just given.
 //
@@ -147,7 +133,7 @@ func (s *Service) Create(
 	if err := s.requireIssuer(); err != nil {
 		return IssuedIngest{}, err
 	}
-	if err := s.requireClaims(cmd.Idempotency); err != nil {
+	if err := idempotency.Require(cmd.Idempotency, s.claims, s.tx); err != nil {
 		return IssuedIngest{}, err
 	}
 
@@ -171,9 +157,13 @@ func (s *Service) Create(
 		if cmd.Idempotency.Keyed {
 			// AFTER the mint, because the claim records what the call created — the
 			// SOURCE id, which is the id a caller who never received the ingest token
-			// needs in order to find it and rotate its credential.
-			if err := s.claim(ctx, scope, cmd.Idempotency,
-				opCreateSource, cmd.Idempotency.RequestHash, created.ID); err != nil {
+			// needs in order to find it and rotate its credential. The policy is
+			// Refuse: the `201` hands out a plaintext ingest token that genuinely
+			// cannot be produced twice.
+			idem := cmd.Idempotency
+			idem.Operation = opCreateSource
+			if _, err := idempotency.Resolve(ctx, s.claims, scope, idem,
+				idempotency.Refuse, created.ID, s.clk.Now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -280,7 +270,7 @@ func (s *Service) RotateIngestToken(
 	if err := s.requireIssuer(); err != nil {
 		return IssuedIngest{}, err
 	}
-	if err := s.requireClaims(idem); err != nil {
+	if err := idempotency.Require(idem, s.claims, s.tx); err != nil {
 		return IssuedIngest{}, err
 	}
 
@@ -297,7 +287,8 @@ func (s *Service) RotateIngestToken(
 		if idem.Keyed {
 			// The claim carries no `created_ref`: the issuer port returns a secret and
 			// a display prefix, never the row id, and there is no version of it that
-			// should return the credential itself.
+			// should return the credential itself. The policy is Refuse — a rotation's
+			// response is a plaintext credential.
 			//
 			// ⭐ THE DIGEST IS OF THE SOURCE BEING ROTATED, not of the empty body this
 			// operation declares. A bodyless request digests to a CONSTANT and the
@@ -306,8 +297,10 @@ func (s *Service) RotateIngestToken(
 			// replay of a rotation that touched a different source entirely. Folded in,
 			// the two are the different requests they are, and a true retry against the
 			// same source still digests identically and still replays.
-			if err := s.claim(ctx, scope, idem, opRotateSourceIngestToken,
-				idempotency.HashTargetedRequest(found.ID, nil), uuid.Nil); err != nil {
+			idem.Operation = opRotateSourceIngestToken
+			idem.RequestHash = idempotency.HashTargetedRequest(found.ID, nil)
+			if _, err := idempotency.Resolve(ctx, s.claims, scope, idem,
+				idempotency.Refuse, uuid.Nil, s.clk.Now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -359,7 +352,7 @@ func (s *Service) CreateCluster(
 		return domain.Cluster{}, errs.Unavailable(CodeClustersUnavailable,
 			"the cluster registry is not configured in this deployment", 0)
 	}
-	if err := s.requireClaims(idem); err != nil {
+	if err := idempotency.Require(idem, s.claims, s.tx); err != nil {
 		return domain.Cluster{}, err
 	}
 
@@ -368,32 +361,14 @@ func (s *Service) CreateCluster(
 		replayOf uuid.UUID
 	)
 	clusterID := id.New()
+	idem.Operation = opCreateCluster
 	err := s.inTx(ctx, func(ctx context.Context) error {
 		if idem.Keyed {
-			res, err := s.claims.Claim(ctx, scope, idempotency.Claim{
-				OrgID:       scope.OrgID(),
-				PrincipalID: idem.Principal.UserID,
-				Operation:   opCreateCluster,
-				Key:         idem.Key,
-				RequestHash: idem.RequestHash,
-				CreatedRef:  clusterID,
-				ClaimedAt:   s.clk.Now().UTC(),
-			})
+			ref, err := idempotency.Resolve(ctx, s.claims, scope, idem,
+				idempotency.Replay, clusterID, s.clk.Now().UTC())
 			if err != nil {
+				replayOf = ref
 				return err
-			}
-			if res.Outcome == idempotency.Conflicted {
-				// One key, two different bodies. That is not a retry, it is a second
-				// request wearing the first one's name, and the contract has always
-				// said so with a `409`.
-				return idempotency.Reuse(res)
-			}
-			if !res.Fresh() {
-				if res.Existing.CreatedRef == uuid.Nil {
-					return idempotency.Reuse(res)
-				}
-				replayOf = res.Existing.CreatedRef
-				return errReplayCluster
 			}
 		}
 		created, err := s.clusters.Create(ctx, scope, clusterID, key, displayName)
@@ -403,7 +378,7 @@ func (s *Service) CreateCluster(
 		out = created
 		return nil
 	})
-	if errors.Is(err, errReplayCluster) {
+	if errors.Is(err, idempotency.ErrReplay) {
 		// Read OUTSIDE the rolled-back transaction, so what comes back is the row
 		// the first attempt committed and nothing this one attempted.
 		return s.clusters.Get(ctx, scope, replayOf)
@@ -413,10 +388,6 @@ func (s *Service) CreateCluster(
 	}
 	return out, nil
 }
-
-// errReplayCluster carries a replayed claim out of its own transaction so the
-// insert beside it rolls back. It never reaches a caller.
-var errReplayCluster = errors.New("this idempotency key already registered a cluster")
 
 // ------------------------------------------------------------------- helpers
 
@@ -429,34 +400,6 @@ func (s *Service) inTx(ctx context.Context, fn func(ctx context.Context) error) 
 	return s.tx.InTx(ctx, fn)
 }
 
-// claim takes the caller's key for op, and turns a key somebody already holds into
-// the contract's `409`.
-//
-// The hash is passed in because what "the same request" means differs by
-// operation: a create is identified by its body, a rotation by the source whose
-// credential it replaces.
-func (s *Service) claim(
-	ctx context.Context, scope db.TenantScope, idem Idempotency,
-	op idempotency.Operation, hash idempotency.RequestHash, created uuid.UUID,
-) error {
-	res, err := s.claims.Claim(ctx, scope, idempotency.Claim{
-		OrgID:       scope.OrgID(),
-		PrincipalID: idem.Principal.UserID,
-		Operation:   op,
-		Key:         idem.Key,
-		RequestHash: hash,
-		CreatedRef:  created,
-		ClaimedAt:   s.clk.Now().UTC(),
-	})
-	if err != nil {
-		return err
-	}
-	if !res.Fresh() {
-		return idempotency.Reuse(res)
-	}
-	return nil
-}
-
 // requireIssuer refuses an operation that would mint a token there is nowhere to
 // mint. A deployment wired without an issuer is a misconfiguration, not a caller
 // error, and `503` is the one status that says so without inviting a retry of the
@@ -467,23 +410,6 @@ func (s *Service) requireIssuer() error {
 	}
 	return errs.Unavailable(CodeTokenIssuerUnavailable,
 		"ingest tokens cannot be minted in this deployment", 0)
-}
-
-// requireClaims refuses a KEYED request this deployment cannot honour.
-//
-// ⛔ IT IS REFUSED, NOT SERVED UNGUARDED. The defect this closes was a header the
-// contract promised and the server ignored; ignoring it a second time because a
-// collaborator is nil would reproduce it exactly, and the caller would have no way
-// to tell a protected create from an unprotected one.
-func (s *Service) requireClaims(idem Idempotency) error {
-	if !idem.Keyed {
-		return nil
-	}
-	if s.claims != nil && s.tx != nil {
-		return nil
-	}
-	return errs.Unavailable(CodeIdempotencyUnavailable,
-		"this deployment cannot honour Idempotency-Key", 0)
 }
 
 // sealCredential stores a supplied credential and returns its id, or nil.

@@ -218,13 +218,17 @@ func DeliverQueueFor(channelType string) string {
 // IDEMPOTENCY KEY: none needed at the job level — the sweep is a query, and the
 // reminder it may mint is a Notification, unique on `(org_id, idempotency_key)`
 // and fired AT MOST ONCE PER GROUP GENERATION by §G.9. Job-level uniqueness is
-// by kind and period so two pods cannot both run the same tick.
+// by kind, ARGS and period, and TenantFanOut is what makes that per-tenant: each
+// org's sweep gets its own once-a-minute slot instead of every org sharing the
+// tick's one, and a tenant whose policies are broken retries and dead-letters
+// alone instead of being a log line inside everybody else's execution.
 //
 // THERE IS EXACTLY ONE STAGE, FOREVER (SPEC §G.9.1, BINDING, PERMANENT). This
 // job must never gain a stage index, a target other than the policy's existing
 // channels, or any awareness of who is on call.
 type NotifyUnackedReminderArgs struct {
 	Payload
+	TenantFanOut
 }
 
 // Kind implements db.JobArgs and river.JobArgs.

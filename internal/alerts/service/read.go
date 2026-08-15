@@ -235,6 +235,20 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, alertID uuid.UU
 	return out, nil
 }
 
+// GetAlert returns the Alert row alone — identity, labels, projections — with
+// none of the detail page's companion reads.
+//
+// It exists for MACHINE callers. `Get` above is the detail PAGE: beside the
+// alert it re-reads the latest occurrence and the active snooze, because a
+// human opening the page is owed all three §B.1 axes at once. The enrichment
+// pipeline needs only the frozen identity of the subject it is enriching — it
+// already holds the occurrence it was dispatched for — and a worker that
+// consumed the page paid two extra reads per run whose results were discarded.
+// A machine that wants one fact asks for one fact.
+func (s *Service) GetAlert(ctx context.Context, scope db.TenantScope, alertID uuid.UUID) (domain.Alert, error) {
+	return s.alerts.GetByID(ctx, scope, alertID)
+}
+
 // GetByKey resolves an Alert by its §C.2 identity key — the human-copyable
 // handle that appears in Slack buttons and URLs.
 func (s *Service) GetByKey(ctx context.Context, scope db.TenantScope, alertKey string) (AlertDetail, error) {

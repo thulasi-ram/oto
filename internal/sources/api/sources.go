@@ -18,15 +18,8 @@ import (
 	"github.com/thulasiram/oto/internal/sources/service"
 )
 
-// idempotencyIntent reads the caller's `Idempotency-Key` and resolves the
-// principal that sent it, into the intent the write facade acts on.
-//
-// ⭐ READING THE HEADER IS THIS LAYER'S JOB; TAKING THE CLAIM IS NOT. A claim has
-// to be taken inside the transaction of the act it guards, and that transaction
-// belongs to `sources/service` — so what crosses the seam is the caller's intent,
-// and the service decides whether this deployment can honour it (a `503`) and
-// whether somebody already holds the key (a `409`).
-//
+// idempotencyIntent reads the caller's `Idempotency-Key` into the intent the
+// write facade acts on (see idempotency.IntentFromRequest for the seam's rules).
 // The hash is passed in because what "the same request" means differs by
 // operation: a create is identified by the RAW bytes it sent, and a rotation —
 // which has no body — by the source whose credential it replaces, which the
@@ -34,15 +27,7 @@ import (
 func (rt *Router) idempotencyIntent(
 	r *http.Request, hash idempotency.RequestHash,
 ) (service.Idempotency, error) {
-	key, keyed, err := idempotency.FromHeader(r)
-	if err != nil || !keyed {
-		return service.Idempotency{}, err
-	}
-	p, err := principalOf(r)
-	if err != nil {
-		return service.Idempotency{}, err
-	}
-	return service.Idempotency{Keyed: true, Key: key, Principal: p, RequestHash: hash}, nil
+	return idempotency.IntentFromRequest(r, hash)
 }
 
 // listSources serves GET /api/v1/sources.

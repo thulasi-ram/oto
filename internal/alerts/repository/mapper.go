@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,11 +22,6 @@ const (
 	sortLastSeenDesc  = "-last_seen_at"
 	sortFirstSeenDesc = "-first_seen_at"
 )
-
-// clampLimit applies the §E.1 page bounds, which live in `platform/db` because
-// they bound `db.Keyset.Limit`. It is applied at every List in this package: a
-// caller that forgets is a caller that asks Postgres for an unbounded scan.
-func clampLimit(n int) int { return db.ClampLimit(n) }
 
 // mapErr turns a database error into an errs.Kind for this module. The §L.9
 // table itself lives in `db.MapError` and is shared by every repository — this
@@ -51,24 +45,6 @@ func mapErr(err error, what string) error {
 		QueryFailed:        "alerts_query_failed",
 		QueryFailedMessage: fmt.Sprintf("could not %s", what),
 	})
-}
-
-// requireScope refuses a scope that names no tenant. A missing org_id predicate
-// is a data leak, so it is refused here rather than defended against downstream.
-func requireScope(s db.TenantScope) error {
-	if !s.Valid() {
-		return errs.Internal("missing_tenant_scope", db.ErrNoTenant)
-	}
-	return nil
-}
-
-// requireID refuses a zero UUID reaching a NOT NULL column. §L.9(1): catch a
-// mapper bug at the boundary rather than as an opaque 23502.
-func requireID(field string, id uuid.UUID) error {
-	if id == uuid.Nil {
-		return errs.Internal("missing_"+field, fmt.Errorf("repository: %s is required", field))
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------- jsonb helpers
@@ -206,41 +182,11 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// ------------------------------------------------------------- keyset helpers
-
-// pageOf trims a slice fetched with limit+1 rows down to the page, and reports
-// whether a further page exists. Fetching one extra row is what makes HasMore
-// honest without a COUNT.
-func pageOf[T any](rows []T, limit int) ([]T, bool) {
-	if len(rows) > limit {
-		return rows[:limit], true
-	}
-	return rows, false
-}
-
-// nextCursor mints the cursor for the page after the one just returned. The hash
-// binds it to the filter it was minted under; presenting it against a different
-// filter is rejected by the caller (§E.1).
-func nextCursor(sortKey time.Time, id uuid.UUID, hash string, hasMore bool) db.Cursor {
-	if !hasMore {
-		return db.Cursor{Hash: hash}
-	}
-	return db.Cursor{SortKey: sortKey.UTC(), ID: id, Hash: hash, HasMore: true}
-}
-
 // ------------------------------------------------------------------ tx runner
 
-// TxRunner runs a function inside one transaction. It is the concrete half of
-// the port `alerts/service` declares, and it lives here because this is the
-// layer permitted to name pgx.
-type TxRunner struct{ pool *pgxpool.Pool }
+// TxRunner is the concrete half of the port `alerts/service` declares; the
+// runner itself is `db.TxRunner`, in the layer permitted to name pgx.
+type TxRunner = db.TxRunner
 
 // NewTxRunner builds a transaction runner over a pool.
-func NewTxRunner(pool *pgxpool.Pool) *TxRunner { return &TxRunner{pool: pool} }
-
-// InTx runs fn inside a transaction, committing on nil and rolling back
-// otherwise. It nests safely: a ctx already carrying a transaction joins it
-// rather than opening a second.
-func (r *TxRunner) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return db.Tx(ctx, r.pool, fn)
-}
+func NewTxRunner(pool *pgxpool.Pool) *TxRunner { return db.NewTxRunner(pool) }

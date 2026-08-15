@@ -79,36 +79,12 @@ func NewReminderService(cfg ReminderConfig) (*ReminderService, error) {
 	return s, nil
 }
 
-// Sweep runs one tick across every tenant.
-//
-// One org's broken policy must not stop the others being reminded, so a failure
-// is logged and the sweep continues. The tick repeats in sixty seconds anyway,
-// which makes "carry on" strictly better than "abort": aborting would silently
-// convert one org's problem into every org's silence.
-func (s *ReminderService) Sweep(ctx context.Context) (int, error) {
-	orgs, err := s.reminders.ListOrgIDs(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	total := 0
-	for _, orgID := range orgs {
-		scope, err := db.NewTenantScope(orgID)
-		if err != nil {
-			continue
-		}
-		n, err := s.SweepOrg(ctx, scope)
-		if err != nil {
-			s.log.ErrorContext(ctx, "notification: the unacked reminder sweep failed for one org",
-				"org_id", orgID, "error", err.Error())
-			continue
-		}
-		total += n
-	}
-	return total, nil
-}
-
 // SweepOrg reminds one tenant's channels about signals nobody has acknowledged.
+//
+// It is one tenant's WHOLE tick, deliberately: the worker fans the periodic out
+// into one of these per live tenant (jobs.TenantFanOut), so there is no
+// all-tenants loop here for one org's broken policy to hide inside — a tenant
+// that fails fails alone, on its own retry budget, and stops nobody else.
 func (s *ReminderService) SweepOrg(ctx context.Context, scope db.TenantScope) (int, error) {
 	// The org's fallback delay, for policies that name none of their own. It is
 	// read fresh on every tick — sixty seconds is the longest a change to it can

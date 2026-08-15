@@ -125,7 +125,7 @@ RETURNING id, kind, created_at, rotated_at`
 func (r *CredentialRepository) Create(
 	ctx context.Context, s db.TenantScope, kind string, values map[string]string,
 ) (CredentialMeta, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return CredentialMeta{}, err
 	}
 	if !ValidCredentialKind(kind) {
@@ -182,10 +182,10 @@ RETURNING id, kind, created_at, rotated_at`
 func (r *CredentialRepository) Rotate(
 	ctx context.Context, s db.TenantScope, credentialID uuid.UUID, kind string, values map[string]string,
 ) (CredentialMeta, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return CredentialMeta{}, err
 	}
-	if err := requireID("credential_id", credentialID); err != nil {
+	if err := db.RequireID("credential_id", credentialID); err != nil {
 		return CredentialMeta{}, err
 	}
 	if !ValidCredentialKind(kind) {
@@ -225,7 +225,7 @@ SELECT id, kind, created_at, rotated_at
 func (r *CredentialRepository) Meta(
 	ctx context.Context, s db.TenantScope, credentialID uuid.UUID,
 ) (CredentialMeta, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return CredentialMeta{}, err
 	}
 	var out CredentialMeta
@@ -252,7 +252,7 @@ SELECT id, org_id, kind, sealed, key_version, created_at, rotated_at
 func (r *CredentialRepository) Resolve(
 	ctx context.Context, s db.TenantScope, credentialID uuid.UUID,
 ) (string, map[string]string, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return "", nil, err
 	}
 	if r.open == nil {
@@ -284,7 +284,7 @@ func (r *CredentialRepository) Resolve(
 // destination out of existence. That is the correct blast radius: losing a token
 // must not lose the record of where messages went.
 func (r *CredentialRepository) Delete(ctx context.Context, s db.TenantScope, credentialID uuid.UUID) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx,

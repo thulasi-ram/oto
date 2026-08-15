@@ -89,16 +89,16 @@ ON CONFLICT (group_id, occurrence_id) DO NOTHING`
 func (r *MemberRepository) Join(
 	ctx context.Context, s db.TenantScope, groupID, occurrenceID, alertID uuid.UUID, at time.Time,
 ) (bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return false, err
 	}
-	if err := requireID("group_id", groupID); err != nil {
+	if err := db.RequireID("group_id", groupID); err != nil {
 		return false, err
 	}
-	if err := requireID("occurrence_id", occurrenceID); err != nil {
+	if err := db.RequireID("occurrence_id", occurrenceID); err != nil {
 		return false, err
 	}
-	if err := requireID("alert_id", alertID); err != nil {
+	if err := db.RequireID("alert_id", alertID); err != nil {
 		return false, err
 	}
 	if at.IsZero() {
@@ -122,7 +122,7 @@ UPDATE alert_group_members
 func (r *MemberRepository) Leave(
 	ctx context.Context, s db.TenantScope, groupID, occurrenceID uuid.UUID, at time.Time,
 ) (bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return false, err
 	}
 	if at.IsZero() {
@@ -146,7 +146,7 @@ SELECT ` + memberColumns + `
 func (r *MemberRepository) AllMembers(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
 ) ([]domain.Member, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	rows, err := r.db(ctx).Query(ctx, allMembersSQL, s.OrgID(), groupID)
@@ -191,7 +191,7 @@ SELECT ` + memberColumns + `
 func (r *MemberRepository) MembersAt(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time,
 ) ([]domain.Member, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	rows, err := r.db(ctx).Query(ctx, membersAtSQL, s.OrgID(), groupID, at.UTC())
@@ -214,10 +214,10 @@ SELECT ` + memberColumns + `
 func (r *MemberRepository) GroupsForAlert(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int,
 ) ([]domain.Member, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, groupsForAlertSQL, s.OrgID(), alertID, clampLimit(limit))
+	rows, err := r.db(ctx).Query(ctx, groupsForAlertSQL, s.OrgID(), alertID, db.ClampLimit(limit))
 	if err != nil {
 		return nil, mapErr(err, "list groups for alert")
 	}
@@ -241,7 +241,7 @@ SELECT count(DISTINCT alert_id), max(joined_at)
 func (r *MemberRepository) DistinctJoinsSince(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time,
 ) (int, time.Time, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return 0, time.Time{}, err
 	}
 	var n int64
@@ -287,7 +287,7 @@ SELECT
 func (r *MemberRepository) Rollup(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
 ) (domain.Counts, string, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Counts{}, "", err
 	}
 	var (
@@ -345,10 +345,10 @@ SELECT ` + memberColumns + `
 func (r *MemberRepository) ListCurrentMembers(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset,
 ) ([]domain.Member, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	var (
 		afterAt *time.Time
@@ -370,12 +370,12 @@ func (r *MemberRepository) ListCurrentMembers(
 	if err != nil {
 		return nil, db.Cursor{}, err
 	}
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.JoinedAt(), last.OccurrenceID(), p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(last.JoinedAt(), last.OccurrenceID(), p.Cursor.Hash, hasMore), nil
 }
 
 // memberAlertsSQL is the fan-out's candidate read, and it is BOUNDED.
@@ -431,7 +431,7 @@ type MemberAlert struct {
 func (r *MemberRepository) CurrentMemberAlerts(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID, limit int,
 ) ([]MemberAlert, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if limit <= 0 {
@@ -469,7 +469,7 @@ func (r *MemberRepository) CurrentMemberAlerts(
 func (r *MemberRepository) CountCurrentMembers(
 	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
 ) (int, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return 0, err
 	}
 	var n int64
@@ -522,7 +522,7 @@ SELECT m.group_id,
 func (r *MemberRepository) SnoozeRollup(
 	ctx context.Context, s db.TenantScope, groupIDs []uuid.UUID, now time.Time,
 ) (map[uuid.UUID]domain.SnoozeRollup, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(groupIDs) == 0 {

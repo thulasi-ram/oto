@@ -79,8 +79,14 @@ type OccurrenceSourceResolver interface {
 
 // EventCounter counts lifecycle transitions per Alert in a window, for the
 // `flap.score` job (§B.6).
+//
+// At most `limit` alerts come back, and when the cap binds the implementation
+// must choose the MOST-CHANGED alerts (ties broken on a stable key). The cap
+// lives on this side of the port so that which alerts get scored is a property
+// of the data — the caller iterates a map, and a cap applied over map iteration
+// order scored a random subset every tick.
 type EventCounter interface {
-	StateChangeCounts(ctx context.Context, s db.TenantScope, w db.TimeWindow) (map[uuid.UUID]int, error)
+	StateChangeCounts(ctx context.Context, s db.TenantScope, w db.TimeWindow, limit int) (map[uuid.UUID]int, error)
 }
 
 // SnoozeHistoryReader reads an Alert's snooze history. Membership of a snooze is
@@ -98,8 +104,15 @@ type SnoozeHistoryReader interface {
 // answer, the sweep HOLDS every candidate — the reaper defaults to silence, never
 // to a fabricated ending.
 type SourceHealth interface {
-	// Healthy reports whether the named AlertSource is currently healthy.
-	Healthy(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) (bool, error)
+	// HealthyFor reports, for each named AlertSource, whether it is currently
+	// healthy — one round trip for a whole sweep tick, because the guard is per
+	// SOURCE and a tick's candidates share a handful of them.
+	//
+	// ABSENCE IS A VERDICT: a source missing from the result — never probed, not
+	// this org's, unresolvable — is one the implementation cannot vouch for, and
+	// the caller must read absence exactly as it reads false: not proven healthy,
+	// so every occurrence it owns is held.
+	HealthyFor(ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
 // The `ui_events.kind` values this module publishes (§E.4). They are plain
@@ -115,6 +128,14 @@ const (
 	StreamEventAppended = "event.appended"
 )
 
+// StreamFrame is one §E.4 change notice, encoded and held until a batch flush.
+// The payload is the SMALL envelope of §E.4 — a change notice, not a resource.
+type StreamFrame struct {
+	Kind       string
+	ResourceID uuid.UUID
+	Payload    []byte
+}
+
 // StreamAppender publishes a user-visible change onto the SSE spine.
 //
 // It is called INSIDE the caller's transaction so the frame and the row it
@@ -122,6 +143,12 @@ const (
 // back, and can never miss something that committed (§E.4).
 type StreamAppender interface {
 	Append(ctx context.Context, s db.TenantScope, kind string, resourceID uuid.UUID, payload []byte) error
+	// AppendBatch publishes many frames in ONE round trip, in slice order — the
+	// implementation must assign stream positions in that order, because the
+	// observe path relies on it to keep the batched flush indistinguishable from
+	// the per-frame appends it replaced. A 200-alert webhook produces hundreds of
+	// frames and must not produce hundreds of round trips (§G.4).
+	AppendBatch(ctx context.Context, s db.TenantScope, frames []StreamFrame) error
 }
 
 // EnrichmentReader reads the provenanced enrichment results for one subject.

@@ -193,6 +193,55 @@ func (r *OrgRepository) Get(ctx context.Context, s db.TenantScope) (domain.Org, 
 	return row.toDomain()
 }
 
+// listLiveOrgsSQL reads ONE keyset page of live orgs, walking the primary key.
+//
+// `id` is the primary key and a UUIDv7, so `id > $1 ORDER BY id` is a cursor
+// that can neither skip nor repeat a tenant when one is created or soft-deleted
+// mid-walk. There is no OFFSET here for the reason `db.Keyset` gives for the
+// whole codebase.
+//
+// ⛔ A SOFT-DELETED TENANT IS NOT LISTED. The one caller is the retention fold,
+// and a departed tenant's settings widening the whole deployment's partition
+// window would be that tenant configuring disk it no longer pays for.
+const listLiveOrgsSQL = `
+SELECT o.id, o.slug, o.name, o.settings, o.created_at, o.updated_at, o.deleted_at
+  FROM orgs o
+ WHERE o.deleted_at IS NULL AND o.id > $1
+ ORDER BY o.id
+ LIMIT $2`
+
+// ListLive reads one keyset page of live orgs, for `identity/service.MaxRetention`.
+//
+// ⚠️ It is unscoped — it walks the tenant table itself — and it AUTHORISES
+// NOTHING: the rows feed a maximum over `orgs.settings`, and a maximum is a
+// number, not a scope. Every other read in this file stays behind a
+// TenantScope.
+func (r *OrgRepository) ListLive(ctx context.Context, after uuid.UUID, limit int) ([]domain.Org, error) {
+	rows, err := r.db(ctx).Query(ctx, listLiveOrgsSQL, after, pageLimit(limit))
+	if err != nil {
+		return nil, mapErr(err, "org_not_found", "org")
+	}
+	defer rows.Close()
+
+	var out []domain.Org
+	for rows.Next() {
+		var row orgRow
+		if err := rows.Scan(&row.id, &row.slug, &row.name, &row.settings,
+			&row.createdAt, &row.updatedAt, &row.deletedAt); err != nil {
+			return nil, mapErr(err, "org_not_found", "org")
+		}
+		org, err := row.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, org)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "org_not_found", "org")
+	}
+	return out, nil
+}
+
 // updateSettingsSQL replaces the whole blob and returns the row it wrote.
 //
 // ⚠️ IT DOES NOT `jsonb_set` KEY BY KEY, and that is deliberate. The merge is

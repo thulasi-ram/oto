@@ -105,7 +105,7 @@ RETURNING ` + drillColumns
 func (r *DrillRepository) Create(
 	ctx context.Context, s db.TenantScope, in domain.NewDrill,
 ) (domain.Drill, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Drill{}, err
 	}
 	if in.ID == uuid.Nil || in.SourceID == uuid.Nil {
@@ -127,7 +127,7 @@ func (r *DrillRepository) Create(
 func (r *DrillRepository) SetBatch(
 	ctx context.Context, s db.TenantScope, id, batchID uuid.UUID,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	_, err := r.db(ctx).Exec(ctx,
@@ -152,7 +152,7 @@ func (r *DrillRepository) SetBatch(
 func (r *DrillRepository) RecordArtefacts(
 	ctx context.Context, s db.TenantScope, id uuid.UUID, a domain.Artifacts,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	_, err := r.db(ctx).Exec(ctx, `
@@ -180,7 +180,7 @@ UPDATE delivery_drills
 func (r *DrillRepository) Freeze(
 	ctx context.Context, s db.TenantScope, id uuid.UUID, res domain.Result, at time.Time,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	body, err := encodeOutcome(res)
@@ -209,7 +209,7 @@ UPDATE delivery_drills
 func (r *DrillRepository) Get(
 	ctx context.Context, s db.TenantScope, id uuid.UUID,
 ) (domain.Drill, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Drill{}, err
 	}
 	var row drillRow
@@ -229,7 +229,7 @@ func (r *DrillRepository) Get(
 func (r *DrillRepository) ListForSource(
 	ctx context.Context, s db.TenantScope, sourceID uuid.UUID, limit int,
 ) ([]domain.Drill, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if limit <= 0 || limit > 50 {
@@ -251,7 +251,7 @@ func (r *DrillRepository) ListForSource(
 func (r *DrillRepository) Unfinished(
 	ctx context.Context, s db.TenantScope, limit int,
 ) ([]domain.Drill, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	rows, err := r.db(ctx).Query(ctx,
@@ -269,7 +269,7 @@ func (r *DrillRepository) Unfinished(
 func (r *DrillRepository) Disposable(
 	ctx context.Context, s db.TenantScope, before time.Time, limit int,
 ) ([]domain.Drill, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	rows, err := r.db(ctx).Query(ctx,
@@ -322,13 +322,6 @@ func timeOrZero(p *time.Time) time.Time {
 		return time.Time{}
 	}
 	return p.UTC()
-}
-
-func requireScope(s db.TenantScope) error {
-	if !s.Valid() {
-		return errs.Forbidden("forbidden", "a tenant scope is required")
-	}
-	return nil
 }
 
 // mapErr turns a database error into an errs.Kind for this package. The §L.9

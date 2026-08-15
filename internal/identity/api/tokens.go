@@ -8,8 +8,6 @@ import (
 
 	"github.com/thulasiram/oto/internal/identity/service"
 	"github.com/thulasiram/oto/internal/platform/authn"
-	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/httpx"
 	"github.com/thulasiram/oto/internal/platform/idempotency"
 )
@@ -86,68 +84,32 @@ func (rt *Router) listAPITokens(w http.ResponseWriter, r *http.Request) {
 	httpx.List(w, r, toAPITokenDTOs(tokens), httpx.PageOf(next, q.Limit), started)
 }
 
-// idempotencyKey reads the caller's `Idempotency-Key`, reporting whether one was
-// sent.
+// idempotencyIntent reads the caller's `Idempotency-Key` into the intent the
+// two token operations claim under. The protocol runs in THIS layer here — the
+// identity service has no transaction seam of its own to carry it — so the
+// operation is filled here too, and the claim itself is `idempotency.Resolve`
+// inside each handler's unit of work.
 //
-// ⛔ A KEYED REQUEST THIS DEPLOYMENT CANNOT HONOUR IS REFUSED, NOT SERVED
-// UNGUARDED. The whole defect this path is fixing was a header the contract
-// promised and the server ignored; ignoring it a second time because a
-// collaborator is nil would reproduce it exactly, and the caller would again have
-// no way to tell a protected create from an unprotected one. `503` says so
-// without inviting a retry of the same broken request.
-//
-// ⭐⭐ THE UNIT OF WORK IS PART OF THAT PRECONDITION, AND IT IS CHECKED HERE
-// BECAUSE HERE IS BEFORE THE MINT. A claim without a transaction to join is
-// refused by `idempotency.Repository.Claim` — but that refusal arrives AFTER the
-// handler has minted, and with no transaction there is nothing to roll the mint
-// back: the token is issued and committed, the claim then fails, and the caller
-// receives a `500` for a credential that exists and whose secret it never saw.
-// That is a worse outcome than the bug. So both collaborators are demanded up
-// front, while refusing still costs nothing.
-func (rt *Router) idempotencyKey(r *http.Request) (idempotency.Key, bool, error) {
-	key, keyed, err := idempotency.FromHeader(r)
-	if err != nil || !keyed {
-		return key, keyed, err
-	}
-	if rt.claims == nil || rt.tx == nil {
-		return idempotency.Key{}, false, errs.Unavailable("idempotency_unavailable",
-			"this deployment cannot honour Idempotency-Key", 0)
-	}
-	return key, true, nil
-}
-
-// claim takes the caller's key for op, and turns a key somebody already holds
-// into the contract's `409`.
-//
-// ⭐⭐ IT MUST BE CALLED INSIDE THE SAME TRANSACTION AS THE ACT IT GUARDS, and
-// AFTER it, because the claim records the id of what the act created. A claim
-// that loses the race therefore rolls that act back with it, which is the
-// difference between "your retry was refused" and "your retry minted a second
-// live credential and told you it was a duplicate".
-//
-// The hash is passed IN rather than computed here, because what "the same
-// request" means differs by operation: a create is identified by its body, and a
-// revoke — which has no body — is identified by the token it destroys.
-func (rt *Router) claim(
-	ctx context.Context, scope db.TenantScope, p authn.Principal,
-	op idempotency.Operation, key idempotency.Key, hash idempotency.RequestHash, created uuid.UUID,
-) error {
-	res, err := rt.claims.Claim(ctx, scope, idempotency.Claim{
-		OrgID:       scope.OrgID(),
-		PrincipalID: p.UserID,
-		Operation:   op,
-		Key:         key,
-		RequestHash: hash,
-		CreatedRef:  created,
-		ClaimedAt:   rt.clk.Now(),
-	})
+// ⭐⭐ THE UNWIRED-DEPLOYMENT CHECK RUNS HERE BECAUSE HERE IS BEFORE THE MINT. A
+// claim without a transaction to join is refused by `idempotency.Repository.Claim`
+// — but that refusal arrives AFTER the handler has minted, and with no
+// transaction there is nothing to roll the mint back: the token is issued and
+// committed, the claim then fails, and the caller receives a `500` for a
+// credential that exists and whose secret it never saw. That is a worse outcome
+// than the bug. So both collaborators are demanded up front (idempotency.Require),
+// while refusing still costs nothing.
+func (rt *Router) idempotencyIntent(
+	r *http.Request, op idempotency.Operation, hash idempotency.RequestHash,
+) (idempotency.Intent, error) {
+	in, err := idempotency.IntentFromRequest(r, hash)
 	if err != nil {
-		return err
+		return idempotency.Intent{}, err
 	}
-	if !res.Fresh() {
-		return idempotency.Reuse(res)
+	if err := idempotency.Require(in, rt.claims, rt.tx); err != nil {
+		return idempotency.Intent{}, err
 	}
-	return nil
+	in.Operation = op
+	return in, nil
 }
 
 // createAPIToken is `POST /api/v1/api-tokens` — operationId `createApiToken`.
@@ -191,7 +153,7 @@ func (rt *Router) createAPIToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, keyed, err := rt.idempotencyKey(r)
+	idem, err := rt.idempotencyIntent(r, opCreateAPIToken, idempotency.HashRequest(raw))
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -203,9 +165,14 @@ func (rt *Router) createAPIToken(w http.ResponseWriter, r *http.Request) {
 		if ierr != nil {
 			return ierr
 		}
-		if keyed {
-			if cerr := rt.claim(ctx, scope, p, opCreateAPIToken, key,
-				idempotency.HashRequest(raw), minted.Token.ID); cerr != nil {
+		if idem.Keyed {
+			// ⭐⭐ INSIDE THE SAME TRANSACTION AS THE MINT, AND AFTER IT, because
+			// the claim records the id of what the act created. A claim that loses
+			// the race therefore rolls that act back with it, which is the
+			// difference between "your retry was refused" and "your retry minted a
+			// second live credential and told you it was a duplicate".
+			if _, cerr := idempotency.Resolve(ctx, rt.claims, scope, idem,
+				idempotency.Refuse, minted.Token.ID, rt.clk.Now()); cerr != nil {
 				return cerr
 			}
 		}
@@ -240,7 +207,7 @@ func (rt *Router) createAPIToken(w http.ResponseWriter, r *http.Request) {
 // wanted a second revoke sends a second key, which costs it nothing and makes the
 // difference between "already done" and "done again" visible instead of guessed.
 func (rt *Router) revokeAPIToken(w http.ResponseWriter, r *http.Request) {
-	p, scope, err := authn.Scope(r.Context())
+	_, scope, err := authn.Scope(r.Context())
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -252,7 +219,16 @@ func (rt *Router) revokeAPIToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, keyed, err := rt.idempotencyKey(r)
+	// ⭐ THE DIGEST IS OF THE TOKEN BEING REVOKED, not of the empty body. A
+	// DELETE has no body, so a body digest here is a CONSTANT and `{id}` is
+	// not in the claim tuple — one key would then make "revoke A" and "revoke
+	// B" indistinguishable, and the second would be refused as a replay of a
+	// request that destroyed a different credential. Folding the target in
+	// makes them two different requests, which is what they are, while a true
+	// retry against the same token still digests identically and still
+	// replays.
+	idem, err := rt.idempotencyIntent(r, opRevokeAPIToken,
+		idempotency.HashTargetedRequest(tokenID, nil))
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -262,21 +238,13 @@ func (rt *Router) revokeAPIToken(w http.ResponseWriter, r *http.Request) {
 		if rerr := rt.svc.RevokeToken(ctx, scope, tokenID); rerr != nil {
 			return rerr
 		}
-		if !keyed {
+		if !idem.Keyed {
 			return nil
 		}
 		// A revoke CREATES nothing, so the claim carries no reference.
-		//
-		// ⭐ THE DIGEST IS OF THE TOKEN BEING REVOKED, not of the empty body. A
-		// DELETE has no body, so a body digest here is a CONSTANT and `{id}` is
-		// not in the claim tuple — one key would then make "revoke A" and "revoke
-		// B" indistinguishable, and the second would be refused as a replay of a
-		// request that destroyed a different credential. Folding the target in
-		// makes them two different requests, which is what they are, while a true
-		// retry against the same token still digests identically and still
-		// replays.
-		return rt.claim(ctx, scope, p, opRevokeAPIToken, key,
-			idempotency.HashTargetedRequest(tokenID, nil), uuid.Nil)
+		_, cerr := idempotency.Resolve(ctx, rt.claims, scope, idem,
+			idempotency.Refuse, uuid.Nil, rt.clk.Now())
+		return cerr
 	})
 	if err != nil {
 		httpx.WriteProblem(w, r, err)

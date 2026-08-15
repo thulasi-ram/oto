@@ -34,6 +34,16 @@ func (o *orgStore) UpdateSettings(
 	return o.org, nil
 }
 
+// ListLive serves the one org as one keyset page: the first call returns it,
+// and a call carrying its id as the cursor returns the empty page MaxRetention
+// reads as the end of the table.
+func (o *orgStore) ListLive(_ context.Context, after uuid.UUID, _ int) ([]domain.Org, error) {
+	if after != uuid.Nil {
+		return nil, nil
+	}
+	return []domain.Org{o.org}, nil
+}
+
 func newFixture(t *testing.T) (*service.Service, *orgStore, db.TenantScope) {
 	t.Helper()
 

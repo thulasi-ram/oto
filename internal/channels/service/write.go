@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/channels/domain"
-	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -44,7 +43,7 @@ var (
 const (
 	// CodeIdempotencyUnavailable means the caller sent an `Idempotency-Key` this
 	// deployment cannot honour.
-	CodeIdempotencyUnavailable = "idempotency_unavailable"
+	CodeIdempotencyUnavailable = idempotency.CodeUnavailable
 	// CodeChannelStoreUnavailable means there is nowhere to write a channel.
 	CodeChannelStoreUnavailable = "channels_store_unavailable"
 	// CodeTesterUnavailable means channel testing is not configured here.
@@ -82,20 +81,12 @@ type ChannelTester interface {
 // Compile-time proof that the tester satisfies the port this file declares.
 var _ ChannelTester = (*Tester)(nil)
 
-// Idempotency is the caller's `Idempotency-Key` intent for one write.
-type Idempotency struct {
-	// Keyed reports that the caller sent a key at all. False means every field
-	// below is ignored and the write behaves exactly as it did before, which is
-	// what keeps the header optional.
-	Keyed bool
-	Key   idempotency.Key
-	// Principal is who sent it. A key is a client's private handle on its own
-	// retry, so one org member's key must never refuse another's request.
-	Principal authn.Principal
-	// RequestHash is what "the same request" means: the sha256 of the body for a
-	// create, and of the CHANNEL for a test — see WriterOptions.
-	RequestHash idempotency.RequestHash
-}
+// Idempotency is the caller's `Idempotency-Key` intent for one write — the
+// platform's own Intent under the name this module's ports cross it as. What
+// "the same request" means here: the sha256 of the body for a create, and of
+// the CHANNEL for a test. The operation is this service's fact and is filled at
+// the claim site, not by the transport.
+type Idempotency = idempotency.Intent
 
 // WriterOptions are the Writer's dependencies.
 type WriterOptions struct {
@@ -148,7 +139,7 @@ func (w *Writer) CreateChannel(
 	if err := w.requireStore(); err != nil {
 		return domain.Instance{}, err
 	}
-	if err := w.requireClaims(idem); err != nil {
+	if err := idempotency.Require(idem, w.claims, w.tx); err != nil {
 		return domain.Instance{}, err
 	}
 
@@ -160,15 +151,17 @@ func (w *Writer) CreateChannel(
 	if in.ID == uuid.Nil {
 		in.ID = id.New()
 	}
+	// ⭐ NEITHER RESPONSE HERE CARRIES A SECRET, so the policy is Replay: the
+	// honest answer to a retry is the channel that already exists or the verdict
+	// already reached — which is what the header's own description promises.
+	idem.Operation = opCreateChannel
 	err := w.inTx(ctx, func(ctx context.Context) error {
 		if idem.Keyed {
-			replayed, ref, err := w.claim(ctx, scope, idem, opCreateChannel, in.ID)
+			ref, err := idempotency.Resolve(ctx, w.claims, scope, idem,
+				idempotency.Replay, in.ID, w.clk.Now().UTC())
 			if err != nil {
-				return err
-			}
-			if replayed {
 				replayOf = ref
-				return errReplay
+				return err
 			}
 		}
 		created, err := w.store.Create(ctx, scope, in)
@@ -178,7 +171,7 @@ func (w *Writer) CreateChannel(
 		out = created
 		return nil
 	})
-	if errors.Is(err, errReplay) {
+	if errors.Is(err, idempotency.ErrReplay) {
 		// Read OUTSIDE the rolled-back transaction, so what comes back is the row
 		// the FIRST attempt committed.
 		return w.store.Get(ctx, scope, replayOf)
@@ -214,24 +207,25 @@ func (w *Writer) TestChannel(
 		return domain.TestResult{}, errs.Unavailable(CodeTesterUnavailable,
 			"channel testing is not configured in this deployment", 0)
 	}
-	if err := w.requireClaims(idem); err != nil {
+	if err := idempotency.Require(idem, w.claims, w.tx); err != nil {
 		return domain.TestResult{}, err
 	}
 
 	if idem.Keyed {
-		replayed := false
+		idem.Operation = opTestChannel
 		err := w.inTx(ctx, func(ctx context.Context) error {
 			// CreatedRef is Nil: a test creates no row. The replay is served from
-			// the destination's health rather than from anything the claim names.
-			was, _, err := w.claim(ctx, scope, idem, opTestChannel, uuid.Nil)
-			replayed = was
+			// the destination's health rather than from anything the claim names —
+			// which is exactly the case Resolve's reconciled edge permits.
+			_, err := idempotency.Resolve(ctx, w.claims, scope, idem,
+				idempotency.Replay, uuid.Nil, w.clk.Now().UTC())
 			return err
 		})
+		if errors.Is(err, idempotency.ErrReplay) {
+			return w.lastTestResult(ctx, scope, channelID)
+		}
 		if err != nil {
 			return domain.TestResult{}, err
-		}
-		if replayed {
-			return w.lastTestResult(ctx, scope, channelID)
 		}
 	}
 	return w.tester.Test(ctx, scope, channelID)
@@ -303,63 +297,3 @@ func (w *Writer) requireStore() error {
 	return errs.Unavailable(CodeChannelStoreUnavailable,
 		"the channel store is not configured in this deployment", 0)
 }
-
-// requireClaims refuses a KEYED request this deployment cannot honour.
-//
-// ⛔ IT IS REFUSED, NOT SERVED UNGUARDED. The defect this closes was a header the
-// contract promised and the server ignored; ignoring it a second time because a
-// collaborator is nil would send the second real message anyway, and the caller
-// would have no way to tell a protected test from an unprotected one.
-func (w *Writer) requireClaims(idem Idempotency) error {
-	if !idem.Keyed {
-		return nil
-	}
-	if w.claims != nil && w.tx != nil {
-		return nil
-	}
-	return errs.Unavailable(CodeIdempotencyUnavailable,
-		"this deployment cannot honour Idempotency-Key", 0)
-}
-
-// claim takes the caller's key for op and reports whether the first attempt
-// already did this, naming what it made.
-//
-// ⭐ IT REPLAYS RATHER THAN REFUSING. Neither of these responses carries a
-// secret, so the honest answer to a retry is the channel that already exists or
-// the verdict already reached — which is what the header's own description
-// promises. A key held for a DIFFERENT body is still a `409`: that is not a
-// retry, it is a second request wearing the first one's name.
-func (w *Writer) claim(
-	ctx context.Context, scope db.TenantScope, idem Idempotency,
-	op idempotency.Operation, created uuid.UUID,
-) (replayed bool, ref uuid.UUID, err error) {
-	res, err := w.claims.Claim(ctx, scope, idempotency.Claim{
-		OrgID:       scope.OrgID(),
-		PrincipalID: idem.Principal.UserID,
-		Operation:   op,
-		Key:         idem.Key,
-		RequestHash: idem.RequestHash,
-		CreatedRef:  created,
-		ClaimedAt:   w.clk.Now().UTC(),
-	})
-	if err != nil {
-		return false, uuid.Nil, err
-	}
-	if res.Fresh() {
-		return false, uuid.Nil, nil
-	}
-	if res.Outcome == idempotency.Conflicted {
-		return false, uuid.Nil, idempotency.Reuse(res)
-	}
-	if created != uuid.Nil && res.Existing.CreatedRef == uuid.Nil {
-		// A create whose replay names nothing cannot be served as one. Refusing
-		// carries the same `idempotency_key_reuse` code, so the client still learns
-		// that its first attempt succeeded.
-		return false, uuid.Nil, idempotency.Reuse(res)
-	}
-	return true, res.Existing.CreatedRef, nil
-}
-
-// errReplay carries a replayed claim out of its own transaction so the create
-// beside it rolls back. It never reaches a caller.
-var errReplay = errors.New("this idempotency key was already claimed")

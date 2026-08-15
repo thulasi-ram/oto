@@ -227,7 +227,7 @@ SELECT` + rejectionColumns + `
 func (r *RejectionRepository) List(
 	ctx context.Context, s db.TenantScope, f domain.RejectionFilter, p db.Keyset,
 ) ([]domain.RejectionEntry, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
 	if f.SourceID == uuid.Nil {
@@ -249,7 +249,7 @@ func (r *RejectionRepository) List(
 		reasons = append(reasons, rs.String())
 	}
 
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 	sql, args := listRejectionsSQL, []any{s.OrgID(), f.SourceID, reasons, limit + 1}
 	if !p.Cursor.IsZero() {
 		sql = listRejectionsFromSQL
@@ -286,10 +286,10 @@ func (r *RejectionRepository) List(
 		return nil, db.Cursor{}, mapErr(err, "read ingest rejections")
 	}
 
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.ReceivedAt, last.ID, p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(last.ReceivedAt, last.ID, p.Cursor.Hash, hasMore), nil
 }

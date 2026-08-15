@@ -132,7 +132,7 @@ const getSourceSQL = `SELECT ` + sourceColumns + ` FROM alert_sources WHERE org_
 // existed" are different answers and the service needs to be able to tell them
 // apart.
 func (r *SourceRepository) Get(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) (domain.Source, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Source{}, err
 	}
 	var row sourceRow
@@ -159,10 +159,10 @@ const listSourcesSQL = `SELECT ` + sourceColumns + ` FROM alert_sources
 func (r *SourceRepository) List(
 	ctx context.Context, s db.TenantScope, f domain.SourceFilter, p db.Keyset,
 ) ([]domain.Source, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	var (
 		afterAt *time.Time
@@ -201,11 +201,11 @@ func (r *SourceRepository) List(
 		return nil, db.Cursor{}, mapErr(err, "sources_not_found", "read sources")
 	}
 
-	page, hasMore := pageOf(out, limit)
+	page, hasMore := db.PageOf(out, limit)
 	cur := db.Cursor{Hash: p.Cursor.Hash}
 	if len(page) > 0 {
 		last := page[len(page)-1]
-		cur = nextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
+		cur = db.NextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
 	}
 	return page, cur, nil
 }
@@ -221,7 +221,7 @@ const listSourcesByIDsSQL = `SELECT ` + sourceColumns + ` FROM alert_sources
 func (r *SourceRepository) ListByIDs(
 	ctx context.Context, s db.TenantScope, ids []uuid.UUID,
 ) ([]domain.Source, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(ids) == 0 {
@@ -282,10 +282,10 @@ const listDueSQL = `SELECT ` + `s.id, s.org_id, s.cluster_id, s.name::text, s.ki
 // silenced upstream. A source oto should poll less often gets a bigger
 // `reconcile_interval_s`; there is no value of any column that means "never".
 func (r *SourceRepository) ListDue(ctx context.Context, s db.TenantScope, limit int) ([]domain.Source, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, listDueSQL, s.OrgID(), r.clock.Now().UTC(), clampLimit(limit))
+	rows, err := r.db(ctx).Query(ctx, listDueSQL, s.OrgID(), r.clock.Now().UTC(), db.ClampLimit(limit))
 	if err != nil {
 		return nil, mapErr(err, "sources_not_found", "list due sources")
 	}
@@ -351,10 +351,10 @@ RETURNING id`
 // question about a row that does not exist. "Not yet observed" is a state, and it
 // has to be a stored one.
 func (r *SourceRepository) Create(ctx context.Context, s db.TenantScope, in domain.SourceDraft) (domain.Source, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Source{}, err
 	}
-	if err := requireID("cluster_id", in.ClusterID); err != nil {
+	if err := db.RequireID("cluster_id", in.ClusterID); err != nil {
 		return domain.Source{}, err
 	}
 	if strings.TrimSpace(in.Name) == "" {
@@ -432,10 +432,10 @@ RETURNING id`
 func (r *SourceRepository) Update(
 	ctx context.Context, s db.TenantScope, sourceID uuid.UUID, p domain.SourcePatch,
 ) (domain.Source, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Source{}, err
 	}
-	if err := requireID("source_id", sourceID); err != nil {
+	if err := db.RequireID("source_id", sourceID); err != nil {
 		return domain.Source{}, err
 	}
 	if p.IsEmpty() {
@@ -506,7 +506,7 @@ UPDATE alert_sources
 // delete would erase the record of what this upstream once reported. Deleting a
 // source must never erase the record of what it once said.
 func (r *SourceRepository) SoftDelete(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx, softDeleteSourceSQL, s.OrgID(), sourceID, r.clock.Now().UTC())

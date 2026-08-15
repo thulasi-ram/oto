@@ -196,12 +196,39 @@ func (s *Service) appendEvents(ctx context.Context, scope db.TenantScope, evs []
 	return n, nil
 }
 
+// appendEventsBatched is appendEvents for the observe path: the timeline write
+// is the same one round trip, but the matching UI frames are QUEUED on the
+// accumulator for the batch's single flush instead of being published one by
+// one. The frames land after the occurrence and alert frames the loop queued,
+// which is exactly where the per-event appends used to put them.
+func (s *Service) appendEventsBatched(ctx context.Context, scope db.TenantScope, acc *observeAccum) (int, error) {
+	if len(acc.events) == 0 {
+		return 0, nil
+	}
+	n, err := s.events.AppendBatch(ctx, scope, acc.events)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range acc.events {
+		if err := s.queueFrame(acc, StreamEventAppended, e.ID(), eventFramePayload(e)); err != nil {
+			return 0, err
+		}
+	}
+	return n, nil
+}
+
 // publishEvent announces one timeline entry on the SSE spine. The envelope is a
 // CHANGE NOTICE, not a resource (§E.4): the client re-reads for detail.
 func (s *Service) publishEvent(ctx context.Context, scope db.TenantScope, e domain.Event) error {
 	if s.stream == nil {
 		return nil
 	}
+	return s.publish(ctx, scope, StreamEventAppended, e.ID(), eventFramePayload(e))
+}
+
+// eventFramePayload is the §E.4 envelope of one timeline entry, shared by the
+// per-event publish and the batched flush so the two can never drift apart.
+func eventFramePayload(e domain.Event) map[string]any {
 	payload := map[string]any{"type": e.Type().String()}
 	if e.AlertID() != uuid.Nil {
 		payload["alert_id"] = e.AlertID()
@@ -212,7 +239,7 @@ func (s *Service) publishEvent(ctx context.Context, scope db.TenantScope, e doma
 	if e.OccurrenceID() != uuid.Nil {
 		payload["occurrence_id"] = e.OccurrenceID()
 	}
-	return s.publish(ctx, scope, StreamEventAppended, e.ID(), payload)
+	return payload
 }
 
 // publishAlert announces that an Alert row changed.
@@ -228,11 +255,17 @@ func (s *Service) publishOccurrence(ctx context.Context, scope db.TenantScope, o
 	if s.stream == nil {
 		return nil
 	}
-	return s.publish(ctx, scope, StreamOccurrenceUpserted, o.ID(), map[string]any{
+	return s.publish(ctx, scope, StreamOccurrenceUpserted, o.ID(), occurrenceFramePayload(o))
+}
+
+// occurrenceFramePayload is the §E.4 envelope of one episode change, shared by
+// the per-item publish and the batched observe path.
+func occurrenceFramePayload(o domain.Occurrence) map[string]any {
+	return map[string]any{
 		"alert_id": o.AlertID(),
 		"state":    o.State().String(),
 		"ack":      o.AckState().String(),
-	})
+	}
 }
 
 func (s *Service) publish(
@@ -241,14 +274,53 @@ func (s *Service) publish(
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	raw, err := json.Marshal(payload)
+	raw, err := encodeFramePayload(payload)
 	if err != nil {
-		return errs.Internal("ui_event_encode_failed", err)
+		return err
 	}
 	if err := s.stream.Append(ctx, scope, kind, resourceID, raw); err != nil {
 		return err
 	}
 	return nil
+}
+
+// queueFrame stages one §E.4 change notice on the accumulator for the batch's
+// single flush. It is publish() with the round trip deferred: the encoding, its
+// error and the nil-stream degradation are identical, so a queued frame and a
+// published one can never disagree about anything but WHEN the round trip runs.
+func (s *Service) queueFrame(
+	acc *observeAccum, kind string, resourceID uuid.UUID, payload map[string]any,
+) error {
+	if s.stream == nil {
+		return nil
+	}
+	raw, err := encodeFramePayload(payload)
+	if err != nil {
+		return err
+	}
+	acc.frames = append(acc.frames, StreamFrame{Kind: kind, ResourceID: resourceID, Payload: raw})
+	return nil
+}
+
+// flushFrames publishes every queued frame of one batch in ONE round trip. A
+// failed flush fails the caller's transaction exactly as a failed per-item
+// Append did: none of the state the frames describe survives either.
+func (s *Service) flushFrames(ctx context.Context, scope db.TenantScope, frames []StreamFrame) error {
+	if s.stream == nil || len(frames) == 0 {
+		return nil
+	}
+	return s.stream.AppendBatch(ctx, scope, frames)
+}
+
+func encodeFramePayload(payload map[string]any) ([]byte, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, errs.Internal("ui_event_encode_failed", err)
+	}
+	return raw, nil
 }
 
 // --------------------------------------------------------------------- jobs

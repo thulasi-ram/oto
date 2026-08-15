@@ -6,49 +6,47 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-
-	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
-	"github.com/thulasiram/oto/internal/platform/db"
-	"github.com/thulasiram/oto/internal/platform/id"
 )
 
 // TestEveryFailureInTheRetentionFoldWidensTheWindow pins the one promise
 // `effectiveRetention`'s own comment makes in the strongest terms this codebase
-// has: an unreadable tenant list, an unreadable org row, a settings lookup that
-// times out — none of them may make `partitions.manage` drop MORE than it would
-// have with the read intact.
+// has: an unreadable settings walk — the tenant list, an org row, a lookup that
+// times out, all of which now surface as ONE failing `MaxRetention` read — must
+// never make `partitions.manage` drop MORE than it would have with the read
+// intact.
 //
-// ⭐⭐ IT IS THE FAILURE PATHS THAT ARE THE TEST, because the happy path was never
-// the bug and because both defects were INVISIBLE at the call site: each returned
-// a plausible pair of numbers, and the tick that used them dropped partitions
-// without complaint. What separates the two answers is not a status but a
-// DIRECTION, and it is only observable against the widest org the fold should
-// have seen.
+// ⭐⭐ IT IS THE FAILURE PATH THAT IS THE TEST, because the happy path was never
+// the bug and because both of the fold's historical defects were INVISIBLE at
+// the call site: each returned a plausible pair of numbers, and the tick that
+// used them dropped partitions without complaint. What separates the two
+// answers is not a status but a DIRECTION, and it is only observable against
+// the widest window the fold should have seen.
 //
 //   - THE TENANT LIST FAILING returned the CONFIG FLOOR, which ships at 30 days
 //     (`tuning.DefaultRawRetention`), because the per-org loop never ran at all.
 //     An org configured to the 365-day bound had 335 days of raw payloads dropped
-//     by one `Scopes()` timeout.
+//     by one timeout.
 //   - ONE ORG'S ROW FAILING kept whatever maximum had accumulated so far, which is
 //     the correct answer for every org except the single one that changes a
 //     maximum: the one asking for the longest window. The old log line even said
 //     "keeping the wider window" while doing exactly that.
 //
-// Both are the same unrecoverable loss reached two ways: `oto_partitions_manage`
-// DROPS, there is no soft delete, and ADR 0024 records cold-storage export as
-// scoped rather than built. So the FAILURE rows assert an INEQUALITY rather than
-// an equality — the fold may return anything from the widest configured org
-// upward, and the settings ceiling it falls back to is deliberately wider than
-// any org in this fixture.
+// Both were the same unrecoverable loss reached two ways, and both are now the
+// same observable event — `identity/service.MaxRetention` is exact or it is an
+// error — so the FAILURE row asserts an INEQUALITY rather than an equality: the
+// fold may return anything from the widest configured tenant upward, and the
+// settings ceiling it falls back to is deliberately wider than the fixture.
 //
-// ⛔ AND THE READABLE ROW ASSERTS AN EQUALITY, WHICH IS THE OTHER HALF. An
+// ⛔ THE READABLE ROWS ASSERT EQUALITIES, WHICH IS THE OTHER HALF. An
 // inequality alone is satisfied by a fold that widens to the ceiling on EVERY
-// tick — 365 days and 120 months, ten years of `alert_events` partitions kept for
-// an install nobody asked it of. "Widening is free" is about a broken read
-// costing an hour of disk, not about a working one, so the row where every read
-// succeeds pins the answer exactly.
+// tick — 365 days and 120 months, ten years of `alert_events` partitions kept
+// for an install nobody asked it of. "Widening is free" is about a broken read
+// costing an hour of disk, not about a working one, so the rows where the read
+// succeeds pin the answer exactly: the identity maximum when it is wider than
+// the config floor, and the FLOOR when every tenant is narrower — a tenant
+// population that asks for less than the deployment must not be able to NARROW
+// the deployment's own window either.
 func TestEveryFailureInTheRetentionFoldWidensTheWindow(t *testing.T) {
 	t.Parallel()
 
@@ -56,76 +54,63 @@ func TestEveryFailureInTheRetentionFoldWidensTheWindow(t *testing.T) {
 	// 13 months of events.
 	const floorRawDays, floorEventMonths = 30, 13
 
-	// Three tenants, and only the third one matters: it is the only org whose
-	// absence from the fold changes the answer, which is precisely the org a
-	// failing read is not allowed to lose.
+	// The widest tenant's effective window, as MaxRetention reports it.
 	//
-	// ⚠️ BOTH OF ITS NUMBERS SIT STRICTLY BETWEEN THE FLOOR AND THE CEILING, and
-	// that is what makes the assertions below say anything at all.
-	//
-	//   - AT THE FLOOR they say nothing. An event window left at the shipped 13
-	//     months IS the seed the fold starts from, so "at least 13" holds under the
-	//     OLD code on every row and the event half of both failure paths goes
-	//     unexercised, with the raw half carrying the whole test.
-	//   - AT THE CEILING they say nothing about OVERSHOOT. A raw window of 365 days
-	//     is the bound the fallback widens to, so a fold that widened on every tick
-	//     — including the ticks where every read succeeded — would satisfy the exact
-	//     assertion too.
-	//
-	// 200 days and 60 months are reachable only by folding this org in.
-	narrow := configuredOrg(t, 1, 1)
-	shipped := configuredOrg(t, floorRawDays, floorEventMonths)
-	widest := configuredOrg(t, 200, 60)
+	// ⚠️ BOTH NUMBERS SIT STRICTLY BETWEEN THE FLOOR AND THE CEILING, and that is
+	// what makes the assertions below say anything at all: at the floor the
+	// inequality holds vacuously under the OLD code, and at the ceiling a fold
+	// that widened on every tick — including the ticks where the read succeeded —
+	// would satisfy the exact assertion too. 200 days and 60 months are reachable
+	// only by actually using the answer.
+	const widestRawDays, widestEventMonths = 200, 60
 
-	tenants := stubTenants{scopes: []db.TenantScope{narrow.scope, shipped.scope, widest.scope}}
-	orgs := stubOrgs{settings: map[uuid.UUID]identitydomain.Settings{
-		narrow.scope.OrgID():  narrow.settings,
-		shipped.scope.OrgID(): shipped.settings,
-		widest.scope.OrgID():  widest.settings,
-	}}
+	widest := stubCeiling{
+		raw:   widestRawDays * 24 * time.Hour,
+		event: widestEventMonths * 30 * 24 * time.Hour,
+	}
 
 	for _, tc := range []struct {
 		name    string
-		tenants stubTenants
-		orgs    stubOrgs
-		// exact marks the row where every read succeeds, which is the only row that
-		// may pin the answer rather than bound it: the fold saw every org, so the
-		// widest one IS the answer and anything above it is disk kept for nobody.
-		exact bool
-		why   string
+		ceiling stubCeiling
+		// wantRaw/wantEvent pin the answer exactly when exact is true; otherwise
+		// they are the LOWER BOUND the fold may never come back under.
+		wantRaw, wantEvent int
+		exact              bool
+		why                string
 	}{
-		{"every tenant readable", tenants, orgs, true,
+		{"the widest tenant is read", widest, widestRawDays, widestEventMonths, true,
 			"the fold is the widest window any tenant asked for — no more, or a working read " +
 				"costs the install ten years of event partitions it never configured"},
-		{"the tenant list cannot be read", stubTenants{err: errors.New("scopes: connection reset")}, orgs, false,
-			"a Scopes() failure used to return the config floor of 30 days, so a tenant keeping " +
-				"200 lost 170 days of raw payloads to one transient error on one hourly tick"},
-		{"the widest tenant's row cannot be read", tenants, orgs.unreadable(widest.scope.OrgID()), false,
-			"a GetOrg() failure used to continue with the maximum it had, and the only org whose " +
-				"loss changes a maximum is the one asking for the longest window"},
+		{"every tenant is narrower than the deployment", stubCeiling{raw: 24 * time.Hour, event: 30 * 24 * time.Hour},
+			floorRawDays, floorEventMonths, true,
+			"the deployment's own retention is a floor: a tenant population asking for one day " +
+				"must not pull the window below what the operator configured"},
+		{"the settings walk cannot be read", stubCeiling{err: errors.New("orgs.list: connection reset")},
+			widestRawDays, widestEventMonths, false,
+			"a failing MaxRetention used to be a failing Scopes() returning the config floor of " +
+				"30 days, so a tenant keeping 200 lost 170 days of raw payloads to one transient " +
+				"error on one hourly tick; the only honest fallback is the settings ceiling, " +
+				"which no org can be configured beyond"},
 	} {
 		rawDays, eventMonths := foldRetention(
-			context.Background(), quietLogger(), tc.tenants, tc.orgs, floorRawDays, floorEventMonths)
+			context.Background(), quietLogger(), tc.ceiling, floorRawDays, floorEventMonths)
 
-		require.GreaterOrEqual(t, rawDays, widest.rawDays,
-			"%s: raw_retention_days came back %d, narrower than the %d days the widest tenant "+
-				"is configured to keep. partitions.manage DROPS those partitions and nothing "+
-				"restores them — %s", tc.name, rawDays, widest.rawDays, tc.why)
-		require.GreaterOrEqual(t, eventMonths, widest.eventMonths,
-			"%s: event_retention_months came back %d, narrower than the %d months the widest "+
-				"tenant is configured to keep — %s",
-			tc.name, eventMonths, widest.eventMonths, tc.why)
+		require.GreaterOrEqual(t, rawDays, tc.wantRaw,
+			"%s: raw_retention_days came back %d, narrower than %d. partitions.manage DROPS "+
+				"those partitions and nothing restores them — %s", tc.name, rawDays, tc.wantRaw, tc.why)
+		require.GreaterOrEqual(t, eventMonths, tc.wantEvent,
+			"%s: event_retention_months came back %d, narrower than %d — %s",
+			tc.name, eventMonths, tc.wantEvent, tc.why)
 
 		if !tc.exact {
 			continue
 		}
-		require.Equal(t, widest.rawDays, rawDays,
-			"%s: raw_retention_days came back %d for a fold that read every org. The answer is "+
-				"the widest tenant's %d days — %s", tc.name, rawDays, widest.rawDays, tc.why)
-		require.Equal(t, widest.eventMonths, eventMonths,
-			"%s: event_retention_months came back %d for a fold that read every org. The answer "+
-				"is the widest tenant's %d months — %s",
-			tc.name, eventMonths, widest.eventMonths, tc.why)
+		require.Equal(t, tc.wantRaw, rawDays,
+			"%s: raw_retention_days came back %d for a fold whose read succeeded. The answer "+
+				"is %d exactly — %s", tc.name, rawDays, tc.wantRaw, tc.why)
+		require.Equal(t, tc.wantEvent, eventMonths,
+			"%s: event_retention_months came back %d for a fold whose read succeeded. The "+
+				"answer is %d exactly — %s", tc.name, eventMonths, tc.wantEvent, tc.why)
 	}
 }
 
@@ -152,72 +137,20 @@ func TestTheSettingsCeilingOnlyEverWidens(t *testing.T) {
 	require.Equal(t, 120, eventMonths, "the ceiling is the event_retention_months bound")
 }
 
-// orgFixture is one tenant as the fold sees it: a scope to be listed, the
-// effective settings `GetOrg` would return for it, and the same two numbers in
-// the units the fold REPORTS — so an assertion quotes the configured window
-// rather than a literal that has to be kept in step with the fixture by hand.
-type orgFixture struct {
-	scope       db.TenantScope
-	settings    identitydomain.Settings
-	rawDays     int
-	eventMonths int
+// stubCeiling is the `retentionCeiling` port with its failure under the test's
+// control. The production implementation behind it,
+// `identity/service.MaxRetention`, is a keyset walk over Postgres with the
+// declarative overlay applied per row, and it cannot be asked to fail — the
+// per-row mechanics, including the overlay beating an org's own value, are
+// pinned in `identity/service`'s own tests.
+type stubCeiling struct {
+	raw, event time.Duration
+	err        error
 }
 
-// configuredOrg mints a tenant whose retention is stated in the units the fold
-// reports — days of payloads, months of events — so a fixture cannot disagree
-// with the assertion about what it was configured to keep.
-func configuredOrg(t *testing.T, rawDays, eventMonths int) orgFixture {
-	t.Helper()
-
-	scope, err := db.NewTenantScope(id.New())
-	require.NoError(t, err)
-	return orgFixture{
-		scope: scope,
-		settings: identitydomain.Settings{
-			RawRetention:   time.Duration(rawDays) * 24 * time.Hour,
-			EventRetention: time.Duration(eventMonths) * 30 * 24 * time.Hour,
-		},
-		rawDays:     rawDays,
-		eventMonths: eventMonths,
-	}
-}
-
-// stubTenants is the `retentionTenants` port with its failure under the test's
-// control. The production implementation behind it, `orgLister`, is a keyset walk
-// over Postgres, which cannot be asked to fail.
-type stubTenants struct {
-	scopes []db.TenantScope
-	err    error
-}
-
-func (s stubTenants) Scopes(context.Context) ([]db.TenantScope, error) {
+func (s stubCeiling) MaxRetention(context.Context) (time.Duration, time.Duration, error) {
 	if s.err != nil {
-		return nil, s.err
+		return 0, 0, s.err
 	}
-	return s.scopes, nil
-}
-
-// stubOrgs is the `retentionSettings` port — `identity.Service.GetOrg` in
-// production — with one named org made unreadable.
-//
-// It returns the settings as EFFECTIVE values, which is what the real service
-// returns: `Org.Settings` is already the overrides folded onto the defaults,
-// clamped, and overlaid with the deployment's Declarative.
-type stubOrgs struct {
-	settings map[uuid.UUID]identitydomain.Settings
-	broken   uuid.UUID
-}
-
-// unreadable returns a copy in which one org's read fails — the fixture is shared
-// across the table's rows, so it is never mutated in place.
-func (s stubOrgs) unreadable(orgID uuid.UUID) stubOrgs {
-	s.broken = orgID
-	return s
-}
-
-func (s stubOrgs) GetOrg(_ context.Context, scope db.TenantScope) (identitydomain.Org, error) {
-	if scope.OrgID() == s.broken {
-		return identitydomain.Org{}, errors.New("orgs.get: context deadline exceeded")
-	}
-	return identitydomain.Org{ID: scope.OrgID(), Settings: s.settings[scope.OrgID()]}, nil
+	return s.raw, s.event, nil
 }

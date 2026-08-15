@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
@@ -52,6 +53,37 @@ func FromHeader(r *http.Request) (Key, bool, error) {
 		return Key{}, false, err
 	}
 	return k, true, nil
+}
+
+// IntentFromRequest reads the caller's `Idempotency-Key` and resolves the
+// principal that sent it, into the Intent a keyed write acts on. An absent
+// header is the zero Intent and no error, exactly as FromHeader reports it.
+//
+// ⭐ READING THE HEADER IS THE TRANSPORT LAYER'S JOB; TAKING THE CLAIM IS NOT.
+// A claim has to be taken inside the transaction of the act it guards, and
+// that transaction belongs to whichever service owns the act — so what crosses
+// the seam is the caller's intent, and the claiming side decides whether this
+// deployment can honour it (a `503`), whether somebody already holds the key
+// for a different body (a `409`), and whether this call is a replay of one it
+// already served.
+//
+// The hash is passed in because what "the same request" means is the
+// operation's own choice: the raw body for a create, HashTargetedRequest for a
+// verb addressed by `{id}` — without which a client that mints one key per
+// gesture (which oto's own frontend does) and acts on subject A then subject B
+// under one key would be told "that request already succeeded" about a request
+// it never made. Operation is left for the layer that owns that fact — see
+// Intent.Operation.
+func IntentFromRequest(r *http.Request, hash RequestHash) (Intent, error) {
+	key, keyed, err := FromHeader(r)
+	if err != nil || !keyed {
+		return Intent{}, err
+	}
+	p, _, err := authn.Scope(r.Context())
+	if err != nil {
+		return Intent{}, err
+	}
+	return Intent{Keyed: true, Key: key, Principal: p, RequestHash: hash}, nil
 }
 
 // Reuse is the refusal a key that is ALREADY CLAIMED answers with, for the

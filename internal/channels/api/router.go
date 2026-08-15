@@ -136,23 +136,13 @@ func (rt *Router) subject(r *http.Request) (db.TenantScope, uuid.UUID, error) {
 	return scope, id, nil
 }
 
-// idempotencyIntent reads the caller's `Idempotency-Key` and resolves the
-// principal that sent it, into the intent the write facade acts on.
-//
-// ⭐ READING THE HEADER IS THIS LAYER'S JOB; TAKING THE CLAIM IS NOT. The hash is
-// passed in because what "the same request" means differs by operation: a create
-// is identified by the RAW bytes it sent, and a test — which has no body — by the
-// channel it would send to.
+// idempotencyIntent reads the caller's `Idempotency-Key` into the intent the
+// write facade acts on (see idempotency.IntentFromRequest for the seam's rules).
+// The hash is passed in because what "the same request" means differs by
+// operation: a create is identified by the RAW bytes it sent, and a test — which
+// has no body — by the channel it would send to.
 func idempotencyIntent(r *http.Request, hash idempotency.RequestHash) (service.Idempotency, error) {
-	key, keyed, err := idempotency.FromHeader(r)
-	if err != nil || !keyed {
-		return service.Idempotency{}, err
-	}
-	p, _, err := authn.Scope(r.Context())
-	if err != nil {
-		return service.Idempotency{}, err
-	}
-	return service.Idempotency{Keyed: true, Key: key, Principal: p, RequestHash: hash}, nil
+	return idempotency.IntentFromRequest(r, hash)
 }
 
 // requireDependency turns a missing collaborator into an honest 503 rather than a

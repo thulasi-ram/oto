@@ -68,13 +68,18 @@ func New(cfg Config) (*Workers, error) {
 // know the full set. A nil field is registered as a stub returning
 // "not implemented", so the queue, the retries and the metrics were all live
 // before this code existed — which is what made the seam worth having.
-func (w *Workers) Register(h *jobs.Handlers) {
+//
+// The tenant list and the queue arrive as arguments because the reminder is this
+// module's one per-tenant periodic: both halves of its fan-out belong to
+// internal/app — the same live-org pager and outbox every other per-tenant
+// periodic is handed — and this module must never enumerate tenants for itself.
+func (w *Workers) Register(h *jobs.Handlers, orgs jobs.Tenants, enq db.Enqueuer) {
 	if h == nil {
 		return
 	}
 	h.NotifyEvaluate = w.NotifyEvaluate
 	h.DeliverDispatch = w.DeliverDispatch
-	h.NotifyUnackedReminder = w.NotifyUnackedReminder
+	h.NotifyUnackedReminder = w.NotifyUnackedReminder(orgs, enq)
 }
 
 // NotifyEvaluate is the `notify.evaluate` handler.
@@ -157,22 +162,58 @@ func (w *Workers) DeliverDispatch(ctx context.Context, job *jobs.Job[jobs.Delive
 	return nil
 }
 
-// NotifyUnackedReminder is the `notify.unacked_reminder` handler.
+// NotifyUnackedReminder builds the `notify.unacked_reminder` handler over the
+// two shapes of jobs.TenantFanOut: a payload naming no org is the fan-out tick
+// and only ENQUEUES — one job per live tenant, a continuation at the ceiling —
+// and a payload naming an org is ONE tenant's sweep, with the kind's whole
+// execution timeout to itself.
+//
+// One org's broken policy must not stop the others being reminded, and separate
+// jobs are how that is true now rather than a promise a log line made: a tenant
+// that fails retries on its own periodic budget and dead-letters under its own
+// payload, and the others were never in the same execution to be stopped. The
+// fan-out shape's own error IS returned — a tick that could not read the tenant
+// list or reach the queue has reminded nobody, which deserves the retry.
+//
+// The org id in the payload is a hint, never authority: jobs.ForTenant resolves
+// it against the live-org table, so a tenant that departed between the tick and
+// the pass is NotFound → nil — nothing to sweep, nothing to retry.
 //
 // ⛔ ONE STAGE, FOREVER (§G.9.1). This handler must never gain a stage index, a
 // target other than the matched policy's own channels, or any awareness of who
 // is on call.
 func (w *Workers) NotifyUnackedReminder(
-	ctx context.Context, _ *jobs.Job[jobs.NotifyUnackedReminderArgs],
-) error {
-	sent, err := w.reminders.Sweep(ctx)
-	if err != nil {
-		return classify(err)
+	orgs jobs.Tenants, enq db.Enqueuer,
+) jobs.Handler[jobs.NotifyUnackedReminderArgs] {
+	return func(ctx context.Context, job *jobs.Job[jobs.NotifyUnackedReminderArgs]) error {
+		if job.Args.IsFanOut() {
+			out, err := jobs.FanOutTenants(ctx, jobs.KindNotifyUnackedReminder, enq, orgs, w.log,
+				job.Args.After, func(f jobs.TenantFanOut) db.JobArgs {
+					return jobs.NotifyUnackedReminderArgs{TenantFanOut: f}
+				})
+			if err != nil {
+				return err
+			}
+			if out.Enqueued > 0 {
+				w.log.DebugContext(ctx, "notification: unacked reminder fan-out",
+					slog.Int("enqueued", out.Enqueued))
+			}
+			return nil
+		}
+
+		return jobs.ForTenant(ctx, jobs.KindNotifyUnackedReminder, orgs, job.Args.OrgID,
+			func(ctx context.Context, scope db.TenantScope) error {
+				sent, err := w.reminders.SweepOrg(ctx, scope)
+				if err != nil {
+					return classify(err)
+				}
+				if sent > 0 {
+					w.log.InfoContext(ctx, "notification: sent unacked reminders",
+						slog.String("org_id", scope.OrgID().String()), slog.Int("count", sent))
+				}
+				return nil
+			})
 	}
-	if sent > 0 {
-		w.log.InfoContext(ctx, "notification: sent unacked reminders", "count", sent)
-	}
-	return nil
 }
 
 // classify hands the service's error to the queue UNWRAPPED.

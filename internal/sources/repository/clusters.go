@@ -74,7 +74,7 @@ const getClusterSQL = `SELECT ` + clusterColumns + ` FROM clusters c WHERE c.org
 
 // Get reads one cluster.
 func (r *ClusterRepository) Get(ctx context.Context, s db.TenantScope, clusterID uuid.UUID) (domain.Cluster, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Cluster{}, err
 	}
 	var row clusterRow
@@ -92,7 +92,7 @@ const getClusterByKeySQL = `SELECT ` + clusterColumns + `
 
 // GetByKey reads one cluster by the key that participates in alert identity.
 func (r *ClusterRepository) GetByKey(ctx context.Context, s db.TenantScope, key string) (domain.Cluster, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Cluster{}, err
 	}
 	var row clusterRow
@@ -117,10 +117,10 @@ const listClustersSQL = `SELECT ` + clusterColumns + `
 func (r *ClusterRepository) List(
 	ctx context.Context, s db.TenantScope, includeDeleted bool, p db.Keyset,
 ) ([]domain.Cluster, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	var (
 		afterAt *time.Time
@@ -149,11 +149,11 @@ func (r *ClusterRepository) List(
 		return nil, db.Cursor{}, mapErr(err, "cluster_not_found", "read clusters")
 	}
 
-	page, hasMore := pageOf(out, limit)
+	page, hasMore := db.PageOf(out, limit)
 	cur := db.Cursor{Hash: p.Cursor.Hash}
 	if len(page) > 0 {
 		last := page[len(page)-1]
-		cur = nextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
+		cur = db.NextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
 	}
 	return page, cur, nil
 }
@@ -175,7 +175,7 @@ RETURNING id`
 func (r *ClusterRepository) Create(
 	ctx context.Context, s db.TenantScope, clusterID uuid.UUID, key, displayName string,
 ) (domain.Cluster, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Cluster{}, err
 	}
 	if strings.TrimSpace(key) == "" || strings.TrimSpace(displayName) == "" {
@@ -218,7 +218,7 @@ RETURNING id`
 func (r *ClusterRepository) UpdateDisplayName(
 	ctx context.Context, s db.TenantScope, clusterID uuid.UUID, displayName string,
 ) (domain.Cluster, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Cluster{}, err
 	}
 	if strings.TrimSpace(displayName) == "" {
@@ -242,7 +242,7 @@ func (r *ClusterRepository) UpdateDisplayName(
 func (r *ClusterRepository) ClusterKeysFor(
 	ctx context.Context, s db.TenantScope, clusterIDs []uuid.UUID,
 ) (map[uuid.UUID]string, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(clusterIDs) == 0 {

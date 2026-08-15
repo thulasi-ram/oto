@@ -90,14 +90,14 @@ func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (Re
 	if err != nil {
 		return ReapResult{}, err
 	}
+	healthy := s.healthBySource(ctx, scope, sources)
 
 	res := ReapResult{Considered: len(candidates)}
 	heldSources := map[uuid.UUID]struct{}{}
 
 	for _, occ := range candidates {
 		sourceID, known := sources[occ.ID()]
-		healthy := known && s.sourceHealthy(ctx, scope, sourceID)
-		if !healthy {
+		if !known || !healthy[sourceID] {
 			res.Held++
 			if known {
 				heldSources[sourceID] = struct{}{}
@@ -145,20 +145,46 @@ func (s *Service) resolveSources(
 	return s.occSources.SourceIDs(ctx, scope, ids)
 }
 
-// sourceHealthy answers the §B.4 guard, and answers "no" whenever it does not
-// know. An unwired port, a failed lookup and an unhealthy source are the same
-// answer here, deliberately.
-func (s *Service) sourceHealthy(ctx context.Context, scope db.TenantScope, sourceID uuid.UUID) bool {
-	if s.health == nil || sourceID == uuid.Nil {
-		return false
+// healthBySource answers the §B.4 guard for every DISTINCT source the tick's
+// candidates resolved to, in one round trip. The guard is per source, so its
+// cost must be per source: 500 candidates over 3 sources is 3 health rows, not
+// 500 lookups — and the worst case for the per-candidate version was exactly the
+// §B.4 case, a source outage, when nothing expires and every candidate returns
+// next tick.
+//
+// ABSENCE FROM THE RESULT IS "NO". An unwired port, a nil source id, a failed
+// lookup and a source the batch simply did not return are all the same answer —
+// "oto does not know" — and the caller holds every occurrence they own. That is
+// why a failed lookup is reported by returning nothing rather than by an error:
+// not knowing holds candidates, it must never abort the sweep.
+func (s *Service) healthBySource(
+	ctx context.Context, scope db.TenantScope, sources map[uuid.UUID]uuid.UUID,
+) map[uuid.UUID]bool {
+	if s.health == nil || len(sources) == 0 {
+		return nil
 	}
-	ok, err := s.health.Healthy(ctx, scope, sourceID)
+	seen := make(map[uuid.UUID]struct{}, len(sources))
+	distinct := make([]uuid.UUID, 0, len(sources))
+	for _, src := range sources {
+		if src == uuid.Nil {
+			continue
+		}
+		if _, dup := seen[src]; dup {
+			continue
+		}
+		seen[src] = struct{}{}
+		distinct = append(distinct, src)
+	}
+	if len(distinct) == 0 {
+		return nil
+	}
+	healthy, err := s.health.HealthyFor(ctx, scope, distinct)
 	if err != nil {
-		s.log.WarnContext(ctx, "alerts: source health unknown, holding occurrence",
-			"source_id", sourceID, "error", err)
-		return false
+		s.log.WarnContext(ctx, "alerts: source health unknown, holding all candidates",
+			"sources", len(distinct), "error", err)
+		return nil
 	}
-	return ok
+	return healthy
 }
 
 // expire moves ONE occurrence through T6, in its own transaction so that a
@@ -444,7 +470,10 @@ func (s *Service) ScoreFlaps(ctx context.Context, scope db.TenantScope, limit in
 	now := s.Now()
 	window := db.TimeWindow{From: now.Add(-cfg.FlapWindow), To: now}
 
-	counts, err := s.eventCounts.StateChangeCounts(ctx, scope, window)
+	// The cap travels WITH the query. Which alerts get scored when it binds is
+	// the port's contract — most-changed first — not an artifact of iterating
+	// this map, so everything that comes back is processed.
+	counts, err := s.eventCounts.StateChangeCounts(ctx, scope, window, limit)
 	if err != nil {
 		return FlapResult{}, err
 	}
@@ -463,9 +492,6 @@ func (s *Service) ScoreFlaps(ctx context.Context, scope db.TenantScope, limit in
 
 	res := FlapResult{}
 	for alertID, n := range counts {
-		if res.Scored >= limit {
-			break
-		}
 		perHour := float32(n) / float32(cfg.FlapWindow.Hours())
 		flapping := n >= cfg.FlapThreshold
 
@@ -473,6 +499,14 @@ func (s *Service) ScoreFlaps(ctx context.Context, scope db.TenantScope, limit in
 			alert, err := s.alerts.GetByID(ctx, scope, alertID)
 			if err != nil {
 				return err
+			}
+			// The steady state writes nothing. Most ticks recompute the same score
+			// for the same alerts, and an UPDATE that changes neither column is
+			// pure WAL churn on the hottest table in the system. The float32
+			// comparison is exact: `flap_score` is REAL, so the value read back is
+			// bit-for-bit the value SetFlap wrote.
+			if alert.IsFlapping() == flapping && alert.FlapScore() == perHour {
+				return nil
 			}
 			if err := s.alerts.SetFlap(ctx, scope, alertID, perHour, flapping); err != nil {
 				return err

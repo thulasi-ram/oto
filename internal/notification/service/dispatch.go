@@ -191,7 +191,7 @@ func (s *DispatchService) Dispatch(
 		out  outcome
 		plan *sendPlan
 	)
-	err := s.txr.Tx(ctx, func(ctx context.Context) error {
+	err := s.txr.InTx(ctx, func(ctx context.Context) error {
 		var err error
 		out, plan, err = s.prepare(ctx, scope, deliveryID)
 		return err
@@ -665,7 +665,7 @@ func (s *DispatchService) record(
 	d := p.delivery
 
 	var out outcome
-	err := s.txr.Tx(ctx, func(ctx context.Context) error {
+	err := s.txr.InTx(ctx, func(ctx context.Context) error {
 		if d.ThreadID != nil && p.gate != nil {
 			// Back under the thread lock to advance the sequence.
 			if err := p.gate.Lock(ctx, *d.ThreadID); err != nil {

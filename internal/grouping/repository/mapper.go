@@ -1,23 +1,17 @@
 package repository
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
-
-// clampLimit applies the §E.1 page bounds, which live in `platform/db` because
-// they bound `db.Keyset.Limit`.
-func clampLimit(n int) int { return db.ClampLimit(n) }
 
 // mapErr turns a database error into an errs.Kind for this module. The §L.9
 // table itself lives in `db.MapError` and is shared by every repository — this
@@ -38,22 +32,6 @@ func mapErr(err error, what string) error {
 		QueryFailed:        "grouping_query_failed",
 		QueryFailedMessage: fmt.Sprintf("could not %s", what),
 	})
-}
-
-// requireScope refuses a scope that names no tenant. A missing org_id predicate
-// is a data leak, not a performance bug.
-func requireScope(s db.TenantScope) error {
-	if !s.Valid() {
-		return errs.Internal("missing_tenant_scope", db.ErrNoTenant)
-	}
-	return nil
-}
-
-func requireID(field string, v uuid.UUID) error {
-	if v == uuid.Nil {
-		return errs.Internal("missing_"+field, errors.New("repository: "+field+" is required"))
-	}
-	return nil
 }
 
 func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
@@ -110,32 +88,9 @@ func strPtr(s string) *string {
 	return &v
 }
 
-// pageOf trims a slice fetched with limit+1 rows down to the page and reports
-// whether a further page exists.
-func pageOf[T any](rows []T, limit int) ([]T, bool) {
-	if len(rows) > limit {
-		return rows[:limit], true
-	}
-	return rows, false
-}
-
-func nextCursor(sortKey time.Time, id uuid.UUID, hash string, hasMore bool) db.Cursor {
-	if !hasMore {
-		return db.Cursor{Hash: hash}
-	}
-	return db.Cursor{SortKey: sortKey.UTC(), ID: id, Hash: hash, HasMore: true}
-}
-
-// TxRunner runs a function inside one transaction. It is the concrete half of
-// the port `grouping/service` declares, and it lives here because this is the
-// layer permitted to name pgx.
-type TxRunner struct{ pool *pgxpool.Pool }
+// TxRunner is the concrete half of the port `grouping/service` declares; the
+// runner itself is `db.TxRunner`, in the layer permitted to name pgx.
+type TxRunner = db.TxRunner
 
 // NewTxRunner builds a transaction runner over a pool.
-func NewTxRunner(pool *pgxpool.Pool) *TxRunner { return &TxRunner{pool: pool} }
-
-// InTx runs fn inside a transaction. It nests safely: a ctx already carrying a
-// transaction joins it rather than opening a second.
-func (r *TxRunner) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return db.Tx(ctx, r.pool, fn)
-}
+func NewTxRunner(pool *pgxpool.Pool) *TxRunner { return db.NewTxRunner(pool) }

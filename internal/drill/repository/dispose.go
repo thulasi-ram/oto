@@ -55,7 +55,7 @@ const eventWindow = 5 * time.Minute
 // back, and a `chat.delete` would be oto writing into somebody's channel history
 // on a timer. The card says it is a drill; that is the mitigation.
 func (r *DrillRepository) Dispose(ctx context.Context, s db.TenantScope, d domain.Drill, at time.Time) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	from := d.StartedAt.Add(-eventWindow)

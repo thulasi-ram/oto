@@ -222,6 +222,14 @@ type AlertProjection struct {
 	TotalOccurrences  int
 }
 
+// AlertProjectionWrite pairs one AlertProjection with the alert it lands on, so
+// a whole batch's projections can travel to the repository as ONE write. A
+// 500-alert storm chunk must not become 500 projection round trips (§G.4).
+type AlertProjectionWrite struct {
+	AlertID    uuid.UUID
+	Projection AlertProjection
+}
+
 // AlertFilter is the compiled, validated form of the §E.3 query string. A nil or
 // empty slice means "no constraint on this dimension".
 type AlertFilter struct {

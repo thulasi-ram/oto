@@ -154,7 +154,7 @@ const getChannelSQL = `SELECT ` + channelColumns + channelFrom + ` WHERE c.org_i
 func (r *ChannelRepository) Get(
 	ctx context.Context, s db.TenantScope, channelID uuid.UUID,
 ) (domain.Instance, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Instance{}, err
 	}
 	var row channelRow
@@ -184,10 +184,10 @@ const listChannelsSQL = `SELECT ` + channelColumns + channelFrom + `
 func (r *ChannelRepository) List(
 	ctx context.Context, s db.TenantScope, includeDeleted bool, p db.Keyset,
 ) ([]domain.Instance, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	var (
 		afterAt *time.Time
@@ -222,11 +222,11 @@ func (r *ChannelRepository) List(
 		return nil, db.Cursor{}, mapErr(err, "channel_not_found", "read channels")
 	}
 
-	page, hasMore := pageOf(out, limit)
+	page, hasMore := db.PageOf(out, limit)
 	cur := db.Cursor{Hash: p.Cursor.Hash}
 	if len(page) > 0 {
 		last := page[len(page)-1]
-		cur = nextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
+		cur = db.NextCursor(last.CreatedAt, last.ID, p.Cursor.Hash, hasMore)
 	}
 	return page, cur, nil
 }
@@ -258,7 +258,7 @@ RETURNING id`
 func (r *ChannelRepository) Create(
 	ctx context.Context, s db.TenantScope, in domain.NewInstance,
 ) (domain.Instance, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Instance{}, err
 	}
 	if !in.Type.Valid() {
@@ -335,10 +335,10 @@ RETURNING id`
 func (r *ChannelRepository) Update(
 	ctx context.Context, s db.TenantScope, channelID uuid.UUID, p domain.InstancePatch,
 ) (domain.Instance, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Instance{}, err
 	}
-	if err := requireID("channel_id", channelID); err != nil {
+	if err := db.RequireID("channel_id", channelID); err != nil {
 		return domain.Instance{}, err
 	}
 	if p.IsEmpty() {
@@ -399,7 +399,7 @@ UPDATE channels SET deleted_at = $3, enabled = false, updated_at = GREATEST(upda
 // CASCADE: a hard delete would erase the record of who was told, when — which is
 // the point of the whole module.
 func (r *ChannelRepository) SoftDelete(ctx context.Context, s db.TenantScope, channelID uuid.UUID) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx, softDeleteChannelSQL, s.OrgID(), channelID, r.clock.Now().UTC())
@@ -429,7 +429,7 @@ SELECT name::text
 func (r *ChannelRepository) ReferencingPolicies(
 	ctx context.Context, s db.TenantScope, channelID uuid.UUID,
 ) ([]string, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	rows, err := r.db(ctx).Query(ctx, referencingPoliciesSQL, s.OrgID(), channelID)
@@ -475,7 +475,7 @@ func (r *ChannelRepository) SetHealth(
 	ctx context.Context, s db.TenantScope, channelID uuid.UUID,
 	status domain.InstanceHealth, detail string, at time.Time,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	if !status.Valid() {

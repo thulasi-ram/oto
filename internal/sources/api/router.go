@@ -149,17 +149,6 @@ func scopeOf(r *http.Request) (db.TenantScope, error) {
 	return s, err
 }
 
-// principalOf resolves the caller itself, for the one handler that must record
-// WHO made a request and not only which tenant it belonged to.
-//
-// An `Idempotency-Key` is a client's private handle on its own retry, so a claim
-// is keyed by the principal as well as the org: one org member's key must never
-// be able to refuse another's request.
-func principalOf(r *http.Request) (authn.Principal, error) {
-	p, _, err := authn.Scope(r.Context())
-	return p, err
-}
-
 // webhookURL renders the absolute URL for a source's ingest path.
 func (rt *Router) webhookURL(path string) string {
 	if rt.baseURL == "" {

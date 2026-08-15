@@ -158,7 +158,7 @@ func (r *EventRepository) Append(
 // actually written. A batch that is entirely deduped writes nothing and returns
 // zero.
 func (r *EventRepository) AppendBatch(ctx context.Context, s db.TenantScope, in []domain.Event) (int, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return 0, err
 	}
 	if len(in) == 0 {
@@ -392,10 +392,10 @@ func (r *EventRepository) listBy(
 	ctx context.Context, s db.TenantScope, column string, subject uuid.UUID,
 	w db.TimeWindow, p db.Keyset,
 ) ([]domain.Event, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	if err := requireID("subject id", subject); err != nil {
+	if err := db.RequireID("subject id", subject); err != nil {
 		return nil, db.Cursor{}, err
 	}
 	// ⭐ The window's lower bound is REQUIRED. `recorded_at` is the partition key
@@ -413,7 +413,7 @@ func (r *EventRepository) listBy(
 		return nil, db.Cursor{}, errs.Validation("time_window_invalid",
 			"the time window must end after it starts")
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	sql := `SELECT ` + eventColumns + `
 	          FROM alert_events
@@ -441,12 +441,12 @@ func (r *EventRepository) listBy(
 	if err != nil {
 		return nil, db.Cursor{}, err
 	}
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.RecordedAt(), last.ID(), p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(last.RecordedAt(), last.ID(), p.Cursor.Hash, hasMore), nil
 }
 
 // getByDedupeKeySQL resolves the entry a §C.8 key already claimed.
@@ -478,7 +478,7 @@ SELECT ` + eventColumns + `
 func (r *EventRepository) GetByDedupeKey(
 	ctx context.Context, s db.TenantScope, key string,
 ) (domain.Event, bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Event{}, false, err
 	}
 	if key == "" {
@@ -539,20 +539,32 @@ SELECT alert_id, count(*)
    AND alert_id IS NOT NULL
    AND type IN ('occurrence.opened','occurrence.reopened','occurrence.resolved',
                 'occurrence.expired','occurrence.suppressed','occurrence.unsuppressed')
- GROUP BY alert_id`
+ GROUP BY alert_id
+ ORDER BY count(*) DESC, alert_id
+ LIMIT $4`
 
 // StateChangeCounts counts lifecycle transitions per Alert inside a window. It
 // is the input to the `flap.score` job (§B.6), which is an EWMA of state
 // transitions per hour.
 //
+// ⭐ THE CAP LIVES IN THE STATEMENT, WITH AN ORDER. `flap.score` can afford only
+// `limit` alerts per tick, and which alerts those are must be a property of the
+// data: the caller iterates a map, and a cap applied over Go map iteration
+// scored a RANDOM subset every tick. Most-changed first, because when the cap
+// binds, the alerts nearest the flap threshold are the ones a stale score
+// misleads about the most; alert_id breaks ties so two equal counts cannot swap
+// places between ticks.
+//
 // NOTE (planner): ev_type_idx is (org_id, type, recorded_at DESC), so this is
 // six index ranges aggregated — the partition pruning from the window is what
 // keeps it cheap. There is no (org_id, recorded_at, alert_id) index and adding
-// one is a migration this module does not own.
+// one is a migration this module does not own. The ORDER BY/LIMIT is a top-N
+// over the aggregate's output, which is already bounded by the org's distinct
+// alerts in the window.
 func (r *EventRepository) StateChangeCounts(
-	ctx context.Context, s db.TenantScope, w db.TimeWindow,
+	ctx context.Context, s db.TenantScope, w db.TimeWindow, limit int,
 ) (map[uuid.UUID]int, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if w.From.IsZero() {
@@ -563,8 +575,9 @@ func (r *EventRepository) StateChangeCounts(
 	if to.IsZero() {
 		to = r.clock.Now()
 	}
+	n := db.ClampLimit(limit)
 
-	rows, err := r.db(ctx).Query(ctx, stateChangeCountsSQL, s.OrgID(), w.From.UTC(), to.UTC())
+	rows, err := r.db(ctx).Query(ctx, stateChangeCountsSQL, s.OrgID(), w.From.UTC(), to.UTC(), n)
 	if err != nil {
 		return nil, mapErr(err, "count state changes")
 	}

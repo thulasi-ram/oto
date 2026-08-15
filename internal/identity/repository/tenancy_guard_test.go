@@ -100,8 +100,6 @@ var notARequestResolver = map[string]string{
 	"notification/repository.orgOfDeliverySQL": "job-payload scope for the delivery workers: the org comes from the delivery row",
 	"sources/repository.resolveSourceOrgSQL":   "job-payload scope for the source workers: the org comes from the source row",
 
-	"notification/repository.listOrgsSQL": "the tenant enumerator for the unacked-reminder sweep. It is not a " +
-		"resolver — nothing outside chooses its input — and it already carries `WHERE deleted_at IS NULL`",
 	"app.liveOrgSQL": "job-payload scope for the per-tenant periodics (`occurrence.reap`, `group.close`, " +
 		"`flap.score`, `retention.prune`'s drill sweep, `stats.rollup`). It is the same category as the " +
 		"five above — the org comes from a ROW, not from a credential — with the twist that the row IS " +
@@ -111,11 +109,16 @@ var notARequestResolver = map[string]string{
 		"because there is nothing to join it TO, and a departed tenant therefore resolves to no row and " +
 		"gets no sweep — the same answer `listOrgIDsSQL` gives on the enqueue side",
 
-	"app.listOrgIDsSQL": "the tenant enumerator for the reaper, the group close and the flap score. Not a " +
-		"resolver for the same reason listOrgsSQL is not, and it now agrees with it: it carries " +
-		"`WHERE deleted_at IS NULL`, so a departed tenant is not swept. It reads one keyset PAGE " +
-		"(`id > $1 … LIMIT $2`) where listOrgsSQL reads the table, which is a cost decision and not a " +
-		"tenancy one — the filter is the same",
+	"app.listOrgIDsSQL": "the tenant enumerator the per-tenant periodics fan out from. Not a " +
+		"resolver — nothing outside chooses its input — and it carries `WHERE deleted_at IS NULL`, " +
+		"so a departed tenant is not swept. It reads one keyset PAGE (`id > $1 … LIMIT $2`) rather " +
+		"than the whole table, which is a cost decision and not a tenancy one",
+
+	"identity/repository.listLiveOrgsSQL": "the tenant enumerator for the retention fold " +
+		"(`identity/service.MaxRetention`). Not a resolver — " +
+		"nothing outside chooses its input, and what comes out feeds a maximum over `orgs.settings`, " +
+		"never a scope. It carries `WHERE deleted_at IS NULL` inline, the same keyset page shape as " +
+		"app.listOrgIDsSQL, so a departed tenant cannot widen the deployment's partition window",
 }
 
 // knownGaps names statements that DO turn an inbound request's credential into a

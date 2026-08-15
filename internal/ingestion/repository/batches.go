@@ -210,7 +210,7 @@ func (r *BatchRepository) Reopen(
 	ctx context.Context, s db.TenantScope, batchID uuid.UUID, receivedAt time.Time,
 	from []domain.Status,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	if len(from) == 0 {
@@ -340,7 +340,7 @@ SELECT` + batchFailureColumns + `
 func (r *BatchRepository) ListFailed(
 	ctx context.Context, s db.TenantScope, f domain.BatchFailureFilter, p db.Keyset,
 ) ([]domain.BatchFailure, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
 	if f.SourceID == uuid.Nil {
@@ -362,7 +362,7 @@ func (r *BatchRepository) ListFailed(
 		statuses = []string{domain.StatusFailed.String(), domain.StatusPartial.String()}
 	}
 
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 	sql, args := listFailedBatchesSQL, []any{s.OrgID(), f.SourceID, statuses, limit + 1}
 	if !p.Cursor.IsZero() {
 		sql = listFailedBatchesFromSQL
@@ -396,12 +396,12 @@ func (r *BatchRepository) ListFailed(
 		return nil, db.Cursor{}, mapErr(err, "read failed ingest batches")
 	}
 
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.ReceivedAt, last.ID, p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(last.ReceivedAt, last.ID, p.Cursor.Hash, hasMore), nil
 }
 
 func deref(p *string) string {

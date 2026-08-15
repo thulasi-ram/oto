@@ -189,13 +189,13 @@ RETURNING ` + occurrenceColumns
 func (r *OccurrenceRepository) OpenOccurrence(
 	ctx context.Context, s db.TenantScope, in domain.OpenOccurrence,
 ) (domain.Occurrence, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Occurrence{}, err
 	}
-	if err := requireID("occurrence id", in.ID); err != nil {
+	if err := db.RequireID("occurrence id", in.ID); err != nil {
 		return domain.Occurrence{}, err
 	}
-	if err := requireID("alert_id", in.AlertID); err != nil {
+	if err := db.RequireID("alert_id", in.AlertID); err != nil {
 		return domain.Occurrence{}, err
 	}
 	if in.Seq < 1 {
@@ -228,7 +228,7 @@ func (r *OccurrenceRepository) OpenOccurrence(
 func (r *OccurrenceRepository) GetByID(
 	ctx context.Context, s db.TenantScope, id uuid.UUID,
 ) (domain.Occurrence, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Occurrence{}, err
 	}
 	var row occurrenceRow
@@ -301,7 +301,7 @@ func (r *OccurrenceRepository) PreviousWithRuleSnapshot(
 func (r *OccurrenceRepository) optional(
 	ctx context.Context, s db.TenantScope, sql string, args ...any,
 ) (domain.Occurrence, bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Occurrence{}, false, err
 	}
 	var row occurrenceRow
@@ -330,7 +330,7 @@ SELECT DISTINCT ON (alert_id) ` + occurrenceColumns + `
 func (r *OccurrenceRepository) LatestByAlerts(
 	ctx context.Context, s db.TenantScope, alertIDs []uuid.UUID,
 ) (map[uuid.UUID]domain.Occurrence, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(alertIDs) == 0 {
@@ -370,10 +370,10 @@ func (r *OccurrenceRepository) LatestByAlerts(
 func (r *OccurrenceRepository) ListByAlert(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset,
 ) ([]domain.Occurrence, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	sql := `SELECT ` + occurrenceColumns + `
 	          FROM alert_occurrences
@@ -399,12 +399,12 @@ func (r *OccurrenceRepository) ListByAlert(
 	if err != nil {
 		return nil, db.Cursor{}, err
 	}
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	if len(page) == 0 {
 		return nil, db.Cursor{Hash: p.Cursor.Hash}, nil
 	}
 	last := page[len(page)-1]
-	return page, nextCursor(last.StartedAt(), last.ID(), p.Cursor.Hash, hasMore), nil
+	return page, db.NextCursor(last.StartedAt(), last.ID(), p.Cursor.Hash, hasMore), nil
 }
 
 func collectOccurrences(rows pgx.Rows, capacity int) ([]domain.Occurrence, error) {
@@ -474,10 +474,10 @@ WHERE org_id = $1 AND id = $2`
 func (r *OccurrenceRepository) Observe(
 	ctx context.Context, s db.TenantScope, id uuid.UUID, o domain.Observation,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("occurrence id", id); err != nil {
+	if err := db.RequireID("occurrence id", id); err != nil {
 		return err
 	}
 	if o.ObservedAt.IsZero() {
@@ -551,10 +551,10 @@ const occurrenceExistsSQL = `SELECT state_version FROM alert_occurrences WHERE o
 func (r *OccurrenceRepository) Transition(
 	ctx context.Context, s db.TenantScope, id uuid.UUID, t domain.Transition,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("occurrence id", id); err != nil {
+	if err := db.RequireID("occurrence id", id); err != nil {
 		return err
 	}
 	if !t.ToState.IsOpen() && !t.ToState.IsTerminal() {
@@ -655,10 +655,10 @@ WHERE org_id = $1 AND id = $2 AND state_version = $8`
 func (r *OccurrenceRepository) SetAck(
 	ctx context.Context, s db.TenantScope, id uuid.UUID, a domain.AckChange, expectVersion int,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("occurrence id", id); err != nil {
+	if err := db.RequireID("occurrence id", id); err != nil {
 		return err
 	}
 	if expectVersion < 1 {
@@ -705,13 +705,13 @@ func ackStateOrUnacked(a domain.AckState) domain.AckState {
 func (r *OccurrenceRepository) BindRuleSnapshot(
 	ctx context.Context, s db.TenantScope, id, snapshotID uuid.UUID,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("occurrence id", id); err != nil {
+	if err := db.RequireID("occurrence id", id); err != nil {
 		return err
 	}
-	if err := requireID("rule_snapshot_id", snapshotID); err != nil {
+	if err := db.RequireID("rule_snapshot_id", snapshotID); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx,
@@ -755,13 +755,13 @@ SELECT ` + occurrenceColumns + `
 func (r *OccurrenceRepository) ReapCandidates(
 	ctx context.Context, s db.TenantScope, before time.Time, limit int,
 ) ([]domain.Occurrence, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if before.IsZero() {
 		return nil, errs.Internal("reap_bound_missing", errsMissing("before is required"))
 	}
-	n := clampLimit(limit)
+	n := db.ClampLimit(limit)
 
 	rows, err := r.db(ctx).Query(ctx, reapCandidatesSQL, s.OrgID(), before.UTC(), n)
 	if err != nil {
@@ -787,7 +787,7 @@ SELECT m.occurrence_id, g.source_id
 func (r *OccurrenceRepository) SourceIDs(
 	ctx context.Context, s db.TenantScope, occurrenceIDs []uuid.UUID,
 ) (map[uuid.UUID]uuid.UUID, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(occurrenceIDs) == 0 {

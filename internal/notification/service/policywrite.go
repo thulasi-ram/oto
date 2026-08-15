@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/notification/domain"
-	"github.com/thulasiram/oto/internal/platform/authn"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
@@ -35,7 +34,7 @@ var opCreateNotificationPolicy = idempotency.MustOperation("createNotificationPo
 
 // CodePolicyIdempotencyUnavailable means the caller sent an `Idempotency-Key`
 // this deployment cannot honour. It is a DEPLOYMENT fact, not a caller error.
-const CodePolicyIdempotencyUnavailable = "idempotency_unavailable"
+const CodePolicyIdempotencyUnavailable = idempotency.CodeUnavailable
 
 // IdempotencyClaims is the `Idempotency-Key` claim store, satisfied by
 // `*platform/idempotency.Repository`.
@@ -55,19 +54,12 @@ type PolicyWriteStore interface {
 	GetPolicy(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Policy, error)
 }
 
-// Idempotency is the caller's `Idempotency-Key` intent for one settings write.
-type Idempotency struct {
-	// Keyed reports that the caller sent a key at all. False means every field
-	// below is ignored and the write behaves exactly as it did before, which is
-	// what keeps the header optional.
-	Keyed bool
-	Key   idempotency.Key
-	// Principal is who sent it. A key is a client's private handle on its own
-	// retry, so one org member's key must never refuse another's request.
-	Principal authn.Principal
-	// RequestHash is the sha256 of the bytes the caller actually sent.
-	RequestHash idempotency.RequestHash
-}
+// Idempotency is the caller's `Idempotency-Key` intent for one settings write —
+// the platform's own Intent under the name this module's ports cross it as.
+// RequestHash is the sha256 of the bytes the caller actually sent; the
+// operation is this service's fact and is filled at the claim site, not by the
+// transport.
+type Idempotency = idempotency.Intent
 
 // PolicyWriterOptions are the writer's dependencies.
 type PolicyWriterOptions struct {
@@ -122,7 +114,7 @@ func (w *PolicyWriter) CreatePolicy(
 		return domain.Policy{}, errs.Unavailable("policies_unavailable",
 			"the policy store is not configured in this deployment", 0)
 	}
-	if err := w.requireClaims(idem); err != nil {
+	if err := idempotency.Require(idem, w.claims, w.tx); err != nil {
 		return domain.Policy{}, err
 	}
 
@@ -134,29 +126,16 @@ func (w *PolicyWriter) CreatePolicy(
 	if in.ID == uuid.Nil {
 		in.ID = id.New()
 	}
+	// ⭐ A POLICY'S `201` CARRIES NO SECRET, so the policy is Replay: the honest
+	// answer to a retry is the policy the first attempt made.
+	idem.Operation = opCreateNotificationPolicy
 	err := w.inTx(ctx, func(ctx context.Context) error {
 		if idem.Keyed {
-			res, err := w.claims.Claim(ctx, scope, idempotency.Claim{
-				OrgID:       scope.OrgID(),
-				PrincipalID: idem.Principal.UserID,
-				Operation:   opCreateNotificationPolicy,
-				Key:         idem.Key,
-				RequestHash: idem.RequestHash,
-				CreatedRef:  in.ID,
-				ClaimedAt:   w.clk.Now().UTC(),
-			})
+			ref, err := idempotency.Resolve(ctx, w.claims, scope, idem,
+				idempotency.Replay, in.ID, w.clk.Now().UTC())
 			if err != nil {
+				replayOf = ref
 				return err
-			}
-			if !res.Fresh() {
-				if res.Outcome == idempotency.Conflicted || res.Existing.CreatedRef == uuid.Nil {
-					// One key, two different bodies — or a replay that names nothing.
-					// Either way the honest answer is the contract's `409`, which still
-					// tells the client its first attempt succeeded.
-					return idempotency.Reuse(res)
-				}
-				replayOf = res.Existing.CreatedRef
-				return errPolicyReplay
 			}
 		}
 		created, err := w.store.CreatePolicy(ctx, scope, in)
@@ -166,7 +145,7 @@ func (w *PolicyWriter) CreatePolicy(
 		out = created
 		return nil
 	})
-	if errors.Is(err, errPolicyReplay) {
+	if errors.Is(err, idempotency.ErrReplay) {
 		// Read OUTSIDE the rolled-back transaction, so what comes back is the row
 		// the FIRST attempt committed.
 		return w.store.GetPolicy(ctx, scope, replayOf)
@@ -181,25 +160,5 @@ func (w *PolicyWriter) inTx(ctx context.Context, fn func(ctx context.Context) er
 	if w.tx == nil {
 		return fn(ctx)
 	}
-	return w.tx.Tx(ctx, fn)
+	return w.tx.InTx(ctx, fn)
 }
-
-// requireClaims refuses a KEYED request this deployment cannot honour.
-//
-// ⛔ IT IS REFUSED, NOT SERVED UNGUARDED. The defect this closes was a header the
-// contract promised and the server ignored; ignoring it a second time because a
-// collaborator is nil would reproduce it exactly.
-func (w *PolicyWriter) requireClaims(idem Idempotency) error {
-	if !idem.Keyed {
-		return nil
-	}
-	if w.claims != nil && w.tx != nil {
-		return nil
-	}
-	return errs.Unavailable(CodePolicyIdempotencyUnavailable,
-		"this deployment cannot honour Idempotency-Key", 0)
-}
-
-// errPolicyReplay carries a replayed claim out of its own transaction so the
-// insert beside it rolls back. It never reaches a caller.
-var errPolicyReplay = errors.New("this idempotency key already created a policy")

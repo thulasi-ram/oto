@@ -299,7 +299,7 @@ SELECT ` + alertColumns + `, was_inserted FROM up`
 func (r *AlertRepository) UpsertBatch(
 	ctx context.Context, s db.TenantScope, in []domain.AlertUpsert,
 ) ([]domain.AlertUpsertResult, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(in) == 0 {
@@ -338,10 +338,10 @@ func (r *AlertRepository) UpsertBatch(
 
 	for i, k := range order {
 		u := winner[k]
-		if err := requireID("alert id", u.ID); err != nil {
+		if err := db.RequireID("alert id", u.ID); err != nil {
 			return nil, err
 		}
-		if err := requireID("cluster_id", u.ClusterID); err != nil {
+		if err := db.RequireID("cluster_id", u.ClusterID); err != nil {
 			return nil, err
 		}
 		if u.AlertKey.IsZero() || u.Fingerprint.IsZero() || u.ClusterKey.IsZero() {
@@ -432,7 +432,7 @@ func (r *AlertRepository) UpsertBatch(
 
 // GetByID reads one Alert within the caller's org.
 func (r *AlertRepository) GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Alert, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Alert{}, err
 	}
 	return r.getOne(ctx, `SELECT `+alertColumns+` FROM alerts WHERE org_id = $1 AND id = $2`,
@@ -441,7 +441,7 @@ func (r *AlertRepository) GetByID(ctx context.Context, s db.TenantScope, id uuid
 
 // GetByAlertKey reads one Alert by its §C.2 identity key.
 func (r *AlertRepository) GetByAlertKey(ctx context.Context, s db.TenantScope, alertKey string) (domain.Alert, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Alert{}, err
 	}
 	return r.getOne(ctx, `SELECT `+alertColumns+` FROM alerts WHERE org_id = $1 AND alert_key = $2`,
@@ -456,7 +456,7 @@ func (r *AlertRepository) GetByAlertKey(ctx context.Context, s db.TenantScope, a
 func (r *AlertRepository) GetByAlertKeys(
 	ctx context.Context, s db.TenantScope, alertKeys []string,
 ) (map[string]domain.Alert, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(alertKeys) == 0 {
@@ -521,7 +521,7 @@ func (r *AlertRepository) List(
 func (r *AlertRepository) ListSorted(
 	ctx context.Context, s db.TenantScope, f domain.AlertFilter, sort string, p db.Keyset,
 ) ([]domain.Alert, db.Cursor, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, db.Cursor{}, err
 	}
 
@@ -535,7 +535,7 @@ func (r *AlertRepository) ListSorted(
 			"sort must be one of: -last_seen_at, -first_seen_at")
 	}
 
-	limit := clampLimit(p.Limit)
+	limit := db.ClampLimit(p.Limit)
 
 	q := r.sb.Select(alertColumnList...).
 		From("alerts").
@@ -588,7 +588,7 @@ func (r *AlertRepository) ListSorted(
 		return nil, db.Cursor{}, mapErr(err, "read alerts")
 	}
 
-	page, hasMore := pageOf(collected, limit)
+	page, hasMore := db.PageOf(collected, limit)
 	out := make([]domain.Alert, len(page))
 	for i, e := range page {
 		out[i] = e.alert
@@ -596,7 +596,7 @@ func (r *AlertRepository) ListSorted(
 	var cur db.Cursor
 	if len(page) > 0 {
 		last := page[len(page)-1]
-		cur = nextCursor(last.sort, last.alert.ID(), f.FilterHash, hasMore)
+		cur = db.NextCursor(last.sort, last.alert.ID(), f.FilterHash, hasMore)
 	} else {
 		cur = db.Cursor{Hash: f.FilterHash}
 	}
@@ -772,7 +772,7 @@ func (r *AlertRepository) Rollup(
 	ctx context.Context, s db.TenantScope, f domain.AlertFilter, key domain.RollupKey,
 	after string, limit int,
 ) ([]domain.AlertRollup, bool, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, false, err
 	}
 	expr, ok := rollupKeyExpr[key.String()]
@@ -780,7 +780,7 @@ func (r *AlertRepository) Rollup(
 		return nil, false, errs.Validation("group_by_invalid",
 			"group_by must be one of: alertname, namespace, fingerprint")
 	}
-	n := clampLimit(limit)
+	n := db.ClampLimit(limit)
 	now := r.clock.Now().UTC()
 
 	// The inner SELECT carries the ORDINARY alert-list filter, unchanged and
@@ -865,23 +865,27 @@ SELECT bucket,
 		return nil, false, mapErr(err, "read alert rollups")
 	}
 
-	page, hasMore := pageOf(out, n)
+	page, hasMore := db.PageOf(out, n)
 	return page, hasMore, nil
 }
 
 // ------------------------------------------------------------------ writes
 
-const setProjectionSQL = `
-UPDATE alerts SET
-    state                 = $3,
-    current_occurrence_id = $4,
-    ack_state             = $5,
-    snoozed_until         = $6,
-    last_seen_at          = GREATEST(last_seen_at, $7),
-    last_state_change_at  = GREATEST(first_seen_at, $8),
-    total_occurrences     = $9,
+const setProjectionBatchSQL = `
+UPDATE alerts a SET
+    state                 = p.state,
+    current_occurrence_id = p.current_occurrence_id,
+    ack_state             = p.ack_state,
+    snoozed_until         = p.snoozed_until,
+    last_seen_at          = GREATEST(a.last_seen_at, p.last_seen_at),
+    last_state_change_at  = GREATEST(a.first_seen_at, p.last_state_change_at),
+    total_occurrences     = p.total_occurrences,
     updated_at            = now()
-WHERE org_id = $1 AND id = $2`
+  FROM unnest($2::uuid[], $3::text[], $4::uuid[], $5::text[], $6::timestamptz[],
+              $7::timestamptz[], $8::timestamptz[], $9::int[])
+       AS p(alert_id, state, current_occurrence_id, ack_state, snoozed_until,
+            last_seen_at, last_state_change_at, total_occurrences)
+ WHERE a.org_id = $1 AND a.id = p.alert_id`
 
 // SetProjection writes the denormalised current-state summary onto `alerts`.
 //
@@ -912,30 +916,78 @@ WHERE org_id = $1 AND id = $2`
 func (r *AlertRepository) SetProjection(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, p domain.AlertProjection,
 ) error {
-	if err := requireScope(s); err != nil {
+	return r.SetProjectionBatch(ctx, s, []domain.AlertProjectionWrite{
+		{AlertID: alertID, Projection: p},
+	})
+}
+
+// SetProjectionBatch is SetProjection for a whole observe batch in ONE
+// statement — the same columns, the same GREATEST clamps, through one shared
+// UPDATE so the two writes cannot drift apart. `unnest` produces its rows in
+// array order, but order is immaterial here: each alert appears once, so there
+// is no earlier write for a later one to shadow.
+//
+// ⛔ A DUPLICATE ALERT ID IS REFUSED. `UPDATE ... FROM` applies AT MOST ONE
+// join row per target row and Postgres does not say which, so a batch carrying
+// two projections for one alert would leave the surviving write to the planner.
+// The caller collapses to the last write per alert BEFORE it gets here.
+func (r *AlertRepository) SetProjectionBatch(
+	ctx context.Context, s db.TenantScope, in []domain.AlertProjectionWrite,
+) error {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("alert_id", alertID); err != nil {
-		return err
-	}
-	if !p.State.IsOpen() && !p.State.IsTerminal() {
-		return errs.Internal("alert_projection_invalid", errsMissing("state is required"))
-	}
-	ack := p.AckState
-	if ack.IsZero() {
-		ack = domain.AckStateUnacked
-	}
-	if p.TotalOccurrences < 0 {
-		return errs.Internal("alert_projection_invalid", errsMissing("total_occurrences must be >= 0"))
+	if len(in) == 0 {
+		return nil
 	}
 
-	tag, err := r.db(ctx).Exec(ctx, setProjectionSQL, s.OrgID(), alertID,
-		p.State.String(), p.CurrentOccurrenceID, ack.String(), p.SnoozedUntil,
-		p.LastSeenAt.UTC(), p.LastStateChangeAt.UTC(), p.TotalOccurrences)
+	n := len(in)
+	ids := make([]uuid.UUID, n)
+	states := make([]string, n)
+	currentOccs := make([]*uuid.UUID, n)
+	acks := make([]string, n)
+	snoozed := make([]*time.Time, n)
+	lastSeen := make([]time.Time, n)
+	lastChange := make([]time.Time, n)
+	totals := make([]int32, n)
+
+	seen := make(map[uuid.UUID]struct{}, n)
+	for i, w := range in {
+		if err := db.RequireID("alert_id", w.AlertID); err != nil {
+			return err
+		}
+		if _, dup := seen[w.AlertID]; dup {
+			return errs.Internal("alert_projection_invalid",
+				errsMissing("each alert may carry at most one projection per batch"))
+		}
+		seen[w.AlertID] = struct{}{}
+		p := w.Projection
+		if !p.State.IsOpen() && !p.State.IsTerminal() {
+			return errs.Internal("alert_projection_invalid", errsMissing("state is required"))
+		}
+		ack := p.AckState
+		if ack.IsZero() {
+			ack = domain.AckStateUnacked
+		}
+		if p.TotalOccurrences < 0 {
+			return errs.Internal("alert_projection_invalid", errsMissing("total_occurrences must be >= 0"))
+		}
+		ids[i] = w.AlertID
+		states[i] = p.State.String()
+		currentOccs[i] = p.CurrentOccurrenceID
+		acks[i] = ack.String()
+		snoozed[i] = p.SnoozedUntil
+		lastSeen[i] = p.LastSeenAt.UTC()
+		lastChange[i] = p.LastStateChangeAt.UTC()
+		totals[i] = int32(p.TotalOccurrences)
+	}
+
+	tag, err := r.db(ctx).Exec(ctx, setProjectionBatchSQL, s.OrgID(), ids, states,
+		currentOccs, acks, snoozed, lastSeen, lastChange, totals)
 	if err != nil {
 		return mapErr(err, "write alert projection")
 	}
-	if tag.RowsAffected() == 0 {
+	if int(tag.RowsAffected()) != n {
 		return errs.NotFound("alert_not_found", "no such alert")
 	}
 	return nil
@@ -947,10 +999,10 @@ func (r *AlertRepository) SetProjection(
 func (r *AlertRepository) SetFlap(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, score float32, flapping bool,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("alert_id", alertID); err != nil {
+	if err := db.RequireID("alert_id", alertID); err != nil {
 		return err
 	}
 	if score < 0 {
@@ -975,10 +1027,10 @@ func (r *AlertRepository) SetFlap(
 func (r *AlertRepository) SetSnoozedUntil(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, until *time.Time,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("alert_id", alertID); err != nil {
+	if err := db.RequireID("alert_id", alertID); err != nil {
 		return err
 	}
 	tag, err := r.db(ctx).Exec(ctx,
@@ -1043,10 +1095,10 @@ SELECT n.label_name, n.alert_count
 func (r *AlertRepository) DistinctLabelNames(
 	ctx context.Context, s db.TenantScope, prefix string, limit int,
 ) ([]domain.LabelCount, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
-	rows, err := r.db(ctx).Query(ctx, distinctLabelNamesSQL, s.OrgID(), prefix, clampLimit(limit))
+	rows, err := r.db(ctx).Query(ctx, distinctLabelNamesSQL, s.OrgID(), prefix, db.ClampLimit(limit))
 	if err != nil {
 		return nil, mapErr(err, "list label names")
 	}
@@ -1107,13 +1159,13 @@ SELECT l.label_value, count(*) AS n
 func (r *AlertRepository) DistinctLabelValues(
 	ctx context.Context, s db.TenantScope, name, prefix string, limit int,
 ) ([]domain.LabelCount, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(name) == "" {
 		return nil, errs.Validation("label_name_required", "a label name is required")
 	}
-	rows, err := r.db(ctx).Query(ctx, distinctLabelValuesSQL, s.OrgID(), name, prefix, clampLimit(limit))
+	rows, err := r.db(ctx).Query(ctx, distinctLabelValuesSQL, s.OrgID(), name, prefix, db.ClampLimit(limit))
 	if err != nil {
 		return nil, mapErr(err, "list label values")
 	}

@@ -142,22 +142,11 @@ func (rt *Router) subject(r *http.Request) (db.TenantScope, uuid.UUID, error) {
 	return scope, id, nil
 }
 
-// idempotencyIntent reads the caller's `Idempotency-Key` and resolves the
-// principal that sent it, into the intent the write facade acts on.
-//
-// ⭐ READING THE HEADER IS THIS LAYER'S JOB; TAKING THE CLAIM IS NOT. A claim has
-// to be taken inside the transaction of the act it guards, and that transaction
-// belongs to `notification/service`.
+// idempotencyIntent reads the caller's `Idempotency-Key` into the intent the
+// write facade acts on (see idempotency.IntentFromRequest for the seam's rules —
+// the claiming transaction belongs to `notification/service`).
 func idempotencyIntent(r *http.Request, hash idempotency.RequestHash) (service.Idempotency, error) {
-	key, keyed, err := idempotency.FromHeader(r)
-	if err != nil || !keyed {
-		return service.Idempotency{}, err
-	}
-	p, _, err := authn.Scope(r.Context())
-	if err != nil {
-		return service.Idempotency{}, err
-	}
-	return service.Idempotency{Keyed: true, Key: key, Principal: p, RequestHash: hash}, nil
+	return idempotency.IntentFromRequest(r, hash)
 }
 
 // requireDependency turns a missing collaborator into an honest 503 rather than a

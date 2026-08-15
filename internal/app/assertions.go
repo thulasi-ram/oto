@@ -56,20 +56,23 @@ var (
 	_ authn.Resolver = (*identityservice.Service)(nil)
 
 	// --- the cross-module ports this package writes adapters for -------------
-	_ alertsservice.StreamAppender       = streamAppender{}
-	_ groupingservice.StreamAppender     = streamAppender{}
-	_ alertsservice.NotificationReader   = (*notificationReader)(nil)
-	_ alertsservice.GroupVersionReader   = (*groupVersions)(nil)
-	_ alertsservice.EnrichmentReader     = enrichmentReader{}
-	_ alertsservice.SourceHealth         = sourceHealth{}
-	_ alertsservice.SettingsReader       = orgSettings{}
-	_ groupingservice.SettingsReader     = orgSettings{}
-	_ notifservice.SettingsReader        = orgSettings{}
-	_ rulesservice.RuleLookup            = ruleLookup{}
-	_ enrichservice.SubjectLoader        = subjectLoader{}
-	_ enrichworker.ScopeResolver         = occurrenceScopes{}
-	_ ingestservice.AlertObserver        = alertObserver{}
-	_ sourcesservice.IngestTokens        = ingestTokenIssuer{}
+	_ alertsservice.StreamAppender     = streamAppender{}
+	_ groupingservice.StreamAppender   = streamAppender{}
+	_ alertsservice.NotificationReader = (*notificationReader)(nil)
+	_ alertsservice.GroupVersionReader = (*groupVersions)(nil)
+	_ alertsservice.EnrichmentReader   = enrichmentReader{}
+	_ alertsservice.SourceHealth       = sourceHealth{}
+	_ alertsservice.SettingsReader     = orgSettings{}
+	_ groupingservice.SettingsReader   = orgSettings{}
+	_ notifservice.SettingsReader      = orgSettings{}
+	_ rulesservice.RuleLookup          = ruleLookup{}
+	_ enrichservice.SubjectLoader      = subjectLoader{}
+	_ enrichworker.ScopeResolver       = occurrenceScopes{}
+	_ ingestservice.AlertObserver      = alertObserver{}
+	// The ingest-token mint moved INTO identity (relocation, not a merge with the
+	// PAT mint): the identity service satisfies the sources-side port directly,
+	// and this line is what breaks if either side of that seam drifts.
+	_ sourcesservice.IngestTokens        = (*identityservice.Service)(nil)
 	_ notifapi.SubjectResolver           = subjectResolver{}
 	_ notifworker.ScopeResolver          = (*notifrepo.ScopeResolver)(nil)
 	_ notifservice.CredentialUnsealer    = (*secrets.Keyring)(nil)

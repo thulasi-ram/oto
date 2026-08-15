@@ -108,7 +108,7 @@ func newFixture(t *testing.T, caps domain.Capability) fixture {
 // exactly as they do in production.
 type txRunner struct{ pool *pgxpool.Pool }
 
-func (r txRunner) Tx(ctx context.Context, fn func(ctx context.Context) error) error {
+func (r txRunner) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return db.Tx(ctx, r.pool, fn)
 }
 

@@ -70,7 +70,7 @@ SELECT kind, sealed, key_version
 func (r *CredentialStore) Resolve(
 	ctx context.Context, s db.TenantScope, credentialID uuid.UUID,
 ) (domain.Credential, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Credential{}, err
 	}
 	if credentialID == uuid.Nil {
@@ -140,7 +140,7 @@ SELECT id, kind, created_at, rotated_at
 func (r *CredentialStore) Meta(
 	ctx context.Context, s db.TenantScope, credentialID uuid.UUID,
 ) (CredentialMeta, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return CredentialMeta{}, err
 	}
 	var out CredentialMeta

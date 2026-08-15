@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -25,8 +24,6 @@ import (
 	groupingapi "github.com/thulasiram/oto/internal/grouping/api"
 	groupingdomain "github.com/thulasiram/oto/internal/grouping/domain"
 	groupingservice "github.com/thulasiram/oto/internal/grouping/service"
-	identitydomain "github.com/thulasiram/oto/internal/identity/domain"
-	identityrepo "github.com/thulasiram/oto/internal/identity/repository"
 	identityservice "github.com/thulasiram/oto/internal/identity/service"
 	ingestiondomain "github.com/thulasiram/oto/internal/ingestion/domain"
 	ingestionservice "github.com/thulasiram/oto/internal/ingestion/service"
@@ -35,7 +32,6 @@ import (
 	notifservice "github.com/thulasiram/oto/internal/notification/service"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
-	"github.com/thulasiram/oto/internal/platform/id"
 	"github.com/thulasiram/oto/internal/platform/jobs"
 	rulesdomain "github.com/thulasiram/oto/internal/rules/domain"
 	rulesservice "github.com/thulasiram/oto/internal/rules/service"
@@ -83,6 +79,30 @@ func (a streamAppender) Append(
 		return nil
 	}
 	_, err := a.svc.Append(ctx, s, streamingdomain.Kind(kind), resourceID, json.RawMessage(payload))
+	return err
+}
+
+// AppendBatch is the batched half of the alerts-side port, onto
+// `streaming/service.AppendBatch`: one round trip and one NOTIFY for a whole
+// observe batch (SPEC §G.4). Frames are validated and appended IN SLICE ORDER —
+// the durable log's seq is assigned in insertion order, so the batched flush
+// replays exactly as the per-frame appends it replaced did.
+func (a streamAppender) AppendBatch(
+	ctx context.Context, s db.TenantScope, frames []alertsservice.StreamFrame,
+) error {
+	if a.svc == nil || len(frames) == 0 {
+		return nil
+	}
+	in := make([]streamingdomain.NewEvent, 0, len(frames))
+	for _, f := range frames {
+		ev, err := streamingdomain.NewAppend(streamingdomain.Kind(f.Kind), f.ResourceID,
+			json.RawMessage(f.Payload))
+		if err != nil {
+			return err
+		}
+		in = append(in, ev)
+	}
+	_, err := a.svc.AppendBatch(ctx, s, in)
 	return err
 }
 
@@ -347,16 +367,10 @@ func (r notificationReader) rollup(
 	if err != nil {
 		return alertsservice.DeliveryRollup{}, err
 	}
-	return alertsservice.DeliveryRollup{
-		Total:          got.Total,
-		Sent:           got.Sent,
-		Failed:         got.Failed,
-		Dead:           got.Dead,
-		Skipped:        got.Skipped,
-		Pending:        got.Pending,
-		LastErrorClass: got.LastErrorClass,
-		LastSentAt:     got.LastSentAt,
-	}, nil
+	// The two structs are field-identical by construction, so the copy is a
+	// compile-checked type conversion: a field added on either side without the
+	// other stops the BUILD here, rather than crossing the seam as a silent zero.
+	return alertsservice.DeliveryRollup(got), nil
 }
 
 // groupDeliveryRollups is `grouping/api.DeliveryRollupReader`.
@@ -378,16 +392,9 @@ func (g groupDeliveryRollups) DeliveryRollupForGroup(
 	if err != nil {
 		return groupingapi.DeliveryRollup{}, err
 	}
-	return groupingapi.DeliveryRollup{
-		Total:          got.Total,
-		Sent:           got.Sent,
-		Failed:         got.Failed,
-		Dead:           got.Dead,
-		Skipped:        got.Skipped,
-		Pending:        got.Pending,
-		LastErrorClass: got.LastErrorClass,
-		LastSentAt:     got.LastSentAt,
-	}, nil
+	// Field-identical by construction: the conversion is the same compile-checked
+	// copy `notificationReader.rollup` makes for the alerts-side type.
+	return groupingapi.DeliveryRollup(got), nil
 }
 
 // subjectResolver is `notification/api.SubjectResolver`: it maps an alert or an
@@ -462,11 +469,14 @@ func (l subjectLoader) LoadSubject(
 	if err != nil {
 		return enrichservice.Loaded{}, err
 	}
-	detail, err := l.alerts.Get(ctx, s, occ.AlertID())
+	// The Alert row alone, never the UI detail read: the enricher needs the
+	// subject's frozen identity, and it already holds the occurrence — `Get`'s
+	// latest-occurrence and active-snooze re-reads would be paid on every run
+	// and discarded.
+	alert, err := l.alerts.GetAlert(ctx, s, occ.AlertID())
 	if err != nil {
 		return enrichservice.Loaded{}, err
 	}
-	alert := detail.Alert
 
 	out := enrichservice.Loaded{
 		AlertID: alert.ID(),
@@ -630,182 +640,42 @@ func payloadMap(v any) map[string]any {
 //
 //	Losing sight of an alert is NOT the same as the alert resolving.
 //
-// When the sources service is absent, or cannot answer, this returns FALSE and
+// When the sources service is absent, or cannot answer, this returns NOTHING and
 // the sweep HOLDS every candidate. The reaper defaults to silence, never to a
 // fabricated ending.
 type sourceHealth struct {
 	svc *sourcesservice.Service
 }
 
-func (h sourceHealth) Healthy(ctx context.Context, s db.TenantScope, sourceID uuid.UUID) (bool, error) {
+// HealthyFor answers the guard for every source a reap tick resolved, in one
+// round trip. `HealthFor` omits sources that were never probed and ids this org
+// does not own, and the omission is passed through untouched: the sweep reads
+// absence as "cannot prove healthy" and holds, which is exactly what unknown
+// must mean under §B.4.
+func (h sourceHealth) HealthyFor(
+	ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID,
+) (map[uuid.UUID]bool, error) {
 	if h.svc == nil {
-		return false, nil
+		return nil, nil
 	}
-	health, err := h.svc.Health(ctx, s, sourceID)
+	health, err := h.svc.HealthFor(ctx, s, sourceIDs)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return !health.BlocksReaper(), nil
+	out := make(map[uuid.UUID]bool, len(health))
+	for id, sh := range health {
+		out[id] = !sh.BlocksReaper()
+	}
+	return out, nil
 }
 
-// ingestTokenIssuer is `sources/api.IngestTokenIssuer`.
-//
-// The token lives in `api_tokens`, which is the identity module's table, and
-// `identity/service` deliberately mints PATs only — an ingest credential is
-// scoped to one AlertSource and belongs to no user, so it cannot go through the
-// PAT path. This is that mint, at the seam.
-//
-// ⛔ THE SECRET IS RETURNED EXACTLY ONCE. Only its sha256 is stored, and there is
-// no method here that reads one back because there is nothing to read.
-type ingestTokenIssuer struct {
-	tokens *identityrepo.APITokenRepository
-	// tx makes a rotation atomic. Nil degrades to two independent writes, which
-	// is what left a source with no working token at all; production wires it.
-	tx  *sourcesrepo.TxRunner
-	clk interface{ Now() time.Time }
-}
-
-// inTx runs fn in one transaction when a runner is wired, inline otherwise.
-func (i ingestTokenIssuer) inTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	if i.tx == nil {
-		return fn(ctx)
-	}
-	return i.tx.InTx(ctx, fn)
-}
-
-func (i ingestTokenIssuer) IssueIngestToken(
-	ctx context.Context, s db.TenantScope, sourceID uuid.UUID,
-) (string, string, error) {
-	if i.tokens == nil {
-		return "", "", errs.Unavailable("identity_unavailable",
-			"the identity store is not wired in this deployment", 0)
-	}
-
-	// ⭐ MINT FIRST, REVOKE SECOND, BOTH IN ONE TRANSACTION.
-	//
-	// It used to revoke first and mint second, reasoning that a window with two
-	// live tokens is a window in which a leaked one still works. That reasoning is
-	// right about the window and wrong about the failure: revoke-then-mint means a
-	// mint that fails for ANY reason leaves the source with ZERO working
-	// credentials, and because Alertmanager treats 401 as permanent and never
-	// retries it, every alert sent afterwards is destroyed rather than delayed.
-	// That is precisely the silent loss ADR 0007 exists to prevent, and it is
-	// exactly what happened: one probe of `rotate-token` against the prefix bug
-	// revoked every live ingest token in the org and left nothing behind it.
-	//
-	// This order has no such failure. The two writes commit together, so an
-	// observer inside the transaction is the only thing that ever sees both
-	// tokens live, and a failure anywhere rolls the whole rotation back to "the
-	// old token still works". The atomic window is a transaction, not a race.
-	var (
-		secret string
-		prefix string
-	)
-	err := i.inTx(ctx, func(ctx context.Context) error {
-		s2, p2, err := i.mint(ctx, s, sourceID)
-		if err != nil {
-			return err
-		}
-		// Revoking by id EXCLUDES the token just minted, so the new credential is
-		// never revoked by the sweep that clears the old ones.
-		if err := i.revokeExcept(ctx, s, sourceID, p2.tokenID); err != nil {
-			return err
-		}
-		secret, prefix = s2, p2.prefix
-		return nil
-	})
-	if err != nil {
-		return "", "", err
-	}
-	return secret, prefix, nil
-}
-
-// mintedToken is what mint produced, so the revocation sweep can skip it.
-type mintedToken struct {
-	tokenID uuid.UUID
-	prefix  string
-}
-
-// mint inserts one fresh ingest token and returns its plaintext secret.
-func (i ingestTokenIssuer) mint(
-	ctx context.Context, s db.TenantScope, sourceID uuid.UUID,
-) (string, mintedToken, error) {
-	now := i.clk.Now().UTC()
-	secret := identitydomain.SecretPrefixIngest + id.Token(identityservice.SecretEntropyBytes)
-	sum := sha256.Sum256([]byte(secret))
-	hash, err := identitydomain.NewTokenHash(sum[:])
-	if err != nil {
-		return "", mintedToken{}, err
-	}
-	// ⚠️ The split is KIND-RELATIVE. `oto_ingest_` is eleven characters, so this
-	// prefix is fifteen and not the twelve a PAT's is; a fixed twelve produced
-	// `oto_ingest_X` and failed api_tokens_prefix_ck on every single call, which
-	// is what made `POST /api/v1/sources` return 422 for the life of the product.
-	prefix, err := identitydomain.PrefixOfSecret(secret)
-	if err != nil {
-		return "", mintedToken{}, err
-	}
-
-	token, err := identitydomain.NewAPIToken(identitydomain.NewAPITokenParams{
-		ID:        id.New(),
-		OrgID:     s.OrgID(),
-		Kind:      identitydomain.TokenKindIngest,
-		Name:      "ingest:" + sourceID.String(),
-		Hash:      hash,
-		Prefix:    prefix,
-		SourceID:  sourceID,
-		CreatedAt: now,
-	})
-	if err != nil {
-		return "", mintedToken{}, err
-	}
-	if err := i.tokens.Insert(ctx, s, token); err != nil {
-		return "", mintedToken{}, err
-	}
-	return secret, mintedToken{tokenID: token.ID, prefix: token.Prefix.String()}, nil
-}
-
-func (i ingestTokenIssuer) RevokeIngestTokens(
-	ctx context.Context, s db.TenantScope, sourceID uuid.UUID,
-) error {
-	return i.revokeExcept(ctx, s, sourceID, uuid.Nil)
-}
-
-// revokeExcept revokes every live ingest token for the source except `keep`.
-//
-// The exclusion is what lets a rotation mint before it revokes: without it the
-// sweep would immediately revoke the token it was called to replace.
-func (i ingestTokenIssuer) revokeExcept(
-	ctx context.Context, s db.TenantScope, sourceID, keep uuid.UUID,
-) error {
-	if i.tokens == nil {
-		return errs.Unavailable("identity_unavailable",
-			"the identity store is not wired in this deployment", 0)
-	}
-	now := i.clk.Now().UTC()
-
-	// An ingest token belongs to no user, so the org's ingest tokens are listed
-	// and narrowed by source here. There is at most a handful per source.
-	page := db.Keyset{Limit: 200}
-	for {
-		tokens, cursor, err := i.tokens.List(ctx, s, identitydomain.TokenKindIngest, uuid.Nil, page)
-		if err != nil {
-			return err
-		}
-		for _, t := range tokens {
-			if t.SourceID != sourceID || (keep != uuid.Nil && t.ID == keep) {
-				continue
-			}
-			if _, err := i.tokens.Revoke(ctx, s, t.ID, now); err != nil {
-				return err
-			}
-		}
-		if !cursor.HasMore || cursor.IsZero() {
-			return nil
-		}
-		page.Cursor = cursor
-	}
-}
+// The per-source ingest token is minted and revoked by `identity/service`
+// itself (IssueIngestToken / RevokeIngestTokens): the mint recipe, the
+// mint-before-revoke transaction and the revocation sweep are credential
+// lifecycle, so they live beside the PAT mint they mirror rather than in this
+// file. `container.go` hands `c.Identity` straight to
+// `sources/service.IngestTokens` — the signatures match by construction
+// (assertions.go), and `sources` still imports nothing of `identity`.
 
 // ---------------------------------------------------------------- org settings
 
@@ -965,17 +835,19 @@ func (r occurrenceScopes) ScopeForOccurrence(
 // global.
 //
 // The sweeps run per org because every repository method takes a TenantScope, by
-// construction. `notification/repository.ReminderRepository.ListOrgIDs` asks the
-// same question of the same table for its own sweep — same `deleted_at IS NULL`
-// filter, same `ORDER BY id` — and this is that list for the reaper, the group
-// close and the flap score. It differs from that one in exactly two ways, both
-// deliberate: it hands back TenantScopes rather than bare ids, because a sweep
-// may not construct its own authorisation; and it WALKS THE TABLE IN PAGES
-// rather than reading it in one query, because this list is read on every tick
-// of every global sweep and a single unbounded scan is a query whose cost is set
-// by the customer count. That bounds the ROUND TRIP, not the result: `Scopes`
-// still returns every live tenant in one slice, so the memory is O(tenants) and
-// only the per-query work is capped.
+// construction, and this is THE tenant list for all of them. The reminder sweep
+// used to keep its own copy of this query in `notification/repository` — same
+// `deleted_at IS NULL` filter, same `ORDER BY id`, but UNBOUNDED, read whole on
+// every tick, and turned into scopes directly instead of through `LiveScope` —
+// which is why a second copy is not allowed back: two lists drift, and the one
+// that drifts is the one nobody is reading in review. This one is WALKED IN
+// PAGES rather than read in one query, because it is read on every tick of every
+// periodic sweep and a single unbounded scan is a query whose cost is set by the
+// customer count. Its two halves are
+// the two sides of the fan-out: `ScopePage` hands the enqueue side one bounded
+// page of bare ids at a time, and `LiveScope` is the only thing that turns one
+// of those ids back into an authorisation, against the table, when its job
+// runs.
 //
 // ⛔ A SOFT-DELETED TENANT IS NOT SWEPT, which is the whole point of the filter:
 // sweeping a departed tenant is work that produces alerts, reminders and flap
@@ -1009,72 +881,17 @@ const listOrgIDsSQL = `SELECT id FROM orgs WHERE deleted_at IS NULL AND id > $1 
 // its own. Now the fan-out's ceiling and the page that serves it are ONE number.
 const orgPageSize = jobs.TenantFanOutLimit
 
-func (l orgLister) Scopes(ctx context.Context) ([]db.TenantScope, error) {
-	out := make([]db.TenantScope, 0, orgPageSize)
-	after := uuid.Nil
-	for {
-		scopes, last, read, err := l.page(ctx, after)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, scopes...)
-		// A short page is the end of the table. A full page that did not move the
-		// cursor cannot happen while the walk is strictly `id > $1`, but stopping
-		// on it costs one comparison and turns a future mistake into a truncated
-		// sweep rather than a worker that never returns.
-		if read < orgPageSize || last == after {
-			return out, nil
-		}
-		after = last
-	}
-}
-
-// page reads the live tenants after `after`, returning the scopes it could build,
-// the last id it SAW, and how many rows it read.
-//
-// The last two are reported separately from the first because an id that fails
-// NewTenantScope must still advance the cursor: a page whose only rows were
-// unusable would otherwise ask for the same page forever.
-func (l orgLister) page(
-	ctx context.Context, after uuid.UUID,
-) (scopes []db.TenantScope, last uuid.UUID, read int, err error) {
-	rows, err := l.pool.Query(ctx, listOrgIDsSQL, after, orgPageSize)
-	if err != nil {
-		return nil, after, 0, err
-	}
-	defer rows.Close()
-
-	last = after
-	for rows.Next() {
-		var orgID uuid.UUID
-		if err := rows.Scan(&orgID); err != nil {
-			return nil, after, 0, err
-		}
-		read++
-		last = orgID
-		scope, scopeErr := db.NewTenantScope(orgID)
-		if scopeErr != nil {
-			continue
-		}
-		scopes = append(scopes, scope)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, after, 0, err
-	}
-	return scopes, last, read, nil
-}
-
-// ScopePage is `jobs.TenantPager`: ONE page of the same walk, handed to the
+// ScopePage is `jobs.TenantPager`: ONE page of the walk, handed to the
 // per-tenant fan-out rather than accumulated.
 //
-// ⭐ IT RETURNS BARE IDS AND `Scopes` RETURNS SCOPES, AND THE DIFFERENCE IS THE
-// POINT. `Scopes` hands out authorisation because its caller is about to do the
-// work; this hands out something to put in a job PAYLOAD, and a payload is data.
-// The scope for that work is produced later, by `LiveScope`, against the table —
-// so an org id that is forged, stale, or simply departed between the tick and the
-// pass cannot become an authorisation. It is also why there is no `NewTenantScope`
-// filter here: an id that cannot become a scope must still advance the cursor,
-// and the only place that can be decided is where the scope is actually needed.
+// ⭐ IT RETURNS BARE IDS AND NEVER SCOPES, AND THAT IS THE POINT. What it hands
+// out goes into a job PAYLOAD, and a payload is data. The scope for the work is
+// produced later, by `LiveScope`, against the table — so an org id that is
+// forged, stale, or simply departed between the tick and the pass cannot become
+// an authorisation. It is also why there is no `NewTenantScope` filter here: an
+// id that cannot become a scope must still advance the cursor — a page whose
+// only rows were unusable would otherwise be asked for forever — and the only
+// place that can be decided is where the scope is actually needed.
 //
 // ⛔ A LIMIT IT CANNOT SERVE IS AN ERROR, NEVER A QUIETLY SMALLER PAGE. The caller
 // reads a short page as "the end of the tenant table" — that is the whole contract

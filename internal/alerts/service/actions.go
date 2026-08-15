@@ -206,7 +206,7 @@ func (s *Service) Comment(
 		return domain.Event{}, false, errs.Newf(errs.KindValidation, "max_length",
 			"a comment must have at most %d characters", MaxCommentBytes)
 	}
-	if err := s.requireClaims(idem); err != nil {
+	if err := idempotency.Require(idem, s.claims, s.tx); err != nil {
 		return domain.Event{}, false, err
 	}
 
@@ -276,12 +276,9 @@ func (s *Service) Comment(
 			// ⭐ BEFORE THE APPEND, because a replay must not have appended
 			// anything to roll back — and because the claim records what this call
 			// creates, which is the event id the caller's `201` would have carried.
-			replayed, _, err := s.claim(ctx, scope, idem, ev.ID())
-			if err != nil {
+			if _, err := idempotency.Resolve(ctx, s.claims, scope, idem,
+				idempotency.Replay, ev.ID(), s.Now()); err != nil {
 				return err
-			}
-			if replayed {
-				return errReplay
 			}
 		}
 		if _, err := s.appendEvents(ctx, scope, []domain.Event{ev}); err != nil {
@@ -301,7 +298,7 @@ func (s *Service) Comment(
 		out = ev
 		return nil
 	})
-	if errors.Is(err, errReplay) {
+	if errors.Is(err, idempotency.ErrReplay) {
 		// The transaction above is rolled back, so this read sees the world the
 		// FIRST attempt committed and nothing this one did.
 		ev, found, readErr := s.events.GetByDedupeKey(ctx, scope, keyedDedupe)
@@ -369,7 +366,7 @@ func (s *Service) Snooze(
 		return domain.Snooze{}, false, errs.Validation("actor_required",
 			"a snooze requires a human actor: it is always attributed")
 	}
-	if err := s.requireClaims(idem); err != nil {
+	if err := idempotency.Require(idem, s.claims, s.tx); err != nil {
 		return domain.Snooze{}, false, err
 	}
 
@@ -396,13 +393,11 @@ func (s *Service) Snooze(
 		// about the notification `endSnooze` would have enqueued.
 		snoozeID := id.New()
 		if idem.Keyed {
-			replayed, ref, err := s.claim(ctx, scope, idem, snoozeID)
+			ref, err := idempotency.Resolve(ctx, s.claims, scope, idem,
+				idempotency.Replay, snoozeID, s.Now())
 			if err != nil {
-				return err
-			}
-			if replayed {
 				replayOf = ref
-				return errReplay
+				return err
 			}
 		}
 
@@ -468,7 +463,7 @@ func (s *Service) Snooze(
 		out = created
 		return nil
 	})
-	if errors.Is(err, errReplay) {
+	if errors.Is(err, idempotency.ErrReplay) {
 		// The transaction above is rolled back, so the incumbent this read finds
 		// is the snooze the FIRST attempt granted. Its id has to match the one the
 		// claim recorded: an alert that has since been unsnoozed and snoozed again

@@ -35,7 +35,7 @@ const batchWindow = 5 * time.Minute
 func (r *DrillRepository) Artifacts(
 	ctx context.Context, s db.TenantScope, d domain.Drill,
 ) (domain.Artifacts, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.Artifacts{}, err
 	}
 	var out domain.Artifacts

@@ -165,7 +165,7 @@ const getHealthSQL = `SELECT ` + healthColumns + ` FROM source_health WHERE org_
 func (r *SourceRepository) GetHealth(
 	ctx context.Context, s db.TenantScope, sourceID uuid.UUID,
 ) (domain.SourceHealth, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return domain.SourceHealth{}, err
 	}
 	var row healthRow
@@ -195,7 +195,7 @@ const listHealthSQL = `SELECT ` + healthColumns + `
 func (r *SourceRepository) HealthFor(
 	ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID,
 ) (map[uuid.UUID]domain.SourceHealth, error) {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return nil, err
 	}
 	if len(sourceIDs) == 0 {
@@ -261,10 +261,10 @@ ON CONFLICT (source_id) DO UPDATE SET
 // table in this module that is UPDATEd rather than appended to. The upsert exists
 // because Create seeds a row and a probe may still race it on a fresh source.
 func (r *SourceRepository) SaveHealth(ctx context.Context, s db.TenantScope, h domain.SourceHealth) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
-	if err := requireID("source_id", h.SourceID); err != nil {
+	if err := db.RequireID("source_id", h.SourceID); err != nil {
 		return err
 	}
 	if h.Status == "" {
@@ -350,7 +350,7 @@ ON CONFLICT (source_id) DO UPDATE SET
 func (r *SourceRepository) TouchPush(
 	ctx context.Context, s db.TenantScope, sourceID uuid.UUID, at time.Time,
 ) error {
-	if err := requireScope(s); err != nil {
+	if err := db.RequireScope(s); err != nil {
 		return err
 	}
 	if at.IsZero() {
