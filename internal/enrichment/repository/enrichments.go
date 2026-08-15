@@ -139,8 +139,7 @@ func (r *EnrichmentRepository) ListBySubject(
 
 	rows, err := r.db(ctx).Query(ctx, listBySubjectSQL, s.OrgID(), subjectKind, sid)
 	if err != nil {
-		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the subject's enrichments")
+		return nil, mapErr(err, CodeQueryFailed, "could not read the subject's enrichments")
 	}
 	defer rows.Close()
 
@@ -152,8 +151,7 @@ func (r *EnrichmentRepository) ListBySubject(
 			&row.phase, &row.status, &row.payload, &row.warnings, &row.errText,
 			&row.durationMS, &row.fromCache, &row.computedAt, &row.expiresAt,
 		); err != nil {
-			return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-				"could not read the subject's enrichments")
+			return nil, mapErr(err, CodeQueryFailed, "could not read the subject's enrichments")
 		}
 		e, err := row.toDomain()
 		if err != nil {
@@ -190,8 +188,7 @@ func (r *EnrichmentRepository) ListBySubject(
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the subject's enrichments")
+		return nil, mapErr(err, CodeQueryFailed, "could not read the subject's enrichments")
 	}
 	return out, nil
 }
@@ -280,8 +277,7 @@ func (r *EnrichmentRepository) UpsertMany(ctx context.Context, s db.TenantScope,
 
 	for range in {
 		if _, err := results.Exec(); err != nil {
-			return errs.Wrap(err, errs.KindInternal, CodeWriteFailed,
-				"could not store the enrichment results")
+			return mapErr(err, CodeWriteFailed, "could not store the enrichment results")
 		}
 	}
 	return nil

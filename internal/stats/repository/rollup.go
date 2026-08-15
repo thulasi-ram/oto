@@ -180,7 +180,7 @@ func (r *StatsRepository) RollupDay(
 
 	tag, err := r.db(ctx).Exec(ctx, rollupDaySQL, s.OrgID(), day.UTC(), asOf.UTC())
 	if err != nil {
-		return 0, errs.Wrap(err, errs.KindInternal, "stats_rollup_failed",
+		return 0, mapErr(err, "stats_rollup_failed",
 			"the alert-hygiene rollup could not be computed")
 	}
 	return int(tag.RowsAffected()), nil

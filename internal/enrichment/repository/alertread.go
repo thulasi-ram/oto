@@ -104,32 +104,32 @@ func (r *AlertReadModel) AlertHistory(
 		// error: the enricher reports an empty history and the pipeline moves on.
 		return alerthistory.Stats{}, nil
 	case err != nil:
-		return alerthistory.Stats{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+		return alerthistory.Stats{}, mapErr(err, CodeQueryFailed,
 			"could not read the alert's history")
 	}
 
 	if err := results.QueryRow().Scan(&out.Count24h, &out.Count7d, &out.Count30d); err != nil {
-		return alerthistory.Stats{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+		return alerthistory.Stats{}, mapErr(err, CodeQueryFailed,
 			"could not count the alert's occurrences")
 	}
 
 	rows, err := results.Query()
 	if err != nil {
-		return alerthistory.Stats{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+		return alerthistory.Stats{}, mapErr(err, CodeQueryFailed,
 			"could not read the alert's firing durations")
 	}
 	for rows.Next() {
 		var seconds float64
 		if err := rows.Scan(&seconds); err != nil {
 			rows.Close()
-			return alerthistory.Stats{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+			return alerthistory.Stats{}, mapErr(err, CodeQueryFailed,
 				"could not read the alert's firing durations")
 		}
 		out.FiringDurationsSeconds = append(out.FiringDurationsSeconds, seconds)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return alerthistory.Stats{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+		return alerthistory.Stats{}, mapErr(err, CodeQueryFailed,
 			"could not read the alert's firing durations")
 	}
 
@@ -211,8 +211,7 @@ func (r *AlertReadModel) RelatedAlerts(
 		s.OrgID(), q.OccurrenceID, q.AlertID,
 		q.From.UTC(), q.AlertName, q.Namespace, q.To.UTC(), limit)
 	if err != nil {
-		return nil, nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the related alerts")
+		return nil, nil, mapErr(err, CodeQueryFailed, "could not read the related alerts")
 	}
 	defer rows.Close()
 
@@ -232,8 +231,7 @@ func (r *AlertReadModel) RelatedAlerts(
 			&severity, &namespace, &service,
 			&rel.State, &occurrenceID, &rel.StartedAt, &total,
 		); err != nil {
-			return nil, nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-				"could not read the related alerts")
+			return nil, nil, mapErr(err, CodeQueryFailed, "could not read the related alerts")
 		}
 		rel.AlertID = alertID.String()
 		rel.OccurrenceID = occurrenceID.String()
@@ -246,8 +244,7 @@ func (r *AlertReadModel) RelatedAlerts(
 		counts[rel.Relation] = int(total)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the related alerts")
+		return nil, nil, mapErr(err, CodeQueryFailed, "could not read the related alerts")
 	}
 	return out, counts, nil
 }
@@ -273,8 +270,7 @@ func (r *AlertReadModel) BindRuleSnapshot(
 			"binding a rule snapshot needs both an occurrence and a snapshot")
 	}
 	if _, err := r.db(ctx).Exec(ctx, bindRuleSnapshotSQL, s.OrgID(), occurrenceID, snapshotID); err != nil {
-		return errs.Wrap(err, errs.KindInternal, CodeWriteFailed,
-			"could not bind the rule snapshot to the occurrence")
+		return mapErr(err, CodeWriteFailed, "could not bind the rule snapshot to the occurrence")
 	}
 	return nil
 }

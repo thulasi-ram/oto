@@ -129,7 +129,7 @@ func (r *StatsRepository) AlertQuality(
 		s.OrgID(), f.Since, f.Until, clusters, names, f.Sort.String(),
 		afterValue, f.AfterKey, limit+1)
 	if err != nil {
-		return nil, false, errs.Wrap(err, errs.KindInternal, "stats_quality_failed",
+		return nil, false, mapErr(err, "stats_quality_failed",
 			"could not read the alert-hygiene rollup")
 	}
 	defer rows.Close()
@@ -147,7 +147,7 @@ func (r *StatsRepository) AlertQuality(
 		)
 		if err := rows.Scan(&q.ClusterKey, &q.AlertName, &occ, &notif, &del,
 			&acked, &auto, &exp, &firing, &flap, &sortValue, &keysetKey); err != nil {
-			return nil, false, errs.Wrap(err, errs.KindInternal, "stats_quality_scan_failed",
+			return nil, false, mapErr(err, "stats_quality_scan_failed",
 				"could not read the alert-hygiene rollup")
 		}
 		if len(out) == limit {
@@ -166,7 +166,7 @@ func (r *StatsRepository) AlertQuality(
 		out = append(out, QualityRow{Quality: q, SortValue: sortValue, KeysetKey: keysetKey})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, errs.Wrap(err, errs.KindInternal, "stats_quality_failed",
+		return nil, false, mapErr(err, "stats_quality_failed",
 			"could not read the alert-hygiene rollup")
 	}
 	return out, hasMore, nil
@@ -305,7 +305,7 @@ func (r *StatsRepository) Overview(
 		&o.Channels.Healthy, &o.Channels.Degraded, &o.Channels.AuthFailed, &o.Channels.ConfigInvalid,
 	)
 	if err != nil {
-		return domain.Overview{}, errs.Wrap(err, errs.KindInternal, "stats_overview_failed",
+		return domain.Overview{}, mapErr(err, "stats_overview_failed",
 			"could not read the dashboard roll-up")
 	}
 	return o, nil

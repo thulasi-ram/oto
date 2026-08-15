@@ -28,6 +28,30 @@ const (
 	CodeBadID = "rules_invalid_id"
 )
 
+// mapErr turns a database error into an errs.Kind for this package. The §L.9
+// table itself lives in `db.MapError` and is shared by every repository — this
+// module contributes only the codes it alone can name. `code` keeps the
+// read/write split this package has always published: `rules_query_failed` on
+// a read, `rules_write_failed` on a write.
+//
+// ⛔ `ComputedKeys` IS WHY A KEY VIOLATION STAYS A 500. `rule_snapshots` has two
+// unique keys: the `id` PRIMARY KEY, minted with `id.New()` immediately before
+// the INSERT, and `rule_snapshots_content_uniq`, which is the upsert's own ON
+// CONFLICT target and is swallowed there. A `23505` reaching Go is therefore a
+// statement that drifted from the schema — §L.9 row 2's oto bug — never a
+// conflict the capture path could fix by changing the request. The foreign keys
+// are the same shape: `org_id` is the authenticated scope's and `source_id` is
+// resolved before a capture is built.
+func mapErr(err error, code, msg string) error {
+	return db.MapError(err, db.ErrorPolicy{
+		NotFound:           CodeNotFound,
+		NotFoundMessage:    "no such rule snapshot",
+		QueryFailed:        code,
+		QueryFailedMessage: msg,
+		ComputedKeys:       true,
+	})
+}
+
 // snapshotRow is the row model of `rule_snapshots`. Unexported, per the
 // three-model rule: no DTO and no domain type may embed it.
 type snapshotRow struct {
@@ -198,8 +222,16 @@ func (r *SnapshotRepository) Upsert(ctx context.Context, s db.TenantScope, snap 
 		string(snap.Origin), promURL, string(snap.Confidence), snap.CandidateCount,
 		snap.CapturedAt,
 	), &inserted)
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// The recovery arm reads with the statement's snapshot, so a conflicting
+		// capture that commits mid-statement can leave BOTH arms empty. The row
+		// exists by the time the caller could look, so this is oto's to retry and
+		// never a 404.
 		return domain.Snapshot{}, false, errs.Wrap(err, errs.KindInternal, CodeWriteFailed,
+			"could not store the rule snapshot")
+	case err != nil:
+		return domain.Snapshot{}, false, mapErr(err, CodeWriteFailed,
 			"could not store the rule snapshot")
 	}
 
@@ -218,12 +250,8 @@ SELECT ` + snapshotColumns + `
 // Get returns one snapshot by id.
 func (r *SnapshotRepository) Get(ctx context.Context, s db.TenantScope, snapshotID uuid.UUID) (domain.Snapshot, error) {
 	row, err := scanSnapshot(r.db(ctx).QueryRow(ctx, getSnapshotSQL, s.OrgID(), snapshotID))
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return domain.Snapshot{}, errs.NotFound(CodeNotFound, "no such rule snapshot")
-	case err != nil:
-		return domain.Snapshot{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule snapshot")
+	if err != nil {
+		return domain.Snapshot{}, mapErr(err, CodeQueryFailed, "could not read the rule snapshot")
 	}
 	return row.toDomain()
 }
@@ -261,8 +289,7 @@ func (r *SnapshotRepository) GetMany(
 
 	rows, err := r.db(ctx).Query(ctx, getSnapshotsByIDsSQL, s.OrgID(), ids)
 	if err != nil {
-		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule snapshots")
+		return nil, mapErr(err, CodeQueryFailed, "could not read the rule snapshots")
 	}
 	defer rows.Close()
 
@@ -270,8 +297,7 @@ func (r *SnapshotRepository) GetMany(
 	for rows.Next() {
 		row, scanErr := scanSnapshot(rows)
 		if scanErr != nil {
-			return nil, errs.Wrap(scanErr, errs.KindInternal, CodeQueryFailed,
-				"could not read the rule snapshots")
+			return nil, mapErr(scanErr, CodeQueryFailed, "could not read the rule snapshots")
 		}
 		snap, convErr := row.toDomain()
 		if convErr != nil {
@@ -280,8 +306,7 @@ func (r *SnapshotRepository) GetMany(
 		out = append(out, snap)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule snapshots")
+		return nil, mapErr(err, CodeQueryFailed, "could not read the rule snapshots")
 	}
 	return out, nil
 }
@@ -360,8 +385,7 @@ func (r *SnapshotRepository) ListByKey(ctx context.Context, s db.TenantScope, ke
 
 	rows, err := r.db(ctx).Query(ctx, sql, args...)
 	if err != nil {
-		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule history")
+		return nil, mapErr(err, CodeQueryFailed, "could not read the rule history")
 	}
 	defer rows.Close()
 
@@ -369,8 +393,7 @@ func (r *SnapshotRepository) ListByKey(ctx context.Context, s db.TenantScope, ke
 	for rows.Next() {
 		row, scanErr := scanSnapshot(rows)
 		if scanErr != nil {
-			return nil, errs.Wrap(scanErr, errs.KindInternal, CodeQueryFailed,
-				"could not read the rule history")
+			return nil, mapErr(scanErr, CodeQueryFailed, "could not read the rule history")
 		}
 		snap, convErr := row.toDomain()
 		if convErr != nil {
@@ -379,8 +402,7 @@ func (r *SnapshotRepository) ListByKey(ctx context.Context, s db.TenantScope, ke
 		out = append(out, snap)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule history")
+		return nil, mapErr(err, CodeQueryFailed, "could not read the rule history")
 	}
 	return out, nil
 }
@@ -433,8 +455,7 @@ func (r *SnapshotRepository) ListPage(
 
 	rows, err := r.db(ctx).Query(ctx, sql, args...)
 	if err != nil {
-		return nil, db.Cursor{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule history")
+		return nil, db.Cursor{}, mapErr(err, CodeQueryFailed, "could not read the rule history")
 	}
 	defer rows.Close()
 
@@ -443,8 +464,7 @@ func (r *SnapshotRepository) ListPage(
 	for rows.Next() {
 		row, scanErr := scanSnapshot(rows)
 		if scanErr != nil {
-			return nil, db.Cursor{}, errs.Wrap(scanErr, errs.KindInternal, CodeQueryFailed,
-				"could not read the rule history")
+			return nil, db.Cursor{}, mapErr(scanErr, CodeQueryFailed, "could not read the rule history")
 		}
 		snap, convErr := row.toDomain()
 		if convErr != nil {
@@ -454,8 +474,7 @@ func (r *SnapshotRepository) ListPage(
 		ids = append(ids, row.id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, db.Cursor{}, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
-			"could not read the rule history")
+		return nil, db.Cursor{}, mapErr(err, CodeQueryFailed, "could not read the rule history")
 	}
 
 	hasMore := len(out) > limit
@@ -539,7 +558,7 @@ func (r *SnapshotRepository) latest(
 		// rule has no predecessor and that is not an error condition.
 		return domain.Snapshot{}, false, nil
 	case err != nil:
-		return domain.Snapshot{}, false, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+		return domain.Snapshot{}, false, mapErr(err, CodeQueryFailed,
 			"could not read the latest rule snapshot")
 	}
 	snap, err := row.toDomain()

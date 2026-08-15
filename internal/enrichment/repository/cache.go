@@ -80,7 +80,7 @@ func (r *CacheRepository) Get(ctx context.Context, s db.TenantScope, key string)
 	case errors.Is(err, pgx.ErrNoRows):
 		return domain.CacheEntry{}, false, nil
 	case err != nil:
-		return domain.CacheEntry{}, false, errs.Wrap(err, errs.KindInternal, CodeQueryFailed,
+		return domain.CacheEntry{}, false, mapErr(err, CodeQueryFailed,
 			"could not read the enrichment cache")
 	}
 
@@ -108,8 +108,7 @@ ON CONFLICT (cache_key) DO UPDATE SET
 func (r *CacheRepository) Put(ctx context.Context, s db.TenantScope, e domain.CacheEntry) error {
 	if _, err := r.db(ctx).Exec(ctx, putCacheSQL,
 		e.Key(), s.OrgID(), e.Payload(), e.ComputedAt(), e.ExpiresAt()); err != nil {
-		return errs.Wrap(err, errs.KindInternal, CodeWriteFailed,
-			"could not write the enrichment cache")
+		return mapErr(err, CodeWriteFailed, "could not write the enrichment cache")
 	}
 	return nil
 }
@@ -135,8 +134,7 @@ func (r *CacheRepository) DeleteExpired(ctx context.Context, before time.Time, l
 	}
 	tag, err := r.db(ctx).Exec(ctx, deleteExpiredSQL, before.UTC(), limit)
 	if err != nil {
-		return 0, errs.Wrap(err, errs.KindInternal, CodeWriteFailed,
-			"could not evict expired enrichment cache entries")
+		return 0, mapErr(err, CodeWriteFailed, "could not evict expired enrichment cache entries")
 	}
 	return tag.RowsAffected(), nil
 }
