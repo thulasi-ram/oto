@@ -73,6 +73,7 @@ just helm-check       render the Helm chart and prove its guard rails still fire
 just ci               everything the GitHub workflow runs, in the same order
 just status           which migrations have been applied
 just reset            destroy the dev volume and start clean
+just docs             Starlight docs site (docs-site/) on :4321, synced from docs/
 ```
 
 `just` is the only task runner (ADR 0021). There was a Makefile alongside it and the two diverged —
