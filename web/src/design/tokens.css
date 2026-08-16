@@ -21,24 +21,25 @@
 :root,
 [data-theme="light"] {
   /* ---- Tier A: pastel chrome ---------------------------------------- */
-  --oto-bg: #fbfaff; /* page */
-  --oto-surface: #ffffff; /* cards, table body */
-  --oto-surface-raised: #f5f3fd; /* headers, sticky rows, popovers */
-  --oto-surface-sunken: #efedf8; /* wells, code blocks, timeline gutter */
-  --oto-border: #e2dff0; /* hairlines */
-  --oto-border-strong: #c9c4e4; /* input borders, dividers that must read */
-  --oto-text: #1e1b2e; /* primary */
-  --oto-text-muted: #5a5473; /* secondary */
-  --oto-text-subtle: #78718f; /* tertiary, timestamps */
+  --oto-bg: #fdf9ef; /* page — washi paper */
+  --oto-surface: #fffdf7; /* cards, table body */
+  --oto-surface-raised: #f1e9d5; /* headers, sticky rows, popovers */
+  --oto-surface-sunken: #e9ddc0; /* wells, code blocks, timeline gutter */
+  --oto-border: #e1d2af; /* hairlines */
+  --oto-border-strong: #c4ae7e; /* input borders, dividers that must read */
+  --oto-text: #2b2622; /* primary — sumi ink */
+  --oto-text-muted: #675d4e; /* secondary — nezumi */
+  --oto-text-subtle: #776c59; /* tertiary, timestamps */
   --oto-text-inverse: #ffffff;
 
   /* brand "chime" — Tier A accent. Links, primary buttons, focus.
-     Deliberately a periwinkle, NOT adjacent to any state hue. */
-  --oto-accent: #5b54d6;
-  --oto-accent-hover: #4a43c4;
-  --oto-accent-fill: #eeedfd;
-  --oto-accent-border: #c3bff3;
-  --oto-focus: #5b54d6;
+     Deliberately a beni crimson-pink (safflower dye), NOT adjacent to any
+     state hue — nearest neighbour is firing red, ~25° away in hue. */
+  --oto-accent: #b5305c;
+  --oto-accent-hover: #942650;
+  --oto-accent-fill: #fbe5ec;
+  --oto-accent-border: #e4a0b8;
+  --oto-focus: #b5305c;
 
   /* ---- Tier B: state only. Never use these for chrome. --------------- */
   --oto-state-firing-fill: #ffebea;
@@ -78,27 +79,29 @@
   --oto-chart-4: #b98bc4;
   --oto-chart-5: #c9915e;
   --oto-chart-6: #5f7c99;
-  --oto-chart-grid: #e2dff0;
+  --oto-chart-grid: #e1d2af;
 }
 
 [data-theme="dark"] {
   /* ---- Tier A: muted, low-chroma chrome ----------------------------- */
-  --oto-bg: #14131c;
-  --oto-surface: #1b1a26;
-  --oto-surface-raised: #242232;
-  --oto-surface-sunken: #100f17;
-  --oto-border: #322f44;
-  --oto-border-strong: #474360;
-  --oto-text: #edebf7;
-  --oto-text-muted: #b4aecb;
-  --oto-text-subtle: #8b84a6;
-  --oto-text-inverse: #14131c;
+  --oto-bg: #171e2f;
+  --oto-surface: #1f2840;
+  --oto-surface-raised: #29334c;
+  --oto-surface-sunken: #111725;
+  --oto-border: #303c58;
+  --oto-border-strong: #46527a;
+  --oto-text: #edebf3;
+  --oto-text-muted: #b7b9c9;
+  --oto-text-subtle: #9096a8;
+  --oto-text-inverse: #171e2f;
 
-  --oto-accent: #a6a0ff;
-  --oto-accent-hover: #bdb8ff;
-  --oto-accent-fill: #262340;
-  --oto-accent-border: #464070;
-  --oto-focus: #a6a0ff;
+  /* Konshi Sutra — indigo manuscript paper. Accent brightens to a bright
+     beni pink so gold/silver-ink logic still reads as "ink on dark paper". */
+  --oto-accent: #ec8ca6;
+  --oto-accent-hover: #f5a6bc;
+  --oto-accent-fill: #3a2434;
+  --oto-accent-border: #63465a;
+  --oto-focus: #ec8ca6;
 
   /* ---- Tier B: state only ------------------------------------------- */
   --oto-state-firing-fill: #331a19;
@@ -137,7 +140,7 @@
   --oto-chart-4: #d3a9dc;
   --oto-chart-5: #e0af82;
   --oto-chart-6: #8aa6c2;
-  --oto-chart-grid: #322f44;
+  --oto-chart-grid: #303c58;
 }
 
 /* Row heights are a first-class concern (U6): 36 px comfortable, 28 px compact.

@@ -4955,24 +4955,25 @@ a distance, unmistakable at a glance, and legible for everyone.
 /* web/src/design/tokens.css */
 :root, [data-theme="light"] {
   /* ---- Tier A: pastel chrome ---------------------------------------- */
-  --oto-bg:               #FBFAFF;  /* page */
-  --oto-surface:          #FFFFFF;  /* cards, table body */
-  --oto-surface-raised:   #F5F3FD;  /* headers, sticky rows, popovers */
-  --oto-surface-sunken:   #EFEDF8;  /* wells, code blocks, timeline gutter */
-  --oto-border:           #E2DFF0;  /* hairlines */
-  --oto-border-strong:    #C9C4E4;  /* input borders, dividers that must read */
-  --oto-text:             #1E1B2E;  /* primary */
-  --oto-text-muted:       #5A5473;  /* secondary */
-  --oto-text-subtle:      #78718F;  /* tertiary, timestamps */
+  --oto-bg:               #FDF9EF;  /* page — washi paper */
+  --oto-surface:          #FFFDF7;  /* cards, table body */
+  --oto-surface-raised:   #F1E9D5;  /* headers, sticky rows, popovers */
+  --oto-surface-sunken:   #E9DDC0;  /* wells, code blocks, timeline gutter */
+  --oto-border:           #E1D2AF;  /* hairlines */
+  --oto-border-strong:    #C4AE7E;  /* input borders, dividers that must read */
+  --oto-text:             #2B2622;  /* primary — sumi ink */
+  --oto-text-muted:       #675D4E;  /* secondary — nezumi */
+  --oto-text-subtle:      #776C59;  /* tertiary, timestamps */
   --oto-text-inverse:     #FFFFFF;
 
   /* brand "chime" — Tier A accent. Used for links, primary buttons, focus.
-     Deliberately a periwinkle, NOT adjacent to any state hue. */
-  --oto-accent:           #5B54D6;
-  --oto-accent-hover:     #4A43C4;
-  --oto-accent-fill:      #EEEDFD;
-  --oto-accent-border:    #C3BFF3;
-  --oto-focus:            #5B54D6;
+     Deliberately a beni crimson-pink (safflower dye), NOT adjacent to any
+     state hue — nearest neighbour is firing red, ~25° away in hue. */
+  --oto-accent:           #B5305C;
+  --oto-accent-hover:     #942650;
+  --oto-accent-fill:      #FBE5EC;
+  --oto-accent-border:    #E4A0B8;
+  --oto-focus:            #B5305C;
 
   /* ---- Tier B: state only. Never use these for chrome. --------------- */
   --oto-state-firing-fill:      #FFEBEA;
@@ -5008,7 +5009,7 @@ a distance, unmistakable at a glance, and legible for everyone.
   /* ---- charts: neutral/brand ramp, NEVER state hues (U5) ------------- */
   --oto-chart-1: #6F67DD; --oto-chart-2: #48A0C9; --oto-chart-3: #7FA05C;
   --oto-chart-4: #B98BC4; --oto-chart-5: #C9915E; --oto-chart-6: #5F7C99;
-  --oto-chart-grid: #E2DFF0;
+  --oto-chart-grid: #E1D2AF;
 }
 ```
 
@@ -5025,27 +5026,27 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
 
 | Foreground | Background | Ratio | Requirement | Pass |
 |---|---|---|---|---|
-| `--oto-text` `#1E1B2E` | `--oto-surface` `#FFFFFF` | **16.8:1** | 4.5 | ✅ |
-| `--oto-text` `#1E1B2E` | `--oto-bg` `#FBFAFF` | **16.2:1** | 4.5 | ✅ |
-| `--oto-text` `#1E1B2E` | `--oto-surface-raised` `#F5F3FD` | **15.3:1** | 4.5 | ✅ |
-| `--oto-text-muted` `#5A5473` | `#FFFFFF` | **7.1:1** | 4.5 | ✅ |
-| `--oto-text-muted` `#5A5473` | `#F5F3FD` | **6.5:1** | 4.5 | ✅ |
-| `--oto-text-subtle` `#78718F` | `#FFFFFF` | **4.6:1** | 4.5 | ✅ |
-| `--oto-accent` `#5B54D6` | `#FFFFFF` | **5.7:1** | 4.5 (link text) | ✅ |
-| `--oto-text-inverse` `#FFFFFF` | `--oto-accent` `#5B54D6` | **5.7:1** | 4.5 (button label) | ✅ |
+| `--oto-text` `#2B2622` | `--oto-surface` `#FFFDF7` | **14.7:1** | 4.5 | ✅ |
+| `--oto-text` `#2B2622` | `--oto-bg` `#FDF9EF` | **14.2:1** | 4.5 | ✅ |
+| `--oto-text` `#2B2622` | `--oto-surface-raised` `#F1E9D5` | **12.4:1** | 4.5 | ✅ |
+| `--oto-text-muted` `#675D4E` | `#FFFDF7` | **6.3:1** | 4.5 | ✅ |
+| `--oto-text-muted` `#675D4E` | `#F1E9D5` | **5.3:1** | 4.5 | ✅ |
+| `--oto-text-subtle` `#776C59` | `#FFFDF7` | **5.1:1** | 4.5 | ✅ |
+| `--oto-accent` `#B5305C` | `#FFFDF7` | **5.8:1** | 4.5 (link text) | ✅ |
+| `--oto-text-inverse` `#FFFFFF` | `--oto-accent` `#B5305C` | **5.9:1** | 4.5 (button label) | ✅ |
 | `--oto-state-firing-text` `#8C1D18` | `--oto-state-firing-fill` `#FFEBEA` | **8.0:1** | 4.5 | ✅ |
-| `--oto-state-firing-solid` `#D7332B` | `--oto-bg` `#FBFAFF` | **4.6:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-firing-solid` `#D7332B` | `--oto-bg` `#FDF9EF` | **4.5:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#7A4A00` | `--oto-state-acked-fill` `#FFF4E0` | **6.9:1** | 4.5 | ✅ |
-| `--oto-state-acked-solid` `#C97A00` | `--oto-bg` `#FBFAFF` | **3.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-acked-solid` `#C97A00` | `--oto-bg` `#FDF9EF` | **3.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-suppressed-text` `#4A4560` | `--oto-state-suppressed-fill` `#F1F0F6` | **8.0:1** | 4.5 | ✅ |
-| `--oto-state-suppressed-solid` `#6E6786` | `--oto-bg` `#FBFAFF` | **5.1:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-suppressed-solid` `#6E6786` | `--oto-bg` `#FDF9EF` | **5.1:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-resolved-text` `#12592F` | `--oto-state-resolved-fill` `#E7F5EC` | **7.5:1** | 4.5 | ✅ |
-| `--oto-state-resolved-solid` `#17794A` | `--oto-bg` `#FBFAFF` | **5.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-resolved-solid` `#17794A` | `--oto-bg` `#FDF9EF` | **5.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-expired-text` `#57493A` | `--oto-state-expired-fill` `#F4F1EC` | **7.7:1** | 4.5 | ✅ |
-| `--oto-state-expired-solid` `#7D6A54` | `--oto-bg` `#FBFAFF` | **5.0:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-expired-solid` `#7D6A54` | `--oto-bg` `#FDF9EF` | **4.9:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-info-text` `#0B4A9B` | `--oto-state-info-fill` `#E9F1FE` | **7.5:1** | 4.5 | ✅ |
-| `--oto-state-info-solid` `#1A6FD4` | `--oto-bg` `#FBFAFF` | **4.7:1** | 3.0 (non-text) | ✅ |
-| `--oto-border-strong` `#C9C4E4` | `--oto-surface` `#FFFFFF` | **1.7:1** | — (decorative hairline only) | n/a |
+| `--oto-state-info-solid` `#1A6FD4` | `--oto-bg` `#FDF9EF` | **4.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-border-strong` `#C4AE7E` | `--oto-surface` `#FFFDF7` | **2.1:1** | — (decorative hairline only) | n/a |
 
 > `--oto-border` and `--oto-border-strong` are **decorative** and are never the sole carrier of
 > meaning. Any border that *does* carry meaning is a Tier-B `-border` or `-solid` token, all of
@@ -5056,22 +5057,24 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
 ```css
 [data-theme="dark"] {
   /* ---- Tier A: muted, low-chroma chrome ----------------------------- */
-  --oto-bg:               #14131C;
-  --oto-surface:          #1B1A26;
-  --oto-surface-raised:   #242232;
-  --oto-surface-sunken:   #100F17;
-  --oto-border:           #322F44;
-  --oto-border-strong:    #474360;
-  --oto-text:             #EDEBF7;
-  --oto-text-muted:       #B4AECB;
-  --oto-text-subtle:      #8B84A6;
-  --oto-text-inverse:     #14131C;
+  --oto-bg:               #171E2F;
+  --oto-surface:          #1F2840;
+  --oto-surface-raised:   #29334C;
+  --oto-surface-sunken:   #111725;
+  --oto-border:           #303C58;
+  --oto-border-strong:    #46527A;
+  --oto-text:             #EDEBF3;
+  --oto-text-muted:       #B7B9C9;
+  --oto-text-subtle:      #9096A8;
+  --oto-text-inverse:     #171E2F;
 
-  --oto-accent:           #A6A0FF;
-  --oto-accent-hover:     #BDB8FF;
-  --oto-accent-fill:      #262340;
-  --oto-accent-border:    #464070;
-  --oto-focus:            #A6A0FF;
+  /* Konshi Sutra — indigo manuscript paper. Accent brightens to a bright
+     beni pink so gold/silver-ink logic still reads as "ink on dark paper". */
+  --oto-accent:           #EC8CA6;
+  --oto-accent-hover:     #F5A6BC;
+  --oto-accent-fill:      #3A2434;
+  --oto-accent-border:    #63465A;
+  --oto-focus:            #EC8CA6;
 
   /* ---- Tier B: state only ------------------------------------------- */
   --oto-state-firing-fill:      #331A19;
@@ -5106,7 +5109,7 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
 
   --oto-chart-1: #9A93F5; --oto-chart-2: #6FC0E4; --oto-chart-3: #A3C57F;
   --oto-chart-4: #D3A9DC; --oto-chart-5: #E0AF82; --oto-chart-6: #8AA6C2;
-  --oto-chart-grid: #322F44;
+  --oto-chart-grid: #303C58;
 }
 ```
 
@@ -5115,24 +5118,24 @@ note under §M.4's table.
 
 | Foreground | Background | Ratio | Requirement | Pass |
 |---|---|---|---|---|
-| `--oto-text` `#EDEBF7` | `--oto-surface` `#1B1A26` | **14.6:1** | 4.5 | ✅ |
-| `--oto-text` `#EDEBF7` | `--oto-bg` `#14131C` | **15.6:1** | 4.5 | ✅ |
-| `--oto-text-muted` `#B4AECB` | `#1B1A26` | **8.1:1** | 4.5 | ✅ |
-| `--oto-text-subtle` `#8B84A6` | `#1B1A26` | **4.9:1** | 4.5 | ✅ |
-| `--oto-accent` `#A6A0FF` | `#1B1A26` | **7.4:1** | 4.5 | ✅ |
-| `--oto-text-inverse` `#14131C` | `--oto-accent` `#A6A0FF` | **8.0:1** | 4.5 (button label) | ✅ |
+| `--oto-text` `#EDEBF3` | `--oto-surface` `#1F2840` | **12.4:1** | 4.5 | ✅ |
+| `--oto-text` `#EDEBF3` | `--oto-bg` `#171E2F` | **14.1:1** | 4.5 | ✅ |
+| `--oto-text-muted` `#B7B9C9` | `#1F2840` | **7.5:1** | 4.5 | ✅ |
+| `--oto-text-subtle` `#9096A8` | `#1F2840` | **5.0:1** | 4.5 | ✅ |
+| `--oto-accent` `#EC8CA6` | `#1F2840` | **6.2:1** | 4.5 | ✅ |
+| `--oto-text-inverse` `#171E2F` | `--oto-accent` `#EC8CA6` | **7.0:1** | 4.5 (button label) | ✅ |
 | `--oto-state-firing-text` `#FFB4AE` | `--oto-state-firing-fill` `#331A19` | **9.5:1** | 4.5 | ✅ |
-| `--oto-state-firing-solid` `#FF6B60` | `--oto-bg` `#14131C` | **6.6:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-firing-solid` `#FF6B60` | `--oto-bg` `#171E2F` | **6.0:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#FFD08A` | `--oto-state-acked-fill` `#33260F` | **10.3:1** | 4.5 | ✅ |
-| `--oto-state-acked-solid` `#F0A93C` | `--oto-bg` `#14131C` | **9.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-acked-solid` `#F0A93C` | `--oto-bg` `#171E2F` | **8.3:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-suppressed-text` `#C0BAD4` | `--oto-state-suppressed-fill` `#242231` | **8.3:1** | 4.5 | ✅ |
-| `--oto-state-suppressed-solid` `#837CA0` | `--oto-bg` `#14131C` | **4.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-suppressed-solid` `#837CA0` | `--oto-bg` `#171E2F` | **4.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-resolved-text` `#96E0B4` | `--oto-state-resolved-fill` `#102E1E` | **9.5:1** | 4.5 | ✅ |
-| `--oto-state-resolved-solid` `#35A96C` | `--oto-bg` `#14131C` | **6.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-resolved-solid` `#35A96C` | `--oto-bg` `#171E2F` | **5.6:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-expired-text` `#D6C7B0` | `--oto-state-expired-fill` `#2B2620` | **9.0:1** | 4.5 | ✅ |
-| `--oto-state-expired-solid` `#9A8869` | `--oto-bg` `#14131C` | **5.4:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-expired-solid` `#9A8869` | `--oto-bg` `#171E2F` | **4.8:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-info-text` `#A8CDFF` | `--oto-state-info-fill` `#142A44` | **8.9:1** | 4.5 | ✅ |
-| `--oto-state-info-solid` `#5B9CF0` | `--oto-bg` `#14131C` | **6.5:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-info-solid` `#5B9CF0` | `--oto-bg` `#171E2F` | **5.9:1** | 3.0 (non-text) | ✅ |
 
 ### M.6 The Slack palette is a SEPARATE, UNCHANGED system
 
