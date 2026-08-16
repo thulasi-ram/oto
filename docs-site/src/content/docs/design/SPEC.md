@@ -5197,7 +5197,7 @@ hex. **Both prohibitions are enforced**, and neither was until git-bug `c49baaa`
 | `web/src/components/ui/Chime.test.tsx` | **RUNS.** Same job | the fūrin's swing fires on the header mark's first mount in a document, at most once per document, never on a connection transition (neither a reload holding a resume point nor a quiet install's endless reconnects can change whether it fires), and carries the `motion-safe:` guard |
 | `web/src/design/scales.test.ts` | **RUNS.** Same job | U10 and §M.8: no font size and no corner radius is written at a call site — not as a bracket (`text-[13px]`, `rounded-[4px]`, `[font-size:13px]`), not through Tailwind's own ladder (`text-sm`, `rounded-md`, bare `rounded`), and not as a raw `font-size`/`border-radius` declaration in a stylesheet. It also asserts §M.8's CSS block declares the same steps, with the same values, as `tokens.css` — the parity §M.4/§M.5 get from `tokens.test.ts` — and that every step the scale declares has a call site — a scale may not grow ahead of the product. The steps are read out of `index.css`, so a new one is permitted the moment it is declared, and comments are stripped before scanning so the prose that names the banned forms does not trip it |
 
-### M.8 Type and radius scales (ADR 0029)
+### M.8 Type, radius and spacing scales (ADR 0029)
 
 §M.4–§M.7 legislate one axis. Until ADR 0029 the other two had no vocabulary at all: no `--text-*`
 and no `--radius-*` existed, so every component invented a px literal in a bracket, and **342** of
@@ -5251,6 +5251,41 @@ of the 54 call sites was on the correct side of that line already; what was miss
 
 `rounded-full` and `rounded-none` remain available and are not steps: they are shapes, and a status
 dot is a circle at any radius the scale could name.
+
+**Spacing was added later, the same way and for the same reason** — a census of the `px-*`/`gap-*`
+values already load-bearing across the tree, not a scale invented ahead of them. Six steps survive,
+the same count as the type scale and for the same cause: the operational surfaces are tables and
+chips, so the ladder is dense at the small end.
+
+```css
+:root {
+  /* Spacing. Named by size, not by role — unlike type/radius, padding and gap
+     are used in too many structural contexts for one name to fit all of them. */
+  --oto-space-2xs: 4px;
+  --oto-space-xs: 6px;
+  --oto-space-sm: 8px;
+  --oto-space-md: 12px;
+  --oto-space-lg: 16px;
+  --oto-space-xl: 24px;
+}
+```
+
+| Utility | Step | What it is for |
+|---|---|---|
+| `p/gap-2xs` | 4 px | tightest inline gap — icon-to-label inside a chip or nav item |
+| `p/gap-xs` | 6 px | compact control padding — chips, toggle pills, the search box |
+| `p/gap-sm` | 8 px | the dense default — table-cell padding, row-level gaps |
+| `p/gap-md` | 12 px | section padding — filter-row insets, card padding |
+| `p/gap-lg` | 16 px | shell-level padding — header, page gutter |
+| `p/gap-xl` | 24 px | generous breathing room — empty/error-state panels |
+
+> ⚠️ **Spacing has no enforcement gate yet.** Type and radius are closed vocabularies —
+> `scales.test.ts` rejects a bracket, Tailwind's own ladder, and an unused step for both axes.
+> Spacing coexists with Tailwind's numeric scale instead of replacing it: `p-sm` and `p-2` compile
+> to the same declaration, and nothing yet stops a new call site from reaching for the numeric form.
+> The six names above are the ones this scale's own introduction (repainting the alert screen's
+> chrome and filter bar) converged on; extending the gate to this axis is future work, tracked the
+> same way an unwritten Playwright a11y sweep is in §M.7 — named here rather than silently assumed.
 
 > **These are NOT theme tokens, and are deliberately outside every `[data-theme]` block.** A palette
 > is a property of the theme; a type step is not, and asking dark mode for its own 11 px would be

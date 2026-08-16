@@ -91,7 +91,15 @@ export const ToggleGroup = <T extends ValidComponent = "div">(
       </span>
       <ToggleGroupPrimitive.Root
         aria-labelledby={legendId}
-        class={cn("flex flex-wrap items-center gap-1", local.class)}
+        class={cn(
+          // A segmented well, not a row of individually-bordered boxes — the
+          // same track/chip relationship `Tabs.tsx`'s `TabsList` already uses.
+          // One border around the group reads as one control with several
+          // values; a border around every pill reads as several controls that
+          // happen to be neighbours.
+          "flex flex-wrap items-center gap-2xs rounded-control bg-sunken p-2xs",
+          local.class,
+        )}
         {...others}
       >
         {local.children}
@@ -113,10 +121,16 @@ export const ToggleGroupItem = <T extends ValidComponent = "button">(
   return (
     <ToggleGroupPrimitive.Item
       class={cn(
-        "inline-flex cursor-pointer items-center gap-1 rounded-control border border-line bg-surface " +
-          "px-1.5 py-0.5 text-body text-ink-muted transition-colors duration-100 " +
-          "hover:bg-raised " +
-          "data-[pressed]:border-accent-border data-[pressed]:bg-accent-fill data-[pressed]:text-ink " +
+        // No border of its own — the well around the group is the only
+        // outline this control needs; resting state is transparent so the
+        // well's `bg-sunken` shows through between pills. The pressed state
+        // keeps its accent tint (Tier A, never a state hue, §M.2) — unlike a
+        // tab, a pressed filter chip is a fact worth seeing at a glance, not
+        // just "which view am I in".
+        "inline-flex cursor-pointer items-center gap-2xs rounded-control " +
+          "px-xs py-2xs text-body text-ink-muted transition-colors duration-100 " +
+          "hover:bg-raised hover:text-ink " +
+          "data-[pressed]:bg-accent-fill data-[pressed]:text-ink " +
           "disabled:cursor-not-allowed disabled:opacity-45",
         local.class,
       )}

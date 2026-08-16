@@ -95,16 +95,25 @@ function variantUsesOfLocalUtilities(local: ReadonlySet<string>): ReadonlyMap<st
 }
 
 /**
- * The two forms of `@import` `index.css` actually uses: a bare package specifier
- * (`"tailwindcss"`, whose `exports` publish `./index.css`) and a path relative to
- * the importing sheet (`"./design/tokens.css"`). Anything else throws rather than
- * resolving to something plausible-but-wrong, because a silently mis-resolved
- * import here would look exactly like a missing utility.
+ * The three forms of `@import` `index.css` actually uses: a bare package
+ * specifier naming a package's own root (`"tailwindcss"`, whose `exports`
+ * publish `./index.css`), a bare specifier naming an explicit file inside a
+ * package (`"@fontsource-variable/inter/wght.css"`), and a path relative to
+ * the importing sheet (`"./design/tokens.css"`). Anything else throws rather
+ * than resolving to something plausible-but-wrong, because a silently
+ * mis-resolved import here would look exactly like a missing utility.
+ *
+ * The first two forms are told apart by whether the bare specifier already
+ * ends in `.css`: appending `/index.css` to one that does (the mistake this
+ * used to make for a font subpath import) resolves to a directory named
+ * `wght.css` and a file inside it, which does not exist.
  */
 const requireFrom = createRequire(ENTRYPOINT);
 
 async function loadStylesheet(id: string, base: string) {
-  const file = id.startsWith(".") ? path.resolve(base, id) : requireFrom.resolve(`${id}/index.css`);
+  const file = id.startsWith(".")
+    ? path.resolve(base, id)
+    : requireFrom.resolve(id.endsWith(".css") ? id : `${id}/index.css`);
   return { path: file, base: path.dirname(file), content: readFileSync(file, "utf8") };
 }
 

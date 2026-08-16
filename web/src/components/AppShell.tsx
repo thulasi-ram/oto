@@ -231,7 +231,11 @@ export const AppShell: ParentComponent = (props) => {
         <SnoozeBanner />
       </header>
 
-      <main id="main" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* The same `px-lg` gutter the header and footer already carry (their
+          own `px-4`) — without it, the header's brand mark sits 16px from the
+          edge while the table below runs flush to it, and that misalignment
+          reads as unfinished before any single element does. */}
+      <main id="main" class="flex min-h-0 flex-1 flex-col overflow-hidden px-lg">
         {props.children}
       </main>
 

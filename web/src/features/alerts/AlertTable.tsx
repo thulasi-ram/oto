@@ -201,7 +201,7 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
                 <th
                   scope="col"
                   class={cn(
-                    "border-b border-line px-2 py-1.5 text-left align-middle",
+                    "border-b border-line px-sm py-xs text-left align-middle",
                     "text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted",
                     col.class,
                   )}
@@ -298,7 +298,10 @@ const AlertRow: Component<AlertRowProps> = (props) => {
       data-row-index={props.index}
       onFocusIn={props.onFocus}
       class={cn(
-        "group border-b border-line",
+        // A quarter-strength hairline, not a full rule: enough to separate two
+        // quiet rows, not enough to read as a spreadsheet grid. The row's own
+        // background tint (below) carries the rest of the separation.
+        "group border-b border-line/50",
         // The row tint is the state's pastel fill — Tier A brightness, Tier B
         // meaning. `firing` gets the tint; a resolved row stays neutral so the
         // live ones are what your eye lands on.
@@ -313,12 +316,12 @@ const AlertRow: Component<AlertRowProps> = (props) => {
         <div class={cn("h-full w-[3px]", STATE_BAR[props.alert.state])} aria-hidden="true" />
       </td>
 
-      <td class="px-2 align-middle">
+      <td class="px-sm align-middle">
         <SeverityMark severity={props.alert.severity} withLabel />
       </td>
 
-      <td class="min-w-0 px-2 align-middle">
-        <div class="flex min-w-0 items-baseline gap-2">
+      <td class="min-w-0 px-sm align-middle">
+        <div class="flex min-w-0 items-baseline gap-sm">
           <A
             href={`/alerts/${props.alert.id}`}
             class="shrink-0 truncate font-medium text-ink hover:text-accent hover:underline"
@@ -344,7 +347,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
             {([k, v]) => (
               <button
                 type="button"
-                class="hidden shrink-0 rounded-chip border border-line bg-raised px-1 font-mono text-micro leading-4 text-ink-subtle hover:border-accent-border hover:text-ink group-hover:inline-flex group-focus-within:inline-flex"
+                class="hidden shrink-0 rounded-chip border border-line bg-raised px-2xs font-mono text-micro leading-4 text-ink-subtle hover:border-accent-border hover:text-ink group-hover:inline-flex group-focus-within:inline-flex"
                 title={`Filter by ${k}="${v}"`}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -361,7 +364,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
       {/* **What the rule said at that moment** — the first promise in the
           README, on the screen it was missing from. */}
       <Show when={props.showRule}>
-        <td class="min-w-0 px-2 align-middle">
+        <td class="min-w-0 px-sm align-middle">
           <RuleCell
             snapshotId={props.alert.rule?.id ?? null}
             snapshot={props.alert.rule ? (props.rules.get(props.alert.rule.id) ?? null) : null}
@@ -370,8 +373,8 @@ const AlertRow: Component<AlertRowProps> = (props) => {
         </td>
       </Show>
 
-      <td class="px-2 align-middle">
-        <div class="flex items-center gap-1">
+      <td class="px-sm align-middle">
+        <div class="flex items-center gap-2xs">
           <StateChip state={props.alert.state} size="sm" urgent={urgent()} />
           <AckChip ackState={props.alert.ack_state} />
           <Show when={props.alert.is_flapping}>
@@ -386,7 +389,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
         </div>
       </td>
 
-      <td class="px-2 align-middle">
+      <td class="px-sm align-middle">
         <Chip mono title={`Cluster ${props.alert.cluster_key}`}>
           {truncate(props.alert.cluster_key, 18)}
         </Chip>
@@ -394,19 +397,19 @@ const AlertRow: Component<AlertRowProps> = (props) => {
 
       {/* "Firing duration", never MTTR — oto measures the signal, not anyone's
           response (SCOPE-BOUNDARY). */}
-      <td class="px-2 text-right align-middle text-ink-muted">
+      <td class="px-sm text-right align-middle text-ink-muted">
         <Show when={occ()} fallback={<span class="text-ink-subtle">—</span>}>
           {(o) => <Elapsed from={o().started_at} to={o().ended_at ?? null} />}
         </Show>
       </td>
 
-      <td class="px-2 text-right align-middle tabular-nums text-ink-muted">
+      <td class="px-sm text-right align-middle tabular-nums text-ink-muted">
         <span title={`${props.alert.total_occurrences} firing episodes since first seen`}>
           {fmtCount(props.alert.total_occurrences)}
         </span>
       </td>
 
-      <td class="px-2 text-right align-middle text-ink-muted">
+      <td class="px-sm text-right align-middle text-ink-muted">
         <RelativeTime value={props.alert.last_seen_at} label="Last seen" />
       </td>
     </tr>

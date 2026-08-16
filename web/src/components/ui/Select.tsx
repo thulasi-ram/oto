@@ -62,8 +62,8 @@ export const SelectTrigger = <T extends ValidComponent = "button">(
   return (
     <SelectPrimitive.Trigger
       class={cn(
-        "flex h-8 w-full items-center justify-between rounded-control border border-line-strong " +
-          "bg-surface px-2 text-item text-ink " +
+        "flex h-8 w-full items-center justify-between rounded-control border border-line " +
+          "bg-surface px-sm text-item text-ink " +
           "disabled:cursor-not-allowed disabled:bg-sunken disabled:opacity-45 " +
           "data-[invalid]:border-line-strong data-[invalid]:ring-1 data-[invalid]:ring-accent-border",
         local.class,

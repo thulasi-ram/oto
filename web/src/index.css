@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter/wght.css";
 @import "./design/tokens.css";
 
 /* Theme is stamped on <html> as data-theme, so every colour resolves through a
@@ -11,7 +12,8 @@
    zero reflow and zero flash. */
 @theme inline {
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
   /* ---- Type scale (§M.8) --------------------------------------------
@@ -34,6 +36,19 @@
   --radius-chip: var(--oto-radius-chip);
   --radius-control: var(--oto-radius-control);
   --radius-surface: var(--oto-radius-surface);
+
+  /* ---- Spacing scale (§M.8) ------------------------------------------
+     `p-2xs` … `gap-xl`, coexisting with Tailwind's own numeric scale rather
+     than replacing it (unlike type/radius, spacing has no enforcement gate
+     yet — see the token comment in tokens.css). Prefer these six names at
+     any call site this change touches; the numeric utilities remain valid
+     elsewhere until a `scales.test.ts`-style gate is written for this axis. */
+  --spacing-2xs: var(--oto-space-2xs);
+  --spacing-xs: var(--oto-space-xs);
+  --spacing-sm: var(--oto-space-sm);
+  --spacing-md: var(--oto-space-md);
+  --spacing-lg: var(--oto-space-lg);
+  --spacing-xl: var(--oto-space-xl);
 
   /* ---- Tier A ------------------------------------------------------- */
   --color-bg: var(--oto-bg);

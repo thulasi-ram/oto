@@ -36,18 +36,18 @@ const TONE: Record<FilterRowTone, string> = {
 };
 
 const GAP: Record<FilterRowGap, string> = {
-  default: "gap-x-3 gap-y-2",
-  tight: "gap-2",
+  default: "gap-x-md gap-y-sm",
+  tight: "gap-sm",
 };
 
 export const FilterRow: Component<FilterRowProps> = (props) => (
   <div
     class={cn(
-      "flex flex-wrap items-center px-3",
+      "flex flex-wrap items-center px-md",
       GAP[props.gap ?? "default"],
       props.standalone === false
-        ? "pb-2"
-        : cn("border-b border-line py-2", TONE[props.tone ?? "surface"]),
+        ? "pb-sm"
+        : cn("border-b border-line py-sm", TONE[props.tone ?? "surface"]),
       props.class,
     )}
   >

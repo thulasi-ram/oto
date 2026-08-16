@@ -294,7 +294,7 @@ const MatcherChip: Component<{
 }> = (props) => {
   const text = (): string => chipText(props.matcher);
   return (
-    <Chip mono class="shrink-0 gap-1">
+    <Chip mono class="shrink-0 gap-2xs">
       {/* `onMouseDown` here has to win the race against the input's own
           `onBlur`: a mousedown on this button moves focus away from the input
           before the click fires, and that blur commits whatever draft is
@@ -439,7 +439,7 @@ const SearchBox: Component<{
       </label>
       <div
         class={cn(
-          "flex min-w-0 flex-wrap items-center gap-1 rounded-control border bg-surface px-1.5 py-1",
+          "flex min-w-0 flex-wrap items-center gap-2xs rounded-control border bg-surface px-xs py-2xs",
           hasProblem() ? "border-line-strong ring-1 ring-accent-border" : "border-line-strong",
         )}
       >
@@ -535,7 +535,7 @@ const SearchBox: Component<{
           mid-word is worse than telling them a beat later. */}
       <div id={statusId} aria-live="polite" class="min-w-0">
         <Show when={errors().length > 0}>
-          <ul class="mt-1 space-y-0.5">
+          <ul class="mt-2xs space-y-0.5">
             <For each={errors()}>
               {(err) => (
                 <li class="flex items-start gap-1.5 text-meta leading-snug text-ink">
@@ -550,7 +550,7 @@ const SearchBox: Component<{
         </Show>
 
         <Show when={rejected().length > 0}>
-          <ul class="mt-1 space-y-1">
+          <ul class="mt-2xs space-y-2xs">
             <For each={rejected()}>
               {(r) => (
                 <li class="flex items-start gap-1.5 text-meta leading-snug text-ink">
@@ -565,11 +565,11 @@ const SearchBox: Component<{
         </Show>
 
         <Show when={focused() && summary() !== null}>
-          <p class="mt-1 text-meta leading-snug text-ink-subtle">{summary()}</p>
+          <p class="mt-2xs text-meta leading-snug text-ink-subtle">{summary()}</p>
         </Show>
 
         <Show when={teaching()}>
-          <ul class="mt-1 space-y-0.5">
+          <ul class="mt-2xs space-y-0.5">
             <For each={MATCHER_EXAMPLES}>
               {(ex) => (
                 <li class="flex flex-wrap items-baseline gap-x-2 text-meta leading-snug">
@@ -592,7 +592,7 @@ const SearchBox: Component<{
           {/* The raw-text half of "structural and raw" search, told at the
               same moment the structural examples above are — reaching for the
               box is when this is worth knowing, not before. */}
-          <p class="mt-1 text-meta leading-snug text-ink-subtle">
+          <p class="mt-2xs text-meta leading-snug text-ink-subtle">
             <Show
               when={props.partialMatchEnabled === true}
               fallback={
@@ -692,9 +692,12 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
   };
 
   return (
-    <div class="shrink-0 border-b border-line bg-surface">
+    // `bg-raised`, not `bg-surface`: the filter chrome is a panel sitting
+    // above the table, the same elevation step the table's own sticky header
+    // uses — not a bare row of controls floating on the page background.
+    <div class="shrink-0 border-b border-line bg-raised">
       {/* ---- row 1: the one search box ---------------------------------- */}
-      <div class="px-3 pb-2 pt-2">
+      <div class="px-md pb-sm pt-sm">
         <SearchBox
           filters={props.filters}
           onChange={props.onChange}
@@ -710,12 +713,12 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
           totalCountLabel={props.totalCountLabel}
         />
 
-        <div class="ml-auto flex shrink-0 items-center gap-2">
+        <div class="ml-auto flex shrink-0 items-center gap-sm">
           <label for="alert-sort" class="sr-only-focusable">
             Sort order
           </label>
           <Select<SortKey>
-            class="flex flex-col gap-1"
+            class="flex flex-col gap-2xs"
             options={[...SORT_OPTIONS]}
             optionTextValue={(s) => SORT_LABEL[s]}
             value={props.filters.sort}
@@ -742,10 +745,10 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
 
       {/* ---- row 3: glance-first — when, what state, how bad ------------- */}
       <FilterRow standalone={false}>
-        <label for="alert-since" class="flex items-center gap-1.5 text-body text-ink-muted">
+        <label for="alert-since" class="flex items-center gap-xs text-body text-ink-muted">
           <span>Since</span>
           <Select<string>
-            class="flex flex-col gap-1"
+            class="flex flex-col gap-2xs"
             options={
               sincePreset() === "Custom"
                 ? [...SINCE_PRESETS.map((p) => p.label), "Custom"]
@@ -776,8 +779,6 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
           </Select>
         </label>
 
-        <Divider />
-
         <ToggleGroup
           legend="Lifecycle state"
           multiple
@@ -788,8 +789,6 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
             {(s) => <ToggleGroupItem value={s}>{STATE_LABEL[s]}</ToggleGroupItem>}
           </For>
         </ToggleGroup>
-
-        <Divider />
 
         <ToggleGroup
           legend="Severity"
@@ -810,7 +809,7 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
       <FilterRow standalone={false}>
         {/* Acknowledgement is orthogonal to state (§B): `acked` still returns
             firing alerts, because acknowledging one does not end it. */}
-        <label for="alert-ack" class="flex items-center gap-1.5 text-body text-ink-muted">
+        <label for="alert-ack" class="flex items-center gap-xs text-body text-ink-muted">
           <span>Ack</span>
           {/* `id`/`title` go on Kobalte's own `SelectTrigger` — the real,
               accessible, interactive surface — same as Sort/Since/Flapping.
@@ -819,7 +818,7 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
               for native form-submission/autofill, not a stand-in for the
               trigger. */}
           <Select<(typeof ACK_OPTIONS)[number]>
-            class="flex flex-col gap-1"
+            class="flex flex-col gap-2xs"
             options={[...ACK_OPTIONS]}
             optionTextValue={(v) => ACK_LABEL[v]}
             value={props.filters.ack ?? ""}
@@ -847,12 +846,12 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
         {/* Snooze is a third orthogonal axis, never a state (§B.8): the default
             includes both, because hiding snoozed alerts is how an incident is
             lost. A snoozed alert still reads at its true severity. */}
-        <label for="alert-snoozed" class="flex items-center gap-1.5 text-body text-ink-muted">
+        <label for="alert-snoozed" class="flex items-center gap-xs text-body text-ink-muted">
           <span>Snoozed</span>
           {/* Same choice as Ack just above: `id`/`title` on the real
               `SelectTrigger`, not the hidden shim. */}
           <Select<(typeof SNOOZED_OPTIONS)[number]>
-            class="flex flex-col gap-1"
+            class="flex flex-col gap-2xs"
             options={[...SNOOZED_OPTIONS]}
             optionTextValue={(v) => SNOOZED_LABEL[v]}
             value={props.filters.snoozed === null ? "" : props.filters.snoozed ? "true" : "false"}
@@ -877,10 +876,10 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
           </Select>
         </label>
 
-        <label for="alert-flapping" class="flex items-center gap-1.5 text-body text-ink-muted">
+        <label for="alert-flapping" class="flex items-center gap-xs text-body text-ink-muted">
           <span>Flapping</span>
           <Select<(typeof FLAPPING_OPTIONS)[number]>
-            class="flex flex-col gap-1"
+            class="flex flex-col gap-2xs"
             options={[...FLAPPING_OPTIONS]}
             optionTextValue={(v) => FLAPPING_LABEL[v]}
             value={props.filters.flapping === null ? "" : props.filters.flapping ? "true" : "false"}
@@ -903,10 +902,10 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
         </label>
 
         <Show when={(clusters.data?.data.length ?? 0) > 0}>
-          <label for="alert-cluster" class="flex items-center gap-1.5 text-body text-ink-muted">
+          <label for="alert-cluster" class="flex items-center gap-xs text-body text-ink-muted">
             <span>Cluster</span>
             <Select<ClusterOption>
-              class="flex flex-col gap-1"
+              class="flex flex-col gap-2xs"
               options={[...clusterOptions()]}
               optionValue="cluster_key"
               optionTextValue="display_name"
@@ -942,7 +941,3 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
     </div>
   );
 };
-
-const Divider: Component = () => (
-  <span class={cn("h-4 w-px shrink-0 bg-line")} aria-hidden="true" />
-);

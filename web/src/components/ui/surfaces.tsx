@@ -55,8 +55,8 @@ export const Chip: ParentComponent<{
   <span
     title={props.title}
     class={cn(
-      "inline-flex max-w-full items-center gap-1 rounded-chip border border-line bg-raised",
-      "px-1 py-px text-meta leading-4 text-ink-muted",
+      "inline-flex max-w-full items-center gap-2xs rounded-chip border border-line bg-raised",
+      "px-2xs py-0.5 text-meta leading-4 text-ink-muted",
       props.mono === true ? "font-mono" : "",
       props.class,
     )}

@@ -187,4 +187,18 @@
   --oto-radius-chip: 3px; /* inline: badges, chips, code spans, skeletons */
   --oto-radius-control: 4px; /* buttons, inputs, wells, nav items, bordered boxes */
   --oto-radius-surface: 6px; /* panels, dialogs — anything that holds controls */
+
+  /* Spacing. Named by size rather than by role, unlike type/radius above —
+     padding and gap are used in too many structural contexts for a role name
+     to fit all of them, the same reason most systems size-name this axis and
+     role-name the other two. Six steps, read off the same census type/radius
+     were: 4/6/8/12/16/24 are the values already load-bearing across the tree
+     (`gap-1`/`py-1.5`/`px-2`/`px-3`/`px-4`/`px-6` and their neighbours), not a
+     scale invented ahead of them. */
+  --oto-space-2xs: 4px; /* tightest inline gap: icon-to-label inside a chip or nav item */
+  --oto-space-xs: 6px; /* compact control padding: chips, toggle pills, search box */
+  --oto-space-sm: 8px; /* the dense default: table-cell padding, row-level gaps */
+  --oto-space-md: 12px; /* section padding: filter-row insets, card padding */
+  --oto-space-lg: 16px; /* shell-level padding: header, page gutter */
+  --oto-space-xl: 24px; /* generous breathing room: empty/error-state panels */
 }
