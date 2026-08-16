@@ -14,7 +14,7 @@
  * thread. Conflating them would suggest oto invents groupings, and it does not:
  * grouping is Alertmanager's decision, mirrored.
  */
-import { For, Match, Show, Switch, createMemo } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
@@ -24,11 +24,34 @@ import { qk } from "~/api/keys";
 import type { Group, GroupListQuery, GroupState } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { SeverityMark, StormChip } from "~/components/StateChip";
+import { Button } from "~/components/ui/Button";
 import { FilterRow } from "~/components/ui/FilterRow";
-import { Button, Chip, Input, Select, ToggleGroup, cx } from "~/components/ui/primitives";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/Select";
+import { Chip } from "~/components/ui/surfaces";
+import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextField";
+import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { count as fmtCount } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
+
+/** An option for the small single-selects below: a value plus its label. */
+interface Opt<T extends string> {
+  readonly value: T;
+  readonly label: string;
+}
+
+const ACK_OPTIONS: Opt<"" | "acked" | "unacked">[] = [
+  { value: "", label: "Any" },
+  { value: "unacked", label: "Has unseen members" },
+  { value: "acked", label: "Fully acknowledged" },
+];
+
+const STORM_OPTIONS: Opt<"" | "true" | "false">[] = [
+  { value: "", label: "Any" },
+  { value: "true", label: "In storm mode" },
+  { value: "false", label: "Not in storm mode" },
+];
 
 const PAGE_SIZE = 50;
 
@@ -107,54 +130,85 @@ export default function GroupsRoute() {
 
   const all = feed.rows;
 
+  // The URL is authoritative; typing only ever reads and writes this local
+  // draft. `search()` changes exactly when a commit (Enter/blur) navigates or
+  // when Back/Forward changes the URL out from under the box, and either way
+  // the draft is meant to follow it. It is never written to on every
+  // keystroke, matching the old `<input>`'s deliberately delayed commit.
+  const [draft, setDraft] = createSignal(search());
+  createEffect(() => setDraft(search()));
+
   return (
     <div class="flex min-h-0 flex-1 flex-col">
       <FilterRow class="shrink-0">
-        <div class="min-w-[14rem] flex-[1_1_16rem]">
-          <label for="group-q" class="sr-only-focusable">
+        <TextField
+          class="min-w-[14rem] flex-[1_1_16rem]"
+          value={draft()}
+          onChange={setDraft}
+        >
+          <TextFieldLabel class="sr-only-focusable">
             Search group titles and labels
-          </label>
-          <Input
+          </TextFieldLabel>
+          <TextFieldInput
             id="group-q"
             type="search"
-            value={search()}
             placeholder="Search group titles and group labels…"
             onKeyDown={(e) => {
               if (e.key === "Enter") setParam("q", e.currentTarget.value);
             }}
             onBlur={(e) => setParam("q", e.currentTarget.value)}
           />
-        </div>
+        </TextField>
 
-        <ToggleGroup<GroupState>
-          legend="Group state"
-          options={GROUP_STATES.map((s) => ({ value: s, label: STATE_LABEL[s] }))}
-          selected={states()}
-          onChange={(next) => setParam("state", next.length > 0 ? next.join(",") : null)}
-        />
+        <ToggleGroup legend="Group state" multiple value={[...states()]} onChange={(next) => setParam("state", next.length > 0 ? next.join(",") : null)}>
+          <For each={GROUP_STATES}>
+            {(s) => <ToggleGroupItem value={s}>{STATE_LABEL[s]}</ToggleGroupItem>}
+          </For>
+        </ToggleGroup>
 
         <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Ack</span>
-          <Select
-            value={ack() ?? ""}
-            onChange={(e) => setParam("ack", e.currentTarget.value || null)}
-            title="`unacked` returns groups with at least one unacknowledged member."
+          <Select<Opt<"" | "acked" | "unacked">>
+            multiple={false}
+            options={ACK_OPTIONS}
+            optionValue="value"
+            optionTextValue="label"
+            value={ACK_OPTIONS.find((o) => o.value === (ack() ?? "")) ?? ACK_OPTIONS[0]!}
+            onChange={(opt) => setParam("ack", opt && opt.value !== "" ? opt.value : null)}
+            itemComponent={(p) => <SelectItem item={p.item}>{p.item.rawValue.label}</SelectItem>}
           >
-            <option value="">Any</option>
-            <option value="unacked">Has unseen members</option>
-            <option value="acked">Fully acknowledged</option>
+            <SelectTrigger
+              aria-label="Ack"
+              title="`unacked` returns groups with at least one unacknowledged member."
+            >
+              <SelectValue<Opt<"" | "acked" | "unacked">>>
+                {(state) => state.selectedOption().label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent />
           </Select>
         </label>
 
         <label class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Storm</span>
-          <Select
-            value={storm() === null ? "" : String(storm())}
-            onChange={(e) => setParam("storm", e.currentTarget.value || null)}
+          <Select<Opt<"" | "true" | "false">>
+            multiple={false}
+            options={STORM_OPTIONS}
+            optionValue="value"
+            optionTextValue="label"
+            value={
+              STORM_OPTIONS.find((o) => o.value === (storm() === null ? "" : String(storm()))) ??
+              STORM_OPTIONS[0]!
+            }
+            onChange={(opt) => setParam("storm", opt && opt.value !== "" ? opt.value : null)}
+            itemComponent={(p) => <SelectItem item={p.item}>{p.item.rawValue.label}</SelectItem>}
           >
-            <option value="">Any</option>
-            <option value="true">In storm mode</option>
-            <option value="false">Not in storm mode</option>
+            <SelectTrigger aria-label="Storm">
+              <SelectValue<Opt<"" | "true" | "false">>>
+                {(state) => state.selectedOption().label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent />
           </Select>
         </label>
 
@@ -185,7 +239,7 @@ export default function GroupsRoute() {
 
             <Show when={feed.hasMore()}>
               <div class="border-t border-line px-3 py-2 text-center">
-                <Button size="sm" busy={groups.isFetching} onClick={feed.loadMore}>
+                <Button variant="secondary" size="sm" busy={groups.isFetching} onClick={feed.loadMore}>
                   Load more
                 </Button>
               </div>
@@ -204,14 +258,14 @@ const GroupRow = (props: { readonly group: Group }) => {
   const unacked = (): number => Math.max(0, g().total_count - g().acked_count);
 
   return (
-    <li class={cx("border-b border-line", live() ? "bg-firing-fill/30" : "bg-surface")}>
+    <li class={cn("border-b border-line", live() ? "bg-firing-fill/30" : "bg-surface")}>
       <A
         href={`/groups/${g().id}`}
         class="flex items-start gap-3 px-3 py-2.5 hover:bg-raised/60"
       >
         <span
           aria-hidden="true"
-          class={cx(
+          class={cn(
             "mt-0.5 h-8 w-[3px] shrink-0 rounded-full",
             live() ? "bg-firing-solid" : "bg-suppressed-solid",
           )}

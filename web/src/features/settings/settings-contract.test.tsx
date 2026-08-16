@@ -22,7 +22,7 @@
  * judged by this file. Each one is put to the *generated schema* first, and the
  * form is only ever asserted to agree with that answer.
  */
-import { fireEvent, screen, within } from "@solidjs/testing-library";
+import { fireEvent, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 import * as v from "valibot";
 
@@ -78,14 +78,27 @@ describe("the channel editor", () => {
     await until(() => expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
 
-    const dialog = within(document.querySelector("dialog[open]") as HTMLElement);
-    const select = dialog.getByLabelText("Verbosity") as HTMLSelectElement;
+    await until(() => expect(document.querySelector('[role="dialog"]')).toBeTruthy());
+    // The Verbosity control is Kobalte's `Select` now, not a native `<select>` —
+    // there is no `HTMLSelectElement` to read `.options` off directly. Kobalte
+    // still renders one real hidden `<select>` with real `<option>`s underneath
+    // (`SelectHiddenSelect`, id="ch-verbosity"), kept around for browser autofill
+    // and native form submission, and that is what this assertion reads instead.
+    const select = document.querySelector("#ch-verbosity") as HTMLSelectElement;
+    expect(select, "no hidden native <select> found for the Verbosity control").toBeTruthy();
 
     // `VERBOSITIES` is hand-written in `ChannelsSection.tsx` — and copied a
     // third time in `tuningCopy.ts`. Derived here so that the day `Verbosity`
     // grows a member, the copies are a test failure rather than a channel that
     // silently cannot be set to it.
-    expect(Array.from(select.options).map((o) => o.value)).toEqual([...enumValues("Verbosity")]);
+    //
+    // The hidden select carries a leading blank `<option />` (Kobalte's own
+    // placeholder-for-autofill option, always present regardless of selection),
+    // so it is filtered out before comparing rather than asserted as part of
+    // the contract's own list.
+    expect(Array.from(select.options).map((o) => o.value).filter((v) => v !== "")).toEqual([
+      ...enumValues("Verbosity"),
+    ]);
     expectNoUndefined(document.body);
   });
 });
@@ -278,8 +291,15 @@ describe("the source form", () => {
 
   it("offers every source kind the contract publishes and no other", async () => {
     await mountSourceDialog();
+    // Same story as the Verbosity control in the channel editor above: `#src-kind`
+    // is Kobalte's hidden native `<select>` behind the Kind combobox, kept for
+    // autofill/native form submission, and it carries a leading blank `<option />`
+    // that isn't part of the contract's own enum.
     const select = document.querySelector("#src-kind") as HTMLSelectElement;
-    expect(Array.from(select.options).map((o) => o.value)).toEqual([...enumValues("SourceKind")]);
+    expect(select, "no hidden native <select> found for the Kind control").toBeTruthy();
+    expect(Array.from(select.options).map((o) => o.value).filter((v) => v !== "")).toEqual([
+      ...enumValues("SourceKind"),
+    ]);
     expectNoUndefined(document.body);
   });
 });

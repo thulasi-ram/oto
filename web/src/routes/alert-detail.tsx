@@ -36,8 +36,9 @@ import {
 } from "~/components/StateChip";
 import { SnoozeChip } from "~/components/SnoozeChip";
 import { Elapsed, RelativeTime } from "~/components/Time";
-import { Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { Chip, DataRow, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { absoluteTime, count as fmtCount, formatLabels } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { AlertActions } from "~/features/alerts/detail/Actions";
@@ -142,7 +143,7 @@ export default function AlertDetailRoute() {
             <header class="shrink-0 border-b border-line bg-surface">
               <div class="flex items-start gap-3 px-4 pb-2 pt-3">
                 <div
-                  class={cx("mt-1 h-9 w-[3px] shrink-0 rounded-full", STATE_BAR[data().state])}
+                  class={cn("mt-1 h-9 w-[3px] shrink-0 rounded-full", STATE_BAR[data().state])}
                   aria-hidden="true"
                 />
 

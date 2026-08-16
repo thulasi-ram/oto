@@ -77,21 +77,37 @@ import type {
   TimingProvenance,
   UpdateOrgSettingsRequest,
 } from "~/api/types";
-import { Dialog, DialogBody } from "~/components/ui/Dialog";
+import { Button } from "~/components/ui/Button";
+import { Checkbox } from "~/components/ui/Checkbox";
 import {
-  Button,
-  Checkbox,
-  Field,
-  Input,
-  Panel,
-  PanelHeader,
-  PanelTitle,
+  Modal,
+  ModalContent,
+  ModalDescription,
+  ModalFooter,
+  ModalHeader,
+  ModalTitle,
+} from "~/components/ui/Modal";
+import {
   Select,
-  cx,
-} from "~/components/ui/primitives";
+  SelectContent,
+  SelectErrorMessage,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/Select";
+import { Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
+import {
+  TextField,
+  TextFieldDescription,
+  TextFieldErrorMessage,
+  TextFieldInput,
+  TextFieldLabel,
+} from "~/components/ui/TextField";
 import { ErrorBanner, ErrorState, Skeleton } from "~/components/ui/states";
 import { RelativeTime } from "~/components/Time";
 import { duration } from "~/lib/format";
+import { cn } from "~/lib/cn";
 import {
   AM_FIELDS,
   ASSUMED_RULE_FOR_S,
@@ -736,7 +752,7 @@ const ProvenanceBadge: Component<{ readonly provenance: TimingProvenance }> = (p
 
   return (
     <span
-      class={cx(
+      class={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-chip border px-1.5 py-px text-meta leading-4",
         copy().tone,
       )}
@@ -789,7 +805,7 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
   const cell = (label: string, t: InheritedTiming): JSX.Element => (
     <span class="whitespace-nowrap">
       <code class="font-mono text-micro text-ink-subtle">{label}</code>{" "}
-      <span class={cx("tabular-nums", own(t) ? "font-medium text-ink" : "text-ink-muted")}>
+      <span class={cn("tabular-nums", own(t) ? "font-medium text-ink" : "text-ink-muted")}>
         {routeDuration(t)}
       </span>
       <Show when={t.provenance === "default_applies"}>
@@ -809,7 +825,7 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
 
   return (
     <li
-      class={cx(
+      class={cn(
         "flex flex-col gap-1 border-b border-line px-2 py-1.5 last:border-b-0",
         props.route.reaches_oto && "bg-accent-fill/40",
         props.route.unreachable && "opacity-60",
@@ -1040,7 +1056,7 @@ const SourceTimings: Component<{
   readonly isBasis: boolean;
   readonly onChoose: () => void;
 }> = (props) => (
-  <li class={cx("border-b border-line px-3 py-3 last:border-b-0", props.isBasis && "bg-accent-fill/40")}>
+  <li class={cn("border-b border-line px-3 py-3 last:border-b-0", props.isBasis && "bg-accent-fill/40")}>
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-item font-medium text-ink">{props.am.sourceName}</span>
@@ -1202,11 +1218,16 @@ const OriginSummary: Component<{
         by that configuration — still stored, and back in force the moment the config key goes.
       </Show>
     </p>
-    <Checkbox
-      checked={props.onlyOverrides}
-      onChange={props.setOnlyOverrides}
-      label={<span class="text-body">Show only what this org has changed</span>}
-    />
+    <div class="flex items-center gap-1.5">
+      <Checkbox
+        id="tuning-only-overrides"
+        checked={props.onlyOverrides}
+        onChange={props.setOnlyOverrides}
+      />
+      <label for="tuning-only-overrides-input" class="text-body text-ink">
+        Show only what this org has changed
+      </label>
+    </div>
   </div>
 );
 
@@ -1281,13 +1302,13 @@ const OriginBadge: Component<{
 
   return (
     <span
-      class={cx(
+      class={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-chip border px-1.5 py-px text-meta leading-4",
         copy().tone,
       )}
       title={copy().title}
     >
-      <span aria-hidden="true" class={cx("size-1.5 rounded-full", copy().dot)} />
+      <span aria-hidden="true" class={cn("size-1.5 rounded-full", copy().dot)} />
       {copy().label}
       <Show when={props.origin === "config" && props.configKey !== null}>
         <code class="font-mono text-micro text-ink-muted">{props.configKey}</code>
@@ -1304,7 +1325,7 @@ const Note: Component<{ readonly kind: "warn" | "quiet"; readonly children: JSX.
   // hue. Spending a saturated colour here is what makes a firing row stop
   // reading as urgent.
   <p
-    class={cx(
+    class={cn(
       "rounded-control border px-2 py-1 text-meta leading-snug",
       props.kind === "warn"
         ? "border-line-strong bg-raised font-medium text-ink"
@@ -1327,6 +1348,51 @@ function shadowedText(knob: KnobCopy, raw: unknown): string {
   if (Array.isArray(raw)) return JSON.stringify(raw);
   return String(raw);
 }
+
+/** One string-valued option, shared by every enum knob's `options`. */
+interface KnobOption {
+  readonly value: string;
+  readonly label: string;
+}
+
+/**
+ * One knob rendered as a Kobalte listbox, over the label/value pairs
+ * `tuningCopy.ts` derives from the contract's own enum — `VERBOSITY_OPTIONS`,
+ * `MENTION_MODE_OPTIONS`, `SEVERITY_OPTIONS`. Kobalte's `Select` is driven by
+ * an `options` array and an `itemComponent`, not by JSX `<option>` children,
+ * so the selected option is looked up by value rather than handed the raw
+ * string the rest of this screen's state holds.
+ */
+const KnobSelect: Component<{
+  readonly id: string;
+  readonly options: readonly KnobOption[];
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly error: string | undefined;
+  readonly onChange: (next: string) => void;
+}> = (props) => (
+  <Select<KnobOption>
+    options={[...props.options]}
+    optionValue="value"
+    optionTextValue="label"
+    value={props.options.find((o) => o.value === props.value) ?? null}
+    disabled={props.disabled}
+    validationState={props.error !== undefined ? "invalid" : "valid"}
+    onChange={(opt) => {
+      if (opt !== null) props.onChange(opt.value);
+    }}
+    itemComponent={(itemProps) => (
+      <SelectItem item={itemProps.item}>{itemProps.item.rawValue.label}</SelectItem>
+    )}
+  >
+    <SelectLabel>Value</SelectLabel>
+    <SelectTrigger id={props.id}>
+      <SelectValue<KnobOption>>{(state) => state.selectedOption()?.label}</SelectValue>
+    </SelectTrigger>
+    <SelectContent />
+    <SelectErrorMessage role="alert">{props.error}</SelectErrorMessage>
+  </Select>
+);
 
 const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (props) => {
   const key = (): KnobKey => props.knob.key;
@@ -1399,7 +1465,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
 
   return (
     <li
-      class={cx(
+      class={cn(
         "border-b border-line px-3 py-3 last:border-b-0",
         ctl().dirty(key()) ? "bg-accent-fill/40" : "",
       )}
@@ -1414,57 +1480,41 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
 
           <Switch>
             <Match when={props.knob.kind === "boolean"}>
-              <Checkbox
-                id={id()}
-                checked={ctl().text(key()) === "true"}
-                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
-                onChange={(next) => ctl().setText(key(), next ? "true" : "false")}
-                label={
-                  <span class="text-body">
-                    {ctl().text(key()) === "true"
-                      ? "On — the resolve is broadcast into the channel"
-                      : "Off — the resolve stays in the thread"}
-                  </span>
-                }
-              />
+              <div class="flex items-center gap-1.5">
+                <Checkbox
+                  id={id()}
+                  checked={ctl().text(key()) === "true"}
+                  disabled={ctl().resetQueued(key()) || ctl().managed(key())}
+                  onChange={(next) => ctl().setText(key(), next ? "true" : "false")}
+                />
+                <label for={`${id()}-input`} class="text-body text-ink">
+                  {ctl().text(key()) === "true"
+                    ? "On — the resolve is broadcast into the channel"
+                    : "Off — the resolve stays in the thread"}
+                </label>
+              </div>
             </Match>
 
             <Match when={props.knob.kind === "verbosity"}>
-              <Field id={id()} label="Value" error={error()}>
-                {(a) => (
-                  <Select
-                    {...a}
-                    value={ctl().text(key())}
-                    disabled={ctl().resetQueued(key()) || ctl().managed(key())}
-                    onChange={(e) => ctl().setText(key(), e.currentTarget.value)}
-                  >
-                    <For each={VERBOSITY_OPTIONS}>
-                      {(o) => <option value={o.value}>{o.label}</option>}
-                    </For>
-                  </Select>
-                )}
-              </Field>
+              <KnobSelect
+                id={id()}
+                options={VERBOSITY_OPTIONS}
+                value={ctl().text(key())}
+                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
+                error={error()}
+                onChange={(next) => ctl().setText(key(), next)}
+              />
             </Match>
 
             <Match when={props.knob.kind === "mentionMode" || props.knob.kind === "severity"}>
-              <Field id={id()} label="Value" error={error()}>
-                {(a) => (
-                  <Select
-                    {...a}
-                    value={ctl().text(key())}
-                    disabled={ctl().resetQueued(key()) || ctl().managed(key())}
-                    onChange={(e) => ctl().setText(key(), e.currentTarget.value)}
-                  >
-                    <For
-                      each={
-                        props.knob.kind === "severity" ? SEVERITY_OPTIONS : MENTION_MODE_OPTIONS
-                      }
-                    >
-                      {(o) => <option value={o.value}>{o.label}</option>}
-                    </For>
-                  </Select>
-                )}
-              </Field>
+              <KnobSelect
+                id={id()}
+                options={props.knob.kind === "severity" ? SEVERITY_OPTIONS : MENTION_MODE_OPTIONS}
+                value={ctl().text(key())}
+                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
+                error={error()}
+                onChange={(next) => ctl().setText(key(), next)}
+              />
             </Match>
 
             <Match when={props.knob.kind === "mentionList"}>
@@ -1478,26 +1528,28 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
             </Match>
 
             <Match when={numeric()}>
-              <Field id={id()} label="Value" error={error()}>
-                {(a) => (
-                  <div class="flex items-center gap-2">
-                    <Input
-                      {...a}
-                      type="number"
-                      inputmode="numeric"
-                      class="max-w-28"
-                      min={b()?.min}
-                      max={b()?.max}
-                      disabled={ctl().resetQueued(key()) || ctl().managed(key())}
-                      value={ctl().text(key())}
-                      onInput={(e) => ctl().setText(key(), e.currentTarget.value)}
-                    />
-                    <span class="shrink-0 text-meta text-ink-subtle">
-                      {unitSuffix(props.knob)}
-                    </span>
-                  </div>
-                )}
-              </Field>
+              <TextField
+                value={ctl().text(key())}
+                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
+                validationState={error() !== undefined ? "invalid" : "valid"}
+                onChange={(next) => ctl().setText(key(), next)}
+              >
+                <TextFieldLabel>Value</TextFieldLabel>
+                <div class="flex items-center gap-2">
+                  <TextFieldInput
+                    id={id()}
+                    type="number"
+                    inputmode="numeric"
+                    class="max-w-28"
+                    min={b()?.min}
+                    max={b()?.max}
+                  />
+                  <span class="shrink-0 text-meta text-ink-subtle">
+                    {unitSuffix(props.knob)}
+                  </span>
+                </div>
+                <TextFieldErrorMessage role="alert">{error()}</TextFieldErrorMessage>
+              </TextField>
             </Match>
           </Switch>
 
@@ -1555,7 +1607,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
             <Show when={ctl().origin(key()) === "org" && !ctl().managed(key())}>
               <Button
                 size="sm"
-                variant={ctl().resetQueued(key()) ? "primary" : "secondary"}
+                variant={ctl().resetQueued(key()) ? "default" : "secondary"}
                 disabled={ctl().busy()}
                 onClick={() => ctl().toggleReset(key())}
                 title="Removes this org's override so the value follows oto's shipped default. Writing today's default back by hand is a different fact — it records an override that happens to match, and it would not follow the default if oto moved it."
@@ -1713,30 +1765,32 @@ const MentionListField: Component<{
         </ul>
       </Show>
 
-      <Field id={props.id} label="Add an entry" hint={MENTION_TOKEN_HINT} error={props.error}>
-        {(a) => (
-          <div class="flex items-center gap-2">
-            <Input
-              {...a}
-              mono
-              class="min-w-0"
-              placeholder="<!subteam^S01AB2CD3EF>"
-              value={entry()}
-              disabled={props.disabled || full()}
-              onInput={(e) => setEntry(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  add();
-                }
-              }}
-            />
-            <Button size="sm" disabled={props.disabled || full()} onClick={add}>
-              Add
-            </Button>
-          </div>
-        )}
-      </Field>
+      <TextField
+        value={entry()}
+        disabled={props.disabled || full()}
+        validationState={props.error !== undefined ? "invalid" : "valid"}
+        onChange={setEntry}
+      >
+        <TextFieldLabel>Add an entry</TextFieldLabel>
+        <div class="flex items-center gap-2">
+          <TextFieldInput
+            id={props.id}
+            class="min-w-0 font-mono"
+            placeholder="<!subteam^S01AB2CD3EF>"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                add();
+              }
+            }}
+          />
+          <Button size="sm" disabled={props.disabled || full()} onClick={add}>
+            Add
+          </Button>
+        </div>
+        <TextFieldDescription>{MENTION_TOKEN_HINT}</TextFieldDescription>
+        <TextFieldErrorMessage role="alert">{props.error}</TextFieldErrorMessage>
+      </TextField>
 
       <p class="text-meta text-ink-subtle" aria-live="polite">
         {list().length} of {MENTION_LIST_MAX} used
@@ -1788,7 +1842,7 @@ const SaveBar: Component<{
           </Button>
           <Button
             size="sm"
-            variant="primary"
+            variant="default"
             busy={props.busy}
             disabled={props.blocked > 0}
             title={
@@ -1812,31 +1866,38 @@ const LeaveGuard: Component<{
   readonly onStay: () => void;
   readonly onLeave: () => void;
 }> = (props) => (
-  <Dialog
+  <Modal
     open={props.pending !== null}
-    onClose={props.onStay}
-    width="sm"
-    title="Leave without saving?"
-    description="These edits change how loud oto is. Nothing has been written yet."
-    footer={
-      <>
-        <Button size="sm" onClick={props.onStay}>
+    onOpenChange={(isOpen) => {
+      if (!isOpen) props.onStay();
+    }}
+  >
+    <ModalContent class="max-w-sm">
+      <ModalHeader>
+        <ModalTitle>Leave without saving?</ModalTitle>
+        <ModalDescription>
+          These edits change how loud oto is. Nothing has been written yet.
+        </ModalDescription>
+      </ModalHeader>
+
+      <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+        <p>
+          {props.count} change{props.count === 1 ? "" : "s"} on this screen{" "}
+          {props.count === 1 ? "has" : "have"} not been sent to oto. Leaving now discards{" "}
+          {props.count === 1 ? "it" : "them"}.
+        </p>
+      </div>
+
+      <ModalFooter>
+        <Button size="sm" variant="secondary" onClick={props.onStay}>
           Stay on this page
         </Button>
-        <Button size="sm" variant="danger" onClick={props.onLeave}>
+        <Button size="sm" variant="destructive" onClick={props.onLeave}>
           Discard and leave
         </Button>
-      </>
-    }
-  >
-    <DialogBody>
-      <p>
-        {props.count} change{props.count === 1 ? "" : "s"} on this screen{" "}
-        {props.count === 1 ? "has" : "have"} not been sent to oto. Leaving now discards{" "}
-        {props.count === 1 ? "it" : "them"}.
-      </p>
-    </DialogBody>
-  </Dialog>
+      </ModalFooter>
+    </ModalContent>
+  </Modal>
 );
 
 /**

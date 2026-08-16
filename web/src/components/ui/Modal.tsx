@@ -1,0 +1,148 @@
+/**
+ * solid-ui's Dialog (https://solid-ui.com/docs/components/dialog), ported
+ * onto `@kobalte/core/dialog`.
+ *
+ * Named `Modal` rather than `Dialog` on purpose. This filesystem is
+ * case-insensitive (macOS/APFS default) and `components/ui/Dialog.tsx`
+ * already exists — the app's hand-rolled modal built on native
+ * `<dialog showModal()>` (see that file's own header comment for why: free
+ * focus trap, inert background, top layer, Escape-to-dismiss). The two now
+ * split by area rather than by "standalone vs. nested": `Dialog.tsx` remains
+ * the native-`<dialog>` implementation existing settings screens use, and
+ * `Modal` is the solid-ui/Kobalte-based dialog primitive the alerts feature
+ * area has standardized on — including its standalone confirm/edit modals
+ * (SnoozeDialog, AckDialog, CommentDialog), none of which nest inside another
+ * Kobalte overlay. Reach for `Modal` in the alerts area, or any new
+ * solid-ui-based surface adopting the same conventions; leave existing
+ * `Dialog.tsx` call sites alone rather than migrating them piecemeal.
+ * Exported names are renamed in step — `Modal`, `ModalTrigger`,
+ * `ModalContent`, `ModalHeader`, `ModalFooter`, `ModalTitle`,
+ * `ModalDescription` — so importing both in the same file is never
+ * ambiguous.
+ *
+ * Retheme notes (see `Button.tsx`/`Popover.tsx` for the fuller rationale):
+ *   - `bg-background/80` overlay -> `bg-black/40`, matching the backdrop the
+ *     native `Dialog.tsx` already draws via `::backdrop`.
+ *   - `bg-background`/`border` panel -> `bg-surface`/`border-line`;
+ *     `sm:rounded-lg` -> `rounded-surface` (unconditional, as `Dialog.tsx` does).
+ *   - `text-lg` (title) -> `text-title`; `text-sm` (description) -> `text-body`.
+ *   - The `animate-in`/`zoom-in-95`/`slide-in-from-*` soup depends on plugins
+ *     this app doesn't install; swapped for `oto-enter` (see `Popover.tsx`).
+ *   - `focus:ring-2 ring-ring ring-offset-2` on the close button dropped —
+ *     the global `:focus-visible` rule already rings it (U7).
+ */
+import type { Component, ComponentProps, JSX, ValidComponent } from "solid-js";
+import { splitProps } from "solid-js";
+
+import * as DialogPrimitive from "@kobalte/core/dialog";
+import type { PolymorphicProps } from "@kobalte/core/polymorphic";
+
+import { cn } from "~/lib/cn";
+
+export const Modal = DialogPrimitive.Root;
+export const ModalTrigger = DialogPrimitive.Trigger;
+
+const ModalPortal: Component<DialogPrimitive.DialogPortalProps> = (props) => {
+  const [, rest] = splitProps(props, ["children"]);
+  return (
+    <DialogPrimitive.Portal {...rest}>
+      <div class="fixed inset-0 z-50 flex items-start justify-center sm:items-center">
+        {props.children}
+      </div>
+    </DialogPrimitive.Portal>
+  );
+};
+
+type ModalOverlayProps<T extends ValidComponent = "div"> = DialogPrimitive.DialogOverlayProps<T> & {
+  class?: string | undefined;
+};
+
+const ModalOverlay = <T extends ValidComponent = "div">(
+  props: PolymorphicProps<T, ModalOverlayProps<T>>,
+) => {
+  const [local, rest] = splitProps(props as ModalOverlayProps, ["class"]);
+  return <DialogPrimitive.Overlay class={cn("fixed inset-0 z-50 bg-black/40", local.class)} {...rest} />;
+};
+
+type ModalContentProps<T extends ValidComponent = "div"> = DialogPrimitive.DialogContentProps<T> & {
+  class?: string | undefined;
+  children?: JSX.Element;
+};
+
+export const ModalContent = <T extends ValidComponent = "div">(
+  props: PolymorphicProps<T, ModalContentProps<T>>,
+) => {
+  const [local, rest] = splitProps(props as ModalContentProps, ["class", "children"]);
+  return (
+    <ModalPortal>
+      <ModalOverlay />
+      <DialogPrimitive.Content
+        class={cn(
+          "fixed left-1/2 top-1/2 z-50 grid max-h-screen w-full max-w-lg -translate-x-1/2 -translate-y-1/2 " +
+            "gap-4 overflow-y-auto rounded-surface border border-line bg-surface p-6 text-ink shadow-lg " +
+            "data-[expanded]:oto-enter",
+          local.class,
+        )}
+        {...rest}
+      >
+        {local.children}
+        <DialogPrimitive.CloseButton class="absolute right-4 top-4 rounded-control opacity-70 transition-opacity hover:bg-raised hover:opacity-100 disabled:pointer-events-none">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="size-4"
+          >
+            <path d="M18 6l-12 12" />
+            <path d="M6 6l12 12" />
+          </svg>
+          <span class="sr-only">Close</span>
+        </DialogPrimitive.CloseButton>
+      </DialogPrimitive.Content>
+    </ModalPortal>
+  );
+};
+
+export const ModalHeader: Component<ComponentProps<"div">> = (props) => {
+  const [local, rest] = splitProps(props, ["class"]);
+  return <div class={cn("flex flex-col gap-1.5 text-center sm:text-left", local.class)} {...rest} />;
+};
+
+export const ModalFooter: Component<ComponentProps<"div">> = (props) => {
+  const [local, rest] = splitProps(props, ["class"]);
+  return (
+    <div
+      class={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", local.class)}
+      {...rest}
+    />
+  );
+};
+
+type ModalTitleProps<T extends ValidComponent = "h2"> = DialogPrimitive.DialogTitleProps<T> & {
+  class?: string | undefined;
+};
+
+export const ModalTitle = <T extends ValidComponent = "h2">(
+  props: PolymorphicProps<T, ModalTitleProps<T>>,
+) => {
+  const [local, rest] = splitProps(props as ModalTitleProps, ["class"]);
+  return (
+    <DialogPrimitive.Title class={cn("text-title font-semibold leading-none text-ink", local.class)} {...rest} />
+  );
+};
+
+type ModalDescriptionProps<T extends ValidComponent = "p"> =
+  DialogPrimitive.DialogDescriptionProps<T> & {
+    class?: string | undefined;
+  };
+
+export const ModalDescription = <T extends ValidComponent = "p">(
+  props: PolymorphicProps<T, ModalDescriptionProps<T>>,
+) => {
+  const [local, rest] = splitProps(props as ModalDescriptionProps, ["class"]);
+  return <DialogPrimitive.Description class={cn("text-body text-ink-muted", local.class)} {...rest} />;
+};

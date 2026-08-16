@@ -35,9 +35,11 @@ import type { AlertEvent, DeliverySummary, SnoozeRequest, TimelineQuery } from "
 import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 import { RelativeTime } from "~/components/Time";
 import { AckChip, SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
-import { Button, Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import { Chip, DataRow, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { ApiError } from "~/api/client";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { count as fmtCount, idempotencyKey } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { Timeline } from "~/features/alerts/detail/Timeline";
@@ -180,7 +182,6 @@ export default function GroupDetailRoute() {
 
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
                   <Button
-                    variant="primary"
                     size="sm"
                     busy={ack.isPending}
                     onClick={() => ack.mutate()}
@@ -189,6 +190,7 @@ export default function GroupDetailRoute() {
                     Acknowledge every current member
                   </Button>
                   <Button
+                    variant="secondary"
                     size="sm"
                     onClick={() => setSnoozeOpen(true)}
                     title="Holds oto's own notifications for every member that has already joined. They keep firing, keep their severity, and stay in the alert list."
@@ -196,6 +198,7 @@ export default function GroupDetailRoute() {
                     Snooze every current member
                   </Button>
                   <Button
+                    variant="secondary"
                     size="sm"
                     busy={unsnooze.isPending}
                     onClick={() => unsnooze.mutate()}
@@ -282,7 +285,7 @@ export default function GroupDetailRoute() {
                               >
                                 <span
                                   aria-hidden="true"
-                                  class={cx(
+                                  class={cn(
                                     "h-4 w-[3px] shrink-0 rounded-full",
                                     STATE_BAR[alert.state],
                                   )}

@@ -41,20 +41,37 @@ import type {
   Verbosity,
 } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Dialog, DialogBody } from "~/components/ui/Dialog";
+import { Button } from "~/components/ui/Button";
+import { Checkbox } from "~/components/ui/Checkbox";
 import {
-  Button,
-  Checkbox,
-  Chip,
-  Field,
-  Input,
-  Panel,
-  PanelHeader,
-  PanelTitle,
+  Modal,
+  ModalContent,
+  ModalDescription,
+  ModalFooter,
+  ModalHeader,
+  ModalTitle,
+} from "~/components/ui/Modal";
+import {
   Select,
-  cx,
-} from "~/components/ui/primitives";
+  SelectContent,
+  SelectDescription,
+  SelectErrorMessage,
+  SelectHiddenSelect,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/Select";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/ui/states";
+import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
+import {
+  TextField,
+  TextFieldDescription,
+  TextFieldErrorMessage,
+  TextFieldInput,
+  TextFieldLabel,
+} from "~/components/ui/TextField";
+import { cn } from "~/lib/cn";
 import { idempotencyKey } from "~/lib/format";
 import { SchemaForm } from "./SchemaForm";
 import {
@@ -94,7 +111,7 @@ export const ChannelsSection: Component = () => {
       <Panel>
         <PanelHeader>
           <PanelTitle>Channels</PanelTitle>
-          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+          <Button size="sm" variant="default" onClick={() => setCreating(true)}>
             Add a channel
           </Button>
         </PanelHeader>
@@ -173,7 +190,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
         <span class="text-item font-medium text-ink">{c().name}</span>
         <Chip>{c().type}</Chip>
         <span
-          class={cx(
+          class={cn(
             "rounded-chip border px-1.5 text-meta leading-5",
             c().health_status === "healthy"
               ? "border-line bg-surface text-ink-muted"
@@ -191,15 +208,15 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
         <Chip title={VERBOSITY_NOTE[c().verbosity]}>{c().verbosity}</Chip>
 
         <div class="ml-auto flex items-center gap-2">
-          <Button size="sm" busy={test.isPending} onClick={() => test.mutate()}>
+          <Button size="sm" variant="secondary" busy={test.isPending} onClick={() => test.mutate()}>
             Send a test card
           </Button>
-          <Button size="sm" onClick={props.onEdit}>
+          <Button size="sm" variant="secondary" onClick={props.onEdit}>
             Edit
           </Button>
           <Button
             size="sm"
-            variant="danger"
+            variant="destructive"
             busy={remove.isPending}
             onClick={() => remove.mutate()}
             title="Removes the destination. Delivery history is kept — the record is not rewritten."
@@ -242,7 +259,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
       <Show when={test.data}>
         {(result) => (
           <p
-            class={cx(
+            class={cn(
               "mt-1 rounded-control border px-2 py-1 text-meta leading-snug",
               result().ok
                 ? "border-line bg-sunken text-ink-muted"
@@ -369,23 +386,187 @@ const ChannelDialog: Component<{
   const violations = (): ReadonlyMap<string, string> => violationsByField(mutation.error);
 
   return (
-    <Dialog
+    <Modal
       open={props.open}
-      onClose={() => {
-        setDirty(false);
-        props.onClose();
+      onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          setDirty(false);
+          props.onClose();
+        }
       }}
-      width="md"
-      title={editing() ? `Edit ${props.channel?.name ?? "channel"}` : "Add a channel"}
-      description="The fields below are generated from this provider's own JSON Schema — the same bytes the server validates against, so what the form accepts and what the server accepts cannot drift."
-      footer={
-        <>
-          <Button size="sm" onClick={props.onClose}>
+    >
+      <ModalContent>
+        <ModalHeader>
+          <ModalTitle>
+            {editing() ? `Edit ${props.channel?.name ?? "channel"}` : "Add a channel"}
+          </ModalTitle>
+          <ModalDescription>
+            The fields below are generated from this provider's own JSON Schema — the same bytes
+            the server validates against, so what the form accepts and what the server accepts
+            cannot drift.
+          </ModalDescription>
+        </ModalHeader>
+
+        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+          <Show when={mutation.error !== null}>
+            <ErrorBanner error={mutation.error} />
+          </Show>
+
+          <Show when={!editing()}>
+            <Select<ChannelType>
+              class="flex flex-col gap-1"
+              options={props.types.map((t) => t.type)}
+              value={type()}
+              onChange={(next) => {
+                if (next === null) return;
+                setType(next);
+                queueMicrotask(() => setConfig(initialConfig(fields())));
+              }}
+              itemComponent={(itemProps) => (
+                <SelectItem item={itemProps.item}>
+                  {props.types.find((t) => t.type === itemProps.item.rawValue)?.display_name ??
+                    itemProps.item.rawValue}
+                </SelectItem>
+              )}
+            >
+              <SelectLabel>
+                Provider
+                <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+                  *
+                </span>
+              </SelectLabel>
+              <SelectTrigger id="ch-type">
+                <SelectValue<ChannelType>>
+                  {(state) =>
+                    props.types.find((t) => t.type === state.selectedOption())?.display_name ??
+                    state.selectedOption()
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectHiddenSelect />
+              <SelectContent />
+            </Select>
+          </Show>
+
+          <TextField
+            value={name()}
+            validationState={
+              (violations().get("name") ??
+              (showErrors() && name().trim() === "" ? "A name is required." : undefined))
+                ? "invalid"
+                : "valid"
+            }
+            onChange={setName}
+          >
+            <TextFieldLabel>
+              Name
+              <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+                *
+              </span>
+            </TextFieldLabel>
+            <TextFieldInput id="ch-name" placeholder="#sre-alerts" />
+            <TextFieldDescription>
+              Unique within the org, compared case-insensitively.
+            </TextFieldDescription>
+            <TextFieldErrorMessage role="alert">
+              {violations().get("name") ??
+                (showErrors() && name().trim() === "" ? "A name is required." : undefined)}
+            </TextFieldErrorMessage>
+          </TextField>
+
+          <Show
+            when={descriptor()}
+            fallback={
+              <p class="text-body text-ink-muted">
+                oto has not published a schema for this provider, so there is nothing to configure.
+              </p>
+            }
+          >
+            <fieldset class="rounded-control border border-line p-3">
+              <legend class="px-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
+                Provider configuration
+              </legend>
+              <SchemaForm
+                fields={fields()}
+                value={config()}
+                prefix="config"
+                showErrors={showErrors()}
+                violations={violations()}
+                onChange={(key, next) => setConfig({ ...config(), [key]: next })}
+              />
+            </fieldset>
+          </Show>
+
+          <Show when={(descriptor()?.credential_kinds ?? []).some((k) => k !== "none")}>
+            <TextField
+              value={secret()}
+              validationState={violations().get("credential.values.token") ? "invalid" : "valid"}
+              onChange={setSecret}
+            >
+              <TextFieldLabel>
+                {editing() ? "Replace credential (optional)" : "Credential"}
+              </TextFieldLabel>
+              <TextFieldInput id="ch-secret" type="password" autocomplete="off" />
+              <TextFieldDescription>
+                {editing()
+                  ? "Leave blank to keep the current one. oto can never show you the existing value — only a hash is kept."
+                  : `This provider accepts: ${(descriptor()?.credential_kinds ?? []).join(", ")}. It is sealed before it touches disk and no endpoint ever returns it.`}
+              </TextFieldDescription>
+              <TextFieldErrorMessage role="alert">
+                {violations().get("credential.values.token")}
+              </TextFieldErrorMessage>
+            </TextField>
+          </Show>
+
+          <Select<Verbosity>
+            class="flex flex-col gap-1"
+            options={[...VERBOSITIES]}
+            value={verbosity()}
+            onChange={(next) => {
+              if (next !== null) setVerbosity(next);
+            }}
+            validationState={violations().get("verbosity") ? "invalid" : "valid"}
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{itemProps.item.rawValue}</SelectItem>
+            )}
+          >
+            <SelectLabel>Verbosity</SelectLabel>
+            <SelectTrigger>
+              <SelectValue<Verbosity>>{(state) => state.selectedOption()}</SelectValue>
+            </SelectTrigger>
+            {/* `id="ch-verbosity"` on the hidden native `<select>` (rendered for
+                browser autofill/form-submission semantics) rather than on the
+                Kobalte trigger button: it is the one element in this composite
+                that is still a real `<select>` with real `<option>`s, so it is
+                what a test — or a password manager — can query by id. */}
+            <SelectHiddenSelect id="ch-verbosity" />
+            <SelectDescription>{VERBOSITY_NOTE[verbosity()]}</SelectDescription>
+            <SelectErrorMessage role="alert">{violations().get("verbosity")}</SelectErrorMessage>
+            <SelectContent />
+          </Select>
+
+          <div class="flex items-center gap-1.5">
+            <Checkbox id="ch-enabled" checked={enabled()} onChange={setEnabled} />
+            <label
+              for="ch-enabled-input"
+              class="inline-flex cursor-pointer select-none items-center text-item text-ink"
+            >
+              Enabled
+              <span class="ml-1.5 text-meta text-ink-subtle">
+                a disabled channel is skipped, and the skip is recorded with a reason rather than
+                dropped
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <ModalFooter>
+          <Button size="sm" variant="secondary" onClick={props.onClose}>
             Cancel
           </Button>
           <Button
             size="sm"
-            variant="primary"
+            variant="default"
             busy={mutation.isPending}
             onClick={() => {
               setShowErrors(true);
@@ -395,125 +576,8 @@ const ChannelDialog: Component<{
           >
             {editing() ? "Save" : "Create"}
           </Button>
-        </>
-      }
-    >
-      <DialogBody>
-        <Show when={mutation.error !== null}>
-          <ErrorBanner error={mutation.error} />
-        </Show>
-
-        <Show when={!editing()}>
-          <Field id="ch-type" label="Provider" required>
-            {(a) => (
-              <Select
-                {...a}
-                value={type()}
-                onChange={(e) => {
-                  setType(e.currentTarget.value as ChannelType);
-                  queueMicrotask(() => setConfig(initialConfig(fields())));
-                }}
-              >
-                <For each={props.types}>
-                  {(t) => <option value={t.type}>{t.display_name}</option>}
-                </For>
-              </Select>
-            )}
-          </Field>
-        </Show>
-
-        <Field
-          id="ch-name"
-          label="Name"
-          required
-          hint="Unique within the org, compared case-insensitively."
-          error={
-            violations().get("name") ??
-            (showErrors() && name().trim() === "" ? "A name is required." : undefined)
-          }
-        >
-          {(a) => (
-            <Input {...a} value={name()} placeholder="#sre-alerts" onInput={(e) => setName(e.currentTarget.value)} />
-          )}
-        </Field>
-
-        <Show
-          when={descriptor()}
-          fallback={
-            <p class="text-body text-ink-muted">
-              oto has not published a schema for this provider, so there is nothing to configure.
-            </p>
-          }
-        >
-          <fieldset class="rounded-control border border-line p-3">
-            <legend class="px-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
-              Provider configuration
-            </legend>
-            <SchemaForm
-              fields={fields()}
-              value={config()}
-              prefix="config"
-              showErrors={showErrors()}
-              violations={violations()}
-              onChange={(key, next) => setConfig({ ...config(), [key]: next })}
-            />
-          </fieldset>
-        </Show>
-
-        <Show when={(descriptor()?.credential_kinds ?? []).some((k) => k !== "none")}>
-          <Field
-            id="ch-secret"
-            label={editing() ? "Replace credential (optional)" : "Credential"}
-            hint={
-              editing()
-                ? "Leave blank to keep the current one. oto can never show you the existing value — only a hash is kept."
-                : `This provider accepts: ${(descriptor()?.credential_kinds ?? []).join(", ")}. It is sealed before it touches disk and no endpoint ever returns it.`
-            }
-            error={violations().get("credential.values.token")}
-          >
-            {(a) => (
-              <Input
-                {...a}
-                type="password"
-                autocomplete="off"
-                value={secret()}
-                onInput={(e) => setSecret(e.currentTarget.value)}
-              />
-            )}
-          </Field>
-        </Show>
-
-        <Field
-          id="ch-verbosity"
-          label="Verbosity"
-          hint={VERBOSITY_NOTE[verbosity()]}
-          error={violations().get("verbosity")}
-        >
-          {(a) => (
-            <Select
-              {...a}
-              value={verbosity()}
-              onChange={(e) => setVerbosity(e.currentTarget.value as Verbosity)}
-            >
-              <For each={VERBOSITIES}>{(v) => <option value={v}>{v}</option>}</For>
-            </Select>
-          )}
-        </Field>
-
-        <Checkbox
-          checked={enabled()}
-          onChange={setEnabled}
-          label={
-            <span>
-              Enabled
-              <span class="ml-1.5 text-meta text-ink-subtle">
-                a disabled channel is skipped, and the skip is recorded with a reason rather than
-                dropped
-              </span>
-            </span>
-          }
-        />
-      </DialogBody>
-    </Dialog>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 };

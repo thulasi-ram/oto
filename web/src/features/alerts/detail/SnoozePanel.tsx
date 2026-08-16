@@ -19,8 +19,9 @@ import { For, Match, Show, Switch, type Component } from "solid-js";
 
 import type { SnoozeEndReason, SnoozeHistoryEntry } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Chip, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { absoluteTime } from "~/lib/format";
 
 const END_REASON: Record<NonNullable<SnoozeEndReason>, string> = {
@@ -69,7 +70,7 @@ const SnoozeRow: Component<{ readonly row: SnoozeHistoryEntry }> = (props) => {
 
   return (
     <li
-      class={cx(
+      class={cn(
         "border-b border-line px-3 py-2 last:border-b-0",
         r().active ? "border-l-[3px] border-l-ink-muted bg-sunken" : "",
       )}

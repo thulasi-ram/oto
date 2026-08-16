@@ -47,8 +47,10 @@ import type {
   RuleSnapshotQuery,
 } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Button, Chip, DataRow, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import { Chip, DataRow, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { absoluteTime, duration } from "~/lib/format";
 
 /**
@@ -111,7 +113,7 @@ export const RuleDiff: Component<{
 
   return (
     <div
-      class={cx(
+      class={cn(
         "rounded-control border border-line-strong border-l-[3px] border-l-ink-muted bg-sunken",
         props.class,
       )}
@@ -373,7 +375,7 @@ const DiffBlock: Component<{
     <div class="grid grid-cols-[2.6rem_minmax(0,1fr)] gap-x-2 gap-y-1">
       <span class="pt-px text-right text-meta text-ink-subtle">was</span>
       <code
-        class={cx(
+        class={cn(
           "min-w-0 break-words rounded-chip bg-surface px-1.5 py-0.5 text-meta leading-snug text-ink-muted line-through decoration-ink-subtle/60",
           props.mono === true ? "font-mono" : "",
         )}
@@ -383,7 +385,7 @@ const DiffBlock: Component<{
 
       <span class="pt-px text-right text-meta font-semibold text-ink">now</span>
       <code
-        class={cx(
+        class={cn(
           "min-w-0 break-words rounded-chip border border-line-strong bg-surface px-1.5 py-0.5 text-meta font-medium leading-snug text-ink",
           props.mono === true ? "font-mono" : "",
         )}
@@ -635,7 +637,7 @@ const VersionHistory: Component<{
         <For each={all()}>
         {(v) => (
           <li
-            class={cx(
+            class={cn(
               "border-b border-line px-2 py-1.5 last:border-b-0",
               v.id === props.currentId ? "bg-accent-fill" : "",
             )}

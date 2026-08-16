@@ -17,7 +17,8 @@ import { For, Show, type Component, type JSX, type ParentComponent } from "solid
 
 import { ApiError } from "~/api/client";
 import { Chime } from "./Chime";
-import { Button, cx } from "./primitives";
+import { Button } from "./Button";
+import { cn } from "~/lib/cn";
 
 /* -------------------------------------------------------------------------- */
 /* Empty                                                                      */
@@ -32,7 +33,7 @@ export interface EmptyStateProps {
 
 export const EmptyState: Component<EmptyStateProps> = (props) => (
   <div
-    class={cx("flex flex-col items-center justify-center gap-2 px-6 py-14 text-center", props.class)}
+    class={cn("flex flex-col items-center justify-center gap-2 px-6 py-14 text-center", props.class)}
   >
     {/* A quiet chime mark — the product's own glyph rather than a generic
         "no data" illustration, and the only decorative art in the app. */}
@@ -59,7 +60,7 @@ export const EmptyState: Component<EmptyStateProps> = (props) => (
 export const Skeleton: Component<{ readonly class?: string }> = (props) => (
   <span
     aria-hidden="true"
-    class={cx("block rounded-chip bg-sunken motion-safe:animate-pulse", props.class)}
+    class={cn("block rounded-chip bg-sunken motion-safe:animate-pulse", props.class)}
   />
 );
 
@@ -80,7 +81,7 @@ export const TableSkeleton: Component<{ readonly rows?: number; readonly cols?: 
         >
           <For each={Array.from({ length: props.cols ?? 5 })}>
             {(_, i) => (
-              <Skeleton class={cx("h-2.5", i() === 0 ? "w-40" : i() === 1 ? "w-24" : "w-16")} />
+              <Skeleton class={cn("h-2.5", i() === 0 ? "w-40" : i() === 1 ? "w-24" : "w-16")} />
             )}
           </For>
         </div>
@@ -140,7 +141,7 @@ export const ErrorState: Component<ErrorStateProps> = (props) => {
 
   return (
     <div
-      class={cx("flex flex-col items-center gap-2 px-6 py-12 text-center", props.class)}
+      class={cn("flex flex-col items-center gap-2 px-6 py-12 text-center", props.class)}
       role="alert"
     >
       <p class="text-title font-semibold text-ink">{title()}</p>
@@ -158,7 +159,7 @@ export const ErrorState: Component<ErrorStateProps> = (props) => {
       </Show>
       <Show when={props.onRetry}>
         {(retry) => (
-          <Button class="mt-2" size="sm" onClick={() => retry()()}>
+          <Button class="mt-2" variant="secondary" size="sm" onClick={() => retry()()}>
             Try again
           </Button>
         )}
@@ -181,7 +182,7 @@ export const ErrorBanner: ParentComponent<{
 }> = (props) => (
   <div
     role="alert"
-    class={cx(
+    class={cn(
       "flex items-start gap-2 rounded-control border border-line-strong bg-raised px-2.5 py-2",
       "text-body leading-snug text-ink",
       props.class,

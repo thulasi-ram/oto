@@ -19,9 +19,13 @@
     "verify": "npm run generate:check && npm run gen:validators:check && tsc --noEmit && vite build && vitest run"
   },
   "dependencies": {
+    "@kobalte/core": "^0.13.13",
     "@solidjs/router": "^0.15.3",
     "@tanstack/solid-query": "^5.90.5",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "solid-js": "^1.9.9",
+    "tailwind-merge": "^3.6.0",
     "valibot": "^1.1.0"
   },
   "devDependencies": {

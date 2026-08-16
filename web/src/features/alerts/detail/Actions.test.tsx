@@ -82,14 +82,14 @@ const firing = (patch: Partial<AlertDetail> = {}): AlertDetail =>
 /**
  * Queries scoped to the action bar rather than to the document.
  *
- * A closed `<dialog>` is still in the DOM, and its submit button shares its verb
- * with the bar button that opened it — so an unscoped `getByRole("button",
- * {name: "Acknowledge"})` is ambiguous by construction. Scoping is not a
+ * An open dialog's submit button shares its verb with the bar button that
+ * opened it — so an unscoped `getByRole("button", {name: "Acknowledge"})` is
+ * ambiguous by construction whenever the ack dialog is open. Scoping is not a
  * workaround here: "what does the bar offer" is precisely the question every
  * rollback assertion below is asking.
  */
 function barButtons(name: string | RegExp): readonly HTMLElement[] {
-  return screen.queryAllByRole("button", { name }).filter((el) => el.closest("dialog") === null);
+  return screen.queryAllByRole("button", { name }).filter((el) => el.closest('[role="dialog"]') === null);
 }
 
 function barButton(name: string): HTMLElement {
@@ -98,9 +98,14 @@ function barButton(name: string): HTMLElement {
   return found[0]!;
 }
 
-/** The one dialog currently open. Ack, comment and snooze are all mounted. */
+/**
+ * The one dialog currently open. Ack, comment and snooze are each their own
+ * `Modal` instance; unlike the native-`<dialog>`-based `Dialog.tsx`, Kobalte's
+ * presence-based `ModalContent` only renders a `[role="dialog"]` node for the
+ * instance whose own `open` is true, so at most one exists at a time here.
+ */
 function openDialogEl(): HTMLElement {
-  const dialog = document.querySelector("dialog[open]");
+  const dialog = document.querySelector('[role="dialog"]');
   expect(dialog, "no dialog is open").not.toBeNull();
   return dialog as HTMLElement;
 }
@@ -165,7 +170,7 @@ describe("acknowledging", () => {
     await until(() => expect(net.net.to("/ack")).toHaveLength(1));
 
     // The refusal is visible…
-    await until(() => expect(document.querySelector("dialog[open]")).not.toBeNull());
+    await until(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
     // …and nothing anywhere claims the receipt exists. `Withdraw
     // acknowledgement` only ever renders for an acked alert, so its absence is
     // the assertion that the screen did not move.
@@ -283,16 +288,29 @@ describe("ending a snooze", () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * ⛔ THIS BAR IS WHERE THE WRONG-LABEL BUG LIVED, because it is the only place
- * that mounts three dialogs at once. `Dialog` renders its `<dialog>` whether or
- * not it is open — the platform's `showModal()` needs an element to be called on
- * — so ack, comment and snooze all exist in the document from the first paint.
+ * ⛔ THIS BAR IS WHERE THE WRONG-LABEL BUG ONCE LIVED, because it used to be
+ * the one place that could have more than one of these dialogs mounted at
+ * once. Back when ack, comment and snooze were built on `Dialog.tsx`'s native
+ * `<dialog>` — which has to stay mounted whether or not it is open, since the
+ * platform's `showModal()`/`close()` need an element to act on — all three
+ * existed in the document from the first paint. While the label ids were the
+ * constants `oto-dialog-title` and `oto-dialog-desc`, all three shared them,
+ * and IDREF resolution takes the FIRST match in document order. So the
+ * comment form's `aria-labelledby` resolved to the *ack* dialog's heading and
+ * a screen reader opened it with "Acknowledge this alert". A wrong label is
+ * worse than a missing one: the operator acts on it.
  *
- * While the label ids were the constants `oto-dialog-title` and
- * `oto-dialog-desc`, all three shared them, and IDREF resolution takes the FIRST
- * match in document order. So the comment form's `aria-labelledby` resolved to
- * the *ack* dialog's heading and a screen reader opened it with "Acknowledge this
- * alert". A wrong label is worse than a missing one: the operator acts on it.
+ * `Modal` (Kobalte) only renders a `[role="dialog"]` node for an instance
+ * whose own `open` is true, so a single dialog no longer has any unopened
+ * sibling to collide with — and `Modal` defaults to `modal={true}`, which
+ * disables pointer events on the rest of the page and traps focus while it is
+ * open, so an operator can never actually get two of these open at the same
+ * time; the bar buttons behind the overlay are unreachable until the open one
+ * is dismissed. The tests below check the reachable version of the old bug
+ * instead: dismiss one dialog, open a *different* one, and confirm the ids
+ * still don't collide across that sequence — a real property here only
+ * because Kobalte mints a fresh id per `Modal` instance rather than reusing a
+ * shared constant.
  */
 describe("the dialog a screen reader is told about", () => {
   /** Resolve an IDREF the way a screen reader does, and say where it landed. */
@@ -334,15 +352,37 @@ describe("the dialog a screen reader is told about", () => {
     mount(firing());
     fireEvent.click(await ackButton());
 
-    expect(target(openDialogEl(), "aria-labelledby").textContent).toBe("Acknowledge this alert");
+    const ackDialog = openDialogEl();
+    expect(target(ackDialog, "aria-labelledby").textContent).toBe("Acknowledge this alert");
+    const ackIds = [ackDialog.getAttribute("aria-labelledby"), ackDialog.getAttribute("aria-describedby")].filter(
+      (id): id is string => id !== null,
+    );
 
-    // Every label id in the document is distinct — the property the constants
-    // could never have, and the reason the first-in-document-order rule bit.
-    const ids = Array.from(document.querySelectorAll("dialog"))
-      .flatMap((d) => [d.getAttribute("aria-labelledby"), d.getAttribute("aria-describedby")])
-      .filter((id): id is string => id !== null);
-    expect(ids.length).toBeGreaterThan(3);
-    expect(new Set(ids).size).toBe(ids.length);
+    // `Modal` traps focus and disables pointer events on the rest of the page
+    // while it's open (`modal={true}`, the default), so an operator can never
+    // reach a state with two of these open together — dismissing this one is
+    // the only way to reach the next. That's the reachable version of the old
+    // bug: ids must still not collide across a dismiss-then-open-a-different-
+    // dialog sequence.
+    fireEvent.click(openDialog().getByRole("button", { name: "Cancel" }));
+    await until(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+
+    await until(() => expect(barButtons("Comment")).toHaveLength(1));
+    fireEvent.click(barButton("Comment"));
+
+    const commentDialog = openDialogEl();
+    const commentIds = [
+      commentDialog.getAttribute("aria-labelledby"),
+      commentDialog.getAttribute("aria-describedby"),
+    ].filter((id): id is string => id !== null);
+
+    // Every label id across the sequence is distinct — the property the old
+    // shared constants could never have, and the reason the
+    // first-in-document-order rule bit.
+    expect(ackIds.length).toBeGreaterThan(0);
+    expect(commentIds.length).toBeGreaterThan(0);
+    const allIds = [...ackIds, ...commentIds];
+    expect(new Set(allIds).size).toBe(allIds.length);
   });
 });
 
@@ -364,7 +404,7 @@ describe("the note bound", () => {
     fireEvent.input(note, { target: { value: "x".repeat(max + 1) } });
     fireEvent.click(openDialog().getByRole("button", { name: "Acknowledge" }));
     // Refused locally: nothing reached the wire.
-    expect(document.querySelector("dialog[open]")).not.toBeNull();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
   it("caps the comment box at the contract's length too, and refuses an empty one", async () => {

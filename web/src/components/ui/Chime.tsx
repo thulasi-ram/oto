@@ -83,7 +83,7 @@
  */
 import { Show, type Component } from "solid-js";
 
-import { cx } from "./primitives";
+import { cn } from "~/lib/cn";
 
 export type ChimeSize = "mark" | "glyph";
 
@@ -170,7 +170,7 @@ export const Chime: Component<ChimeProps> = (props) => {
   const swing = swingClass(props.size);
 
   return (
-    <svg viewBox="0 0 40 40" class={cx(BOX[props.size], swing, props.class)} aria-hidden="true">
+    <svg viewBox="0 0 40 40" class={cn(BOX[props.size], swing, props.class)} aria-hidden="true">
       <path
         d={DOME}
         fill="none"

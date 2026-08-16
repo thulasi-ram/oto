@@ -40,8 +40,8 @@ describe("the reason filter", () => {
     const group = await screen.findByRole("group", { name: "Reason" });
 
     const labels = within(group)
-      .getAllByRole("checkbox")
-      .map((el) => el.closest("label")?.textContent?.trim() ?? "");
+      .getAllByRole("button")
+      .map((el) => el.textContent?.trim() ?? "");
 
     // The picklist the control is built from is the contract's own, so the count
     // is derived twice from the same place and never typed here.
@@ -59,7 +59,7 @@ describe("the reason filter", () => {
     const stub = mount();
     const group = await screen.findByRole("group", { name: "Reason" });
 
-    fireEvent.click(within(group).getAllByRole("checkbox")[0]!);
+    fireEvent.click(within(group).getAllByRole("button")[0]!);
 
     await until(() => {
       const sent = stub.to("/rejections").map((c) => c.search.get("reason"));

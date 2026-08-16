@@ -39,7 +39,8 @@ import {
   normaliseSeverity,
 } from "~/components/StateChip";
 import { SnoozeChipUnknownUntil } from "~/components/SnoozeChip";
-import { Chip, cx } from "~/components/ui/primitives";
+import { Chip } from "~/components/ui/surfaces";
+import { cn } from "~/lib/cn";
 import { count as fmtCount, duration as fmtDuration, truncate } from "~/lib/format";
 import { createVirtualiser, readRowHeight } from "~/lib/virtual";
 
@@ -199,7 +200,7 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
               {(col) => (
                 <th
                   scope="col"
-                  class={cx(
+                  class={cn(
                     "border-b border-line px-2 py-1.5 text-left align-middle",
                     "text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted",
                     col.class,
@@ -296,7 +297,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
     <tr
       data-row-index={props.index}
       onFocusIn={props.onFocus}
-      class={cx(
+      class={cn(
         "group border-b border-line",
         // The row tint is the state's pastel fill — Tier A brightness, Tier B
         // meaning. `firing` gets the tint; a resolved row stays neutral so the
@@ -309,7 +310,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
       {/* The 3 px status bar (§M.2). Saturated, and the only saturated thing in
           the row's chrome. */}
       <td class="w-[3px] p-0">
-        <div class={cx("h-full w-[3px]", STATE_BAR[props.alert.state])} aria-hidden="true" />
+        <div class={cn("h-full w-[3px]", STATE_BAR[props.alert.state])} aria-hidden="true" />
       </td>
 
       <td class="px-2 align-middle">

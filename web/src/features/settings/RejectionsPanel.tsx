@@ -39,7 +39,9 @@ import type {
   RejectionReason,
 } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Button, Chip, ToggleGroup } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import { Chip } from "~/components/ui/surfaces";
+import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { ErrorState } from "~/components/ui/states";
 import { count as fmtCount, formatLabels, truncate } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
@@ -234,16 +236,17 @@ const RejectionFeed: Component<{ readonly sourceID: string }> = (props) => {
       </h3>
 
       <div class="mt-1">
-        <ToggleGroup<RejectionReason>
+        <ToggleGroup
           legend="Reason"
           showLegend
-          options={RejectionReasonSchema.options.map((r) => ({
-            value: r,
-            label: REASON_LABEL[r],
-          }))}
-          selected={reasons()}
-          onChange={setReasons}
-        />
+          multiple
+          value={[...reasons()]}
+          onChange={(next) => setReasons(next as RejectionReason[])}
+        >
+          <For each={RejectionReasonSchema.options}>
+            {(reason) => <ToggleGroupItem value={reason}>{REASON_LABEL[reason]}</ToggleGroupItem>}
+          </For>
+        </ToggleGroup>
       </div>
 
       <p class={standing().tone} aria-live="polite" aria-atomic="true">

@@ -15,7 +15,7 @@
  */
 import { type Component, type JSX } from "solid-js";
 
-import { cx } from "./primitives";
+import { cn } from "~/lib/cn";
 
 export type FilterRowTone = "surface" | "raised";
 export type FilterRowGap = "default" | "tight";
@@ -42,12 +42,12 @@ const GAP: Record<FilterRowGap, string> = {
 
 export const FilterRow: Component<FilterRowProps> = (props) => (
   <div
-    class={cx(
+    class={cn(
       "flex flex-wrap items-center px-3",
       GAP[props.gap ?? "default"],
       props.standalone === false
         ? "pb-2"
-        : cx("border-b border-line py-2", TONE[props.tone ?? "surface"]),
+        : cn("border-b border-line py-2", TONE[props.tone ?? "surface"]),
       props.class,
     )}
   >

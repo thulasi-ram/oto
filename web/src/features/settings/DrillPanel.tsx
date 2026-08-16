@@ -20,8 +20,11 @@ import { disposeDeliveryDrill, getDeliveryDrill, startDeliveryDrill } from "~/ap
 import { qk } from "~/api/keys";
 import type { DeliveryDrill, DrillStage, DrillStageName, DrillStageStatus } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Button, Chip, Input, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import { Chip } from "~/components/ui/surfaces";
+import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextField";
 import { ErrorBanner } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 
 /**
  * What each stage proves, in one line, for the operator who has never read the
@@ -125,16 +128,10 @@ export const DrillPanel: Component<{ readonly sourceID: string }> = (props) => {
 
       <Show when={open()}>
         <div class="mt-1.5 flex flex-wrap items-end gap-2">
-          <label class="flex flex-col gap-0.5">
-            <span class="text-meta text-ink-subtle">
-              severity to fire at (policies usually match on it)
-            </span>
-            <Input
-              value={severity()}
-              placeholder="warning"
-              onInput={(e) => setSeverity(e.currentTarget.value)}
-            />
-          </label>
+          <TextField value={severity()} onChange={setSeverity}>
+            <TextFieldLabel>severity to fire at (policies usually match on it)</TextFieldLabel>
+            <TextFieldInput placeholder="warning" />
+          </TextField>
           <Button size="sm" busy={start.isPending} onClick={() => start.mutate()}>
             Run a drill
           </Button>
@@ -246,7 +243,7 @@ const StageRow: Component<{ readonly stage: DrillStage }> = (props) => {
     <li class="flex items-start gap-1.5 text-meta leading-snug">
       <span
         aria-hidden="true"
-        class={cx(
+        class={cn(
           "w-3 shrink-0 text-center font-mono",
           st().status === "failed" ? "font-bold text-ink" : "text-ink-subtle",
         )}
@@ -255,7 +252,7 @@ const StageRow: Component<{ readonly stage: DrillStage }> = (props) => {
       </span>
       <div class="min-w-0">
         <span
-          class={cx(
+          class={cn(
             st().status === "failed" ? "font-semibold text-ink" : "font-medium text-ink-muted",
           )}
         >

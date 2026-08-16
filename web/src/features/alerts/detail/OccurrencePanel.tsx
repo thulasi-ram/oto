@@ -11,8 +11,9 @@ import { For, Match, Show, Switch, type Component } from "solid-js";
 import type { Occurrence, ResolveReason, SuppressionReason } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { STATE_BAR, StateChip } from "~/components/StateChip";
-import { Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { absoluteTime, duration } from "~/lib/format";
 
 /**
@@ -85,14 +86,14 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
           <For each={props.occurrences}>
             {(occ) => (
               <li
-                class={cx(
+                class={cn(
                   "flex items-start gap-2.5 border-b border-line px-3 py-2 last:border-b-0",
                   occ.id === props.currentId ? "bg-accent-fill" : "",
                 )}
               >
                 <span
                   aria-hidden="true"
-                  class={cx("mt-1 h-6 w-[3px] shrink-0 rounded-full", STATE_BAR[occ.state])}
+                  class={cn("mt-1 h-6 w-[3px] shrink-0 rounded-full", STATE_BAR[occ.state])}
                 />
 
                 <div class="min-w-0 flex-1">

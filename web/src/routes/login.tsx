@@ -26,8 +26,9 @@ import { createSignal, Show, type Component } from "solid-js";
 
 import { ApiError } from "~/api/client";
 import { useSession } from "~/api/session";
+import { Button } from "~/components/ui/Button";
 import { Chime } from "~/components/ui/Chime";
-import { Button, Field, Input } from "~/components/ui/primitives";
+import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextField";
 
 /** What the operator is told, per failure. Never more specific than the server. */
 function messageFor(err: unknown): string {
@@ -93,33 +94,15 @@ const LoginRoute: Component = () => {
           <p class="text-body text-ink-muted">Use the account created at setup.</p>
         </div>
 
-        <Field id="login-email" label="Email" required>
-          {(a) => (
-            <Input
-              {...a}
-              type="email"
-              name="email"
-              autocomplete="username"
-              required
-              value={email()}
-              onInput={(e) => setEmail(e.currentTarget.value)}
-            />
-          )}
-        </Field>
+        <TextField value={email()} onChange={setEmail} name="email" required>
+          <TextFieldLabel>Email</TextFieldLabel>
+          <TextFieldInput id="login-email" type="email" autocomplete="username" />
+        </TextField>
 
-        <Field id="login-password" label="Password" required>
-          {(a) => (
-            <Input
-              {...a}
-              type="password"
-              name="password"
-              autocomplete="current-password"
-              required
-              value={password()}
-              onInput={(e) => setPassword(e.currentTarget.value)}
-            />
-          )}
-        </Field>
+        <TextField value={password()} onChange={setPassword} name="password" required>
+          <TextFieldLabel>Password</TextFieldLabel>
+          <TextFieldInput id="login-password" type="password" autocomplete="current-password" />
+        </TextField>
 
         {/* role=alert so the failure is announced, not just painted. */}
         <Show when={error()}>
@@ -134,7 +117,7 @@ const LoginRoute: Component = () => {
           )}
         </Show>
 
-        <Button type="submit" variant="primary" busy={busy()}>
+        <Button type="submit" busy={busy()}>
           Sign in
         </Button>
       </form>

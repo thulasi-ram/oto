@@ -24,8 +24,9 @@ import { useQuery } from "@tanstack/solid-query";
 
 import { batchGetRuleSnapshots, listAlertRollups, listAlerts } from "~/api/endpoints";
 import { qk } from "~/api/keys";
+import { useSession } from "~/api/session";
 import type { Alert, AlertRollup, RollupAxis, RuleSnapshot } from "~/api/types";
-import { Button } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
 import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
 import { count as fmtCount } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
@@ -49,6 +50,7 @@ const BUCKET_PAGE_SIZE = 100;
 
 export default function AlertsRoute() {
   const navigate = useNavigate();
+  const session = useSession();
   // Subscribing to the router's params is what makes back/forward work; the
   // filters are derived from the URL and never held in parallel.
   const [searchParams] = useSearchParams();
@@ -255,6 +257,7 @@ export default function AlertsRoute() {
         totalCountLabel={
           axis() === null ? `${fmtCount(alerts().length)}${hasMore() ? "+" : ""}` : undefined
         }
+        partialMatchEnabled={session.me()?.search?.partial_match_enabled}
         status={
           <span class="text-body tabular-nums text-ink-muted" aria-live="polite">
             {status()}
@@ -288,7 +291,7 @@ export default function AlertsRoute() {
                 title="No alerts match these filters, so there is nothing to group."
                 body="The buckets are computed from the same filtered set as the list. An empty roll-up means an empty list, not a grouping problem."
                 action={
-                  <Button size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
+                  <Button variant="secondary" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
                     Clear filters
                   </Button>
                 }
@@ -321,7 +324,7 @@ export default function AlertsRoute() {
                 title="No alerts match these filters."
                 body="The filters are doing something — that is not the same as there being nothing here. Clear them to see everything oto has."
                 action={
-                  <Button size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
+                  <Button variant="secondary" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
                     Clear filters
                   </Button>
                 }
@@ -397,7 +400,7 @@ function Footer(props: {
           </span>
         }
       >
-        <Button size="sm" busy={props.loading} onClick={props.onLoadMore}>
+        <Button variant="secondary" size="sm" busy={props.loading} onClick={props.onLoadMore}>
           Load {fmtCount(props.pageSize)} more
         </Button>
         <span class="text-meta text-ink-subtle">

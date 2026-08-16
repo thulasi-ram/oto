@@ -20,10 +20,12 @@ import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 
 import type { AlertEvent } from "~/api/types";
 import { ClockSkewBadge, ClockTime, RelativeTime } from "~/components/Time";
+import { Button } from "~/components/ui/Button";
 import { FilterRow } from "~/components/ui/FilterRow";
-import { Button, ToggleGroup, cx } from "~/components/ui/primitives";
 import { EmptyState } from "~/components/ui/states";
+import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { calendarDay, differentDay } from "~/lib/format";
+import { cn } from "~/lib/cn";
 import {
   ALL_CATEGORIES,
   CATEGORY_LABEL,
@@ -49,12 +51,16 @@ export interface TimelineProps {
 export const Timeline: Component<TimelineProps> = (props) => (
   <div class="flex min-h-0 flex-col">
     <FilterRow tone="raised">
-      <ToggleGroup<EventCategory>
+      <ToggleGroup
         legend="Event kinds"
-        options={ALL_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABEL[c] }))}
-        selected={props.categories}
-        onChange={props.onCategoriesChange}
-      />
+        multiple
+        value={[...props.categories]}
+        onChange={(next) => props.onCategoriesChange(next as EventCategory[])}
+      >
+        <For each={ALL_CATEGORIES}>
+          {(c) => <ToggleGroupItem value={c}>{CATEGORY_LABEL[c]}</ToggleGroupItem>}
+        </For>
+      </ToggleGroup>
       <div class="ml-auto flex items-center gap-2">
         <Show when={props.categories.length > 0}>
           <Button size="sm" variant="ghost" onClick={() => props.onCategoriesChange([])}>
@@ -97,7 +103,7 @@ export const Timeline: Component<TimelineProps> = (props) => (
 
     <Show when={props.hasMore}>
       <div class="border-t border-line px-3 py-2 text-center">
-        <Button size="sm" busy={props.loading} onClick={props.onLoadMore}>
+        <Button variant="secondary" size="sm" busy={props.loading} onClick={props.onLoadMore}>
           Load earlier events
         </Button>
       </div>
@@ -145,7 +151,7 @@ const TimelineRow: Component<{
             thing carrying meaning — the marker glyph and the label do that. */}
         <div class="relative flex w-4 shrink-0 justify-center" aria-hidden="true">
           <span class="absolute inset-y-0 w-px bg-line" />
-          <span class={cx("relative mt-1.5 bg-surface", kind().tone)}>
+          <span class={cn("relative mt-1.5 bg-surface", kind().tone)}>
             <Marker shape={kind().shape} />
           </span>
         </div>
@@ -159,7 +165,7 @@ const TimelineRow: Component<{
             {/* Attribution. A human is named plainly; a machine is named as the
                 machine it is, so the two are never confusable. */}
             <span
-              class={cx(
+              class={cn(
                 "shrink-0 text-meta",
                 isHuman(props.event.actor_kind) ? "font-medium text-ink-muted" : "text-ink-subtle",
               )}
@@ -197,14 +203,15 @@ const TimelineRow: Component<{
 
           <Show when={hasPayload() && !isRuleChangePayload(props.event.type, payload())}>
             <div class="mt-1">
-              <button
-                type="button"
-                class="text-meta text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
+              <Button
+                variant="link"
+                size="sm"
+                class="h-auto p-0 text-meta text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
                 aria-expanded={open()}
                 onClick={() => setOpen(!open())}
               >
                 {open() ? "Hide" : "Show"} detail
-              </button>
+              </Button>
               <Show when={open()}>
                 <PayloadTable payload={payload()} />
               </Show>

@@ -7,7 +7,7 @@
 import { Match, Switch, type Component } from "solid-js";
 import { A, Navigate, useParams } from "@solidjs/router";
 
-import { cx } from "~/components/ui/primitives";
+import { cn } from "~/lib/cn";
 import { ChannelsSection } from "~/features/settings/ChannelsSection";
 import { PoliciesSection } from "~/features/settings/PoliciesSection";
 import { SourcesSection } from "~/features/settings/SourcesSection";
@@ -44,7 +44,7 @@ const SettingsRoute: Component = () => {
               <A
                 href={`/settings/${section.id}`}
                 aria-current={params.section === section.id ? "page" : undefined}
-                class={cx(
+                class={cn(
                   "-mb-px border-b-2 px-2.5 py-1.5 text-item transition-colors duration-100",
                   params.section === section.id
                     ? "border-accent font-medium text-ink"

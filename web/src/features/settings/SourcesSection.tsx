@@ -33,9 +33,36 @@ import type {
   SourceKind,
 } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Dialog, DialogBody } from "~/components/ui/Dialog";
-import { Button, Checkbox, Chip, Field, Input, Panel, PanelHeader, PanelTitle, Select, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import { Checkbox } from "~/components/ui/Checkbox";
+import {
+  Modal,
+  ModalContent,
+  ModalDescription,
+  ModalFooter,
+  ModalHeader,
+  ModalTitle,
+} from "~/components/ui/Modal";
+import {
+  Select,
+  SelectContent,
+  SelectErrorMessage,
+  SelectHiddenSelect,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/Select";
+import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
+import {
+  TextField,
+  TextFieldDescription,
+  TextFieldErrorMessage,
+  TextFieldInput,
+  TextFieldLabel,
+} from "~/components/ui/TextField";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { idempotencyKey } from "~/lib/format";
 
 import { DrillPanel } from "./DrillPanel";
@@ -181,7 +208,7 @@ export const SourcesSection: Component = () => {
           <PanelTitle>Sources</PanelTitle>
           <Button
             size="sm"
-            variant="primary"
+            variant="default"
             disabled={(clusters.data?.data.length ?? 0) === 0}
             title={
               (clusters.data?.data.length ?? 0) === 0
@@ -254,7 +281,7 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
         <Chip>{s().kind}</Chip>
         <Show when={s().cluster_key}>{(key) => <Chip mono>{key()}</Chip>}</Show>
         <span
-          class={cx(
+          class={cn(
             "rounded-chip border px-1.5 text-meta leading-5",
             s().health?.status === "healthy"
               ? "border-line bg-surface text-ink-muted"
@@ -289,11 +316,16 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
           <Button size="sm" busy={test.isPending} onClick={() => test.mutate()}>
             Test
           </Button>
-          <Checkbox
-            checked={s().push_enabled}
-            onChange={(next) => toggle.mutate(next)}
-            label={<span class="text-meta">accept webhooks</span>}
-          />
+          <div class="flex items-center gap-1.5">
+            <Checkbox
+              id={`source-${s().id}-push`}
+              checked={s().push_enabled}
+              onChange={(next) => toggle.mutate(next)}
+            />
+            <label for={`source-${s().id}-push-input`} class="cursor-pointer select-none text-meta text-ink">
+              accept webhooks
+            </label>
+          </div>
         </div>
       </div>
 
@@ -310,7 +342,7 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
       <Show when={test.data}>
         {(result) => (
           <p
-            class={cx(
+            class={cn(
               "mt-1 rounded-control border px-2 py-1 text-meta leading-snug",
               result().ok
                 ? "border-line bg-sunken text-ink-muted"
@@ -404,37 +436,37 @@ const ClustersPanel: Component = () => {
 
       <div class="flex flex-wrap items-end gap-2 border-t border-line bg-raised px-3 py-2">
         <div class="min-w-[10rem] flex-1">
-          <Field
-            id="cluster-key"
-            label="Cluster key"
-            hint="Immutable. It participates in alert identity, so changing it later would re-key every alert."
-            error={violations().get("cluster_key")}
+          <TextField
+            value={key()}
+            validationState={violations().get("cluster_key") ? "invalid" : "valid"}
+            onChange={setKey}
           >
-            {(a) => (
-              <Input
-                {...a}
-                mono
-                value={key()}
-                placeholder="prod-eu"
-                onInput={(e) => setKey(e.currentTarget.value)}
-              />
-            )}
-          </Field>
+            <TextFieldLabel>Cluster key</TextFieldLabel>
+            <TextFieldInput id="cluster-key" class="font-mono" placeholder="prod-eu" />
+            <TextFieldDescription>
+              Immutable. It participates in alert identity, so changing it later would re-key every
+              alert.
+            </TextFieldDescription>
+            <TextFieldErrorMessage id="cluster-key-error" role="alert">
+              {violations().get("cluster_key")}
+            </TextFieldErrorMessage>
+          </TextField>
         </div>
         <div class="min-w-[10rem] flex-1">
-          <Field id="cluster-name" label="Display name" error={violations().get("display_name")}>
-            {(a) => (
-              <Input
-                {...a}
-                value={name()}
-                placeholder="Production EU"
-                onInput={(e) => setName(e.currentTarget.value)}
-              />
-            )}
-          </Field>
+          <TextField
+            value={name()}
+            validationState={violations().get("display_name") ? "invalid" : "valid"}
+            onChange={setName}
+          >
+            <TextFieldLabel>Display name</TextFieldLabel>
+            <TextFieldInput id="cluster-name" placeholder="Production EU" />
+            <TextFieldErrorMessage id="cluster-name-error" role="alert">
+              {violations().get("display_name")}
+            </TextFieldErrorMessage>
+          </TextField>
         </div>
         <Button
-          size="md"
+          size="default"
           busy={create.isPending}
           disabled={key().trim() === "" || name().trim() === ""}
           onClick={() => create.mutate()}
@@ -488,20 +520,171 @@ const CreateSourceDialog: Component<{
 
   const violations = (): ReadonlyMap<string, string> => violationsByField(create.error);
 
+  /** Rendered next to a required field's label — matches the old `Field`'s asterisk exactly. */
+  const Required: Component = () => (
+    <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+      *
+    </span>
+  );
+
   return (
-    <Dialog
+    <Modal
       open={props.open}
-      onClose={props.onClose}
-      title="Register an Alertmanager"
-      description="oto reads state from this upstream and accepts webhooks from it. It never writes to your cluster — it cannot create, edit or expire a silence."
-      footer={
-        <>
-          <Button size="sm" onClick={props.onClose}>
+      onOpenChange={(isOpen) => {
+        if (!isOpen) props.onClose();
+      }}
+    >
+      <ModalContent>
+        <ModalHeader>
+          <ModalTitle>Register an Alertmanager</ModalTitle>
+          <ModalDescription>
+            oto reads state from this upstream and accepts webhooks from it. It never writes to your
+            cluster — it cannot create, edit or expire a silence.
+          </ModalDescription>
+        </ModalHeader>
+
+        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+          <Show when={create.error !== null}>
+            <ErrorBanner error={create.error} />
+          </Show>
+
+          <TextField
+            value={name()}
+            required
+            validationState={(localError("name") ?? violations().get("name")) ? "invalid" : "valid"}
+            onChange={(value) => {
+              setTouched(true);
+              setName(value);
+            }}
+          >
+            <TextFieldLabel>
+              Name
+              <Required />
+            </TextFieldLabel>
+            <TextFieldInput id="src-name" maxLength={NAME_MAX} placeholder="alertmanager-prod-eu" />
+            <TextFieldErrorMessage id="src-name-error" role="alert">
+              {localError("name") ?? violations().get("name")}
+            </TextFieldErrorMessage>
+          </TextField>
+
+          <Select
+            options={[...props.clusters]}
+            optionValue="id"
+            optionTextValue="display_name"
+            required
+            value={props.clusters.find((c) => c.id === clusterId()) ?? null}
+            onChange={(value) => {
+              setTouched(true);
+              setClusterId(value?.id ?? "");
+            }}
+            validationState={
+              (localError("cluster_id") ?? violations().get("cluster_id")) ? "invalid" : "valid"
+            }
+            placeholder="— pick one —"
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{itemProps.item.rawValue.display_name}</SelectItem>
+            )}
+          >
+            <SelectLabel>
+              Cluster
+              <Required />
+            </SelectLabel>
+            <SelectTrigger id="src-cluster">
+              <SelectValue<{ readonly id: string; readonly display_name: string }>>
+                {(state) => state.selectedOption().display_name}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
+            <SelectErrorMessage id="src-cluster-error" role="alert">
+              {localError("cluster_id") ?? violations().get("cluster_id")}
+            </SelectErrorMessage>
+          </Select>
+
+          <Select
+            options={SourceKindSchema.options}
+            optionTextValue={(option) => KIND_LABEL[option]}
+            required
+            value={kind()}
+            onChange={(value) => setKind(value ?? "alertmanager")}
+            validationState={violations().get("kind") ? "invalid" : "valid"}
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{KIND_LABEL[itemProps.item.rawValue]}</SelectItem>
+            )}
+          >
+            <SelectLabel>
+              Kind
+              <Required />
+            </SelectLabel>
+            <SelectTrigger id="src-kind-trigger">
+              <SelectValue<SourceKind>>{(state) => KIND_LABEL[state.selectedOption()]}</SelectValue>
+            </SelectTrigger>
+            {/* `id` goes on the hidden native `<select>`, not the trigger button — this is the
+                element `settings-contract.test.tsx` reads `.options` off of, exactly as it did
+                the old native `<select>`. */}
+            <SelectHiddenSelect id="src-kind" />
+            <SelectContent />
+            <SelectErrorMessage role="alert">{violations().get("kind")}</SelectErrorMessage>
+          </Select>
+
+          <TextField
+            value={baseUrl()}
+            required
+            validationState={
+              (localError("base_url") ?? violations().get("base_url")) ? "invalid" : "valid"
+            }
+            onChange={(value) => {
+              setTouched(true);
+              setBaseUrl(value);
+            }}
+          >
+            <TextFieldLabel>
+              Base URL
+              <Required />
+            </TextFieldLabel>
+            <TextFieldInput
+              id="src-url"
+              class="font-mono"
+              placeholder="https://alertmanager.example.com"
+            />
+            <TextFieldDescription>
+              Absolute, no trailing slash. All replicas of an HA pair must be registered against the
+              same cluster — they are the same failure domain, and their duplicate webhooks are
+              deduplicated by design.
+            </TextFieldDescription>
+            <TextFieldErrorMessage id="src-url-error" role="alert">
+              {localError("base_url") ?? violations().get("base_url")}
+            </TextFieldErrorMessage>
+          </TextField>
+
+          <TextField
+            value={promUrl()}
+            validationState={violations().get("prometheus_url") ? "invalid" : "valid"}
+            onChange={setPromUrl}
+          >
+            <TextFieldLabel>Prometheus URL (optional)</TextFieldLabel>
+            <TextFieldInput
+              id="src-prom"
+              class="font-mono"
+              placeholder="https://prometheus.example.com"
+            />
+            <TextFieldDescription>
+              Lets oto read the rules API, which is what makes a rule snapshot authoritative rather
+              than reconstructed from a generatorURL.
+            </TextFieldDescription>
+            <TextFieldErrorMessage id="src-prom-error" role="alert">
+              {violations().get("prometheus_url")}
+            </TextFieldErrorMessage>
+          </TextField>
+        </div>
+
+        <ModalFooter>
+          <Button size="sm" variant="secondary" onClick={props.onClose}>
             Cancel
           </Button>
           <Button
             size="sm"
-            variant="primary"
+            variant="default"
             busy={create.isPending}
             onClick={() => {
               setTouched(true);
@@ -511,61 +694,9 @@ const CreateSourceDialog: Component<{
           >
             Register
           </Button>
-        </>
-      }
-    >
-      <DialogBody>
-        <Show when={create.error !== null}>
-          <ErrorBanner error={create.error} />
-        </Show>
-
-        <Field id="src-name" label="Name" required error={localError("name") ?? violations().get("name")}>
-          {(a) => (
-            <Input {...a} value={name()} maxLength={NAME_MAX} placeholder="alertmanager-prod-eu" onInput={(e) => { setTouched(true); setName(e.currentTarget.value); }} />
-          )}
-        </Field>
-
-        <Field id="src-cluster" label="Cluster" required error={localError("cluster_id") ?? violations().get("cluster_id")}>
-          {(a) => (
-            <Select {...a} value={clusterId()} onChange={(e) => { setTouched(true); setClusterId(e.currentTarget.value); }}>
-              <option value="">— pick one —</option>
-              <For each={props.clusters}>{(c) => <option value={c.id}>{c.display_name}</option>}</For>
-            </Select>
-          )}
-        </Field>
-
-        <Field id="src-kind" label="Kind" required error={violations().get("kind")}>
-          {(a) => (
-            <Select {...a} value={kind()} onChange={(e) => setKind(e.currentTarget.value as SourceKind)}>
-              <For each={SourceKindSchema.options}>
-                {(k) => <option value={k}>{KIND_LABEL[k]}</option>}
-              </For>
-            </Select>
-          )}
-        </Field>
-
-        <Field
-          id="src-url"
-          label="Base URL"
-          required
-          hint="Absolute, no trailing slash. All replicas of an HA pair must be registered against the same cluster — they are the same failure domain, and their duplicate webhooks are deduplicated by design."
-          error={localError("base_url") ?? violations().get("base_url")}
-        >
-          {(a) => (
-            <Input {...a} mono value={baseUrl()} placeholder="https://alertmanager.example.com" onInput={(e) => { setTouched(true); setBaseUrl(e.currentTarget.value); }} />
-          )}
-        </Field>
-
-        <Field
-          id="src-prom"
-          label="Prometheus URL (optional)"
-          hint="Lets oto read the rules API, which is what makes a rule snapshot authoritative rather than reconstructed from a generatorURL."
-          error={violations().get("prometheus_url")}
-        >
-          {(a) => <Input {...a} mono value={promUrl()} placeholder="https://prometheus.example.com" onInput={(e) => setPromUrl(e.currentTarget.value)} />}
-        </Field>
-      </DialogBody>
-    </Dialog>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 };
 
@@ -579,39 +710,50 @@ const TokenDialog: Component<{
   readonly created: SourceCreated | null;
   readonly onClose: () => void;
 }> = (props) => (
-  <Dialog
+  <Modal
     open={props.created !== null}
-    onClose={props.onClose}
-    title="Your ingest token"
-    description="This is the only time oto will show it. Only a hash is stored, so it cannot be shown again — rotate the source to get a new one."
-    footer={
-      <Button size="sm" variant="primary" onClick={props.onClose}>
-        I have copied it
-      </Button>
-    }
+    onOpenChange={(isOpen) => {
+      if (!isOpen) props.onClose();
+    }}
   >
-    <DialogBody>
-      <Show when={props.created}>
-        {(created) => (
-          <>
-            <div class="rounded-control border border-line-strong bg-sunken px-2 py-2">
-              <code class="block break-all font-mono text-body text-ink">
-                {created().ingest_token}
-              </code>
-            </div>
-            <Button
-              size="sm"
-              onClick={() => void navigator.clipboard?.writeText(created().ingest_token)}
-            >
-              Copy token
-            </Button>
-            <p class="text-body leading-relaxed text-ink-muted">
-              Point your Alertmanager's webhook receiver at oto's ingest URL for this source and send
-              this token as its bearer credential.
-            </p>
-          </>
-        )}
-      </Show>
-    </DialogBody>
-  </Dialog>
+    <ModalContent>
+      <ModalHeader>
+        <ModalTitle>Your ingest token</ModalTitle>
+        <ModalDescription>
+          This is the only time oto will show it. Only a hash is stored, so it cannot be shown again —
+          rotate the source to get a new one.
+        </ModalDescription>
+      </ModalHeader>
+
+      <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+        <Show when={props.created}>
+          {(created) => (
+            <>
+              <div class="rounded-control border border-line-strong bg-sunken px-2 py-2">
+                <code class="block break-all font-mono text-body text-ink">
+                  {created().ingest_token}
+                </code>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => void navigator.clipboard?.writeText(created().ingest_token)}
+              >
+                Copy token
+              </Button>
+              <p class="text-body leading-relaxed text-ink-muted">
+                Point your Alertmanager's webhook receiver at oto's ingest URL for this source and send
+                this token as its bearer credential.
+              </p>
+            </>
+          )}
+        </Show>
+      </div>
+
+      <ModalFooter>
+        <Button size="sm" variant="default" onClick={props.onClose}>
+          I have copied it
+        </Button>
+      </ModalFooter>
+    </ModalContent>
+  </Modal>
 );

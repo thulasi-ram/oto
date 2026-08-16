@@ -55,9 +55,44 @@ function mount(): FetchStub {
 async function openEditor(): Promise<ReturnType<typeof within>> {
   await until(() => expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy());
   fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-  const dialog = document.querySelector("dialog[open]");
+  // `PolicyDialog` is now `Modal` (Kobalte), not the native-`<dialog>`-based
+  // `Dialog.tsx` — presence-based `ModalContent` renders a `[role="dialog"]`
+  // node rather than a `<dialog open>` one (see `Actions.test.tsx`'s own
+  // `openDialogEl` for the same swap).
+  const dialog = document.querySelector('[role="dialog"]');
   expect(dialog, "the policy editor did not open").not.toBeNull();
   return within(dialog as HTMLElement);
+}
+
+/**
+ * Opens a `Select`'s real, accessible listbox — the way a keyboard user opens
+ * it (`SelectTrigger`'s own `onKeyDown` treats `ArrowDown` as "open, focus
+ * first") — rather than reaching past the visible trigger into
+ * `SelectHiddenSelect`'s `aria-hidden` native shim. `SelectContent` renders
+ * through a `Portal`, so its options are not descendants of the dialog
+ * element and have to be found from `screen`, not from `editor`; and it is
+ * presence-gated the same way `Modal` is, so the options are awaited rather
+ * than assumed to exist the instant the trigger opens.
+ */
+async function openListbox(trigger: HTMLElement): Promise<void> {
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  await until(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
+}
+
+/**
+ * Picks the one alert the dry-run picker was seeded with.
+ *
+ * `PolicyPreviewPanel` lives inside the Modal's presence-gated content, so
+ * `recentAlertsQuery()` only starts fetching once the dialog actually opens —
+ * and the trigger stays honestly disabled (with a "Loading…" placeholder)
+ * until that query resolves. A test driving the real trigger has to wait for
+ * it exactly as an operator would, rather than reaching past it.
+ */
+async function pickTheRecentAlert(editor: ReturnType<typeof within>): Promise<void> {
+  const trigger = editor.getByLabelText("Against this alert");
+  await until(() => expect(trigger).not.toBeDisabled());
+  await openListbox(trigger);
+  fireEvent.click(screen.getAllByRole("option")[0]!);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -67,17 +102,22 @@ describe("the reasons a policy may carry", () => {
     mount();
     const editor = await openEditor();
 
-    // The "Simulating" select renders the same list the toggle group does, and
-    // one `<option>` per reason is the cleanest place to count them.
-    const simulating = editor.getByLabelText("Simulating") as HTMLSelectElement;
-    expect(simulating.options).toHaveLength(REASONS.length);
+    // The "Simulating" select renders the same list the toggle group does.
+    // It is Kobalte's real listbox now, not a native `<select>` — opened the
+    // way a keyboard user opens it, with each `role="option"` counted rather
+    // than an `HTMLSelectElement`'s `.options` (that is `SelectHiddenSelect`'s
+    // job, and it is `aria-hidden` — not the surface under test here).
+    await openListbox(editor.getByLabelText("Simulating"));
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(REASONS.length);
 
-    for (const option of Array.from(simulating.options)) {
-      expect(option.value, "an option with no value").not.toBe("");
-      expect(option.textContent?.trim(), `\`${option.value}\` has no label`).toBeTruthy();
+    for (const option of options) {
+      const key = option.getAttribute("data-key");
+      expect(key, "an option with no key").toBeTruthy();
+      expect(option.textContent?.trim(), `\`${key ?? ""}\` has no label`).toBeTruthy();
     }
     // Derived: a reason the server adds must appear here, not in a `?? raw`.
-    expect(Array.from(simulating.options).map((o) => o.value).sort()).toEqual([...REASONS].sort());
+    expect(options.map((o) => o.getAttribute("data-key")).sort()).toEqual([...REASONS].sort());
     expectNoUndefined(document.body);
   });
 
@@ -85,7 +125,10 @@ describe("the reasons a policy may carry", () => {
     mount();
     const editor = await openEditor();
     const group = editor.getByRole("group", { name: "About these facts" });
-    expect(within(group).getAllByRole("checkbox")).toHaveLength(REASONS.length);
+    // `ToggleGroupItem` (Kobalte) renders a real `<button aria-pressed>`, not a
+    // checkbox — see the "refuses a policy that communicates nothing" test
+    // below for the same swap.
+    expect(within(group).getAllByRole("button")).toHaveLength(REASONS.length);
   });
 });
 
@@ -196,8 +239,11 @@ describe("the policy editor's bounds", () => {
     const facts = editor.getByRole("group", { name: "About these facts" });
 
     // `reasons` has `minItems: 1`. Untick everything the seeded policy carries.
-    for (const box of within(facts).getAllByRole("checkbox")) {
-      if ((box as HTMLInputElement).checked) fireEvent.click(box);
+    // `ToggleGroupItem` (Kobalte) renders a real `<button aria-pressed>`, not a
+    // checkbox — `.checked` has no meaning on it, so the pressed state is read
+    // off `aria-pressed` instead.
+    for (const box of within(facts).getAllByRole("button")) {
+      if (box.getAttribute("aria-pressed") === "true") fireEvent.click(box);
     }
 
     await until(() => expect(editor.getByRole("button", { name: "Save" })).toBeDisabled());
@@ -256,9 +302,7 @@ describe("the dry run", () => {
     }));
 
     const editor = await openEditor();
-    fireEvent.change(editor.getByLabelText("Against this alert"), {
-      target: { value: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae" },
-    });
+    await pickTheRecentAlert(editor);
     fireEvent.click(editor.getByRole("button", { name: "Preview" }));
 
     await until(() => expect(editor.getAllByText(/Would not send/)).toHaveLength(SUPPRESSED.length));
@@ -287,9 +331,7 @@ describe("the dry run", () => {
     }));
 
     const editor = await openEditor();
-    fireEvent.change(editor.getByLabelText("Against this alert"), {
-      target: { value: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae" },
-    });
+    await pickTheRecentAlert(editor);
     fireEvent.click(editor.getByRole("button", { name: "Preview" }));
 
     await until(() => expect(editor.getByText(/it would go unreported/)).toBeTruthy());

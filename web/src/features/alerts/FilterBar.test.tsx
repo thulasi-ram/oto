@@ -38,6 +38,20 @@ function stubReferenceData(): void {
   });
 }
 
+/**
+ * Opens a `Select`'s real, accessible listbox and returns the option named
+ * `optionName` — the way a keyboard user opens it (`SelectTrigger`'s own
+ * `onKeyDown` treats `ArrowDown` as "open, focus first"), not by reaching past
+ * the visible control into `SelectHiddenSelect`'s `aria-hidden` native shim.
+ * `SelectContent` is presence-gated the same way `Modal` is, so the option is
+ * awaited rather than assumed to exist the instant the trigger opens.
+ */
+async function openOption(trigger: HTMLElement, optionName: string | RegExp): Promise<HTMLElement> {
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  await until(() => expect(screen.getByRole("option", { name: optionName })).toBeTruthy());
+  return screen.getByRole("option", { name: optionName });
+}
+
 describe("the enumerable filters", () => {
   it("offers every lifecycle state the contract serves, each with a word", () => {
     stubReferenceData();
@@ -45,8 +59,8 @@ describe("the enumerable filters", () => {
 
     const group = screen.getByRole("group", { name: "Lifecycle state" });
     const labels = within(group)
-      .getAllByRole("checkbox")
-      .map((el) => el.closest("label")?.textContent?.trim() ?? "");
+      .getAllByRole("button")
+      .map((el) => el.textContent?.trim() ?? "");
 
     expect(labels).toHaveLength(enumValues("State").length);
     for (const label of labels) expect(label).not.toBe("");
@@ -58,7 +72,7 @@ describe("the enumerable filters", () => {
     const { onChange } = mount({ severity: ["critical"] });
 
     const group = screen.getByRole("group", { name: "Lifecycle state" });
-    fireEvent.click(within(group).getAllByRole("checkbox")[0]!);
+    fireEvent.click(within(group).getAllByRole("button")[0]!);
 
     expect(onChange).toHaveBeenCalledTimes(1);
     const next = onChange.mock.calls[0]?.[0];
@@ -78,29 +92,33 @@ describe("the enumerable filters", () => {
 });
 
 describe("the orthogonal axes", () => {
-  it("defaults snoozed to `any`, because hiding snoozed alerts is how an incident is lost", () => {
+  it("defaults snoozed to `any`, because hiding snoozed alerts is how an incident is lost", async () => {
     stubReferenceData();
     mount();
-    const select = screen.getByTitle(/currently holding its notifications/i) as HTMLSelectElement;
-    expect(select.value).toBe("");
-    expect(within(select).getByRole("option", { name: /Any \(default/ })).toBeTruthy();
+    const trigger = screen.getByTitle(/currently holding its notifications/i);
+    const option = await openOption(trigger, /Any \(default/);
+    expect(option).toHaveAttribute("aria-selected", "true");
   });
 
-  it("maps the snooze control onto a tri-state, never onto a lifecycle state", () => {
+  it("maps the snooze control onto a tri-state, never onto a lifecycle state", async () => {
     stubReferenceData();
     const { onChange } = mount();
-    const select = screen.getByTitle(/currently holding its notifications/i);
+    const trigger = screen.getByTitle(/currently holding its notifications/i);
 
-    fireEvent.change(select, { target: { value: "true" } });
+    const option = await openOption(trigger, "Notifications held");
+    fireEvent.click(option);
     expect(onChange.mock.calls[0]?.[0]?.snoozed).toBe(true);
     // And it never touches `state` — a snoozed alert is still firing.
     expect(onChange.mock.calls[0]?.[0]?.state).toEqual([]);
   });
 
-  it("keeps acknowledgement orthogonal to state too", () => {
+  it("keeps acknowledgement orthogonal to state too", async () => {
     stubReferenceData();
     const { onChange } = mount();
-    fireEvent.change(screen.getByTitle(/A receipt on a signal/i), { target: { value: "acked" } });
+    const trigger = screen.getByTitle(/A receipt on a signal/i);
+
+    const option = await openOption(trigger, "Seen by someone");
+    fireEvent.click(option);
     expect(onChange.mock.calls[0]?.[0]?.ack).toBe("acked");
     expect(onChange.mock.calls[0]?.[0]?.state).toEqual([]);
   });
@@ -121,10 +139,10 @@ describe("clusters", () => {
     const { onChange } = mount();
 
     await until(() => expect(screen.getByText("Cluster")).toBeTruthy());
-    const select = screen.getByText("Cluster").parentElement?.querySelector("select");
-    expect(within(select!).getByRole("option", { name: "Production (EU)" })).toBeTruthy();
+    const trigger = document.getElementById("alert-cluster") as HTMLElement;
+    const option = await openOption(trigger, "Production (EU)");
 
-    fireEvent.change(select!, { target: { value: "prod-eu" } });
+    fireEvent.click(option);
     expect(onChange.mock.calls[0]?.[0]?.cluster).toEqual(["prod-eu"]);
   });
 });

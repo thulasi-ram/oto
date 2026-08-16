@@ -18,7 +18,7 @@
  * request; the server's `violations[]` is authoritative and is mapped back onto
  * the exact control that failed, JSON Pointer and all.
  */
-import { For, Show, createSignal, type Component } from "solid-js";
+import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 import { useMutation, useQueryClient } from "@tanstack/solid-query";
 import * as v from "valibot";
 
@@ -32,8 +32,22 @@ import {
 } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import type { AlertDetail, Occurrence, SnoozeRequest } from "~/api/types";
-import { Dialog, DialogBody } from "~/components/ui/Dialog";
-import { Button, Field, Textarea } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import {
+  Modal,
+  ModalContent,
+  ModalDescription,
+  ModalFooter,
+  ModalHeader,
+  ModalTitle,
+} from "~/components/ui/Modal";
+import {
+  TextField,
+  TextFieldDescription,
+  TextFieldErrorMessage,
+  TextFieldLabel,
+  TextFieldTextArea,
+} from "~/components/ui/TextField";
 import { ErrorBanner } from "~/components/ui/states";
 import { idempotencyKey } from "~/lib/format";
 import { createFieldError } from "~/lib/validation";
@@ -154,7 +168,7 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         when={acked()}
         fallback={
           <Button
-            variant="primary"
+            variant="default"
             size="sm"
             disabled={!occurrenceOpen()}
             title={
@@ -178,7 +192,7 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         </Button>
       </Show>
 
-      <Button size="sm" onClick={() => setCommentOpen(true)}>
+      <Button variant="secondary" size="sm" onClick={() => setCommentOpen(true)}>
         Comment
       </Button>
 
@@ -188,6 +202,7 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         when={snoozed()}
         fallback={
           <Button
+            variant="secondary"
             size="sm"
             onClick={() => setSnoozeOpen(true)}
             title="Stop oto's own notifications for this alert until a fixed time. It keeps firing, keeps its severity, and stays visible."
@@ -197,6 +212,7 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         }
       >
         <Button
+          variant="secondary"
           size="sm"
           busy={unsnooze.isPending}
           onClick={() => unsnooze.mutate()}
@@ -221,9 +237,14 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         </span>
       </Show>
 
-      {/* Three Dialogs mounted side by side: each must stay unconditionally
-          mounted, per Dialog.tsx's `titleId`/`descId` comment — a fourth one
-          added here inherits that same rule. */}
+      {/* Three Modals mounted side by side, each its own `Modal` root. Unlike
+          `Dialog.tsx`'s native `<dialog>` (which has to stay mounted whether
+          open or closed so `showModal()`/`close()` have an element to act on,
+          which is what forced that file's per-instance `titleId`/`descId`),
+          Kobalte's presence-based `ModalContent` only renders the one that is
+          actually open — so there is no sibling markup for an
+          `aria-labelledby`/`aria-describedby` id to collide with in the first
+          place. */}
       <AckDialog
         alert={props.alert}
         open={ackOpen()}
@@ -283,24 +304,64 @@ const AckDialog: Component<{
   const orphans = (): readonly string[] => orphanViolations(mutation.error, ["note"]);
 
   return (
-    <Dialog
+    <Modal
       open={props.open}
-      onClose={props.onClose}
-      width="sm"
-      title={props.withdrawing ? "Withdraw acknowledgement" : "Acknowledge this alert"}
-      description={
-        props.withdrawing
-          ? "Recorded as a deliberate withdrawal, which is distinct from the automatic one that happens when a new episode opens."
-          : "A receipt that a human has seen this signal. It does not change the alert: it stays firing until the upstream says otherwise."
-      }
-      footer={
-        <>
-          <Button size="sm" onClick={props.onClose}>
+      onOpenChange={(isOpen) => {
+        if (!isOpen) props.onClose();
+      }}
+    >
+      <ModalContent class="max-w-sm">
+        <ModalHeader>
+          <ModalTitle>
+            {props.withdrawing ? "Withdraw acknowledgement" : "Acknowledge this alert"}
+          </ModalTitle>
+          <ModalDescription>
+            {props.withdrawing
+              ? "Recorded as a deliberate withdrawal, which is distinct from the automatic one that happens when a new episode opens."
+              : "A receipt that a human has seen this signal. It does not change the alert: it stays firing until the upstream says otherwise."}
+          </ModalDescription>
+        </ModalHeader>
+
+        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+          <Show when={mutation.error !== null && orphans().length > 0}>
+            <ErrorBanner>
+              <For each={orphans()}>{(msg) => <p>{msg}</p>}</For>
+            </ErrorBanner>
+          </Show>
+
+          <Show when={mutation.error instanceof ApiError && mutation.error.status === 412}>
+            <ErrorBanner>
+              This episode ended before the request landed, so there is nothing to acknowledge. The
+              alert may have resolved while this dialog was open.
+            </ErrorBanner>
+          </Show>
+
+          <TextField
+            value={note()}
+            validationState={(localError() ?? serverErrors().get("note")) ? "invalid" : "valid"}
+            onChange={(value) => {
+              setTouched(true);
+              setNote(value);
+            }}
+          >
+            <TextFieldLabel>Note (optional)</TextFieldLabel>
+            <TextFieldTextArea maxLength={NOTE_MAX} placeholder="Known deploy, rolling back" />
+            <TextFieldDescription>
+              Context for whoever reads the timeline next. Immutable once written.
+            </TextFieldDescription>
+            <TextFieldErrorMessage role="alert">
+              {localError() ?? serverErrors().get("note")}
+            </TextFieldErrorMessage>
+          </TextField>
+        </div>
+
+        <ModalFooter>
+          <Button size="sm" variant="secondary" onClick={props.onClose}>
             Cancel
           </Button>
           <Button
             size="sm"
-            variant="primary"
+            variant="default"
             busy={mutation.isPending}
             disabled={localError() !== undefined}
             onClick={() => {
@@ -312,44 +373,9 @@ const AckDialog: Component<{
           >
             {props.withdrawing ? "Withdraw" : "Acknowledge"}
           </Button>
-        </>
-      }
-    >
-      <DialogBody>
-        <Show when={mutation.error !== null && orphans().length > 0}>
-          <ErrorBanner>
-            <For each={orphans()}>{(msg) => <p>{msg}</p>}</For>
-          </ErrorBanner>
-        </Show>
-
-        <Show when={mutation.error instanceof ApiError && mutation.error.status === 412}>
-          <ErrorBanner>
-            This episode ended before the request landed, so there is nothing to acknowledge. The
-            alert may have resolved while this dialog was open.
-          </ErrorBanner>
-        </Show>
-
-        <Field
-          id="ack-note"
-          label="Note (optional)"
-          hint="Context for whoever reads the timeline next. Immutable once written."
-          error={localError() ?? serverErrors().get("note")}
-        >
-          {(a) => (
-            <Textarea
-              {...a}
-              value={note()}
-              maxLength={NOTE_MAX}
-              placeholder="Known deploy, rolling back"
-              onInput={(e) => {
-                setTouched(true);
-                setNote(e.currentTarget.value);
-              }}
-            />
-          )}
-        </Field>
-      </DialogBody>
-    </Dialog>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 };
 
@@ -380,59 +406,77 @@ const CommentDialog: Component<{
 
   const serverErrors = (): ReadonlyMap<string, string> => violationsByField(mutation.error);
 
+  // Recomputed on every keystroke (it drives `disabled`) and read again at
+  // submit time — memoized so the one parse of `body()` is shared instead of
+  // done twice.
+  const parsed = createMemo(() => v.safeParse(CommentFormSchema, { body: body() }));
+
   return (
-    <Dialog
+    <Modal
       open={props.open}
-      onClose={props.onClose}
-      title="Add a comment"
-      description="Comments are events like any other: immutable, attributed, and mirrored into the chat thread. They cannot be edited or deleted, because the timeline is the record."
-      footer={
-        <>
-          <Button size="sm" onClick={props.onClose}>
+      onOpenChange={(isOpen) => {
+        if (!isOpen) props.onClose();
+      }}
+    >
+      <ModalContent>
+        <ModalHeader>
+          <ModalTitle>Add a comment</ModalTitle>
+          <ModalDescription>
+            Comments are events like any other: immutable, attributed, and mirrored into the chat
+            thread. They cannot be edited or deleted, because the timeline is the record.
+          </ModalDescription>
+        </ModalHeader>
+
+        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+          <Show when={mutation.error !== null}>
+            <ErrorBanner error={mutation.error} />
+          </Show>
+
+          <TextField
+            value={body()}
+            validationState={(localError() ?? serverErrors().get("body")) ? "invalid" : "valid"}
+            onChange={(value) => {
+              setTouched(true);
+              setBody(value);
+            }}
+          >
+            <TextFieldLabel>
+              Comment
+              <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+                *
+              </span>
+            </TextFieldLabel>
+            <TextFieldTextArea
+              rows={5}
+              maxLength={COMMENT_MAX}
+              placeholder="What you found, what you changed, what to check next time."
+            />
+            <TextFieldErrorMessage role="alert">
+              {localError() ?? serverErrors().get("body")}
+            </TextFieldErrorMessage>
+          </TextField>
+        </div>
+
+        <ModalFooter>
+          <Button size="sm" variant="secondary" onClick={props.onClose}>
             Cancel
           </Button>
           <Button
             size="sm"
-            variant="primary"
+            variant="default"
             busy={mutation.isPending}
-            disabled={v.safeParse(CommentFormSchema, { body: body() }).success === false}
+            disabled={parsed().success === false}
             onClick={() => {
               setTouched(true);
-              const parsed = v.safeParse(CommentFormSchema, { body: body() });
-              if (!parsed.success) return;
-              mutation.mutate(parsed.output.body);
+              const result = parsed();
+              if (!result.success) return;
+              mutation.mutate(result.output.body);
             }}
           >
             Add comment
           </Button>
-        </>
-      }
-    >
-      <DialogBody>
-        <Show when={mutation.error !== null}>
-          <ErrorBanner error={mutation.error} />
-        </Show>
-        <Field
-          id="comment-body"
-          label="Comment"
-          required
-          error={localError() ?? serverErrors().get("body")}
-        >
-          {(a) => (
-            <Textarea
-              {...a}
-              value={body()}
-              rows={5}
-              maxLength={COMMENT_MAX}
-              placeholder="What you found, what you changed, what to check next time."
-              onInput={(e) => {
-                setTouched(true);
-                setBody(e.currentTarget.value);
-              }}
-            />
-          )}
-        </Field>
-      </DialogBody>
-    </Dialog>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 };

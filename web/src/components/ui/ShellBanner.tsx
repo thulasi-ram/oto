@@ -33,7 +33,8 @@ import type { ActiveSnooze } from "~/api/types";
 import { qk } from "~/api/keys";
 import { sourcesQuery } from "~/api/queries";
 import { RelativeTime } from "~/components/Time";
-import { Button, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import { cn } from "~/lib/cn";
 import type { Source } from "~/api/types";
 
 /* -------------------------------------------------------------------------- */
@@ -69,7 +70,7 @@ export interface ShellBannerProps {
  * div is zero pixels tall; a *styled* empty one is a border and an offset, which
  * is the whole reason the region below cannot simply be a permanent strip.
  */
-const STRIP_CLASS = cx(
+const STRIP_CLASS = cn(
   "flex items-center justify-between gap-3 border-b border-line-strong bg-raised",
   "px-4 py-1.5 text-body text-ink",
 );
@@ -117,7 +118,7 @@ export const ShellBanner: ParentComponent<ShellBannerProps> = (props) => (
   <div
     aria-live={props.announce === false ? undefined : "polite"}
     aria-atomic={props.announce === false ? undefined : "true"}
-    class={props.when ? cx(STRIP_CLASS, props.class) : ""}
+    class={props.when ? cn(STRIP_CLASS, props.class) : ""}
   >
     <Show when={props.when}>
       <div class="min-w-0">{props.children}</div>

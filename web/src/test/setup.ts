@@ -1,9 +1,9 @@
 /**
  * What every test file gets before it runs.
  *
- * Four things, and no more than four: the two APIs jsdom does not implement —
- * `<dialog>` and `ResizeObserver` — a clean DOM between tests, and a `fetch` that
- * fails loudly.
+ * Five things, and no more than five: the three APIs jsdom does not implement
+ * correctly — `<dialog>`, `ResizeObserver`, and computed `animationName` — a
+ * clean DOM between tests, and a `fetch` that fails loudly.
  *
  * ⛔ THE `fetch` DEFAULT IS THE IMPORTANT ONE. jsdom ships no `fetch` that can
  * reach anything, and a test that forgets to stub one would otherwise get an
@@ -95,6 +95,47 @@ function installResizeObserverShim(): void {
 }
 
 installResizeObserverShim();
+
+/* -------------------------------------------------------------------------- */
+/* jsdom's computed `animationName` is `""`, not the spec's `"none"`          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `solid-ui`'s Kobalte-based overlays (`Modal`, `Popover`, `DropdownMenu`) use
+ * `solid-presence` to keep their content mounted until an exit animation
+ * finishes, so the compound component can unmount cleanly instead of vanishing
+ * mid-frame. It decides whether an element is "animating out" by reading
+ * `getComputedStyle(el).animationName`, falling back to `"none"` only when
+ * that read is `null`/`undefined`.
+ *
+ * jsdom never loads this project's real, compiled Tailwind CSS, so nothing
+ * ever matches an `@utility oto-enter` rule — but jsdom's own default for an
+ * unset `animationName` is the empty string `""`, not the CSS-spec default
+ * `"none"`. `solid-presence`'s `?? "none"` fallback doesn't catch an empty
+ * string, so it reads `""`, concludes an exit animation is in flight, and
+ * waits forever for an `animationend` that jsdom — which never runs any
+ * animation — will never dispatch. Without this shim, closing any of those
+ * three overlays in a test leaves it mounted in the DOM indefinitely: the
+ * component isn't broken, jsdom's computed style just doesn't match a real
+ * browser's.
+ */
+function installAnimationNameShim(): void {
+  const proto = Object.getPrototypeOf(getComputedStyle(document.documentElement)) as {
+    animationName?: string;
+  };
+  const original = Object.getOwnPropertyDescriptor(proto, "animationName");
+  if (original?.get === undefined) return;
+
+  Object.defineProperty(proto, "animationName", {
+    configurable: true,
+    get(this: unknown): string {
+      const value = original.get!.call(this) as string;
+      return value === "" ? "none" : value;
+    },
+  });
+}
+
+installAnimationNameShim();
 
 /* -------------------------------------------------------------------------- */
 /* No request goes unnoticed                                                  */

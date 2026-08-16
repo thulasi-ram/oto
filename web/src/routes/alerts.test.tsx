@@ -19,10 +19,12 @@ import { fireEvent, screen, within } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import AlertsRoute from "./alerts";
+import { SessionProvider } from "~/api/session";
 import type { AlertRollup } from "~/api/types";
 import { count as fmtCount } from "~/lib/format";
 import { alert } from "~/test/fixtures";
 import {
+  item,
   list,
   renderScreen,
   stubFetch,
@@ -62,8 +64,22 @@ function bucket(patch: Partial<AlertRollup> = {}): AlertRollup {
  * asked for, the answer offers a cursor, so "load more" is always available and
  * a request carrying a cursor is always distinguishable from page one.
  */
+/**
+ * A minimal principal, just enough for `AlertsRoute`'s `useSession()` read
+ * (the search-capability note in `FilterBar`) to resolve to something rather
+ * than throw outside a provider. Not the shell's concern here — that is
+ * `App.test.tsx`'s `ME` — so this stays as small as the route actually reads.
+ */
+const ME = item({
+  principal_kind: "user",
+  user: { id: "11111111-1111-4111-8111-111111111111", email: "operator@example.test" },
+  org: { id: "22222222-2222-4222-8222-222222222222", slug: "acme", name: "Acme", settings: {} },
+  search: { partial_match_enabled: false },
+});
+
 function mount(path: string): FetchStub {
   const http = stubFetch({
+    "GET /api/v1/me": ME,
     "GET /api/v1/clusters": list([]),
     "GET /api/v1/labels": unpaged([]),
     "GET /api/v1/alerts": (call: RecordedCall) =>
@@ -85,7 +101,11 @@ function mount(path: string): FetchStub {
             }),
           },
   });
-  renderScreen(() => <AlertsRoute />, { path });
+  renderScreen(() => (
+    <SessionProvider>
+      <AlertsRoute />
+    </SessionProvider>
+  ), { path });
   return http;
 }
 
@@ -128,7 +148,7 @@ async function pageOnce(
 /** Toggle the first lifecycle state — the smallest possible filter change. */
 async function changeAFilter(): Promise<void> {
   const states = await screen.findByRole("group", { name: "Lifecycle state" });
-  fireEvent.click(within(states).getAllByRole("checkbox")[0]!);
+  fireEvent.click(within(states).getAllByRole("button")[0]!);
 }
 
 describe("changing the filters while a page is loaded", () => {

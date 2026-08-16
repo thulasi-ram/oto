@@ -14,7 +14,25 @@
  */
 import { For, Show, type Component } from "solid-js";
 
-import { Checkbox, Field, Input, Select, Textarea } from "~/components/ui/primitives";
+import { Checkbox } from "~/components/ui/Checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectDescription,
+  SelectErrorMessage,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/Select";
+import {
+  TextField,
+  TextFieldDescription,
+  TextFieldErrorMessage,
+  TextFieldInput,
+  TextFieldLabel,
+  TextFieldTextArea,
+} from "~/components/ui/TextField";
 import {
   validateField,
   type JsonValue,
@@ -88,15 +106,27 @@ const SchemaFieldControl: Component<{
     return parts.length > 0 ? parts.join(" ") : undefined;
   };
 
+  /** The required-field asterisk, exactly as `primitives.tsx`'s `Field` rendered it. */
+  const requiredMark = () =>
+    f().required ? (
+      <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+        *
+      </span>
+    ) : null;
+
   if (f().kind === "boolean") {
     return (
       <div class="flex flex-col gap-1">
-        <Checkbox
-          id={props.id}
-          checked={props.value === true}
-          onChange={(next) => props.onChange(next)}
-          label={<span class="font-medium">{f().title}</span>}
-        />
+        <div class="inline-flex items-center gap-1.5">
+          <Checkbox
+            id={props.id}
+            checked={props.value === true}
+            onChange={(next) => props.onChange(next)}
+          />
+          <label for={`${props.id}-input`} class="cursor-pointer select-none text-item text-ink">
+            <span class="font-medium">{f().title}</span>
+          </label>
+        </div>
         <Show when={hint()}>
           <p class="pl-5 text-meta leading-snug text-ink-subtle">{hint()}</p>
         </Show>
@@ -109,141 +139,191 @@ const SchemaFieldControl: Component<{
     );
   }
 
+  if (f().kind === "enum") {
+    const options = (): string[] =>
+      f().required ? [...f().enumValues] : ["", ...f().enumValues];
+
+    return (
+      <Select
+        id={props.id}
+        class="flex flex-col gap-1"
+        options={options()}
+        value={typeof props.value === "string" ? props.value : ""}
+        onChange={(next) => props.onChange(next ?? "")}
+        validationState={props.error ? "invalid" : "valid"}
+        required={f().required}
+        placeholder="— not set —"
+        itemComponent={(item) => (
+          <SelectItem item={item.item}>
+            {item.item.rawValue === "" ? "— not set —" : item.item.rawValue}
+          </SelectItem>
+        )}
+      >
+        <SelectLabel>
+          {f().title}
+          {requiredMark()}
+        </SelectLabel>
+        <SelectTrigger>
+          <SelectValue>{(state) => String(state.selectedOption())}</SelectValue>
+        </SelectTrigger>
+        <SelectContent />
+        <Show when={hint()}>
+          <SelectDescription>{hint()}</SelectDescription>
+        </Show>
+        <SelectErrorMessage role="alert">
+          <span
+            aria-hidden="true"
+            class="mr-1 inline-block size-1.5 rounded-full bg-accent align-middle"
+          />
+          {props.error}
+        </SelectErrorMessage>
+      </Select>
+    );
+  }
+
+  /**
+   * Every remaining kind is a single text-family control — a plain input, a
+   * textarea, or a textarea standing in for a structured value (a list, a
+   * map, or raw JSON for whatever the reader would not guess at). They share
+   * one `TextField` root because exactly one `Show` branch below is ever
+   * mounted for a given field, so there is only ever one control reading the
+   * root's `value`/`onChange`.
+   */
+  const rootValue = (): string => {
+    switch (f().kind) {
+      case "integer":
+      case "number":
+        return typeof props.value === "number" ? String(props.value) : "";
+      case "stringArray":
+        return Array.isArray(props.value) ? props.value.join("\n") : "";
+      case "stringMap":
+        return typeof props.value === "object" &&
+          props.value !== null &&
+          !Array.isArray(props.value)
+          ? Object.entries(props.value)
+              .map(([k, val]) => `${k}: ${String(val)}`)
+              .join("\n")
+          : "";
+      case "unsupported":
+        return props.value === "" ? "" : JSON.stringify(props.value, null, 2);
+      default:
+        return typeof props.value === "string" ? props.value : "";
+    }
+  };
+
+  const rootOnChange = (raw: string): void => {
+    switch (f().kind) {
+      case "integer":
+      case "number": {
+        const parsed =
+          f().kind === "integer" ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+        props.onChange(Number.isFinite(parsed) ? parsed : "");
+        return;
+      }
+      case "stringArray":
+        props.onChange(
+          raw
+            .split("\n")
+            .map((s) => s.trim())
+            .filter((s) => s !== ""),
+        );
+        return;
+      case "stringMap": {
+        const map: Record<string, JsonValue> = {};
+        for (const line of raw.split("\n")) {
+          const idx = line.indexOf(":");
+          if (idx <= 0) continue;
+          const k = line.slice(0, idx).trim();
+          if (k !== "") map[k] = line.slice(idx + 1).trim();
+        }
+        props.onChange(map);
+        return;
+      }
+      case "unsupported": {
+        if (raw.trim() === "") {
+          props.onChange("");
+          return;
+        }
+        try {
+          props.onChange(JSON.parse(raw) as JsonValue);
+        } catch {
+          // Keep the text the user typed; the error surfaces on submit
+          // rather than deleting their work mid-keystroke.
+          props.onChange(raw);
+        }
+        return;
+      }
+      default:
+        props.onChange(raw);
+    }
+  };
+
   return (
-    <Field
+    <TextField
       id={props.id}
-      label={f().title}
+      value={rootValue()}
+      onChange={rootOnChange}
+      validationState={props.error ? "invalid" : "valid"}
       required={f().required}
-      hint={hint()}
-      error={props.error}
     >
-      {(a) => (
-        <>
-          <Show when={f().kind === "enum"}>
-            <Select
-              {...a}
-              value={typeof props.value === "string" ? props.value : ""}
-              onChange={(e) => props.onChange(e.currentTarget.value)}
-            >
-              <Show when={!f().required}>
-                <option value="">— not set —</option>
-              </Show>
-              <For each={f().enumValues}>{(opt) => <option value={opt}>{opt}</option>}</For>
-            </Select>
-          </Show>
+      <TextFieldLabel>
+        {f().title}
+        {requiredMark()}
+      </TextFieldLabel>
 
-          <Show when={f().kind === "string"}>
-            <Input
-              {...a}
-              mono={f().format === "uri" || f().pattern !== null}
-              value={typeof props.value === "string" ? props.value : ""}
-              maxLength={f().maxLength ?? undefined}
-              onInput={(e) => props.onChange(e.currentTarget.value)}
-            />
-          </Show>
+      <Show when={f().kind === "string"}>
+        <TextFieldInput
+          class={f().format === "uri" || f().pattern !== null ? "font-mono" : undefined}
+          maxLength={f().maxLength ?? undefined}
+        />
+      </Show>
 
-          <Show when={f().kind === "text"}>
-            <Textarea
-              {...a}
-              value={typeof props.value === "string" ? props.value : ""}
-              maxLength={f().maxLength ?? undefined}
-              onInput={(e) => props.onChange(e.currentTarget.value)}
-            />
-          </Show>
+      <Show when={f().kind === "text"}>
+        <TextFieldTextArea maxLength={f().maxLength ?? undefined} />
+      </Show>
 
-          <Show when={f().kind === "integer" || f().kind === "number"}>
-            <Input
-              {...a}
-              type="number"
-              min={f().minimum ?? undefined}
-              max={f().maximum ?? undefined}
-              step={f().kind === "integer" ? 1 : "any"}
-              value={typeof props.value === "number" ? String(props.value) : ""}
-              onInput={(e) => {
-                const parsed =
-                  f().kind === "integer"
-                    ? Number.parseInt(e.currentTarget.value, 10)
-                    : Number.parseFloat(e.currentTarget.value);
-                props.onChange(Number.isFinite(parsed) ? parsed : "");
-              }}
-            />
-          </Show>
+      <Show when={f().kind === "integer" || f().kind === "number"}>
+        <TextFieldInput
+          type="number"
+          min={f().minimum ?? undefined}
+          max={f().maximum ?? undefined}
+          step={f().kind === "integer" ? 1 : "any"}
+        />
+      </Show>
 
-          {/* A list of strings, one per line. Simpler to paste into than a chip
-              editor and impossible to get stuck in. */}
-          <Show when={f().kind === "stringArray"}>
-            <Textarea
-              {...a}
-              value={Array.isArray(props.value) ? props.value.join("\n") : ""}
-              placeholder="One value per line"
-              onInput={(e) =>
-                props.onChange(
-                  e.currentTarget.value
-                    .split("\n")
-                    .map((s) => s.trim())
-                    .filter((s) => s !== ""),
-                )
-              }
-            />
-          </Show>
+      {/* A list of strings, one per line. Simpler to paste into than a chip
+          editor and impossible to get stuck in. */}
+      <Show when={f().kind === "stringArray"}>
+        <TextFieldTextArea placeholder="One value per line" />
+      </Show>
 
-          {/* `key: value` per line — the shape webhook headers actually take. */}
-          <Show when={f().kind === "stringMap"}>
-            <Textarea
-              {...a}
-              value={
-                typeof props.value === "object" && props.value !== null && !Array.isArray(props.value)
-                  ? Object.entries(props.value)
-                      .map(([k, val]) => `${k}: ${String(val)}`)
-                      .join("\n")
-                  : ""
-              }
-              placeholder={"X-Example: value\nOne per line"}
-              onInput={(e) => {
-                const map: Record<string, JsonValue> = {};
-                for (const line of e.currentTarget.value.split("\n")) {
-                  const idx = line.indexOf(":");
-                  if (idx <= 0) continue;
-                  const k = line.slice(0, idx).trim();
-                  if (k !== "") map[k] = line.slice(idx + 1).trim();
-                }
-                props.onChange(map);
-              }}
-            />
-          </Show>
+      {/* `key: value` per line — the shape webhook headers actually take. */}
+      <Show when={f().kind === "stringMap"}>
+        <TextFieldTextArea placeholder={"X-Example: value\nOne per line"} />
+      </Show>
 
-          {/* The escape hatch. Rendering an unknown schema shape as a plain text
-              box would produce a config that passes here and fails the server —
-              so it says what it does not understand and takes raw JSON. */}
-          <Show when={f().kind === "unsupported"}>
-            <div class="flex flex-col gap-1">
-              <p class="text-meta leading-snug text-ink-muted">
-                This form does not render {f().reason ?? "this shape"}, so it will not pretend to.
-                Enter the value as JSON — the server validates it against the same schema either way.
-              </p>
-              <Textarea
-                {...a}
-                class="font-mono"
-                value={props.value === "" ? "" : JSON.stringify(props.value, null, 2)}
-                onInput={(e) => {
-                  const raw = e.currentTarget.value;
-                  if (raw.trim() === "") {
-                    props.onChange("");
-                    return;
-                  }
-                  try {
-                    props.onChange(JSON.parse(raw) as JsonValue);
-                  } catch {
-                    // Keep the text the user typed; the error surfaces on submit
-                    // rather than deleting their work mid-keystroke.
-                    props.onChange(raw);
-                  }
-                }}
-              />
-            </div>
-          </Show>
-        </>
-      )}
-    </Field>
+      {/* The escape hatch. Rendering an unknown schema shape as a plain text
+          box would produce a config that passes here and fails the server —
+          so it says what it does not understand and takes raw JSON. */}
+      <Show when={f().kind === "unsupported"}>
+        <p class="text-meta leading-snug text-ink-muted">
+          This form does not render {f().reason ?? "this shape"}, so it will not pretend to.
+          Enter the value as JSON — the server validates it against the same schema either way.
+        </p>
+        <TextFieldTextArea class="font-mono" />
+      </Show>
+
+      <Show when={hint()}>
+        <TextFieldDescription>{hint()}</TextFieldDescription>
+      </Show>
+
+      <TextFieldErrorMessage role="alert">
+        <span
+          aria-hidden="true"
+          class="mr-1 inline-block size-1.5 rounded-full bg-accent align-middle"
+        />
+        {props.error}
+      </TextFieldErrorMessage>
+    </TextField>
   );
 };

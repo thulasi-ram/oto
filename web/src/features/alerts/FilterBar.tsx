@@ -33,8 +33,21 @@ import { useQuery } from "@tanstack/solid-query";
 
 import { clustersQuery, labelNamesQuery } from "~/api/queries";
 import { FilterRow } from "~/components/ui/FilterRow";
-import { Button, Chip, Select, ToggleGroup, cx } from "~/components/ui/primitives";
+import {
+  Select,
+  SelectContent,
+  SelectHiddenSelect,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/Select";
+import { Button } from "~/components/ui/Button";
+import { Chip } from "~/components/ui/surfaces";
+import { Tabs, TabsList, TabsTrigger } from "~/components/ui/Tabs";
+import { TextField, TextFieldInput } from "~/components/ui/TextField";
+import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
 import { STATE_LABEL } from "~/components/StateChip";
+import { cn } from "~/lib/cn";
 import type { State } from "~/api/types";
 import { count as fmtCount } from "~/lib/format";
 import {
@@ -65,6 +78,58 @@ const SINCE_PRESETS = [
   { label: "Last 7 days", hours: 24 * 7 },
   { label: "Last 30 days", hours: 24 * 30 },
 ] as const;
+
+/** What the "Since" picker shows for a preset label — "Custom" gets the
+ *  longer, more honest sentence; every real preset just shows its own label. */
+const CUSTOM_SINCE_LABEL = "Custom (from link)";
+function sinceOptionLabel(label: string): string {
+  return label === "Custom" ? CUSTOM_SINCE_LABEL : label;
+}
+
+/** The two sort orders, spelled out for the picker. */
+const SORT_LABEL: Record<SortKey, string> = {
+  "-last_seen_at": "Newest activity",
+  "-first_seen_at": "Newest first seen",
+};
+const SORT_OPTIONS: readonly SortKey[] = ["-last_seen_at", "-first_seen_at"];
+
+/**
+ * Ack, Snoozed and Flapping are all the same shape underneath: a nullable
+ * boolean (or, for Ack, a nullable two-member enum) stood in for as a string
+ * tri-state — `""` for "unset" — because that is the value type both a native
+ * `<select>` and the Kobalte listbox key that replaces it need.
+ */
+const ACK_OPTIONS = ["", "unacked", "acked"] as const;
+const ACK_LABEL: Record<(typeof ACK_OPTIONS)[number], string> = {
+  "": "Any",
+  unacked: "Not yet seen",
+  acked: "Seen by someone",
+};
+
+const SNOOZED_OPTIONS = ["", "true", "false"] as const;
+const SNOOZED_LABEL: Record<(typeof SNOOZED_OPTIONS)[number], string> = {
+  "": "Any (default — includes both)",
+  true: "Notifications held",
+  false: "Notifications flowing",
+};
+
+const FLAPPING_OPTIONS = ["", "true", "false"] as const;
+const FLAPPING_LABEL: Record<(typeof FLAPPING_OPTIONS)[number], string> = {
+  "": "Any",
+  true: "Damped as flapping",
+  false: "Not flapping",
+};
+
+/**
+ * The Cluster picker's own "no filter" row — a real entry in its `options`,
+ * since Kobalte's `Select` (unlike a native `<select>`) needs every value it
+ * can land on, placeholder included, to be one of the options it was given.
+ */
+interface ClusterOption {
+  readonly cluster_key: string;
+  readonly display_name: string;
+}
+const ALL_CLUSTERS: ClusterOption = { cluster_key: "", display_name: "All clusters" };
 
 /**
  * The word "Group" is deliberately absent. It used to collide with `/groups`
@@ -270,6 +335,13 @@ const MatcherChip: Component<{
 const SearchBox: Component<{
   readonly filters: AlertFilters;
   readonly onChange: (next: AlertFilters) => void;
+  /** Whether this deployment's Postgres has `pg_trgm` enabled (`SearchDTO` on
+   *  `GET /api/v1/me`) — told to the operator only where the teaching copy
+   *  already lives, not as permanent chrome: a capability worth knowing when
+   *  you reach for the box, not a fact worth a badge forever. Read by the
+   *  caller, not here, so this component stays provider-free and testable
+   *  standalone — the same reason `totalCountLabel` arrives as a prop. */
+  readonly partialMatchEnabled?: boolean | undefined;
 }> = (props) => {
   const [draft, setDraft] = createSignal(props.filters.q);
   const [focused, setFocused] = createSignal(false);
@@ -362,11 +434,11 @@ const SearchBox: Component<{
 
   return (
     <div class="min-w-0">
-      <label for="alert-q" class="sr-only-focusable">
+      <label id="alert-q-label" for="alert-q" class="sr-only-focusable">
         Search alerts, or type a label matcher
       </label>
       <div
-        class={cx(
+        class={cn(
           "flex min-w-0 flex-wrap items-center gap-1 rounded-control border bg-surface px-1.5 py-1",
           hasProblem() ? "border-line-strong ring-1 ring-accent-border" : "border-line-strong",
         )}
@@ -377,69 +449,74 @@ const SearchBox: Component<{
           )}
         </For>
 
-        <input
-          ref={inputRef}
-          id="alert-q"
-          type="text"
-          list={listId}
+        <TextField
+          class="min-w-[8rem] flex-1"
           value={draft()}
-          placeholder={
-            committedParsed().matchers.length === 0
-              ? 'Search, or namespace="payments"…'
-              : "Add another matcher, or search…"
-          }
-          spellcheck={false}
-          autocapitalize="off"
-          autocorrect="off"
-          aria-describedby={statusId}
-          aria-invalid={hasProblem() ? "true" : undefined}
-          class="min-w-[8rem] flex-1 border-0 bg-transparent p-0 text-item text-ink placeholder:text-ink-subtle"
-          onFocus={() => setFocused(true)}
-          onInput={(e) => setDraft(e.currentTarget.value)}
-          onBlur={(e) => {
-            setFocused(false);
-            const { matchers, rest } = peelTrailingMatchers(e.currentTarget.value);
-            commitMatchers(matchers);
-            applyRest(rest);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === " ") {
-              const { matchers, rest } = peelTrailingMatchers(e.currentTarget.value);
-              if (matchers.length > 0) {
-                e.preventDefault();
-                commitMatchers(matchers);
-                setDraft(rest);
-              }
-              return;
+          onChange={setDraft}
+          validationState={hasProblem() ? "invalid" : "valid"}
+          aria-label="Alert search"
+        >
+          <TextFieldInput
+            ref={(el) => (inputRef = el)}
+            id="alert-q"
+            type="text"
+            list={listId}
+            placeholder={
+              committedParsed().matchers.length === 0
+                ? 'Search, or namespace="payments"…'
+                : "Add another matcher, or search…"
             }
-            if (e.key === "Enter") {
-              e.preventDefault();
+            spellcheck={false}
+            autocapitalize="off"
+            autocorrect="off"
+            aria-describedby={statusId}
+            class="h-auto w-full border-0 bg-transparent p-0"
+            onFocus={() => setFocused(true)}
+            onBlur={(e) => {
+              setFocused(false);
               const { matchers, rest } = peelTrailingMatchers(e.currentTarget.value);
               commitMatchers(matchers);
               applyRest(rest);
-              return;
-            }
-            if (e.key === "Escape") {
-              // Nothing unsaved to revert — Escape's job is then to clear a
-              // committed search outright, same as it always has.
-              if (draft() === props.filters.q && props.filters.q !== "") {
-                setDraft("");
-                props.onChange({ ...props.filters, q: "" });
-              } else {
-                setDraft(props.filters.q);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === " ") {
+                const { matchers, rest } = peelTrailingMatchers(e.currentTarget.value);
+                if (matchers.length > 0) {
+                  e.preventDefault();
+                  commitMatchers(matchers);
+                  setDraft(rest);
+                }
+                return;
               }
-              e.currentTarget.blur();
-              return;
-            }
-            if (e.key === "Backspace" && e.currentTarget.value === "") {
-              const n = committedParsed().matchers.length;
-              if (n > 0) {
+              if (e.key === "Enter") {
                 e.preventDefault();
-                removeAt(n - 1);
+                const { matchers, rest } = peelTrailingMatchers(e.currentTarget.value);
+                commitMatchers(matchers);
+                applyRest(rest);
+                return;
               }
-            }
-          }}
-        />
+              if (e.key === "Escape") {
+                // Nothing unsaved to revert — Escape's job is then to clear a
+                // committed search outright, same as it always has.
+                if (draft() === props.filters.q && props.filters.q !== "") {
+                  setDraft("");
+                  props.onChange({ ...props.filters, q: "" });
+                } else {
+                  setDraft(props.filters.q);
+                }
+                e.currentTarget.blur();
+                return;
+              }
+              if (e.key === "Backspace" && e.currentTarget.value === "") {
+                const n = committedParsed().matchers.length;
+                if (n > 0) {
+                  e.preventDefault();
+                  removeAt(n - 1);
+                }
+              }
+            }}
+          />
+        </TextField>
       </div>
 
       {/* A native datalist gives name completion with zero ARIA of our own and
@@ -497,7 +574,7 @@ const SearchBox: Component<{
               {(ex) => (
                 <li class="flex flex-wrap items-baseline gap-x-2 text-meta leading-snug">
                   <code
-                    class={cx(
+                    class={cn(
                       "font-mono",
                       ex.served
                         ? "text-ink"
@@ -511,6 +588,26 @@ const SearchBox: Component<{
               )}
             </For>
           </ul>
+
+          {/* The raw-text half of "structural and raw" search, told at the
+              same moment the structural examples above are — reaching for the
+              box is when this is worth knowing, not before. */}
+          <p class="mt-1 text-meta leading-snug text-ink-subtle">
+            <Show
+              when={props.partialMatchEnabled === true}
+              fallback={
+                <>
+                  Plain words search alertname, summary and description. Substring matches inside a
+                  compound name (e.g. "error" in <code class="font-mono">CheckoutErrorRateHigh</code>)
+                  aren't available on this deployment — ask an admin about enabling Postgres's{" "}
+                  <code class="font-mono">pg_trgm</code> extension.
+                </>
+              }
+            >
+              Plain words search alertname, summary and description — including substrings inside a
+              compound name, like "error" in <code class="font-mono">CheckoutErrorRateHigh</code>.
+            </Show>
+          </p>
         </Show>
       </div>
     </div>
@@ -535,62 +632,21 @@ const GroupingTabs: Component<{
    *  pages remain unloaded — shown only on the "All" tab. */
   readonly totalCountLabel?: string | undefined;
 }> = (props) => {
-  const refs: (HTMLButtonElement | undefined)[] = [];
-
-  const focusAt = (index: number): void => {
-    const n = GROUP_BY_VALUES.length;
-    refs[((index % n) + n) % n]?.focus();
-  };
-
   return (
-    <div role="tablist" aria-label="Group alerts by" class="flex items-center gap-1">
-      <For each={GROUP_BY_VALUES}>
-        {(g, i) => {
-          const selected = (): boolean => props.value === g;
-          return (
-            <button
-              ref={(el) => {
-                refs[i()] = el;
-              }}
-              type="button"
-              role="tab"
-              aria-selected={selected() ? "true" : "false"}
-              tabindex={selected() ? 0 : -1}
-              class={cx(
-                "-mb-px border-b-2 px-2.5 py-1.5 text-item transition-colors duration-100",
-                selected()
-                  ? "border-accent font-medium text-ink"
-                  : "border-transparent text-ink-muted hover:text-ink",
-              )}
-              onClick={() => props.onChange(g)}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowRight") {
-                  e.preventDefault();
-                  focusAt(i() + 1);
-                } else if (e.key === "ArrowLeft") {
-                  e.preventDefault();
-                  focusAt(i() - 1);
-                } else if (e.key === "Home") {
-                  e.preventDefault();
-                  focusAt(0);
-                } else if (e.key === "End") {
-                  e.preventDefault();
-                  focusAt(GROUP_BY_VALUES.length - 1);
-                } else if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  props.onChange(g);
-                }
-              }}
-            >
+    <Tabs value={props.value} onChange={(v) => props.onChange(v as GroupBy)} activationMode="manual">
+      <TabsList aria-label="Group alerts by">
+        <For each={GROUP_BY_VALUES}>
+          {(g) => (
+            <TabsTrigger value={g}>
               {GROUP_TAB_LABEL[g]}
               <Show when={g === "none" && props.totalCountLabel !== undefined}>
                 <span class="ml-1 tabular-nums text-ink-subtle">{props.totalCountLabel}</span>
               </Show>
-            </button>
-          );
-        }}
-      </For>
-    </div>
+            </TabsTrigger>
+          )}
+        </For>
+      </TabsList>
+    </Tabs>
   );
 };
 
@@ -607,10 +663,16 @@ export interface FilterBarProps {
   /** The flat-list total, pre-formatted with its "+" qualifier, shown on the
    *  "All" tab only. `undefined` while a roll-up axis is active. */
   readonly totalCountLabel?: string | undefined;
+  /** See `SearchBox`'s own prop of the same name. */
+  readonly partialMatchEnabled?: boolean | undefined;
 }
 
 export const FilterBar: Component<FilterBarProps> = (props) => {
   const clusters = useQuery(() => clustersQuery());
+  const clusterOptions = createMemo<readonly ClusterOption[]>(() => [
+    ALL_CLUSTERS,
+    ...(clusters.data?.data ?? []),
+  ]);
 
   const patch = (part: Partial<AlertFilters>): void => {
     props.onChange({ ...props.filters, ...part });
@@ -633,7 +695,11 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
     <div class="shrink-0 border-b border-line bg-surface">
       {/* ---- row 1: the one search box ---------------------------------- */}
       <div class="px-3 pb-2 pt-2">
-        <SearchBox filters={props.filters} onChange={props.onChange} />
+        <SearchBox
+          filters={props.filters}
+          onChange={props.onChange}
+          partialMatchEnabled={props.partialMatchEnabled}
+        />
       </div>
 
       {/* ---- row 2: how the list is arranged, and in what order ---------- */}
@@ -648,14 +714,26 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
           <label for="alert-sort" class="sr-only-focusable">
             Sort order
           </label>
-          <Select
-            id="alert-sort"
+          <Select<SortKey>
+            class="flex flex-col gap-1"
+            options={[...SORT_OPTIONS]}
+            optionTextValue={(s) => SORT_LABEL[s]}
             value={props.filters.sort}
-            onChange={(e) => patch({ sort: e.currentTarget.value as SortKey })}
-            title="Only two orderings exist, because a keyset cursor needs a total order backed by an index."
+            onChange={(next) => {
+              if (next !== null) patch({ sort: next });
+            }}
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{SORT_LABEL[itemProps.item.rawValue]}</SelectItem>
+            )}
           >
-            <option value="-last_seen_at">Newest activity</option>
-            <option value="-first_seen_at">Newest first seen</option>
+            <SelectTrigger
+              id="alert-sort"
+              title="Only two orderings exist, because a keyset cursor needs a total order backed by an index."
+            >
+              <SelectValue<SortKey>>{(state) => SORT_LABEL[state.selectedOption()]}</SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
           </Select>
 
           {props.status}
@@ -664,12 +742,20 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
 
       {/* ---- row 3: glance-first — when, what state, how bad ------------- */}
       <FilterRow standalone={false}>
-        <label class="flex items-center gap-1.5 text-body text-ink-muted">
+        <label for="alert-since" class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Since</span>
-          <Select
+          <Select<string>
+            class="flex flex-col gap-1"
+            options={
+              sincePreset() === "Custom"
+                ? [...SINCE_PRESETS.map((p) => p.label), "Custom"]
+                : SINCE_PRESETS.map((p) => p.label)
+            }
+            optionTextValue={sinceOptionLabel}
             value={sincePreset()}
-            onChange={(e) => {
-              const preset = SINCE_PRESETS.find((p) => p.label === e.currentTarget.value);
+            onChange={(label) => {
+              if (label === null) return;
+              const preset = SINCE_PRESETS.find((p) => p.label === label);
               if (!preset) return;
               patch({
                 since:
@@ -678,105 +764,170 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
                     : new Date(Date.now() - preset.hours * 3_600_000).toISOString(),
               });
             }}
-            title="Lower bound on last activity."
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{sinceOptionLabel(itemProps.item.rawValue)}</SelectItem>
+            )}
           >
-            <For each={SINCE_PRESETS}>{(p) => <option value={p.label}>{p.label}</option>}</For>
-            <Show when={sincePreset() === "Custom"}>
-              <option value="Custom">Custom (from link)</option>
-            </Show>
+            <SelectTrigger id="alert-since" title="Lower bound on last activity.">
+              <SelectValue<string>>{(state) => sinceOptionLabel(state.selectedOption())}</SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
           </Select>
         </label>
 
         <Divider />
 
-        <ToggleGroup<State>
+        <ToggleGroup
           legend="Lifecycle state"
-          options={ALL_STATES.map((s) => ({ value: s, label: STATE_LABEL[s] }))}
-          selected={props.filters.state}
-          onChange={(next) => patch({ state: next })}
-        />
+          multiple
+          value={[...props.filters.state]}
+          onChange={(next) => patch({ state: next as State[] })}
+        >
+          <For each={ALL_STATES}>
+            {(s) => <ToggleGroupItem value={s}>{STATE_LABEL[s]}</ToggleGroupItem>}
+          </For>
+        </ToggleGroup>
 
         <Divider />
 
-        <ToggleGroup<string>
+        <ToggleGroup
           legend="Severity"
-          options={[
-            ...COMMON_SEVERITIES.map((s) => ({ value: s as string, label: s })),
-            ...customSeverities().map((s) => ({ value: s, label: s })),
-          ]}
-          selected={props.filters.severity}
+          multiple
+          value={[...props.filters.severity]}
           onChange={(next) => patch({ severity: next })}
-        />
+        >
+          <For each={COMMON_SEVERITIES}>
+            {(s) => <ToggleGroupItem value={s}>{s}</ToggleGroupItem>}
+          </For>
+          <For each={customSeverities()}>
+            {(s) => <ToggleGroupItem value={s}>{s}</ToggleGroupItem>}
+          </For>
+        </ToggleGroup>
       </FilterRow>
 
       {/* ---- row 4: investigation-second — orthogonal axes, then Clear --- */}
       <FilterRow standalone={false}>
         {/* Acknowledgement is orthogonal to state (§B): `acked` still returns
             firing alerts, because acknowledging one does not end it. */}
-        <label class="flex items-center gap-1.5 text-body text-ink-muted">
+        <label for="alert-ack" class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Ack</span>
-          <Select
+          {/* `id`/`title` go on Kobalte's own `SelectTrigger` — the real,
+              accessible, interactive surface — same as Sort/Since/Flapping.
+              `SelectHiddenSelect` stays unlabelled: it is a separate,
+              genuinely `aria-hidden` native `<select>` Kobalte renders only
+              for native form-submission/autofill, not a stand-in for the
+              trigger. */}
+          <Select<(typeof ACK_OPTIONS)[number]>
+            class="flex flex-col gap-1"
+            options={[...ACK_OPTIONS]}
+            optionTextValue={(v) => ACK_LABEL[v]}
             value={props.filters.ack ?? ""}
-            onChange={(e) => {
-              const v = e.currentTarget.value;
+            onChange={(v) => {
+              if (v === null) return;
               patch({ ack: v === "acked" || v === "unacked" ? v : null });
             }}
-            title="A receipt on a signal. An acknowledged alert is still firing."
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{ACK_LABEL[itemProps.item.rawValue]}</SelectItem>
+            )}
           >
-            <option value="">Any</option>
-            <option value="unacked">Not yet seen</option>
-            <option value="acked">Seen by someone</option>
+            <SelectTrigger
+              id="alert-ack"
+              title="A receipt on a signal. An acknowledged alert is still firing."
+            >
+              <SelectValue<(typeof ACK_OPTIONS)[number]>>
+                {(state) => ACK_LABEL[state.selectedOption()]}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
           </Select>
         </label>
 
         {/* Snooze is a third orthogonal axis, never a state (§B.8): the default
             includes both, because hiding snoozed alerts is how an incident is
             lost. A snoozed alert still reads at its true severity. */}
-        <label class="flex items-center gap-1.5 text-body text-ink-muted">
+        <label for="alert-snoozed" class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Snoozed</span>
-          <Select
-            value={props.filters.snoozed === null ? "" : String(props.filters.snoozed)}
-            onChange={(e) => {
-              const v = e.currentTarget.value;
+          {/* Same choice as Ack just above: `id`/`title` on the real
+              `SelectTrigger`, not the hidden shim. */}
+          <Select<(typeof SNOOZED_OPTIONS)[number]>
+            class="flex flex-col gap-1"
+            options={[...SNOOZED_OPTIONS]}
+            optionTextValue={(v) => SNOOZED_LABEL[v]}
+            value={props.filters.snoozed === null ? "" : props.filters.snoozed ? "true" : "false"}
+            onChange={(v) => {
+              if (v === null) return;
               patch({ snoozed: v === "" ? null : v === "true" });
             }}
-            title="Whether oto is currently holding its notifications for the alert. It says nothing about the signal — a snoozed alert is still firing and still whatever severity it was."
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{SNOOZED_LABEL[itemProps.item.rawValue]}</SelectItem>
+            )}
           >
-            <option value="">Any (default — includes both)</option>
-            <option value="true">Notifications held</option>
-            <option value="false">Notifications flowing</option>
+            <SelectTrigger
+              id="alert-snoozed"
+              title="Whether oto is currently holding its notifications for the alert. It says nothing about the signal — a snoozed alert is still firing and still whatever severity it was."
+            >
+              <SelectValue<(typeof SNOOZED_OPTIONS)[number]>>
+                {(state) => SNOOZED_LABEL[state.selectedOption()]}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
           </Select>
         </label>
 
-        <label class="flex items-center gap-1.5 text-body text-ink-muted">
+        <label for="alert-flapping" class="flex items-center gap-1.5 text-body text-ink-muted">
           <span>Flapping</span>
-          <Select
-            value={props.filters.flapping === null ? "" : String(props.filters.flapping)}
-            onChange={(e) => {
-              const v = e.currentTarget.value;
+          <Select<(typeof FLAPPING_OPTIONS)[number]>
+            class="flex flex-col gap-1"
+            options={[...FLAPPING_OPTIONS]}
+            optionTextValue={(v) => FLAPPING_LABEL[v]}
+            value={props.filters.flapping === null ? "" : props.filters.flapping ? "true" : "false"}
+            onChange={(v) => {
+              if (v === null) return;
               patch({ flapping: v === "" ? null : v === "true" });
             }}
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{FLAPPING_LABEL[itemProps.item.rawValue]}</SelectItem>
+            )}
           >
-            <option value="">Any</option>
-            <option value="true">Damped as flapping</option>
-            <option value="false">Not flapping</option>
+            <SelectTrigger id="alert-flapping">
+              <SelectValue<(typeof FLAPPING_OPTIONS)[number]>>
+                {(state) => FLAPPING_LABEL[state.selectedOption()]}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
           </Select>
         </label>
 
         <Show when={(clusters.data?.data.length ?? 0) > 0}>
-          <label class="flex items-center gap-1.5 text-body text-ink-muted">
+          <label for="alert-cluster" class="flex items-center gap-1.5 text-body text-ink-muted">
             <span>Cluster</span>
-            <Select
-              value={props.filters.cluster[0] ?? ""}
-              onChange={(e) => {
-                const v = e.currentTarget.value;
-                patch({ cluster: v === "" ? [] : [v] });
+            <Select<ClusterOption>
+              class="flex flex-col gap-1"
+              options={[...clusterOptions()]}
+              optionValue="cluster_key"
+              optionTextValue="display_name"
+              value={
+                clusterOptions().find(
+                  (c) => c.cluster_key === (props.filters.cluster[0] ?? ""),
+                ) ?? ALL_CLUSTERS
+              }
+              onChange={(next) => {
+                if (next === null) return;
+                patch({ cluster: next.cluster_key === "" ? [] : [next.cluster_key] });
               }}
+              itemComponent={(itemProps) => (
+                <SelectItem item={itemProps.item}>{itemProps.item.rawValue.display_name}</SelectItem>
+              )}
             >
-              <option value="">All clusters</option>
-              <For each={clusters.data?.data ?? []}>
-                {(c) => <option value={c.cluster_key}>{c.display_name}</option>}
-              </For>
+              <SelectTrigger id="alert-cluster">
+                <SelectValue<ClusterOption>>{(state) => state.selectedOption().display_name}</SelectValue>
+              </SelectTrigger>
+              <SelectHiddenSelect />
+              <SelectContent />
             </Select>
           </label>
         </Show>
@@ -793,5 +944,5 @@ export const FilterBar: Component<FilterBarProps> = (props) => {
 };
 
 const Divider: Component = () => (
-  <span class={cx("h-4 w-px shrink-0 bg-line")} aria-hidden="true" />
+  <span class={cn("h-4 w-px shrink-0 bg-line")} aria-hidden="true" />
 );

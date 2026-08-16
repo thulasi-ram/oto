@@ -19,9 +19,10 @@ import { Show, createMemo, type JSX, type ParentComponent } from "solid-js";
 import { describeConnection, useLive } from "~/api/live";
 import { Countdown } from "~/components/Time";
 import { Chime } from "~/components/ui/Chime";
-import { Button, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
 import { ShellBanner, SnoozeBanner, SourceReachBanner } from "~/components/ui/ShellBanner";
 import { UserMenu } from "~/components/UserMenu";
+import { cn } from "~/lib/cn";
 
 /* -------------------------------------------------------------------------- */
 /* Connection                                                                 */
@@ -71,7 +72,7 @@ const ConnectionBadge = (): JSX.Element => {
       {/* One polite live region for the whole app: a connection change is worth
           announcing once, and never worth interrupting for. */}
       <span
-        class={cx(
+        class={cn(
           "inline-flex items-center gap-1.5 rounded-control border px-1.5 py-0.5 text-meta",
           live.state() === "live"
             ? "border-line bg-surface text-ink-muted"
@@ -79,7 +80,7 @@ const ConnectionBadge = (): JSX.Element => {
         )}
         title={describeConnection(live.state(), live.detail())}
       >
-        <span aria-hidden="true" class={cx("size-1.5 shrink-0 rounded-full", dot())} />
+        <span aria-hidden="true" class={cn("size-1.5 shrink-0 rounded-full", dot())} />
         <span aria-live="polite" aria-atomic="true">
           {label()}
         </span>
@@ -158,7 +159,7 @@ const Nav = (): JSX.Element => {
         <A
           href={item.href}
           aria-current={active(item.prefix) ? "page" : undefined}
-          class={cx(
+          class={cn(
             "rounded-control px-2 py-1 text-item transition-colors duration-100",
             active(item.prefix)
               ? "bg-accent-fill font-medium text-ink"

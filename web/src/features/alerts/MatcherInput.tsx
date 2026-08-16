@@ -26,7 +26,7 @@ import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 import { useQuery } from "@tanstack/solid-query";
 
 import { labelNamesQuery } from "~/api/queries";
-import { Input, cx } from "~/components/ui/primitives";
+import { cn } from "~/lib/cn";
 import { count as fmtCount } from "~/lib/format";
 import {
   MATCHER_EXAMPLES,
@@ -72,10 +72,17 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
   };
 
   return (
-    <div class={cx("min-w-0", props.class)}>
-      <Input
+    <div class={cn("min-w-0", props.class)}>
+      {/* A plain, hand-styled `<input>` rather than the Kobalte-backed
+          `TextField`/`TextFieldInput`: this box's value is already fully
+          hand-managed (the `draft`/`focused` split above), and wrapping it in
+          Kobalte's `TextField` Root would add a `role="group"` wrapper div and
+          hand value ownership to Kobalte's own controllable signal — a second,
+          competing source of truth for exactly the state this component
+          already owns. Same classes `TextFieldInput` renders, same
+          `aria-invalid` mechanism the old `Input` used. */}
+      <input
         id={props.id}
-        mono
         list={listId()}
         value={text()}
         placeholder={'{namespace="payments", severity=~"critical|warning"}'}
@@ -84,7 +91,13 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
         autocorrect="off"
         aria-label="Label matchers, Alertmanager syntax"
         aria-describedby={statusId()}
-        invalid={hasProblem()}
+        aria-invalid={hasProblem() ? "true" : undefined}
+        class={cn(
+          "h-8 w-full rounded-control border border-line-strong bg-surface px-2 text-item text-ink",
+          "font-mono placeholder:text-ink-subtle",
+          "disabled:cursor-not-allowed disabled:bg-sunken disabled:opacity-60",
+          "aria-[invalid=true]:border-line-strong aria-[invalid=true]:ring-1 aria-[invalid=true]:ring-accent-border",
+        )}
         onFocus={() => {
           setDraft(props.value);
           setFocused(true);
@@ -170,7 +183,7 @@ export const MatcherInput: Component<MatcherInputProps> = (props) => {
               {(ex) => (
                 <li class="flex flex-wrap items-baseline gap-x-2 text-meta leading-snug">
                   <code
-                    class={cx(
+                    class={cn(
                       "font-mono",
                       ex.served ? "text-ink" : "text-ink-subtle line-through decoration-ink-subtle/60",
                     )}

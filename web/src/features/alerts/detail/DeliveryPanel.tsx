@@ -23,8 +23,9 @@ import type {
   NotificationSuppressedReason,
 } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Chip, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { absoluteTime, shortId } from "~/lib/format";
 
 /**
@@ -243,7 +244,7 @@ const Stat: Component<{
   readonly small?: boolean;
 }> = (props) => (
   <span
-    class={cx(
+    class={cn(
       "inline-flex items-center gap-1 rounded-chip border px-1.5 leading-5 tabular-nums",
       props.small === true ? "text-micro" : "text-meta",
       props.emphasis === true

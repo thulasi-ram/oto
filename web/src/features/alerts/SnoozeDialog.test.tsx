@@ -59,7 +59,7 @@ function mount(): {
 }
 
 function dialog(): ReturnType<typeof within> {
-  const el = document.querySelector("dialog[open]");
+  const el = document.querySelector('[role="dialog"]');
   expect(el, "the snooze dialog is not open").not.toBeNull();
   return within(el as HTMLElement);
 }
@@ -200,7 +200,7 @@ describe("when the server says no", () => {
     await until(() => expect(screen.getByText("the database is unhappy")).toBeTruthy());
     expect(onSuccess).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-    expect(document.querySelector("dialog[open]")).not.toBeNull();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     expectNoUndefined(document.body);
   });
 

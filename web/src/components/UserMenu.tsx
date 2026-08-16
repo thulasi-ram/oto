@@ -8,24 +8,34 @@
  * admin configuration) that this menu exists to disambiguate from. So they are
  * consolidated here, behind one disclosure trigger showing who is signed in.
  *
- * Built on the native Popover API (`popover` + `popovertarget`) rather than a
- * hand-rolled `div` with outside-click/Escape listeners — the same reach for
- * the platform primitive this codebase already applies to `Dialog.tsx` and its
- * native `<dialog>`. The browser gives us top-layer stacking and light-dismiss
- * (click-outside, Escape) for free; a hand-rolled version would reimplement
- * both and inevitably reimplement them worse.
+ * Built on solid-ui's `DropdownMenu` (`components/ui/DropdownMenu.tsx`, ported
+ * onto `@kobalte/core/dropdown-menu`) rather than a hand-rolled popover — this
+ * is a flat list of discrete actions (theme, density, sign-out), which is
+ * exactly the case `DropdownMenu` exists for, as opposed to `Popover`'s
+ * free-form content. Kobalte gives us the roving-tabindex keyboard model
+ * (arrow keys, Home/End, typeahead), focus return to the trigger, and
+ * light-dismiss (click-outside, Escape) for free.
  *
- * Positioning: the trigger and the panel share a `relative` wrapper, and the
- * panel overrides the popover's default `position: fixed` (which centers it in
- * the viewport) with `position: absolute`, anchored to the wrapper. A
- * top-layer element's containing block is still resolved from its place in the
- * DOM, so this ordinary CSS trick works without CSS anchor positioning.
+ * Every item sets `closeOnSelect={false}`: none of these are fire-and-forget
+ * actions where an instant close reads as confirmation. Theme and density are
+ * toggles an operator may click more than once in a row; sign-out is async and
+ * must stay open to show a failure. The menu still closes normally on
+ * outside-click, Escape, or — for a *successful* sign-out — because `navigate`
+ * unmounts this component's whole subtree.
  */
 import { useNavigate } from "@solidjs/router";
 import { Show, createSignal, type Component, type JSX } from "solid-js";
 
 import { useSession } from "~/api/session";
-import { Button, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "~/components/ui/DropdownMenu";
 import {
   density,
   setDensity,
@@ -41,15 +51,14 @@ import {
 
 const THEME_ORDER: readonly ThemePreference[] = ["system", "light", "dark"];
 
-const ThemeToggle = (): JSX.Element => {
+const ThemeItem = (): JSX.Element => {
   const next = (): ThemePreference =>
     THEME_ORDER[(THEME_ORDER.indexOf(themePreference()) + 1) % THEME_ORDER.length] ?? "system";
 
   return (
-    <Button
-      size="sm"
-      variant="ghost"
-      onClick={() => setTheme(next())}
+    <DropdownMenuItem
+      closeOnSelect={false}
+      onSelect={() => setTheme(next())}
       title={`Theme: ${themePreference()} (currently ${theme()}). Click for ${next()}.`}
       aria-label={`Theme: ${themePreference()}, currently rendering ${theme()}. Switch to ${next()}.`}
     >
@@ -57,15 +66,14 @@ const ThemeToggle = (): JSX.Element => {
         <MoonGlyph />
       </Show>
       <span class="capitalize">{themePreference()}</span>
-    </Button>
+    </DropdownMenuItem>
   );
 };
 
-const DensityToggle = (): JSX.Element => (
-  <Button
-    size="sm"
-    variant="ghost"
-    onClick={() => setDensity(density() === "compact" ? "comfortable" : "compact")}
+const DensityItem = (): JSX.Element => (
+  <DropdownMenuItem
+    closeOnSelect={false}
+    onSelect={() => setDensity(density() === "compact" ? "comfortable" : "compact")}
     title={`Row density: ${density()}`}
     aria-label={`Row density: ${density()}. Switch to ${
       density() === "compact" ? "comfortable" : "compact"
@@ -73,7 +81,7 @@ const DensityToggle = (): JSX.Element => (
   >
     <DensityGlyph compact={density() === "compact"} />
     <span class="capitalize">{density()}</span>
-  </Button>
+  </DropdownMenuItem>
 );
 
 /**
@@ -81,9 +89,9 @@ const DensityToggle = (): JSX.Element => (
  *
  * The principal is already in hand — `/me` answered before this shell mounted —
  * so naming it costs nothing and answers "which account am I in?" without a
- * settings trip. The button does not confirm: a sign-out is one click to undo.
+ * settings trip. The item does not confirm: a sign-out is one click to undo.
  */
-const SignOut: Component = () => {
+const SignOutItem: Component = () => {
   const session = useSession();
   const navigate = useNavigate();
   const [busy, setBusy] = createSignal(false);
@@ -121,19 +129,18 @@ const SignOut: Component = () => {
   return (
     <>
       <Show when={failed()}>
-        <span role="alert" class="text-meta font-medium text-ink">
+        <p role="alert" class="px-2 py-1 text-meta font-medium text-ink">
           Still signed in — sign-out failed. Try again.
-        </span>
+        </p>
       </Show>
-      <button
-        type="button"
-        onClick={() => void go()}
+      <DropdownMenuItem
+        closeOnSelect={false}
         disabled={busy()}
+        onSelect={() => void go()}
         title={session.me()?.user?.email ?? undefined}
-        class="rounded-control px-1.5 py-1 text-meta font-medium text-ink-muted transition-colors duration-100 hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-45"
       >
         Sign out
-      </button>
+      </DropdownMenuItem>
     </>
   );
 };
@@ -152,18 +159,14 @@ function initials(email: string | undefined): string {
   return out.length > 0 ? out : "?";
 }
 
-const MENU_ID = "user-menu";
-
 export const UserMenu: Component = () => {
   const session = useSession();
   const email = (): string | undefined => session.me()?.user?.email ?? undefined;
 
   return (
-    <div class="relative">
-      <Button
-        id={`${MENU_ID}-trigger`}
-        popovertarget={MENU_ID}
-        popovertargetaction="toggle"
+    <DropdownMenu placement="bottom-end">
+      <DropdownMenuTrigger
+        as={Button}
         size="sm"
         variant="ghost"
         title={email()}
@@ -176,29 +179,19 @@ export const UserMenu: Component = () => {
           {initials(email())}
         </span>
         <ChevronGlyph />
-      </Button>
+      </DropdownMenuTrigger>
 
-      <div
-        id={MENU_ID}
-        popover
-        class={cx(
-          "absolute inset-auto right-0 top-full m-0 mt-1.5 w-64 flex-col gap-1",
-          "rounded-surface border border-line bg-surface p-2 text-ink",
-          "shadow-[0_16px_48px_-12px_rgb(0_0_0_/_0.35)]",
-          // The UA stylesheet's `[popover]:popover-open` is `display: block` by
-          // default, not flex — the popover's own open/closed state drives
-          // whether this renders at all, so `flex` only needs to apply while open.
-          "open:flex",
-        )}
-      >
-        <p class="truncate px-1 py-1 text-meta text-ink-subtle">{email() ?? "Signed in"}</p>
-        <div class="h-px bg-line" aria-hidden="true" />
-        <ThemeToggle />
-        <DensityToggle />
-        <div class="h-px bg-line" aria-hidden="true" />
-        <SignOut />
-      </div>
-    </div>
+      <DropdownMenuContent class="w-64">
+        <DropdownMenuLabel class="truncate text-meta font-normal text-ink-subtle">
+          {email() ?? "Signed in"}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <ThemeItem />
+        <DensityItem />
+        <DropdownMenuSeparator />
+        <SignOutItem />
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 };
 

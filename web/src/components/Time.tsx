@@ -13,7 +13,7 @@
  */
 import { createSignal, onCleanup, type Component } from "solid-js";
 
-import { cx } from "~/components/ui/primitives";
+import { cn } from "~/lib/cn";
 import {
   absoluteTime,
   clockTime,
@@ -51,7 +51,7 @@ export const RelativeTime: Component<RelativeTimeProps> = (props) => (
   <time
     datetime={props.value ?? undefined}
     title={`${props.label ? `${props.label}: ` : ""}${absoluteTime(props.value)}`}
-    class={cx("tabular-nums", props.class)}
+    class={cn("tabular-nums", props.class)}
   >
     {relativeTime(props.value, now())}
   </time>
@@ -64,7 +64,7 @@ export const ClockTime: Component<{ readonly value: string; readonly class?: str
   <time
     datetime={props.value}
     title={absoluteTime(props.value)}
-    class={cx("font-mono text-meta tabular-nums", props.class)}
+    class={cn("font-mono text-meta tabular-nums", props.class)}
   >
     {clockTime(props.value)}
   </time>
@@ -83,7 +83,7 @@ export const Elapsed: Component<{
     const end = props.to ? new Date(props.to).getTime() : now();
     return duration((end - start) / 1000);
   };
-  return <span class={cx("tabular-nums", props.class)}>{text()}</span>;
+  return <span class={cn("tabular-nums", props.class)}>{text()}</span>;
 };
 
 /**
@@ -103,7 +103,7 @@ export const ClockSkewBadge: Component<{
 
   return (
     <span
-      class={cx(
+      class={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-chip border border-line-strong",
         "bg-sunken px-1 py-px font-mono text-micro leading-4 text-ink-muted",
         props.class,
@@ -131,5 +131,5 @@ export const Countdown: Component<{ readonly until: number | null; readonly clas
   const seconds = (): number =>
     props.until === null ? 0 : Math.max(0, Math.ceil((props.until - tick()) / 1000));
 
-  return <span class={cx("tabular-nums", props.class)}>{seconds()}s</span>;
+  return <span class={cn("tabular-nums", props.class)}>{seconds()}s</span>;
 };

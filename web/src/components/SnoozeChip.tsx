@@ -14,7 +14,7 @@
 import { Show, type Component } from "solid-js";
 
 import { RelativeTime } from "~/components/Time";
-import { cx } from "~/components/ui/primitives";
+import { cn } from "~/lib/cn";
 import type { Snooze } from "~/api/types";
 
 export interface SnoozeChipProps {
@@ -27,7 +27,7 @@ export const SnoozeChip: Component<SnoozeChipProps> = (props) => (
   <Show when={props.snooze}>
     {(s) => (
       <span
-        class={cx(
+        class={cn(
           "inline-flex shrink-0 items-center gap-1 rounded-chip border border-line-strong",
           "bg-sunken px-1 py-px text-meta font-medium leading-4 text-ink",
           props.class,
@@ -52,7 +52,7 @@ export const SnoozeChip: Component<SnoozeChipProps> = (props) => (
  */
 export const SnoozeChipUnknownUntil: Component<{ readonly class?: string }> = (props) => (
   <span
-    class={cx(
+    class={cn(
       "inline-flex shrink-0 items-center gap-1 rounded-chip border border-line-strong",
       "bg-sunken px-1 py-px text-meta font-medium leading-4 text-ink",
       props.class,

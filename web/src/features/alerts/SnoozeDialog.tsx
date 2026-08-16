@@ -28,9 +28,25 @@ import { maxLengthOf, maxValueOf, minValueOf } from "~/api/bounds";
 import { ApiError, orphanViolations, violationsByField } from "~/api/client";
 import { SnoozeRequestSchema } from "~/api/generated/validators";
 import type { SnoozeRequest } from "~/api/types";
-import { Dialog, DialogBody } from "~/components/ui/Dialog";
-import { Button, Field, Input, Textarea, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import {
+  Modal,
+  ModalContent,
+  ModalDescription,
+  ModalFooter,
+  ModalHeader,
+  ModalTitle,
+} from "~/components/ui/Modal";
+import {
+  TextField,
+  TextFieldDescription,
+  TextFieldErrorMessage,
+  TextFieldInput,
+  TextFieldLabel,
+  TextFieldTextArea,
+} from "~/components/ui/TextField";
 import { ErrorBanner } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 import { absoluteTime, duration as fmtDuration, idempotencyKey } from "~/lib/format";
 import { createFieldError } from "~/lib/validation";
 
@@ -236,19 +252,159 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
   };
 
   return (
-    <Dialog
+    <Modal
       open={props.open}
-      onClose={props.onClose}
-      title={props.subject === "group" ? "Snooze every current member" : "Snooze notifications"}
-      description={SUBJECT_DESCRIPTION[props.subject]}
-      footer={
-        <>
-          <Button size="sm" onClick={props.onClose}>
+      onOpenChange={(isOpen) => {
+        if (!isOpen) props.onClose();
+      }}
+    >
+      <ModalContent>
+        <ModalHeader>
+          <ModalTitle>
+            {props.subject === "group" ? "Snooze every current member" : "Snooze notifications"}
+          </ModalTitle>
+          <ModalDescription>{SUBJECT_DESCRIPTION[props.subject]}</ModalDescription>
+        </ModalHeader>
+
+        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+          <Show when={mutation.error !== null && orphans().length > 0}>
+            <ErrorBanner>
+              <For each={orphans()}>{(msg) => <p>{msg}</p>}</For>
+            </ErrorBanner>
+          </Show>
+
+          <Show when={mutation.error instanceof ApiError && mutation.error.status === 412}>
+            <ErrorBanner>
+              {props.subject === "group"
+                ? "There is nothing here to snooze — this group has no currently-joined member. A snooze is never predictive, so there is nothing for it to attach to."
+                : "This alert is in the wrong state for a snooze. The request itself was fine; the entity moved while the dialog was open."}
+            </ErrorBanner>
+          </Show>
+
+          <Show
+            when={
+              mutation.error instanceof ApiError &&
+              mutation.error.status !== 412 &&
+              mutation.error.status !== 422
+            }
+          >
+            <ErrorBanner error={mutation.error} />
+          </Show>
+
+          <fieldset class="min-w-0">
+            <legend class="mb-1.5 text-body font-medium text-ink-muted">For how long</legend>
+            <div class="flex flex-wrap gap-1">
+              <For each={SNOOZE_PRESETS}>
+                {(preset) => (
+                  <label
+                    class={cn(
+                      "inline-flex cursor-pointer items-center rounded-control border px-2 py-1 text-body",
+                      mode() === "duration" && seconds() === preset.seconds
+                        ? "border-accent-border bg-accent-fill font-medium text-ink"
+                        : "border-line bg-surface text-ink-muted hover:bg-raised",
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="snooze-duration"
+                      class="sr-only-focusable"
+                      checked={mode() === "duration" && seconds() === preset.seconds}
+                      onChange={() => {
+                        setMode("duration");
+                        setSeconds(preset.seconds);
+                      }}
+                    />
+                    {preset.label}
+                  </label>
+                )}
+              </For>
+            </div>
+          </fieldset>
+
+          <TextField
+            value={String(Math.round(seconds() / 60))}
+            validationState={
+              (durationError() ?? serverErrors().get("duration_seconds")) ? "invalid" : "valid"
+            }
+            onChange={(value) => {
+              setTouched(true);
+              setMode("duration");
+              const mins = Number.parseInt(value, 10);
+              setSeconds(Number.isFinite(mins) ? mins * 60 : Number.NaN);
+            }}
+          >
+            <TextFieldLabel>Or a custom number of minutes</TextFieldLabel>
+            <TextFieldInput type="number" min={SNOOZE_MIN_SECONDS / 60} max={SNOOZE_MAX_SECONDS / 60} />
+            <TextFieldDescription>
+              {`Between 5 minutes and 30 days. Currently ${fmtDuration(seconds())}.`}
+            </TextFieldDescription>
+            <TextFieldErrorMessage role="alert">
+              {durationError() ?? serverErrors().get("duration_seconds")}
+            </TextFieldErrorMessage>
+          </TextField>
+
+          {/* The absolute form. Choosing it sends `until` and *only* `until`. */}
+          <TextField
+            value={until()}
+            validationState={(untilError() ?? serverErrors().get("until")) ? "invalid" : "valid"}
+            onChange={(value) => {
+              setTouched(true);
+              setMode("until");
+              setUntil(value);
+            }}
+          >
+            <TextFieldLabel>Or until an exact time</TextFieldLabel>
+            <TextFieldInput type="datetime-local" />
+            <TextFieldDescription>
+              {mode() === "until"
+                ? `Notifications resume ${absoluteTime(new Date(until()).toString())}.`
+                : "Pick a time to switch to the absolute form. Exactly one of the two is ever sent."}
+            </TextFieldDescription>
+            <TextFieldErrorMessage role="alert">
+              {untilError() ?? serverErrors().get("until")}
+            </TextFieldErrorMessage>
+          </TextField>
+
+          <TextField
+            value={note()}
+            validationState={(noteError() ?? serverErrors().get("note")) ? "invalid" : "valid"}
+            onChange={(value) => {
+              setTouched(true);
+              setNote(value);
+            }}
+          >
+            <TextFieldLabel>Note (optional)</TextFieldLabel>
+            <TextFieldTextArea
+              rows={2}
+              maxLength={NOTE_MAX}
+              placeholder="Deploy window, expected until 17:00"
+            />
+            <TextFieldDescription>
+              Why this is going quiet. Shown wherever the snooze is shown, and kept in the history
+              afterwards.
+            </TextFieldDescription>
+            <TextFieldErrorMessage role="alert">
+              {noteError() ?? serverErrors().get("note")}
+            </TextFieldErrorMessage>
+          </TextField>
+
+          <p class="text-meta leading-snug text-ink-subtle">
+            {props.subject === "group"
+              ? "Every member stays firing, stays whatever severity it was, and stays in the default alert list. A member that cannot be snoozed is skipped rather than failing the request."
+              : "A snoozed alert is still firing and is still rendered as firing."}{" "}
+            Snoozing suppresses every notification reason for it — including a rule change — except the
+            messages announcing the snooze starting and ending, so it can never go quiet silently. Every
+            snooze is attributed and stays in the history afterwards.
+          </p>
+        </div>
+
+        <ModalFooter>
+          <Button size="sm" variant="secondary" onClick={props.onClose}>
             Cancel
           </Button>
           <Button
             size="sm"
-            variant="primary"
+            variant="default"
             busy={mutation.isPending}
             disabled={touched() && !valid()}
             onClick={() => {
@@ -260,142 +416,8 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
           >
             Hold notifications until {endsLabel()}
           </Button>
-        </>
-      }
-    >
-      <DialogBody>
-        <Show when={mutation.error !== null && orphans().length > 0}>
-          <ErrorBanner>
-            <For each={orphans()}>{(msg) => <p>{msg}</p>}</For>
-          </ErrorBanner>
-        </Show>
-
-        <Show when={mutation.error instanceof ApiError && mutation.error.status === 412}>
-          <ErrorBanner>
-            {props.subject === "group"
-              ? "There is nothing here to snooze — this group has no currently-joined member. A snooze is never predictive, so there is nothing for it to attach to."
-              : "This alert is in the wrong state for a snooze. The request itself was fine; the entity moved while the dialog was open."}
-          </ErrorBanner>
-        </Show>
-
-        <Show
-          when={
-            mutation.error instanceof ApiError &&
-            mutation.error.status !== 412 &&
-            mutation.error.status !== 422
-          }
-        >
-          <ErrorBanner error={mutation.error} />
-        </Show>
-
-        <fieldset class="min-w-0">
-          <legend class="mb-1.5 text-body font-medium text-ink-muted">For how long</legend>
-          <div class="flex flex-wrap gap-1">
-            <For each={SNOOZE_PRESETS}>
-              {(preset) => (
-                <label
-                  class={cx(
-                    "inline-flex cursor-pointer items-center rounded-control border px-2 py-1 text-body",
-                    mode() === "duration" && seconds() === preset.seconds
-                      ? "border-accent-border bg-accent-fill font-medium text-ink"
-                      : "border-line bg-surface text-ink-muted hover:bg-raised",
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="snooze-duration"
-                    class="sr-only-focusable"
-                    checked={mode() === "duration" && seconds() === preset.seconds}
-                    onChange={() => {
-                      setMode("duration");
-                      setSeconds(preset.seconds);
-                    }}
-                  />
-                  {preset.label}
-                </label>
-              )}
-            </For>
-          </div>
-        </fieldset>
-
-        <Field
-          id="snooze-minutes"
-          label="Or a custom number of minutes"
-          hint={`Between 5 minutes and 30 days. Currently ${fmtDuration(seconds())}.`}
-          error={durationError() ?? serverErrors().get("duration_seconds")}
-        >
-          {(a) => (
-            <Input
-              {...a}
-              type="number"
-              min={SNOOZE_MIN_SECONDS / 60}
-              max={SNOOZE_MAX_SECONDS / 60}
-              value={Math.round(seconds() / 60)}
-              onInput={(e) => {
-                setTouched(true);
-                setMode("duration");
-                const mins = Number.parseInt(e.currentTarget.value, 10);
-                setSeconds(Number.isFinite(mins) ? mins * 60 : Number.NaN);
-              }}
-            />
-          )}
-        </Field>
-
-        {/* The absolute form. Choosing it sends `until` and *only* `until`. */}
-        <Field
-          id="snooze-until"
-          label="Or until an exact time"
-          hint={
-            mode() === "until"
-              ? `Notifications resume ${absoluteTime(new Date(until()).toString())}.`
-              : "Pick a time to switch to the absolute form. Exactly one of the two is ever sent."
-          }
-          error={untilError() ?? serverErrors().get("until")}
-        >
-          {(a) => (
-            <Input
-              {...a}
-              type="datetime-local"
-              value={until()}
-              onInput={(e) => {
-                setTouched(true);
-                setMode("until");
-                setUntil(e.currentTarget.value);
-              }}
-            />
-          )}
-        </Field>
-
-        <Field
-          id="snooze-note"
-          label="Note (optional)"
-          hint="Why this is going quiet. Shown wherever the snooze is shown, and kept in the history afterwards."
-          error={noteError() ?? serverErrors().get("note")}
-        >
-          {(a) => (
-            <Textarea
-              {...a}
-              value={note()}
-              rows={2}
-              maxLength={NOTE_MAX}
-              placeholder="Deploy window, expected until 17:00"
-              onInput={(e) => {
-                setTouched(true);
-                setNote(e.currentTarget.value);
-              }}
-            />
-          )}
-        </Field>
-
-        <p class="text-meta leading-snug text-ink-subtle">
-          {props.subject === "group"
-            ? "Every member stays firing, stays whatever severity it was, and stays in the default alert list. A member that cannot be snoozed is skipped rather than failing the request."
-            : "A snoozed alert is still firing and is still rendered as firing."}{" "}
-          Snoozing suppresses every notification reason for it — including a rule change — except the
-          messages announcing the snooze starting and ending, so it can never go quiet silently. Every
-          snooze is attributed and stays in the history afterwards.
-        </p>
-      </DialogBody>
-    </Dialog>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 };

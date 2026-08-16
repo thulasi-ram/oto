@@ -29,7 +29,8 @@ import {
   normaliseSeverity,
   type KnownSeverity,
 } from "~/components/StateChip";
-import { Button, cx } from "~/components/ui/primitives";
+import { Button } from "~/components/ui/Button";
+import { cn } from "~/lib/cn";
 import { count as fmtCount } from "~/lib/format";
 
 const NOUN: Record<RollupAxis, string> = {
@@ -168,7 +169,7 @@ const BucketRow: Component<{
           because "we stopped hearing about this" is the open question. */}
       <span
         aria-hidden="true"
-        class={cx("h-5 w-[3px] rounded-full", STATE_BAR[b().state])}
+        class={cn("h-5 w-[3px] rounded-full", STATE_BAR[b().state])}
       />
 
       <SeverityMark severity={topSeverity(b())} />
@@ -199,7 +200,7 @@ const BucketRow: Component<{
               class="inline-flex items-center gap-1"
               title={`${c.n} ${STATE_LABEL[c.state].toLowerCase()}`}
             >
-              <span class={cx("size-1.5 rounded-full", STATE_BAR[c.state])} aria-hidden="true" />
+              <span class={cn("size-1.5 rounded-full", STATE_BAR[c.state])} aria-hidden="true" />
               {c.n}
               <span class="sr-only-focusable">{STATE_LABEL[c.state]}</span>
             </span>
@@ -249,11 +250,11 @@ const BucketRow: Component<{
   );
 
   return (
-    <li class={cx("border-b border-line", b().state === "firing" ? "bg-firing-fill/30" : "bg-surface")}>
+    <li class={cn("border-b border-line", b().state === "firing" ? "bg-firing-fill/30" : "bg-surface")}>
       <Show
         when={props.onDrillDown}
         fallback={
-          <div class={cx(BUCKET_ROW_GRID, "px-3 py-2")}>
+          <div class={cn(BUCKET_ROW_GRID, "px-3 py-2")}>
             <Body />
           </div>
         }
@@ -261,7 +262,7 @@ const BucketRow: Component<{
         {(drill) => (
           <button
             type="button"
-            class={cx(BUCKET_ROW_GRID, "w-full px-3 py-2 text-left hover:bg-raised")}
+            class={cn(BUCKET_ROW_GRID, "w-full px-3 py-2 text-left hover:bg-raised")}
             title={`Open the ${b().total_count} alert${b().total_count === 1 ? "" : "s"} in this bucket, keeping every other filter`}
             onClick={() => drill()(b().key)}
           >

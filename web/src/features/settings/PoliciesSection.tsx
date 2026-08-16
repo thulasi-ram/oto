@@ -50,21 +50,36 @@ import type {
   Policy,
   PolicyPreview,
 } from "~/api/types";
-import { Dialog, DialogBody } from "~/components/ui/Dialog";
+import { Button } from "~/components/ui/Button";
+import { Checkbox } from "~/components/ui/Checkbox";
 import {
-  Button,
-  Checkbox,
-  Chip,
-  Field,
-  Input,
-  Panel,
-  PanelHeader,
-  PanelTitle,
+  Modal,
+  ModalContent,
+  ModalDescription,
+  ModalFooter,
+  ModalHeader,
+  ModalTitle,
+} from "~/components/ui/Modal";
+import {
   Select,
-  ToggleGroup,
-  cx,
-} from "~/components/ui/primitives";
+  SelectContent,
+  SelectHiddenSelect,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/Select";
+import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/ui/states";
+import {
+  TextField,
+  TextFieldDescription,
+  TextFieldErrorMessage,
+  TextFieldInput,
+  TextFieldLabel,
+} from "~/components/ui/TextField";
+import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
+import { cn } from "~/lib/cn";
 import { idempotencyKey } from "~/lib/format";
 import { formatMatchers, parseMatchers } from "~/lib/matchers";
 import { MatcherInput } from "~/features/alerts/MatcherInput";
@@ -230,7 +245,7 @@ export const PoliciesSection: Component = () => {
       <Panel>
         <PanelHeader>
           <PanelTitle>Notification policies</PanelTitle>
-          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+          <Button size="sm" variant="default" onClick={() => setCreating(true)}>
             Add a policy
           </Button>
         </PanelHeader>
@@ -289,7 +304,7 @@ const PolicyRow: Component<{
   }));
 
   return (
-    <li class={cx("border-b border-line px-3 py-2.5 last:border-b-0", p().enabled ? "" : "opacity-60")}>
+    <li class={cn("border-b border-line px-3 py-2.5 last:border-b-0", p().enabled ? "" : "opacity-60")}>
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-item font-medium text-ink">{p().name}</span>
         <Chip title="Lower is evaluated first.">priority {p().priority}</Chip>
@@ -297,10 +312,10 @@ const PolicyRow: Component<{
           <Chip>disabled</Chip>
         </Show>
         <div class="ml-auto flex items-center gap-2">
-          <Button size="sm" onClick={props.onEdit}>
+          <Button size="sm" variant="secondary" onClick={props.onEdit}>
             Edit
           </Button>
-          <Button size="sm" variant="danger" busy={remove.isPending} onClick={() => remove.mutate()}>
+          <Button size="sm" variant="destructive" busy={remove.isPending} onClick={() => remove.mutate()}>
             Remove
           </Button>
         </div>
@@ -464,89 +479,76 @@ const PolicyDialog: Component<{
   const violations = (): ReadonlyMap<string, string> => violationsByField(mutation.error);
 
   return (
-    <Dialog
+    <Modal
       open={props.open}
-      onClose={() => {
-        setSeeded(false);
-        props.onClose();
+      onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          setSeeded(false);
+          props.onClose();
+        }
       }}
-      width="lg"
-      title={editing() ? `Edit ${props.policy?.name ?? "policy"}` : "Add a notification policy"}
-      description="A policy decides whether and where a fact is communicated. It never decides how the message looks — that belongs to the channel's renderer."
-      footer={
-        <>
-          <Button size="sm" onClick={props.onClose}>
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            variant="primary"
-            busy={mutation.isPending}
-            disabled={!gated().success}
-            onClick={() => {
-              setTouched(true);
-              const parsed = gated();
-              if (!parsed.success) return;
-              mutation.mutate(parsed.output);
-            }}
-          >
-            {editing() ? "Save" : "Create"}
-          </Button>
-        </>
-      }
     >
-      <DialogBody>
-        <Show when={mutation.error !== null}>
-          <ErrorBanner error={mutation.error} />
-        </Show>
+      <ModalContent>
+        <ModalHeader>
+          <ModalTitle>
+            {editing() ? `Edit ${props.policy?.name ?? "policy"}` : "Add a notification policy"}
+          </ModalTitle>
+          <ModalDescription>
+            A policy decides whether and where a fact is communicated. It never decides how the
+            message looks — that belongs to the channel's renderer.
+          </ModalDescription>
+        </ModalHeader>
 
-        <div class="flex flex-wrap gap-3">
+        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+          <Show when={mutation.error !== null}>
+            <ErrorBanner error={mutation.error} />
+          </Show>
+
+          <div class="flex flex-wrap gap-3">
           <div class="min-w-[12rem] flex-[2]">
-            <Field
-              id="pol-name"
-              label="Name"
-              required
-              error={localError("name") ?? violations().get("name")}
+            <TextField
+              value={name()}
+              validationState={
+                (localError("name") ?? violations().get("name")) ? "invalid" : "valid"
+              }
+              onChange={(value) => {
+                setTouched(true);
+                setName(value);
+              }}
             >
-              {(a) => (
-                <Input
-                  {...a}
-                  value={name()}
-                  maxLength={NAME_MAX}
-                  placeholder="critical → #sre-alerts"
-                  onInput={(e) => {
-                    setTouched(true);
-                    setName(e.currentTarget.value);
-                  }}
-                />
-              )}
-            </Field>
+              <TextFieldLabel>
+                Name
+                <span class="ml-0.5 text-ink-subtle" aria-hidden="true">
+                  *
+                </span>
+              </TextFieldLabel>
+              <TextFieldInput maxLength={NAME_MAX} placeholder="critical → #sre-alerts" />
+              <TextFieldErrorMessage role="alert">
+                {localError("name") ?? violations().get("name")}
+              </TextFieldErrorMessage>
+            </TextField>
           </div>
           <div class="w-28">
-            <Field
-              id="pol-priority"
-              label="Priority"
-              hint={`Lower first. ${PRIORITY_MIN}–${PRIORITY_MAX}.`}
-              error={localError("priority") ?? violations().get("priority")}
+            <TextField
+              value={Number.isFinite(priority()) ? String(priority()) : ""}
+              validationState={
+                (localError("priority") ?? violations().get("priority")) ? "invalid" : "valid"
+              }
+              onChange={(value) => {
+                setTouched(true);
+                // An unreadable box becomes `NaN` rather than the last good
+                // number: silently keeping the previous value would save
+                // something the operator can no longer see.
+                setPriority(Number.parseInt(value, 10));
+              }}
             >
-              {(a) => (
-                <Input
-                  {...a}
-                  type="number"
-                  min={PRIORITY_MIN}
-                  max={PRIORITY_MAX}
-                  step={1}
-                  value={Number.isFinite(priority()) ? String(priority()) : ""}
-                  onInput={(e) => {
-                    setTouched(true);
-                    // An unreadable box becomes `NaN` rather than the last good
-                    // number: silently keeping the previous value would save
-                    // something the operator can no longer see.
-                    setPriority(Number.parseInt(e.currentTarget.value, 10));
-                  }}
-                />
-              )}
-            </Field>
+              <TextFieldLabel>Priority</TextFieldLabel>
+              <TextFieldInput type="number" min={PRIORITY_MIN} max={PRIORITY_MAX} step={1} />
+              <TextFieldDescription>{`Lower first. ${PRIORITY_MIN}–${PRIORITY_MAX}.`}</TextFieldDescription>
+              <TextFieldErrorMessage role="alert">
+                {localError("priority") ?? violations().get("priority")}
+              </TextFieldErrorMessage>
+            </TextField>
           </div>
         </div>
 
@@ -590,30 +592,44 @@ const PolicyDialog: Component<{
           >
             <div class="flex flex-col gap-1">
               <For each={props.channels}>
-                {(c) => (
-                  <Checkbox
-                    checked={channelIds().includes(c.id)}
-                    // The cap is the contract's, and a box that cannot be ticked
-                    // says so before the save does. Already-ticked boxes stay
-                    // clickable, or the cap would be a trap you cannot back out of.
-                    disabled={!channelIds().includes(c.id) && channelIds().length >= CHANNELS_MAX}
-                    onChange={(next) => {
-                      setTouched(true);
-                      setChannelIds(
-                        next ? [...channelIds(), c.id] : channelIds().filter((id) => id !== c.id),
-                      );
-                    }}
-                    label={
-                      <span>
+                {(c) => {
+                  const inputId = (): string => `pol-channel-${c.id}`;
+                  // The cap is the contract's, and a box that cannot be ticked
+                  // says so before the save does. Already-ticked boxes stay
+                  // clickable, or the cap would be a trap you cannot back out of.
+                  const disabled = (): boolean =>
+                    !channelIds().includes(c.id) && channelIds().length >= CHANNELS_MAX;
+                  return (
+                    <div class="flex items-center gap-1.5">
+                      <Checkbox
+                        id={inputId()}
+                        checked={channelIds().includes(c.id)}
+                        disabled={disabled()}
+                        onChange={(next) => {
+                          setTouched(true);
+                          setChannelIds(
+                            next
+                              ? [...channelIds(), c.id]
+                              : channelIds().filter((id) => id !== c.id),
+                          );
+                        }}
+                      />
+                      <label
+                        for={`${inputId()}-input`}
+                        class={cn(
+                          "select-none text-item text-ink",
+                          disabled() ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                        )}
+                      >
                         {c.name}
                         <span class="ml-1.5 text-meta text-ink-subtle">
                           {c.type} · {c.verbosity}
                           {c.enabled ? "" : " · disabled"}
                         </span>
-                      </span>
-                    }
-                  />
-                )}
+                      </label>
+                    </div>
+                  );
+                }}
               </For>
             </div>
           </Show>
@@ -627,16 +643,20 @@ const PolicyDialog: Component<{
         </fieldset>
 
         <div>
-          <ToggleGroup<NotificationReason>
+          <ToggleGroup
             showLegend
             legend="About these facts"
-            options={REASONS.map((r) => ({ value: r, label: REASON_LABEL[r] }))}
-            selected={reasons()}
+            multiple
+            value={[...reasons()]}
             onChange={(next) => {
               setTouched(true);
-              setReasons(next);
+              setReasons(next as NotificationReason[]);
             }}
-          />
+          >
+            <For each={REASONS}>
+              {(r) => <ToggleGroupItem value={r}>{REASON_LABEL[r]}</ToggleGroupItem>}
+            </For>
+          </ToggleGroup>
           <Show when={localError("reasons") ?? violations().get("reasons")}>
             {(msg) => (
               <p class="mt-1 text-meta font-medium text-ink" role="alert">
@@ -646,11 +666,37 @@ const PolicyDialog: Component<{
           </Show>
         </div>
 
-        <Checkbox checked={enabled()} onChange={setEnabled} label={<span>Enabled</span>} />
+        <div class="flex items-center gap-1.5">
+          <Checkbox id="pol-enabled" checked={enabled()} onChange={setEnabled} />
+          <label for="pol-enabled-input" class="cursor-pointer select-none text-item text-ink">
+            Enabled
+          </label>
+        </div>
 
-        <PolicyPreviewPanel draft={draft()} />
-      </DialogBody>
-    </Dialog>
+          <PolicyPreviewPanel draft={draft()} />
+        </div>
+
+        <ModalFooter>
+          <Button size="sm" variant="secondary" onClick={props.onClose}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            variant="default"
+            busy={mutation.isPending}
+            disabled={!gated().success}
+            onClick={() => {
+              setTouched(true);
+              const parsed = gated();
+              if (!parsed.success) return;
+              mutation.mutate(parsed.output);
+            }}
+          >
+            {editing() ? "Save" : "Create"}
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 };
 
@@ -738,6 +784,22 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
   const recent = useQuery(() => recentAlertsQuery());
 
   /**
+   * The recent twenty, as `PickedAlert`s.
+   *
+   * ⛔ KEPT AS ITS OWN MEMO, DEPENDENT ONLY ON `recent.data`. `options()` below
+   * used to `.map(pickedAlert)` this same array inline, which reads `picked()`
+   * in the same computation — so *every* selection re-ran the `.map` and handed
+   * the controlled `Select` a fresh set of row objects it had never seen by
+   * reference. Kobalte resyncs its controlled `value` against `options()` by
+   * identity, so a picker driven through its real listbox (not the hidden
+   * shim's `fireEvent.change`, which this bug was invisible to) spun into an
+   * infinite `onChange` ⇄ recompute loop the instant something was actually
+   * selected. Keeping `rows` stable across `picked()` changes is what breaks
+   * that cycle.
+   */
+  const rows = createMemo<readonly PickedAlert[]>(() => (recent.data?.data ?? []).map(pickedAlert));
+
+  /**
    * What the picker offers: the recent twenty, plus the alert already chosen if
    * a refetch has since pushed it off the end.
    *
@@ -746,10 +808,9 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
    * Preview.
    */
   const options = createMemo<readonly PickedAlert[]>(() => {
-    const rows = (recent.data?.data ?? []).map(pickedAlert);
     const chosen = picked();
-    if (chosen === null || rows.some((o) => o.id === chosen.id)) return rows;
-    return [...rows, chosen];
+    if (chosen === null || rows().some((o) => o.id === chosen.id)) return rows();
+    return [...rows(), chosen];
   });
 
   const preview = useMutation(() => ({
@@ -770,37 +831,76 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
 
       <div class="flex flex-wrap items-end gap-2">
         <div class="min-w-[14rem] flex-1">
-          <label for="preview-alert" class="mb-1 block text-body font-medium text-ink-muted">
-            Against this alert
-          </label>
-          <Select
-            id="preview-alert"
-            value={picked()?.id ?? ""}
-            onChange={(e) => {
-              const id = e.currentTarget.value;
-              setPicked(options().find((o) => o.id === id) ?? null);
-            }}
+          {/* Labelled with Kobalte's own `SelectLabel` (matching
+              `ChannelsSection.tsx`/`SourcesSection.tsx`), not a hand-written
+              `<label for>` — a plain `for` cannot target `SelectTrigger`, since
+              it renders a `<button>` and a `<button>` is not a labelable
+              element (a native `<label for>` on one is left without an
+              accessible name). `SelectLabel` wires `aria-labelledby` to the
+              trigger itself, which is the real, accessible, interactive
+              surface — not `SelectHiddenSelect`'s `aria-hidden` native shim,
+              which exists only for browser autofill/native form submission and
+              was never meant to be the primary interaction or testing surface.
+
+              The picker is disabled, and says so, until `recent` actually has
+              rows: `PolicyDialog` is a Kobalte `Modal`, whose content (this
+              panel included) is presence-gated (`<Show when={contentPresent()}>`)
+              and mounts only once the dialog opens — so `recentAlertsQuery()`
+              does not even start fetching before then. Without a loading state
+              an operator (or a test driving the real trigger) could open this
+              picker while `options()` is still empty and "select" nothing,
+              which is exactly the kind of honesty gap `FilterBar.tsx`'s own
+              async-fed Cluster picker avoids by staying out of the way until
+              it has something to offer. This picker cannot hide the same way —
+              it is the point of the dry run — so it disables itself and says
+              "Loading recent alerts…" instead. */}
+          <Select<PickedAlert>
+            class="flex flex-col gap-1"
+            options={[...options()]}
+            optionValue="id"
+            optionTextValue="label"
+            value={picked()}
+            onChange={setPicked}
+            disabled={recent.isPending}
+            placeholder={recent.isPending ? "Loading recent alerts…" : "— pick a recent alert —"}
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{itemProps.item.rawValue.label}</SelectItem>
+            )}
           >
-            <option value="">— pick a recent alert —</option>
-            <For each={options()}>{(o) => <option value={o.id}>{o.label}</option>}</For>
+            <SelectLabel class="mb-1 block">Against this alert</SelectLabel>
+            <SelectTrigger>
+              <SelectValue<PickedAlert>>{(state) => state.selectedOption().label}</SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
           </Select>
         </div>
 
         <div class="w-52">
-          <label for="preview-reason" class="mb-1 block text-body font-medium text-ink-muted">
-            Simulating
-          </label>
-          <Select
-            id="preview-reason"
+          <Select<NotificationReason>
+            class="flex flex-col gap-1"
+            options={[...REASONS]}
+            optionTextValue={(r) => REASON_LABEL[r]}
             value={reason()}
-            onChange={(e) => setReason(e.currentTarget.value as NotificationReason)}
+            onChange={(next) => {
+              if (next !== null) setReason(next);
+            }}
+            itemComponent={(itemProps) => (
+              <SelectItem item={itemProps.item}>{REASON_LABEL[itemProps.item.rawValue]}</SelectItem>
+            )}
           >
-            <For each={REASONS}>{(r) => <option value={r}>{REASON_LABEL[r]}</option>}</For>
+            <SelectLabel class="mb-1 block">Simulating</SelectLabel>
+            <SelectTrigger>
+              <SelectValue<NotificationReason>>
+                {(state) => REASON_LABEL[state.selectedOption()]}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectHiddenSelect />
+            <SelectContent />
           </Select>
         </div>
 
         <Button
-          size="md"
           busy={preview.isPending}
           disabled={picked() === null}
           onClick={() => preview.mutate()}
@@ -829,7 +929,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
                 <For each={result().results}>
                   {(r) => (
                     <li
-                      class={cx(
+                      class={cn(
                         "rounded-control border px-2 py-1.5",
                         r.would_send
                           ? "border-line bg-surface"

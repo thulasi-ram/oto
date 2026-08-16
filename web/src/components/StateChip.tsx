@@ -14,7 +14,7 @@
  */
 import { type Component, type JSX } from "solid-js";
 
-import { cx } from "~/components/ui/primitives";
+import { cn } from "~/lib/cn";
 import type { AckState, State } from "~/api/types";
 
 /* -------------------------------------------------------------------------- */
@@ -75,7 +75,7 @@ export interface StateChipProps {
 
 export const StateChip: Component<StateChipProps> = (props) => (
   <span
-    class={cx(
+    class={cn(
       "inline-flex shrink-0 items-center gap-1 rounded-chip border font-medium",
       props.size === "sm" ? "px-1 py-px text-meta leading-4" : "px-1.5 py-0.5 text-body",
       STATE_STYLE[props.state],
@@ -85,7 +85,7 @@ export const StateChip: Component<StateChipProps> = (props) => (
   >
     <span
       aria-hidden="true"
-      class={cx(
+      class={cn(
         "size-1.5 shrink-0 rounded-full",
         STATE_DOT[props.state],
         props.urgent === true ? "oto-pulse" : "",
@@ -111,7 +111,7 @@ export const AckChip: Component<{ readonly ackState: AckState; readonly class?: 
 ) =>
   props.ackState === "acked" ? (
     <span
-      class={cx(
+      class={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-chip border px-1 py-px",
         "text-meta font-medium leading-4",
         "border-acked-border bg-acked-fill text-acked-text",
@@ -183,7 +183,7 @@ export const SeverityMark: Component<SeverityMarkProps> = (props) => {
 
   return (
     <span
-      class={cx(
+      class={cn(
         "inline-flex shrink-0 items-center gap-1 text-body",
         known() ? SEVERITY_COLOUR[known() as KnownSeverity] : "text-ink-subtle",
         props.class,
@@ -219,7 +219,7 @@ export const SeverityMark: Component<SeverityMarkProps> = (props) => {
  */
 export const FlappingChip: Component<{ readonly class?: string }> = (props) => (
   <span
-    class={cx(
+    class={cn(
       "inline-flex shrink-0 items-center gap-1 rounded-chip border border-info-border",
       "bg-info-fill px-1 py-px text-meta font-medium leading-4 text-info-text",
       props.class,
@@ -234,7 +234,7 @@ export const FlappingChip: Component<{ readonly class?: string }> = (props) => (
 /** Storm mode: one root message with a count, per-alert replies suppressed. */
 export const StormChip: Component<{ readonly class?: string }> = (props) => (
   <span
-    class={cx(
+    class={cn(
       "inline-flex shrink-0 items-center gap-1 rounded-chip border border-info-border",
       "bg-info-fill px-1 py-px text-meta font-medium leading-4 text-info-text",
       props.class,

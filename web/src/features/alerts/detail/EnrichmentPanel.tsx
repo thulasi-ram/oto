@@ -15,8 +15,9 @@ import { For, Match, Show, Switch, createSignal, type Component } from "solid-js
 
 import type { Enrichment, EnrichmentStatus } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { Chip, Panel, PanelHeader, PanelTitle, cx } from "~/components/ui/primitives";
+import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
+import { cn } from "~/lib/cn";
 
 /** Tier A throughout: an enricher's health is not an alert's state (§M.2). */
 const STATUS_NOTE: Record<EnrichmentStatus, string> = {
@@ -81,7 +82,7 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
     <li class="border-b border-line px-3 py-2 last:border-b-0">
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span class="font-mono text-body font-medium text-ink">{e().enricher}</span>
-        <span class={cx("text-meta", STATUS_WEIGHT[e().status])} title={STATUS_NOTE[e().status]}>
+        <span class={cn("text-meta", STATUS_WEIGHT[e().status])} title={STATUS_NOTE[e().status]}>
           {e().status}
         </span>
         <span class="ml-auto text-meta text-ink-subtle">
