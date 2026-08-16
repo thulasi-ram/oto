@@ -95,12 +95,12 @@ func newTimelineRig(t *testing.T) *timelineRig {
 	// `AppendTimelineEvent`, and what it has to satisfy — the closed enum, the C.8
 	// key claim, ev_subject_ck, ev_summary_ck — is enforced below it, in SQL.
 	alerts, err := alertsservice.New(alertsservice.Deps{
-		Alerts:      alertsrepo.NewAlertRepository(h.Pool, r.clk),
+		Alerts:      alertsrepo.NewAlertRepository(h.Pool, r.clk, false),
 		Occurrences: alertsrepo.NewOccurrenceRepository(h.Pool),
 		Events:      alertsrepo.NewEventRepository(h.Pool, r.clk),
 		Snoozes:     alertsrepo.NewSnoozeRepository(h.Pool, r.clk),
 		Tx:          alertsrepo.NewTxRunner(h.Pool),
-		AlertBatch:  alertsrepo.NewAlertRepository(h.Pool, r.clk),
+		AlertBatch:  alertsrepo.NewAlertRepository(h.Pool, r.clk, false),
 		OccBatch:    alertsrepo.NewOccurrenceRepository(h.Pool),
 		Clock:       r.clk,
 		Logger:      quietLogger(),

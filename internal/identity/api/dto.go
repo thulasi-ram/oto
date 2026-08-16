@@ -117,6 +117,23 @@ type UserDTO struct {
 	SlackUserID *string `json:"slack_user_id"`
 }
 
+// SearchDTO reports what free-text alert search can do IN THIS DEPLOYMENT.
+//
+// It exists because the answer is not a constant: it depends on whether the
+// operator has enabled Postgres's `pg_trgm` extension, which oto itself never
+// does (see internal/platform/db/capabilities.go and
+// docs/runbooks/alert-search-partial-match.md). The UI reads this to decide
+// whether to advertise substring matching on alert names at all, rather than
+// offering a search mode that silently never matches.
+type SearchDTO struct {
+	// PartialMatchEnabled is true when `pg_trgm` is enabled, which lets alert
+	// search find a substring INSIDE a compound alertname (e.g. "error" inside
+	// `CheckoutErrorRateHigh`) that word-based full-text search can never split.
+	// False means alert search still works — full-text search over alertname,
+	// summary and description — just without that one gap closed.
+	PartialMatchEnabled bool `json:"partial_match_enabled"`
+}
+
 // MeDTO is the current principal, its org and that org's settings.
 //
 // PrincipalKind is `user` for a session and `pat` for a token — the contract's
@@ -132,6 +149,10 @@ type MeDTO struct {
 	// SessionExpiresAt lets the UI warn before it is logged out rather than
 	// discovering it mid-action.
 	SessionExpiresAt *time.Time `json:"session_expires_at"`
+	// Search is this deployment's alert-search capabilities. Nested rather than
+	// flattened for the same reason Org's Settings is: it is one coherent fact
+	// about the deployment, not a property of the principal.
+	Search SearchDTO `json:"search"`
 }
 
 // APITokenDTO is a bearer credential WITHOUT its secret.

@@ -153,19 +153,30 @@ type AlertRepository struct {
 	q     db.Querier
 	clock clock.Clock
 	sb    sq.StatementBuilderType
+	// trigramAvailable is a process-lifetime fact, not a per-query check: it is
+	// whatever `db.TrigramAvailable` answered ONCE at startup (internal/app's
+	// Container). See applyAlertFilter for what it changes about `?q=`.
+	trigramAvailable bool
 }
 
 // NewAlertRepository builds the repository over a fallback querier, normally the
 // general pool. The clock is injected because the snoozed facet of the list is a
 // predicate about "now" and must stay testable.
-func NewAlertRepository(q db.Querier, clk clock.Clock) *AlertRepository {
+//
+// trigramAvailable is the cached result of `db.TrigramAvailable`, computed once
+// at boot. It is a plain bool rather than a live-checked capability because the
+// fact it reports — whether `pg_trgm` is enabled on this Postgres — cannot
+// change without a restart, so re-querying `pg_extension` on every search would
+// buy nothing but a round trip.
+func NewAlertRepository(q db.Querier, clk clock.Clock, trigramAvailable bool) *AlertRepository {
 	if clk == nil {
 		clk = clock.New()
 	}
 	return &AlertRepository{
-		q:     q,
-		clock: clk,
-		sb:    sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
+		q:                q,
+		clock:            clk,
+		sb:               sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
+		trigramAvailable: trigramAvailable,
 	}
 }
 
@@ -541,7 +552,7 @@ func (r *AlertRepository) ListSorted(
 		From("alerts").
 		Where(sq.Eq{"org_id": s.OrgID()})
 
-	q, err := applyAlertFilter(q, f, r.clock.Now())
+	q, err := applyAlertFilter(q, f, r.clock.Now(), r.trigramAvailable)
 	if err != nil {
 		return nil, db.Cursor{}, err
 	}
@@ -606,7 +617,9 @@ func (r *AlertRepository) ListSorted(
 // applyAlertFilter compiles §E.3 onto the query. Every dimension is optional and
 // a nil or empty value means "no constraint", which is what makes the default
 // list the whole open world rather than an accidental subset.
-func applyAlertFilter(q sq.SelectBuilder, f domain.AlertFilter, now time.Time) (sq.SelectBuilder, error) {
+func applyAlertFilter(
+	q sq.SelectBuilder, f domain.AlertFilter, now time.Time, trigramAvailable bool,
+) (sq.SelectBuilder, error) {
 	// ⭐⭐ SYNTHETICS ARE EXCLUDED BY DEFAULT, and this is the OPPOSITE default
 	// from `Snoozed` two dimensions down. The reason is that they answer opposite
 	// questions. A snoozed alert is a real thing happening in a real cluster and
@@ -710,11 +723,41 @@ func applyAlertFilter(q sq.SelectBuilder, f domain.AlertFilter, now time.Time) (
 		q = q.Where(sq.GtOrEq{"last_seen_at": f.Since.UTC()})
 	}
 	if strings.TrimSpace(f.Query) != "" {
-		// Mirrors alerts_text_idx exactly; any deviation makes the index unusable.
-		q = q.Where(sq.Expr(
+		// The LEFT-HAND SIDE mirrors alerts_text_idx exactly; any deviation makes
+		// the index unusable. Only the query-building function on the right may
+		// change — `websearch_to_tsquery` over `plainto_tsquery` is the SAME
+		// index (a GIN index on the tsvector expression does not care how the
+		// query side of `@@` was produced) and buys negation (`-word`), phrase
+		// search (`"exact phrase"`) and OR (`word1 OR word2`) for free.
+		textMatch := sq.Expr(
 			`to_tsvector('simple', alertname || ' ' || coalesce(annotations->>'summary','')
 			                                 || ' ' || coalesce(annotations->>'description',''))
-			 @@ plainto_tsquery('simple', ?)`, f.Query))
+			 @@ websearch_to_tsquery('simple', ?)`, f.Query)
+
+		// ⭐ TRIGRAM IS THE ONLY THING THAT CAN SUBSTRING-MATCH A COMPOUND ALERT
+		// NAME. `alertname` values like `CheckoutErrorRateHigh` are ONE lexeme to
+		// the `simple` text-search parser — no tsquery variant can ever find
+		// "error" inside it, because tsquery matches whole lexemes, never
+		// substrings of one. `pg_trgm`'s `ILIKE '%...%'` is a different
+		// mechanism entirely and closes exactly that gap.
+		//
+		// This branch exists ONLY when `db.TrigramAvailable` found the extension
+		// already enabled (internal/platform/db/capabilities.go). oto never
+		// enables it itself and never requires it: absent the extension, search
+		// is exactly the tsquery clause above, unconditionally correct on any
+		// Postgres.
+		if !trigramAvailable {
+			q = q.Where(textMatch)
+		} else {
+			// The `?` is bound by squirrel/pgx as a normal query parameter — the
+			// `%` wrapping happens IN SQL, not by string-concatenating f.Query
+			// into the statement, so this stays as safe from injection as every
+			// other parameterised predicate in this file.
+			q = q.Where(sq.Or{
+				textMatch,
+				sq.Expr(`alertname ILIKE '%' || ? || '%'`, f.Query),
+			})
+		}
 	}
 	return q, nil
 }
@@ -805,7 +848,7 @@ func (r *AlertRepository) Rollup(
 		From("alerts").
 		Where(sq.Eq{"org_id": s.OrgID()})
 
-	inner, err := applyAlertFilter(inner, f, now)
+	inner, err := applyAlertFilter(inner, f, now, r.trigramAvailable)
 	if err != nil {
 		return nil, false, err
 	}

@@ -59,12 +59,12 @@ func (c *countingStream) kinds() []string {
 func (f *fixture) streamedService(stream StreamAppender) *Service {
 	f.t.Helper()
 	svc, err := New(Deps{
-		Alerts:      repository.NewAlertRepository(f.pool, f.clk),
+		Alerts:      repository.NewAlertRepository(f.pool, f.clk, false),
 		Occurrences: repository.NewOccurrenceRepository(f.pool),
 		Events:      repository.NewEventRepository(f.pool, f.clk),
 		Snoozes:     repository.NewSnoozeRepository(f.pool, f.clk),
 		Tx:          repository.NewTxRunner(f.pool),
-		AlertBatch:  repository.NewAlertRepository(f.pool, f.clk),
+		AlertBatch:  repository.NewAlertRepository(f.pool, f.clk, false),
 		OccBatch:    repository.NewOccurrenceRepository(f.pool),
 		Stream:      stream,
 		Clock:       f.clk,

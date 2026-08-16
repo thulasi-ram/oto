@@ -246,6 +246,7 @@ var queryObjects = map[string]bool{
 // quietly empties the gate.
 var nestedOnly = map[string]string{
 	"alerts.SuppressedByDTO":              "inlined in OccurrenceDTO.suppressed_by",
+	"identity.SearchDTO":                  "inlined in MeDTO.search",
 	"notification.PolicyPreviewResultDTO": "inlined in PolicyPreviewDTO",
 	"rules.RuleKeyDTO":                    "inlined in the rules snapshot schemas",
 	"sources.HealthWarningDTO":            "inlined in SourceHealthDTO.warnings[]",

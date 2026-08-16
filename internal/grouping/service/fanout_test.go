@@ -71,7 +71,7 @@ func newFanOutWorld(t *testing.T) *fanOutWorld {
 	user := h.User(org)
 
 	alerts, err := alerts.New(alerts.Deps{
-		Alerts:      alertsrepo.NewAlertRepository(h.Pool, h.Clock),
+		Alerts:      alertsrepo.NewAlertRepository(h.Pool, h.Clock, false),
 		Occurrences: alertsrepo.NewOccurrenceRepository(h.Pool),
 		Events:      alertsrepo.NewEventRepository(h.Pool, h.Clock),
 		Snoozes:     alertsrepo.NewSnoozeRepository(h.Pool, h.Clock),

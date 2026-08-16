@@ -65,6 +65,15 @@ type Deps struct {
 	// configuration at boot, which is the only moment a bad values file is cheap
 	// to find out about.
 	Declarative domain.Declarative
+
+	// TrigramAvailable is the SAME process-lifetime `pg_trgm` capability bool
+	// `alerts/repository.AlertRepository` is built with — both are computed
+	// ONCE, in `internal/app`'s Container, from `db.TrigramAvailable`. identity
+	// surfaces it on `GET /api/v1/me` (MeDTO.Search) purely as a display fact
+	// for the UI; it never influences a query this package runs. Threading the
+	// same bool through both modules, rather than having identity import
+	// alerts to ask, is what keeps the two domains decoupled (ADR 0002).
+	TrigramAvailable bool
 }
 
 // Service is the identity module's business logic. It MINTS the authn.Principal
@@ -86,6 +95,8 @@ type Service struct {
 	// is no second place an Org is assembled, so there is no path by which a
 	// caller can obtain an Org whose Settings ignore the deployment.
 	declarative domain.Declarative
+	// trigramAvailable is a display fact only; see Deps.TrigramAvailable.
+	trigramAvailable bool
 }
 
 // Compile-time proof that the service satisfies the port the auth middleware
@@ -113,17 +124,18 @@ func New(d Deps) *Service {
 	}
 
 	return &Service{
-		orgs:        d.Orgs,
-		users:       d.Users,
-		tokens:      d.Tokens,
-		sessions:    d.Sessions,
-		slack:       d.Slack,
-		tx:          d.Tx,
-		hasher:      hasher,
-		clk:         clk,
-		log:         logger,
-		sessionTTL:  ttl,
-		declarative: d.Declarative,
+		orgs:             d.Orgs,
+		users:            d.Users,
+		tokens:           d.Tokens,
+		sessions:         d.Sessions,
+		slack:            d.Slack,
+		tx:               d.Tx,
+		hasher:           hasher,
+		clk:              clk,
+		log:              logger,
+		sessionTTL:       ttl,
+		declarative:      d.Declarative,
+		trigramAvailable: d.TrigramAvailable,
 	}
 }
 

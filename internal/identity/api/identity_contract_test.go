@@ -176,6 +176,14 @@ type contractIdentityService struct {
 	user  domain.User
 	token domain.APIToken
 
+	// trigramAvailable is what Me() reports as MeView.TrigramAvailable — the
+	// process-lifetime pg_trgm capability bool (see
+	// internal/platform/db/capabilities.go). It is set non-zero in the fixture so
+	// TestGetCurrentPrincipalAnswersTheShapeTheContractDeclares can prove `/me`
+	// actually carries it through, not merely that the field exists and is false
+	// by coincidence.
+	trigramAvailable bool
+
 	// issued is the command the last create carried, so a test can prove the
 	// request reached the service unmangled.
 	issued service.CreateTokenCommand
@@ -362,10 +370,11 @@ func (s *contractIdentityService) Me(
 	s.calls.me++
 	user := s.user
 	return service.MeView{
-		Principal:   p,
-		Org:         s.org,
-		User:        &user,
-		SlackUserID: contractSlackUserID,
+		Principal:        p,
+		Org:              s.org,
+		User:             &user,
+		SlackUserID:      contractSlackUserID,
+		TrigramAvailable: s.trigramAvailable,
 	}, nil
 }
 
@@ -589,10 +598,11 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 
 	org, decl := contractOrg(t)
 	svc := &contractIdentityService{
-		org:   org,
-		decl:  decl,
-		user:  contractUser(t),
-		token: contractToken(t),
+		org:              org,
+		decl:             decl,
+		user:             contractUser(t),
+		token:            contractToken(t),
+		trigramAvailable: true,
 	}
 	resolver := &contractSessionResolver{}
 	tx := &contractTx{}
@@ -665,6 +675,13 @@ func TestGetCurrentPrincipalAnswersTheShapeTheContractDeclares(t *testing.T) {
 	}
 	if got := f.svc.counts().me; got != 1 {
 		t.Fatalf("the service was consulted %d time(s), want 1", got)
+	}
+
+	// `search.partial_match_enabled` must carry MeView.TrigramAvailable through
+	// unchanged — the fixture sets it true specifically so this is not a
+	// coincidental false.
+	if !strings.Contains(string(resp.Body()), `"partial_match_enabled":true`) {
+		t.Fatalf("the /me body does not carry search.partial_match_enabled=true: %s", resp)
 	}
 
 	// ⛔ No credential material anywhere in the body. The session secret is a

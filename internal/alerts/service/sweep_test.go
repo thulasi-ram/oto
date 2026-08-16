@@ -72,12 +72,12 @@ func (f *fakeHealth) HealthyFor(
 func (f *fixture) sweepService(occSources OccurrenceSourceResolver, health SourceHealth) *Service {
 	f.t.Helper()
 	svc, err := New(Deps{
-		Alerts:      repository.NewAlertRepository(f.pool, f.clk),
+		Alerts:      repository.NewAlertRepository(f.pool, f.clk, false),
 		Occurrences: repository.NewOccurrenceRepository(f.pool),
 		Events:      repository.NewEventRepository(f.pool, f.clk),
 		Snoozes:     repository.NewSnoozeRepository(f.pool, f.clk),
 		Tx:          repository.NewTxRunner(f.pool),
-		AlertBatch:  repository.NewAlertRepository(f.pool, f.clk),
+		AlertBatch:  repository.NewAlertRepository(f.pool, f.clk, false),
 		OccBatch:    repository.NewOccurrenceRepository(f.pool),
 		OccSources:  occSources,
 		Health:      health,

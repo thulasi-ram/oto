@@ -92,12 +92,12 @@ func newFixture(t *testing.T, now time.Time) *fixture {
 func (f *fixture) newService(clk clock.Clock) *Service {
 	f.t.Helper()
 	svc, err := New(Deps{
-		Alerts:      repository.NewAlertRepository(f.pool, clk),
+		Alerts:      repository.NewAlertRepository(f.pool, clk, false),
 		Occurrences: repository.NewOccurrenceRepository(f.pool),
 		Events:      repository.NewEventRepository(f.pool, clk),
 		Snoozes:     repository.NewSnoozeRepository(f.pool, clk),
 		Tx:          repository.NewTxRunner(f.pool),
-		AlertBatch:  repository.NewAlertRepository(f.pool, clk),
+		AlertBatch:  repository.NewAlertRepository(f.pool, clk, false),
 		OccBatch:    repository.NewOccurrenceRepository(f.pool),
 		Clock:       clk,
 		Logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),

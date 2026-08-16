@@ -31,6 +31,13 @@ type MeView struct {
 	// SlackUserID is the linked Slack member id, empty when unlinked. It is a
 	// display fact on UserDTO; nothing authorises on it.
 	SlackUserID string
+	// TrigramAvailable reports whether this deployment's Postgres has `pg_trgm`
+	// enabled, which is what lets alert search substring-match inside a compound
+	// alertname (SPEC, `alerts/repository.applyAlertFilter`). It is a display
+	// fact for the UI, same as SlackUserID: nothing here authorises on it, and
+	// nothing in `identity` ever queries `pg_trgm` itself — the value travels in
+	// from `internal/app`'s one process-lifetime check (see Deps.TrigramAvailable).
+	TrigramAvailable bool
 }
 
 // Me assembles the current principal's view of itself.
@@ -45,7 +52,11 @@ func (s *Service) Me(ctx context.Context, scope db.TenantScope, p authn.Principa
 		return MeView{}, unauthenticated()
 	}
 
-	view := MeView{Principal: p, Org: org.WithDeclarative(s.declarative)}
+	view := MeView{
+		Principal:        p,
+		Org:              org.WithDeclarative(s.declarative),
+		TrigramAvailable: s.trigramAvailable,
+	}
 	if p.UserID == uuid.Nil {
 		return view, nil
 	}

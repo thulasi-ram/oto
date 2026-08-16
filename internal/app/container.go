@@ -282,6 +282,25 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	c.orgs = orgLister{pool: general}
 	c.enqueuer = &lateEnqueuer{}
 
+	// ---- capability detection: pg_trgm ------------------------------------
+	//
+	// ONE process-lifetime check, cached as a bool and threaded into every
+	// consumer below. It is computed here, before either consumer exists,
+	// specifically so that `identity` and `alerts` never need to know about
+	// each other to agree on the answer — see db.TrigramAvailable's doc
+	// comment for why oto never enables the extension itself.
+	//
+	// A read error here is NOT fatal: the capability is optional by design, and
+	// a transient failure to read `pg_extension` should degrade to "not
+	// available" rather than take the whole process down over a feature every
+	// alert search can run without.
+	trigramAvailable, err := db.TrigramAvailable(ctx, general)
+	if err != nil {
+		logger.Warn("db: could not determine pg_trgm availability; alert search will not offer partial alertname matching",
+			"error", err.Error())
+		trigramAvailable = false
+	}
+
 	// ---- the idempotency claim store -------------------------------------
 	//
 	// Built before every domain, because it belongs to none of them: it is the
@@ -349,6 +368,11 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Logger:      logger,
 		SessionTTL:  o.Config.Security.SessionTTL,
 		Declarative: declarative,
+		// Same process-lifetime bool `alerts` gets below. identity surfaces it on
+		// `GET /api/v1/me` (§C, MeDTO.Search) so the UI can offer alertname
+		// substring search precisely when it will actually match — without
+		// `internal/identity` importing `internal/alerts` to find out (ADR 0002).
+		TrigramAvailable: trigramAvailable,
 	})
 	if !declarative.Empty() {
 		keys := declarative.Keys()
@@ -512,7 +536,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// Two of its ports are LATE-BOUND because the service graph has cycles the
 	// package graph does not: `grouping` needs the alert timeline, and `alerts`
 	// needs a group's state_version. Both holders answer safely until filled.
-	alertRepo := alertsrepo.NewAlertRepository(general, clk)
+	alertRepo := alertsrepo.NewAlertRepository(general, clk, trigramAvailable)
 	occurrenceRepo := alertsrepo.NewOccurrenceRepository(general)
 	eventRepo := alertsrepo.NewEventRepository(general, clk)
 	snoozeRepo := alertsrepo.NewSnoozeRepository(general, clk)

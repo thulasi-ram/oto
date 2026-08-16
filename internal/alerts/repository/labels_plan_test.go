@@ -262,7 +262,7 @@ func TestIngestSurvivesALabelThatCannotBeIndexed(t *testing.T) {
 	h := harness.New(t)
 	org := h.Org()
 	cluster := h.Cluster(org)
-	repo := NewAlertRepository(h.Pool, h.Clock)
+	repo := NewAlertRepository(h.Pool, h.Clock, false)
 
 	name := incompressibleName(domain.MaxLabelNameBytes)
 	value := incompressibleAstral(512)
@@ -397,7 +397,7 @@ func TestBoundingTheValueAloneWouldNotHaveBeenEnough(t *testing.T) {
 	h.Exec(`INSERT INTO alert_labels (org_id, alert_id, label_name, label_value)
 	        VALUES ($1, $2, $3, $4)`, org.ID, alert.ID, name, value)
 
-	vals, err := NewAlertRepository(h.Pool, h.Clock).
+	vals, err := NewAlertRepository(h.Pool, h.Clock, false).
 		DistinctLabelValues(h.Ctx, org.Scope, name, "", 200)
 	require.NoError(t, err)
 	require.Empty(t, vals, "a name too large to index is invisible to the typeahead, not an error")

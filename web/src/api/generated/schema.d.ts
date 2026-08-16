@@ -5078,6 +5078,20 @@ export interface components {
             /** @description Present when `principal_kind` is `pat`. */
             token_id?: components["schemas"]["Uuid"] | null;
             session_expires_at?: components["schemas"]["Timestamp"] | null;
+            search: components["schemas"]["SearchDTO"];
+        };
+        /** @description This deployment's free-text alert-search capabilities. */
+        SearchDTO: {
+            /**
+             * @description Whether partial/substring matching on alert names is available. Alert search always runs a
+             *     full-text query over alertname, summary and description; this is `true` only when this
+             *     deployment's Postgres also has the `pg_trgm` extension enabled, which lets search find a
+             *     substring inside a compound alertname (e.g. "error" inside `CheckoutErrorRateHigh`) that
+             *     word-based full-text search can never split on its own. Enabling `pg_trgm` is a one-time,
+             *     operator-run, self-service step oto never performs itself; see
+             *     docs/runbooks/alert-search-partial-match.md.
+             */
+            partial_match_enabled: boolean;
         };
         /**
          * @description A bearer credential. **The secret is never returned by this schema** — only a SHA-256 hash of it

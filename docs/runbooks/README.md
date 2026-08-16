@@ -9,6 +9,11 @@ non-zero or sustained value means, what to check, and what to do.
 page is the file that constructs the collector; if a page and the code disagree, the code is right
 and the page is a bug.
 
+**Not every page here is a metric.**
+[`alert-search-partial-match.md`](alert-search-partial-match.md) is a one-time, operator-run SQL
+snippet (optional `pg_trgm` opt-in for substring alert-name search) — it lives here because it is
+still ops-facing self-service documentation, just not one page per collector.
+
 ## How to see them
 
 ```bash

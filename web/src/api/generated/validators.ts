@@ -1985,12 +1985,17 @@ export const UserDTOSchema = v.looseObject({
   ))),
 });
 
+export const SearchDTOSchema = v.looseObject({
+  "partial_match_enabled": v.boolean(),
+});
+
 export const MeDTOSchema = v.looseObject({
   "principal_kind": v.picklist(["user", "pat"]),
   "user": v.exactOptional(v.nullable(UserDTOSchema)),
   "org": OrgDTOSchema,
   "token_id": v.exactOptional(v.nullable(UuidSchema)),
   "session_expires_at": v.exactOptional(v.nullable(TimestampSchema)),
+  "search": SearchDTOSchema,
 });
 
 export const ApiTokenDTOSchema = v.looseObject({

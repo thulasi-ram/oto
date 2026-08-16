@@ -89,6 +89,7 @@ func toMeDTO(v service.MeView) MeDTO {
 	dto := MeDTO{
 		PrincipalKind: principalKind(v.Principal.Kind),
 		Org:           toOrgDTO(v.Org),
+		Search:        SearchDTO{PartialMatchEnabled: v.TrigramAvailable},
 	}
 	if v.User != nil {
 		u := toUserDTO(*v.User, v.SlackUserID)

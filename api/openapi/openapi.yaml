@@ -9464,7 +9464,7 @@ components:
 
     MeDTO:
       type: object
-      required: [principal_kind, org]
+      required: [principal_kind, org, search]
       properties:
         principal_kind:
           type: string
@@ -9485,9 +9485,27 @@ components:
           oneOf:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
+        search:
+          $ref: '#/components/schemas/SearchDTO'
       description: |
         The current principal, its org and that org's settings. v1 has no roles and no scopes: every
         authenticated principal has full access to its own org and none to any other.
+
+    SearchDTO:
+      type: object
+      required: [partial_match_enabled]
+      properties:
+        partial_match_enabled:
+          type: boolean
+          description: |
+            Whether partial/substring matching on alert names is available. Alert search always runs a
+            full-text query over alertname, summary and description; this is `true` only when this
+            deployment's Postgres also has the `pg_trgm` extension enabled, which lets search find a
+            substring inside a compound alertname (e.g. "error" inside `CheckoutErrorRateHigh`) that
+            word-based full-text search can never split on its own. Enabling `pg_trgm` is a one-time,
+            operator-run, self-service step oto never performs itself; see
+            docs/runbooks/alert-search-partial-match.md.
+      description: This deployment's free-text alert-search capabilities.
 
     ApiTokenDTO:
       type: object
