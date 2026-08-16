@@ -4960,8 +4960,8 @@ a distance, unmistakable at a glance, and legible for everyone.
   --oto-surface:          #FFFDF7;  /* cards, table body */
   --oto-surface-raised:   #F1E9D5;  /* headers, sticky rows, popovers */
   --oto-surface-sunken:   #E9DDC0;  /* wells, code blocks, timeline gutter */
-  --oto-border:           #E1D2AF;  /* hairlines */
-  --oto-border-strong:    #C4AE7E;  /* input borders, dividers that must read */
+  --oto-border:           #D2B879;  /* hairlines (ADR 0031: darkened for a crisper grid) */
+  --oto-border-strong:    #A3833E;  /* input borders, dividers that must read; ≥3:1 (ADR 0031) */
   --oto-text:             #2B2622;  /* primary — sumi ink */
   --oto-text-muted:       #675D4E;  /* secondary — nezumi */
   --oto-text-subtle:      #776C59;  /* tertiary, timestamps */
@@ -5010,7 +5010,7 @@ a distance, unmistakable at a glance, and legible for everyone.
   /* ---- charts: neutral/brand ramp, NEVER state hues (U5) ------------- */
   --oto-chart-1: #6F67DD; --oto-chart-2: #48A0C9; --oto-chart-3: #7FA05C;
   --oto-chart-4: #B98BC4; --oto-chart-5: #C9915E; --oto-chart-6: #5F7C99;
-  --oto-chart-grid: #E1D2AF;
+  --oto-chart-grid: #D2B879;
 }
 ```
 
@@ -5047,7 +5047,7 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
 | `--oto-state-expired-solid` `#7D6A54` | `--oto-bg` `#FDF9EF` | **4.9:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-info-text` `#0B4A9B` | `--oto-state-info-fill` `#E9F1FE` | **7.5:1** | 4.5 | ✅ |
 | `--oto-state-info-solid` `#1A6FD4` | `--oto-bg` `#FDF9EF` | **4.7:1** | 3.0 (non-text) | ✅ |
-| `--oto-border-strong` `#C4AE7E` | `--oto-surface` `#FFFDF7` | **2.1:1** | — (decorative hairline only) | n/a |
+| `--oto-border-strong` `#A3833E` | `--oto-surface` `#FFFDF7` | **3.5:1** | — (decorative hairline only) | n/a |
 
 > `--oto-border` and `--oto-border-strong` are **decorative** and are never the sole carrier of
 > meaning. Any border that *does* carry meaning is a Tier-B `-border` or `-solid` token, all of
@@ -5062,20 +5062,24 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
   --oto-surface:          #1F2840;
   --oto-surface-raised:   #29334C;
   --oto-surface-sunken:   #111725;
-  --oto-border:           #303C58;
-  --oto-border-strong:    #46527A;
+  --oto-border:           #435889;  /* ADR 0031: brightened for a crisper grid */
+  --oto-border-strong:    #6476AF;  /* ≥3:1 (ADR 0031) */
   --oto-text:             #EDEBF3;
   --oto-text-muted:       #B7B9C9;
   --oto-text-subtle:      #9096A8;
   --oto-text-inverse:     #171E2F;
 
-  /* Konshi Sutra — indigo manuscript paper. Accent brightens to a bright
-     beni pink so gold/silver-ink logic still reads as "ink on dark paper". */
-  --oto-accent:           #EC8CA6;
-  --oto-accent-hover:     #F5A6BC;
-  --oto-accent-fill:      #3A2434;
-  --oto-accent-border:    #63465A;
-  --oto-focus:            #EC8CA6;
+  /* Konshi Sutra, dark only (ADR 0032) — sometsuke plum-blossom blue-and-white,
+     replacing beni for this theme. `-hover` pales toward white (the blossom);
+     `-solid` is the blue (the night ground). ~233° hue: the widest gap left
+     between `info` (~214°) and `suppressed` (~252°) is only ~41° wide, so this
+     sits ~19° from each — tighter than every other accent this system has
+     shipped (all ≥25°). Accepted deliberately; see ADR 0032 for the tradeoff. */
+  --oto-accent:           #949DE0;
+  --oto-accent-hover:     #CDD4EA;
+  --oto-accent-fill:      #141734;
+  --oto-accent-border:    #465291;
+  --oto-focus:            #949DE0;
 
   /* ---- Tier B: state only ------------------------------------------- */
   --oto-state-firing-fill:      #331A19;
@@ -5110,7 +5114,7 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
 
   --oto-chart-1: #9A93F5; --oto-chart-2: #6FC0E4; --oto-chart-3: #A3C57F;
   --oto-chart-4: #D3A9DC; --oto-chart-5: #E0AF82; --oto-chart-6: #8AA6C2;
-  --oto-chart-grid: #303C58;
+  --oto-chart-grid: #435889;
 }
 ```
 
@@ -5123,8 +5127,9 @@ note under §M.4's table.
 | `--oto-text` `#EDEBF3` | `--oto-bg` `#171E2F` | **14.1:1** | 4.5 | ✅ |
 | `--oto-text-muted` `#B7B9C9` | `#1F2840` | **7.5:1** | 4.5 | ✅ |
 | `--oto-text-subtle` `#9096A8` | `#1F2840` | **5.0:1** | 4.5 | ✅ |
-| `--oto-accent` `#EC8CA6` | `#1F2840` | **6.2:1** | 4.5 | ✅ |
-| `--oto-text-inverse` `#171E2F` | `--oto-accent` `#EC8CA6` | **7.0:1** | 4.5 (button label) | ✅ |
+| `--oto-accent` `#949DE0` | `#1F2840` | **5.7:1** | 4.5 | ✅ |
+| `--oto-text-inverse` `#171E2F` | `--oto-accent` `#949DE0` | **6.5:1** | 4.5 (button label) | ✅ |
+| `--oto-border-strong` `#6476AF` | `--oto-surface` `#1F2840` | **3.3:1** | — (decorative hairline only) | n/a |
 | `--oto-state-firing-text` `#FFB4AE` | `--oto-state-firing-fill` `#331A19` | **9.5:1** | 4.5 | ✅ |
 | `--oto-state-firing-solid` `#FF6B60` | `--oto-bg` `#171E2F` | **6.0:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#FFD08A` | `--oto-state-acked-fill` `#33260F` | **10.3:1** | 4.5 | ✅ |
@@ -5230,12 +5235,22 @@ of the 54 call sites was on the correct side of that line already; what was miss
   --oto-type-page: 18px;
 
   /* Radius. The tier is chosen by what the corner belongs to, not by how big
-     it looks. */
-  --oto-radius-chip: 3px;
-  --oto-radius-control: 4px;
-  --oto-radius-surface: 6px;
+     it looks. All three are 0px as of ADR 0031 — see the note below the
+     table. */
+  --oto-radius-chip: 0px;
+  --oto-radius-control: 0px;
+  --oto-radius-surface: 0px;
 }
 ```
+
+> ⚠️ **AMENDED — [ADR 0031](/adr/0031-sharp-corners-and-crisper-grid/).** The three radius
+> steps above were *derived* from the 3px/4px/6px census this section describes — not designed —
+> and that census is still the accurate history of why three tiers exist and where the line between
+> `chip` and `control` falls. What ADR 0031 changes is the **value** each of the three steps holds,
+> not the tiers themselves: all three render 0px, an explicit Bloomberg-terminal/Swiss-Modernist
+> sharp-corners override, so a component still reaches for the correct named step (`rounded-chip` on
+> a badge, `rounded-control` on a button) even though every one of them is visually flush today.
+> `rounded-full`/`rounded-none` are unaffected — they were always shapes, not steps.
 
 | Utility | Step | What it is for |
 |---|---|---|
@@ -5245,9 +5260,9 @@ of the 54 call sites was on the correct side of that line already; what was miss
 | `text-item` | 13 px | a named thing or a control — row titles, nav, tabs, buttons |
 | `text-title` | 14 px | dialog and section titles |
 | `text-page` | 18 px | the page heading, and nothing else |
-| `rounded-chip` | 3 px | inline — badges, chips, code spans, skeletons |
-| `rounded-control` | 4 px | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
-| `rounded-surface` | 6 px | panels and dialogs — anything that holds controls |
+| `rounded-chip` | 0 px (ADR 0031; was 3 px) | inline — badges, chips, code spans, skeletons |
+| `rounded-control` | 0 px (ADR 0031; was 4 px) | buttons, inputs, wells, nav items, bordered boxes; **and the `:focus-visible` ring**, since what takes focus is a control |
+| `rounded-surface` | 0 px (ADR 0031; was 6 px) | panels and dialogs — anything that holds controls |
 
 `rounded-full` and `rounded-none` remain available and are not steps: they are shapes, and a status
 dot is a circle at any radius the scale could name.

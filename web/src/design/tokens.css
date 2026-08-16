@@ -25,8 +25,8 @@
   --oto-surface: #fffdf7; /* cards, table body */
   --oto-surface-raised: #f1e9d5; /* headers, sticky rows, popovers */
   --oto-surface-sunken: #e9ddc0; /* wells, code blocks, timeline gutter */
-  --oto-border: #e1d2af; /* hairlines */
-  --oto-border-strong: #c4ae7e; /* input borders, dividers that must read */
+  --oto-border: #d2b879; /* hairlines (ADR 0031: darkened for a crisper grid) */
+  --oto-border-strong: #a3833e; /* input borders, dividers that must read; ≥3:1, technical grid weight (ADR 0031) */
   --oto-text: #2b2622; /* primary — sumi ink */
   --oto-text-muted: #675d4e; /* secondary — nezumi */
   --oto-text-subtle: #776c59; /* tertiary, timestamps */
@@ -79,7 +79,7 @@
   --oto-chart-4: #b98bc4;
   --oto-chart-5: #c9915e;
   --oto-chart-6: #5f7c99;
-  --oto-chart-grid: #e1d2af;
+  --oto-chart-grid: #d2b879;
 }
 
 [data-theme="dark"] {
@@ -88,20 +88,24 @@
   --oto-surface: #1f2840;
   --oto-surface-raised: #29334c;
   --oto-surface-sunken: #111725;
-  --oto-border: #303c58;
-  --oto-border-strong: #46527a;
+  --oto-border: #435889; /* ADR 0031: brightened for a crisper grid */
+  --oto-border-strong: #6476af; /* ≥3:1, technical grid weight (ADR 0031) */
   --oto-text: #edebf3;
   --oto-text-muted: #b7b9c9;
   --oto-text-subtle: #9096a8;
   --oto-text-inverse: #171e2f;
 
-  /* Konshi Sutra — indigo manuscript paper. Accent brightens to a bright
-     beni pink so gold/silver-ink logic still reads as "ink on dark paper". */
-  --oto-accent: #ec8ca6;
-  --oto-accent-hover: #f5a6bc;
-  --oto-accent-fill: #3a2434;
-  --oto-accent-border: #63465a;
-  --oto-focus: #ec8ca6;
+  /* Konshi Sutra, dark only (ADR 0032) — sometsuke plum-blossom blue-and-white,
+     replacing beni for this theme. `-hover` pales toward white (the blossom);
+     `-solid` is the blue (the night ground). ~233° hue: the widest gap left
+     between `info` (~214°) and `suppressed` (~252°) is only ~41° wide, so this
+     sits ~19° from each — tighter than every other accent this system has
+     shipped (all ≥25°). Accepted deliberately; see the ADR for the tradeoff. */
+  --oto-accent: #949de0;
+  --oto-accent-hover: #cdd4ea;
+  --oto-accent-fill: #141734;
+  --oto-accent-border: #465291;
+  --oto-focus: #949de0;
 
   /* ---- Tier B: state only ------------------------------------------- */
   --oto-state-firing-fill: #331a19;
@@ -140,7 +144,7 @@
   --oto-chart-4: #d3a9dc;
   --oto-chart-5: #e0af82;
   --oto-chart-6: #8aa6c2;
-  --oto-chart-grid: #303c58;
+  --oto-chart-grid: #435889;
 }
 
 /* Row heights are a first-class concern (U6): 36 px comfortable, 28 px compact.
@@ -183,10 +187,14 @@
   --oto-type-page: 18px; /* the page heading, and nothing else */
 
   /* Radius. Three tiers, and the tier is chosen by what the corner belongs to,
-     not by how big it looks: inline things, controls, surfaces. */
-  --oto-radius-chip: 3px; /* inline: badges, chips, code spans, skeletons */
-  --oto-radius-control: 4px; /* buttons, inputs, wells, nav items, bordered boxes */
-  --oto-radius-surface: 6px; /* panels, dialogs — anything that holds controls */
+     not by how big it looks: inline things, controls, surfaces. All three are
+     0px as of ADR 0031 — sharp corners, Bloomberg-terminal/Swiss-Modernist
+     geometry — an explicit override of the census this scale was originally
+     derived from (§M.8), not a re-derivation. `rounded-full`/`rounded-none`
+     stay available for shapes (dots, avatars). */
+  --oto-radius-chip: 0px; /* inline: badges, chips, code spans, skeletons */
+  --oto-radius-control: 0px; /* buttons, inputs, wells, nav items, bordered boxes */
+  --oto-radius-surface: 0px; /* panels, dialogs — anything that holds controls */
 
   /* Spacing. Named by size rather than by role, unlike type/radius above —
      padding and gap are used in too many structural contexts for a role name

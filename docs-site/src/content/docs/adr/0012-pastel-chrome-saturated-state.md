@@ -1,7 +1,8 @@
 ---
 title: 0012 — Pastel product chrome, saturated colour reserved exclusively for state
 ---
-**Status:** Accepted · 2026-08-08
+**Status:** Accepted · 2026-08-08 · accent choice superseded by ADR 0030 (2026-08-16); the
+two-tier architecture below is unchanged
 
 ## Context
 The owner named the product **oto** (音, Japanese for *sound* — a chime) and requires a light,
@@ -25,7 +26,8 @@ A strict **two-tier** colour system.
 **Tier A — chrome is pastel.** Backgrounds, surfaces, borders, navigation, tables, panels, form
 controls, charts' gridlines. Low chroma, high lightness (light) / low lightness (dark). Chrome
 never uses a state hue. The brand accent is a periwinkle (`#5B54D6` / `#A6A0FF`) chosen
-specifically because it is not adjacent to any state hue.
+specifically because it is not adjacent to any state hue. *(2026-08-16: the accent is now a beni
+crimson-pink — see ADR 0030 — for the same reason, not a different one.)*
 
 **Tier B — saturated colour means state, and nothing else.** No decorative accent, no chart
 series, no hover effect may use a Tier-B hue. Scarcity is what makes it loud: when a saturated

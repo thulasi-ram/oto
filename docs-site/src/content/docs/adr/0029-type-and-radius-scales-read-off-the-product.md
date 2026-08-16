@@ -1,7 +1,8 @@
 ---
 title: 0029 — Type and radius scales, read off the product rather than drawn for it
 ---
-**Status:** Accepted · 2026-08-14
+**Status:** Accepted · 2026-08-14 · radius VALUES (not the three-tier structure) overridden by
+ADR 0031 (2026-08-16) — see *How to overturn this* for why the census below still stands as history
 **Decided WITHOUT the owner.** See *How to overturn this*, below. The ticket set the shape of the
 answer and it is honoured rather than relitigated: derive the scale from what is in use, resolve the
 stragglers deliberately, and land a gate — *"a half-migration that leaves both spellings live is the

@@ -1,5 +1,6 @@
-# 0030 — Tier A repainted as Washi & Ink / Konshi Sutra; accent moves to beni
-
+---
+title: 0030 — Tier A repainted as Washi & Ink / Konshi Sutra; accent moves to beni
+---
 **Status:** Accepted · 2026-08-16 · supersedes the accent clause of ADR 0012 · `--oto-border`/
 `--oto-border-strong` values amended by ADR 0031 (2026-08-16, same day) · dark-theme accent
 (`--oto-accent` and siblings) further amended by ADR 0032 (2026-08-16, same day) — light theme's
