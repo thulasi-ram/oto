@@ -39,9 +39,47 @@ up: infra migrate
 # Alertmanager within a minute of this returning — that, and not a hand-written
 # config, is what makes "bring the stack up and watch an alert arrive" true.
 [group('run')]
-infra:
+infra: am-wire
     docker compose up -d --wait postgres alertmanager prometheus
     @echo "postgres :5432   alertmanager http://localhost:9093   prometheus http://localhost:9090"
+
+# Render the dev Alertmanager receiver's URL and ingest token into
+# deploy/alertmanager/local/, which is gitignored and mounted at
+# /etc/alertmanager/local. Both are read by `url_file` / `credentials_file`.
+#
+# This recipe exists because Alertmanager expands NO environment variables: a
+# literal `$VAR` in its config is parsed as a URL and fails at load. Files are
+# the only supported indirection, so something has to write them, and that
+# something reads .env rather than asking you to paste a token into a tracked
+# file. Runs before `infra` so the mount is never an empty directory.
+#
+# With OTO_AM_LOCAL_* unset it writes the all-zero uuid and a dummy token, which
+# 404s loudly instead of posting to a route that does not exist.
+[group('run')]
+am-wire:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir=deploy/alertmanager/local
+    mkdir -p "$dir"
+    url="${OTO_AM_LOCAL_WEBHOOK:-http://host.docker.internal:8080/api/v1/ingest/alertmanager/00000000-0000-0000-0000-000000000000}"
+    # Alertmanager dials from inside a container, where localhost is itself.
+    # The .env value is written from oto's point of view, so translate it.
+    host_url="${url//localhost/host.docker.internal}"
+    host_url="${host_url//127.0.0.1/host.docker.internal}"
+    printf '%s' "$host_url"                                   > "$dir/webhook_url"
+    printf '%s' "${OTO_AM_LOCAL_INGEST_TOKEN:-oto_ingest_REPLACE_ME}" > "$dir/ingest_token"
+    chmod 600 "$dir/ingest_token"
+    if [[ "$host_url" != "$url" ]]; then
+      echo "→ $dir/webhook_url  (localhost → host.docker.internal)"
+    else
+      echo "→ $dir/webhook_url"
+    fi
+    # Never echo the token itself, only whether one was found.
+    if [[ -n "${OTO_AM_LOCAL_INGEST_TOKEN:-}" ]]; then
+      echo "→ $dir/ingest_token  (from OTO_AM_LOCAL_INGEST_TOKEN)"
+    else
+      echo "→ $dir/ingest_token  (PLACEHOLDER — set OTO_AM_LOCAL_INGEST_TOKEN in .env)"
+    fi
 
 # Stop the containers, keeping the data volume.
 [group('run')]

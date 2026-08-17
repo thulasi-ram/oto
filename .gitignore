@@ -23,6 +23,8 @@ web/playwright-report/
 *.local.yml
 *.local.yaml
 config.local.*
+# The dev Alertmanager's webhook URL and ingest token, rendered by `just am-wire`.
+deploy/alertmanager/local/
 
 # --- Editors and OS ---
 .DS_Store

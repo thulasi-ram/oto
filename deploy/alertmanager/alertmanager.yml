@@ -7,20 +7,24 @@
 # The receiver block below is the ENTIRE Alertmanager change oto requires
 # (SPEC §J.1). Nothing else is needed.
 #
-# ⚠️ TWO PLACEHOLDERS BELOW MUST BE REPLACED BEFORE ANYTHING REACHES oto.
-# The ingest route is per source — `/api/v1/ingest/alertmanager/{source_id}` —
-# and authenticates with that source's own token, so neither value can be known
-# until the source exists. Create one and read both off the response, which is
-# the only time the token is ever returned:
+# ⚠️ THE RECEIVER'S URL AND TOKEN LIVE IN FILES, NOT IN THIS FILE. The ingest
+# route is per source — `/api/v1/ingest/alertmanager/{source_id}` — and
+# authenticates with that source's own token, so neither value can be known
+# until the source exists, and the token is a real credential that must never
+# be committed. Alertmanager does NO environment-variable expansion (a literal
+# `$VAR` is parsed as a URL and fails at load), so `url_file` and
+# `credentials_file` are the supported way to keep both out of a tracked file.
+#
+# `just am-wire` renders both into deploy/alertmanager/local/, which is
+# gitignored, from OTO_AM_LOCAL_WEBHOOK and OTO_AM_LOCAL_INGEST_TOKEN in .env.
+# Create a source and read both off the response, which is the only time the
+# token is ever returned:
 #
 #   curl -sS -X POST http://localhost:8080/api/v1/sources \
 #     -H "authorization: Bearer $OTO_PAT" -H 'content-type: application/json' \
 #     -d '{"cluster_id":"…","name":"dev","kind":"alertmanager",
 #          "base_url":"http://localhost:9093",
 #          "prometheus_url":"http://localhost:9090"}'
-#
-# `webhook_url` from that response goes in `url`, `ingest_token` goes in
-# `credentials`, then `docker compose restart alertmanager`.
 
 global:
   resolve_timeout: 5m
@@ -38,16 +42,18 @@ receivers:
       # send_resolved MUST stay true: oto distinguishes `resolved` from `expired`
       # and will raise a persistent source_health warning if it is off (C15).
       - send_resolved: true
-        # REPLACE the trailing uuid with your source id (see the header note).
-        # The all-zero uuid is a deliberate placeholder: it 404s rather than
-        # quietly posting to a route that does not exist.
-        url: http://host.docker.internal:8080/api/v1/ingest/alertmanager/00000000-0000-0000-0000-000000000000
+        # Written by `just am-wire`. Until it runs, the file holds the all-zero
+        # uuid, which 404s rather than quietly posting to a route that does not
+        # exist. Note the host it must name: Alertmanager is in a container, so
+        # oto on the host is host.docker.internal, never localhost.
+        url_file: /etc/alertmanager/local/webhook_url
         max_alerts: 0
         http_config:
-          # REPLACE with the `ingest_token` from the source-creation response.
-          # It is returned exactly once; only its sha256 is stored.
+          # The source's `ingest_token`, returned exactly once at creation; only
+          # its sha256 is stored. Read from a file so a real credential never
+          # lands in a tracked config.
           authorization:
             type: Bearer
-            credentials: oto_ingest_REPLACE_ME
+            credentials_file: /etc/alertmanager/local/ingest_token
 
 inhibit_rules: []

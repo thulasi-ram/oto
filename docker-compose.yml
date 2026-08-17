@@ -46,6 +46,11 @@ services:
       - "9093:9093"
     volumes:
       - ./deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # The receiver's URL and ingest token, as files. Gitignored and rendered
+      # from .env by `just am-wire` — Alertmanager expands no environment
+      # variables, so `url_file`/`credentials_file` is the only way to keep a
+      # real credential out of the tracked config above.
+      - ./deploy/alertmanager/local:/etc/alertmanager/local:ro
       - oto-amdata:/alertmanager
     extra_hosts:
       - "host.docker.internal:host-gateway"
