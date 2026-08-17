@@ -36,7 +36,7 @@ import {
 } from "~/components/StateChip";
 import { SnoozeChip } from "~/components/SnoozeChip";
 import { Elapsed, RelativeTime } from "~/components/Time";
-import { Chip, DataRow, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
+import { Chip, DataRow, PageHeading, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { absoluteTime, count as fmtCount, formatLabels } from "~/lib/format";
@@ -159,9 +159,11 @@ export default function AlertDetailRoute() {
                 />
 
                 <div class="min-w-0 flex-1">
-                  <h1 class="min-w-0 truncate text-page font-semibold tracking-tight text-ink">
-                    {data().alertname}
-                  </h1>
+                  {/* The swipe rather than the rule (§M.9): this heading is
+                      alone on its line, so it has the room for a background
+                      pass. `muted`, not `accent` — the accent draws focus rails
+                      and links a few pixels away. */}
+                  <PageHeading brush="swipe">{data().alertname}</PageHeading>
 
                   {/* The three orthogonal axes, on their own line so they read as
                       one group instead of competing with the name. */}

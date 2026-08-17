@@ -36,7 +36,7 @@ import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 import { RelativeTime } from "~/components/Time";
 import { AckChip, SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
 import { Button } from "~/components/ui/Button";
-import { Chip, DataRow, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
+import { Chip, DataRow, PageHeading, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { ApiError } from "~/api/client";
 import { EmptyState, ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
@@ -134,9 +134,12 @@ export default function GroupDetailRoute() {
               <div class="flex flex-wrap items-start gap-3">
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-2">
-                    <h1 class="min-w-0 truncate text-page font-semibold tracking-tight text-ink">
-                      {g().title}
-                    </h1>
+                    {/* The rule rather than the swipe (§M.9): this heading
+                        shares a wrap row with four chips, and a background pass
+                        under a title with a severity mark beside it is one
+                        texture too many. An underline is the quieter of the two
+                        shapes and it is what that row can carry. */}
+                    <PageHeading brush="rule">{g().title}</PageHeading>
                     <SeverityMark severity={g().severity} withLabel />
                     <Show when={g().storm_mode}>
                       <StormChip />
