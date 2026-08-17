@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786993915,"nonce":"FmIpysMkuW88Y7fPuplp41N1IkY=","added":null,"removed":["notification"]}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1786993916,"nonce":"WA45cSgssA8dXCDr6VunE3dcbR0=","added":["medium","contract"],"removed":null}]}
