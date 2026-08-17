@@ -35,6 +35,11 @@ just up                   # API on :8080 and UI on :5173, together
 calls `/healthz` through the dev proxy, which is the quickest way to confirm the front end and the
 back end are talking.
 
+Losing that token is not losing API access: **Settings → Access tokens** mints more, shows each
+secret once, and revokes them. Minting requires a signed-in session and always will — a token
+cannot mint or enumerate its own siblings — so the browser is the only place it can be done, and
+`bootstrap` stays a one-time act rather than the only one.
+
 | | |
 |---|---|
 | API | <http://localhost:8080> — `/healthz`, `/readyz`, `/metrics`, `/api/v1/…` |

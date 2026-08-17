@@ -27,6 +27,8 @@ import type {
   AlertListQuery,
   AlertRollup,
   AlertRollupQuery,
+  ApiToken,
+  ApiTokenCreated,
   Channel,
   ChannelTest,
   ChannelTypeDescriptor,
@@ -35,6 +37,7 @@ import type {
   CreateClusterRequest,
   CreatePolicyRequest,
   CreateSourceRequest,
+  CreateTokenRequest,
   DeliveryDrill,
   Delivery,
   Enricher,
@@ -64,6 +67,7 @@ import type {
   SnoozeHistoryEntry,
   SnoozeRequest,
   Source,
+  SourceCreated,
   SourceHealth,
   SourceTest,
   StatsOverview,
@@ -460,8 +464,42 @@ export function getSource(id: Uuid, c: Ctx = {}): Promise<Source> {
   return getItem<Source>(`${V1}/sources/${id}`, ctx(c));
 }
 
-export function createSource(body: CreateSourceRequest, key: string): Promise<Source> {
-  return postItem<Source>(`${V1}/sources`, body, { idempotencyKey: key });
+/**
+ * Register an upstream and receive its ingest token.
+ *
+ * ⛔ THE ANSWER IS NOT A `Source`, AND SAYING SO COST THE UI THE WEBHOOK URL.
+ * This used to be `Promise<Source>` — a `SourceDTO`, the object every other
+ * function in this block returns — while the handler answers `SourceCreatedDTO`:
+ * a *wrapper* carrying `{source, ingest_token, token_prefix, webhook_url}`. The
+ * only call site papered over the difference with `as unknown as SourceCreated`,
+ * which is precisely the cast that suspends the generated types, so nothing
+ * checked that the dialog was reading fields the response has. It was not:
+ * `webhook_url` — the one URL nobody has to assemble, because the server builds
+ * it from its own `OTO_HTTP_BASE_URL` — went unrendered for as long as the type
+ * was wrong.
+ */
+export function createSource(body: CreateSourceRequest, key: string): Promise<SourceCreated> {
+  return postItem<SourceCreated>(`${V1}/sources`, body, { idempotencyKey: key });
+}
+
+/**
+ * Mint a new ingest token for a source and revoke the old one.
+ *
+ * ⚠️ THE OLD TOKEN STOPS WORKING IMMEDIATELY, and Alertmanager treats the `401`
+ * it then receives as PERMANENT — so every alert it sends between this call and
+ * the receiver being reconfigured is lost. Nothing delays the revocation to be
+ * kind, which is why the screen that calls this has to say so before it does.
+ *
+ * The key is minted per gesture like every other one, and a REPLAY is refused
+ * rather than replayed: the contract answers a reused key with `409
+ * idempotency_key_reuse` and rotates nothing, because a blind retry would revoke
+ * the secret the caller may still be holding from the first attempt.
+ *
+ * Answers the same `SourceCreatedDTO` as `createSource`, so the one-time dialog
+ * is the same dialog.
+ */
+export function rotateSourceIngestToken(id: Uuid, key: string): Promise<SourceCreated> {
+  return postItem<SourceCreated>(`${V1}/sources/${id}/rotate-token`, {}, { idempotencyKey: key });
 }
 
 export function updateSource(id: Uuid, body: UpdateSourceRequest): Promise<Source> {
@@ -694,6 +732,62 @@ export function login(body: LoginRequest, c: Ctx = {}): Promise<Me> {
 /** Revoke the session SERVER-SIDE. 204, and the cookie is gone. */
 export function logout(c: Ctx = {}): Promise<void> {
   return postVoid(`${V1}/auth/logout`, ctx(c));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Personal access tokens                                                     */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * ⛔ ALL THREE ARE SESSION-ONLY, AND THAT IS WHY THEY LIVE IN THE UI AT ALL.
+ * The contract declares `security: [sessionCookie]` on each of them, and
+ * `internal/identity/api/tokens.go` states the reason: a token cannot enumerate
+ * or mint its own siblings. The `oto_session` cookie is `HttpOnly`, so the
+ * browser is the only client that can ever hold one — which makes this file the
+ * only place these operations can be called from, not merely a convenient one.
+ * Before these existed the sole path to a second PAT was `fetch()` typed into a
+ * devtools console, because `oto bootstrap` refuses to run twice.
+ */
+
+/**
+ * The caller's OWN tokens, newest first — never the org's.
+ *
+ * The narrowing is the service's (`ListTokens` filters to the principal's user),
+ * and it is a privacy rule rather than an authorisation one: v1 has no RBAC, and
+ * one operator's laptop token still has no business in another's settings screen.
+ * The screen says so, because a list that silently showed only some of what its
+ * title claims would be worse than one that is honest about its scope.
+ */
+export function listApiTokens(c: Ctx = {}): Promise<ListEnvelope<ApiToken>> {
+  return getList<ApiToken>(`${V1}/api-tokens`, ctx(c));
+}
+
+/**
+ * Mint one. **The 201 body is the only response in this API that ever carries
+ * the secret**, and only its sha256 is stored — a lost token is replaced, never
+ * recovered.
+ *
+ * ⭐ A REUSED KEY IS A `409`, NOT A REPLAY, and unusually the strictness is the
+ * safe behaviour rather than the inconvenient one. Replaying would mean the
+ * server had kept the secret in the clear under a string the client chose;
+ * minting again would hand out a live credential whose secret went to a response
+ * that may never have arrived. So the key is minted per submit, as everywhere
+ * else, and a retry is a new gesture with a new key.
+ */
+export function createApiToken(body: CreateTokenRequest, key: string): Promise<ApiTokenCreated> {
+  return postItem<ApiTokenCreated>(`${V1}/api-tokens`, body, { idempotencyKey: key });
+}
+
+/**
+ * Revoke one. Idempotent server-side — revoking twice succeeds and does not move
+ * the revocation timestamp.
+ *
+ * ⚠️ IT IS NOT INSTANT. The credential cache means a revoked token keeps working
+ * for up to sixty seconds (contract), so the screen must not tell an operator
+ * responding to a leak that the door is already shut.
+ */
+export function revokeApiToken(id: Uuid): Promise<void> {
+  return del(`${V1}/api-tokens/${id}`);
 }
 
 /**

@@ -10,6 +10,7 @@
 import type {
   Alert,
   AlertDetail,
+  ApiToken,
   Channel,
   Cluster,
   DeliveryDrill,
@@ -122,6 +123,26 @@ export function cluster(patch: Partial<Cluster> = {}): Cluster {
     source_count: 1,
     created_at: T0,
     updated_at: T0,
+    ...patch,
+  };
+}
+
+/**
+ * One personal access token as the list returns it — prefix, never a secret.
+ * `ApiTokenDTO` has no field for one, which is the contract's way of making the
+ * mistake unrepresentable rather than merely discouraged.
+ */
+export function apiToken(patch: Partial<ApiToken> = {}): ApiToken {
+  return {
+    id: "6b2c8e9f-7a0d-4b2c-3e4f-5061728394a5",
+    kind: "pat",
+    name: "laptop CLI",
+    prefix: "oto_pat_AbCd",
+    source_id: null,
+    last_used_at: T0,
+    expires_at: null,
+    created_at: T0,
+    revoked_at: null,
     ...patch,
   };
 }

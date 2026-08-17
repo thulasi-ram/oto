@@ -19,6 +19,7 @@ import { violationsByField } from "~/api/client";
 import {
   createCluster,
   createSource,
+  rotateSourceIngestToken,
   testSource,
   updateSource,
 } from "~/api/endpoints";
@@ -66,6 +67,7 @@ import { cn } from "~/lib/cn";
 import { idempotencyKey } from "~/lib/format";
 
 import { DrillPanel } from "./DrillPanel";
+import { OneTimeSecret } from "./OneTimeSecret";
 import { RejectionsPanel } from "./RejectionsPanel";
 import {
   CHECK_LABEL,
@@ -206,10 +208,25 @@ const SourceFormSchema = v.pipe(
   CreateSourceRequestSchema, // the generated schema is the final gate
 );
 
+/**
+ * How a source's ingest token came to be on screen.
+ *
+ * The two are the same secret and the same dialog, and they are NOT the same
+ * moment: after a registration nothing is broken yet, and after a rotation the
+ * upstream is already failing. The dialog says which, because "copy this" and
+ * "copy this, alerts are being dropped until you do" are different instructions.
+ */
+type SecretOrigin = "created" | "rotated";
+
+interface RevealedSecret {
+  readonly created: SourceCreated;
+  readonly origin: SecretOrigin;
+}
+
 export const SourcesSection: Component = () => {
   const client = useQueryClient();
   const [creating, setCreating] = createSignal(false);
-  const [token, setToken] = createSignal<SourceCreated | null>(null);
+  const [token, setToken] = createSignal<RevealedSecret | null>(null);
 
   const sources = useQuery(() => sourcesQuery());
   const clusters = useQuery(() => clustersQuery());
@@ -249,7 +266,14 @@ export const SourcesSection: Component = () => {
           </Match>
           <Match when={true}>
             <ul>
-              <For each={sources.data?.data ?? []}>{(s) => <SourceRow source={s} />}</For>
+              <For each={sources.data?.data ?? []}>
+                {(s) => (
+                  <SourceRow
+                    source={s}
+                    onRotated={(created) => setToken({ created, origin: "rotated" })}
+                  />
+                )}
+              </For>
             </ul>
           </Match>
         </Switch>
@@ -262,24 +286,45 @@ export const SourcesSection: Component = () => {
         onClose={() => setCreating(false)}
         clusters={clusters.data?.data ?? []}
         onCreated={(created) => {
-          setToken(created);
+          setToken({ created, origin: "created" });
           void client.invalidateQueries({ queryKey: qk.settings.sources() });
         }}
       />
 
-      <TokenDialog created={token()} onClose={() => setToken(null)} />
+      <TokenDialog revealed={token()} onClose={() => setToken(null)} />
     </div>
   );
 };
 
 /* -------------------------------------------------------------------------- */
 
-const SourceRow: Component<{ readonly source: Source }> = (props) => {
+const SourceRow: Component<{
+  readonly source: Source;
+  readonly onRotated: (created: SourceCreated) => void;
+}> = (props) => {
   const client = useQueryClient();
   const s = (): Source => props.source;
+  const [confirmingRotate, setConfirmingRotate] = createSignal(false);
 
   const test = useMutation(() => ({
     mutationFn: () => testSource(s().id),
+  }));
+
+  /**
+   * A fresh key per gesture, and it must be fresh: the contract answers a reused
+   * `Idempotency-Key` with `409 idempotency_key_reuse` and rotates nothing, so a
+   * key held across two deliberate rotations would silently perform one.
+   */
+  const rotate = useMutation(() => ({
+    mutationFn: () => rotateSourceIngestToken(s().id, idempotencyKey()),
+    onSuccess: (created) => {
+      setConfirmingRotate(false);
+      props.onRotated(created);
+      // Nothing the row RENDERS changes — `SourceDTO` carries no token prefix,
+      // by design — but the row itself was written to, and the response carries
+      // a fresher copy of it than the list is holding.
+      void client.invalidateQueries({ queryKey: qk.settings.sources() });
+    },
   }));
 
   const toggle = useMutation(() => ({
@@ -328,6 +373,25 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
         <div class="ml-auto flex items-center gap-sm">
           <Button size="sm" busy={test.isPending} onClick={() => test.mutate()}>
             Test
+          </Button>
+          {/*
+            ⛔ IT ASKS FIRST, WHERE `Remove` ON THE CHANNELS SCREEN DOES NOT, and
+            the difference is not caution about severity. Removing a channel is a
+            state change an operator can see and undo by making another one.
+            Rotating destroys a credential that is deployed somewhere else — in
+            an Alertmanager config this app cannot read, let alone edit — and the
+            damage begins immediately and silently, at the upstream, in alerts
+            that are never delivered. A misfire has no local symptom at all, so
+            the confirmation is the only place the cost can be stated before it
+            is paid.
+          */}
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setConfirmingRotate(true)}
+            title="Mint a new ingest token for this source. The current one stops working the moment you confirm."
+          >
+            Rotate token
           </Button>
           <div class={CHECK_ROW}>
             <Checkbox
@@ -393,9 +457,81 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
       <Show when={test.error !== null}>
         <ErrorBanner error={test.error} />
       </Show>
+
+      <RotateDialog
+        source={s()}
+        open={confirmingRotate()}
+        busy={rotate.isPending}
+        error={rotate.error}
+        onClose={() => setConfirmingRotate(false)}
+        onConfirm={() => rotate.mutate()}
+      />
     </li>
   );
 };
+
+/**
+ * The one thing standing between a click and an upstream that has stopped being
+ * able to deliver.
+ *
+ * The copy is the handler's own account of what happens (`internal/sources/api/
+ * sources.go`), deliberately unsoftened: the old token is rejected with `401`,
+ * Alertmanager treats a `401` as PERMANENT and does not retry, and alerts sent in
+ * the window between rotating here and reconfiguring the receiver are lost — not
+ * delayed. An operator who is rotating because a config file leaked needs all
+ * three of those facts, and needs them before confirming rather than in a runbook
+ * afterwards.
+ */
+const RotateDialog: Component<{
+  readonly source: Source;
+  readonly open: boolean;
+  readonly busy: boolean;
+  readonly error: unknown;
+  readonly onClose: () => void;
+  readonly onConfirm: () => void;
+}> = (props) => (
+  <Modal
+    open={props.open}
+    onOpenChange={(isOpen) => {
+      if (!isOpen) props.onClose();
+    }}
+  >
+    <ModalContent>
+      <ModalHeader>
+        <ModalTitle>Rotate the ingest token for {props.source.name}?</ModalTitle>
+        <ModalDescription>
+          The current token stops working immediately — nothing waits for you to be ready.
+        </ModalDescription>
+      </ModalHeader>
+
+      <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
+        <Show when={props.error !== null}>
+          <ErrorBanner error={props.error} />
+        </Show>
+
+        <p>
+          Between this rotation and the moment you update this Alertmanager's webhook receiver, oto
+          answers its batches with <code class="font-mono">401</code>. Alertmanager treats that as
+          permanent and does not retry, so every alert it sends in that window is{" "}
+          <strong class="font-semibold">lost, not delayed</strong>.
+        </p>
+        <p class={HELP}>
+          The new token is shown exactly once, on the next screen. Have this source's configuration
+          open before you confirm.
+        </p>
+      </div>
+
+      <ModalFooter>
+        <Button size="sm" variant="secondary" onClick={props.onClose}>
+          Cancel
+        </Button>
+        <Button size="sm" variant="destructive" busy={props.busy} onClick={props.onConfirm}>
+          Rotate the token
+        </Button>
+      </ModalFooter>
+    </ModalContent>
+  </Modal>
+);
 
 /* -------------------------------------------------------------------------- */
 
@@ -539,7 +675,7 @@ const CreateSourceDialog: Component<{
   const create = useMutation(() => ({
     mutationFn: (body: CreateSourceRequest) => createSource(body, idempotencyKey()),
     onSuccess: (created) => {
-      props.onCreated(created as unknown as SourceCreated);
+      props.onCreated(created);
       props.onClose();
     },
   }));
@@ -732,59 +868,76 @@ const CreateSourceDialog: Component<{
 };
 
 /**
- * The ingest token, shown exactly once.
+ * The ingest token, shown exactly once — and the URL it belongs beside.
  *
- * The contract is explicit that there is no way to retrieve it later, so this
- * dialog says so before the user closes it rather than after.
+ * ⛔ IT SHOWS BOTH HALVES, WHICH IT DID NOT USED TO. This dialog rendered the
+ * token alone and then told the reader to "point your Alertmanager's webhook
+ * receiver at oto's ingest URL for this source" — an instruction that names a
+ * value it was already holding and did not print. `webhook_url` was in the
+ * response the whole time; the response was typed as a plain `SourceDTO` and
+ * cast through `unknown` at the call site, so nothing complained that the dialog
+ * was reading two of the four fields it had. It is the one version of that URL
+ * nobody has to assemble, built server-side from the deployment's own
+ * `OTO_HTTP_BASE_URL`, and `deploy/alertmanager/alertmanager.yml`'s header
+ * comment asks the operator for exactly this pair: `webhook_url` into `url`,
+ * `ingest_token` into `credentials`.
+ *
+ * `webhook_url` is optional in the contract, so it is rendered when present
+ * rather than assumed — a deployment that cannot state its own base URL should
+ * show one field, not the string "undefined" beside a live credential.
  */
 const TokenDialog: Component<{
-  readonly created: SourceCreated | null;
+  readonly revealed: RevealedSecret | null;
   readonly onClose: () => void;
 }> = (props) => (
   <Modal
-    open={props.created !== null}
+    open={props.revealed !== null}
     onOpenChange={(isOpen) => {
       if (!isOpen) props.onClose();
     }}
   >
     <ModalContent>
-      <ModalHeader>
-        <ModalTitle>Your ingest token</ModalTitle>
-        <ModalDescription>
-          This is the only time oto will show it. Only a hash is stored, so it cannot be shown again —
-          rotate the source to get a new one.
-        </ModalDescription>
-      </ModalHeader>
+      <Show when={props.revealed}>
+        {(revealed) => (
+          <>
+            <ModalHeader>
+              <ModalTitle>
+                {revealed().origin === "rotated" ? "The new ingest token" : "Your ingest token"}
+              </ModalTitle>
+              <ModalDescription>
+                {revealed().origin === "rotated"
+                  ? "The old token is already rejected. Until this one is in place, this source's alerts are being dropped — copy it now."
+                  : "This is the only time oto will show it. Only a hash is stored, so it cannot be shown again — rotate the source to get a new one."}
+              </ModalDescription>
+            </ModalHeader>
 
-      <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
-        <Show when={props.created}>
-          {(created) => (
-            <>
-              <div class="rounded-control border border-line-strong bg-sunken px-sm py-sm">
-                <code class="block break-all font-mono text-body text-ink">
-                  {created().ingest_token}
-                </code>
-              </div>
-              <Button
-                size="sm"
-                onClick={() => void navigator.clipboard?.writeText(created().ingest_token)}
-              >
-                Copy token
+            <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
+              <OneTimeSecret
+                label="Ingest token"
+                value={revealed().created.ingest_token}
+                secret
+                help="The bearer credential for this source's webhook receiver. Only its sha256 is stored."
+              />
+
+              <Show when={revealed().created.webhook_url}>
+                {(url) => (
+                  <OneTimeSecret
+                    label="Webhook URL"
+                    value={url()}
+                    help="Not a secret, and shown here because it is the other half of the pair: this goes in `url`, the token above goes in the receiver's `authorization.credentials`."
+                  />
+                )}
+              </Show>
+            </div>
+
+            <ModalFooter>
+              <Button size="sm" variant="default" onClick={props.onClose}>
+                I have copied it
               </Button>
-              <p class={cn(HELP, "leading-relaxed")}>
-                Point your Alertmanager's webhook receiver at oto's ingest URL for this source and send
-                this token as its bearer credential.
-              </p>
-            </>
-          )}
-        </Show>
-      </div>
-
-      <ModalFooter>
-        <Button size="sm" variant="default" onClick={props.onClose}>
-          I have copied it
-        </Button>
-      </ModalFooter>
+            </ModalFooter>
+          </>
+        )}
+      </Show>
     </ModalContent>
   </Modal>
 );

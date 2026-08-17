@@ -228,6 +228,8 @@ export type PolicyPreviewRequest = S["PolicyPreviewRequest"];
 /** A partial write: an omitted key is left alone, `reset` returns one to the default. */
 export type UpdateOrgSettingsRequest = S["UpdateOrgSettingsRequest"];
 export type LoginRequest = S["LoginRequest"];
+/** `expires_at` is optional and must be in the future; omitting it never expires. */
+export type CreateTokenRequest = S["CreateTokenRequest"];
 
 /* ---- streaming ---------------------------------------------------------- */
 

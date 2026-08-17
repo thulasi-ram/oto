@@ -120,6 +120,16 @@ export const qk = {
     failedBatches: (sourceID: string, query: FailedBatchListQuery) =>
       ["settings", "sources", sourceID, "failed-batches", query] as const,
     /**
+     * The signed-in operator's own personal access tokens.
+     *
+     * Under `["settings"]` because that is the screen it belongs to, and not
+     * under any per-user segment because there is no other user's list to
+     * collide with: the server narrows this to the caller, and a sign-out
+     * `clear()`s the whole cache (`api/session.tsx`) rather than trusting a key
+     * to keep two operators' data apart.
+     */
+    apiTokens: () => ["settings", "api-tokens"] as const,
+    /**
      * One drill, polled while it is still running.
      *
      * Under `["settings","drills"]` and not a root of its own: a drill is a

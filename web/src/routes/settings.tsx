@@ -12,13 +12,22 @@ import { SidebarPanel } from "~/components/SidebarSlot";
 import { ChannelsSection } from "~/features/settings/ChannelsSection";
 import { PoliciesSection } from "~/features/settings/PoliciesSection";
 import { SourcesSection } from "~/features/settings/SourcesSection";
+import { TokensSection } from "~/features/settings/TokensSection";
 import { TuningSection } from "~/features/settings/TuningSection";
 
+/*
+ * Tokens sits last because it is the least visited and the only one that is not
+ * about the alert pipeline — but it belongs in settings rather than under the
+ * user menu, which was the other candidate. A PAT is org data with a lifecycle,
+ * an audit trail and a revoke button, listed the same way sources and channels
+ * are; a menu is for acts, not for inventories.
+ */
 const SECTIONS = [
   { id: "sources", label: "Sources and clusters" },
   { id: "channels", label: "Channels" },
   { id: "policies", label: "Notification policies" },
   { id: "tuning", label: "Tuning" },
+  { id: "tokens", label: "Access tokens" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -101,6 +110,9 @@ const SettingsRoute: Component = () => {
                 </Match>
                 <Match when={params.section === "tuning"}>
                   <TuningSection />
+                </Match>
+                <Match when={params.section === "tokens"}>
+                  <TokensSection />
                 </Match>
               </Switch>
             </div>

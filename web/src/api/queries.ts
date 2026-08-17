@@ -266,6 +266,13 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "settings.failedBatches": { by: "live" },
 
   "settings.clusters": { by: "mutation" },
+  // Minting and revoking are the only things that change this list, both happen
+  // on the screen that reads it, and both invalidate it. `last_used_at` does
+  // move without a local write — but nothing announces that, and a screen that
+  // polled for it would be asking the server every few seconds to watch a column
+  // whose whole purpose is "is this old token still in use somewhere", a
+  // question answered by looking rather than by watching.
+  "settings.apiTokens": { by: "mutation" },
   "settings.channels": { by: "mutation" },
   "settings.policies": { by: "mutation" },
   // `TuningSection` writes the saved settings back with `setQueryData`, which is
