@@ -28,6 +28,7 @@ import { ApiError } from "~/api/client";
 import { useSession } from "~/api/session";
 import { Logo } from "~/components/Logo";
 import { Button } from "~/components/ui/Button";
+import { Ink, clearColumn } from "~/components/ui/Ink";
 import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextField";
 
 /** What the operator is told, per failure. Never more specific than the server. */
@@ -71,7 +72,57 @@ const LoginRoute: Component = () => {
   };
 
   return (
-    <div class="flex flex-1 flex-col items-center justify-center gap-10 p-8">
+    // `min-h-full` because `flex-1` has never done anything here: the shell
+    // mounts this route inside a plain `h-full` div rather than a flex column,
+    // so the wrapper has always been content-height (435 px of an 827 px
+    // viewport) and the composition has always sat at the top of the screen.
+    // Nothing noticed while the canvas was empty. With ink on it, `overflow-
+    // hidden` cuts the bleed off at a hard horizontal line two thirds up the
+    // page — a rectangle, which is the one thing a brush must never look like.
+    <div class="relative flex min-h-full flex-1 flex-col items-center justify-center gap-10 overflow-hidden p-8">
+      {/* ---- atmosphere (§M.9) -------------------------------------------
+          The ensō, twice, oversized and cropped by two opposite corners, at
+          `--oto-wash`. This is the ONE screen §M.2 permits it on: every other
+          surface has an alert on it, and decoration there costs a firing row
+          its scarcity. The form below stays bare on the canvas — putting it on
+          an opaque `bg-surface` card is the trivially safe way to guarantee
+          contrast and it turns a threshold into a card, which is the opposite
+          of what the comment under this one is asking for.
+
+          ⭐ THE CONTRAST GUARANTEE IS GEOMETRY, NOT A CAREFULLY CHOSEN OPACITY.
+          Both spans stretch to `inset-0` of this wrapper — not to the size of
+          the art — so `clearColumn`'s `50%` is the wrapper's middle, which is
+          where the form is centred. The 400 px it clears is the form's 320 px
+          plus 40 px of air on each side, at every viewport width and with no
+          media query. Measured, this is what the alternative costs:
+          `--oto-text-subtle` is 4.90:1 on `--oto-bg` in light and 4.37:1 under
+          a flat 6% wash, which fails AA — and nothing in CI would catch it,
+          because `contrast.test.ts` measures token pairs and not composites.
+
+          Nothing here animates. U9's decorative one-shot budget is a document's
+          worth and the fūrin already spends it (ADR 0028); a fading wash would
+          be a second one. */}
+      <Ink
+        motif="enso"
+        size="28rem 28rem, 100% 100%"
+        position="-6rem -8rem, center"
+        carve={clearColumn("400px")}
+        class="absolute inset-0"
+      />
+      <Ink
+        motif="enso"
+        size="28rem 28rem, 100% 100%"
+        position="right -6rem bottom -8rem, center"
+        carve={clearColumn("400px")}
+        class="absolute inset-0"
+      />
+
+      {/* `relative` on the two content elements, rather than a negative z-index
+          on the ink: neither this wrapper nor anything above it opens a stacking
+          context, so `-z-10` would send the wash behind the page background and
+          out of sight entirely. Two positioned siblings at `z-index: auto` paint
+          in DOM order, and the ink is written first. */}
+
       {/* The one screen with no incident on it, and therefore the only one that
           gets the mark itself rather than a piece of it.
           Everywhere else the fūrin would compete with something an operator is
@@ -85,10 +136,10 @@ const LoginRoute: Component = () => {
           `text-line-strong` rather than `text-ink`, for the reason the glyph
           was: this is a greeting, not a heading, and the sentence under it is
           what the person came here to act on. */}
-      <Logo class="size-28 text-line-strong" />
+      <Logo class="relative size-28 text-line-strong" />
 
       <form
-        class="flex w-full max-w-[320px] flex-col gap-4"
+        class="relative flex w-full max-w-[320px] flex-col gap-4"
         onSubmit={(e) => void submit(e)}
         aria-labelledby="login-heading"
       >
