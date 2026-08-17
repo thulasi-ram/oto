@@ -7,6 +7,8 @@ title: oto — the Case, the derived group, and where the three axes live
 > **Supersedes in part:** ADR 0005's assignment of the Slack thread to an Alertmanager-derived
 > group key, and the `filters.ts` rule that snoozed alerts stay in the default list.
 > **Tickets:** the work is filed in `git bug`; see *What was filed*, below.
+> **Companion:** [`case-and-grouping-handoff`](/design/case-and-grouping-handoff/) — session
+> state, tooling traps, and where to start.
 
 ---
 
