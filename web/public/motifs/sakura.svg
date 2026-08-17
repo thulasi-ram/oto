@@ -1,0 +1,15 @@
+<svg preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72">
+  <title>oto -- sakura, a single fallen petal, for `expired` and nowhere else</title>
+  <!-- One petal: narrow at the base, widening to the notched outer edge.
+       ⛔ THE ROTATION IS NOT DECORATION. Drawn upright, a notched petal is a
+       heart — the two shapes are the same outline and only their angle tells
+       them apart. 28° off vertical is what makes it read as something that has
+       fallen, which is the whole meaning being borrowed (mono no aware).
+       The box is square so the rotated petal cannot clip its own corners; the
+       call site sizes it as a square for the same reason.
+       One petal, not a drift: a petal that appears on every empty panel stops
+       meaning transience within a day, which is why it is gated to one state. -->
+  <g transform="rotate(28 36 36)">
+    <path fill="#000" d="M36 68 C 22 58, 12 44, 13 30 C 14 18, 22 10, 30 13 C 34 14.5, 35 18, 36 21 C 37 18, 38 14.5, 42 13 C 50 10, 58 18, 59 30 C 60 44, 50 58, 36 68 Z"/>
+  </g>
+</svg>

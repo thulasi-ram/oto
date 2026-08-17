@@ -1,0 +1,12 @@
+<svg preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 48" width="240" height="48">
+  <title>oto -- two-pass brush swipe, for the background of a page heading</title>
+  <!-- Two passes with the seam left visible. The first enters tapered from the
+       left and ends bluntly under the second; the second rides over it from
+       x=136, sits a couple of units higher, and lifts off tapered at the right.
+       The overlap is where the two silhouettes disagree, and `fill-opacity` on
+       the second makes the joint read as tone as well as shape.
+       The ink fills most of the 48-unit box on purpose: the box is the heading's
+       line box, and a band that only covers the middle third reads as a rule. -->
+  <path fill="#000" d="M4 26C12 15 46 8 96 6c26-1 50 1 62 4v33c-28 4-64 5-98 2-26-2-46-7-53-12-3-2-3-5-3-7Z"/>
+  <path fill="#000" fill-opacity="0.8" d="M136 11c38-5 74-5 98 1 4 1 5 6 4 13-1 8-5 15-11 17-31 4-65 2-91-4-4-1-5-3-3-7Z"/>
+</svg>

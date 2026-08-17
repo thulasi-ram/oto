@@ -178,6 +178,61 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * Decorative ink — the tints that carry no fact (§M.9).
+ *
+ * Every other colour in this file is load-bearing: a surface, a border, a text
+ * level, the accent, or one of the six state quads. None of them is "ink that
+ * means nothing", and a motif that wants a faint stroke had exactly two options
+ * before these existed — a hardcoded `rgba()`, which no gate catches because it
+ * is not a state hue and which is wrong the moment the theme flips, or an
+ * `<img>`, which cannot take `currentColor` and therefore needs one file per
+ * theme.
+ *
+ * ⛔ THEY ARE DERIVED, NOT THEMED, AND THAT IS WHY THEY SIT HERE. Each one mixes
+ * a token that IS themed, so one declaration is correct in both palettes and the
+ * two can never drift. `color-mix(… , transparent)` premultiplies alpha, so the
+ * result is the source hue at N% alpha rather than the source hue darkened
+ * toward black.
+ *
+ * ⛔ AND THAT IS ALSO WHY THEY ARE NOT IN A `[data-theme]` BLOCK. `tokens.test.ts`
+ * reads only rules whose prelude names a theme, so nothing here is asked for a
+ * dark counterpart; `contrast.test.ts` wants a measured pair for every token in
+ * §M.4/§M.5, and a decorative wash has no contrast obligation to measure — which
+ * is precisely why it must not sit in a palette block. §M.9 records the
+ * composites anyway, because the ink lands *behind* text and the pair that
+ * matters is the composite rather than the tint.
+ *
+ * The heading step is separate and heavier on purpose: 6% behind an 18 px page
+ * heading is invisible, and 12% behind 12 px body copy would be a defect. §M.9
+ * states the rule that keeps them apart — ink goes behind a page heading and
+ * nowhere else.
+ * ------------------------------------------------------------------------- */
+:root {
+  /* Ambient wash: motifs on a canvas (the door, a full-page empty state). */
+  --oto-wash: color-mix(in oklab, var(--oto-text) 6%, transparent);
+
+  /* Heading-weight tint, for ink BEHIND a page heading. Two hues, both Tier A
+     under §M.2, so neither can be mistaken for a state. They are clearly
+     distinct in light (kincha gold against beni crimson) and nearly collapse in
+     dark, where ADR 0032 put the accent at ~233° next to a blue-grey border
+     token — worth knowing before choosing between them. */
+  --oto-wash-heading: color-mix(in oklab, var(--oto-border-strong) 12%, transparent);
+  --oto-wash-heading-accent: color-mix(in oklab, var(--oto-accent) 12%, transparent);
+
+  /* ⭐ FOUR TIMES THE WEIGHT, AND THE REASON IS OCCUPANCY, NOT TASTE. The two
+     steps above sit UNDER 18 px text and every percent they gain is spent
+     against its contrast; the two below sit BESIDE it, on empty canvas, and owe
+     nothing to anything. A tapered rule 4 px tall at 12% is not a quiet brush
+     stroke — it is an invisible one, and the visible fraction of it that
+     survives reads as a `border-bottom`, which is the single thing an underline
+     here must not look like. §M.9 states the split; §M.4's decorative-hairline
+     row is the precedent for a Tier-A line that carries no fact and therefore
+     owes no ratio. */
+  --oto-wash-rule: color-mix(in oklab, var(--oto-border-strong) 48%, transparent);
+  --oto-wash-rule-accent: color-mix(in oklab, var(--oto-accent) 48%, transparent);
+}
+
+/* ---------------------------------------------------------------------------
  * Type and radius — SPEC §M.8. The other two axes the design system owns.
  *
  * ⭐ THESE WERE DERIVED, NOT DESIGNED. Every step below is a size the product was

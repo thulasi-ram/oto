@@ -234,6 +234,53 @@
   }
 }
 
+/* Decorative ink — a §M.9 motif, and the whole of the accessibility contract
+   that goes with it. A decorative stroke has to sit BEHIND or BESIDE something
+   without occupying a slot in the layout, which is why the art arrives as a
+   `mask-image` over a flat `--oto-wash` fill rather than as an inline `<svg>`:
+   an inlined mark is content, and `Wordmark.tsx`/`Logo.tsx` stay the right
+   answer for that.
+
+   ⛔ THE `forced-colors` GUARD IS THE REASON THIS IS ONE UTILITY AND NOT THREE
+   LINES PER MOTIF. Decorative ink is exempt from WCAG 1.4.3 and 1.4.11 only for
+   as long as it is genuinely decorative. Under `forced-colors: active` the OS
+   replaces the tint with a system colour at FULL strength, and a 6% wash becomes
+   an opaque slab across the panel — so the element leaves the page entirely.
+   `pointer-events`/`user-select` are here for the same reason: no call site can
+   take the ink without them.
+
+   The five knobs are the whole call-site vocabulary, and every one has a default
+   that is right for a motif stretched to its own box:
+
+     --oto-ink-tint       the fill. `--oto-wash`, or a §M.9 heading step.
+     --oto-ink-motif      one or more mask layers — `url(/motifs/…)` art, and
+                          optionally a gradient carve-out under it.
+     --oto-ink-size       per layer.
+     --oto-ink-position   per layer.
+     --oto-ink-composite  `intersect` when a carve-out layer is present, so the
+                          ink is GEOMETRICALLY incapable of entering the column
+                          the carve-out clears. Choosing an opacity low enough to
+                          look safe is the alternative, and it is how a measured
+                          §M.4 pair quietly stops holding.
+
+   `Ink.tsx` is the only intended way in: it owns `aria-hidden` (which no
+   stylesheet can set) and the `/motifs/` URL, so a call site cannot spell either
+   of them wrong. */
+@utility oto-ink {
+  background-color: var(--oto-ink-tint, var(--oto-wash));
+  mask-image: var(--oto-ink-motif);
+  mask-repeat: no-repeat;
+  mask-size: var(--oto-ink-size, 100% 100%);
+  mask-position: var(--oto-ink-position, center);
+  mask-composite: var(--oto-ink-composite, add);
+  pointer-events: none;
+  user-select: none;
+
+  @media (forced-colors: active) {
+    display: none;
+  }
+}
+
 /* Visually hidden but reachable by assistive tech. Used for live regions and
    for the table's semantic column headers. */
 @utility sr-only-focusable {

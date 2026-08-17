@@ -5233,6 +5233,7 @@ hex. **Both prohibitions are enforced**, and neither was until git-bug `c49baaa`
 | `web/src/index.css.test.ts` | **RUNS.** `npm run test`, `ui` job | every first-party utility is declared with `@utility` (so variants of it compile); the reduced-motion guard suppresses motion by sweeping `*` rather than by naming class names, so it cannot fall behind the next animation added; the guard sits in `@layer base`, which is what lets it beat an important-flagged utility, and nothing else in that layer carries `!important` on a motion property; and no animation is driven from JavaScript or an inline style, where the media query cannot reach it. **This is the row that carries U4/U9's reduced-motion clause** — a snapshot would have proved one tree at one moment, this proves the guard reaches every animation including the ones not yet written |
 | `web/src/components/ui/Chime.test.tsx` | **RUNS.** Same job | the fūrin's swing fires on the header mark's first mount in a document, at most once per document, never on a connection transition (neither a reload holding a resume point nor a quiet install's endless reconnects can change whether it fires), and carries the `motion-safe:` guard |
 | `web/src/design/scales.test.ts` | **RUNS.** Same job | U10 and §M.8: no font size and no corner radius is written at a call site — not as a bracket (`text-[13px]`, `rounded-[4px]`, `[font-size:13px]`), not through Tailwind's own ladder (`text-sm`, `rounded-md`, bare `rounded`), and not as a raw `font-size`/`border-radius` declaration in a stylesheet. It also asserts §M.8's CSS block declares the same steps, with the same values, as `tokens.css` — the parity §M.4/§M.5 get from `tokens.test.ts` — and that every step the scale declares has a call site — a scale may not grow ahead of the product. The steps are read out of `index.css`, so a new one is permitted the moment it is declared, and comments are stripped before scanning so the prose that names the banned forms does not trip it |
+| `web/src/design/ink.test.ts` | **RUNS.** Same job | §M.9: every composite the section tabulates computes to the stated ratio ±0.05 and agrees with its ✅/❌ — including the ❌, which is the row that justifies the carve-out and would otherwise be an unverified claim about a number nobody re-derives; every tint it quotes is derived in `tokens.css` from the token and percentage the row names, and none of them sits in a `[data-theme]` block, where it would owe `contrast.test.ts` a pair it cannot have; every motif the `Motif` union names exists under `web/public/motifs/` and carries `preserveAspectRatio="none"`; and the `oto-ink` utility compiles with all three of its CSS guarantees, so the `forced-colors` guard cannot be dropped from one call site at a time |
 
 ### M.8 Type, radius and spacing scales (ADR 0029)
 
@@ -5343,6 +5344,139 @@ chips, so the ladder is dense at the small end.
 > and every step above is below both, so all text in this product is body text for contrast
 > purposes and owes 4.5:1 — which is what §M.4/§M.5 already measure. The scale does not create an
 > exemption and must not be read as one.
+
+### M.9 Decorative ink (ADR 0035)
+
+Every colour in §M.4/§M.5 is load-bearing: a surface, a border, a text level, the accent, or one of
+the six state quads. None of them is *ink that means nothing*, and until ADR 0035 there was no way
+to put a decorative stroke on a surface at all — a motif had a hardcoded `rgba()`, which no gate
+catches because it is not a state hue and which is wrong the moment the theme flips, or an `<img>`,
+which cannot take `currentColor` and therefore needs one file per theme.
+
+Decorative ink is **Tier A** and carries **no fact**. It is a second reading of something the copy
+already states in full (U1); delete every motif on a screen and the screen must still say
+everything it said before. It is **static** — U9's decorative one-shot budget is a whole document's
+worth and the fūrin's 180 ms greeting already spends it (ADR 0028), so a fading wash or a drifting
+cloud is forbidden rather than merely unimplemented.
+
+**The tints are derived, not themed.** Each mixes a token that *is* themed, so one declaration is
+correct in both palettes and the two cannot drift. They sit in a bare `:root` block for the same
+reason `--oto-row-h` and the §M.8 steps do: `tokens.test.ts` reads only rules whose prelude names a
+theme, and `contrast.test.ts` wants a measured pair for every token in §M.4/§M.5 — and a tint has no
+contrast obligation of its own. What it *does* have is a **composite** obligation, because ink lands
+behind text, and that is what the table below measures.
+
+```css
+:root {
+  --oto-wash:                 color-mix(in oklab, var(--oto-text) 6%, transparent);
+  --oto-wash-heading:         color-mix(in oklab, var(--oto-border-strong) 12%, transparent);
+  --oto-wash-heading-accent:  color-mix(in oklab, var(--oto-accent) 12%, transparent);
+  --oto-wash-rule:            color-mix(in oklab, var(--oto-border-strong) 48%, transparent);
+  --oto-wash-rule-accent:     color-mix(in oklab, var(--oto-accent) 48%, transparent);
+}
+```
+
+⭐ **`heading` and `rule` are four times apart, and the axis is OCCUPANCY rather than taste.**
+A `heading` tint goes **under** text and spends every percent it gains against that text's contrast,
+which is what the composite table below measures. A `rule` tint goes **beside** it — a tapered
+underline on empty canvas, with nothing on it — and therefore owes nothing to anything, exactly like
+the decorative hairline row §M.4 marks `—`/n/a. At 12% a 4 px tapered stroke is not a quiet brush;
+it is an invisible one, and the fraction of it that survives reads as a `border-bottom`, which is
+the one thing an underline here must not look like.
+
+#### Where ink may go, and where it may not
+
+| Placement | Verdict |
+|---|---|
+| The door (`/login`) | **Permitted.** The one screen with no incident on it. Every other surface has an alert on it, and decoration there costs a firing row its scarcity (§M.2). |
+| A **page heading** — `text-page`, once per screen | **Permitted**, background swipe (`heading`, 12%) or underline rule (`rule`, 48%), `muted` or `accent`. The shape picks the weight; a call site may not mix them. |
+| A **full-page** empty state | **Permitted**, one corner-anchored motif. |
+| `PanelHeader`, `PanelTitle`, `SECTION_LABEL` | **Forbidden.** Alert detail stacks six panels, and at six a gesture becomes a texture. |
+| A **sub-panel** empty state | **Forbidden**, same reason: one quiet alert renders six of them at once. |
+| Body copy, help text, timestamps, table cells | **Forbidden.** `--oto-text-muted` behind a wash is a defect and `--oto-text-subtle` an outright failure — see the ❌ row below. |
+| Any row, chip, badge or status surface | **Forbidden.** Ink that lands near state is ink that will be read as state. |
+
+> **The rule, in one sentence: ink goes behind a page heading and nowhere else it can be mistaken
+> for chrome.** The tempting next step is a wash behind a section label, and it is written down here
+> precisely because it is tempting.
+
+#### Measured composites
+
+⚠️ **These are composites, which is the thing §M.4/§M.5 cannot express.** Those tables measure token
+*pairs*; a tint behind text is a third colour, and `contrast.test.ts` would never see it. Each row
+below composites the ink over its background in sRGB and measures the text against the result. The
+18 px page heading is **not** WCAG "large text" (that starts at 18.66 px bold), so its floor is 4.5.
+
+The two `rule` steps are deliberately **absent** from this table. Nothing sits on them — they are a
+stroke beside a heading, not behind it — so like `--oto-border` in §M.4 they carry no fact, are
+never the sole carrier of meaning, and have no ratio to state. A row here would be a measurement of
+a pair the product never puts together.
+
+| Composite | Theme | Text | Ink over background | Measured | Floor | Pass |
+|---|---|---|---|---|---|---|
+| page heading, muted brush | light | `--oto-text` | `--oto-border-strong` 12% on `--oto-surface` | **12.95:1** | 4.5 | ✅ |
+| page heading, muted brush | dark | `--oto-text` | `--oto-border-strong` 12% on `--oto-surface` | **10.89:1** | 4.5 | ✅ |
+| page heading, accent brush | light | `--oto-text` | `--oto-accent` 12% on `--oto-surface` | **12.21:1** | 4.5 | ✅ |
+| page heading, accent brush | dark | `--oto-text` | `--oto-accent` 12% on `--oto-surface` | **10.08:1** | 4.5 | ✅ |
+| ambient wash under body copy | light | `--oto-text-muted` | `--oto-text` 6% on `--oto-bg` | **5.48:1** | 4.5 | ✅ |
+| ambient wash under body copy | dark | `--oto-text-muted` | `--oto-text` 6% on `--oto-bg` | **7.35:1** | 4.5 | ✅ |
+| ambient wash under tertiary text | light | `--oto-text-subtle` | `--oto-text` 6% on `--oto-bg` | **4.37:1** | 4.5 | ❌ |
+| ambient wash under tertiary text | dark | `--oto-text-subtle` | `--oto-text` 6% on `--oto-bg` | **4.84:1** | 4.5 | ✅ |
+
+⭐⭐ **THE LAST TWO ROWS ARE WHY THE CARVE-OUT EXISTS.** `--oto-text-subtle` is 4.90:1 on `--oto-bg`
+in light and **4.37:1** under a flat 6% wash — an AA failure, in one theme only, at the weight the
+wash was *supposed* to be safe at. Nothing in CI would have caught it: `contrast.test.ts` measures
+pairs and not composites, and the axe row that would see it is the one **UNWRITTEN** entry in §M.7.
+So the ambient wash does not rely on being faint. It relies on **geometry**: a second mask layer, a
+horizontal gradient transparent across a fixed centre column, intersected with the art, makes the
+ink incapable of entering the column the text is centred in — at every viewport width, with no media
+query and nothing to tune. Picking an opacity low enough to look safe is the alternative, and the
+row above is what it costs.
+
+#### The accessibility contract
+
+Decorative ink is exempt from WCAG 1.4.3 and 1.4.11 only for as long as it is genuinely decorative.
+That exemption is bought with four things, and they live in **one** place each so that no call site
+can take the ink without them:
+
+| Guarantee | Where |
+|---|---|
+| `aria-hidden` | `Ink.tsx` — no stylesheet can set it |
+| `pointer-events: none`, `user-select: none` | the `oto-ink` `@utility` |
+| `display: none` under `forced-colors: active` | the same `@utility` — **the one everybody misses.** The OS overrides the tint to a system colour at full strength, and a 6% wash becomes an opaque slab across the panel |
+| no animation | ADR 0028 / U9; `index.css.test.ts` already proves no motion escapes the reduced-motion sweep |
+
+**Every motif asset carries `preserveAspectRatio="none"`.** The SVG default is `xMidYMid meet`,
+which letterboxes the art inside the mask box — and the mask then goes *transparent* at the edges.
+That does not present as a scaling bug. It presents as the content having vanished, which is the
+hardest possible symptom to trace back to an attribute nobody set. `web/public/motifs/README.md`
+records this beside the files, and `ink.test.ts` fails on an asset without it.
+
+#### Motifs
+
+Each is chosen because its traditional meaning already matches the placement, not because it is
+decorative. **One motif per state, never both** — the moment a panel carries clouds *and* petals the
+distinction they exist to draw is gone.
+
+| Motif | Meaning | Spent on |
+|---|---|---|
+| ensō (the lockup) | the mark itself | `/login`, bleeding off two corners behind the form |
+| two-pass swipe | a brush entering and lifting | behind a page heading that is alone on its line |
+| tapered rule | one smooth pass | under a page heading that shares its row |
+| kumo (suyari-gumo) | cloud, stillness — nothing is wrong, and that is the point | a full-page empty state that is quiet |
+| sakura | *mono no aware*, transience | the `expired` empty state, **and nowhere else** |
+
+> **`sakura` is gated, and the gate is the point.** `expired` is the one state in the system whose
+> meaning is transience — §M.1 is explicit that it reads *"oto stopped hearing about this"*, never
+> *"resolved"* — and on screen it used to be indistinguishable from a filter that matched nothing.
+> A petal that appears on every empty panel stops meaning transience within a day.
+
+> **Kumo as a *group boundary* was explored and parked** — as a free-standing band between groups it
+> read as debris and could not cap the first group; as the group header's top border it was too loud
+> at `--oto-border-strong`/11 px and too faint once reduced. One rule survived both attempts and
+> holds whatever is tried next: **a drawn boundary must own its boundary** — the row above it gives
+> up its `border-bottom`, or the result is a hairline with a cloud stuck to it. See git-bug
+> `2a64686`; it is a taste decision, not a rules one, and nothing here forbids it.
 ---
 
 ## N. Amendment procedure

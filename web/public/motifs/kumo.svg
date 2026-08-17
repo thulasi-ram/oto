@@ -1,0 +1,13 @@
+<svg preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 80" width="200" height="80">
+  <title>oto -- kumo (suyari-gumo), the trailing mist band, for a quiet state</title>
+  <!-- Three bands, each scalloped along the top and flat along the bottom, each
+       ending further right than the last — the way suyari-gumo separates one
+       scene from the next in an emaki scroll. The flat bottom is what makes it
+       read as mist rather than as cloud: the `Z` on every band closes a straight
+       line back to where it started.
+       Nothing here carries a fact. It is a second channel beside the sentence
+       (U1), never a substitute for it. -->
+  <path fill="#000" d="M0 27 L0 21 C 5 13, 17 11, 25 17 C 33 7, 51 7, 59 17 C 69 9, 83 11, 89 19 C 97 13, 111 15, 117 23 C 125 21, 133 23, 137 27 Z"/>
+  <path fill="#000" d="M14 49 L14 43 C 20 34, 33 32, 41 39 C 50 29, 68 29, 77 39 C 88 31, 102 33, 108 41 C 118 35, 134 37, 142 44 C 152 41, 168 43, 176 47 C 182 48, 187 48, 190 49 Z"/>
+  <path fill="#000" d="M4 70 L4 65 C 10 57, 22 56, 29 62 C 37 54, 52 54, 59 62 C 68 57, 80 58, 85 65 C 92 63, 99 65, 102 70 Z"/>
+</svg>

@@ -1,0 +1,11 @@
+<svg preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 8" width="240" height="8">
+  <title>oto -- smooth tapered rule, for the underline of a page heading</title>
+  <!-- One pass, thickest left of centre, tapering to a point at both ends. It
+       occupies about two thirds of its 8-unit box; below that it stops reading
+       as a brush and starts reading as a `border-bottom`, which is the one thing
+       an underline here must not look like.
+       Deliberately NOT the swipe scaled down: a mask has no fixed aspect, and
+       stretching this thin rule to heading height reads as a wave rather than
+       as a stroke. That is why there are two assets. -->
+  <path fill="#000" d="M1 5.6 C 40 2.6, 130 0.9, 239 2.2 C 132 6.4, 42 7.4, 1 5.6 Z"/>
+</svg>
