@@ -106,14 +106,20 @@ afterEach(() => {
 
 describe("frames become invalidations", () => {
   const cases: readonly { kind: string; expects: readonly (readonly string[])[] }[] = [
-    { kind: "alert.upserted", expects: [["alerts"]] },
+    // `["notifications"]` rides along with the three frames that can mint or
+    // move an intent (ADR 0034). A SUPPRESSED intent leaves no delivery behind,
+    // so `delivery.updated` alone would never announce the rows the activity log
+    // exists for; the log absorbs the rate at the cache entry instead
+    // (`notificationActivityQuery`), not by being told about less.
+    { kind: "alert.upserted", expects: [["alerts"], ["notifications"]] },
     { kind: "occurrence.upserted", expects: [["alerts"], ["groups"]] },
     { kind: "group.upserted", expects: [["groups"]] },
-    { kind: "event.appended", expects: [["alerts"], ["groups"]] },
-    // `["alerts"]` alone: a delivery is read as part of an alert
-    // (`qk.alerts.notifications`), and the `["deliveries"]` prefix this used to
-    // invalidate as well owned no query at all.
-    { kind: "delivery.updated", expects: [["alerts"]] },
+    { kind: "event.appended", expects: [["alerts"], ["groups"], ["notifications"]] },
+    // `["alerts"]` because a delivery is read as part of an alert
+    // (`qk.alerts.notifications`); `["notifications"]` because a delivery moving
+    // is what changes an intent's status. The `["deliveries"]` prefix this used
+    // to invalidate as well owned no query at all.
+    { kind: "delivery.updated", expects: [["alerts"], ["notifications"]] },
     { kind: "source.health", expects: [["settings", "sources"]] },
   ];
 
@@ -154,7 +160,7 @@ describe("frames become invalidations", () => {
     // still does not throw.
     mounted = await mountLive();
     await mounted.push(sse(frame(4, "alert.upserted", { id: "an-alert-nobody-fetched" })));
-    expect(mounted.keys()).toEqual([["alerts"]]);
+    expect(mounted.keys()).toEqual([["alerts"], ["notifications"]]);
   });
 
   it("keeps working after an unreadable frame and an unknown kind in the same batch", async () => {

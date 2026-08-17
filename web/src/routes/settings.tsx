@@ -1,16 +1,21 @@
 /**
- * `/settings/:section` — sources, clusters, channels and policies.
+ * `/settings/:section` — sources, clusters, channels, tuning and tokens.
  *
  * The section is in the path rather than in component state so a settings screen
  * is linkable like everything else. "Look at the channel config" should be a URL.
+ *
+ * ⛔ NOTIFICATION POLICIES ARE NOT HERE ANY MORE (ADR 0034). They are a
+ * destination of their own at `/notifications/policies`, beside the activity log
+ * that records what they did. `/settings/policies` still resolves — see
+ * `MOVED` — because that URL was linkable for the whole life of the screen and a
+ * bookmark that lands on "That page does not exist." teaches an operator that
+ * oto loses things.
  */
 import { For, Match, Switch, type Component } from "solid-js";
-import { A, Navigate, useParams } from "@solidjs/router";
+import { Navigate, useParams } from "@solidjs/router";
 
-import { cn } from "~/lib/cn";
-import { SidebarPanel } from "~/components/SidebarSlot";
+import { SidebarPanel, SubNavLink } from "~/components/SidebarSlot";
 import { ChannelsSection } from "~/features/settings/ChannelsSection";
-import { PoliciesSection } from "~/features/settings/PoliciesSection";
 import { SourcesSection } from "~/features/settings/SourcesSection";
 import { TokensSection } from "~/features/settings/TokensSection";
 import { TuningSection } from "~/features/settings/TuningSection";
@@ -25,24 +30,39 @@ import { TuningSection } from "~/features/settings/TuningSection";
 const SECTIONS = [
   { id: "sources", label: "Sources and clusters" },
   { id: "channels", label: "Channels" },
-  { id: "policies", label: "Notification policies" },
   { id: "tuning", label: "Tuning" },
   { id: "tokens", label: "Access tokens" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
-function isSection(value: string): value is SectionId {
+/** `undefined` is the bare `/settings`, which the rail links to. */
+function isSection(value: string | undefined): value is SectionId {
   return SECTIONS.some((s) => s.id === value);
 }
 
+/**
+ * Sections that used to be here, and where they went.
+ *
+ * A redirect rather than a removal, and a table rather than an `if`: the next
+ * section that moves adds a line instead of a branch, and the reader can see at
+ * a glance which of yesterday's URLs still resolve.
+ */
+const MOVED: Readonly<Record<string, string>> = {
+  policies: "/notifications/policies",
+};
+
 const SettingsRoute: Component = () => {
-  const params = useParams<{ section: string }>();
+  const params = useParams<{ section?: string }>();
+  const moved = (): string | undefined =>
+    params.section === undefined ? undefined : MOVED[params.section];
 
   return (
     <Switch>
+      <Match when={moved()}>{(href) => <Navigate href={href()} />}</Match>
+      {/* Covers both the bare `/settings` the rail links to and a typo'd one. */}
       <Match when={!isSection(params.section)}>
-        <Navigate href="/settings/sources" />
+        <Navigate href={`/settings/${SECTIONS[0].id}`} />
       </Match>
       <Match when={true}>
         <>
@@ -50,37 +70,30 @@ const SettingsRoute: Component = () => {
             This used to be this route's OWN `w-64` rail, drawn beside its
             content. The shell now owns the one left rail on screen (§5 of the
             porting spec) — a second rail next to it is exactly what that
-            change removes — so the section list is handed to the shell's
-            contextual zone instead. `SidebarPanel` renders nothing where it
-            sits; the shell places it, and withdraws it automatically when this
-            route unmounts.
+            change removes — so the section list is handed to the shell instead,
+            which draws it INDENTED UNDER the "Settings" entry of the primary
+            nav. `SidebarPanel` renders nothing where it sits; the shell places
+            it, and withdraws it automatically when this route unmounts.
 
-            The links themselves are unchanged: real `<A>`s with the section in
-            the path, so deep links, ⌘-click and the back button all keep
-            working exactly as they did. The 2px accent rail is drawn at rest
-            too, in `border-transparent`, so selecting a section cannot shift
-            the row's text by two pixels.
+            No `<nav>` of its own: it lands inside the shell's own navigation
+            landmark, and a second one nested there would announce these links
+            twice. The links themselves are unchanged — real `<A>`s with the
+            section in the path, so deep links, ⌘-click and the back button all
+            keep working exactly as they did — and `SubNavLink` owns their
+            appearance, shared with `routes/notifications.tsx` so the two lists
+            that occupy these same pixels cannot drift apart.
           */}
           <SidebarPanel>
-            <nav aria-label="Settings sections" class="flex flex-col gap-2xs">
-              <For each={SECTIONS}>
-                {(section) => (
-                  <A
-                    href={`/settings/${section.id}`}
-                    aria-current={params.section === section.id ? "page" : undefined}
-                    class={cn(
-                      "flex h-9 shrink-0 items-center border-l-2 px-md text-item",
-                      "transition-colors duration-100",
-                      params.section === section.id
-                        ? "border-accent bg-raised font-medium text-ink"
-                        : "border-transparent text-ink-muted hover:bg-raised hover:text-ink",
-                    )}
-                  >
-                    {section.label}
-                  </A>
-                )}
-              </For>
-            </nav>
+            <For each={SECTIONS}>
+              {(section) => (
+                <SubNavLink
+                  href={`/settings/${section.id}`}
+                  current={params.section === section.id}
+                >
+                  {section.label}
+                </SubNavLink>
+              )}
+            </For>
           </SidebarPanel>
 
           {/*
@@ -104,9 +117,6 @@ const SettingsRoute: Component = () => {
                 </Match>
                 <Match when={params.section === "channels"}>
                   <ChannelsSection />
-                </Match>
-                <Match when={params.section === "policies"}>
-                  <PoliciesSection />
                 </Match>
                 <Match when={params.section === "tuning"}>
                   <TuningSection />

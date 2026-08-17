@@ -33,9 +33,12 @@
  * ever only about a second vertical plane competing with this one for width and
  * for the answer to "where am I". A toolbar is neither — it sits *inside* the
  * content column, spans exactly the table it filters, and cannot be mistaken for
- * a place to go. The contextual zone stays for what genuinely reads as
- * destinations, which is settings' section list; on `/alerts` it is now empty,
- * and the hairline below hides itself accordingly.
+ * a place to go. What a screen may still contribute to the rail is what genuinely
+ * reads as DESTINATIONS — settings' section list, and notifications' (ADR 0034).
+ * Those no longer sit in a zone of their own behind a hairline: ADR 0034 nests
+ * them inside the nav below, indented under the entry that owns them, so the rail
+ * is one list at two depths rather than two lists at one. `/alerts` contributes
+ * nothing and simply has no children under it.
  *
  * ⛔ THE `<header>` IS THE BRAND BLOCK, AND IT IS LOAD-BEARING FOR `App.test.tsx`.
  * That suite asserts shell survival by NODE IDENTITY — the same `<header>` and the
@@ -44,7 +47,14 @@
  * in document order, which is what putting it inside the rail buys.
  */
 import { A, useLocation } from "@solidjs/router";
-import { For, Show, createMemo, type JSX, type ParentComponent } from "solid-js";
+import {
+  For,
+  Show,
+  createMemo,
+  type Accessor,
+  type JSX,
+  type ParentComponent,
+} from "solid-js";
 
 import { describeConnection, useLive } from "~/api/live";
 import { createSidebarSlot, SidebarSlotProvider } from "~/components/SidebarSlot";
@@ -178,41 +188,84 @@ interface NavItem {
 const NAV: readonly NavItem[] = [
   { href: "/alerts", label: "Alerts", prefix: "/alerts" },
   { href: "/groups", label: "Groups", prefix: "/groups" },
-  { href: "/settings/sources", label: "Settings", prefix: "/settings" },
+  // ADR 0034. The BARE path, not `/notifications/policies` — the route redirects
+  // to its first section, and an href the location never exactly equals is what
+  // stops `<A>` from stamping its own `aria-current="page"` on a row whose child
+  // is the real answer (see `App.tsx`, and the ⛔ on `Nav` below).
+  { href: "/notifications", label: "Notifications", prefix: "/notifications" },
+  { href: "/settings", label: "Settings", prefix: "/settings" },
 ];
 
 /**
- * The three places the product has. Everything else a screen wants in the rail
- * goes in the contextual zone below, behind a hairline, so "where I can go" never
- * reads as "what I am filtering".
+ * The four places the product has, and — indented beneath whichever one you are
+ * in — the sections that place contributed.
+ *
+ * ⭐ THE SECTIONS ARE INSIDE THIS NAV, NOT IN A ZONE UNDER IT. They used to sit
+ * in a block of their own at the bottom of the rail behind a hairline, which
+ * left Policies / Activity log floating unattached below four peer destinations:
+ * nothing on screen said which of the four owned them, and they read as a second
+ * list that merely happened to change when you navigated. Nested under their
+ * parent, the containment *is* the layout, and the answer needs no hairline to
+ * explain it.
  *
  * The 2px accent rail is drawn AT REST TOO, in `border-transparent`. A rail that
  * only exists on the active row would push that row's text two pixels right on
- * selection — the whole rail would shiver on every navigation. This is the same
- * recipe the settings section list uses in its half of the zone, on purpose:
- * they stack vertically and would read as two different kinds of list otherwise.
+ * selection — the whole rail would shiver on every navigation. `SubNavLink` uses
+ * the identical recipe one indent in, on purpose: these interleave now, and two
+ * near-identical rows built two ways is exactly how a list starts to look wrong
+ * without anyone being able to say why.
+ *
+ * ⛔ AN EXPANDED PARENT DOES NOT TAKE `aria-current="page"` AND DOES NOT TAKE THE
+ * ACCENT. Its child does, and there is only one page. A parent claiming to be the
+ * current page while the row under it also claims it announces two destinations
+ * for one location; visually it would stack two accent rails, which is two
+ * answers to "where am I" (§0.6 spends saturation on one thing at a time). The
+ * parent still reads as where you are — `text-ink` and medium against three muted
+ * siblings — it just stops being the *precise* answer when a finer one exists.
  */
-const Nav = (): JSX.Element => {
+const Nav = (props: {
+  /**
+   * The screen's section list, still UNCALLED.
+   *
+   * ⛔ THE ACCESSOR IS PASSED, NEVER THE RENDERED ELEMENT. Two places below need
+   * to know whether sections exist — the parent row's styling and the `<Show>` —
+   * and handing in `panel()()` would mean *building* the list to answer the
+   * first question and building it again to answer the second. Asking whether
+   * the source is null is free; calling it is not.
+   */
+  readonly panel: Accessor<(() => JSX.Element) | null>;
+}): JSX.Element => {
   const location = useLocation();
   const active = (prefix: string): boolean => location.pathname.startsWith(prefix);
+  /** Active AND the screen handed us sections to draw under it. */
+  const expanded = (prefix: string): boolean => active(prefix) && props.panel() !== null;
 
   return (
     <nav aria-label="Primary" class="flex shrink-0 flex-col gap-2xs pb-sm">
       <For each={NAV}>
         {(item) => (
-          <A
-            href={item.href}
-            aria-current={active(item.prefix) ? "page" : undefined}
-            class={cn(
-              "flex h-9 shrink-0 items-center border-l-2 px-md text-item",
-              "transition-colors duration-100",
-              active(item.prefix)
-                ? "border-accent bg-raised font-medium text-ink"
-                : "border-transparent text-ink-muted hover:bg-raised hover:text-ink",
-            )}
-          >
-            {item.label}
-          </A>
+          <>
+            <A
+              href={item.href}
+              aria-current={active(item.prefix) && !expanded(item.prefix) ? "page" : undefined}
+              class={cn(
+                "flex h-9 shrink-0 items-center border-l-2 px-md text-item",
+                "transition-colors duration-100",
+                active(item.prefix)
+                  ? expanded(item.prefix)
+                    ? "border-transparent font-medium text-ink"
+                    : "border-accent bg-raised font-medium text-ink"
+                  : "border-transparent text-ink-muted hover:bg-raised hover:text-ink",
+              )}
+            >
+              {item.label}
+            </A>
+            {/* Only the matching destination renders them, so the list appears
+                exactly once however many entries `NAV` grows. */}
+            <Show when={expanded(item.prefix) && props.panel()}>
+              {(panel) => <div class="flex flex-col gap-2xs">{panel()()}</div>}
+            </Show>
+          </>
         )}
       </For>
     </nav>
@@ -257,8 +310,9 @@ export const AppShell: ParentComponent = (props) => {
         Skip to content
       </a>
 
-      {/* THE one rail. A screen that wants rail space uses the contextual zone
-          below; it never draws a second `<aside>` beside this one. */}
+      {/* THE one rail. A screen that wants rail space hands its sections to the
+          nav below through `<SidebarPanel>`; it never draws a second `<aside>`
+          beside this one. */}
       <aside class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-surface">
         {/* §2 puts the chrome band at `h-14`, and the brand keeps it so the rail's
             first row lines up with whatever the content column starts with. */}
@@ -292,27 +346,17 @@ export const AppShell: ParentComponent = (props) => {
           </A>
         </header>
 
-        <Nav />
+        {/* The nav scrolls, and it scrolls independently of the content column:
+            a screen with a tall section list must not be able to push the
+            connection badge off the bottom, and must not drag the table beside
+            it either. `flex-1` is unconditional so the footer stays pinned on a
+            screen that contributes no sections at all (`/alerts`).
 
-        {/* The contextual zone.
-
-            It is the only part of the rail that scrolls, and it scrolls
-            independently of the content column: a screen with a tall section
-            list must not be able to push the connection badge off the bottom,
-            and must not drag the table beside it either.
-
-            Since ADR 0033 exactly one screen fills it — settings, with its
-            section list. `/alerts` contributes nothing, which is the state the
-            wrapper below was already written for.
-
-            The wrapper is unconditional and always `flex-1` so the footer stays
-            pinned even on a screen that contributes nothing — the hairline is
-            what is conditional, because a separator with nothing under it is a
-            rule advertising an empty room. */}
+            The hairline that used to separate the sections from the nav is gone
+            with the zone it separated. A rule between a parent and its own
+            children would be arguing against the indent. */}
         <div class="min-h-0 flex-1 overflow-y-auto">
-          <Show when={slot.panel()}>
-            {(panel) => <div class="border-t border-line py-sm">{panel()()}</div>}
-          </Show>
+          <Nav panel={slot.panel} />
         </div>
 
         {/* The two standing facts, pinned to the bottom: whether what is on

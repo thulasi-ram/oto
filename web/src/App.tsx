@@ -40,6 +40,7 @@ const AlertsRoute = lazy(() => import("~/routes/alerts"));
 const AlertDetailRoute = lazy(() => import("~/routes/alert-detail"));
 const GroupsRoute = lazy(() => import("~/routes/groups"));
 const GroupDetailRoute = lazy(() => import("~/routes/group-detail"));
+const NotificationsRoute = lazy(() => import("~/routes/notifications"));
 const SettingsRoute = lazy(() => import("~/routes/settings"));
 const LoginRoute = lazy(() => import("~/routes/login"));
 const LinearIssuesRoute = lazy(() => import("~/routes/linear-issues"));
@@ -81,7 +82,7 @@ const Root: Component<{ readonly children?: JSX.Element }> = (props) => {
  *
  * ⛔ IT IS A LAYOUT ROUTE'S COMPONENT, AND NEVER A WRAPPER A SCREEN PUTS AROUND
  * ITSELF. `props.children` here is the router's outlet, so navigating between the
- * five screens below swaps only the outlet and leaves this subtree standing.
+ * six screens below swaps only the outlet and leaves this subtree standing.
  * Every route used to build its own `<Authenticated>` — five sibling route
  * components, five independent constructions of the same tree — and Solid does
  * not reconcile across siblings, so each nav click DISPOSED the shell and built a
@@ -128,14 +129,29 @@ export const routes = (): JSX.Element => (
     {/* Two entries read `/` and they do not compete: this one is a LEAF, so it
         matches `/` and nothing else, while the layout below carries children and
         is therefore matched partially — it contributes no branch of its own and
-        only ever prefixes the five paths inside it. */}
+        only ever prefixes the six paths inside it. */}
     <Route path="/" component={() => <Navigate href="/alerts" />} />
     <Route path="/" component={Authenticated}>
       <Route path="/alerts" component={AlertsRoute} />
       <Route path="/alerts/:id" component={AlertDetailRoute} />
       <Route path="/groups" component={GroupsRoute} />
       <Route path="/groups/:id" component={GroupDetailRoute} />
-      <Route path="/settings/:section" component={SettingsRoute} />
+      {/* Routing rules and the record of what they did (ADR 0034). `/settings`
+          still answers `/settings/policies` and redirects it here, so links
+          minted while policies lived there keep resolving.
+
+          ⛔ THE SECTION IS OPTIONAL, AND THE BARE PATH IS WHAT THE RAIL LINKS TO.
+          Not a tidiness preference: `<A>` sets `aria-current="page"` itself on an
+          EXACT href match, and `mergeProps` puts its own binding last, so a
+          destination whose href was `/notifications/policies` announced itself as
+          the current page while the section row beneath it announced the same
+          thing — two destinations for one location, and two accent rails stacked.
+          Pointing the rail at `/notifications` makes the parent's href something
+          the location never exactly equals, which hands the decision back to
+          `AppShell`, where the one-accent-mark rule is actually written down.
+          Each route redirects the bare path to its own first section. */}
+      <Route path="/notifications/:section?" component={NotificationsRoute} />
+      <Route path="/settings/:section?" component={SettingsRoute} />
     </Route>
     {/* Deliberately outside the authenticated layout: a static, mock-data-only
         visual reference with no real API calls, so it needs neither a session

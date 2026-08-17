@@ -44,11 +44,13 @@ import {
   listChannels,
   listClusters,
   listLabelNames,
+  listNotifications,
   listPolicies,
   listRuleSnapshots,
   listSources,
 } from "./endpoints";
-import type { AlertListQuery, RuleSnapshotQuery } from "./types";
+import { keepPrevious } from "~/lib/keysetFeed";
+import type { AlertListQuery, NotificationListQuery, RuleSnapshotQuery } from "./types";
 
 /**
  * The floor under everything the live stream owns, and the client's default.
@@ -198,6 +200,45 @@ function recentAlertsStaleTime(query: {
 }
 
 /**
+ * One page of the notification activity log.
+ *
+ * ⛔ IT IS A HISTORY FEED, AND IT IS PAGED, AND THOSE TWO FACTS SET ITS POLICY
+ * TOGETHER. Every frame that changes an alert can also mint a notification
+ * intent — a suppressed one leaves no delivery behind, so `delivery.updated`
+ * alone would never announce it — which is why `api/live.tsx` invalidates
+ * `["notifications"]` from the alert frames as well. That is the right *reach*
+ * and the wrong *rate*: a storm would then refetch page one under the reader
+ * once per frame, and the rows it is re-fetching are rows that have already
+ * happened.
+ *
+ * So the same shape `recentAlertsQuery` uses: the frame still marks the entry
+ * stale, and `"static"` is what solid-query's refetch pass honours, so a storm
+ * costs one request per quiet window rather than one per frame. Nothing an
+ * operator does on this screen turns on the log being right to the second — it
+ * is read to answer "was anybody told, and why not", about intents that are
+ * already in the past.
+ */
+export function notificationActivityQuery(query: NotificationListQuery) {
+  return {
+    queryKey: qk.notifications.list(query),
+    queryFn: ({ signal }: { signal: AbortSignal }) => listNotifications(query, { signal }),
+    staleTime: activityStaleTime,
+    placeholderData: keepPrevious,
+  };
+}
+
+/** How long the activity feed stays quiet, however loud the stream is. */
+export const ACTIVITY_QUIET_MS = 20_000;
+
+/** `"static"` for a quiet window after each answer; ordinary staleness after. */
+function activityStaleTime(query: {
+  readonly state: { readonly dataUpdatedAt: number };
+}): number | "static" {
+  const age = Date.now() - query.state.dataUpdatedAt;
+  return age < ACTIVITY_QUIET_MS ? "static" : DEFAULT_STALE_MS;
+}
+
+/**
  * One page of a rule's captured versions, for the drift panel's history.
  *
  * The `staleTime` is STATED here rather than inherited from the client default,
@@ -252,6 +293,12 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "alerts.snoozes": { by: "live" },
   "alerts.activeSnoozes": { by: "live" },
   "alerts.notifications": { by: "live" },
+
+  // The activity log. Reached by the three frames that can mint an intent —
+  // `alert.upserted`, `event.appended`, `delivery.updated` — and rate-limited
+  // at the entry rather than at the invalidation (`ACTIVITY_QUIET_MS`).
+  "notifications.all": { by: "live" },
+  "notifications.list": { by: "live" },
 
   "groups.all": { by: "live" },
   "groups.list": { by: "live" },

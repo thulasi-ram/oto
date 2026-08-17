@@ -31,6 +31,7 @@ import type {
   AlertRollupQuery,
   FailedBatchListQuery,
   GroupListQuery,
+  NotificationListQuery,
   RejectionListQuery,
   RuleSnapshotQuery,
   TimelineQuery,
@@ -101,6 +102,23 @@ export const qk = {
   },
   labels: {
     names: () => ["labels", "names"] as const,
+  },
+  notifications: {
+    all: () => ["notifications"] as const,
+    /**
+     * One page of the org-wide notification activity log.
+     *
+     * A root of its own rather than a segment under `["alerts"]`, because the
+     * feed is not an alert list read another way: a row here is an *intent oto
+     * formed*, including every one it suppressed, and the filter axes are the
+     * intent's own (which status, which reason, which suppression). Filing it
+     * under alerts would mean every `alert.upserted` in a storm invalidated the
+     * whole history feed as a side effect of a row moving.
+     *
+     * The query is in the key because the cursor is minted against the filter
+     * set server-side (§E.3) — two selections are two keysets, never one entry.
+     */
+    list: (query: NotificationListQuery) => ["notifications", "list", query] as const,
   },
   settings: {
     clusters: () => ["settings", "clusters"] as const,

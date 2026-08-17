@@ -16,12 +16,8 @@
  */
 import { For, Match, Show, Switch, type Component } from "solid-js";
 
-import type {
-  DeliverySummary,
-  Notification,
-  NotificationReason,
-  NotificationSuppressedReason,
-} from "~/api/types";
+import type { DeliverySummary, Notification } from "~/api/types";
+import { describeSuppression, REASON_LABEL } from "~/features/notifications/vocabulary";
 import { RelativeTime } from "~/components/Time";
 import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
@@ -29,65 +25,12 @@ import { cn } from "~/lib/cn";
 import { absoluteTime, shortId } from "~/lib/format";
 import { PANEL_BODY, PANEL_HEADER, PANEL_ROW } from "./rhythm";
 
-/**
- * Every reason a notification can be suppressed, in plain language.
- *
- * A suppressed notification is **recorded with a reason, never silently
- * dropped**, so every one of these has to be sayable.
+/*
+ * The words for a reason and for a suppression are NOT declared here any more.
+ * They live in `~/features/notifications/vocabulary`, because the org-wide
+ * activity log renders the same rows and a second copy of an enum-keyed map is
+ * how the first one lost `snoozed`. That module's header carries the argument.
  */
-const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, string> = {
-  no_policy: "no notification policy matched, so nobody was told",
-  // §B.8.2 ranks a snooze ahead of every automatic damper: it is a deliberate
-  // human act and therefore the most actionable explanation of a silence.
-  snoozed:
-    "a person asked oto to hold its notifications for this alert until a fixed time — the alert itself kept firing",
-  throttled: "the per-subject throttle was already spent",
-  storm: "the group was in storm mode — one message with a count was posted instead",
-  flapping: "this alert is damped as flapping, so updates are digested rather than sent one by one",
-  verbosity: "the channel's verbosity setting does not carry this kind of update",
-  channel_disabled: "every matching channel is disabled",
-  duplicate_render: "the message would have been byte-identical to the one already posted",
-};
-
-/**
- * A reason oto has never heard of renders as its raw wire value rather than as
- * nothing. The published enum is closed, so this only fires when the server is
- * ahead of the client — which gate G3 (`npm run generate:check`, in CI) exists
- * to make a build failure rather than a blank in the UI.
- */
-function describeSuppression(reason: string): string {
-  return SUPPRESSED_REASON[reason as NonNullable<NotificationSuppressedReason>] ?? reason;
-}
-
-/**
- * Every reason a notification carries, in plain language.
- *
- * ⛔ TYPED AGAINST `NotificationReason`, not `Record<string, string>`. The
- * suppression map above already learned this the hard way — it lost `snoozed`,
- * the compiler had nothing to check it against, and a wire token was rendered
- * where a sentence belongs. This map has the same job and now has the same
- * guarantee: a reason the server adds is a build failure here.
- */
-const REASON_LABEL: Record<NotificationReason, string> = {
-  fired: "started firing",
-  new_alerts: "new alerts joined",
-  some_resolved: "some resolved",
-  all_resolved: "all resolved",
-  repeat: "repeat",
-  suppressed: "suppressed upstream",
-  unsuppressed: "no longer suppressed",
-  expired: "expired",
-  refired: "fired again",
-  acked: "acknowledged",
-  unacked: "acknowledgement withdrawn",
-  enriched: "enrichment arrived",
-  rule_changed: "the rule changed",
-  comment: "a comment was added",
-  snoozed: "snoozed",
-  unsnoozed: "snooze ended",
-  unacked_reminder: "still firing and unacknowledged",
-  storm: "storm",
-};
 
 export interface DeliveryPanelProps {
   readonly notifications: readonly Notification[];
@@ -161,19 +104,26 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
                     {REASON_LABEL[n.reason] ?? n.reason}
                   </span>
                   <Chip title={`Notification status: ${n.status}`}>{n.status}</Chip>
-                  {/* Which policy matched. `null` means the policy has since
-                      been deleted, which is a different fact from "no policy
-                      matched" — that one shows as a suppression reason. */}
-                  <Chip
-                    mono={n.policy_id !== null && n.policy_id !== undefined}
-                    title={
-                      n.policy_id
-                        ? "The notification policy that matched this fact."
-                        : "The policy that matched has since been deleted, so oto can no longer name it."
-                    }
-                  >
-                    policy {n.policy_id ? shortId(n.policy_id) : "deleted"}
-                  </Chip>
+                  {/* ⛔ A NULL `policy_id` HAS TWO CAUSES AND THEY ARE NOT THE
+                      SAME FACT. A policy that matched and has since been
+                      deleted is "oto can no longer name what routed this";
+                      `no_policy` is "nothing routed it at all", and there was
+                      never a policy to name. This chip read "policy deleted"
+                      for both, inventing a deletion that never happened on the
+                      commonest row an org without policies has — the
+                      suppression sentence below already says it properly. */}
+                  <Show when={n.policy_id ?? (n.suppressed_reason !== "no_policy" ? "deleted" : null)}>
+                    <Chip
+                      mono={n.policy_id !== null && n.policy_id !== undefined}
+                      title={
+                        n.policy_id
+                          ? "The notification policy that matched this fact."
+                          : "The policy that matched has since been deleted, so oto can no longer name it."
+                      }
+                    >
+                      policy {n.policy_id ? shortId(n.policy_id) : "deleted"}
+                    </Chip>
+                  </Show>
                   <span class="ml-auto text-meta text-ink-subtle">
                     <RelativeTime value={n.created_at} label="Created" /> ago
                   </span>

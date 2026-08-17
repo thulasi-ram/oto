@@ -1,6 +1,14 @@
 /**
  * Notification policies — matchers → channels → reasons.
  *
+ * ⭐ THIS IS A DESTINATION NOW, NOT A SETTINGS SECTION (ADR 0034). It used to be
+ * the third of five bands under `/settings`, filed beside access tokens and the
+ * tuning knobs. Routing is not that kind of object: it is edited on the same
+ * question the alert list is read on ("did anyone hear about this, and if not,
+ * why not"), and it has a sibling — the activity log — that is pure operational
+ * reading and would have been absurd under a gear icon. Both now live under
+ * `/notifications`.
+ *
  * A policy decides **whether** and **where**, never how a message is rendered.
  * That separation is why the form has no formatting controls: rendering belongs
  * to the channel's renderer, and offering it here would imply a coupling that
@@ -53,6 +61,15 @@ import type {
 import { Button } from "~/components/ui/Button";
 import { Checkbox } from "~/components/ui/Checkbox";
 import {
+  Combobox,
+  ComboboxContent,
+  ComboboxControl,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxLabel,
+  ComboboxTrigger,
+} from "~/components/ui/Combobox";
+import {
   Modal,
   ModalContent,
   ModalDescription,
@@ -84,6 +101,13 @@ import { idempotencyKey } from "~/lib/format";
 import { formatMatchers, parseMatchers } from "~/lib/matchers";
 import { MatcherInput } from "~/features/alerts/MatcherInput";
 
+/*
+ * The form rhythm is `features/settings`', and the import path is the only thing
+ * left of this screen's old address. It is deliberately shared rather than
+ * copied: this dialog and the channel dialog sit two clicks apart and are the
+ * same object drawn twice, so a second set of gap constants here would be the
+ * exact drift `rhythm.ts` was written to end.
+ */
 import {
   CHECK_LABEL,
   CHECK_ROW,
@@ -96,7 +120,7 @@ import {
   PANEL_HEADER,
   ROW,
   SECTION,
-} from "./rhythm";
+} from "~/features/settings/rhythm";
 
 /**
  * Every fact a policy can choose to communicate — READ from the contract's own
@@ -206,6 +230,17 @@ const PolicyFormSchema = v.pipe(
   CreatePolicyRequestSchema, // the generated schema is the final gate
 );
 
+/**
+ * The same enum as `./vocabulary`'s `REASON_LABEL`, phrased differently on
+ * purpose — and the difference is not cosmetic.
+ *
+ * These label things a policy MAY BE TOLD ABOUT: they are read as the text of a
+ * toggle ("rule changed", pressed or not). `vocabulary.ts` labels the same enum
+ * as things that HAVE HAPPENED, read beside a timestamp ("the rule changed").
+ * One map cannot be right in both places, and if one had to be wrong it must not
+ * be this one — here the label is the entire explanation of what the control
+ * does. See that module's header for the full argument.
+ */
 const REASON_LABEL: Record<NotificationReason, string> = {
   fired: "started firing",
   new_alerts: "new alerts joined",
@@ -592,63 +627,15 @@ const PolicyDialog: Component<{
           </Show>
         </div>
 
-        {/* A `<legend>` labels one control group here, so it is a field label —
-            `LABEL` plus the `mb-xs` a legend cannot get from its fieldset's gap,
-            because a rendered legend sits outside that flow. */}
-        <fieldset>
-          <legend class={cn(LABEL, "mb-xs")}>Tell these channels</legend>
-          <Show
-            when={props.channels.length > 0}
-            fallback={<p class={HELP}>There are no channels yet, so this policy would have nowhere to send.</p>}
-          >
-            <div class="flex flex-col gap-xs">
-              <For each={props.channels}>
-                {(c) => {
-                  const inputId = (): string => `pol-channel-${c.id}`;
-                  // The cap is the contract's, and a box that cannot be ticked
-                  // says so before the save does. Already-ticked boxes stay
-                  // clickable, or the cap would be a trap you cannot back out of.
-                  const disabled = (): boolean =>
-                    !channelIds().includes(c.id) && channelIds().length >= CHANNELS_MAX;
-                  return (
-                    <div class={CHECK_ROW}>
-                      <Checkbox
-                        id={inputId()}
-                        checked={channelIds().includes(c.id)}
-                        disabled={disabled()}
-                        onChange={(next) => {
-                          setTouched(true);
-                          setChannelIds(
-                            next
-                              ? [...channelIds(), c.id]
-                              : channelIds().filter((id) => id !== c.id),
-                          );
-                        }}
-                      />
-                      <label
-                        for={`${inputId()}-input`}
-                        class={cn(CHECK_LABEL, disabled() && "cursor-not-allowed opacity-50")}
-                      >
-                        {c.name}
-                        <span class="ml-sm text-meta text-ink-subtle">
-                          {c.type} · {c.verbosity}
-                          {c.enabled ? "" : " · disabled"}
-                        </span>
-                      </label>
-                    </div>
-                  );
-                }}
-              </For>
-            </div>
-          </Show>
-          <Show when={localError("channel_ids") ?? violations().get("channel_ids")}>
-            {(msg) => (
-              <p class="mt-xs text-meta font-medium text-ink" role="alert">
-                {msg()}
-              </p>
-            )}
-          </Show>
-        </fieldset>
+        <ChannelPicker
+          channels={props.channels}
+          value={channelIds()}
+          onChange={(next) => {
+            setTouched(true);
+            setChannelIds(next);
+          }}
+          error={localError("channel_ids") ?? violations().get("channel_ids")}
+        />
 
         <div class={FIELD}>
           <ToggleGroup
@@ -705,6 +692,168 @@ const PolicyDialog: Component<{
         </ModalFooter>
       </ModalContent>
     </Modal>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+/* Where the policy sends                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * "Tell these channels", as a search box rather than a wall of checkboxes.
+ *
+ * ⭐ THE LIST IS AS LONG AS THE ORG DECIDES IT IS. A checkbox per channel is the
+ * right control while there are six of them and the wrong one at forty: the
+ * dialog grows a scroll region whose only navigation is the eye, and the fields
+ * under it — the facts, the dry run, the Save button — get pushed below the fold
+ * of a modal by data the operator does not control. A combobox is the same
+ * multiple selection with a filter in front of it: what is picked stays visible
+ * as chips at all times, and finding `#sre-alerts` costs three keystrokes rather
+ * than a scan.
+ *
+ * ⛔ THE SEARCH MATCHES THE TYPE AND THE VERBOSITY TOO, not just the name.
+ * `optionTextValue` is what Kobalte filters on, so building it out of the same
+ * three facts the row *shows* is what makes "slack" a query that works. Filtering
+ * on the name alone would render a row saying `#sre-alerts slack status_changes`
+ * and then refuse to find it by two of the three words on it.
+ *
+ * ⛔ THE CAP IS STATED, NOT ENFORCED BY DISABLING. The checkbox list could grey
+ * out the rows past `CHANNELS_MAX` because every row was on screen to be greyed;
+ * a picker you have to type into cannot tell you about a row you have not found
+ * yet. So the selection is accepted and the contract's own sentence — "At most N
+ * channels on one policy." — appears under the control with Save disabled behind
+ * it. The bound is discovered in the dialog either way, which is the property
+ * that matters (a 422 after Save is what this screen is named after).
+ */
+const ChannelPicker: Component<{
+  readonly channels: readonly Channel[];
+  readonly value: readonly string[];
+  readonly onChange: (next: readonly string[]) => void;
+  readonly error: string | undefined;
+}> = (props) => {
+  /**
+   * The chosen channels as the OBJECTS the picker offers, resolved out of
+   * `props.channels` rather than rebuilt.
+   *
+   * ⛔ IDENTITY IS THE WHOLE POINT OF DOING IT THIS WAY. Kobalte resyncs a
+   * controlled `value` against `options` by reference, so handing it freshly
+   * constructed rows — even structurally identical ones — puts a controlled
+   * multi-select into an `onChange` ⇄ recompute loop the moment something is
+   * picked. The dry-run picker below carries the same warning in longer form; it
+   * is the one bug this primitive reliably produces.
+   */
+  const selected = createMemo<Channel[]>(() => {
+    const chosen = new Set(props.value);
+    return props.channels.filter((c) => chosen.has(c.id));
+  });
+
+  /** A channel the operator can no longer name — deleted under an open dialog. */
+  const orphans = createMemo(() => {
+    const known = new Set(props.channels.map((c) => c.id));
+    return props.value.filter((id) => !known.has(id));
+  });
+
+  return (
+    <div class={FIELD}>
+      <Show
+        when={props.channels.length > 0}
+        fallback={
+          <>
+            <span class={LABEL}>Tell these channels</span>
+            <p class={HELP}>
+              There are no channels yet, so this policy would have nowhere to send.
+            </p>
+          </>
+        }
+      >
+        <Combobox<Channel>
+          multiple
+          options={[...props.channels]}
+          optionValue="id"
+          optionLabel="name"
+          optionTextValue={(c) => `${c.name} ${c.type} ${c.verbosity}`}
+          value={selected()}
+          // ⛔ THE ORPHANS ARE CARRIED THROUGH. The picker can only ever hand
+          // back channels it offers, so mapping its answer straight onto the
+          // form would delete a destination that merely could not be named —
+          // a silent edit nobody asked for, on the field that decides who hears.
+          onChange={(next) => props.onChange([...next.map((c) => c.id), ...orphans()])}
+          validationState={props.error === undefined ? "valid" : "invalid"}
+          itemComponent={(itemProps) => (
+            <ComboboxItem item={itemProps.item}>
+              {itemProps.item.rawValue.name}
+              <span class="ml-sm text-meta text-ink-subtle">
+                {itemProps.item.rawValue.type} · {itemProps.item.rawValue.verbosity}
+                {itemProps.item.rawValue.enabled ? "" : " · disabled"}
+              </span>
+            </ComboboxItem>
+          )}
+        >
+          <ComboboxLabel class="block">Tell these channels</ComboboxLabel>
+          <ComboboxControl<Channel>>
+            {(state) => (
+              <>
+                {/* What is already picked, never behind anything. A policy's
+                    destinations are the answer to "where does this go", and a
+                    control that only showed them once opened would hide it. */}
+                <For each={state.selectedOptions()}>
+                  {(c) => (
+                    <span class="inline-flex items-center gap-2xs rounded-chip border border-line bg-raised py-0.5 pl-1.5 pr-0.5 text-meta text-ink">
+                      {c.name}
+                      <button
+                        type="button"
+                        class="flex size-4 items-center justify-center rounded-chip text-ink-subtle hover:bg-surface hover:text-ink"
+                        aria-label={`Do not tell ${c.name}`}
+                        onClick={() => state.remove(c)}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          aria-hidden="true"
+                          class="size-3"
+                        >
+                          <path d="M18 6L6 18M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </span>
+                  )}
+                </For>
+                {/* The placeholder is on the input, which is where the caret
+                    goes; Kobalte's root-level `placeholder` is for the *value*
+                    surface a `Select` has and a combobox does not. */}
+                <ComboboxInput placeholder={state.selectedOptions().length > 0 ? "Add another…" : "Search channels…"} />
+                <ComboboxTrigger aria-label="Show every channel" />
+              </>
+            )}
+          </ComboboxControl>
+          <ComboboxContent />
+        </Combobox>
+      </Show>
+
+      {/* A channel deleted while this dialog was open is still on the policy and
+          must not vanish from it silently — the save would then quietly drop a
+          destination the operator never chose to drop. */}
+      <Show when={orphans().length > 0}>
+        <p class="text-meta leading-snug text-ink-muted">
+          {orphans().length === 1
+            ? "One channel on this policy no longer exists"
+            : `${orphans().length} channels on this policy no longer exist`}
+          . Saving keeps {orphans().length === 1 ? "it" : "them"} exactly as {orphans().length === 1 ? "it is" : "they are"}.
+        </p>
+      </Show>
+
+      <Show when={props.error}>
+        {(msg) => (
+          <p class="text-meta font-medium text-ink" role="alert">
+            {msg()}
+          </p>
+        )}
+      </Show>
+    </div>
   );
 };
 

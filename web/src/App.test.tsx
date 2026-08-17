@@ -137,6 +137,10 @@ function world(opts: { readonly snoozes?: readonly ActiveSnooze[] } = {}): World
 
     // `/groups`.
     "GET /api/v1/alert-groups": list([]),
+
+    // `/notifications/policies`.
+    "GET /api/v1/notification-policies": list([]),
+    "GET /api/v1/channels": list([]),
   });
 
   const json = globalThis.fetch as typeof fetch;
@@ -333,5 +337,69 @@ describe("the shell is a layout route, not five wrappers", () => {
     // session the operator has just revoked.
     expect(w.aborted(1)).toBe(true);
     expect(w.opened()).toBe(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A screen's sections belong to the destination above them, and the rail has to
+ * say so structurally rather than by being read top to bottom.
+ *
+ * ⛔ THE FAILURE THIS GUARDS IS INVISIBLE TO A SCREENSHOT DIFF. The sections used
+ * to render in a block of their own at the foot of the rail, under a hairline:
+ * every link was present, every link worked, and nothing on screen — or in the
+ * accessibility tree — said which of the four destinations owned them. They read
+ * as a second, peer-level list that happened to change when you navigated. So
+ * the assertions below are about CONTAINMENT and about which node claims to be
+ * the current page, neither of which a "the link is on screen" check can see.
+ */
+describe("a screen's sections hang under the destination that owns them", () => {
+  it("puts them inside the primary nav, under their parent", async () => {
+    const w = world();
+    mount("/notifications/policies");
+
+    const nav = (): HTMLElement | null => document.querySelector('nav[aria-label="Primary"]');
+    await until(() =>
+      expect(screen.getByRole("link", { name: "Activity log" })).toBeTruthy(),
+    );
+
+    // ⛔ INSIDE the one navigation landmark, not beside it. `contains` is the
+    // whole assertion: the old shape put these in a sibling `<nav>` further down
+    // the rail, which passes any check that merely finds the link.
+    for (const label of ["Policies", "Activity log"]) {
+      expect(
+        nav()?.contains(screen.getByRole("link", { name: label })),
+        `\`${label}\` is not inside the primary nav — it is a detached list again`,
+      ).toBe(true);
+    }
+
+    // And exactly one navigation landmark: the section list contributes no
+    // `<nav>` of its own, or a screen reader would announce these links twice —
+    // once as "Primary", once as whatever the nested region called itself.
+    expect(document.querySelectorAll("nav").length).toBe(1);
+
+    // ⛔ ONE PAGE, ONE `aria-current`. The parent is where you are; the child is
+    // the precise answer, and only the precise answer claims the attribute.
+    expect(screen.getByRole("link", { name: "Policies" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Notifications" })).not.toHaveAttribute(
+      "aria-current",
+    );
+    expect(w.opened()).toBe(1);
+  });
+
+  it("withdraws them when the screen that contributed them leaves", async () => {
+    world();
+    const history = mount("/notifications/policies");
+
+    await until(() => expect(screen.getByRole("link", { name: "Activity log" })).toBeTruthy());
+    await navigate(history, "/alerts", ALERTS);
+
+    // `/alerts` contributes nothing, so the rail is four destinations and no
+    // children — and "Notifications" gets its own accent mark back the moment it
+    // has no child to hand it to (asserted through `aria-current`, which is the
+    // same decision expressed where a test can see it).
+    expect(screen.queryByRole("link", { name: "Activity log" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Alerts" })).toHaveAttribute("aria-current", "page");
   });
 });

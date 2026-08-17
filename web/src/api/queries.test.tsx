@@ -53,7 +53,7 @@ import {
 import { FilterBar } from "~/features/alerts/FilterBar";
 import { DEFAULT_FILTERS } from "~/features/alerts/filters";
 import { SourcesSection } from "~/features/settings/SourcesSection";
-import { PoliciesSection } from "~/features/settings/PoliciesSection";
+import { PoliciesSection } from "~/features/notifications/PoliciesSection";
 import { alert, channel, cluster, policy, source, frame, sse } from "~/test/fixtures";
 import {
   flush,

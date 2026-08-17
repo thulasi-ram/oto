@@ -57,6 +57,12 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
     switch (frame.kind) {
       case "alert.upserted":
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
+        // An alert that moved is an alert oto may have just formed an intent
+        // about — including a SUPPRESSED one, which leaves no delivery behind
+        // and would therefore be announced by nothing else. The activity log
+        // absorbs the rate itself (`notificationActivityQuery`); reaching it is
+        // this file's half of the bargain.
+        void queryClient.invalidateQueries({ queryKey: qk.notifications.all() });
         break;
       case "occurrence.upserted":
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
@@ -69,15 +75,21 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
         // The timeline is the differentiator; it must never lag its own stream.
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
         void queryClient.invalidateQueries({ queryKey: qk.groups.all() });
+        void queryClient.invalidateQueries({ queryKey: qk.notifications.all() });
         break;
       case "delivery.updated":
-        // `["alerts"]` and nothing else, because that is where a delivery is
-        // read: the notification list on the alert detail screen is
+        // `["alerts"]` because that is where a delivery is read per alert: the
+        // notification list on the alert detail screen is
         // `qk.alerts.notifications(id)`, and `DeliveryPanel` renders what that
         // query already holds. There was a `["deliveries"]` invalidation here
         // and no query anywhere under that prefix — a line that named a
         // resource oto does not cache and updated nothing.
+        //
+        // `["notifications"]` because a delivery moving is exactly what changes
+        // an intent's status from `pending` to `delivered`, `partial` or
+        // `failed`, and that status is the activity log's headline.
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
+        void queryClient.invalidateQueries({ queryKey: qk.notifications.all() });
         break;
       case "source.health":
         void queryClient.invalidateQueries({ queryKey: qk.settings.sources() });

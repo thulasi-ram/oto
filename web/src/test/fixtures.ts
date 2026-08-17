@@ -14,6 +14,7 @@ import type {
   Channel,
   Cluster,
   DeliveryDrill,
+  Notification,
   Occurrence,
   OrgSettingsView,
   Policy,
@@ -174,6 +175,32 @@ export function policy(patch: Partial<Policy> = {}): Policy {
     matchers: [{ name: "severity", op: "=", value: "critical" }],
     reasons: ["fired", "all_resolved"],
     channel_ids: ["4f0a6c7d-5e8b-4f0a-1c2d-3e4f50617283"],
+    created_at: T0,
+    updated_at: T0,
+    ...patch,
+  };
+}
+
+/**
+ * One notification intent, as the activity log and the alert detail read it.
+ *
+ * It defaults to a DELIVERED one, because the interesting fixtures are the
+ * departures from it: `notification({ status: "suppressed", suppressed_reason:
+ * "no_policy" })` is the row this record exists for, and a builder that made the
+ * happy path the awkward one to write would get that backwards.
+ */
+export function notification(patch: Partial<Notification> = {}): Notification {
+  return {
+    id: "7c3d9f0a-8b1e-4c3d-4f50-617283940516",
+    subject_kind: "alert_group",
+    subject_id: "9d4e0a1b-9c2f-4d4e-5061-728394051627",
+    group_id: "9d4e0a1b-9c2f-4d4e-5061-728394051627",
+    alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
+    occurrence_id: null,
+    reason: "fired",
+    policy_id: "5a1b7d8e-6f9c-4a1b-2d3e-4f5061728394",
+    state_version: 1,
+    status: "delivered",
     created_at: T0,
     updated_at: T0,
     ...patch,

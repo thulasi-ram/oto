@@ -53,6 +53,7 @@ import type {
   ListEnvelope,
   Me,
   Notification,
+  NotificationListQuery,
   Occurrence,
   OrgSettingsView,
   Policy,
@@ -663,6 +664,26 @@ export function previewPolicy(body: PolicyPreviewRequest, c: Ctx = {}): Promise<
 /* -------------------------------------------------------------------------- */
 /* Deliveries, silences, enrichers, stats, identity                           */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Every notification intent oto has formed, newest first — the activity log.
+ *
+ * ⛔ SUPPRESSED INTENTS ARE IN THIS LIST, AND THAT IS WHY IT IS WORTH READING.
+ * oto records the decision *not* to send with the reason it was taken, so
+ * "nobody was told about this" is answerable from the product with `no_policy`
+ * or `throttled` beside it rather than being indistinguishable from "nothing
+ * happened" (§B.6). `listAlertNotifications` above answers the same question
+ * for one alert; this one answers it for the org.
+ */
+export function listNotifications(
+  query: NotificationListQuery,
+  c: Ctx = {},
+): Promise<ListEnvelope<Notification>> {
+  return getList<Notification>(`${V1}/notifications`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
 
 export function listDeliveries(
   query: QueryParams,

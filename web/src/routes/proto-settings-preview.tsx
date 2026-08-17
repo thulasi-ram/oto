@@ -50,7 +50,7 @@ import type {
 import { Button } from "~/components/ui/Button";
 import { setTheme, theme } from "~/design/theme";
 import { ChannelsSection } from "~/features/settings/ChannelsSection";
-import { PoliciesSection } from "~/features/settings/PoliciesSection";
+import { PoliciesSection } from "~/features/notifications/PoliciesSection";
 import { SourcesSection } from "~/features/settings/SourcesSection";
 import { TuningSection } from "~/features/settings/TuningSection";
 import { channel, cluster, orgSettings, policy, source } from "~/test/fixtures";

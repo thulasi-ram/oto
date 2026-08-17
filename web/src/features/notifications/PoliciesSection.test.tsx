@@ -224,9 +224,11 @@ describe("the policy editor's bounds", () => {
     await until(() => expect(save()).not.toBeDisabled());
 
     // `channel_ids` has `minItems: 1`: a policy with nowhere to send records
-    // every notification as suppressed, so the form will not build one.
-    const group = editor.getByRole("group", { name: "Tell these channels" });
-    fireEvent.click(within(group).getAllByRole("checkbox")[0] as HTMLElement);
+    // every notification as suppressed, so the form will not build one. The
+    // picker is a combobox now, so "untick" is "remove the chip" — and the chip
+    // is the reason the control can be a search box at all: what a policy sends
+    // to stays visible without opening anything.
+    fireEvent.click(editor.getByRole("button", { name: `Do not tell ${channel().name}` }));
     await until(() => expect(save()).toBeDisabled());
 
     fireEvent.click(save());
@@ -271,6 +273,105 @@ describe("the policy editor's bounds", () => {
     expect((sent as { priority: number }).priority).toBe(PRIORITY.max);
     // And the name is trimmed on the way out, not stored with its whitespace.
     expect((sent as { name: string }).name).toBe("critical → #sre");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Where the policy sends                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The picker is a combobox rather than a checkbox per channel, and the two
+ * properties that trade has to keep are asserted here rather than assumed:
+ * **what is already chosen is visible without opening anything**, and **typing
+ * narrows the list**. A search box that hid the current selection would be a
+ * worse control than the wall of checkboxes it replaced, however much shorter.
+ */
+describe("the channel picker", () => {
+  const OTHER = channel({
+    id: "6b2c8e9f-7a0d-4b2c-3e4f-506172839405",
+    name: "#platform-oncall",
+    type: "webhook",
+  });
+
+  function mountWithBoth(): void {
+    stubFetch({
+      "GET /api/v1/notification-policies": list([policy()]),
+      "GET /api/v1/channels": list([channel(), OTHER]),
+      "GET /api/v1/alerts": list([alert()]),
+      "GET /api/v1/labels": { json: { data: [], meta: { request_id: "r" } } },
+      [`PATCH ${EDIT_PATH}`]: () => ({ json: item(policy()) }),
+    });
+    renderScreen(() => <PoliciesSection />);
+  }
+
+  /**
+   * The search box inside the control.
+   *
+   * By ROLE and not by `getByLabelText`: Kobalte points the label at the control
+   * *and* at the input inside it, so the label alone matches two nodes — and the
+   * one a person types into is the `combobox`.
+   */
+  function search(editor: ReturnType<typeof within>): HTMLElement {
+    return editor.getByRole("combobox", { name: "Tell these channels" });
+  }
+
+  it("shows what the policy already sends to, without being opened", async () => {
+    mountWithBoth();
+    const editor = await openEditor();
+
+    // The seeded policy carries exactly one channel, and its chip is on screen
+    // with the listbox shut.
+    expect(editor.getByText(channel().name)).toBeTruthy();
+    expect(editor.queryByRole("listbox")).toBeNull();
+  });
+
+  it("narrows the list to what was typed", async () => {
+    mountWithBoth();
+    const editor = await openEditor();
+
+    fireEvent.input(search(editor), { target: { value: "platform" } });
+
+    // `ComboboxContent` portals (see `ui/Combobox.tsx`), so the options are
+    // found from `screen` rather than from the dialog element.
+    await until(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    expect(screen.getAllByRole("option")[0]?.textContent).toContain(OTHER.name);
+  });
+
+  it("searches the type as well as the name, because the row shows both", async () => {
+    mountWithBoth();
+    const editor = await openEditor();
+
+    // A row reads `#platform-oncall webhook status_changes`. Filtering on the
+    // name alone would render three words and find the option by only one.
+    fireEvent.input(search(editor), { target: { value: "webhook" } });
+    await until(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    expect(screen.getAllByRole("option")[0]?.textContent).toContain(OTHER.name);
+  });
+
+  it("adds the channel that was picked to the ones already there", async () => {
+    const net = stubFetch({
+      "GET /api/v1/notification-policies": list([policy()]),
+      "GET /api/v1/channels": list([channel(), OTHER]),
+      "GET /api/v1/alerts": list([alert()]),
+      "GET /api/v1/labels": { json: { data: [], meta: { request_id: "r" } } },
+      [`PATCH ${EDIT_PATH}`]: () => ({ json: item(policy()) }),
+    });
+    renderScreen(() => <PoliciesSection />);
+    const editor = await openEditor();
+
+    fireEvent.input(search(editor), { target: { value: "platform" } });
+    await until(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    fireEvent.click(screen.getAllByRole("option")[0]!);
+
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+    await until(() => expect(net.to(EDIT_PATH)).toHaveLength(1));
+
+    // ⛔ ADDED TO, NOT REPLACED. A multiple-selection control that handed back
+    // only the last click would quietly delete every other destination on the
+    // policy — the most expensive silent edit this form could make.
+    const sent = net.to(EDIT_PATH)[0]?.body as { channel_ids: readonly string[] };
+    expect([...sent.channel_ids].sort()).toEqual([channel().id, OTHER.id].sort());
   });
 });
 
