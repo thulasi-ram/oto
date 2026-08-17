@@ -33,11 +33,13 @@ import {
   TextFieldLabel,
   TextFieldTextArea,
 } from "~/components/ui/TextField";
+import { cn } from "~/lib/cn";
 import {
   validateField,
   type JsonValue,
   type SchemaField,
 } from "./jsonSchema";
+import { CHECK_LABEL, CHECK_ROW, FIELD, FORM, HELP } from "./rhythm";
 
 export interface SchemaFormProps {
   readonly fields: readonly SchemaField[];
@@ -51,11 +53,11 @@ export interface SchemaFormProps {
 }
 
 export const SchemaForm: Component<SchemaFormProps> = (props) => (
-  <div class="flex flex-col gap-3">
+  <div class={FORM}>
     <Show
       when={props.fields.length > 0}
       fallback={
-        <p class="text-body text-ink-muted">
+        <p class={HELP}>
           This provider declares no configuration. That is the schema's statement, not a loading
           state.
         </p>
@@ -116,19 +118,21 @@ const SchemaFieldControl: Component<{
 
   if (f().kind === "boolean") {
     return (
-      <div class="flex flex-col gap-1">
-        <div class="inline-flex items-center gap-1.5">
+      <div class={FIELD}>
+        {/* `gap-xs` is 6px, so the 14px box plus the gap puts the label's left
+            edge at exactly the 20px the help text below indents to. */}
+        <div class={CHECK_ROW}>
           <Checkbox
             id={props.id}
             checked={props.value === true}
             onChange={(next) => props.onChange(next)}
           />
-          <label for={`${props.id}-input`} class="cursor-pointer select-none text-item text-ink">
+          <label for={`${props.id}-input`} class={CHECK_LABEL}>
             <span class="font-medium">{f().title}</span>
           </label>
         </div>
         <Show when={hint()}>
-          <p class="pl-5 text-meta leading-snug text-ink-subtle">{hint()}</p>
+          <p class={cn("pl-5", HELP)}>{hint()}</p>
         </Show>
         <Show when={props.error}>
           <p class="pl-5 text-meta font-medium text-ink" role="alert">
@@ -146,7 +150,7 @@ const SchemaFieldControl: Component<{
     return (
       <Select
         id={props.id}
-        class="flex flex-col gap-1"
+        class={FIELD}
         options={options()}
         value={typeof props.value === "string" ? props.value : ""}
         onChange={(next) => props.onChange(next ?? "")}
@@ -168,7 +172,7 @@ const SchemaFieldControl: Component<{
         </SelectTrigger>
         <SelectContent />
         <Show when={hint()}>
-          <SelectDescription>{hint()}</SelectDescription>
+          <SelectDescription class={HELP}>{hint()}</SelectDescription>
         </Show>
         <SelectErrorMessage role="alert">
           <span
@@ -261,6 +265,7 @@ const SchemaFieldControl: Component<{
   return (
     <TextField
       id={props.id}
+      class={FIELD}
       value={rootValue()}
       onChange={rootOnChange}
       validationState={props.error ? "invalid" : "valid"}
@@ -306,7 +311,7 @@ const SchemaFieldControl: Component<{
           box would produce a config that passes here and fails the server —
           so it says what it does not understand and takes raw JSON. */}
       <Show when={f().kind === "unsupported"}>
-        <p class="text-meta leading-snug text-ink-muted">
+        <p class={HELP}>
           This form does not render {f().reason ?? "this shape"}, so it will not pretend to.
           Enter the value as JSON — the server validates it against the same schema either way.
         </p>
@@ -314,7 +319,7 @@ const SchemaFieldControl: Component<{
       </Show>
 
       <Show when={hint()}>
-        <TextFieldDescription>{hint()}</TextFieldDescription>
+        <TextFieldDescription class={HELP}>{hint()}</TextFieldDescription>
       </Show>
 
       <TextFieldErrorMessage role="alert">

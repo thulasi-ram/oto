@@ -27,6 +27,7 @@ import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { absoluteTime, shortId } from "~/lib/format";
+import { PANEL_BODY, PANEL_HEADER, PANEL_ROW } from "./rhythm";
 
 /**
  * Every reason a notification can be suppressed, in plain language.
@@ -97,14 +98,14 @@ export interface DeliveryPanelProps {
 
 export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
   <Panel>
-    <PanelHeader>
+    <PanelHeader class={PANEL_HEADER}>
       <PanelTitle>Who was told</PanelTitle>
     </PanelHeader>
 
     <Show when={props.summary}>
       {(s) => (
-        <div class="border-b border-line px-3 py-2">
-          <div class="flex flex-wrap items-center gap-1.5">
+        <div class={cn("border-b border-line", PANEL_BODY)}>
+          <div class="flex flex-wrap items-center gap-xs">
             <Stat label="sent" value={s().sent} />
             <Stat label="pending" value={s().pending} />
             <Stat label="skipped" value={s().skipped} />
@@ -120,7 +121,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
           {/* The headline case. Stated as a sentence, because a number alone
               does not communicate "nobody knows about this". */}
           <Show when={s().dead > 0}>
-            <p class="mt-2 rounded-control border border-line-strong border-l-[3px] border-l-ink bg-sunken px-2 py-1.5 text-body font-medium leading-snug text-ink">
+            <p class="mt-md rounded-control border border-line-strong border-l-2 border-l-ink bg-sunken px-md py-sm text-body font-medium leading-snug text-ink">
               {s().dead} {s().dead === 1 ? "delivery" : "deliveries"} gave up permanently. Nobody was
               told through {s().dead === 1 ? "that channel" : "those channels"}.
               {s().last_error_class ? ` Last error class: ${s().last_error_class}.` : ""}
@@ -128,7 +129,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
           </Show>
 
           <Show when={s().total === 0}>
-            <p class="mt-2 text-body leading-snug text-ink-muted">
+            <p class="mt-md text-body leading-snug text-ink-muted">
               No notification was even attempted for this alert. That usually means no policy
               matched it — which is worth knowing, because it is indistinguishable from silence.
             </p>
@@ -154,8 +155,8 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
         <ul>
           <For each={props.notifications}>
             {(n) => (
-              <li class="border-b border-line px-3 py-2 last:border-b-0">
-                <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <li class={cn("border-b border-line last:border-b-0", PANEL_ROW)}>
+                <div class="flex flex-wrap items-center gap-x-sm gap-y-2xs">
                   <span class="text-body font-medium text-ink">
                     {REASON_LABEL[n.reason] ?? n.reason}
                   </span>
@@ -183,7 +184,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
                     which is not the same as "never changed", so it is rendered
                     as an em dash rather than silently repeating the creation
                     time and making the two indistinguishable. */}
-                <p class="mt-0.5 text-meta text-ink-subtle">
+                <p class="mt-2xs text-meta text-ink-subtle">
                   last moved{" "}
                   <Show
                     when={n.updated_at}
@@ -199,7 +200,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
 
                 <Show when={n.suppressed_reason}>
                   {(reason) => (
-                    <p class="mt-0.5 text-meta leading-snug text-ink-muted">
+                    <p class="mt-2xs text-meta leading-snug text-ink-muted">
                       Not sent — {describeSuppression(reason())}. Recorded rather than dropped, so
                       the audit trail is complete.
                     </p>
@@ -208,7 +209,7 @@ export const DeliveryPanel: Component<DeliveryPanelProps> = (props) => (
 
                 <Show when={n.delivery_summary}>
                   {(s) => (
-                    <div class="mt-1 flex flex-wrap items-center gap-1">
+                    <div class="mt-sm flex flex-wrap items-center gap-2xs">
                       <Stat label="sent" value={s().sent} small />
                       <Show when={s().pending > 0}>
                         <Stat label="pending" value={s().pending} small />

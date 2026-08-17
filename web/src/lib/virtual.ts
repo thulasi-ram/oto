@@ -83,10 +83,20 @@ export function createVirtualiser(opts: VirtualOptions): Virtualiser {
   return { window, attach };
 }
 
-/** Read the current `--oto-row-h`, so JS and CSS can never disagree about it. */
+/**
+ * Read the current `--oto-row-h`, so JS and CSS can never disagree about it.
+ *
+ * The two fallbacks are for the cases where there is no computed style to read —
+ * no document at all, or a stylesheet that has not resolved — and they must
+ * track the COMFORTABLE step in `tokens.css` (§M.3 U6, 48 px since the density
+ * amendment). They are a last resort, not a second source of truth: every path
+ * that has a document reads the token.
+ */
+const ROW_H_FALLBACK = 48;
+
 export function readRowHeight(): number {
-  if (typeof globalThis.document === "undefined") return 36;
+  if (typeof globalThis.document === "undefined") return ROW_H_FALLBACK;
   const raw = getComputedStyle(document.documentElement).getPropertyValue("--oto-row-h");
   const n = Number.parseFloat(raw);
-  return Number.isFinite(n) && n > 0 ? n : 36;
+  return Number.isFinite(n) && n > 0 ? n : ROW_H_FALLBACK;
 }

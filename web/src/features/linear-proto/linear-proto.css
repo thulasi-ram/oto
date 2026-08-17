@@ -1,0 +1,139 @@
+/*
+ * linear-proto — scoped palette (SPEC.md §1).
+ *
+ * Sealed off from the oto design system *on the colour axis*: this file declares
+ * every colour the prototype uses as an `--lp-*` custom property under
+ * `.linear-proto`. Nothing here reads or writes an `--oto-*` COLOUR token, and
+ * nothing outside this directory should read an `--lp-*` one. Size is a
+ * different matter — the type and radius scales are oto's, shared not copied
+ * (SPEC.md §0), so `var(--oto-radius-*)` is the right answer below.
+ *
+ * Import once from the route that mounts the prototype:
+ *   import "~/features/linear-proto/linear-proto.css";
+ * and mount the tree inside an element carrying the `linear-proto` class.
+ */
+
+/*
+ * Var declarations are shared by two selectors.
+ *
+ * `.linear-proto` is the app shell. `.lp-portal` is for Kobalte overlay content,
+ * which `Portal`s to document.body — outside the shell — so the vars would
+ * otherwise resolve to nothing. It deliberately carries NO background of its
+ * own: this stylesheet is unlayered while Tailwind's utilities live in
+ * `@layer utilities`, so an unlayered `background` here would beat an overlay's
+ * `bg-[var(--lp-overlay)]` utility at equal specificity.
+ */
+.linear-proto,
+.lp-portal {
+  --lp-canvas: #0f0f11;
+  --lp-surface: #151619;
+  --lp-overlay: #1c1d21;
+  --lp-border: rgba(255, 255, 255, 0.08);
+  --lp-border-strong: #23252a;
+  --lp-text: #f7f8f8;
+  --lp-text-2: #8a8f98;
+  --lp-text-3: #62666d;
+  --lp-accent: #5e6ad2;
+  --lp-red: #f26522;
+  --lp-amber: #f5a623;
+  --lp-neutral: #62666d;
+  --lp-neutral-2: #8a8f98;
+
+  /*
+   * The one easing curve in the prototype. A long, flat tail (expo-out) so an
+   * overlay arrives rather than lands — the same curve for enters, exits and
+   * colour changes, because a UI with two easings has none.
+   */
+  --lp-ease: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.linear-proto {
+  background: var(--lp-canvas);
+  color: var(--lp-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-wrap: pretty;
+}
+
+/*
+ * There is no type scale here, on purpose (SPEC.md §0, §4).
+ *
+ * An earlier draft declared six `.lp-t-*` classes. They were duplication twice
+ * over: oto's own ladder is 10 / 11 / 12 / 13 / 14 / 18px — already the Linear
+ * ladder — and `scales.test.ts` bans a raw `font-size:` in any stylesheet that
+ * does not point at `var(--oto-type-*)`. Type comes from the oto utilities
+ * (`text-item`, `text-body`, `text-meta`, `text-micro`) plus the ordinary
+ * `font-*` / `uppercase` / `tracking-*` companions. Only colour is scoped here.
+ */
+
+/*
+ * Overlay motion (SPEC.md §5).
+ *
+ * Only the keyframes live here; the `animation` shorthand is applied from the
+ * component as `data-[expanded]:animate-[…]` so that `motion-reduce:animate-none`
+ * — a utility in the same Tailwind layer, sorted after it — can actually win.
+ * A rule declared here is unlayered and would out-rank that guard.
+ *
+ * Enter is 0.96, never 0: a popover that grows from nothing reads as a balloon,
+ * not as a surface that was already there. Paired with the `origin-[…]` the
+ * components set from Kobalte's transform-origin var, the scale runs *away from
+ * the trigger*, so the overlay looks like it unfolded out of the control that
+ * opened it.
+ */
+@keyframes lp-overlay-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes lp-overlay-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* Thin, quiet scrollbars — the list is the only thing that should have weight. */
+.linear-proto,
+.linear-proto *,
+.lp-portal,
+.lp-portal * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.linear-proto ::-webkit-scrollbar,
+.lp-portal ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.linear-proto ::-webkit-scrollbar-track,
+.lp-portal ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.linear-proto ::-webkit-scrollbar-thumb,
+.lp-portal ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: var(--oto-radius-control);
+}
+
+.linear-proto ::-webkit-scrollbar-thumb:hover,
+.lp-portal ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.linear-proto ::-webkit-scrollbar-corner,
+.lp-portal ::-webkit-scrollbar-corner {
+  background: transparent;
+}

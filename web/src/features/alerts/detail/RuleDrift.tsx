@@ -48,10 +48,18 @@ import type {
 } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
-import { Chip, DataRow, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
+import {
+  Chip,
+  DataRow,
+  Panel,
+  PanelHeader,
+  PanelTitle,
+  SECTION_LABEL,
+} from "~/components/ui/surfaces";
 import { EmptyState } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { absoluteTime, duration } from "~/lib/format";
+import { PANEL_BODY, PANEL_HEADER } from "./rhythm";
 
 /**
  * The cap on `RuleHistoryDTO.versions`. Reaching it does not mean the history
@@ -114,11 +122,11 @@ export const RuleDiff: Component<{
   return (
     <div
       class={cn(
-        "rounded-control border border-line-strong border-l-[3px] border-l-ink-muted bg-sunken",
+        "rounded-control border border-line-strong border-l-2 border-l-ink-muted bg-sunken",
         props.class,
       )}
     >
-      <div class="flex flex-wrap items-baseline gap-x-2 border-b border-line px-2.5 py-1.5">
+      <div class="flex flex-wrap items-baseline gap-x-sm gap-y-2xs border-b border-line px-md py-sm">
         <span class="text-body font-semibold text-ink">This rule changed</span>
         <span class="text-meta text-ink-subtle">
           previous version captured{" "}
@@ -126,7 +134,7 @@ export const RuleDiff: Component<{
         </span>
       </div>
 
-      <div class="space-y-2 px-2.5 py-2">
+      <div class="space-y-md px-md py-md">
         <Show when={nothing()}>
           <p class="text-meta text-ink-subtle">
             The fingerprint changed but no field oto compares differed — usually formatting.
@@ -277,10 +285,10 @@ const ExprVerdict: Component<{ readonly drift: ExprDrift }> = (props) => {
           label="numbers moved"
           note="Both versions are the same expression with different numbers in it, so oto can name the values that moved."
         >
-          <ul class="mt-1 space-y-0.5">
+          <ul class="mt-sm space-y-2xs">
             <For each={numbers()}>
               {(n) => (
-                <li class="flex items-baseline gap-2">
+                <li class="flex items-baseline gap-sm">
                   <span class="w-10 shrink-0 text-right font-mono text-micro text-ink-subtle">
                     #{n.index + 1}
                   </span>
@@ -297,7 +305,7 @@ const ExprVerdict: Component<{ readonly drift: ExprDrift }> = (props) => {
               )}
             </For>
           </ul>
-          <p class="mt-1 text-meta leading-snug text-ink-subtle">
+          <p class="mt-sm text-meta leading-snug text-ink-subtle">
             Numbered by position among the literals oto vouched for — durations, subquery steps and{" "}
             <code class="font-mono">offset</code> operands are not counted, and are never reported as
             thresholds.
@@ -340,8 +348,8 @@ const VerdictNote: ParentComponent<{
   readonly label: string;
   readonly note: string;
 }> = (props) => (
-  <div class="mt-1.5 border-l border-line pl-2">
-    <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+  <div class="mt-sm border-l border-line pl-sm">
+    <div class="flex flex-wrap items-baseline gap-x-sm gap-y-2xs">
       <Chip>oto: {props.label}</Chip>
       <p class="min-w-0 flex-1 text-meta leading-snug text-ink-subtle">{props.note}</p>
     </div>
@@ -364,7 +372,7 @@ const DiffBlock: Component<{
   readonly hint?: string | undefined;
 }> = (props) => (
   <div>
-    <div class="mb-0.5 flex items-baseline gap-2">
+    <div class="mb-2xs flex flex-wrap items-baseline gap-x-sm gap-y-2xs">
       <span class="text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
         {props.term}
       </span>
@@ -372,11 +380,11 @@ const DiffBlock: Component<{
         <span class="text-meta text-ink-subtle">{props.hint}</span>
       </Show>
     </div>
-    <div class="grid grid-cols-[2.6rem_minmax(0,1fr)] gap-x-2 gap-y-1">
+    <div class="grid grid-cols-[2.6rem_minmax(0,1fr)] gap-x-sm gap-y-2xs">
       <span class="pt-px text-right text-meta text-ink-subtle">was</span>
       <code
         class={cn(
-          "min-w-0 break-words rounded-chip bg-surface px-1.5 py-0.5 text-meta leading-snug text-ink-muted line-through decoration-ink-subtle/60",
+          "min-w-0 break-words rounded-chip bg-surface px-xs py-2xs text-meta leading-snug text-ink-muted line-through decoration-ink-subtle/60",
           props.mono === true ? "font-mono" : "",
         )}
       >
@@ -386,7 +394,7 @@ const DiffBlock: Component<{
       <span class="pt-px text-right text-meta font-semibold text-ink">now</span>
       <code
         class={cn(
-          "min-w-0 break-words rounded-chip border border-line-strong bg-surface px-1.5 py-0.5 text-meta font-medium leading-snug text-ink",
+          "min-w-0 break-words rounded-chip border border-line-strong bg-surface px-xs py-2xs text-meta font-medium leading-snug text-ink",
           props.mono === true ? "font-mono" : "",
         )}
       >
@@ -424,10 +432,10 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
 
   return (
     <Panel>
-      <PanelHeader>
+      <PanelHeader class={PANEL_HEADER}>
         <PanelTitle>Rule at fire time</PanelTitle>
         <Show when={props.history.versions.length > 0}>
-          <span class="text-meta text-ink-subtle">
+          <span class="shrink-0 text-meta text-ink-subtle">
             {props.history.versions.length} version
             {props.history.versions.length === 1 ? "" : "s"} captured
           </span>
@@ -463,14 +471,14 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
         }
       >
         {(rule) => (
-          <div class="space-y-3 p-3">
+          <div class={cn("space-y-md", PANEL_BODY)}>
             {/* The drift diff comes FIRST. If the rule moved, that is the
                 headline, not a footnote under the current definition. */}
             <Show when={props.history.change}>
               {(change) => <RuleDiff change={change()} />}
             </Show>
 
-            <dl class="space-y-1">
+            <dl class="space-y-2xs">
               <DataRow term="Rule">
                 <span class="font-mono text-body">{rule().rule_name}</span>
               </DataRow>
@@ -489,7 +497,7 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
               <DataRow term="for:">
                 <span class="font-mono text-body">{duration(rule().for_seconds)}</span>
                 <Show when={rule().keep_firing_for_seconds > 0}>
-                  <span class="ml-2 text-meta text-ink-subtle">
+                  <span class="ml-sm text-meta text-ink-subtle">
                     keep_firing_for {duration(rule().keep_firing_for_seconds)}
                   </span>
                 </Show>
@@ -502,10 +510,10 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
             </dl>
 
             <div>
-              <p class="mb-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
+              <p class="mb-sm text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
                 Expression
               </p>
-              <pre class="overflow-x-auto rounded-control border border-line bg-sunken px-2 py-1.5 font-mono text-meta leading-relaxed text-ink">
+              <pre class="overflow-x-auto rounded-control border border-line bg-sunken px-md py-sm font-mono text-meta leading-relaxed text-ink">
                 <code>{rule().expr === "" ? "(oto could not read this rule)" : rule().expr}</code>
               </pre>
             </div>
@@ -513,7 +521,7 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
             {/* Provenance. A snapshot that came from a generatorURL is a weaker
                 claim than one read from the rules API, and saying which is the
                 difference between evidence and a guess. */}
-            <div class="flex flex-wrap items-center gap-1.5">
+            <div class="flex flex-wrap items-center gap-xs">
               <Chip title={ORIGIN_NOTE[rule().origin] ?? ""}>origin: {rule().origin}</Chip>
               <Chip title={CONFIDENCE_NOTE[rule().match_confidence] ?? ""}>
                 match: {rule().match_confidence}
@@ -525,7 +533,7 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
                     href={url()}
                     target="_blank"
                     rel="noreferrer noopener"
-                    class="text-meta text-accent hover:underline"
+                    class="text-meta text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
                   >
                     Prometheus ↗
                   </a>
@@ -629,7 +637,12 @@ const VersionHistory: Component<{
 
   return (
     <details class="rounded-control border border-line">
-      <summary class="cursor-pointer list-none px-2 py-1.5 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted hover:bg-raised">
+      <summary
+        class={cn(
+          "cursor-pointer list-none px-md py-sm text-ink-muted hover:bg-raised",
+          SECTION_LABEL,
+        )}
+      >
         Version history ({all().length}
         {hasMore() ? "+" : ""})
       </summary>
@@ -638,11 +651,13 @@ const VersionHistory: Component<{
         {(v) => (
           <li
             class={cn(
-              "border-b border-line px-2 py-1.5 last:border-b-0",
-              v.id === props.currentId ? "bg-accent-fill" : "",
+              "border-b border-line px-md py-sm last:border-b-0",
+              // Neutral, not accented (§0.6). "The one bound to this occurrence"
+              // is chrome; the words in the row already say so.
+              v.id === props.currentId ? "border-l-2 border-l-ink-muted bg-sunken" : "",
             )}
           >
-            <div class="flex items-baseline gap-2">
+            <div class="flex flex-wrap items-baseline gap-x-sm gap-y-2xs">
               <span class="font-mono text-micro text-ink-subtle">
                 {v.rule_fingerprint.slice(0, 12)}
               </span>
@@ -656,7 +671,7 @@ const VersionHistory: Component<{
                 </span>
               </Show>
             </div>
-            <code class="mt-0.5 block truncate font-mono text-micro text-ink-muted" title={v.expr}>
+            <code class="mt-2xs block truncate font-mono text-micro text-ink-muted" title={v.expr}>
               {v.expr === "" ? "(unavailable)" : v.expr}
             </code>
           </li>
@@ -665,11 +680,11 @@ const VersionHistory: Component<{
       </ol>
 
       <Show when={hasMore()}>
-        <div class="border-t border-line px-2 py-1.5 text-center">
+        <div class="border-t border-line px-md py-md text-center">
           <Button size="sm" busy={page.isFetching} onClick={loadOlder}>
             Load older versions
           </Button>
-          <p class="mt-1 text-micro leading-snug text-ink-subtle">
+          <p class="mt-sm text-micro leading-snug text-ink-subtle">
             The alert's own response embeds at most {EMBEDDED_VERSION_CAP} captures. There are more,
             and they are reachable — this pages the full history with a keyset cursor.
           </p>

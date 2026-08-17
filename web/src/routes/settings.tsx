@@ -4,10 +4,11 @@
  * The section is in the path rather than in component state so a settings screen
  * is linkable like everything else. "Look at the channel config" should be a URL.
  */
-import { Match, Switch, type Component } from "solid-js";
+import { For, Match, Switch, type Component } from "solid-js";
 import { A, Navigate, useParams } from "@solidjs/router";
 
 import { cn } from "~/lib/cn";
+import { SidebarPanel } from "~/components/SidebarSlot";
 import { ChannelsSection } from "~/features/settings/ChannelsSection";
 import { PoliciesSection } from "~/features/settings/PoliciesSection";
 import { SourcesSection } from "~/features/settings/SourcesSection";
@@ -35,42 +36,76 @@ const SettingsRoute: Component = () => {
         <Navigate href="/settings/sources" />
       </Match>
       <Match when={true}>
-        <div class="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 overflow-auto p-4">
-          <nav
-            aria-label="Settings sections"
-            class="flex shrink-0 items-center gap-1 border-b border-line"
-          >
-            {SECTIONS.map((section) => (
-              <A
-                href={`/settings/${section.id}`}
-                aria-current={params.section === section.id ? "page" : undefined}
-                class={cn(
-                  "-mb-px border-b-2 px-2.5 py-1.5 text-item transition-colors duration-100",
-                  params.section === section.id
-                    ? "border-accent font-medium text-ink"
-                    : "border-transparent text-ink-muted hover:text-ink",
-                )}
-              >
-                {section.label}
-              </A>
-            ))}
-          </nav>
+        <>
+          {/*
+            This used to be this route's OWN `w-64` rail, drawn beside its
+            content. The shell now owns the one left rail on screen (§5 of the
+            porting spec) — a second rail next to it is exactly what that
+            change removes — so the section list is handed to the shell's
+            contextual zone instead. `SidebarPanel` renders nothing where it
+            sits; the shell places it, and withdraws it automatically when this
+            route unmounts.
 
-          <Switch>
-            <Match when={params.section === "sources"}>
-              <SourcesSection />
-            </Match>
-            <Match when={params.section === "channels"}>
-              <ChannelsSection />
-            </Match>
-            <Match when={params.section === "policies"}>
-              <PoliciesSection />
-            </Match>
-            <Match when={params.section === "tuning"}>
-              <TuningSection />
-            </Match>
-          </Switch>
-        </div>
+            The links themselves are unchanged: real `<A>`s with the section in
+            the path, so deep links, ⌘-click and the back button all keep
+            working exactly as they did. The 2px accent rail is drawn at rest
+            too, in `border-transparent`, so selecting a section cannot shift
+            the row's text by two pixels.
+          */}
+          <SidebarPanel>
+            <nav aria-label="Settings sections" class="flex flex-col gap-2xs">
+              <For each={SECTIONS}>
+                {(section) => (
+                  <A
+                    href={`/settings/${section.id}`}
+                    aria-current={params.section === section.id ? "page" : undefined}
+                    class={cn(
+                      "flex h-9 shrink-0 items-center border-l-2 px-md text-item",
+                      "transition-colors duration-100",
+                      params.section === section.id
+                        ? "border-accent bg-raised font-medium text-ink"
+                        : "border-transparent text-ink-muted hover:bg-raised hover:text-ink",
+                    )}
+                  >
+                    {section.label}
+                  </A>
+                )}
+              </For>
+            </nav>
+          </SidebarPanel>
+
+          {/*
+            Just the content column now — the rail that used to sit beside it
+            was this route's own. The measure is re-judged rather than carried
+            over: `max-w-3xl` (48rem), down from the recent `max-w-4xl` (56rem).
+            That cap was sized to sit beside a `w-64` (256px) rail this route
+            drew itself; with the rail gone the column now starts 256px further
+            left on screen, and holding 56rem here would let a form that is a
+            couple of fields and a save button run well past a comfortable
+            reading measure on a wide display. 48rem is still comfortably enough
+            for tuning's `17rem` label column plus a workable control beside it
+            — that pairing, not the rail that used to be next to it, is what
+            actually sizes this cap.
+          */}
+          <div class="min-h-0 w-full flex-1 overflow-auto">
+            <div class="flex w-full max-w-3xl flex-col gap-xl p-lg">
+              <Switch>
+                <Match when={params.section === "sources"}>
+                  <SourcesSection />
+                </Match>
+                <Match when={params.section === "channels"}>
+                  <ChannelsSection />
+                </Match>
+                <Match when={params.section === "policies"}>
+                  <PoliciesSection />
+                </Match>
+                <Match when={params.section === "tuning"}>
+                  <TuningSection />
+                </Match>
+              </Switch>
+            </div>
+          </div>
+        </>
       </Match>
     </Switch>
   );

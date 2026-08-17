@@ -62,6 +62,15 @@ const typeSteps = published("text");
 const radiusSteps = published("radius");
 
 /**
+ * The spacing step names — `2xs`, `sm`, `lg`, … — read out of `index.css` the
+ * same way, because they are also the list of width utilities this stylesheet
+ * has quietly broken. See the assertion at the foot of this file.
+ *
+ * Longest first, so the alternation cannot let `xs` claim the tail of `2xs`.
+ */
+const spacingSteps = [...published("spacing")].sort((a, b) => b.length - a.length);
+
+/**
  * The side and corner variants a radius utility composes with. `rounded-t-surface`
  * is the same decision as `rounded-surface`, and a rule that only knew the
  * unqualified form would miss both the legal use and the illegal one.
@@ -254,6 +263,29 @@ describe("the type and radius scales", () => {
           "§M.8 tabulates what each step is for beside its value; one of the two edits is unfinished.",
       ).toBe(value);
     }
+  });
+
+  it("rejects a width utility whose name a spacing step has shadowed", () => {
+    const shadowed = new RegExp(
+      String.raw`(?<![\w-])(max-w-(?:${spacingSteps.join("|")}))(?![\w-])`,
+      "g",
+    );
+    const offences: string[] = [];
+    for (const [file, text] of corpus) {
+      for (const m of text.matchAll(shadowed)) offences.push(`${file}: ${m[1] ?? m[0]}`);
+    }
+    expect(
+      offences,
+      "in Tailwind v4 a NAMED width key is resolved against the SPACING namespace before the " +
+        "container namespace, and `index.css` publishes spacing steps called 2xs, xs, sm, md, lg " +
+        "and xl. So `max-w-sm` does not mean 24rem here — it compiles to `max-width: " +
+        "var(--oto-space-sm)`, 8px, and `max-w-lg` to 16px. Nothing warns: the class exists, it " +
+        "is spelled correctly, and it renders a dialog as a sliver. State the width as a NUMERIC " +
+        "multiple instead, which has no name for a spacing step to collide with — max-w-80 for " +
+        "the old xs, 96 for sm, 112 for md, 128 for lg, 144 for xl. Renaming the spacing steps is " +
+        "not the fix: `px-md`/`gap-lg` are the product's spacing vocabulary and §M.8 tabulates " +
+        "them under exactly these names.",
+    ).toEqual([]);
   });
 
   it("keeps every step it declares in use, so the scale cannot outgrow the product", () => {

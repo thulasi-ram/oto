@@ -40,7 +40,10 @@ export const EmptyState: Component<EmptyStateProps> = (props) => (
     <Chime size="glyph" class="text-line-strong" />
     <p class="text-title font-medium text-ink">{props.title}</p>
     <Show when={props.body}>
-      <p class="max-w-sm text-body leading-relaxed text-ink-muted">{props.body}</p>
+      {/* `max-w-96` (24rem) is the measure this sentence has always wanted; the
+          named `max-w-sm` resolves against the spacing namespace and compiles
+          to 8px — see the ⛔ block in `Modal.tsx`. */}
+      <p class="max-w-96 text-body leading-relaxed text-ink-muted">{props.body}</p>
     </Show>
     <Show when={props.action}>
       <div class="mt-1">{props.action}</div>
@@ -76,7 +79,7 @@ export const TableSkeleton: Component<{ readonly rows?: number; readonly cols?: 
     <For each={Array.from({ length: props.rows ?? 12 })}>
       {() => (
         <div
-          class="flex items-center gap-4 border-b border-line px-3"
+          class="flex items-center gap-md border-b border-line px-3"
           style={{ height: "var(--oto-row-h)" }}
         >
           <For each={Array.from({ length: props.cols ?? 5 })}>
@@ -145,9 +148,11 @@ export const ErrorState: Component<ErrorStateProps> = (props) => {
       role="alert"
     >
       <p class="text-title font-semibold text-ink">{title()}</p>
-      <p class="max-w-md text-body leading-relaxed text-ink-muted">{body()}</p>
+      {/* `max-w-112` (28rem), not `max-w-md`: a named width key resolves against
+          the spacing namespace first, so `max-w-md` compiles to 12px. */}
+      <p class="max-w-112 text-body leading-relaxed text-ink-muted">{body()}</p>
       <Show when={api()?.violations.length}>
-        <ul class="mt-1 max-w-md space-y-0.5 text-left text-body text-ink-muted">
+        <ul class="mt-1 max-w-112 space-y-0.5 text-left text-body text-ink-muted">
           <For each={api()?.violations}>
             {(v) => (
               <li>

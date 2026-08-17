@@ -67,6 +67,19 @@ import { idempotencyKey } from "~/lib/format";
 
 import { DrillPanel } from "./DrillPanel";
 import { RejectionsPanel } from "./RejectionsPanel";
+import {
+  CHECK_LABEL,
+  CHECK_ROW,
+  FIELD,
+  FIELD_ROW,
+  FORM,
+  HELP,
+  PANEL_BODY,
+  PANEL_HEADER,
+  ROW,
+  ROW_SINGLE,
+  SECTION,
+} from "./rhythm";
 
 /**
  * Tier A: an upstream's health is not an alert's state (§M.2).
@@ -202,9 +215,9 @@ export const SourcesSection: Component = () => {
   const clusters = useQuery(() => clustersQuery());
 
   return (
-    <div class="flex flex-col gap-4">
+    <div class={SECTION}>
       <Panel>
-        <PanelHeader>
+        <PanelHeader class={PANEL_HEADER}>
           <PanelTitle>Sources</PanelTitle>
           <Button
             size="sm"
@@ -275,8 +288,8 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
   }));
 
   return (
-    <li class="border-b border-line px-3 py-2.5 last:border-b-0">
-      <div class="flex flex-wrap items-center gap-2">
+    <li class={cn(ROW, "flex flex-col gap-sm")}>
+      <div class="flex min-h-8 flex-wrap items-center gap-sm">
         <span class="text-item font-medium text-ink">{s().name}</span>
         <Chip>{s().kind}</Chip>
         <Show when={s().cluster_key}>{(key) => <Chip mono>{key()}</Chip>}</Show>
@@ -312,28 +325,28 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
           every {s().reconcile_interval_seconds}s
         </span>
 
-        <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-sm">
           <Button size="sm" busy={test.isPending} onClick={() => test.mutate()}>
             Test
           </Button>
-          <div class="flex items-center gap-1.5">
+          <div class={CHECK_ROW}>
             <Checkbox
               id={`source-${s().id}-push`}
               checked={s().push_enabled}
               onChange={(next) => toggle.mutate(next)}
             />
-            <label for={`source-${s().id}-push-input`} class="cursor-pointer select-none text-meta text-ink">
+            <label for={`source-${s().id}-push-input`} class={CHECK_LABEL}>
               accept webhooks
             </label>
           </div>
         </div>
       </div>
 
-      <p class="mt-0.5 break-all font-mono text-meta text-ink-subtle">{s().base_url}</p>
+      <p class="break-all font-mono text-meta text-ink-subtle">{s().base_url}</p>
 
       <Show when={s().health?.last_error}>
         {(err) => (
-          <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
+          <p class="border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink">
             {err()}
           </p>
         )}
@@ -343,7 +356,7 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
         {(result) => (
           <p
             class={cn(
-              "mt-1 rounded-control border px-2 py-1 text-meta leading-snug",
+              "rounded-control border px-sm py-xs text-meta leading-snug",
               result().ok
                 ? "border-line bg-sunken text-ink-muted"
                 : "border-line-strong bg-raised font-medium text-ink",
@@ -378,7 +391,7 @@ const SourceRow: Component<{ readonly source: Source }> = (props) => {
       <RejectionsPanel sourceID={s().id} />
 
       <Show when={test.error !== null}>
-        <ErrorBanner error={test.error} class="mt-1" />
+        <ErrorBanner error={test.error} />
       </Show>
     </li>
   );
@@ -407,7 +420,7 @@ const ClustersPanel: Component = () => {
 
   return (
     <Panel>
-      <PanelHeader>
+      <PanelHeader class={PANEL_HEADER}>
         <PanelTitle>Clusters</PanelTitle>
         <span class="text-meta text-ink-subtle">
           a cluster is an identity and failure domain, not a label
@@ -418,7 +431,7 @@ const ClustersPanel: Component = () => {
         <ul>
           <For each={clusters.data?.data ?? []}>
             {(c) => (
-              <li class="flex items-center gap-2 border-b border-line px-3 py-2 last:border-b-0">
+              <li class={ROW_SINGLE}>
                 <span class="text-item text-ink">{c.display_name}</span>
                 <Chip mono title="Immutable — it participates in every alert key in this cluster.">
                   {c.cluster_key}
@@ -434,16 +447,29 @@ const ClustersPanel: Component = () => {
         </ul>
       </Show>
 
-      <div class="flex flex-wrap items-end gap-2 border-t border-line bg-raised px-3 py-2">
-        <div class="min-w-[10rem] flex-1">
+      {/*
+        ⛔ THE TWO FIELDS ARE STARTED, NOT ENDED, AND THE BUTTON IS ON ITS OWN
+        LINE. This bar used to be one `items-end` row: "Cluster key" carries a
+        two-line description and "Display name" carries none, so ending the row
+        aligned their *bottoms* — which put the key's label 39px above the
+        name's and its input 39px above the name's input, two staggered controls
+        reading as one line. `FIELD_ROW` starts them, so both labels share a
+        baseline and both inputs share the next one however much help hangs
+        below either. A trailing `Button` can only ride that line when every
+        field beside it is the same height, which these two are not, so it takes
+        the following line at the form's own left edge instead.
+      */}
+      <div class={cn(FORM, "border-t border-line bg-raised", PANEL_BODY)}>
+        <div class={FIELD_ROW}>
           <TextField
+            class={cn(FIELD, "min-w-[10rem] flex-1")}
             value={key()}
             validationState={violations().get("cluster_key") ? "invalid" : "valid"}
             onChange={setKey}
           >
             <TextFieldLabel>Cluster key</TextFieldLabel>
             <TextFieldInput id="cluster-key" class="font-mono" placeholder="prod-eu" />
-            <TextFieldDescription>
+            <TextFieldDescription class={HELP}>
               Immutable. It participates in alert identity, so changing it later would re-key every
               alert.
             </TextFieldDescription>
@@ -451,9 +477,8 @@ const ClustersPanel: Component = () => {
               {violations().get("cluster_key")}
             </TextFieldErrorMessage>
           </TextField>
-        </div>
-        <div class="min-w-[10rem] flex-1">
           <TextField
+            class={cn(FIELD, "min-w-[10rem] flex-1")}
             value={name()}
             validationState={violations().get("display_name") ? "invalid" : "valid"}
             onChange={setName}
@@ -466,6 +491,7 @@ const ClustersPanel: Component = () => {
           </TextField>
         </div>
         <Button
+          class="self-start"
           size="default"
           busy={create.isPending}
           disabled={key().trim() === "" || name().trim() === ""}
@@ -543,12 +569,13 @@ const CreateSourceDialog: Component<{
           </ModalDescription>
         </ModalHeader>
 
-        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+        <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
           <Show when={create.error !== null}>
             <ErrorBanner error={create.error} />
           </Show>
 
           <TextField
+            class={FIELD}
             value={name()}
             required
             validationState={(localError("name") ?? violations().get("name")) ? "invalid" : "valid"}
@@ -568,6 +595,7 @@ const CreateSourceDialog: Component<{
           </TextField>
 
           <Select
+            class={FIELD}
             options={[...props.clusters]}
             optionValue="id"
             optionTextValue="display_name"
@@ -602,6 +630,7 @@ const CreateSourceDialog: Component<{
           </Select>
 
           <Select
+            class={FIELD}
             options={SourceKindSchema.options}
             optionTextValue={(option) => KIND_LABEL[option]}
             required
@@ -628,6 +657,7 @@ const CreateSourceDialog: Component<{
           </Select>
 
           <TextField
+            class={FIELD}
             value={baseUrl()}
             required
             validationState={
@@ -647,7 +677,7 @@ const CreateSourceDialog: Component<{
               class="font-mono"
               placeholder="https://alertmanager.example.com"
             />
-            <TextFieldDescription>
+            <TextFieldDescription class={HELP}>
               Absolute, no trailing slash. All replicas of an HA pair must be registered against the
               same cluster — they are the same failure domain, and their duplicate webhooks are
               deduplicated by design.
@@ -658,6 +688,7 @@ const CreateSourceDialog: Component<{
           </TextField>
 
           <TextField
+            class={FIELD}
             value={promUrl()}
             validationState={violations().get("prometheus_url") ? "invalid" : "valid"}
             onChange={setPromUrl}
@@ -668,7 +699,7 @@ const CreateSourceDialog: Component<{
               class="font-mono"
               placeholder="https://prometheus.example.com"
             />
-            <TextFieldDescription>
+            <TextFieldDescription class={HELP}>
               Lets oto read the rules API, which is what makes a rule snapshot authoritative rather
               than reconstructed from a generatorURL.
             </TextFieldDescription>
@@ -725,11 +756,11 @@ const TokenDialog: Component<{
         </ModalDescription>
       </ModalHeader>
 
-      <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+      <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
         <Show when={props.created}>
           {(created) => (
             <>
-              <div class="rounded-control border border-line-strong bg-sunken px-2 py-2">
+              <div class="rounded-control border border-line-strong bg-sunken px-sm py-sm">
                 <code class="block break-all font-mono text-body text-ink">
                   {created().ingest_token}
                 </code>
@@ -740,7 +771,7 @@ const TokenDialog: Component<{
               >
                 Copy token
               </Button>
-              <p class="text-body leading-relaxed text-ink-muted">
+              <p class={cn(HELP, "leading-relaxed")}>
                 Point your Alertmanager's webhook receiver at oto's ingest URL for this source and send
                 this token as its bearer credential.
               </p>

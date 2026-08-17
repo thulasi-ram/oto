@@ -10,18 +10,50 @@
  * this never says "live" unless frames are arriving; and a calm list is only
  * evidence of calm when oto can still see every source and is not holding its
  * tongue, which is what the two banners below `ResyncBanner` are for. All three
- * ride in the header so they reach every route, not just the settings screen
+ * ride in the shell so they reach every route, not just the settings screen
  * nobody is on when it matters.
+ *
+ * # There is ONE NAVIGATION chrome, and it is the left rail (PORTING-SPEC §5,
+ * # as amended by ADR 0033)
+ *
+ * The shell used to draw a top bar *and* leave the screens below to grow rails of
+ * their own — settings had one, the alert list was growing one. Two chromes doing
+ * one job was the most visible seam in the port: "where I can go" and "what I am
+ * filtering" sat in different planes, and the second rail stole the width the
+ * first one had already spent.
+ *
+ * So the bar is retired rather than joined. The rail holds, top to bottom: the
+ * brand, the destinations, whatever the current screen contributes, and the two
+ * standing facts (connection, identity). The aggregated banner strip moves to the
+ * top of the content column, where the thing it qualifies actually is.
+ *
+ * ⭐ WHAT §5 ACTUALLY FORBIDS IS A SECOND *RAIL*, NOT A CONTROL IN THE COLUMN.
+ * ADR 0033 moves the alert screen's filters out of the contextual zone and into a
+ * toolbar above the table. That does not reopen the seam §5 closed: the rule was
+ * ever only about a second vertical plane competing with this one for width and
+ * for the answer to "where am I". A toolbar is neither — it sits *inside* the
+ * content column, spans exactly the table it filters, and cannot be mistaken for
+ * a place to go. The contextual zone stays for what genuinely reads as
+ * destinations, which is settings' section list; on `/alerts` it is now empty,
+ * and the hairline below hides itself accordingly.
+ *
+ * ⛔ THE `<header>` IS THE BRAND BLOCK, AND IT IS LOAD-BEARING FOR `App.test.tsx`.
+ * That suite asserts shell survival by NODE IDENTITY — the same `<header>` and the
+ * same `<main>` before and after a navigation — and screens draw `<header>`s of
+ * their own (`routes/alerts.tsx` has one). The shell's must therefore precede them
+ * in document order, which is what putting it inside the rail buys.
  */
 import { A, useLocation } from "@solidjs/router";
-import { Show, createMemo, type JSX, type ParentComponent } from "solid-js";
+import { For, Show, createMemo, type JSX, type ParentComponent } from "solid-js";
 
 import { describeConnection, useLive } from "~/api/live";
+import { createSidebarSlot, SidebarSlotProvider } from "~/components/SidebarSlot";
 import { Countdown } from "~/components/Time";
-import { Chime } from "~/components/ui/Chime";
 import { Button } from "~/components/ui/Button";
 import { ShellBanner, SnoozeBanner, SourceReachBanner } from "~/components/ui/ShellBanner";
 import { UserMenu } from "~/components/UserMenu";
+import { IconMark } from "~/components/IconMark";
+import { Wordmark } from "~/components/Wordmark";
 import { cn } from "~/lib/cn";
 
 /* -------------------------------------------------------------------------- */
@@ -146,29 +178,43 @@ interface NavItem {
 const NAV: readonly NavItem[] = [
   { href: "/alerts", label: "Alerts", prefix: "/alerts" },
   { href: "/groups", label: "Groups", prefix: "/groups" },
-  { href: "/settings/sources", label: "Admin Settings", prefix: "/settings" },
+  { href: "/settings/sources", label: "Settings", prefix: "/settings" },
 ];
 
+/**
+ * The three places the product has. Everything else a screen wants in the rail
+ * goes in the contextual zone below, behind a hairline, so "where I can go" never
+ * reads as "what I am filtering".
+ *
+ * The 2px accent rail is drawn AT REST TOO, in `border-transparent`. A rail that
+ * only exists on the active row would push that row's text two pixels right on
+ * selection — the whole rail would shiver on every navigation. This is the same
+ * recipe the settings section list uses in its half of the zone, on purpose:
+ * they stack vertically and would read as two different kinds of list otherwise.
+ */
 const Nav = (): JSX.Element => {
   const location = useLocation();
   const active = (prefix: string): boolean => location.pathname.startsWith(prefix);
 
   return (
-    <nav aria-label="Primary" class="flex items-center gap-0.5">
-      {NAV.map((item) => (
-        <A
-          href={item.href}
-          aria-current={active(item.prefix) ? "page" : undefined}
-          class={cn(
-            "rounded-control px-2 py-1 text-item transition-colors duration-100",
-            active(item.prefix)
-              ? "bg-accent-fill font-medium text-ink"
-              : "text-ink-muted hover:bg-raised hover:text-ink",
-          )}
-        >
-          {item.label}
-        </A>
-      ))}
+    <nav aria-label="Primary" class="flex shrink-0 flex-col gap-2xs pb-sm">
+      <For each={NAV}>
+        {(item) => (
+          <A
+            href={item.href}
+            aria-current={active(item.prefix) ? "page" : undefined}
+            class={cn(
+              "flex h-9 shrink-0 items-center border-l-2 px-md text-item",
+              "transition-colors duration-100",
+              active(item.prefix)
+                ? "border-accent bg-raised font-medium text-ink"
+                : "border-transparent text-ink-muted hover:bg-raised hover:text-ink",
+            )}
+          >
+            {item.label}
+          </A>
+        )}
+      </For>
     </nav>
   );
 };
@@ -178,8 +224,18 @@ const Nav = (): JSX.Element => {
 /* -------------------------------------------------------------------------- */
 
 export const AppShell: ParentComponent = (props) => {
-  // Read once per render pass so the header does not thrash on every frame.
+  // Read once per render pass so the chrome does not thrash on every frame.
   const year = createMemo(() => new Date().getFullYear());
+
+  /**
+   * The rail's contextual half, created exactly once.
+   *
+   * ⛔ IT ONLY GETS TO BE A SIGNAL BECAUSE THE SHELL IS A LAYOUT ROUTE. Screens
+   * hand their sections here with `<SidebarPanel>` rather than rendering an
+   * `<aside>` of their own, so there is one rail on screen at any time and the
+   * shell — and the SSE stream above it — is untouched by the handover.
+   */
+  const slot = createSidebarSlot();
 
   return (
     /**
@@ -187,9 +243,13 @@ export const AppShell: ParentComponent = (props) => {
      * region inside is therefore its own container — which is what the alert
      * table's virtualiser measures against, and what keeps a sticky table
      * header sticky to the table rather than to the document.
+     *
+     * The axis is now horizontal — rail beside content — and the `h-screen` /
+     * `min-h-0` / `overflow-hidden` chain is carried down the content column
+     * unchanged, so `<main>` still hands its child a definite height.
      */
-    <div class="flex h-screen flex-col overflow-hidden bg-bg">
-      {/* Keyboard users get out of the header in one tab, always. */}
+    <div class="flex h-screen overflow-hidden bg-bg">
+      {/* Keyboard users get out of the rail in one tab, always. */}
       <a
         href="#main"
         class="sr-only-focusable absolute left-2 top-2 z-50 rounded-control border border-line-strong bg-surface px-3 py-1.5 text-item font-medium text-ink"
@@ -197,24 +257,89 @@ export const AppShell: ParentComponent = (props) => {
         Skip to content
       </a>
 
-      <header class="z-30 shrink-0 border-b border-line bg-surface">
-        <div class="flex h-11 items-center gap-4 px-4">
-          <A href="/alerts" class="flex shrink-0 items-center gap-1.5" aria-label="oto — home">
-            {/* The chime — 音. The only piece of brand art in the chrome. */}
-            <Chime size="mark" class="text-accent" />
-            <span class="font-mono text-title font-bold tracking-tight text-ink">oto</span>
+      {/* THE one rail. A screen that wants rail space uses the contextual zone
+          below; it never draws a second `<aside>` beside this one. */}
+      <aside class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-surface">
+        {/* §2 puts the chrome band at `h-14`, and the brand keeps it so the rail's
+            first row lines up with whatever the content column starts with. */}
+        <header class="flex h-14 shrink-0 items-center px-md">
+          <A href="/alerts" class="flex shrink-0 items-center gap-xs" aria-label="oto — home">
+            {/* ⭐ THE HORIZONTAL LOCKUP: THE MARK, THEN THE SIGNATURE BESIDE IT.
+                Both are cuts of the same drawing, taken from the brand sheet
+                rather than assembled here — see `IconMark.tsx` on how the mark
+                is lifted out of the composed logo's own mask.
+
+                The stacked composition (`~/components/Logo`, ensō + bell +
+                signature inside the ring) is the wrong shape for this band: it
+                is square, so a header that is 56 px tall and 232 px wide can
+                only ever render it small, and at that size the signature inside
+                the ring stops resolving as writing. Split into two, the same
+                drawing uses the width instead of fighting the height — the ring
+                gets 36 px, which is enough for the bell inside it to read, and
+                the signature sits beside it at 20 px, near the cap height of
+                the nav below. The composed version keeps the login screen,
+                where there is room for it to be square.
+
+                `text-ink` for both, never the accent. §M.2 keeps saturation for
+                state, and a brand mark in the accent hue at the top of every
+                screen is the most persistent way there is to teach the eye that
+                colour in oto does not mean anything (§0.6).
+
+                The link's own `aria-label` is the accessible name; both marks
+                are `aria-hidden`, so the product is named exactly once. */}
+            <IconMark class="size-9 text-ink" />
+            <Wordmark class="h-5 text-ink" />
           </A>
-          <Nav />
-          <div class="flex-1" />
-          <ConnectionBadge />
-          <div class="h-4 w-px bg-line" aria-hidden="true" />
-          <UserMenu />
+        </header>
+
+        <Nav />
+
+        {/* The contextual zone.
+
+            It is the only part of the rail that scrolls, and it scrolls
+            independently of the content column: a screen with a tall section
+            list must not be able to push the connection badge off the bottom,
+            and must not drag the table beside it either.
+
+            Since ADR 0033 exactly one screen fills it — settings, with its
+            section list. `/alerts` contributes nothing, which is the state the
+            wrapper below was already written for.
+
+            The wrapper is unconditional and always `flex-1` so the footer stays
+            pinned even on a screen that contributes nothing — the hairline is
+            what is conditional, because a separator with nothing under it is a
+            rule advertising an empty room. */}
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          <Show when={slot.panel()}>
+            {(panel) => <div class="border-t border-line py-sm">{panel()()}</div>}
+          </Show>
         </div>
-        {/* Ordered by how much of the screen each one calls into question: the
+
+        {/* The two standing facts, pinned to the bottom: whether what is on
+            screen is actually live, and who oto thinks you are. Stacked rather
+            than set side by side — at `w-64` the badge grows a Reconnect button
+            when it has bad news, and a row that reflows on a disconnection is a
+            row that moves the menu out from under the cursor. */}
+        <footer class="flex shrink-0 flex-col items-start gap-sm border-t border-line px-md py-sm">
+          <ConnectionBadge />
+          <UserMenu />
+        </footer>
+      </aside>
+
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {/* The aggregated strip, at the top of the column whose contents it
+            qualifies. It used to hang under the retired top bar; nothing about
+            it changed in the move except its parent, which is deliberate — the
+            three components are rendered here unconditionally, in one node that
+            is built with the shell and never rebuilt, so every live region below
+            is mounted from the first frame and stays the same node for the life
+            of the session.
+
+            Ordered by how much of the screen each one calls into question: the
             live stream first, then whether oto can still see every source, then
             what oto is deliberately keeping quiet about. Each renders nothing
-            visible when it has nothing to say, so the happy path is one flat
-            header and the table below never shifts.
+            visible when it has nothing to say, so the happy path is a flat edge
+            and the table below never shifts.
 
             All three keep a node mounted while silent so the strip's arrival is
             an update to something already there rather than a new element the
@@ -226,24 +351,37 @@ export const AppShell: ParentComponent = (props) => {
             countdowns, and a polite region wrapped around a ticking clock
             re-reads the whole banner every time the clock moves. See
             `ShellBanner.tsx` for the mounted-region argument at length. */}
-        <ResyncBanner />
-        <SourceReachBanner />
-        <SnoozeBanner />
-      </header>
+        <div class="shrink-0">
+          <ResyncBanner />
+          <SourceReachBanner />
+          <SnoozeBanner />
+        </div>
 
-      {/* The same `px-lg` gutter the header and footer already carry (their
-          own `px-4`) — without it, the header's brand mark sits 16px from the
-          edge while the table below runs flush to it, and that misalignment
-          reads as unfinished before any single element does. */}
-      <main id="main" class="flex min-h-0 flex-1 flex-col overflow-hidden px-lg">
-        {props.children}
-      </main>
+        {/* ⭐ THE PAGE GUTTER LIVES HERE AND NOWHERE ELSE (§2: `px-lg` → `px-xl`).
+            This and the footnote below carry the identical `px-xl`, so whatever
+            the screen puts at its own left edge and the footnote line up on one
+            column — and a screen that wants symmetric gutters gets them by
+            adding NOTHING of its own horizontally, rather than by pairing a left
+            pad here with a right pad down there.
 
-      <footer class="shrink-0 border-t border-line px-4 py-1.5 text-micro text-ink-subtle">
-        oto · alert history for Prometheus · {year()} — oto records what your cluster reported.{" "}
-        {/* vocab:allow — the footer states the scope boundary to the operator; it denies the concept it names. */}
-        It does not page anyone and it does not know who is on call.
-      </footer>
+            ⛔ THE CLASS STRING IS THE VIRTUALISER'S CONTRACT. `min-h-0 flex-1`
+            under a column that is itself `min-h-0` is what gives this element a
+            definite height instead of one derived from its content, and
+            `overflow-hidden` is what forces the scroll into the screen's own
+            container where `readRowHeight()` can measure it. */}
+        <main id="main" class="flex min-h-0 flex-1 flex-col overflow-hidden px-xl">
+          {/* Screens reach the rail through here and nowhere else. The provider
+              renders no node of its own, so `<main>`'s child is still the
+              screen's own root and the height chain above is unbroken. */}
+          <SidebarSlotProvider value={slot}>{props.children}</SidebarSlotProvider>
+        </main>
+
+        <footer class="shrink-0 border-t border-line px-xl py-xs text-micro text-ink-subtle">
+          oto · alert history for Prometheus · {year()} — oto records what your cluster reported.{" "}
+          {/* vocab:allow — the footer states the scope boundary to the operator; it denies the concept it names. */}
+          It does not page anyone and it does not know who is on call.
+        </footer>
+      </div>
     </div>
   );
 };

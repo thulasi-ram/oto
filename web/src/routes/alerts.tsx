@@ -18,7 +18,18 @@
  * which this screen used to do — under-reported every count the moment the
  * result exceeded one page.
  */
-import { For, Match, Show, Switch, createMemo, onCleanup, onMount } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createComputed,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  untrack,
+} from "solid-js";
 import { useNavigate, useSearchParams } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 
@@ -47,6 +58,9 @@ import {
 
 const PAGE_SIZE = 100;
 const BUCKET_PAGE_SIZE = 100;
+
+/** One shared empty set, so "nothing is held" is stable by reference. */
+const NOTHING_HELD: ReadonlySet<string> = new Set<string>();
 
 export default function AlertsRoute() {
   const navigate = useNavigate();
@@ -130,6 +144,144 @@ export default function AlertsRoute() {
 
   const alerts = listFeed.rows;
   const buckets = bucketFeed.rows;
+
+  /* ---- inserts do not move the list under the operator (§0.5) ------------ */
+
+  /**
+   * ⭐⭐ A ROW THE OPERATOR IS READING NEVER GETS PUSHED DOWN BY A NEW ONE.
+   *
+   * `alert.upserted` invalidates the whole `["alerts"]` prefix, page one
+   * refetches, and the server re-sorts — so a fresh alert lands at the TOP of
+   * the array this screen renders. Spliced in silently, every row below it moves
+   * down by `--oto-row-h` while somebody is reading one of them, mid-incident.
+   * The keyset feed is the right place to get the rows from and the wrong place
+   * to fix this: it is a pagination machine, and what is held back here is a
+   * *presentation* decision that must not touch the cursor.
+   *
+   * So the feed stays authoritative and this filters it. `held` names the ids
+   * that arrived above what was already on screen; everything else — content
+   * changes to rows already visible, rows that left the filter, rows appended
+   * below — flows straight through, because withholding those would be a
+   * different lie (a list frozen at a state that is no longer true).
+   *
+   * Deferral only happens while the operator is actually *in* the list
+   * (`engaged` below). Idle at the top, alerts appear as they always did; that
+   * is the state this screen spends most of its life in, and a "1 new" chip
+   * over a list nobody is reading is friction bought for nothing.
+   */
+  const [held, setHeld] = createSignal<ReadonlySet<string>>(NOTHING_HELD);
+
+  /**
+   * Whether the operator has a position in the list worth protecting: a
+   * scroller inside the content column is off its top, or focus is somewhere
+   * inside it (the table region, a row link, the load-more button).
+   *
+   * Observed from the column, not from `AlertTable`: `scroll` does not bubble
+   * but it does traverse the capture phase, so one capture listener on the
+   * column sees whichever scroller the table owns without this route knowing
+   * anything about its markup.
+   */
+  const [scrolled, setScrolled] = createSignal(false);
+  const [reading, setReading] = createSignal(false);
+  const engaged = (): boolean => scrolled() || reading();
+
+  let column: HTMLDivElement | undefined;
+  /** The filter band. Inside the column, but never part of "the list". */
+  let chrome: HTMLDivElement | undefined;
+
+  onMount(() => {
+    const el = column;
+    if (el === undefined) return;
+    const onScroll = (e: Event): void => {
+      if (e.target instanceof HTMLElement) setScrolled(e.target.scrollTop > 0);
+    };
+    /**
+     * Focus inside the toolbar is somebody *changing* the list, not somebody
+     * reading it — and the two want opposite behaviour from the deferral. A
+     * filter change is the operator's own act (`asked` below already lets those
+     * through); typing in the search box while alerts arrive should not freeze
+     * the rows underneath, because nothing is being read yet.
+     */
+    const inChrome = (node: EventTarget | Node | null): boolean =>
+      node instanceof Node && chrome !== undefined && chrome.contains(node);
+    const onFocusIn = (e: FocusEvent): void => {
+      if (!inChrome(e.target)) setReading(true);
+    };
+    const onFocusOut = (e: FocusEvent): void => {
+      const next = e.relatedTarget;
+      setReading(next instanceof Node && el.contains(next) && !inChrome(next));
+    };
+    el.addEventListener("scroll", onScroll, true);
+    el.addEventListener("focusin", onFocusIn);
+    el.addEventListener("focusout", onFocusOut);
+    onCleanup(() => {
+      el.removeEventListener("scroll", onScroll, true);
+      el.removeEventListener("focusin", onFocusIn);
+      el.removeEventListener("focusout", onFocusOut);
+    });
+  });
+
+  /**
+   * The ids on screen, in order — a plain variable rather than a signal, on
+   * purpose. The computation below both reads it and writes the held set, and a
+   * reactive read of either would make it its own dependency and spin.
+   */
+  let onScreen: readonly string[] = [];
+  let heldFingerprint = untrack(filterFingerprint);
+  let heldPageCount = untrack(listFeed.pageCount);
+
+  /**
+   * Pure-phase, for the same reason `createKeysetFeed` is: what the table
+   * renders must already be decided by the time it reads its rows, so a held
+   * insert is never painted and then retracted.
+   */
+  createComputed(() => {
+    const incoming = alerts();
+    const fingerprint = filterFingerprint();
+    const pageCount = listFeed.pageCount();
+    const ids = incoming.map((a) => a.id);
+
+    // A filter change and a "load more" are the operator's OWN actions — they
+    // asked for a different list, so there is nothing to protect them from.
+    const asked = fingerprint !== heldFingerprint || pageCount !== heldPageCount;
+    heldFingerprint = fingerprint;
+    heldPageCount = pageCount;
+
+    if (asked || !untrack(engaged)) {
+      onScreen = ids;
+      setHeld(NOTHING_HELD);
+      return;
+    }
+
+    // The anchor is the first row already on screen. Anything new *before* it
+    // would push that row down; anything at or after it lands below the top of
+    // what is being read and is spliced in as before.
+    const visible = new Set(onScreen);
+    const carried = untrack(held);
+    const anchor = ids.findIndex((id) => visible.has(id));
+    const next = new Set<string>();
+    for (const [i, id] of ids.entries()) {
+      if (carried.has(id)) next.add(id);
+      else if (!visible.has(id) && anchor >= 0 && i < anchor) next.add(id);
+    }
+
+    onScreen = ids.filter((id) => !next.has(id));
+    setHeld(next.size === 0 ? NOTHING_HELD : next);
+  });
+
+  const rows = createMemo<readonly Alert[]>(() => {
+    const back = held();
+    const all = alerts();
+    return back.size === 0 ? all : all.filter((a) => !back.has(a.id));
+  });
+
+  const pending = (): number => held().size;
+
+  /** Let the held rows in, wherever they sort to. The operator's own act. */
+  const showHeld = (): void => {
+    onScreen = untrack(alerts).map((a) => a.id);
+    setHeld(NOTHING_HELD);
+  };
 
   /* ---- what the rule said (ADR 0025) ------------------------------------- */
 
@@ -243,27 +395,90 @@ export default function AlertsRoute() {
       if (rollups.isPending && n === 0) return "Loading…";
       return `${fmtCount(n)}${hasMore() ? "+" : ""} bucket${n === 1 ? "" : "s"}`;
     }
-    const n = alerts().length;
+    // The count of what is ON SCREEN, not of what has been loaded — held rows
+    // are counted by the chip beside it, and the two sum to the loaded total.
+    const n = rows().length;
     if (query.isPending && n === 0) return "Loading…";
     return `${fmtCount(n)}${hasMore() ? "+" : ""} alert${n === 1 ? "" : "s"}`;
   };
 
   return (
-    <div class="flex min-h-0 flex-1 flex-col">
-      <FilterBar
-        filters={filters()}
-        onChange={setFilters}
-        onReset={() => setFilters(DEFAULT_FILTERS)}
-        totalCountLabel={
-          axis() === null ? `${fmtCount(alerts().length)}${hasMore() ? "+" : ""}` : undefined
-        }
-        partialMatchEnabled={session.me()?.search?.partial_match_enabled}
-        status={
-          <span class="text-body tabular-nums text-ink-muted" aria-live="polite">
-            {status()}
-          </span>
-        }
-      />
+    // ⛔ THE `min-h-0` / `overflow-hidden` CHAIN IS LOAD-BEARING. `AlertTable`
+    // virtualises against its own scroller, which only has a bounded height
+    // because every ancestor from `AppShell`'s `h-screen` down to here refuses
+    // to grow with its content. This element is the whole screen now — there is
+    // no side-by-side row above it any more — so it is the link in that chain,
+    // and it must keep refusing to grow with its content.
+    //
+    // ⭐ NO HORIZONTAL PADDING OF ITS OWN — the shell's gutter is the only
+    // horizontal gutter on the screen. Inner alignment is `px-md`, the same step
+    // the table's cells use, so the strip below lines up with the first column.
+    <div
+      ref={(el) => {
+        column = el;
+      }}
+      class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+    >
+      {/* The filters are a band above the table, not a rail beside it (ADR
+          0033). They are instruments belonging to this list, so they live in
+          this column, spanning exactly what they narrow.
+
+          ⛔ THE `ref` IS NOT DECORATION — it is what keeps the held-alerts
+          deferral below honest. That machine asks "does the operator have a
+          position in this list worth protecting?", and answers it partly from
+          focus. While the panel lived in the shell's rail, focus in a filter
+          control was trivially not focus *in the list*; now it is focus inside
+          this very column, and without the guard in `onFocusIn` below, tabbing
+          into the Severity menu would start withholding incoming alerts. The
+          chrome is marked here and excluded there. */}
+      <div
+        ref={(el) => {
+          chrome = el;
+        }}
+        class="shrink-0"
+      >
+        <FilterBar
+          filters={filters()}
+          onChange={setFilters}
+          onReset={() => setFilters(DEFAULT_FILTERS)}
+          totalCountLabel={
+            axis() === null ? `${fmtCount(rows().length)}${hasMore() ? "+" : ""}` : undefined
+          }
+          partialMatchEnabled={session.me()?.search?.partial_match_enabled}
+        />
+      </div>
+
+      {/* ⛔ A STRIP, NOT A SECOND CHROME BAR. This was `h-14`, holding one 12 px
+          string, which read as two stacked bars disagreeing about which one was
+          the app's. It is `h-9` and belongs to the content column alone — the
+          rail runs full height beside it — so it reads as the table's own
+          status line.
+          The polite region is the strip itself and is mounted unconditionally:
+          both the count and the arrival of the held-alerts chip are mutations
+          *inside* a region that already existed, which is the only kind a
+          screen reader reliably speaks. */}
+      <header
+        class="flex h-9 shrink-0 items-center gap-md border-b border-line px-md"
+        aria-live="polite"
+      >
+        <span class="text-body tabular-nums text-ink-muted">{status()}</span>
+
+        {/* §0.5. Quiet by construction: Tier A only, no state hue and no
+            accent, so it cannot out-shout a severity mark two rows below it
+            (§0.6). It is a real button, so Enter and Space apply the held
+            rows for free. */}
+        <Show when={pending() > 0}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={showHeld}
+            title="New alerts arrived while you were reading. They are held back so the list does not move under you."
+            aria-label={`Show ${fmtCount(pending())} new alert${pending() === 1 ? "" : "s"}`}
+          >
+            {fmtCount(pending())} new
+          </Button>
+        </Show>
+      </header>
 
       <Switch>
         {/* A blocked query is not an error and not an empty list — it is a
@@ -271,7 +486,7 @@ export default function AlertsRoute() {
         <Match when={blocked()}>
           <EmptyState
             title="This filter cannot be served exactly, so nothing was requested."
-            body="oto refuses to run a filter that would fall back to a sequential scan. Fix the matcher above and the list will return — see the reasons under the input."
+            body="oto refuses to run a filter that would fall back to a sequential scan. Fix the matcher in the panel and the list will return — see the reasons under the input."
           />
         </Match>
 
@@ -291,7 +506,11 @@ export default function AlertsRoute() {
                 title="No alerts match these filters, so there is nothing to group."
                 body="The buckets are computed from the same filtered set as the list. An empty roll-up means an empty list, not a grouping problem."
                 action={
-                  <Button variant="secondary" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setFilters(DEFAULT_FILTERS)}
+                  >
                     Clear filters
                   </Button>
                 }
@@ -310,13 +529,13 @@ export default function AlertsRoute() {
           </Switch>
         </Match>
 
-        <Match when={query.isPending && alerts().length === 0}>
+        <Match when={query.isPending && rows().length === 0}>
           <div class="flex-1 overflow-hidden">
             <TableSkeleton rows={14} cols={6} />
           </div>
         </Match>
 
-        <Match when={alerts().length === 0}>
+        <Match when={rows().length === 0}>
           <Show
             when={isUnfiltered(filters())}
             fallback={
@@ -324,7 +543,11 @@ export default function AlertsRoute() {
                 title="No alerts match these filters."
                 body="The filters are doing something — that is not the same as there being nothing here. Clear them to see everything oto has."
                 action={
-                  <Button variant="secondary" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setFilters(DEFAULT_FILTERS)}
+                  >
                     Clear filters
                   </Button>
                 }
@@ -340,7 +563,7 @@ export default function AlertsRoute() {
 
         <Match when={true}>
           <AlertTable
-            alerts={alerts()}
+            alerts={rows()}
             snoozedKnown={filters().snoozed}
             rules={rulesById()}
             rulesPending={rules.isFetching}
@@ -362,7 +585,7 @@ export default function AlertsRoute() {
       {/* Rejected matchers are explained at the bottom too, where the empty
           state points, so the reason is never off-screen from its effect. */}
       <Show when={rejected().length > 0}>
-        <ul class="border-t border-line bg-raised px-3 py-2 text-meta leading-snug text-ink">
+        <ul class="shrink-0 border-t border-line bg-raised px-md py-sm text-meta leading-snug text-ink">
           <For each={rejected()}>
             {(r) => (
               <li>

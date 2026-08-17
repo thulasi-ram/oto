@@ -163,13 +163,26 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
   };
 
   return (
-    <div class="flex flex-wrap items-center gap-2">
-      <Show
-        when={acked()}
-        fallback={
+    /*
+     * ⛔ PERSISTENT, NEVER HOVER-REVEALED (§0.4). Every control below is on
+     * screen from first paint whether or not a pointer is anywhere near it. A
+     * bar that materialises under the cursor, on a screen whose contents change
+     * under SSE, is a misclick generator at 3am — and the thing it would
+     * misclick is a receipt on a signal or a decision to make oto go quiet.
+     *
+     * The column, rather than a single wrapping row, is what makes the buttons
+     * *stable* as well as visible: `unsnooze`'s refusal is the one failure here
+     * with no dialog to land in, and inside the row it used to reflow the
+     * buttons sideways the instant it appeared. Now it appears underneath them
+     * and nothing moves.
+     */
+    <div class="flex flex-col items-end gap-sm">
+      <div class="flex flex-wrap items-center justify-end gap-sm">
+        {/* The primary. It is the one accented control on this screen, and the
+            only one an operator should be able to hit without thinking. */}
+        <Show when={!acked()}>
           <Button
             variant="default"
-            size="sm"
             disabled={!occurrenceOpen()}
             title={
               occurrenceOpen()
@@ -180,57 +193,67 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
           >
             Acknowledge
           </Button>
-        }
-      >
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => setAckOpen(true)}
-          title="Withdraw the receipt. Recorded as a deliberate withdrawal, not as an automatic one."
-        >
-          Withdraw acknowledgement
+        </Show>
+
+        <Button variant="secondary" onClick={() => setCommentOpen(true)}>
+          Comment
         </Button>
-      </Show>
 
-      <Button variant="secondary" size="sm" onClick={() => setCommentOpen(true)}>
-        Comment
-      </Button>
+        {/* ⛔ EVERYTHING PAST THIS RULE TAKES SOMETHING AWAY, so it is put out
+            of the cursor's way on purpose. Withdrawing removes a receipt other
+            people are reading; snoozing makes oto stop saying anything. Neither
+            may sit flush against the button people reach for by reflex, and
+            neither wears the accent. The gap and the hairline are the whole
+            mechanism — both still open a dialog, so neither is one click from
+            done. */}
+        <span aria-hidden="true" class="mx-xs h-6 w-px shrink-0 bg-line" />
 
-      {/* Buttons are never no-ops (§B.8.6): while a snooze holds, the control
-          is the one that ends it. */}
-      <Show
-        when={snoozed()}
-        fallback={
+        <Show when={acked()}>
+          <Button
+            variant="destructive"
+            onClick={() => setAckOpen(true)}
+            title="Withdraw the receipt. Recorded as a deliberate withdrawal, not as an automatic one."
+          >
+            Withdraw acknowledgement
+          </Button>
+        </Show>
+
+        {/* Buttons are never no-ops (§B.8.6): while a snooze holds, the control
+            is the one that ends it. Resuming gives notifications back rather
+            than taking them away, so it is the one control on this side of the
+            rule that is not held at arm's length by its styling. */}
+        <Show
+          when={snoozed()}
+          fallback={
+            <Button
+              variant="destructive"
+              onClick={() => setSnoozeOpen(true)}
+              title="Stop oto's own notifications for this alert until a fixed time. It keeps firing, keeps its severity, and stays visible."
+            >
+              Snooze
+            </Button>
+          }
+        >
           <Button
             variant="secondary"
-            size="sm"
-            onClick={() => setSnoozeOpen(true)}
-            title="Stop oto's own notifications for this alert until a fixed time. It keeps firing, keeps its severity, and stays visible."
+            busy={unsnooze.isPending}
+            onClick={() => unsnooze.mutate()}
+            title="Resume oto's notifications now. The wake-up card reflects the alert's state now, not a replay of what was suppressed."
           >
-            Snooze
+            Resume notifications
           </Button>
-        }
-      >
-        <Button
-          variant="secondary"
-          size="sm"
-          busy={unsnooze.isPending}
-          onClick={() => unsnooze.mutate()}
-          title="Resume oto's notifications now. The wake-up card reflects the alert's state now, not a replay of what was suppressed."
-        >
-          Resume notifications
-        </Button>
-      </Show>
+        </Show>
+      </div>
 
       {/* Unlike every other failure on this screen, this one has no dialog to
-          appear inside — it lands in the bar, next to a button that still reads
+          appear inside — it lands in the bar, under a button that still reads
           "Resume notifications". Without `role="alert"` nothing moves and nothing
           is announced, so a screen reader user presses the button and hears
           silence, which is the one thing oto is not allowed to do about a
           failure. `role="alert"` is the same idiom the other 17 refusal sites
           use (AppShell's sign-out failure, `ErrorBanner`, `Field`). */}
       <Show when={unsnooze.error !== null}>
-        <span role="alert" class="text-meta leading-snug text-ink">
+        <span role="alert" class="max-w-96 text-right text-meta leading-snug text-ink">
           {unsnooze.error instanceof ApiError && unsnooze.error.status === 412
             ? "This alert is not snoozed — it woke before the request landed."
             : (unsnooze.error as Error | null)?.message}
@@ -310,7 +333,11 @@ const AckDialog: Component<{
         if (!isOpen) props.onClose();
       }}
     >
-      <ModalContent class="max-w-sm">
+      {/* `max-w-96` (24rem) — narrower than `ModalContent`'s 32rem default,
+          because this dialog is one note field. NOT `max-w-sm`: a named width
+          key resolves against the spacing namespace before the container one,
+          which compiled this dialog down to an 8px sliver. See `Modal.tsx`. */}
+      <ModalContent class="max-w-96">
         <ModalHeader>
           <ModalTitle>
             {props.withdrawing ? "Withdraw acknowledgement" : "Acknowledge this alert"}

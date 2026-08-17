@@ -145,8 +145,19 @@ async function pageOnce(
   return calls(http).length;
 }
 
+/**
+ * Open one of the filter toolbar's menus (ADR 0033 — the controls moved out of
+ * the shell's rail and four axes now live behind a trigger). Anchored on the
+ * axis name because a trigger's accessible name grows to include its value.
+ */
+async function openMenu(axis: string): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${axis}`) }));
+  await until(() => expect(screen.getByRole("dialog")).toBeTruthy());
+}
+
 /** Toggle the first lifecycle state — the smallest possible filter change. */
 async function changeAFilter(): Promise<void> {
+  await openMenu("Status");
   const states = await screen.findByRole("group", { name: "Lifecycle state" });
   fireEvent.click(within(states).getAllByRole("button")[0]!);
 }
@@ -180,6 +191,7 @@ describe("changing the grouping while a bucket page is loaded", () => {
 
     // A bucket cursor is a bucket key, so regrouping invalidates it twice over:
     // the keys it orders do not exist under the new axis.
+    await openMenu("Group");
     fireEvent.click(screen.getByRole("tab", { name: "By namespace" }));
 
     await until(() => {

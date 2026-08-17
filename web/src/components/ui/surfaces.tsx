@@ -17,6 +17,16 @@ import type { ParentComponent } from "solid-js";
 
 import { cn } from "~/lib/cn";
 
+/**
+ * The one uppercase section-label recipe. Three near-identical variants grew
+ * up independently (`.08em`/`text-meta`/semibold here, `.06em`/`text-meta`/
+ * semibold in the alert tables, `.08em`/`text-micro`/medium in the side
+ * panel) before this was hoisted; the side-panel's is the one PORTING-SPEC §4
+ * mandates, so it is the one that survives. Every uppercase section label in
+ * the app should read from this constant rather than re-deriving its own.
+ */
+export const SECTION_LABEL = "text-micro font-medium uppercase tracking-[0.08em]";
+
 export const Panel: ParentComponent<{ readonly class?: string }> = (props) => (
   <section class={cn("rounded-surface border border-line bg-surface", props.class)}>
     {props.children}
@@ -36,14 +46,7 @@ export const PanelHeader: ParentComponent<{ readonly class?: string }> = (props)
 );
 
 export const PanelTitle: ParentComponent<{ readonly class?: string }> = (props) => (
-  <h2
-    class={cn(
-      "text-meta font-semibold uppercase tracking-[0.08em] text-ink-muted",
-      props.class,
-    )}
-  >
-    {props.children}
-  </h2>
+  <h2 class={cn(SECTION_LABEL, "text-ink-muted", props.class)}>{props.children}</h2>
 );
 
 /** A neutral chip. Tier A only — never used to carry a state. */

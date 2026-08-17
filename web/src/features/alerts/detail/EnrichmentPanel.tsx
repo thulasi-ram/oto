@@ -18,6 +18,7 @@ import { RelativeTime } from "~/components/Time";
 import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
+import { PANEL_HEADER, PANEL_ROW } from "./rhythm";
 
 /** Tier A throughout: an enricher's health is not an alert's state (§M.2). */
 const STATUS_NOTE: Record<EnrichmentStatus, string> = {
@@ -44,10 +45,10 @@ export interface EnrichmentPanelProps {
 
 export const EnrichmentPanel: Component<EnrichmentPanelProps> = (props) => (
   <Panel>
-    <PanelHeader>
+    <PanelHeader class={PANEL_HEADER}>
       <PanelTitle>Enrichment</PanelTitle>
       <Show when={props.enrichments.length > 0}>
-        <span class="text-meta text-ink-subtle">{props.enrichments.length} results</span>
+        <span class="shrink-0 text-meta text-ink-subtle">{props.enrichments.length} results</span>
       </Show>
     </PanelHeader>
 
@@ -79,8 +80,8 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
   const hasPayload = (): boolean => Object.keys(e().payload).length > 0;
 
   return (
-    <li class="border-b border-line px-3 py-2 last:border-b-0">
-      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+    <li class={cn("border-b border-line last:border-b-0", PANEL_ROW)}>
+      <div class="flex flex-wrap items-center gap-x-sm gap-y-2xs">
         <span class="font-mono text-body font-medium text-ink">{e().enricher}</span>
         <span class={cn("text-meta", STATUS_WEIGHT[e().status])} title={STATUS_NOTE[e().status]}>
           {e().status}
@@ -91,7 +92,7 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
       </div>
 
       {/* Provenance. Version, phase, timing and cache origin, always. */}
-      <div class="mt-1 flex flex-wrap items-center gap-1">
+      <div class="mt-sm flex flex-wrap items-center gap-2xs">
         <Chip title="Bumping the version invalidates the cache and forces a re-run.">
           v{e().enricher_version}
         </Chip>
@@ -121,14 +122,14 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
 
       <Show when={e().error}>
         {(err) => (
-          <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
+          <p class="mt-sm border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink">
             {err()}
           </p>
         )}
       </Show>
 
       <Show when={(e().warnings ?? []).length > 0}>
-        <ul class="mt-1 space-y-0.5 border-l-2 border-line pl-2">
+        <ul class="mt-sm space-y-2xs border-l-2 border-line pl-sm">
           <For each={e().warnings ?? []}>
             {(w) => <li class="text-meta leading-snug text-ink-muted">{w}</li>}
           </For>
@@ -136,7 +137,7 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
       </Show>
 
       <Show when={hasPayload()}>
-        <div class="mt-1">
+        <div class="mt-sm">
           <button
             type="button"
             class="text-meta text-ink-subtle underline decoration-dotted underline-offset-2 hover:text-ink"
@@ -146,7 +147,7 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
             {open() ? "Hide" : "Show"} result
           </button>
           <Show when={open()}>
-            <pre class="mt-1 max-h-64 overflow-auto rounded-control border border-line bg-sunken px-2 py-1.5 font-mono text-meta leading-relaxed text-ink">
+            <pre class="mt-sm max-h-64 overflow-auto rounded-control border border-line bg-sunken px-md py-sm font-mono text-meta leading-relaxed text-ink">
               <code>{JSON.stringify(e().payload, null, 2)}</code>
             </pre>
           </Show>

@@ -266,7 +266,7 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
           <ModalDescription>{SUBJECT_DESCRIPTION[props.subject]}</ModalDescription>
         </ModalHeader>
 
-        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+        <div class="flex flex-col gap-md text-item leading-relaxed text-ink">
           <Show when={mutation.error !== null && orphans().length > 0}>
             <ErrorBanner>
               <For each={orphans()}>{(msg) => <p>{msg}</p>}</For>
@@ -292,13 +292,13 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
           </Show>
 
           <fieldset class="min-w-0">
-            <legend class="mb-1.5 text-body font-medium text-ink-muted">For how long</legend>
-            <div class="flex flex-wrap gap-1">
+            <legend class="mb-xs text-body font-medium text-ink-muted">For how long</legend>
+            <div class="flex flex-wrap gap-2xs">
               <For each={SNOOZE_PRESETS}>
                 {(preset) => (
                   <label
                     class={cn(
-                      "inline-flex cursor-pointer items-center rounded-control border px-2 py-1 text-body",
+                      "inline-flex cursor-pointer items-center rounded-control border px-sm py-2xs text-body",
                       mode() === "duration" && seconds() === preset.seconds
                         ? "border-accent-border bg-accent-fill font-medium text-ink"
                         : "border-line bg-surface text-ink-muted hover:bg-raised",

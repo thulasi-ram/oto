@@ -23,6 +23,7 @@ import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { absoluteTime } from "~/lib/format";
+import { PANEL_HEADER, PANEL_ROW } from "./rhythm";
 
 const END_REASON: Record<NonNullable<SnoozeEndReason>, string> = {
   manual: "a person woke it early",
@@ -38,7 +39,7 @@ export interface SnoozePanelProps {
 
 export const SnoozePanel: Component<SnoozePanelProps> = (props) => (
   <Panel>
-    <PanelHeader>
+    <PanelHeader class={PANEL_HEADER}>
       <PanelTitle>Quiet periods</PanelTitle>
       <span class="text-meta text-ink-subtle">oto's notifications, not the signal</span>
     </PanelHeader>
@@ -71,11 +72,12 @@ const SnoozeRow: Component<{ readonly row: SnoozeHistoryEntry }> = (props) => {
   return (
     <li
       class={cn(
-        "border-b border-line px-3 py-2 last:border-b-0",
-        r().active ? "border-l-[3px] border-l-ink-muted bg-sunken" : "",
+        "border-b border-line last:border-b-0",
+        PANEL_ROW,
+        r().active ? "border-l-2 border-l-ink-muted bg-sunken" : "",
       )}
     >
-      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <div class="flex flex-wrap items-baseline gap-x-sm gap-y-2xs">
         <Show when={r().active}>
           <Chip title="This is the snooze currently in force. The alert is still firing.">
             in force
@@ -95,7 +97,7 @@ const SnoozeRow: Component<{ readonly row: SnoozeHistoryEntry }> = (props) => {
 
       <Show when={r().note}>
         {(note) => (
-          <p class="mt-0.5 border-l-2 border-line-strong pl-2 text-body leading-snug text-ink">
+          <p class="mt-sm border-l-2 border-line-strong pl-sm text-body leading-snug text-ink">
             {note()}
           </p>
         )}
@@ -103,7 +105,7 @@ const SnoozeRow: Component<{ readonly row: SnoozeHistoryEntry }> = (props) => {
 
       <Show when={r().ended_reason}>
         {(reason) => (
-          <p class="mt-0.5 text-meta leading-snug text-ink-subtle">
+          <p class="mt-2xs text-meta leading-snug text-ink-subtle">
             Ended — {END_REASON[reason()] ?? reason()}
             {r().ended_by_label ? `, by ${r().ended_by_label}` : ""}.
           </p>

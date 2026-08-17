@@ -42,10 +42,15 @@
   --oto-focus: #b5305c;
 
   /* ---- Tier B: state only. Never use these for chrome. --------------- */
+  /* `-solid` was #d7332b (3° hue, 68% HSL saturation) and sat only ~23° from the
+     beni accent above with less chroma than it — on a screen where the accent
+     draws focus rails and links, firing did not read as the hottest thing on it.
+     It is now a vermilion at 8°/88%: ~28° from the accent and ~28° from acked,
+     the widest it can be without crowding either. Contrast rose 4.5 → 4.7:1. */
   --oto-state-firing-fill: #ffebea;
   --oto-state-firing-border: #f5b5b0;
   --oto-state-firing-text: #8c1d18;
-  --oto-state-firing-solid: #d7332b;
+  --oto-state-firing-solid: #d8290e;
 
   --oto-state-acked-fill: #fff4e0;
   --oto-state-acked-border: #f0c982;
@@ -108,10 +113,14 @@
   --oto-focus: #949de0;
 
   /* ---- Tier B: state only ------------------------------------------- */
+  /* `-solid` was #ff6b60, whose 96/255 blue-green floor read salmon rather than
+     hot. Hue is unchanged at 4°; the floor drops to 70 for the same vermilion
+     identity light now carries. Red trades luminance for chroma — 6.0 → 5.2:1,
+     still well clear of the 3:1 non-text floor U2 sets. */
   --oto-state-firing-fill: #331a19;
   --oto-state-firing-border: #6e2e2a;
   --oto-state-firing-text: #ffb4ae;
-  --oto-state-firing-solid: #ff6b60;
+  --oto-state-firing-solid: #ff5346;
 
   --oto-state-acked-fill: #33260f;
   --oto-state-acked-border: #6e5320;
@@ -147,13 +156,25 @@
   --oto-chart-grid: #435889;
 }
 
-/* Row heights are a first-class concern (U6): 36 px comfortable, 28 px compact.
-   They live here so the virtualiser and the CSS can never disagree. */
+/* Row heights are a first-class concern (U6): 48 px comfortable, 36 px compact.
+   They live here so the virtualiser and the CSS can never disagree — and this is
+   the ONLY place either number is written. `readRowHeight()` reads the computed
+   value back out, `TableSkeleton` and the row element both style off the var, so
+   raising the step here ripples through the virtualiser's arithmetic for free.
+   Never hardcode a row height at a call site.
+
+   Comfortable was 36 px and compact 28 px. U6 has been amended: the density
+   these screens were drawn at is tighter than an operator working a 3am storm
+   can use, and a row that fits its content exactly leaves no room for the
+   persistent per-row actions the alert row is meant to carry (§0.4 — visible
+   or in an explicit menu, never revealed by hover alone). Liberal means SPACE —
+   the type ladder in §M.8 is unchanged, and hierarchy still comes from weight
+   and colour rather than size. */
 :root {
-  --oto-row-h: 36px;
+  --oto-row-h: 48px;
 }
 [data-density="compact"] {
-  --oto-row-h: 28px;
+  --oto-row-h: 36px;
 }
 
 /* ---------------------------------------------------------------------------

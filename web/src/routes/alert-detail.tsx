@@ -45,6 +45,7 @@ import { AlertActions } from "~/features/alerts/detail/Actions";
 import { DeliveryPanel } from "~/features/alerts/detail/DeliveryPanel";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
 import { OccurrencePanel } from "~/features/alerts/detail/OccurrencePanel";
+import { PANEL_BODY, PANEL_HEADER } from "~/features/alerts/detail/rhythm";
 import { RulePanel } from "~/features/alerts/detail/RuleDrift";
 import { SnoozePanel } from "~/features/alerts/detail/SnoozePanel";
 import { Timeline } from "~/features/alerts/detail/Timeline";
@@ -125,7 +126,7 @@ export default function AlertDetailRoute() {
   return (
     <Switch>
       <Match when={alert.isPending}>
-        <div class="space-y-3 p-4">
+        <div class="space-y-md p-lg">
           <Skeleton class="h-6 w-80" />
           <Skeleton class="h-4 w-56" />
           <Skeleton class="h-64 w-full" />
@@ -139,19 +140,32 @@ export default function AlertDetailRoute() {
       <Match when={alert.data}>
         {(data) => (
           <div class="flex min-h-0 flex-1 flex-col">
-            {/* ---- header ------------------------------------------------- */}
+            {/* ---- header -------------------------------------------------
+                ONE focal element: the alert's name. It used to share a wrap row
+                with five chips, which meant the eye landed on whichever of the
+                six happened to be widest. Everything that is not the name is now
+                on a line of its own below it and demoted by weight and colour —
+                never by inflating the title, which is already at the top of the
+                type scale and stays there. */}
             <header class="shrink-0 border-b border-line bg-surface">
-              <div class="flex items-start gap-3 px-4 pb-2 pt-3">
+              <div class="flex items-stretch gap-md px-lg pb-md pt-lg">
+                {/* The state as a full-height rail rather than a stub beside the
+                    title: it is the one thing here that has to be legible from
+                    across a room, and (§0.6) it is deliberately the only
+                    saturated pigment in this header. */}
                 <div
-                  class={cn("mt-1 h-9 w-[3px] shrink-0 rounded-full", STATE_BAR[data().state])}
+                  class={cn("w-2xs shrink-0 rounded-full", STATE_BAR[data().state])}
                   aria-hidden="true"
                 />
 
                 <div class="min-w-0 flex-1">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <h1 class="min-w-0 truncate text-page font-semibold tracking-tight text-ink">
-                      {data().alertname}
-                    </h1>
+                  <h1 class="min-w-0 truncate text-page font-semibold tracking-tight text-ink">
+                    {data().alertname}
+                  </h1>
+
+                  {/* The three orthogonal axes, on their own line so they read as
+                      one group instead of competing with the name. */}
+                  <div class="mt-sm flex flex-wrap items-center gap-sm">
                     <SeverityMark severity={data().severity} withLabel />
                     <StateChip
                       state={data().state}
@@ -171,7 +185,7 @@ export default function AlertDetailRoute() {
                     <SnoozeChip snooze={data().snooze ?? null} />
                   </div>
 
-                  <p class="mt-0.5 text-body text-ink-muted">
+                  <p class="mt-sm text-body text-ink-muted">
                     {STATE_MEANING[data().state]}
                     <Show when={data().snooze}>
                       {" "}
@@ -180,66 +194,80 @@ export default function AlertDetailRoute() {
                     </Show>
                   </p>
 
-                  <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-ink-muted">
+                  {/* Reference material. It is read when someone goes looking for
+                      it, never at a glance, so it sits a colour step and a type
+                      step below the sentence above it and is spaced widely enough
+                      that each pair is picked out individually. */}
+                  <div class="mt-md flex flex-wrap items-center gap-x-lg gap-y-2xs text-meta text-ink-subtle">
                     <span>
-                      <span class="text-ink-subtle">cluster</span>{" "}
-                      <span class="font-mono">{data().cluster_key}</span>
+                      cluster <span class="font-mono text-ink-muted">{data().cluster_key}</span>
                     </span>
                     <Show when={data().namespace}>
                       <span>
-                        <span class="text-ink-subtle">namespace</span>{" "}
-                        <span class="font-mono">{data().namespace}</span>
+                        namespace <span class="font-mono text-ink-muted">{data().namespace}</span>
                       </span>
                     </Show>
                     <Show when={data().service}>
                       <span>
-                        <span class="text-ink-subtle">service</span>{" "}
-                        <span class="font-mono">{data().service}</span>
+                        service <span class="font-mono text-ink-muted">{data().service}</span>
                       </span>
                     </Show>
                     <span title={absoluteTime(data().first_seen_at)}>
-                      <span class="text-ink-subtle">first seen</span>{" "}
-                      <RelativeTime value={data().first_seen_at} label="First seen" /> ago
+                      first seen{" "}
+                      <span class="text-ink-muted">
+                        <RelativeTime value={data().first_seen_at} label="First seen" /> ago
+                      </span>
                     </span>
                     <span title={absoluteTime(data().last_seen_at)}>
-                      <span class="text-ink-subtle">last seen</span>{" "}
-                      <RelativeTime value={data().last_seen_at} label="Last seen" /> ago
+                      last seen{" "}
+                      <span class="text-ink-muted">
+                        <RelativeTime value={data().last_seen_at} label="Last seen" /> ago
+                      </span>
                     </span>
                     {/* "Firing duration" — never MTTR (SCOPE-BOUNDARY). */}
                     <Show when={data().current_occurrence}>
                       {(occ) => (
                         <span>
-                          <span class="text-ink-subtle">firing duration</span>{" "}
-                          <Elapsed from={occ().started_at} to={occ().ended_at ?? null} />
+                          firing duration{" "}
+                          <span class="text-ink-muted">
+                            <Elapsed from={occ().started_at} to={occ().ended_at ?? null} />
+                          </span>
                         </span>
                       )}
                     </Show>
                     <span title="Firing episodes since oto first saw this identity">
-                      <span class="text-ink-subtle">episodes</span>{" "}
-                      {fmtCount(data().total_occurrences)}
+                      episodes{" "}
+                      <span class="text-ink-muted">{fmtCount(data().total_occurrences)}</span>
                     </span>
                     <Show when={data().is_flapping || data().flap_score > 0}>
                       <span title="EWMA of state transitions per hour. A derived signal, never a state.">
-                        <span class="text-ink-subtle">flap score</span>{" "}
-                        {data().flap_score.toFixed(1)}
+                        flap score{" "}
+                        <span class="text-ink-muted">{data().flap_score.toFixed(1)}</span>
                       </span>
                     </Show>
                   </div>
                 </div>
 
+                {/* Persistent, never hover-revealed (§0.4). It keeps its own
+                    column so the buttons sit in the same place on every alert
+                    regardless of how long the name is or how many chips it has. */}
                 <div class="shrink-0">
                   <AlertActions alert={data()} />
                 </div>
               </div>
 
-              <div class="flex flex-wrap items-center gap-2 px-4 pb-2">
+              {/* Ancillary links and identity. Muted rather than accented, so the
+                  state rail and the severity mark stay the most saturated things
+                  on the screen (§0.6); the underline, not a hue, is what makes a
+                  link a link. */}
+              <div class="flex flex-wrap items-center gap-sm px-lg pb-lg">
                 <Show when={data().generator_url}>
                   {(url) => (
                     <a
                       href={url()}
                       target="_blank"
                       rel="noreferrer noopener"
-                      class="text-body text-accent hover:underline"
+                      class="text-meta text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
                     >
                       Open the query in Prometheus ↗
                     </a>
@@ -249,7 +277,7 @@ export default function AlertDetailRoute() {
                   {(group) => (
                     <A
                       href={`/groups/${group().id}`}
-                      class="text-body text-accent hover:underline"
+                      class="text-meta text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
                       title="The Alertmanager notification group this episode joined"
                     >
                       In group: {group().title} ↗
@@ -265,11 +293,15 @@ export default function AlertDetailRoute() {
               </div>
             </header>
 
-            {/* ---- body --------------------------------------------------- */}
-            <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-auto p-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] xl:overflow-hidden">
+            {/* ---- body ---------------------------------------------------
+                Two section groups (`gap-xl`) each holding panels a step closer
+                together (`gap-lg`), so "these are two different kinds of thing"
+                and "these are six panels of the same kind" are told apart by
+                space alone rather than by a rule between them. */}
+            <div class="grid min-h-0 flex-1 grid-cols-1 gap-xl overflow-auto p-lg xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] xl:overflow-hidden">
               {/* Timeline */}
               <Panel class="flex min-h-0 flex-col xl:overflow-hidden">
-                <PanelHeader>
+                <PanelHeader class={PANEL_HEADER}>
                   <PanelTitle>Timeline</PanelTitle>
                   <span class="text-meta text-ink-subtle">
                     displayed in the upstream's time · ordered by oto's
@@ -298,16 +330,19 @@ export default function AlertDetailRoute() {
               </Panel>
 
               {/* Evidence */}
-              <div class="flex min-h-0 flex-col gap-4 xl:overflow-auto">
+              <div class="flex min-h-0 flex-col gap-lg xl:overflow-auto">
                 <LabelsPanel
                   labels={data().labels}
                   annotations={data().annotations}
                 />
 
+                {/* Each panel loads and fails on its own, and stays NAMED while
+                    it does — a panel that vanished while loading would be
+                    indistinguishable from one that has nothing to say. */}
                 <Switch>
                   <Match when={rule.isPending}>
                     <Panel>
-                      <PanelHeader>
+                      <PanelHeader class={PANEL_HEADER}>
                         <PanelTitle>Rule at fire time</PanelTitle>
                       </PanelHeader>
                       <LoadingLine />
@@ -315,7 +350,7 @@ export default function AlertDetailRoute() {
                   </Match>
                   <Match when={rule.isError}>
                     <Panel>
-                      <PanelHeader>
+                      <PanelHeader class={PANEL_HEADER}>
                         <PanelTitle>Rule at fire time</PanelTitle>
                       </PanelHeader>
                       <ErrorState error={rule.error} onRetry={() => void rule.refetch()} />
@@ -379,11 +414,11 @@ function LabelsPanel(props: {
 
   return (
     <Panel>
-      <PanelHeader>
+      <PanelHeader class={PANEL_HEADER}>
         <PanelTitle>Labels and annotations</PanelTitle>
         <button
           type="button"
-          class="text-meta text-ink-subtle hover:text-ink hover:underline"
+          class="shrink-0 text-meta text-ink-subtle hover:text-ink hover:underline"
           onClick={() => void navigator.clipboard?.writeText(formatLabels(props.labels))}
           title="Copy as an Alertmanager matcher set"
         >
@@ -391,12 +426,12 @@ function LabelsPanel(props: {
         </button>
       </PanelHeader>
 
-      <div class="p-3">
+      <div class={PANEL_BODY}>
         <Show
           when={labelEntries().length > 0}
           fallback={<p class="text-body text-ink-subtle">This alert carries no labels.</p>}
         >
-          <dl class="space-y-0.5">
+          <dl class="space-y-2xs">
             <For each={labelEntries()}>
               {([k, val]) => (
                 <DataRow term={k}>
@@ -408,11 +443,11 @@ function LabelsPanel(props: {
         </Show>
 
         <Show when={annotationEntries().length > 0}>
-          <div class="mt-3 border-t border-line pt-3">
-            <p class="mb-1.5 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
+          <div class="mt-md border-t border-line pt-md">
+            <p class="mb-sm text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
               Annotations
             </p>
-            <dl class="space-y-1.5">
+            <dl class="space-y-sm">
               <For each={annotationEntries()}>
                 {([k, val]) => (
                   <div>

@@ -11,11 +11,18 @@
  *   - **U8** severity is carried by the *icon*; state is carried by the
  *     *colour*. That is the same split as the Slack card, and it is the only
  *     thing the two systems share (§M.6).
+ *
+ * The marks themselves live in `./glyphs`, which is where §0.3's rule is
+ * argued: severity gets the ordinal bar ramp because severity is ordered, and
+ * each lifecycle state gets an unrelated shape because lifecycle is not.
  */
-import { type Component, type JSX } from "solid-js";
+import { type Component } from "solid-js";
 
+import { SeverityBars, StateGlyph, WaveGlyph } from "~/components/glyphs";
 import { cn } from "~/lib/cn";
 import type { AckState, State } from "~/api/types";
+
+export { SeverityBars, StateGlyph, type GlyphState } from "~/components/glyphs";
 
 /* -------------------------------------------------------------------------- */
 /* State                                                                      */
@@ -33,13 +40,6 @@ const STATE_STYLE: Record<State, string> = {
   suppressed: "border-suppressed-border bg-suppressed-fill text-suppressed-text",
   resolved: "border-resolved-border bg-resolved-fill text-resolved-text",
   expired: "border-expired-border bg-expired-fill text-expired-text",
-};
-
-const STATE_DOT: Record<State, string> = {
-  firing: "bg-firing-solid",
-  suppressed: "bg-suppressed-solid",
-  resolved: "bg-resolved-solid",
-  expired: "bg-expired-solid",
 };
 
 export const STATE_LABEL: Record<State, string> = {
@@ -83,11 +83,12 @@ export const StateChip: Component<StateChipProps> = (props) => (
     )}
     title={STATE_MEANING[props.state]}
   >
-    <span
-      aria-hidden="true"
+    {/* §0.3: a shape per state, never a fill ramp. The chip's word carries the
+        accessible name, so the mark itself is hidden from assistive tech. */}
+    <StateGlyph
+      state={props.state}
       class={cn(
-        "size-1.5 shrink-0 rounded-full",
-        STATE_DOT[props.state],
+        props.size === "sm" ? "size-3" : "size-3.5",
         props.urgent === true ? "oto-pulse" : "",
       )}
     />
@@ -119,7 +120,7 @@ export const AckChip: Component<{ readonly ackState: AckState; readonly class?: 
       )}
       title="Someone has seen this. It is still firing."
     >
-      <CheckGlyph />
+      <StateGlyph state="acked" tone="inherit" class="size-3" />
       Acked
     </span>
   ) : null;
@@ -153,21 +154,19 @@ const SEVERITY_COLOUR: Record<KnownSeverity, string> = {
 };
 
 /**
- * The severity glyph. Three distinct shapes, so the distinction survives
- * greyscale, colour blindness and a bad monitor: a filled triangle for
- * critical, an outlined diamond for warning, a small circle for info.
+ * §0.3: severity is the one axis that really is ordered, so it — and only it —
+ * gets the ordinal encoding: an ascending count of filled bars. The unfilled
+ * bars stay drawn at low opacity, so `info` and `critical` ink the same box and
+ * a column of severities reads as one ruler rather than three sizes of mark.
+ *
+ * A missing or unrecognised severity inks zero bars: the ruler is present, the
+ * reading is absent. That is a different statement from "info", and an unknown
+ * severity is never coerced into one.
  */
-const SeverityGlyph: Component<{ readonly severity: KnownSeverity }> = (props) => {
-  const shapes: Record<KnownSeverity, JSX.Element> = {
-    critical: <path d="M6 1.2 11.2 10.6H0.8z" fill="currentColor" />,
-    warning: <path d="M6 1.4 10.6 6 6 10.6 1.4 6z" fill="none" stroke="currentColor" stroke-width="1.6" />,
-    info: <circle cx="6" cy="6" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6" />,
-  };
-  return (
-    <svg viewBox="0 0 12 12" class="size-3 shrink-0" aria-hidden="true">
-      {shapes[props.severity]}
-    </svg>
-  );
+const SEVERITY_BARS: Record<KnownSeverity, number> = {
+  critical: 3,
+  warning: 2,
+  info: 1,
 };
 
 export interface SeverityMarkProps {
@@ -190,13 +189,7 @@ export const SeverityMark: Component<SeverityMarkProps> = (props) => {
       )}
       title={`Severity: ${text()}`}
     >
-      {known() ? (
-        <SeverityGlyph severity={known() as KnownSeverity} />
-      ) : (
-        <svg viewBox="0 0 12 12" class="size-3 shrink-0" aria-hidden="true">
-          <rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4" />
-        </svg>
-      )}
+      <SeverityBars filled={known() === null ? 0 : SEVERITY_BARS[known() as KnownSeverity]} />
       {/* U1: the glyph is never the only channel — the word is always available,
           visually when asked for and to assistive tech always. */}
       {props.withLabel === true ? (
@@ -226,7 +219,7 @@ export const FlappingChip: Component<{ readonly class?: string }> = (props) => (
     )}
     title="oto has damped this as flapping. Notifications become update-only with a periodic digest — nothing is dropped."
   >
-    <WaveGlyph />
+    <WaveGlyph class="size-3" />
     Flapping
   </span>
 );
@@ -245,31 +238,3 @@ export const StormChip: Component<{ readonly class?: string }> = (props) => (
   </span>
 );
 
-/* -------------------------------------------------------------------------- */
-/* Glyphs                                                                     */
-/* -------------------------------------------------------------------------- */
-
-const CheckGlyph: Component = () => (
-  <svg viewBox="0 0 12 12" class="size-3 shrink-0" aria-hidden="true">
-    <path
-      d="M2.4 6.4 4.8 8.8 9.6 3.2"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.7"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-  </svg>
-);
-
-const WaveGlyph: Component = () => (
-  <svg viewBox="0 0 12 12" class="size-3 shrink-0" aria-hidden="true">
-    <path
-      d="M1 7.5c1.2 0 1.2-3 2.5-3s1.3 3 2.5 3 1.2-3 2.5-3 1.3 3 2.5 3"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.4"
-      stroke-linecap="round"
-    />
-  </svg>
-);

@@ -81,6 +81,18 @@ import {
   validateConfig,
   type JsonValue,
 } from "./jsonSchema";
+import {
+  CHECK_LABEL,
+  CHECK_ROW,
+  FIELD,
+  FORM,
+  HELP,
+  LEGEND,
+  PANEL_BODY,
+  PANEL_HEADER,
+  ROW,
+  SECTION,
+} from "./rhythm";
 
 const HEALTH_NOTE: Record<ChannelHealthStatus, string> = {
   healthy: "Delivering.",
@@ -107,9 +119,9 @@ export const ChannelsSection: Component = () => {
   const channels = useQuery(() => channelsQuery());
 
   return (
-    <div class="flex flex-col gap-4">
+    <div class={SECTION}>
       <Panel>
-        <PanelHeader>
+        <PanelHeader class={PANEL_HEADER}>
           <PanelTitle>Channels</PanelTitle>
           <Button size="sm" variant="default" onClick={() => setCreating(true)}>
             Add a channel
@@ -141,13 +153,13 @@ export const ChannelsSection: Component = () => {
 
       <Show when={(types.data?.length ?? 0) > 0}>
         <Panel>
-          <PanelHeader>
+          <PanelHeader class={PANEL_HEADER}>
             <PanelTitle>Available providers</PanelTitle>
           </PanelHeader>
-          <ul class="p-3">
+          <ul class={cn(PANEL_BODY, "flex flex-col gap-sm")}>
             <For each={types.data ?? []}>
               {(t) => (
-                <li class="flex flex-wrap items-center gap-1.5 py-1">
+                <li class="flex min-h-6 flex-wrap items-center gap-sm">
                   <span class="text-item font-medium text-ink">{t.display_name}</span>
                   <For each={t.capabilities}>{(cap) => <Chip>{cap}</Chip>}</For>
                 </li>
@@ -185,8 +197,8 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
   }));
 
   return (
-    <li class="border-b border-line px-3 py-2.5 last:border-b-0">
-      <div class="flex flex-wrap items-center gap-2">
+    <li class={cn(ROW, "flex flex-col gap-sm")}>
+      <div class="flex min-h-8 flex-wrap items-center gap-sm">
         <span class="text-item font-medium text-ink">{c().name}</span>
         <Chip>{c().type}</Chip>
         <span
@@ -207,7 +219,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
         </Show>
         <Chip title={VERBOSITY_NOTE[c().verbosity]}>{c().verbosity}</Chip>
 
-        <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-sm">
           <Button size="sm" variant="secondary" busy={test.isPending} onClick={() => test.mutate()}>
             Send a test card
           </Button>
@@ -228,7 +240,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
 
       {/* Credentials are write-only: oto shows the kind and the rotation date,
           never a masked value it would have to invent. */}
-      <div class="mt-1 flex flex-wrap items-center gap-x-3 text-meta text-ink-subtle">
+      <div class="flex flex-wrap items-center gap-x-lg text-meta text-ink-subtle">
         <Show when={c().credential_kind}>
           {(kind) => <span>credential: {kind()}</span>}
         </Show>
@@ -250,7 +262,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
 
       <Show when={c().health_error}>
         {(err) => (
-          <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
+          <p class="border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink">
             {err()}
           </p>
         )}
@@ -260,7 +272,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
         {(result) => (
           <p
             class={cn(
-              "mt-1 rounded-control border px-2 py-1 text-meta leading-snug",
+              "rounded-control border px-sm py-xs text-meta leading-snug",
               result().ok
                 ? "border-line bg-sunken text-ink-muted"
                 : "border-line-strong bg-raised font-medium text-ink",
@@ -274,7 +286,7 @@ const ChannelRow: Component<{ readonly channel: Channel; readonly onEdit: () => 
       </Show>
 
       <Show when={test.error !== null || remove.error !== null}>
-        <ErrorBanner error={test.error ?? remove.error} class="mt-1" />
+        <ErrorBanner error={test.error ?? remove.error} />
       </Show>
     </li>
   );
@@ -407,14 +419,14 @@ const ChannelDialog: Component<{
           </ModalDescription>
         </ModalHeader>
 
-        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+        <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
           <Show when={mutation.error !== null}>
             <ErrorBanner error={mutation.error} />
           </Show>
 
           <Show when={!editing()}>
             <Select<ChannelType>
-              class="flex flex-col gap-1"
+              class={FIELD}
               options={props.types.map((t) => t.type)}
               value={type()}
               onChange={(next) => {
@@ -449,6 +461,7 @@ const ChannelDialog: Component<{
           </Show>
 
           <TextField
+            class={FIELD}
             value={name()}
             validationState={
               (violations().get("name") ??
@@ -465,7 +478,7 @@ const ChannelDialog: Component<{
               </span>
             </TextFieldLabel>
             <TextFieldInput id="ch-name" placeholder="#sre-alerts" />
-            <TextFieldDescription>
+            <TextFieldDescription class={HELP}>
               Unique within the org, compared case-insensitively.
             </TextFieldDescription>
             <TextFieldErrorMessage role="alert">
@@ -477,15 +490,22 @@ const ChannelDialog: Component<{
           <Show
             when={descriptor()}
             fallback={
-              <p class="text-body text-ink-muted">
+              <p class={HELP}>
                 oto has not published a schema for this provider, so there is nothing to configure.
               </p>
             }
           >
-            <fieldset class="rounded-control border border-line p-3">
-              <legend class="px-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
-                Provider configuration
-              </legend>
+            {/*
+              ⛔ A NAMED GROUP, NOT A BOX. This was a `rounded-control border
+              px-lg py-md` fieldset, and the padding put every provider field
+              17px to the right of Name, Credential and Verbosity and made it
+              34px narrower — two left edges and two control widths inside one
+              form, which is what "the settings forms are not aligned" looked
+              like from here. `LEGEND` names the group in small caps, the same
+              voice `PanelTitle` uses one level up, on the shared left edge.
+            */}
+            <fieldset>
+              <legend class={LEGEND}>Provider configuration</legend>
               <SchemaForm
                 fields={fields()}
                 value={config()}
@@ -499,6 +519,7 @@ const ChannelDialog: Component<{
 
           <Show when={(descriptor()?.credential_kinds ?? []).some((k) => k !== "none")}>
             <TextField
+              class={FIELD}
               value={secret()}
               validationState={violations().get("credential.values.token") ? "invalid" : "valid"}
               onChange={setSecret}
@@ -507,7 +528,7 @@ const ChannelDialog: Component<{
                 {editing() ? "Replace credential (optional)" : "Credential"}
               </TextFieldLabel>
               <TextFieldInput id="ch-secret" type="password" autocomplete="off" />
-              <TextFieldDescription>
+              <TextFieldDescription class={HELP}>
                 {editing()
                   ? "Leave blank to keep the current one. oto can never show you the existing value — only a hash is kept."
                   : `This provider accepts: ${(descriptor()?.credential_kinds ?? []).join(", ")}. It is sealed before it touches disk and no endpoint ever returns it.`}
@@ -519,7 +540,7 @@ const ChannelDialog: Component<{
           </Show>
 
           <Select<Verbosity>
-            class="flex flex-col gap-1"
+            class={FIELD}
             options={[...VERBOSITIES]}
             value={verbosity()}
             onChange={(next) => {
@@ -540,19 +561,28 @@ const ChannelDialog: Component<{
                 that is still a real `<select>` with real `<option>`s, so it is
                 what a test — or a password manager — can query by id. */}
             <SelectHiddenSelect id="ch-verbosity" />
-            <SelectDescription>{VERBOSITY_NOTE[verbosity()]}</SelectDescription>
+            <SelectDescription class={HELP}>{VERBOSITY_NOTE[verbosity()]}</SelectDescription>
             <SelectErrorMessage role="alert">{violations().get("verbosity")}</SelectErrorMessage>
             <SelectContent />
           </Select>
 
-          <div class="flex items-center gap-1.5">
-            <Checkbox id="ch-enabled" checked={enabled()} onChange={setEnabled} />
-            <label
-              for="ch-enabled-input"
-              class="inline-flex cursor-pointer select-none items-center text-item text-ink"
-            >
+          {/*
+            The one checkbox on this screen whose label is a sentence and
+            therefore wraps. `items-center` on the row centres the box against
+            the WHOLE wrapped block, which left it ~10px below the line it
+            labels; starting the row and centring the box inside its own 24px
+            floor instead puts it on the first line, where the words are.
+          */}
+          <div class={cn(CHECK_ROW, "items-start")}>
+            <Checkbox
+              class="min-h-6 items-center"
+              id="ch-enabled"
+              checked={enabled()}
+              onChange={setEnabled}
+            />
+            <label for="ch-enabled-input" class={CHECK_LABEL}>
               Enabled
-              <span class="ml-1.5 text-meta text-ink-subtle">
+              <span class="ml-sm text-meta text-ink-subtle">
                 a disabled channel is skipped, and the skip is recorded with a reason rather than
                 dropped
               </span>

@@ -30,6 +30,24 @@
  *     this app doesn't install; swapped for `oto-enter` (see `Popover.tsx`).
  *   - `focus:ring-2 ring-ring ring-offset-2` on the close button dropped —
  *     the global `:focus-visible` rule already rings it (U7).
+ *
+ * ⛔ NO `max-w-lg`/`max-w-sm`/`max-w-md`/`max-w-xl` ANYWHERE IN THIS FILE, AND
+ * NOT IN A CALLER'S `class` EITHER. `index.css`'s `@theme inline` block names
+ * six spacing steps `2xs…xl` (`--spacing-sm`, `--spacing-lg`, …), and in
+ * Tailwind v4 the `max-w-*` utility resolves a *named* key against the spacing
+ * namespace before the container namespace. Registering the steps therefore
+ * silently redefined the whole t-shirt width ladder: `max-w-lg` stopped being
+ * `--container-lg` (32rem) and became `--oto-space-lg` — 16px — so this panel
+ * compiled to a 50px-wide sliver with its text spilling out of both sides. The
+ * width is stated as a spacing multiple (`max-w-128` == 32rem, the width this
+ * panel has always had) because a multiple cannot be shadowed by a named step.
+ *
+ * Layout note, same incident: the panel is centred by the portal's flex box
+ * rather than by `left-1/2 top-1/2 -translate-1/2` on the panel itself. That
+ * lets the portal own the viewport gutter (`p-lg`), which `max-h-screen` on a
+ * self-positioned panel could never leave, so a modal taller than the viewport
+ * now scrolls *inside* a panel that stops short of both edges instead of
+ * running flush off the top and bottom of the screen.
  */
 import type { Component, ComponentProps, JSX, ValidComponent } from "solid-js";
 import { splitProps } from "solid-js";
@@ -46,7 +64,7 @@ const ModalPortal: Component<DialogPrimitive.DialogPortalProps> = (props) => {
   const [, rest] = splitProps(props, ["children"]);
   return (
     <DialogPrimitive.Portal {...rest}>
-      <div class="fixed inset-0 z-50 flex items-start justify-center sm:items-center">
+      <div class="fixed inset-0 z-50 flex items-start justify-center overflow-hidden p-lg sm:items-center">
         {props.children}
       </div>
     </DialogPrimitive.Portal>
@@ -78,15 +96,14 @@ export const ModalContent = <T extends ValidComponent = "div">(
       <ModalOverlay />
       <DialogPrimitive.Content
         class={cn(
-          "fixed left-1/2 top-1/2 z-50 grid max-h-screen w-full max-w-lg -translate-x-1/2 -translate-y-1/2 " +
-            "gap-4 overflow-y-auto rounded-surface border border-line bg-surface p-6 text-ink shadow-lg " +
-            "data-[expanded]:oto-enter",
+          "relative z-50 grid max-h-full w-full max-w-128 gap-lg overflow-y-auto rounded-surface " +
+            "border border-line bg-surface px-xl py-lg text-ink shadow-lg data-[expanded]:oto-enter",
           local.class,
         )}
         {...rest}
       >
         {local.children}
-        <DialogPrimitive.CloseButton class="absolute right-4 top-4 rounded-control opacity-70 transition-opacity hover:bg-raised hover:opacity-100 disabled:pointer-events-none">
+        <DialogPrimitive.CloseButton class="absolute right-lg top-lg rounded-control p-2xs opacity-70 transition-opacity hover:bg-raised hover:opacity-100 disabled:pointer-events-none">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 24 24"
@@ -109,14 +126,19 @@ export const ModalContent = <T extends ValidComponent = "div">(
 
 export const ModalHeader: Component<ComponentProps<"div">> = (props) => {
   const [local, rest] = splitProps(props, ["class"]);
-  return <div class={cn("flex flex-col gap-1.5 text-center sm:text-left", local.class)} {...rest} />;
+  /* `pr-xl` is the close button's berth, not decoration: it sits `right-lg`
+     inside the panel's `px-xl`, so a title long enough to reach it would run
+     underneath the glyph without it. */
+  return (
+    <div class={cn("flex flex-col gap-xs pr-xl text-center sm:text-left", local.class)} {...rest} />
+  );
 };
 
 export const ModalFooter: Component<ComponentProps<"div">> = (props) => {
   const [local, rest] = splitProps(props, ["class"]);
   return (
     <div
-      class={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", local.class)}
+      class={cn("flex flex-col-reverse gap-sm sm:flex-row sm:justify-end", local.class)}
       {...rest}
     />
   );

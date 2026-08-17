@@ -15,6 +15,7 @@ import { Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { absoluteTime, duration } from "~/lib/format";
+import { PANEL_HEADER, PANEL_ROW } from "./rhythm";
 
 /**
  * `resolve_reason` distinguishes "the upstream told us it ended" from "we
@@ -64,10 +65,10 @@ export interface OccurrencePanelProps {
 
 export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
   <Panel>
-    <PanelHeader>
+    <PanelHeader class={PANEL_HEADER}>
       <PanelTitle>Firing episodes</PanelTitle>
       <Show when={props.occurrences.length > 0}>
-        <span class="text-meta text-ink-subtle">{props.occurrences.length} shown</span>
+        <span class="shrink-0 text-meta text-ink-subtle">{props.occurrences.length} shown</span>
       </Show>
     </PanelHeader>
 
@@ -87,17 +88,22 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
             {(occ) => (
               <li
                 class={cn(
-                  "flex items-start gap-2.5 border-b border-line px-3 py-2 last:border-b-0",
-                  occ.id === props.currentId ? "bg-accent-fill" : "",
+                  "flex items-start gap-md border-b border-line last:border-b-0",
+                  PANEL_ROW,
+                  // §0.6: "this is the episode you are looking at" is chrome, not
+                  // state, so it is said with a neutral tone shift rather than
+                  // with the accent tint that used to sit here — the same idiom
+                  // `SnoozePanel` already uses for the snooze in force.
+                  occ.id === props.currentId ? "border-l-2 border-l-ink-muted bg-sunken" : "",
                 )}
               >
                 <span
                   aria-hidden="true"
-                  class={cn("mt-1 h-6 w-[3px] shrink-0 rounded-full", STATE_BAR[occ.state])}
+                  class={cn("mt-2xs h-6 w-2xs shrink-0 rounded-full", STATE_BAR[occ.state])}
                 />
 
                 <div class="min-w-0 flex-1">
-                  <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <div class="flex flex-wrap items-center gap-x-sm gap-y-2xs">
                     <span class="font-mono text-body font-medium text-ink">#{occ.seq}</span>
                     <StateChip state={occ.state} size="sm" />
                     <Show when={occ.ack_state === "acked"}>
@@ -113,7 +119,7 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
                     </span>
                   </div>
 
-                  <div class="mt-0.5 flex flex-wrap items-center gap-x-3 text-meta text-ink-muted">
+                  <div class="mt-2xs flex flex-wrap items-center gap-x-md gap-y-2xs text-meta text-ink-muted">
                     <span title="How long this episode was firing. oto times the signal, not anyone's response.">
                       fired for {duration(occ.duration_seconds)}
                       {occ.ended_at === null || occ.ended_at === undefined ? " so far" : ""}
@@ -155,7 +161,7 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
 
                   <Show when={occ.ack_note}>
                     {(note) => (
-                      <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink-muted">
+                      <p class="mt-sm border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink-muted">
                         {note()}
                       </p>
                     )}

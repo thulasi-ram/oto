@@ -70,17 +70,34 @@ const ThemeItem = (): JSX.Element => {
   );
 };
 
+/**
+ * Row density — and since ADR 0033, THE only place it is set.
+ *
+ * It used to be offered twice: here, and again as a "Display" menu in the alert
+ * screen's filter toolbar. Two controls for one preference is a bad trade even
+ * when they share a signal, and the split said something untrue about the
+ * preference itself — sitting among the filters, density read as a property of
+ * *this list*, when `--oto-row-h` is a property of the person: it survives a
+ * reload, it applies to every table in the product, and it belongs beside the
+ * other two things this menu holds (which theme, which account).
+ *
+ * ⭐ THE WORD "ROWS" IS LOAD-BEARING NOW THAT THERE IS NOWHERE ELSE TO LEARN
+ * THIS FROM. "Comfortable" alone was legible when a labelled `Row density`
+ * toggle existed one screen away; on its own in a three-item menu it is a
+ * mystery. The theme item beside it can afford one word because a sun and a
+ * moon say the rest; there is no such universal glyph for density.
+ */
 const DensityItem = (): JSX.Element => (
   <DropdownMenuItem
     closeOnSelect={false}
     onSelect={() => setDensity(density() === "compact" ? "comfortable" : "compact")}
-    title={`Row density: ${density()}`}
+    title={`Row density: ${density()}. Applies to every table in oto, and is remembered.`}
     aria-label={`Row density: ${density()}. Switch to ${
       density() === "compact" ? "comfortable" : "compact"
     }.`}
   >
     <DensityGlyph compact={density() === "compact"} />
-    <span class="capitalize">{density()}</span>
+    <span class="capitalize">{density()} rows</span>
   </DropdownMenuItem>
 );
 

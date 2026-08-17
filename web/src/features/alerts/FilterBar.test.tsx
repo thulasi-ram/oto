@@ -52,10 +52,32 @@ async function openOption(trigger: HTMLElement, optionName: string | RegExp): Pr
   return screen.getByRole("option", { name: optionName });
 }
 
+/**
+ * Opens one of the toolbar's menus by its trigger.
+ *
+ * ⛔ THIS STEP IS THE COST OF THE TOOLBAR, AND IT IS DELIBERATELY EXPLICIT.
+ * Until ADR 0033 every control here was in the DOM at mount, so a test could
+ * reach straight for `getByRole` — and so could a screen reader. A closed
+ * Kobalte popover renders nothing, so both now have to open it first. What is
+ * *not* behind a menu is asserted separately below ("says on each trigger's
+ * face what it is narrowing by"), because that is the property that makes the
+ * hiding acceptable.
+ *
+ * Matched by a `^`-anchored pattern: a trigger's accessible name grows to
+ * include its value ("Severity critical +1"), so anchoring names the axis
+ * without pinning whatever it happens to be filtering for.
+ */
+async function openMenu(axis: string): Promise<HTMLElement> {
+  fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${axis}`) }));
+  await until(() => expect(screen.getByRole("dialog")).toBeTruthy());
+  return screen.getByRole("dialog");
+}
+
 describe("the enumerable filters", () => {
-  it("offers every lifecycle state the contract serves, each with a word", () => {
+  it("offers every lifecycle state the contract serves, each with a word", async () => {
     stubReferenceData();
     mount();
+    await openMenu("Status");
 
     const group = screen.getByRole("group", { name: "Lifecycle state" });
     const labels = within(group)
@@ -67,9 +89,10 @@ describe("the enumerable filters", () => {
     expectNoUndefined(group as HTMLElement);
   });
 
-  it("toggles a state without disturbing the rest of the filter set", () => {
+  it("toggles a state without disturbing the rest of the filter set", async () => {
     stubReferenceData();
     const { onChange } = mount({ severity: ["critical"] });
+    await openMenu("Status");
 
     const group = screen.getByRole("group", { name: "Lifecycle state" });
     fireEvent.click(within(group).getAllByRole("button")[0]!);
@@ -80,11 +103,12 @@ describe("the enumerable filters", () => {
     expect(next?.severity).toEqual(["critical"]);
   });
 
-  it("keeps a severity that arrived from a link even though it is not one of the common three", () => {
+  it("keeps a severity that arrived from a link even though it is not one of the common three", async () => {
     // `AlertDTO.severity` is a free vocabulary, not an enum. A deployment using
     // `sev1` must see its own word back rather than have it silently dropped.
     stubReferenceData();
     mount({ severity: ["sev1"] });
+    await openMenu("Severity");
 
     const group = screen.getByRole("group", { name: "Severity" });
     expect(within(group).getByText("sev1")).toBeTruthy();
@@ -95,6 +119,7 @@ describe("the orthogonal axes", () => {
   it("defaults snoozed to `any`, because hiding snoozed alerts is how an incident is lost", async () => {
     stubReferenceData();
     mount();
+    await openMenu("Status");
     const trigger = screen.getByTitle(/currently holding its notifications/i);
     const option = await openOption(trigger, /Any \(default/);
     expect(option).toHaveAttribute("aria-selected", "true");
@@ -103,6 +128,7 @@ describe("the orthogonal axes", () => {
   it("maps the snooze control onto a tri-state, never onto a lifecycle state", async () => {
     stubReferenceData();
     const { onChange } = mount();
+    await openMenu("Status");
     const trigger = screen.getByTitle(/currently holding its notifications/i);
 
     const option = await openOption(trigger, "Notifications held");
@@ -115,6 +141,7 @@ describe("the orthogonal axes", () => {
   it("keeps acknowledgement orthogonal to state too", async () => {
     stubReferenceData();
     const { onChange } = mount();
+    await openMenu("Status");
     const trigger = screen.getByTitle(/A receipt on a signal/i);
 
     const option = await openOption(trigger, "Seen by someone");
@@ -231,9 +258,10 @@ describe("the merged search box", () => {
 });
 
 describe("grouping, as tabs", () => {
-  it("offers one tab per axis the contract rolls up on, plus 'All'", () => {
+  it("offers one tab per axis the contract rolls up on, plus 'All'", async () => {
     stubReferenceData();
     mount();
+    await openMenu("Group");
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((t) => t.textContent)).toEqual([
       "All",
@@ -243,9 +271,10 @@ describe("grouping, as tabs", () => {
     ]);
   });
 
-  it("marks exactly the current axis selected, and only it reachable by Tab", () => {
+  it("marks exactly the current axis selected, and only it reachable by Tab", async () => {
     stubReferenceData();
     mount({ groupBy: "namespace" });
+    await openMenu("Group");
     const tabs = screen.getAllByRole("tab");
 
     const byNamespace = tabs.find((t) => t.textContent === "By namespace")!;
@@ -260,16 +289,18 @@ describe("grouping, as tabs", () => {
     }
   });
 
-  it("activates a tab on click", () => {
+  it("activates a tab on click", async () => {
     stubReferenceData();
     const { onChange } = mount();
+    await openMenu("Group");
     fireEvent.click(screen.getByRole("tab", { name: "By alert name" }));
     expect(onChange.mock.calls[0]?.[0]?.groupBy).toBe("alertname");
   });
 
-  it("moves focus on the arrow keys without activating — activation is Enter/Space only", () => {
+  it("moves focus on the arrow keys without activating — activation is Enter/Space only", async () => {
     stubReferenceData();
     const { onChange } = mount();
+    await openMenu("Group");
     const all = screen.getByRole("tab", { name: "All" });
     const byAlertName = screen.getByRole("tab", { name: "By alert name" });
 
@@ -281,6 +312,49 @@ describe("grouping, as tabs", () => {
 
     fireEvent.keyDown(byAlertName, { key: "Enter" });
     expect(onChange.mock.calls[0]?.[0]?.groupBy).toBe("alertname");
+  });
+});
+
+/**
+ * ⭐ THIS IS THE SUITE THAT PAYS FOR THE MENUS.
+ *
+ * Four axes are behind a popover now (ADR 0033), which means their controls are
+ * out of the accessibility tree while it is closed. That is only acceptable
+ * because the *facts* are not: every axis states what it is narrowing by on its
+ * own trigger, at rest, and the total is on a button beside them. Delete these
+ * assertions and the menus stop being a layout decision and start being a
+ * disclosure failure — "why is this list empty?" would be a click away for a
+ * sighted operator and unanswerable for a screen-reader one.
+ */
+describe("what the toolbar says without being opened", () => {
+  it("names each axis it is narrowing by, on the trigger itself", () => {
+    stubReferenceData();
+    mount({
+      state: ["firing"],
+      severity: ["critical", "warning"],
+      since: new Date(Date.now() - 24 * 3_600_000).toISOString(),
+      groupBy: "namespace",
+    });
+
+    // A view is three axes agreeing, so the trigger says the view's name rather
+    // than reciting the axes it is made of.
+    expect(screen.getByRole("button", { name: /^Status\s+Firing/ })).toBeTruthy();
+    // Two severities: the first, and how many more. Never a bare count.
+    expect(screen.getByRole("button", { name: /^Severity\s+critical \+1/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Group\s+namespace/ })).toBeTruthy();
+    expect(screen.getByTitle(/Lower bound on last activity/)).toHaveTextContent("Last 24 hours");
+  });
+
+  it("says only the axis name when that axis is narrowing nothing", () => {
+    stubReferenceData();
+    mount();
+
+    // Not "Status: any" and not a zero — an axis that is doing nothing says its
+    // name and stops, so the ones that ARE doing something are the only words
+    // on the band with a value attached.
+    expect(screen.getByRole("button", { name: "Status" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Severity" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Group" })).toBeTruthy();
   });
 });
 

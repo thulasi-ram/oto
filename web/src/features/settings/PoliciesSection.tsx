@@ -84,6 +84,20 @@ import { idempotencyKey } from "~/lib/format";
 import { formatMatchers, parseMatchers } from "~/lib/matchers";
 import { MatcherInput } from "~/features/alerts/MatcherInput";
 
+import {
+  CHECK_LABEL,
+  CHECK_ROW,
+  FIELD,
+  FIELD_ROW,
+  FORM,
+  HELP,
+  LABEL,
+  LEGEND,
+  PANEL_HEADER,
+  ROW,
+  SECTION,
+} from "./rhythm";
+
 /**
  * Every fact a policy can choose to communicate — READ from the contract's own
  * enum rather than re-typed from it.
@@ -241,9 +255,9 @@ export const PoliciesSection: Component = () => {
   });
 
   return (
-    <div class="flex flex-col gap-4">
+    <div class={SECTION}>
       <Panel>
-        <PanelHeader>
+        <PanelHeader class={PANEL_HEADER}>
           <PanelTitle>Notification policies</PanelTitle>
           <Button size="sm" variant="default" onClick={() => setCreating(true)}>
             Add a policy
@@ -304,14 +318,14 @@ const PolicyRow: Component<{
   }));
 
   return (
-    <li class={cn("border-b border-line px-3 py-2.5 last:border-b-0", p().enabled ? "" : "opacity-60")}>
-      <div class="flex flex-wrap items-center gap-2">
+    <li class={cn(ROW, "flex flex-col gap-sm", p().enabled ? "" : "opacity-60")}>
+      <div class="flex min-h-8 flex-wrap items-center gap-sm">
         <span class="text-item font-medium text-ink">{p().name}</span>
         <Chip title="Lower is evaluated first.">priority {p().priority}</Chip>
         <Show when={!p().enabled}>
           <Chip>disabled</Chip>
         </Show>
-        <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-sm">
           <Button size="sm" variant="secondary" onClick={props.onEdit}>
             Edit
           </Button>
@@ -321,7 +335,7 @@ const PolicyRow: Component<{
         </div>
       </div>
 
-      <div class="mt-1 flex flex-col gap-1 text-meta text-ink-muted">
+      <div class="flex flex-col gap-2xs text-meta text-ink-muted">
         <p>
           <span class="text-ink-subtle">when</span>{" "}
           <code class="font-mono text-ink">
@@ -364,7 +378,7 @@ const PolicyRow: Component<{
       </div>
 
       <Show when={remove.error !== null}>
-        <ErrorBanner error={remove.error} class="mt-1" />
+        <ErrorBanner error={remove.error} />
       </Show>
     </li>
   );
@@ -499,14 +513,14 @@ const PolicyDialog: Component<{
           </ModalDescription>
         </ModalHeader>
 
-        <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+        <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
           <Show when={mutation.error !== null}>
             <ErrorBanner error={mutation.error} />
           </Show>
 
-          <div class="flex flex-wrap gap-3">
-          <div class="min-w-[12rem] flex-[2]">
+          <div class={FIELD_ROW}>
             <TextField
+              class={cn(FIELD, "min-w-[12rem] flex-[2]")}
               value={name()}
               validationState={
                 (localError("name") ?? violations().get("name")) ? "invalid" : "valid"
@@ -527,9 +541,8 @@ const PolicyDialog: Component<{
                 {localError("name") ?? violations().get("name")}
               </TextFieldErrorMessage>
             </TextField>
-          </div>
-          <div class="w-28">
             <TextField
+              class={cn(FIELD, "w-28")}
               value={Number.isFinite(priority()) ? String(priority()) : ""}
               validationState={
                 (localError("priority") ?? violations().get("priority")) ? "invalid" : "valid"
@@ -544,16 +557,15 @@ const PolicyDialog: Component<{
             >
               <TextFieldLabel>Priority</TextFieldLabel>
               <TextFieldInput type="number" min={PRIORITY_MIN} max={PRIORITY_MAX} step={1} />
-              <TextFieldDescription>{`Lower first. ${PRIORITY_MIN}–${PRIORITY_MAX}.`}</TextFieldDescription>
+              <TextFieldDescription class={HELP}>{`Lower first. ${PRIORITY_MIN}–${PRIORITY_MAX}.`}</TextFieldDescription>
               <TextFieldErrorMessage role="alert">
                 {localError("priority") ?? violations().get("priority")}
               </TextFieldErrorMessage>
             </TextField>
           </div>
-        </div>
 
-        <div>
-          <label for="pol-matchers" class="mb-1 block text-body font-medium text-ink-muted">
+        <div class={FIELD}>
+          <label for="pol-matchers" class={LABEL}>
             Matchers
           </label>
           <MatcherInput
@@ -565,7 +577,7 @@ const PolicyDialog: Component<{
             }}
             onCommit={() => undefined}
           />
-          <p class="mt-1 text-meta leading-snug text-ink-subtle">
+          <p class={HELP}>
             All matchers must match. An empty list matches everything, and at most {MATCHERS_MAX} may
             be given. Unlike the alert-list filter, a policy accepts{" "}
             <code class="font-mono">=~</code> and <code class="font-mono">!~</code> — the server
@@ -573,24 +585,23 @@ const PolicyDialog: Component<{
           </p>
           <Show when={localError("matchers") ?? violations().get("matchers")}>
             {(msg) => (
-              <p class="mt-1 text-meta font-medium text-ink" role="alert">
+              <p class="text-meta font-medium text-ink" role="alert">
                 {msg()}
               </p>
             )}
           </Show>
         </div>
 
+        {/* A `<legend>` labels one control group here, so it is a field label —
+            `LABEL` plus the `mb-xs` a legend cannot get from its fieldset's gap,
+            because a rendered legend sits outside that flow. */}
         <fieldset>
-          <legend class="mb-1 text-body font-medium text-ink-muted">Tell these channels</legend>
+          <legend class={cn(LABEL, "mb-xs")}>Tell these channels</legend>
           <Show
             when={props.channels.length > 0}
-            fallback={
-              <p class="text-body text-ink-muted">
-                There are no channels yet, so this policy would have nowhere to send.
-              </p>
-            }
+            fallback={<p class={HELP}>There are no channels yet, so this policy would have nowhere to send.</p>}
           >
-            <div class="flex flex-col gap-1">
+            <div class="flex flex-col gap-xs">
               <For each={props.channels}>
                 {(c) => {
                   const inputId = (): string => `pol-channel-${c.id}`;
@@ -600,7 +611,7 @@ const PolicyDialog: Component<{
                   const disabled = (): boolean =>
                     !channelIds().includes(c.id) && channelIds().length >= CHANNELS_MAX;
                   return (
-                    <div class="flex items-center gap-1.5">
+                    <div class={CHECK_ROW}>
                       <Checkbox
                         id={inputId()}
                         checked={channelIds().includes(c.id)}
@@ -616,13 +627,10 @@ const PolicyDialog: Component<{
                       />
                       <label
                         for={`${inputId()}-input`}
-                        class={cn(
-                          "select-none text-item text-ink",
-                          disabled() ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-                        )}
+                        class={cn(CHECK_LABEL, disabled() && "cursor-not-allowed opacity-50")}
                       >
                         {c.name}
-                        <span class="ml-1.5 text-meta text-ink-subtle">
+                        <span class="ml-sm text-meta text-ink-subtle">
                           {c.type} · {c.verbosity}
                           {c.enabled ? "" : " · disabled"}
                         </span>
@@ -635,14 +643,14 @@ const PolicyDialog: Component<{
           </Show>
           <Show when={localError("channel_ids") ?? violations().get("channel_ids")}>
             {(msg) => (
-              <p class="mt-1 text-meta font-medium text-ink" role="alert">
+              <p class="mt-xs text-meta font-medium text-ink" role="alert">
                 {msg()}
               </p>
             )}
           </Show>
         </fieldset>
 
-        <div>
+        <div class={FIELD}>
           <ToggleGroup
             showLegend
             legend="About these facts"
@@ -659,16 +667,16 @@ const PolicyDialog: Component<{
           </ToggleGroup>
           <Show when={localError("reasons") ?? violations().get("reasons")}>
             {(msg) => (
-              <p class="mt-1 text-meta font-medium text-ink" role="alert">
+              <p class="text-meta font-medium text-ink" role="alert">
                 {msg()}
               </p>
             )}
           </Show>
         </div>
 
-        <div class="flex items-center gap-1.5">
+        <div class={CHECK_ROW}>
           <Checkbox id="pol-enabled" checked={enabled()} onChange={setEnabled} />
-          <label for="pol-enabled-input" class="cursor-pointer select-none text-item text-ink">
+          <label for="pol-enabled-input" class={CHECK_LABEL}>
             Enabled
           </label>
         </div>
@@ -818,18 +826,20 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
       previewPolicy({ alert_id: picked()?.id ?? "", reason: reason(), policy: props.draft }),
   }));
 
+  // Named, not boxed — the same change as the channel dialog's provider group.
+  // The bordered box's `px-lg` put every control in this panel 17px right of the
+  // policy's own fields; the panel is still obviously a separate thing because
+  // its legend says so, in the same small caps `PanelTitle` uses.
   return (
-    <fieldset class="rounded-control border border-line bg-raised p-3">
-      <legend class="px-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
-        Dry run
-      </legend>
+    <fieldset>
+      <legend class={LEGEND}>Dry run</legend>
 
-      <p class="mb-2 text-meta leading-snug text-ink-muted">
+      <p class={cn("mb-md", HELP)}>
         Runs the real policy matcher and the real renderer against a real alert, including this
         unsaved draft, and <span class="font-medium text-ink">sends nothing</span>.
       </p>
 
-      <div class="flex flex-wrap items-end gap-2">
+      <div class={FIELD_ROW}>
         <div class="min-w-[14rem] flex-1">
           {/* Labelled with Kobalte's own `SelectLabel` (matching
               `ChannelsSection.tsx`/`SourcesSection.tsx`), not a hand-written
@@ -855,7 +865,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
               it is the point of the dry run — so it disables itself and says
               "Loading recent alerts…" instead. */}
           <Select<PickedAlert>
-            class="flex flex-col gap-1"
+            class={FIELD}
             options={[...options()]}
             optionValue="id"
             optionTextValue="label"
@@ -867,7 +877,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
               <SelectItem item={itemProps.item}>{itemProps.item.rawValue.label}</SelectItem>
             )}
           >
-            <SelectLabel class="mb-1 block">Against this alert</SelectLabel>
+            <SelectLabel class="block">Against this alert</SelectLabel>
             <SelectTrigger>
               <SelectValue<PickedAlert>>{(state) => state.selectedOption().label}</SelectValue>
             </SelectTrigger>
@@ -878,7 +888,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
 
         <div class="w-52">
           <Select<NotificationReason>
-            class="flex flex-col gap-1"
+            class={FIELD}
             options={[...REASONS]}
             optionTextValue={(r) => REASON_LABEL[r]}
             value={reason()}
@@ -889,7 +899,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
               <SelectItem item={itemProps.item}>{REASON_LABEL[itemProps.item.rawValue]}</SelectItem>
             )}
           >
-            <SelectLabel class="mb-1 block">Simulating</SelectLabel>
+            <SelectLabel class="block">Simulating</SelectLabel>
             <SelectTrigger>
               <SelectValue<NotificationReason>>
                 {(state) => REASON_LABEL[state.selectedOption()]}
@@ -900,7 +910,11 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
           </Select>
         </div>
 
+        {/* `self-end` earns its place here and only here: both fields on this
+            line are a label over a trigger with nothing hanging below, so the
+            row's bottom edge IS the control line. */}
         <Button
+          class="self-end"
           busy={preview.isPending}
           disabled={picked() === null}
           onClick={() => preview.mutate()}
@@ -910,33 +924,33 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
       </div>
 
       <Show when={preview.error !== null}>
-        <ErrorBanner error={preview.error} class="mt-2" />
+        <ErrorBanner error={preview.error} class="mt-md" />
       </Show>
 
       <Show when={preview.data}>
         {(result) => (
-          <div class="mt-3">
+          <div class="mt-lg">
             <Show
               when={result().matched}
               fallback={
-                <p class="rounded-control border border-line-strong border-l-[3px] border-l-ink bg-surface px-2 py-1.5 text-body font-medium leading-snug text-ink">
+                <p class="rounded-control border border-line-strong border-l-[3px] border-l-ink bg-surface px-md py-sm text-body font-medium leading-snug text-ink">
                   Nothing would be sent. No enabled policy — including this draft — matches this
                   alert for that fact, so it would go unreported.
                 </p>
               }
             >
-              <ul class="space-y-1.5">
+              <ul class="flex flex-col gap-sm">
                 <For each={result().results}>
                   {(r) => (
                     <li
                       class={cn(
-                        "rounded-control border px-2 py-1.5",
+                        "flex flex-col gap-xs rounded-control border px-md py-sm",
                         r.would_send
                           ? "border-line bg-surface"
                           : "border-line-strong bg-sunken",
                       )}
                     >
-                      <div class="flex flex-wrap items-center gap-2 text-body">
+                      <div class="flex flex-wrap items-center gap-sm text-body">
                         <span class="font-medium text-ink">{r.channel_name}</span>
                         <Chip>{r.channel_type}</Chip>
                         <Chip title="How the message would be placed in the thread.">{r.mode}</Chip>
@@ -948,7 +962,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
                       <Show
                         when={r.would_send}
                         fallback={
-                          <p class="mt-1 text-meta leading-snug text-ink-muted">
+                          <p class="text-meta leading-snug text-ink-muted">
                             Would not send — {describeSuppression(r.suppressed_reason)}. It would
                             still be recorded with that reason.
                           </p>
@@ -956,7 +970,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
                       >
                         <Show when={r.rendered_fallback}>
                           {(text) => (
-                            <p class="mt-1 border-l-2 border-line-strong pl-2 text-meta leading-snug text-ink">
+                            <p class="border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink">
                               {text()}
                             </p>
                           )}
@@ -969,7 +983,7 @@ const PolicyPreviewPanel: Component<{ readonly draft: CreatePolicyRequest }> = (
             </Show>
 
             <Show when={(result().warnings ?? []).length > 0}>
-              <ul class="mt-2 space-y-0.5">
+              <ul class="mt-md flex flex-col gap-2xs">
                 <For each={result().warnings ?? []}>
                   {(w) => <li class="text-meta leading-snug text-ink-muted">{w}</li>}
                 </For>

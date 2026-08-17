@@ -26,6 +26,8 @@ import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextF
 import { ErrorBanner } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 
+import { FIELD, FIELD_ROW } from "./rhythm";
+
 /**
  * What each stage proves, in one line, for the operator who has never read the
  * SPEC. It is keyed by the contract's own enum so a stage added server-side
@@ -110,8 +112,8 @@ export const DrillPanel: Component<{ readonly sourceID: string }> = (props) => {
   const current = (): DeliveryDrill | undefined => drill.data ?? start.data ?? undefined;
 
   return (
-    <div class="mt-1.5 rounded-control border border-line bg-sunken px-2 py-1.5">
-      <div class="flex flex-wrap items-center gap-2">
+    <div class="flex flex-col gap-sm rounded-control border border-line bg-sunken px-md py-sm">
+      <div class="flex flex-wrap items-center gap-sm">
         <button
           type="button"
           class="text-meta font-medium text-ink underline decoration-line-strong underline-offset-2"
@@ -127,17 +129,21 @@ export const DrillPanel: Component<{ readonly sourceID: string }> = (props) => {
       </div>
 
       <Show when={open()}>
-        <div class="mt-1.5 flex flex-wrap items-end gap-2">
-          <TextField value={severity()} onChange={setSeverity}>
+        {/* The buttons are the default 32px, not `sm`'s 28px, because they stand
+            on a control line: `items-end` flushed a 28px button against a 32px
+            input and left it visibly 4px short at the top. `sm` is for a row's
+            or a header's actions, where there is no input to match. */}
+        <div class={FIELD_ROW}>
+          <TextField class={FIELD} value={severity()} onChange={setSeverity}>
             <TextFieldLabel>severity to fire at (policies usually match on it)</TextFieldLabel>
             <TextFieldInput placeholder="warning" />
           </TextField>
-          <Button size="sm" busy={start.isPending} onClick={() => start.mutate()}>
+          <Button class="self-end" busy={start.isPending} onClick={() => start.mutate()}>
             Run a drill
           </Button>
           <Show when={current() && current()!.status !== "running" && !current()!.disposed_at}>
             <Button
-              size="sm"
+              class="self-end"
               variant="ghost"
               busy={dispose.isPending}
               onClick={() => dispose.mutate()}
@@ -149,7 +155,7 @@ export const DrillPanel: Component<{ readonly sourceID: string }> = (props) => {
         </div>
 
         <Show when={start.error !== null || drill.error !== null || dispose.error !== null}>
-          <ErrorBanner error={start.error ?? drill.error ?? dispose.error} class="mt-1.5" />
+          <ErrorBanner error={start.error ?? drill.error ?? dispose.error} />
         </Show>
 
         <Show when={current()}>{(d) => <DrillResult drill={d()} />}</Show>
@@ -183,18 +189,18 @@ const DrillResult: Component<{ readonly drill: DeliveryDrill }> = (props) => {
   });
 
   return (
-    <div class="mt-1.5">
+    <div class="flex flex-col gap-sm">
       <p class="text-meta font-medium leading-snug text-ink">{headline()}</p>
 
-      <ol class="mt-1.5 flex flex-col gap-0.5">
+      <ol class="flex flex-col gap-2xs">
         <For each={d().stages}>{(stage) => <StageRow stage={stage} />}</For>
       </ol>
 
       <Show when={d().destinations.length > 0}>
-        <ul class="mt-1.5 flex flex-col gap-0.5">
+        <ul class="flex flex-col gap-2xs">
           <For each={d().destinations}>
             {(dest) => (
-              <li class="flex flex-wrap items-center gap-1.5 text-meta text-ink-muted">
+              <li class="flex flex-wrap items-center gap-xs text-meta text-ink-muted">
                 <Chip>{dest.channel_name}</Chip>
                 <span>{dest.status}</span>
                 <span class="text-ink-subtle">{dest.mode}</span>
@@ -215,7 +221,7 @@ const DrillResult: Component<{ readonly drill: DeliveryDrill }> = (props) => {
         </ul>
       </Show>
 
-      <p class="mt-1.5 text-meta leading-snug text-ink-subtle">
+      <p class="text-meta leading-snug text-ink-subtle">
         Started by {d().started_by_label}, <RelativeTime value={d().started_at} label="Started" />{" "}
         ago.{" "}
         <Show
@@ -240,7 +246,7 @@ const StageRow: Component<{ readonly stage: DrillStage }> = (props) => {
     Object.entries(st().facts ?? {}) as [string, string][];
 
   return (
-    <li class="flex items-start gap-1.5 text-meta leading-snug">
+    <li class="flex items-start gap-xs text-meta leading-snug">
       <span
         aria-hidden="true"
         class={cn(

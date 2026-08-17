@@ -4928,7 +4928,7 @@ a distance, unmistakable at a glance, and legible for everyone.
 | U3 | **Dark mode is the default** for an ops tool, with an explicit light option and `prefers-color-scheme` respected on first load. |
 | U4 | **No flashing, no blinking, ever.** The only motion tied to urgency is a slow 2 s opacity pulse on the unacked-critical dot, disabled entirely under `prefers-reduced-motion: reduce`. |
 | U5 | **Saturated hues are state-only (Tier B).** Charts use the neutral/brand ramp `--oto-chart-1…6`, never state hues, unless the chart *is* plotting state. |
-| U6 | Density is a first-class concern: the alert table is a dense operational surface. Pastel must not mean airy — row height 36 px comfortable / 28 px compact. |
+| U6 | Density is a first-class concern: the alert table is an operational surface, and its rhythm is a **token**, never a number at a call site — `--oto-row-h`, read back by `readRowHeight()` so the virtualiser's arithmetic and the CSS can never disagree. **Row height is 48 px comfortable / 36 px compact** (amended from 36/28; see the note below). Density is *space*, not size: the §M.8 type ladder is unchanged by this, and hierarchy comes from weight and colour rather than from inflating text. |
 | U7 | Focus is always visible: `--oto-focus` ring, 2 px, 2 px offset, ≥ 3:1 against both the control and its background. Never `outline: none`. |
 | U8 | Severity (`critical`/`warning`/`info`) is carried by the **icon**; state (`firing`/`acked`/`suppressed`/`resolved`/`expired`) is carried by the **colour**. This is the same split as the Slack card, and it is the only thing the two systems share. |
 | U9 | **Non-urgency motion comes in exactly two kinds** (ADR 0028). **(a) One-shot:** triggered by a discrete event (a mount, an open, a commit), ≤ 200 ms, animating `opacity` and `transform` only, never looping — and a *purely decorative* one-shot (brand motion, carrying no fact) fires **at most once per document**. **(b) Indeterminate-activity:** a loop is permitted only while something is genuinely pending (loading, connecting, in flight), must stop when the pending thing does, and is limited to an opacity cycle of period ≥ 1 s or a uniform rotation. Both kinds: no luminance oscillation beyond U4's prohibition, never the sole carrier of a state fact (U1), and **absent under `prefers-reduced-motion: reduce`**. **No animation announces a connection-state change.** A (b) loop may run *while* the connection is pending, beside the label that says so; nothing may mark the transition itself. Connection health is a labelled Tier-A fact, and a silent channel for it violates U1. **A colour transition is not motion, and is therefore neither kind.** A control settling from one Tier-A token to another on hover, focus or `aria-current` displaces nothing and repeats nothing; U9 binds it only with bounds — colour properties alone (`transition-colors`: never `all`, never a length, never a layout property), **≤ 150 ms**, and **between Tier-A tokens only**, because U5 already reserves saturated hue for state. That is the feedback U7 and Tier A already require, written in CSS rather than in two class names, and the reduced-motion sweep flattens it regardless. |
@@ -4940,6 +4940,16 @@ a distance, unmistakable at a glance, and legible for everyone.
 > header mark's first mount in a document. The first four predate ADR 0028 and are classified
 > there; the fifth is its consequence, and the ADR records why the researched 1400 ms swing and the
 > `connecting → live` trigger were both rejected.
+>
+> **U6's row height was amended from 36 px / 28 px to 48 px / 36 px, and the sentence "pastel must
+> not mean airy" was struck with it.** That clause was written against a worry — that a soft palette
+> would drift into marketing-page whitespace — and the shipped screens overshot it: at 36 px a row
+> fits its content and nothing else, which leaves no room for the per-row actions the alert list now
+> shows persistently rather than revealing on hover. The two numbers live in exactly one place
+> (`--oto-row-h` in `tokens.css`, switched by `[data-density]`), so this is a token edit and not a
+> sweep. **What U6 still forbids is unchanged:** the type ladder does not move with the rows, and a
+> row height written at a call site is still a defect, because `readRowHeight()` and the CSS would
+> then be free to disagree about the same list.
 >
 > **The `transition-colors duration-100` on buttons, primary nav, settings tabs and filter chips is
 > deliberately not in that list.** Five call sites carry it — `primitives.tsx:42` and `:315`,
@@ -4979,7 +4989,7 @@ a distance, unmistakable at a glance, and legible for everyone.
   --oto-state-firing-fill:      #FFEBEA;
   --oto-state-firing-border:    #F5B5B0;
   --oto-state-firing-text:      #8C1D18;
-  --oto-state-firing-solid:     #D7332B;
+  --oto-state-firing-solid:     #D8290E;  /* vermilion; was #D7332B (see note below) */
 
   --oto-state-acked-fill:       #FFF4E0;
   --oto-state-acked-border:     #F0C982;
@@ -5035,7 +5045,8 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
 | `--oto-accent` `#B5305C` | `#FFFDF7` | **5.8:1** | 4.5 (link text) | ✅ |
 | `--oto-text-inverse` `#FFFFFF` | `--oto-accent` `#B5305C` | **5.9:1** | 4.5 (button label) | ✅ |
 | `--oto-state-firing-text` `#8C1D18` | `--oto-state-firing-fill` `#FFEBEA` | **8.0:1** | 4.5 | ✅ |
-| `--oto-state-firing-solid` `#D7332B` | `--oto-bg` `#FDF9EF` | **4.5:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-firing-solid` `#D8290E` | `--oto-bg` `#FDF9EF` | **4.7:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-firing-solid` `#D8290E` | `--oto-surface` `#FFFDF7` | **4.9:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#7A4A00` | `--oto-state-acked-fill` `#FFF4E0` | **6.9:1** | 4.5 | ✅ |
 | `--oto-state-acked-solid` `#C97A00` | `--oto-bg` `#FDF9EF` | **3.2:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-suppressed-text` `#4A4560` | `--oto-state-suppressed-fill` `#F1F0F6` | **8.0:1** | 4.5 | ✅ |
@@ -5051,6 +5062,18 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
 > `--oto-border` and `--oto-border-strong` are **decorative** and are never the sole carrier of
 > meaning. Any border that *does* carry meaning is a Tier-B `-border` or `-solid` token, all of
 > which clear 3:1.
+
+> ⚠️ **`--oto-state-firing-solid` was saturated: `#D7332B` → `#D8290E`, in both themes' spirit
+> (§M.5 carries the dark half).** U5 reserves saturated hue for state so that severity wins every
+> attention contest on the alert list — but light's firing red was the *less* chromatic of the two
+> reds on screen (68% HSL saturation against the beni accent's 58% at a hue only ~23° away), while
+> the accent draws focus rails, links and primary buttons on the same rows. Firing was therefore not
+> reliably the hottest thing on a screen whose whole point is that it is. The new value is a
+> vermilion at 8°/88%: **~28° from the accent and ~28° from `acked`**, the widest separation
+> available between the two neighbours, and its measured contrast on `--oto-bg` *rose* from 4.5:1 to
+> 4.7:1. Hue and chroma moved; the tier did not — this is still Tier B, still state-only, and no
+> other token changed. The pair on `--oto-surface` is tabulated because the alert row body is
+> surface, not page.
 
 ### M.5 Dark palette (default theme)
 
@@ -5084,7 +5107,7 @@ CI asserts each of these — `web/src/design/contrast.test.ts`, and it is a real
   --oto-state-firing-fill:      #331A19;
   --oto-state-firing-border:    #6E2E2A;
   --oto-state-firing-text:      #FFB4AE;
-  --oto-state-firing-solid:     #FF6B60;
+  --oto-state-firing-solid:     #FF5346;  /* vermilion; was #FF6B60 (see §M.4's note) */
 
   --oto-state-acked-fill:       #33260F;
   --oto-state-acked-border:     #6E5320;
@@ -5130,7 +5153,8 @@ note under §M.4's table.
 | `--oto-text-inverse` `#171E2F` | `--oto-accent` `#949DE0` | **6.5:1** | 4.5 (button label) | ✅ |
 | `--oto-border-strong` `#6476AF` | `--oto-surface` `#1F2840` | **3.3:1** | — (decorative hairline only) | n/a |
 | `--oto-state-firing-text` `#FFB4AE` | `--oto-state-firing-fill` `#331A19` | **9.5:1** | 4.5 | ✅ |
-| `--oto-state-firing-solid` `#FF6B60` | `--oto-bg` `#171E2F` | **6.0:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-firing-solid` `#FF5346` | `--oto-bg` `#171E2F` | **5.2:1** | 3.0 (non-text) | ✅ |
+| `--oto-state-firing-solid` `#FF5346` | `--oto-surface` `#1F2840` | **4.6:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-acked-text` `#FFD08A` | `--oto-state-acked-fill` `#33260F` | **10.3:1** | 4.5 | ✅ |
 | `--oto-state-acked-solid` `#F0A93C` | `--oto-bg` `#171E2F` | **8.3:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-suppressed-text` `#C0BAD4` | `--oto-state-suppressed-fill` `#242231` | **8.3:1** | 4.5 | ✅ |
@@ -5141,6 +5165,15 @@ note under §M.4's table.
 | `--oto-state-expired-solid` `#9A8869` | `--oto-bg` `#171E2F` | **4.8:1** | 3.0 (non-text) | ✅ |
 | `--oto-state-info-text` `#A8CDFF` | `--oto-state-info-fill` `#142A44` | **8.9:1** | 4.5 | ✅ |
 | `--oto-state-info-solid` `#5B9CF0` | `--oto-bg` `#171E2F` | **5.9:1** | 3.0 (non-text) | ✅ |
+
+> ⚠️ **The dark half of the firing saturation (`#FF6B60` → `#FF5346`).** Dark's problem was not the
+> accent — ADR 0032 put that at ~233°, nowhere near red — it was that `#FF6B60` carried a 96/255
+> blue-green floor and read salmon. The hue is unchanged at ~4°, so the distance from `acked` (~36°)
+> is unchanged too; only the floor drops, to 70. **This is the one place the change costs
+> something:** red's luminance and its chroma trade against each other, so a hotter red on a dark
+> ground is a dimmer one, and the measured ratio falls 6.0:1 → 5.2:1 (4.6:1 on `--oto-surface`).
+> Both remain far above U2's 3:1 for non-text, and chroma is the channel that carries urgency here —
+> `acked` at 8.3:1 out-*luminates* firing in this theme either way, and always did.
 
 ### M.6 The Slack palette is a SEPARATE, UNCHANGED system
 

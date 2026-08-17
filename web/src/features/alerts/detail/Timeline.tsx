@@ -36,6 +36,7 @@ import {
   type MarkerShape,
 } from "./eventKinds";
 import { RuleChangePayload, isRuleChangePayload } from "./RuleDrift";
+import { PANEL_BODY } from "./rhythm";
 
 export interface TimelineProps {
   readonly events: readonly AlertEvent[];
@@ -61,7 +62,7 @@ export const Timeline: Component<TimelineProps> = (props) => (
           {(c) => <ToggleGroupItem value={c}>{CATEGORY_LABEL[c]}</ToggleGroupItem>}
         </For>
       </ToggleGroup>
-      <div class="ml-auto flex items-center gap-2">
+      <div class="ml-auto flex items-center gap-sm">
         <Show when={props.categories.length > 0}>
           <Button size="sm" variant="ghost" onClick={() => props.onCategoriesChange([])}>
             Show all
@@ -87,7 +88,7 @@ export const Timeline: Component<TimelineProps> = (props) => (
         />
       }
     >
-      <ol class="min-h-0 flex-1 overflow-auto px-3 py-2">
+      <ol class={cn("min-h-0 flex-1 overflow-auto", PANEL_BODY)}>
         <For each={props.events}>
           {(event, i) => (
             <TimelineRow
@@ -102,7 +103,7 @@ export const Timeline: Component<TimelineProps> = (props) => (
     </Show>
 
     <Show when={props.hasMore}>
-      <div class="border-t border-line px-3 py-2 text-center">
+      <div class={cn("border-t border-line text-center", PANEL_BODY)}>
         <Button variant="secondary" size="sm" busy={props.loading} onClick={props.onLoadMore}>
           Load earlier events
         </Button>
@@ -138,7 +139,7 @@ const TimelineRow: Component<{
   return (
     <>
       <Show when={newDay()}>
-        <li class="flex items-center gap-2 pb-1 pt-3 first:pt-0" aria-hidden="true">
+        <li class="flex items-center gap-sm pb-sm pt-lg first:pt-0" aria-hidden="true">
           <span class="text-meta font-semibold uppercase tracking-[0.06em] text-ink-subtle">
             {calendarDay(props.event.occurred_at)}
           </span>
@@ -146,7 +147,7 @@ const TimelineRow: Component<{
         </li>
       </Show>
 
-      <li class="group relative flex gap-3 pl-1">
+      <li class="group relative flex gap-md pl-2xs">
         {/* The rail. It is a background element, so it must never be the only
             thing carrying meaning — the marker glyph and the label do that. */}
         <div class="relative flex w-4 shrink-0 justify-center" aria-hidden="true">
@@ -156,8 +157,8 @@ const TimelineRow: Component<{
           </span>
         </div>
 
-        <div class="min-w-0 flex-1 pb-3">
-          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <div class="min-w-0 flex-1 pb-lg">
+          <div class="flex flex-wrap items-baseline gap-x-sm gap-y-2xs">
             <ClockTime value={props.event.occurred_at} class="shrink-0 text-ink-subtle" />
 
             <span class="shrink-0 text-body font-medium text-ink">{kind().label}</span>
@@ -188,21 +189,21 @@ const TimelineRow: Component<{
 
           {/* The server's pre-rendered one-liner. Rendered verbatim, which is
               what lets an older UI display a newer event type correctly. */}
-          <p class="mt-0.5 text-item leading-snug text-ink">{props.event.summary}</p>
+          <p class="mt-2xs text-item leading-snug text-ink">{props.event.summary}</p>
 
           <Show when={kind().note}>
-            <p class="mt-0.5 text-meta leading-snug text-ink-subtle">{kind().note}</p>
+            <p class="mt-2xs text-meta leading-snug text-ink-subtle">{kind().note}</p>
           </Show>
 
           {/* A rule change is the one payload that gets a first-class rendering,
               because "the threshold moved under you" is the single most valuable
               thing this timeline can tell anyone. */}
           <Show when={isRuleChangePayload(props.event.type, payload())}>
-            <RuleChangePayload payload={payload()} class="mt-2" />
+            <RuleChangePayload payload={payload()} class="mt-md" />
           </Show>
 
           <Show when={hasPayload() && !isRuleChangePayload(props.event.type, payload())}>
-            <div class="mt-1">
+            <div class="mt-sm">
               <Button
                 variant="link"
                 size="sm"
@@ -230,7 +231,7 @@ const TimelineRow: Component<{
  * event payloads are — reads as English instead of as a code block.
  */
 const PayloadTable: Component<{ readonly payload: Record<string, unknown> }> = (props) => (
-  <dl class="mt-1 grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-x-3 gap-y-0.5 rounded-control border border-line bg-sunken px-2 py-1.5">
+  <dl class="mt-sm grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-x-md gap-y-2xs rounded-control border border-line bg-sunken px-md py-sm">
     <For each={Object.entries(props.payload)}>
       {([key, value]) => (
         <>

@@ -26,8 +26,8 @@ import { createSignal, Show, type Component } from "solid-js";
 
 import { ApiError } from "~/api/client";
 import { useSession } from "~/api/session";
+import { Logo } from "~/components/Logo";
 import { Button } from "~/components/ui/Button";
-import { Chime } from "~/components/ui/Chime";
 import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextField";
 
 /** What the operator is told, per failure. Never more specific than the server. */
@@ -72,15 +72,20 @@ const LoginRoute: Component = () => {
 
   return (
     <div class="flex flex-1 flex-col items-center justify-center gap-10 p-8">
-      {/* The one screen with no incident on it.
+      {/* The one screen with no incident on it, and therefore the only one that
+          gets the mark itself rather than a piece of it.
           Everywhere else the fūrin would compete with something an operator is
-          trying to read, so it stays at 16px in the chrome and 32px in an empty
-          panel. Here there is nothing to compete with, and the negative space
-          around it — ma — is doing as much work as the glyph: `gap-10` against
-          the form's own `gap-4` is what makes it read as a threshold rather than
-          as a decoration bolted to a field. Still, quiet, and no larger than the
-          empty state's glyph. */}
-      <Chime size="glyph" class="text-line-strong" />
+          trying to read, so it stays at 16px in the chrome (beside the
+          signature) and 32px in an empty panel. Here there is nothing to
+          compete with: the ensō, the bell inside it and the brush "oto" get to
+          be the whole composition they were drawn as. The negative space around
+          them — ma — is doing as much work as the ink: `gap-10` against the
+          form's own `gap-4` is what makes this read as a threshold rather than
+          as a decoration bolted to a field.
+          `text-line-strong` rather than `text-ink`, for the reason the glyph
+          was: this is a greeting, not a heading, and the sentence under it is
+          what the person came here to act on. */}
+      <Logo class="size-28 text-line-strong" />
 
       <form
         class="flex w-full max-w-[320px] flex-col gap-4"

@@ -129,6 +129,17 @@ import {
   type KnobCopy,
   type KnobKey,
 } from "./tuningCopy";
+import {
+  CHECK_LABEL,
+  CHECK_ROW,
+  FIELD,
+  FORM,
+  HELP,
+  PANEL_BODY,
+  PANEL_HEADER,
+  ROW,
+  SECTION,
+} from "./rhythm";
 
 /* -------------------------------------------------------------------------- */
 /* The Alertmanager reference, READ from each source                          */
@@ -547,7 +558,7 @@ export const TuningSection: Component = () => {
   };
 
   return (
-    <div class="flex flex-col gap-4 pb-24">
+    <div class={cn(SECTION, "pb-24")}>
       <AlertmanagerPanel
         sources={refs()}
         basis={am()}
@@ -589,7 +600,7 @@ export const TuningSection: Component = () => {
                   answer is WHICH KEY to go and edit, not "the request failed".
                 */}
                 <Match when={managedByConfig(save.error)}>
-                  <div class="flex flex-col gap-1">
+                  <div class="flex flex-col gap-xs">
                     <span class="font-medium">
                       This deployment's configuration owns one of these settings, so nothing was
                       changed.
@@ -609,7 +620,7 @@ export const TuningSection: Component = () => {
                     <Button
                       size="sm"
                       variant="secondary"
-                      class="mt-1 self-start"
+                      class="mt-sm self-start"
                       onClick={() => void view.refetch()}
                     >
                       Reload what is in force
@@ -617,7 +628,7 @@ export const TuningSection: Component = () => {
                   </div>
                 </Match>
                 <Match when={true}>
-                  <div class="flex flex-col gap-1">
+                  <div class="flex flex-col gap-xs">
                     <span class="font-medium">oto refused the write, and nothing was changed.</span>
                     <span class="text-ink-muted">
                       The bounds are enforced on the server against the merged state, so a value can
@@ -649,7 +660,7 @@ export const TuningSection: Component = () => {
               return (
                 <Show when={keys().length > 0}>
                   <Panel>
-                    <PanelHeader class="flex-col items-start gap-0.5">
+                    <PanelHeader class={cn(PANEL_HEADER, "flex-col items-start gap-2xs")}>
                       <PanelTitle>{group.title}</PanelTitle>
                       <p class="text-meta leading-snug text-ink-muted">{group.blurb}</p>
                     </PanelHeader>
@@ -670,9 +681,15 @@ export const TuningSection: Component = () => {
               dirtyKeys().length === 0
             }
           >
-            <Panel class="px-3 py-8 text-center">
+            <Panel class="px-lg py-xl text-center">
               <p class="text-item font-medium text-ink">This org has changed nothing.</p>
-              <p class="mx-auto mt-1 max-w-md text-body leading-relaxed text-ink-muted">
+              {/* `max-w-112` (28rem), not `max-w-md`: `index.css` registers an
+                  oto spacing step named `md`, and Tailwind v4 resolves a NAMED
+                  `max-w-*` against the spacing namespace before the container
+                  namespace — so `max-w-md` compiles to `max-width: 12px` and
+                  this paragraph rendered one character wide. A numeric multiple
+                  cannot be shadowed by a named step. */}
+              <p class="mx-auto mt-sm max-w-112 text-body leading-relaxed text-ink-muted">
                 Every value in force is oto's shipped default, and each will follow that default if
                 oto moves it. That is a legitimate state, not an empty one.
               </p>
@@ -767,8 +784,8 @@ const ProvenanceBadge: Component<{ readonly provenance: TimingProvenance }> = (p
 const TimingCell: Component<{ readonly field: AmFieldCopy; readonly am: AmRef }> = (props) => {
   const timing = (): AmTiming => props.am[props.field.key];
   return (
-    <div class="flex min-w-0 flex-col gap-1">
-      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+    <div class="flex min-w-0 flex-col gap-xs">
+      <div class="flex flex-wrap items-baseline gap-x-sm gap-y-2xs">
         <code class="font-mono text-meta text-ink-muted">{props.field.label}</code>
         <span class="text-item font-medium text-ink tabular-nums">
           {timing().provenance === "unknown" ? "—" : duration(timing().seconds)}
@@ -826,12 +843,12 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
   return (
     <li
       class={cn(
-        "flex flex-col gap-1 border-b border-line px-2 py-1.5 last:border-b-0",
+        "flex flex-col gap-xs border-b border-line px-md py-sm last:border-b-0",
         props.route.reaches_oto && "bg-accent-fill/40",
         props.route.unreachable && "opacity-60",
       )}
     >
-      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <div class="flex flex-wrap items-baseline gap-x-sm gap-y-2xs">
         <Show
           when={props.route.path.length > 1}
           fallback={<span class="text-meta font-medium text-ink">the top-level route</span>}
@@ -871,7 +888,7 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
           </span>
         </Show>
       </div>
-      <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-meta">
+      <div class="flex flex-wrap gap-x-md gap-y-2xs text-meta">
         {cell("group_wait", props.route.group_wait)}
         {cell("group_interval", props.route.group_interval)}
         {cell("repeat_interval", props.route.repeat_interval)}
@@ -895,7 +912,7 @@ const RouteList: Component<{
 }> = (props) => {
   const [open, setOpen] = createSignal(props.openByDefault);
   return (
-    <div class="mt-2">
+    <div class="mt-md">
       <Show
         when={open()}
         fallback={
@@ -910,14 +927,14 @@ const RouteList: Component<{
           </For>
         </ul>
         <Show when={props.am.routesDropped > 0}>
-          <p class="mt-1 text-micro leading-snug text-ink-muted">
+          <p class="mt-sm text-micro leading-snug text-ink-muted">
             {props.am.routesDropped} more route{props.am.routesDropped === 1 ? "" : "s"} exist and
             were not read: this configuration is past the size oto resolves, so the list above is
             not the whole tree.
           </p>
         </Show>
         <Show when={!props.openByDefault}>
-          <Button size="sm" variant="ghost" class="mt-1" onClick={() => setOpen(false)}>
+          <Button size="sm" variant="ghost" class="mt-sm" onClick={() => setOpen(false)}>
             Hide routes
           </Button>
         </Show>
@@ -946,7 +963,7 @@ const RouteOrigin: Component<{ readonly am: AmRef }> = (props) => {
     RECEIVER_BASIS_COPY[props.am.receiverBasis];
 
   return (
-    <div class="mt-2 rounded-control border border-line px-2 py-1.5 text-meta leading-snug text-ink-muted">
+    <div class="rounded-control border border-line px-md py-sm text-meta leading-snug text-ink-muted">
       <Switch>
         {/* The answer. One route reaches oto, or several that agree. */}
         <Match when={props.am.route === "oto_receiver"}>
@@ -1056,9 +1073,9 @@ const SourceTimings: Component<{
   readonly isBasis: boolean;
   readonly onChoose: () => void;
 }> = (props) => (
-  <li class={cn("border-b border-line px-3 py-3 last:border-b-0", props.isBasis && "bg-accent-fill/40")}>
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <div class="flex flex-wrap items-center gap-2">
+  <li class={cn(ROW, "flex flex-col gap-md", props.isBasis && "bg-accent-fill/40")}>
+    <div class="flex min-h-8 flex-wrap items-center justify-between gap-sm">
+      <div class="flex flex-wrap items-center gap-sm">
         <span class="text-item font-medium text-ink">{props.am.sourceName}</span>
         <Show when={props.isBasis}>
           <span class="rounded-chip border border-accent-border bg-accent-fill px-1.5 py-px text-meta font-semibold leading-4 text-ink">
@@ -1066,7 +1083,7 @@ const SourceTimings: Component<{
           </span>
         </Show>
       </div>
-      <div class="flex items-center gap-2 text-meta text-ink-subtle">
+      <div class="flex items-center gap-sm text-meta text-ink-subtle">
         <Show
           when={props.am.observedAt !== null}
           fallback={<span>never read</span>}
@@ -1083,14 +1100,14 @@ const SourceTimings: Component<{
       </div>
     </div>
 
-    <div class="mt-2 grid gap-3 md:grid-cols-3">
+    <div class="grid gap-md md:grid-cols-3">
       <For each={AM_FIELDS}>{(f) => <TimingCell field={f} am={props.am} />}</For>
     </div>
 
     <RouteOrigin am={props.am} />
 
     <Show when={props.am.defaultsFromVersion !== null}>
-      <p class="mt-2 text-meta leading-snug text-ink-subtle">
+      <p class="text-meta leading-snug text-ink-subtle">
         Defaulted values are Alertmanager{" "}
         <span class="font-mono">{props.am.defaultsFromVersion}</span>&apos;s documented 30s / 5m / 4h.
         <Show when={!props.am.defaultsVerified}>
@@ -1114,7 +1131,7 @@ const AlertmanagerPanel: Component<{
   readonly onChooseBasis: (id: string) => void;
 }> = (props) => (
   <Panel>
-    <PanelHeader class="flex-col items-start gap-0.5">
+    <PanelHeader class={cn(PANEL_HEADER, "flex-col items-start gap-2xs")}>
       <PanelTitle>Your Alertmanager</PanelTitle>
       <p class="text-meta leading-snug text-ink-muted">
         Read from each source&apos;s own running configuration on the status call oto already makes.
@@ -1124,22 +1141,25 @@ const AlertmanagerPanel: Component<{
 
     <Switch>
       <Match when={props.pending}>
-        <div class="flex flex-col gap-2 px-3 py-3">
+        <div class={cn(PANEL_BODY, "flex flex-col gap-sm")}>
           <Skeleton class="h-2.5 w-40" />
           <Skeleton class="h-2 w-full" />
         </div>
       </Match>
 
       <Match when={props.error !== null}>
-        <div class="px-3 py-3">
+        <div class={PANEL_BODY}>
           <ErrorState error={props.error} onRetry={props.onRetry} />
         </div>
       </Match>
 
       <Match when={props.sources.length === 0}>
-        <div class="px-3 py-6 text-center">
+        <div class="px-lg py-xl text-center">
           <p class="text-item font-medium text-ink">No source has been read yet.</p>
-          <p class="mx-auto mt-1 max-w-lg text-body leading-relaxed text-ink-muted">
+          {/* `max-w-128` (32rem) rather than `max-w-lg` — see the note on the
+              "changed nothing" paragraph above: an oto spacing step named `lg`
+              shadows the named container size, and `max-w-lg` compiles to 16px. */}
+          <p class="mx-auto mt-sm max-w-128 text-body leading-relaxed text-ink-muted">
             Every duration on this screen is a multiple of an Alertmanager&apos;s{" "}
             <code class="font-mono text-meta">group_wait</code>,{" "}
             <code class="font-mono text-meta">group_interval</code> and{" "}
@@ -1167,7 +1187,7 @@ const AlertmanagerPanel: Component<{
       </Match>
     </Switch>
 
-    <div class="border-t border-line bg-raised px-3 py-2">
+    <div class={cn("border-t border-line bg-raised", PANEL_BODY)}>
       <p class="text-meta leading-snug text-ink-subtle">
         oto does not read your rule files, so every verdict that depends on a rule&apos;s{" "}
         <code class="font-mono text-ink-muted">for:</code> assumes{" "}
@@ -1194,7 +1214,10 @@ const OriginSummary: Component<{
   readonly onlyOverrides: boolean;
   readonly setOnlyOverrides: (next: boolean) => void;
 }> = (props) => (
-  <div class="flex flex-wrap items-center justify-between gap-3 rounded-surface border border-line bg-raised px-3 py-2">
+  <div class={cn(
+    "flex flex-wrap items-center justify-between gap-md rounded-surface border border-line bg-raised",
+    PANEL_BODY,
+  )}>
     <p class="text-body leading-snug text-ink">
       <span class="font-medium">
         {props.overrides} of {props.total}
@@ -1218,13 +1241,13 @@ const OriginSummary: Component<{
         by that configuration — still stored, and back in force the moment the config key goes.
       </Show>
     </p>
-    <div class="flex items-center gap-1.5">
+    <div class={CHECK_ROW}>
       <Checkbox
         id="tuning-only-overrides"
         checked={props.onlyOverrides}
         onChange={props.setOnlyOverrides}
       />
-      <label for="tuning-only-overrides-input" class="text-body text-ink">
+      <label for="tuning-only-overrides-input" class={CHECK_LABEL}>
         Show only what this org has changed
       </label>
     </div>
@@ -1326,7 +1349,7 @@ const Note: Component<{ readonly kind: "warn" | "quiet"; readonly children: JSX.
   // reading as urgent.
   <p
     class={cn(
-      "rounded-control border px-2 py-1 text-meta leading-snug",
+      "rounded-control border px-md py-sm text-meta leading-snug",
       props.kind === "warn"
         ? "border-line-strong bg-raised font-medium text-ink"
         : "border-line bg-sunken text-ink-muted",
@@ -1372,6 +1395,7 @@ const KnobSelect: Component<{
   readonly onChange: (next: string) => void;
 }> = (props) => (
   <Select<KnobOption>
+    class={FIELD}
     options={[...props.options]}
     optionValue="value"
     optionTextValue="label"
@@ -1454,6 +1478,14 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
 
   const error = (): string | undefined => ctl().localError(key()) ?? ctl().serverError(key());
 
+  /** Whether either per-knob action applies. Both conditions are restated from
+   *  the two `<Show>`s inside the row, so the row itself can be withheld: an
+   *  always-mounted empty `<div>` is still a flex item, and it was spending a
+   *  `gap-md` — 12px of dead space under every knob that has neither. */
+  const hasActions = (): boolean =>
+    (ctl().origin(key()) === "org" && !ctl().managed(key())) ||
+    (ctl().dirty(key()) && !ctl().resetQueued(key()));
+
   const suggestion = (): number | null => {
     const g = guidance();
     if (g?.suggest === undefined) return null;
@@ -1465,29 +1497,35 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
 
   return (
     <li
-      class={cn(
-        "border-b border-line px-3 py-3 last:border-b-0",
-        ctl().dirty(key()) ? "bg-accent-fill/40" : "",
-      )}
+      class={cn(ROW, ctl().dirty(key()) ? "bg-accent-fill/40" : "")}
     >
-      <div class="grid gap-x-5 gap-y-3 md:grid-cols-[17rem_minmax(0,1fr)]">
+      <div class="grid gap-x-xl gap-y-md md:grid-cols-[17rem_minmax(0,1fr)]">
         {/* ---- control column ---- */}
-        <div class="flex min-w-0 flex-col gap-2">
-          <div class="flex flex-wrap items-center gap-2">
+        <div class="flex min-w-0 flex-col gap-md">
+          <div class="flex min-h-6 flex-wrap items-center gap-sm">
             <span class="text-item font-medium text-ink">{props.knob.label}</span>
             <OriginBadge origin={ctl().origin(key())} configKey={ctl().configKey(key())} />
           </div>
 
+          {/*
+            ⭐ THE CONTROL AND THE LINE UNDER IT ARE ONE `FIELD`. The "in force …
+            oto accepts …" line is this control's help text, and it used to sit
+            in the column's own `gap-md` flow — 12px under the input, where the
+            identical line in the channel, policy and source dialogs sits 6px
+            under it. Wrapping the pair makes the settings screen answer with one
+            number instead of two.
+          */}
+          <div class={FIELD}>
           <Switch>
             <Match when={props.knob.kind === "boolean"}>
-              <div class="flex items-center gap-1.5">
+              <div class={CHECK_ROW}>
                 <Checkbox
                   id={id()}
                   checked={ctl().text(key()) === "true"}
                   disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                   onChange={(next) => ctl().setText(key(), next ? "true" : "false")}
                 />
-                <label for={`${id()}-input`} class="text-body text-ink">
+                <label for={`${id()}-input`} class={CHECK_LABEL}>
                   {ctl().text(key()) === "true"
                     ? "On — the resolve is broadcast into the channel"
                     : "Off — the resolve stays in the thread"}
@@ -1529,13 +1567,14 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
 
             <Match when={numeric()}>
               <TextField
+                class={FIELD}
                 value={ctl().text(key())}
                 disabled={ctl().resetQueued(key()) || ctl().managed(key())}
                 validationState={error() !== undefined ? "invalid" : "valid"}
                 onChange={(next) => ctl().setText(key(), next)}
               >
                 <TextFieldLabel>Value</TextFieldLabel>
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-sm">
                   <TextFieldInput
                     id={id()}
                     type="number"
@@ -1554,7 +1593,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
           </Switch>
 
           <Show when={numeric() && Number.isFinite(ctl().num(key()))}>
-            <p class="text-meta text-ink-subtle">
+            <p class={HELP}>
               in force: {readValue(props.knob.kind, ctl().num(key()))}
               <Show when={b()}>
                 {(bound) => (
@@ -1568,6 +1607,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
               </Show>
             </p>
           </Show>
+          </div>
 
           {/*
             ⭐ THE SHADOWED OVERRIDE, SHOWN AND NOT HIDDEN. "You have 900s stored
@@ -1597,7 +1637,8 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
             </Note>
           </Show>
 
-          <div class="flex flex-wrap items-center gap-2">
+          <Show when={hasActions()}>
+          <div class="flex flex-wrap items-center gap-sm">
             {/*
               ⛔ NO RESET ON A MANAGED KEY. The server refuses one with the same
               409 as a write, and for a sharper reason: unlike a write, a reset
@@ -1621,6 +1662,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
               </Button>
             </Show>
           </div>
+          </Show>
 
           <Show when={ctl().resetQueued(key())}>
             <Note kind="quiet">
@@ -1632,13 +1674,13 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
         </div>
 
         {/* ---- explanation column ---- */}
-        <div class="flex min-w-0 flex-col gap-2">
+        <div class="flex min-w-0 flex-col gap-md">
           <p class="text-body leading-relaxed text-ink-muted">{props.knob.what}</p>
 
-          <dl class="flex flex-col gap-1.5">
+          <dl class="flex flex-col gap-sm">
             <For each={props.knob.risks}>
               {(risk) => (
-                <div class="grid grid-cols-[minmax(0,5.5rem)_minmax(0,1fr)] gap-x-2">
+                <div class="grid grid-cols-[minmax(0,5.5rem)_minmax(0,1fr)] gap-x-md">
                   <dt class="text-meta font-semibold uppercase tracking-[0.04em] text-ink-subtle">
                     {risk.label}
                   </dt>
@@ -1648,7 +1690,7 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
             </For>
           </dl>
 
-          <p class="border-l-2 border-line-strong pl-2 text-body leading-relaxed text-ink-muted">
+          <p class="border-l-2 border-line-strong pl-sm text-body leading-relaxed text-ink-muted">
             <span class="font-medium text-ink">Against your Alertmanager. </span>
             {props.knob.amRule}
           </p>
@@ -1743,9 +1785,9 @@ const MentionListField: Component<{
   };
 
   return (
-    <div class="flex flex-col gap-1.5">
+    <div class={FIELD}>
       <Show when={list().length > 0}>
-        <ul class="flex flex-wrap gap-1">
+        <ul class="flex flex-wrap gap-2xs">
           <For each={list()}>
             {(item) => (
               <li class="inline-flex items-center gap-1 rounded-chip border border-line bg-raised px-1 py-px font-mono text-meta text-ink-muted">
@@ -1766,13 +1808,14 @@ const MentionListField: Component<{
       </Show>
 
       <TextField
+        class={FIELD}
         value={entry()}
         disabled={props.disabled || full()}
         validationState={props.error !== undefined ? "invalid" : "valid"}
         onChange={setEntry}
       >
         <TextFieldLabel>Add an entry</TextFieldLabel>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-sm">
           <TextFieldInput
             id={props.id}
             class="min-w-0 font-mono"
@@ -1784,15 +1827,18 @@ const MentionListField: Component<{
               }
             }}
           />
-          <Button size="sm" disabled={props.disabled || full()} onClick={add}>
+          {/* Default size, not `sm`: this button stands beside the input on the
+              control line, and `sm`'s 28px against a 32px field left it centred
+              2px short at each end. */}
+          <Button disabled={props.disabled || full()} onClick={add}>
             Add
           </Button>
         </div>
-        <TextFieldDescription>{MENTION_TOKEN_HINT}</TextFieldDescription>
+        <TextFieldDescription class={HELP}>{MENTION_TOKEN_HINT}</TextFieldDescription>
         <TextFieldErrorMessage role="alert">{props.error}</TextFieldErrorMessage>
       </TextField>
 
-      <p class="text-meta text-ink-subtle" aria-live="polite">
+      <p class={HELP} aria-live="polite">
         {list().length} of {MENTION_LIST_MAX} used
         {full() ? " — the cap the server enforces" : ""}.
       </p>
@@ -1818,7 +1864,10 @@ const SaveBar: Component<{
       aria-label="Unsaved changes"
       class="fixed inset-x-0 bottom-0 z-40 border-t border-line-strong bg-raised motion-safe:oto-enter"
     >
-      <div class="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-3 px-4 py-2.5">
+      {/* Full-bleed rather than `mx-auto max-w-5xl`: with the section rail on the
+          left the content column is no longer centred in the viewport, so a
+          centred bar would sit visibly off its own form. */}
+      <div class="flex w-full flex-wrap items-center gap-md px-xl py-md">
         <p class="text-body text-ink" aria-live="polite">
           <span class="font-medium">
             {props.dirty} unsaved change{props.dirty === 1 ? "" : "s"}
@@ -1836,7 +1885,7 @@ const SaveBar: Component<{
             </span>
           </Show>
         </p>
-        <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-sm">
           <Button size="sm" variant="ghost" disabled={props.busy} onClick={props.onDiscard}>
             Discard
           </Button>
@@ -1872,7 +1921,10 @@ const LeaveGuard: Component<{
       if (!isOpen) props.onStay();
     }}
   >
-    <ModalContent class="max-w-sm">
+    {/* `max-w-96` (24rem) rather than `max-w-sm`: the oto spacing step named
+        `sm` shadows the named container size in Tailwind v4, so `max-w-sm`
+        compiled to `max-width: 8px` and this leave guard opened as a sliver. */}
+    <ModalContent class="max-w-96">
       <ModalHeader>
         <ModalTitle>Leave without saving?</ModalTitle>
         <ModalDescription>
@@ -1880,7 +1932,7 @@ const LeaveGuard: Component<{
         </ModalDescription>
       </ModalHeader>
 
-      <div class="flex flex-col gap-3 text-item leading-relaxed text-ink">
+      <div class={cn(FORM, "text-item leading-relaxed text-ink")}>
         <p>
           {props.count} change{props.count === 1 ? "" : "s"} on this screen{" "}
           {props.count === 1 ? "has" : "have"} not been sent to oto. Leaving now discards{" "}
@@ -1909,18 +1961,18 @@ const TuningSkeleton: Component = () => (
   <For each={[3, 3, 3]}>
     {(rows) => (
       <Panel>
-        <PanelHeader>
+        <PanelHeader class={PANEL_HEADER}>
           <Skeleton class="h-2.5 w-40" />
         </PanelHeader>
         <For each={Array.from({ length: rows })}>
           {() => (
-            <div class="grid gap-x-5 gap-y-3 border-b border-line px-3 py-3 last:border-b-0 md:grid-cols-[17rem_minmax(0,1fr)]">
-              <div class="flex flex-col gap-2">
+            <div class={cn(ROW, "grid gap-x-xl gap-y-md md:grid-cols-[17rem_minmax(0,1fr)]")}>
+              <div class="flex flex-col gap-md">
                 <Skeleton class="h-2.5 w-32" />
                 <Skeleton class="h-8 w-28" />
                 <Skeleton class="h-2 w-40" />
               </div>
-              <div class="flex flex-col gap-2">
+              <div class="flex flex-col gap-md">
                 <Skeleton class="h-2 w-full" />
                 <Skeleton class="h-2 w-11/12" />
                 <Skeleton class="h-2 w-10/12" />
