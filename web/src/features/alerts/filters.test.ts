@@ -25,6 +25,7 @@ import {
   compileFilters,
   compileRollupFilters,
   filtersFromSearch,
+  isExpiredOnly,
   isUnfiltered,
   matcherTextFromSelector,
   searchFromFilters,
@@ -117,6 +118,41 @@ describe("counting what is on", () => {
 
   it("counts each axis once", () => {
     expect(activeFilterCount(f({ state: ["firing", "resolved"], ack: "acked", q: "x" }))).toBe(3);
+  });
+
+  // §M.9 / ADR 0035. `expired` is the one state whose meaning is transience —
+  // §M.1: it reads "oto stopped hearing about this", never "resolved" — and an
+  // empty list under that filter used to borrow the sentence a typo'd cluster
+  // name gets. This predicate is what tells the two apart, and it is deliberately
+  // the narrow reading: `expired` plus anything else is a filtered search that
+  // happens to include expired, and the honest sentence for an empty one of
+  // those is the generic one.
+  it("recognises a list looking at `expired` and at nothing else", () => {
+    expect(isExpiredOnly(f({ state: ["expired"] }))).toBe(true);
+    // Grouping is a view rather than a filter, exactly as `isUnfiltered` has it.
+    expect(isExpiredOnly(f({ state: ["expired"], groupBy: "alertname" }))).toBe(true);
+
+    expect(isExpiredOnly(DEFAULT_FILTERS)).toBe(false);
+    expect(isExpiredOnly(f({ state: ["firing"] }))).toBe(false);
+    expect(isExpiredOnly(f({ state: ["expired", "resolved"] }))).toBe(false);
+    expect(isExpiredOnly(f({ state: ["expired"], namespace: ["prod"] }))).toBe(false);
+    expect(isExpiredOnly(f({ state: ["expired"], q: "disk" }))).toBe(false);
+    expect(isExpiredOnly(f({ state: ["expired"], snoozed: false }))).toBe(false);
+  });
+
+  // The two predicates read the same eleven fields, and the whole point of
+  // splitting them was that neither could drift from the other. They must stay
+  // mutually exclusive: a list is unfiltered, or it is looking at expired, never
+  // both — the `<Switch>` on `/alerts` picks the first arm that matches.
+  it("cannot call the same view both unfiltered and expired-only", () => {
+    for (const view of [
+      DEFAULT_FILTERS,
+      f({ state: ["expired"] }),
+      f({ state: ["expired"], q: "x" }),
+      f({ q: "x" }),
+    ]) {
+      expect(isUnfiltered(view) && isExpiredOnly(view)).toBe(false);
+    }
   });
 });
 

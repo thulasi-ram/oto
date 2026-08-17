@@ -34,6 +34,8 @@ import {
   ModalHeader,
   ModalTitle,
 } from "~/components/ui/Modal";
+import { PageEmptyState } from "~/components/ui/states";
+import { PageHeading } from "~/components/ui/surfaces";
 import { setTheme, theme } from "~/design/theme";
 import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 
@@ -254,6 +256,57 @@ const SnoozeBand: Component = () => {
   );
 };
 
+/**
+ * §M.9's decorative ink, in both themes, on one page.
+ *
+ * ⭐ IT IS HERE BECAUSE INK IS THE ONE THING A UNIT TEST CANNOT SEE. `ink.test.ts`
+ * proves the composites, the derivation and the `forced-colors` guard;
+ * `Ink.test.tsx` proves the DOM contract. Neither can tell you that a mask
+ * letterboxed itself into invisibility, that a brush is sitting a step too high,
+ * or that the two heading hues collapse into one another in dark — which they
+ * nearly do, and which this band is the fastest way to see (ADR 0032).
+ *
+ * Every shape and both hues appear, including the `accent` variant no shipping
+ * heading spends, because "legal but unspent" is exactly the thing a reviewer
+ * needs to look at before spending it.
+ */
+const InkBand: Component = () => (
+  <Band
+    title="Decorative ink (§M.9)"
+    note="Tier A, carries no fact, static. A brush goes behind a page heading and nowhere else; a motif goes in the corner of a full-page empty state. Toggle the theme above — all of it is one declaration per tint."
+  >
+    <div class="flex w-full flex-col gap-lg">
+      <div class="flex flex-col gap-md bg-surface p-lg">
+        <PageHeading brush="swipe">HighMemoryUtilisation</PageHeading>
+        <PageHeading brush="rule">payments · critical · eu-west-1</PageHeading>
+        <PageHeading brush="swipe" hue="accent">
+          HighMemoryUtilisation
+        </PageHeading>
+        <PageHeading brush="rule" hue="accent">
+          payments · critical · eu-west-1
+        </PageHeading>
+      </div>
+
+      <div class="grid grid-cols-2 gap-md">
+        <div class="h-64 bg-surface">
+          <PageEmptyState
+            motif="kumo"
+            title="No alerts match these filters."
+            body="The filters are doing something — that is not the same as there being nothing here."
+          />
+        </div>
+        <div class="h-64 bg-surface">
+          <PageEmptyState
+            motif="sakura"
+            title="Nothing has gone quiet."
+            body="`expired` means oto stopped hearing about an alert — never that it resolved."
+          />
+        </div>
+      </div>
+    </div>
+  </Band>
+);
+
 /* -------------------------------------------------------------------------- */
 /* The route                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -267,6 +320,7 @@ const ProtoUiPreviewRoute: Component = () => (
         <LongModalBand />
         <ConfirmModalBand />
         <SnoozeBand />
+        <InkBand />
       </div>
     </div>
   </QueryClientProvider>

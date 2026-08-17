@@ -106,8 +106,30 @@ export const DEFAULT_FILTERS: AlertFilters = {
 
 /** True when nothing is filtering — used to tell "no matches" from "nothing here". */
 export function isUnfiltered(f: AlertFilters): boolean {
+  return f.state.length === 0 && nothingElseFilters(f);
+}
+
+/**
+ * True when the list is looking at `expired` and at nothing else.
+ *
+ * ⭐ IT EXISTS TO GIVE ONE EMPTY STATE ITS OWN SENTENCE. `expired` is the one
+ * state whose meaning is transience — §M.1: it reads *"oto stopped hearing about
+ * this"*, never *"resolved"* — and an empty list under that filter used to say
+ * "No alerts match these filters", which is true of a typo'd cluster name too.
+ * The two facts are different and the screen now says which one it is (and
+ * carries the §M.9 motif that says it a second way).
+ *
+ * ⛔ EXACTLY ONE STATE, AND NOTHING ELSE ACTIVE. `expired` plus a namespace is a
+ * filtered search that happens to include expired, and the honest sentence for
+ * an empty one of those is the generic one.
+ */
+export function isExpiredOnly(f: AlertFilters): boolean {
+  return f.state.length === 1 && f.state[0] === "expired" && nothingElseFilters(f);
+}
+
+/** Every filter except `state` at its default. */
+function nothingElseFilters(f: AlertFilters): boolean {
   return (
-    f.state.length === 0 &&
     f.severity.length === 0 &&
     f.cluster.length === 0 &&
     f.namespace.length === 0 &&

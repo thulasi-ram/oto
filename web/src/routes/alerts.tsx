@@ -38,7 +38,7 @@ import { qk } from "~/api/keys";
 import { useSession } from "~/api/session";
 import type { Alert, AlertRollup, RollupAxis, RuleSnapshot } from "~/api/types";
 import { Button } from "~/components/ui/Button";
-import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
+import { EmptyState, ErrorState, PageEmptyState, TableSkeleton } from "~/components/ui/states";
 import { count as fmtCount } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { AlertTable } from "~/features/alerts/AlertTable";
@@ -49,6 +49,7 @@ import {
   compileFilters,
   compileRollupFilters,
   filtersFromSearch,
+  isExpiredOnly,
   isUnfiltered,
   searchFromFilters,
   withMatcher,
@@ -482,7 +483,13 @@ export default function AlertsRoute() {
 
       <Switch>
         {/* A blocked query is not an error and not an empty list — it is a
-            filter oto refuses to approximate. It gets its own state. */}
+            filter oto refuses to approximate. It gets its own state.
+
+            ⛔ AND IT DELIBERATELY GETS NO §M.9 MOTIF, THOUGH IT IS A FULL-PAGE
+            EMPTY STATE. Kumo means stillness — nothing is wrong, and that is the
+            point. Here something IS wrong and there is a fix two lines below;
+            putting a serene cloud behind a refusal would be the ink saying the
+            opposite of the sentence. */}
         <Match when={blocked()}>
           <EmptyState
             title="This filter cannot be served exactly, so nothing was requested."
@@ -502,7 +509,8 @@ export default function AlertsRoute() {
               </div>
             </Match>
             <Match when={buckets().length === 0}>
-              <EmptyState
+              <PageEmptyState
+                motif="kumo"
                 title="No alerts match these filters, so there is nothing to group."
                 body="The buckets are computed from the same filtered set as the list. An empty roll-up means an empty list, not a grouping problem."
                 action={
@@ -535,30 +543,47 @@ export default function AlertsRoute() {
           </div>
         </Match>
 
+        {/* Three empty lists, three different facts about the world, and until
+            §M.9 the middle one did not exist. `expired` is the one state whose
+            meaning is transience — §M.1: it reads "oto stopped hearing about
+            this", never "resolved" — and an empty list under that filter used to
+            borrow the sentence a typo'd cluster name gets. The order matters:
+            `isExpiredOnly` is strictly narrower than the fallback, so it has to
+            be asked first. */}
         <Match when={rows().length === 0}>
-          <Show
-            when={isUnfiltered(filters())}
-            fallback={
-              <EmptyState
-                title="No alerts match these filters."
-                body="The filters are doing something — that is not the same as there being nothing here. Clear them to see everything oto has."
+          <Switch>
+            <Match when={isUnfiltered(filters())}>
+              <PageEmptyState
+                motif="kumo"
+                title="Nothing has fired yet."
+                body="oto is listening. When your Alertmanager sends its first webhook, the alert and everything that happens to it afterwards will appear here."
+              />
+            </Match>
+            <Match when={isExpiredOnly(filters())}>
+              <PageEmptyState
+                motif="sakura"
+                title="Nothing has gone quiet."
+                body="`expired` means oto stopped hearing about an alert — never that it resolved. No alert currently carries that state, which is the good version of this screen."
                 action={
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setFilters(DEFAULT_FILTERS)}
-                  >
+                  <Button variant="secondary" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
                     Clear filters
                   </Button>
                 }
               />
-            }
-          >
-            <EmptyState
-              title="Nothing has fired yet."
-              body="oto is listening. When your Alertmanager sends its first webhook, the alert and everything that happens to it afterwards will appear here."
-            />
-          </Show>
+            </Match>
+            <Match when={true}>
+              <PageEmptyState
+                motif="kumo"
+                title="No alerts match these filters."
+                body="The filters are doing something — that is not the same as there being nothing here. Clear them to see everything oto has."
+                action={
+                  <Button variant="secondary" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>
+                    Clear filters
+                  </Button>
+                }
+              />
+            </Match>
+          </Switch>
         </Match>
 
         <Match when={true}>

@@ -30,7 +30,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~
 import { Chip } from "~/components/ui/surfaces";
 import { TextField, TextFieldInput, TextFieldLabel } from "~/components/ui/TextField";
 import { ToggleGroup, ToggleGroupItem } from "~/components/ui/ToggleGroup";
-import { EmptyState, ErrorState, TableSkeleton } from "~/components/ui/states";
+import { ErrorState, PageEmptyState, TableSkeleton } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
 import { count as fmtCount } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
@@ -226,7 +226,8 @@ export default function GroupsRoute() {
           <TableSkeleton rows={10} cols={5} />
         </Match>
         <Match when={all().length === 0}>
-          <EmptyState
+          <PageEmptyState
+            motif="kumo"
             title="No groups match."
             body="A group appears when Alertmanager routes a notification to oto. If nothing has been routed yet, there is nothing to group."
           />

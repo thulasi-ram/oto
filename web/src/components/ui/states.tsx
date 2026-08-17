@@ -13,11 +13,12 @@
  *   - An error shows the request id, because that is the string that makes a
  *     support conversation short.
  */
-import { For, Show, type Component, type JSX, type ParentComponent } from "solid-js";
+import { For, Show, splitProps, type Component, type JSX, type ParentComponent } from "solid-js";
 
 import { ApiError } from "~/api/client";
 import { Chime } from "./Chime";
 import { Button } from "./Button";
+import { Ink, clearColumn } from "./Ink";
 import { cn } from "~/lib/cn";
 
 /* -------------------------------------------------------------------------- */
@@ -36,7 +37,14 @@ export const EmptyState: Component<EmptyStateProps> = (props) => (
     class={cn("flex flex-col items-center justify-center gap-2 px-6 py-14 text-center", props.class)}
   >
     {/* A quiet chime mark — the product's own glyph rather than a generic
-        "no data" illustration, and the only decorative art in the app. */}
+        "no data" illustration.
+
+        It used to say "and the only decorative art in the app", which stopped
+        being true with §M.9: a full-page empty state may also carry an ambient
+        motif. What is still true, and is the reason this component did not grow
+        a prop for it, is that THIS glyph is the only art the *shared* empty
+        state has — see `PageEmptyState` for the six sub-panels that would
+        otherwise render six washes on one quiet alert. */}
     <Chime size="glyph" class="text-line-strong" />
     <p class="text-title font-medium text-ink">{props.title}</p>
     <Show when={props.body}>
@@ -50,6 +58,89 @@ export const EmptyState: Component<EmptyStateProps> = (props) => (
     </Show>
   </div>
 );
+
+/**
+ * The two ambient motifs a FULL-PAGE empty state may carry — SPEC §M.9,
+ * ADR 0035. Chosen because their traditional meaning already matches the state,
+ * not because they are decorative.
+ *
+ *   kumo   — cloud, stillness. Nothing is wrong, and that is the point.
+ *   sakura — *mono no aware*, transience. `expired`, and nowhere else.
+ *
+ * ⛔ ONE MOTIF PER STATE, NEVER BOTH. The moment a panel carries clouds *and*
+ * petals the distinction they exist to draw is gone — which is why this is a
+ * single required prop rather than a set of optional ones.
+ *
+ * ⛔ SAKURA IS GATED, AND THE GATE IS THE POINT. A petal that appears on every
+ * empty panel stops meaning transience within a day. `expired` is the one state
+ * whose meaning *is* transience — §M.1 is explicit that it reads "oto stopped
+ * hearing about this", never "resolved" — and the whole reason this component
+ * exists is that on screen it was indistinguishable from a filter that matched
+ * nothing.
+ */
+export type EmptyMotif = "kumo" | "sakura";
+
+/**
+ * Where each motif sits, and how big. Both preserve their asset's aspect (200×80
+ * and 72×72), because a stretched cloud reads as smoke and a stretched petal
+ * reads as a leaf — the assets carry `preserveAspectRatio="none"` so that a box
+ * of the wrong shape distorts visibly rather than letterboxing the mask into
+ * nothing, and these two numbers are what keeps it from having to.
+ */
+const MOTIF: Readonly<Record<EmptyMotif, { readonly size: string; readonly position: string }>> = {
+  // Mist drifts in from the edge and trails off, the way suyari-gumo does.
+  kumo: { size: "20rem 8rem, 100% 100%", position: "left -3rem bottom 2rem, center" },
+  // One petal, already fallen, on the other side. Square: the art is rotated
+  // inside its own box, so a non-square box would clip the corners it turns into.
+  sakura: { size: "5rem 5rem, 100% 100%", position: "right 3rem bottom 2rem, center" },
+};
+
+/**
+ * A full-page empty state: the sentence, plus one corner-anchored motif.
+ *
+ * ⛔ THIS IS A SEPARATE COMPONENT AND NOT A PROP ON `EmptyState`, FOR ONE
+ * CONCRETE REASON. `EmptyState` has eighteen call sites and six of them are
+ * sub-panels on a single alert-detail page — delivery, enrichment, occurrences,
+ * timeline, rule drift, snoozes. A wash on the shared component renders six of
+ * them on one quiet alert, and at six a gesture becomes a texture. The shared
+ * component is therefore untouched, and this one is reachable only from the
+ * handful of screens that fill a page on their own.
+ *
+ * ⭐ THE MOTIF CANNOT REACH THE TEXT, AND NOT BECAUSE AN OPACITY WAS CHOSEN
+ * CAREFULLY. `clearColumn` intersects a transparent band across the middle
+ * 28rem with the art, and the sentence is capped at `max-w-96` (24rem) inside
+ * it — so the ink is geometrically excluded at every viewport width, and on a
+ * narrow one it simply disappears rather than sliding under the words.
+ *
+ * ⛔ AND IT IS NEVER THE ONLY CHANNEL (U1). The copy already says the whole
+ * fact; the ink is a second reading of it. Every state below must still be
+ * correct with the ink removed. Nothing here moves, either — U9's decorative
+ * one-shot budget is spent by the fūrin's greeting (ADR 0028), so the obvious
+ * next thought (drifting clouds, falling petals) is forbidden rather than
+ * merely unimplemented.
+ */
+export const PageEmptyState: Component<EmptyStateProps & { readonly motif: EmptyMotif }> = (
+  props,
+) => {
+  // `splitProps` rather than reading `props.title`/`props.body` across: it keeps
+  // the getters, so the sentence stays reactive, and it forwards an ABSENT
+  // optional as absent — which `exactOptionalPropertyTypes` requires and an
+  // explicit `body={props.body}` does not do.
+  const [mine, rest] = splitProps(props, ["motif", "class"]);
+
+  return (
+    <div class="relative flex min-h-0 flex-1 flex-col justify-center overflow-hidden">
+      <Ink
+        motif={mine.motif}
+        size={MOTIF[mine.motif].size}
+        position={MOTIF[mine.motif].position}
+        carve={clearColumn("28rem")}
+        class="absolute inset-0"
+      />
+      <EmptyState {...rest} class={cn("relative", mine.class)} />
+    </div>
+  );
+};
 
 /* -------------------------------------------------------------------------- */
 /* Loading                                                                    */

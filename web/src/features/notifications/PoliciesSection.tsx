@@ -87,7 +87,7 @@ import {
   SelectValue,
 } from "~/components/ui/Select";
 import { Chip, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
-import { EmptyState, ErrorBanner, ErrorState, LoadingLine } from "~/components/ui/states";
+import { ErrorBanner, ErrorState, LoadingLine, PageEmptyState } from "~/components/ui/states";
 import {
   TextField,
   TextFieldDescription,
@@ -307,7 +307,8 @@ export const PoliciesSection: Component = () => {
             <ErrorState error={policies.error} onRetry={() => void policies.refetch()} />
           </Match>
           <Match when={(policies.data?.data.length ?? 0) === 0}>
-            <EmptyState
+            <PageEmptyState
+              motif="kumo"
               title="No policies."
               body="With no policy, every notification is recorded as suppressed with reason `no_policy`. oto keeps a complete history and tells nobody — which is a choice worth making deliberately."
             />
