@@ -75,7 +75,36 @@ SELECT g.id, g.state_version, g.group_labels, min(o.started_at) AS unacked_since
    -- axis exists -- so the one place that genuinely means "firing and audible"
    -- has to write it down.
    AND a.suppression_reason IS NULL
+   -- ⛔ AND A CASE HOLDING AN UPSTREAM RESOLVE IS NOT ONE TO NAG ABOUT EITHER.
+   -- Since migration 00057 a resolve inside the retention window W does NOT close
+   -- the episode: the close is HELD on resolve_pending_at and the case stays
+   -- open, so a re-fire inside W lands in it instead of minting the next seq.
+   --
+   -- ⚠️ THE STATE COLUMN CANNOT SEE THAT, AND THAT IS WHY THIS LINE EXISTS. The
+   -- deferral is written as a transition with From == To
+   -- (internal/alerts/service/lifecycle.go), so alerts.state STAYS 'firing' for
+   -- the whole window and a.state = 'firing' above cannot tell "still burning"
+   -- apart from "resolved, close held". Without this predicate the held-open case
+   -- keeps minting unacked reminders about an alert upstream has ALREADY called
+   -- resolved -- exactly the noise W exists to remove, re-made by the one sweep
+   -- that never heard about W. Case.ClosePending() is this same question in the
+   -- domain, and case_pending_pair_ck makes the two pending columns agree, so
+   -- naming the indexed one names both.
+   AND o.resolve_pending_at IS NULL
    AND o.ack_state = 'unacked'
+   -- ⛔ THE LITERAL 'alert_group' IS LOAD-BEARING AND IT IS TIED TO ONE ALLOCATION.
+   -- This NOT EXISTS is the once-per-generation LATCH, and it can only find the
+   -- reminder it is latching on if the reminder recorded the same subject it looks
+   -- for. The unacked_reminder reason is allocated SubjectAlertGroup in
+   -- internal/notification/domain/reason.go, so the pair written by notify.go is
+   -- (alert_group, group_id) and that is what is probed here.
+   --
+   -- ⚠️ MOVING unacked_reminder TO ANOTHER SUBJECT WOULD SILENTLY UNLATCH IT.
+   -- Nothing would fail: this clause would simply stop matching the row it wrote,
+   -- every sweep would find the group again, and one reminder stage (§G.9.1) would
+   -- become a nag every sweep interval -- the ladder oto refuses, built by accident.
+   -- If that allocation ever changes, this literal changes with it, in the same
+   -- commit. Correct as written; do not "generalise" it.
    AND NOT EXISTS (
          SELECT 1 FROM notifications n
           WHERE n.org_id = g.org_id

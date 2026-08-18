@@ -130,14 +130,17 @@ type Mode string
 
 // The delivery modes.
 const (
-	// ModePostRoot posts a new root message. It happens once per AlertGroup
-	// generation and is the only genuinely at-risk operation on recovery (§G.5).
+	// ModePostRoot posts a new root message. It happens once per THREAD, and a
+	// thread is keyed by its SUBJECT — an alert, a case or a group since migration
+	// 00056, and always the AlertGroup generation in v1. It is the only genuinely
+	// at-risk operation on recovery (§G.5).
 	ModePostRoot Mode = "post_root"
 	// ModeUpdateRoot amends the root in place. This is the PRIMARY mechanism:
 	// `repeat interval elapsed` is update-only, never a repost (C8).
 	ModeUpdateRoot Mode = "update_root"
-	// ModeThreadReply appends a reply to the group's thread. Replies are the
-	// exception, not the rule.
+	// ModeThreadReply appends a reply to the SUBJECT's thread — the group's, while
+	// v1 keys every thread by the AlertGroup generation. Replies are the exception,
+	// not the rule.
 	ModeThreadReply Mode = "thread_reply"
 	// ModeBroadcastReply surfaces a thread reply in-channel (ADR 0020). It is for
 	// the transitions an on-call engineer would be angry to have missed, and it is

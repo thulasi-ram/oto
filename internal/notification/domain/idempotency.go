@@ -7,19 +7,62 @@ import (
 )
 
 // SubjectKind is what a Notification is about — the closed set of
-// `notifications.subject_kind` (notifications_subjkind_ck).
+// `notifications.subject_kind` (notifications_subjkind_ck, widened to three
+// members by migration 00056 and to four by 00058) and of
+// `channel_threads.subject_kind` (threads_subjkind_ck).
 //
-// v1 has exactly one member. It exists as a type anyway because it is hashed
-// into the idempotency key: the day a second kind appears, keys minted for the
-// first must not collide with it, and that is only true if the kind was in the
-// hash from the beginning.
+// It has always been hashed into the idempotency key, and that foresight is what
+// let the second and third kinds arrive without re-keying anything: the same
+// Reason at the same `state_version` about a Case and about its group are two
+// intents rather than a collision, because the kind was in the pre-image from the
+// beginning.
+//
+// ⛔ THE KIND IS WHAT THE FACT IS ABOUT, NEVER WHERE IT IS DELIVERED.
+// `notifications.group_id` is the delivery target for the eighteen signal Reasons
+// and a thread is keyed by the AlertGroup generation whatever this says. `digest`
+// is the exception in both halves: it has no group (notifications_target_ck) and
+// its thread is keyed by the policy.
 type SubjectKind string
 
-// SubjectAlertGroup is the only v1 subject: one AlertGroup GENERATION.
+// SubjectAlertGroup is one AlertGroup GENERATION — a re-opened group is a new
+// generation and therefore a new subject.
+//
+// ⭐ IT KEEPS THE SPELLING `alert_group` while `enrichments.subject_kind` spells
+// the same altitude `group`; migration 00056 records why the two vocabularies
+// differ by one word. Rows already carry `alert_group` under `notif_subject_idx`
+// and `threads_subject_uniq`, and re-spelling a persisted enum value to match a
+// neighbouring table buys nothing and re-keys everything.
+//
+// The other two members are declared in reason.go, beside the Reason → SubjectKind
+// allocation that gives them meaning.
 const SubjectAlertGroup SubjectKind = "alert_group"
 
+// subjectKinds is the closed set, and it is the SPELLING half of the contract:
+// exactly the four values notifications_subjkind_ck and threads_subjkind_ck
+// admit. WHICH of them a given fact may claim is a separate question, answered by
+// `reasonSubjects` in reason.go.
+var subjectKinds = map[SubjectKind]struct{}{
+	SubjectAlert:      {},
+	SubjectCase:       {},
+	SubjectAlertGroup: {},
+	// `digest` (migration 00058) is admitted by both CHECKs, and it is the one kind
+	// whose two tables mean different things by `subject_id`: a NOTIFICATION's
+	// digest subject is (policy, window) and carries the policy id, while a
+	// THREAD's digest subject is the POLICY alone — one ongoing conversation per
+	// policy per channel, one reply per window.
+	SubjectDigest: {},
+}
+
 // Valid reports whether k is in the closed set.
-func (k SubjectKind) Valid() bool { return k == SubjectAlertGroup }
+//
+// ⚠️ IT USED TO BE `k == SubjectAlertGroup`, WHICH WENT FALSE THE MOMENT A
+// NOTIFICATION COULD SAY `case`. A membership test that names one member of a set
+// that has grown does not fail loudly — it rejects the new, honest values as
+// unknown, which is the shape of bug this whole change exists to remove.
+func (k SubjectKind) Valid() bool {
+	_, ok := subjectKinds[k]
+	return ok
+}
 
 // String renders the kind as stored.
 func (k SubjectKind) String() string { return string(k) }

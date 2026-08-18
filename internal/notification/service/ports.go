@@ -38,6 +38,32 @@ type PolicyStore interface {
 	ListLive(ctx context.Context, s db.TenantScope) ([]domain.Policy, error)
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Policy, error)
 	ListWithUnackedReminder(ctx context.Context, s db.TenantScope, orgDefaultSeconds *int) ([]domain.Policy, error)
+	// ListWithDigest is the digest tick's whole view of configuration: the live
+	// policies that carry a window (`digest_window_s`), in evaluation order. Unlike
+	// `ListLive` it is not walked to a first match — every digest policy is its own
+	// subscription — so the order buys a stable tick rather than a routing decision.
+	ListWithDigest(ctx context.Context, s db.TenantScope) ([]domain.Policy, error)
+}
+
+// DigestStore is the read model the digest tick folds: what happened in a window,
+// and which window this policy last covered.
+//
+// ⭐ IT IS TWO READS AND NO WRITE, WHICH IS THE POINT OF TICK EVALUATION. The
+// alternative — evaluating a digest event-driven, as each case opens — needs durable
+// per-window counters and per-policy timers, and every one of them is a row that can
+// disagree with the facts it is counting. Here the count is a query over rows that
+// are already stored, and the cursor is `max(digest_window_start)` over the digests
+// themselves, so the only state the tick keeps is state a digest was actually sent
+// for.
+type DigestStore interface {
+	// Buckets aggregates ONE window ONCE per tenant, per generation, so that N
+	// digest policies fold the same rows instead of running N window queries. The
+	// window is half-open, [start, end), so a boundary instant is counted once.
+	Buckets(ctx context.Context, s db.TenantScope, start, end time.Time, limit int) ([]repository.DigestBucket, error)
+	// LastWindow is the "last window covered" cursor, or the zero time for a policy
+	// that has never digested — which means "cover one window", never "cover
+	// everything since the policy was created".
+	LastWindow(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (time.Time, error)
 }
 
 // NotificationStore persists intents.
@@ -45,7 +71,10 @@ type NotificationStore interface {
 	Insert(ctx context.Context, s db.TenantScope, n domain.Notification) (domain.Notification, bool, error)
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Notification, error)
 	SetStatus(ctx context.Context, s db.TenantScope, id uuid.UUID, st domain.Status, now time.Time) error
-	CountRecent(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectID uuid.UUID, since time.Time) (int, error)
+	// CountRecent keys on the DELIVERY TARGET (`group_id`), not on the subject:
+	// since migration 00056 a subject predicate no longer matches every row, and
+	// the throttle has to count everything that landed on the thread.
+	CountRecent(ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time) (int, error)
 	ExistsForReason(ctx context.Context, s db.TenantScope, kind domain.SubjectKind, subjectID uuid.UUID, r domain.Reason) (bool, error)
 }
 
@@ -87,11 +116,12 @@ type ChannelStore interface {
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Channel, error)
 	SetHealth(ctx context.Context, s db.TenantScope, id uuid.UUID, status domain.HealthStatus, detail string, now time.Time) error
 	Credential(ctx context.Context, s db.TenantScope, id uuid.UUID) (repository.SealedCredential, error)
-	// ClaimStormNotice takes the once-per-channel storm-notice latch (ADR 0020).
-	// True means THIS evaluation is the one that gets to tell the channel oto has
-	// started withholding; false means the channel was already told inside the
-	// window and the per-group reply stays quiet on its own thread.
-	ClaimStormNotice(ctx context.Context, s db.TenantScope, id uuid.UUID, now, notBefore time.Time) (bool, error)
+	// ⛔ `ClaimStormNotice` WAS HERE AND IS DELETED. It took the once-per-channel
+	// storm-notice latch (`channels.storm_notice_at`, ADR 0020): true meant THIS
+	// evaluation got to tell the channel oto had started withholding. Storm damping
+	// is gone, so nothing withholds and nothing announces. It was the only WRITE this
+	// port carried for the evaluation path, and its removal is why
+	// `NotificationService` needs no channel store at all.
 }
 
 // EventSink appends this module's facts to the shared timeline.
