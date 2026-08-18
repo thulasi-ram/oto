@@ -4,6 +4,20 @@
 // schema requires (derived from each file's first H1), strips that now-
 // redundant H1 from the body, and rewrites internal *.md links to the clean
 // URLs Starlight serves them at. Re-run after any change under docs/.
+//
+// ⛔ DESTRUCTIVE — READ THIS FIRST. This script rmSync()s adr/, design/, setup/
+// and runbooks/ under src/content/docs/ before regenerating them, so ANY page
+// living in one of those four directories that has NO source under docs/ is
+// destroyed, not merely stale. Two such pages exist today and are NOT generated
+// from anything:
+//
+//     src/content/docs/design/case-and-grouping.md
+//     src/content/docs/design/case-and-grouping-handoff.md
+//
+// Give them a home under docs/design/ before running this, or copy them aside
+// and put them back afterwards. Everything else under those four directories,
+// plus architecture.md, orchestration.md and guides/overview.md, is generated
+// and safe to lose; index.mdx and the rest of guides/ are never touched.
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, dirname, basename, extname, posix } from "node:path";
 

@@ -277,10 +277,10 @@ place to read a number — several alerts take `for:` from a config variable —
 **What it does.** An alert resolves, then the same `alert_key` fires again. `refire_grace` decides
 whether that is *the same problem coming back* or *a new problem*:
 
-- **Within the grace window** → the existing occurrence **reopens** (`reopen_count += 1`), oto reuses
+- **Within the grace window** → the existing case **reopens** (`reopen_count += 1`), oto reuses
   the existing Slack thread, and the card updates in place with a `refired` reply. **No new root
   message.**
-- **After the grace window** → a **new occurrence** opens. If the alert group had already closed, that
+- **After the grace window** → a **new case** opens. If the alert group had already closed, that
   means a **new AlertGroup generation**, and a new AlertGroup generation means a **brand-new Slack root
   message and a brand-new thread.**
 
@@ -296,19 +296,19 @@ Alertmanager will not tell oto that a group changed sooner than `group_interval`
 notification. So the resolve notification and the subsequent re-fire notification are separated by *at
 least* `group_interval` on the wire. If `refire_grace` is 2 minutes and `group_interval` is 5 minutes,
 the grace window has always expired by the time oto is even capable of hearing about the re-fire. The
-window is unreachable. Every re-fire is classified as a new occurrence, opens a new generation, and
+window is unreachable. Every re-fire is classified as a new case, opens a new generation, and
 posts a new root card — and you get exactly the wall of near-identical Slack messages oto exists to
 prevent, with a `refire_grace` setting that looks like it should have prevented it.
 
 **Too long → history that lies.** Two genuinely separate incidents six hours apart get recorded as one
-occurrence that "reopened", sharing one thread and one duration. Your alert history under-counts
-occurrences, the duration statistics are meaningless (one occurrence with a six-hour gap in the middle),
+case that "reopened", sharing one thread and one duration. Your alert history under-counts
+cases, the duration statistics are meaningless (one case with a six-hour gap in the middle),
 and a Slack thread from this morning grows a reply about this evening's outage.
 
 ### The arithmetic against real numbers
 
 **The grace clock does not start when oto hears about the resolve. It starts when *Prometheus*
-stopped considering the rule to be firing.** T5 sets the occurrence's `ended_at` from the upstream
+stopped considering the rule to be firing.** T5 sets the case's `ended_at` from the upstream
 `EndsAt`, not from the observation time — deliberately, because that is when the problem actually
 ended. Everything below follows from that one fact, and it is what the old default missed.
 
@@ -375,7 +375,7 @@ by construction — the first live verification run had to alter the alert set, 
 to exercise it at all. Doubling gives every legal configuration a band at least 5 minutes wide in
 which a re-fire is both *observable* and *inside the grace*. Zero is a Slack thread per transition.
 The ceiling is the "history that lies" failure: beyond a day, two separate incidents merge into one
-occurrence.
+case.
 
 Then sanity-check the top end against how long your incidents actually last. If a typical incident is
 resolved and genuinely gone in under ten minutes, a ten-minute grace window will merge distinct
@@ -383,7 +383,7 @@ incidents; shorten it toward `2 × group_interval` and accept a few more threads
 
 ### ⛔ `group_close_delay` must be at least `refire_grace`, or none of the above is true
 
-Reopening an occurrence only avoids a new Slack root message **if the group generation is still
+Reopening a case only avoids a new Slack root message **if the group generation is still
 open.** Closing a generation freezes its thread, and the next observation opens generation N+1 with a
 brand-new root card (§B.5). So a `group_close_delay` shorter than `refire_grace` gives you a re-fire
 that oto correctly classified as *the same problem coming back* — `reopen_count += 1`, the right
@@ -405,7 +405,7 @@ The two failures are not symmetric, and the choice between them is the whole pro
 
 - **Grace too short → thread fragmentation.** Noisy, annoying, and every single message is a **loud,
   visible new root card.** Nobody misses anything. What you lose is readability and an accurate
-  occurrence count.
+  case count.
 - **Grace too long → a genuine re-fire folded into a stale thread.** That is the shape of a **missed
   page**, which is the worst failure oto can have.
 
@@ -441,7 +441,7 @@ you should know about:
 
 **What it does.** `flap_score` is an EWMA of state transitions per hour. When an alert exceeds
 `flap_threshold` transitions within `flap_window`, oto marks it flapping and changes behaviour: the
-alert still opens and closes occurrences normally, and the card still updates, but **thread replies stop
+alert still opens and closes cases normally, and the card still updates, but **thread replies stop
 and are replaced by one coalesced digest reply per `flap_digest_interval`**. Flapping is a visible state
 in the UI, never a silent one.
 
@@ -460,8 +460,8 @@ it.
 > **A threshold of 5 transitions in 30 minutes was unreachable for every rule shape in the corpus,
 > including rules with no `for:` at all.**
 
-What oto counts is lifecycle events on the alert — `occurrence.opened`, `occurrence.reopened`,
-`occurrence.resolved`, `occurrence.expired` and the suppression pair — so **one full
+What oto counts is lifecycle events on the alert — `case.opened`, `case.reopened`,
+`case.resolved`, `case.expired` and the suppression pair — so **one full
 fire → resolve → fire cycle contributes exactly two.** The question is therefore how fast a cycle can
 physically be *observed*, and there are two independent floors:
 
@@ -653,7 +653,7 @@ broadcast — a reminder nobody sees is not a reminder.
 
 | Key | Default | What it does | Relationship to your config |
 |---|---|---|---|
-| `resolve_grace_s` | `300` (5m) | How long past an alert's `EndsAt` lease oto waits before the reaper marks the occurrence **`expired`**. | Prometheus refreshes `EndsAt` on every send; the lease is typically `4 × scrape_interval` or `evaluation_interval` (commonly 3–4 minutes). Set `resolve_grace` **above** that lease, or a single missed scrape looks like an expiry. `5m` covers the usual case. |
+| `resolve_grace_s` | `300` (5m) | How long past an alert's `EndsAt` lease oto waits before the reaper marks the case **`expired`**. | Prometheus refreshes `EndsAt` on every send; the lease is typically `4 × scrape_interval` or `evaluation_interval` (commonly 3–4 minutes). Set `resolve_grace` **above** that lease, or a single missed scrape looks like an expiry. `5m` covers the usual case. |
 | `group_close_delay_s` | `1200` (20m) | How long an AlertGroup stays `open` after its last member stops firing, before it closes. Closing a group is what makes the *next* fire open a new generation — and therefore a new Slack root message. | Keep it **at or above `group_interval`**, and **at or above `refire_grace`** — that second one is not a suggestion. A `group_close_delay` shorter than `refire_grace` hands a re-fire that oto classified as *the same problem coming back* a brand-new root card anyway, which is the entire thing the grace exists to avoid. It shipped as `300` against a `600` grace, which defeated half the grace; both are now `1200`. See `refire_grace`, above. |
 | `unacked_reminder_after_s` | `0` (unset) | The org **default** a notification policy's own `unacked_reminder_after_s` falls back to when it is NULL. A policy with an opinion always wins. | **Zero means "no org default"**, which is what shipped — not "immediately". When set, the range is `60`–`86400`, mirroring `policies_reminder_ck` exactly. ⛔ One stage, forever (§G.9.1). |
 | `default_verbosity` | `status_changes` | The fallback for a Channel that names no verbosity of its own. A channel's own setting always wins — an org default can never make a quiet channel loud. | Set it to `firing_only` if most of your channels want the quietest setting and you would rather not repeat yourself. |
@@ -666,8 +666,8 @@ broadcast — a reminder nobody sees is not a reminder.
 
 **`expired` is not `resolved`, and the distinction is load-bearing.** `expired` means *oto stopped
 hearing about this* — Prometheus or Alertmanager went away. `resolved` requires an explicit
-`status="resolved"` observation. The reaper will never expire an occurrence while the alert source is
-unhealthy; it holds the occurrence in place and raises a `source.unreachable` banner instead. Do not
+`status="resolved"` observation. The reaper will never expire a case while the alert source is
+unhealthy; it holds the case in place and raises a `source.unreachable` banner instead. Do not
 tune `resolve_grace_s` down to make expiries arrive faster. Losing sight of an alert is not the same as
 the alert resolving, and a fast, wrong expiry is worse than a slow, correct one.
 
@@ -723,7 +723,7 @@ the enrichment and storm markers — and, the one that matters, **every human co
 note. Those live nowhere else in oto and cannot be reconstructed from anything.** When the month is
 dropped, the writing goes with it.
 
-Concretely, `GET /alerts/{id}/events`, `GET /occurrences/{id}/events` and the group timeline stop
+Concretely, `GET /alerts/{id}/events`, `GET /cases/{id}/events` and the group timeline stop
 returning anything older than the window. The alert page, the episode list, the acks, the rule text and
 the delivery record are all unaffected.
 

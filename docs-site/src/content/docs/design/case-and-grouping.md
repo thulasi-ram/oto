@@ -1,9 +1,19 @@
 ---
 title: oto — the Case, the derived group, and where the three axes live
 ---
-> **Status:** Design decisions, agreed 2026-08-17/18. Not yet implemented.
+> **Status:** Design decisions agreed 2026-08-17/18; **shipped 2026-08-18** in migrations
+> 00048–00052 and the code that rides them. The two arguments that needed recording before the
+> code could land are now recorded: [ADR 0036](/adr/0036-alertoccurrence-becomes-alertcase/)
+> (the rename, argued against FR-1 by name) and
+> [ADR 0038](/adr/0038-the-group-key-is-derived-from-the-alerts-own-labels/) (the derived key).
+> **Two proposals here were deliberately NOT adopted**, and both are marked in place below:
+> group close is still driven by `last_activity_at` rather than by "no live case with this split
+> key" (§5.3), and `alert_groups.receiver` / `source_group_key` were **kept as provenance**
+> rather than allowed to go vestigial (§5.2). One item stays open: the split key has been
+> replayed only against synthetic fixtures, never against production payloads (§11).
 > **Precedence:** below `SPEC.md` and `SCOPE-BOUNDARY.md`. Where this document contradicts
-> either, it is a **delta list** for another agent to apply — it does not edit those files.
+> either, `SPEC.md` won — it has since been amended to match what shipped, and this document is
+> kept as the record of *why*, not as a description of the current schema.
 > **Supersedes in part:** ADR 0005's assignment of the Slack thread to an Alertmanager-derived
 > group key, and the `filters.ts` rule that snoozed alerts stay in the default list.
 > **Tickets:** the work is filed in `git bug`; see *What was filed*, below.
@@ -54,10 +64,12 @@ That second constraint is what makes the rest of this document necessary.
 
 `group_by` is **a declared notification-batching boundary, never a relatedness claim.**
 
-The schema settles this on its own: `alert_group_members` has `PRIMARY KEY (group_id,
-occurrence_id)` — one episode, many groups — and multi-membership is reachable via
+The schema settled this on its own: `alert_group_members` had `PRIMARY KEY (group_id,
+occurrence_id)` — one episode, many groups — and multi-membership was reachable via
 `continue: true`, which `amroutes.go:31` names as "where multi-delivery comes from". Identity is
-not many-to-many. A thing cannot be identical to two different things.
+not many-to-many. A thing cannot be identical to two different things. (That join table was
+dropped by 00051 once §5 removed the only legitimate way to be in two groups at once; the
+argument it made about `group_by` is why, not a description of today's schema.)
 
 What `group_by` does control:
 
@@ -94,12 +106,17 @@ detected by diffing group membership across payloads.**
 ### 3.1 `AlertOccurrence` becomes `AlertCase`
 
 The entity is unchanged: one contiguous firing episode, `(alert_id, seq)`, gapless, at most one
-open per alert. The rename makes it the noun the product leads with.
+open per alert. The rename makes it the noun the product leads with. **Shipped in 00052** —
+`alert_occurrences` is now `alert_cases`, `alerts.Occurrence` is now `alerts.Case`. The
+`occurrence.*` values already written into `alert_events` were deliberately left unrewritten —
+that log is append-only, monthly-partitioned and retained thirteen months — and are read through
+a translation instead: `NewEventType` accepts the pre-rename spelling and returns the canonical
+`case.*` value, so `occurrence` never reaches a client.
 
 `case` sits adjacent to §A.1's scope-ban family (`incident`, `triage`, `assignee`, `owner`,
 `responder`), and §A.1's own rule is that such a word is *"presumed over the line until argued
-otherwise against FR-1 by name"*. The argument is made in §3.2 and must be recorded in an ADR
-before the rename lands.
+otherwise against FR-1 by name"*. The argument is made in §3.2 and was recorded, as required,
+before the rename landed: [ADR 0036](/adr/0036-alertoccurrence-becomes-alertcase/).
 
 Rejected alternatives: **`AlertRollup`** — `rollup` already means aggregated delivery counts
 (`RollupAlert`, `RollupOccurrence`, `RollupGroup`); **`Episode`** — accurate, already the
@@ -140,8 +157,8 @@ and only `state` is additionally projected onto `alerts`.
   state       alert_cases               YES — the only question that still has an
                                         answer when nothing is firing, and it leads
                                         four indexes on the list path
-  ack_state   alert_cases               NO  — removed
-  snooze      alert_snoozes             NO  — removed
+  ack_state   alert_cases               NO  — alerts.ack_state dropped by 00049
+  snooze      alert_snoozes             NO  — alerts.snoozed_until dropped by 00048
 ```
 
 ### 4.1 Why ack is a Case concept
@@ -149,7 +166,8 @@ and only `state` is additionally projected onto `alerts`.
 Ack is **backward-looking**: a receipt for a firing that happened. Its statement stops being
 true when a new episode begins.
 
-- It cannot exist without an episode: `occ_ackorder_ck CHECK (acked_at >= started_at)`.
+- It cannot exist without an episode: `case_ackorder_ck CHECK (acked_at IS NULL OR acked_at >=
+  started_at)` (`occ_ackorder_ck` before the 00052 rename).
 - Alert-scoped ack means a March acknowledgement pre-acknowledges a September firing, which
   never reaches anyone's queue. Every fix for that — "clear the ack on resolve" — *is*
   case-scoping under another name.
@@ -186,8 +204,8 @@ temporal direction, each landing on the smallest subject on which its statement 
 `AlertGroup` stops mirroring Alertmanager and starts being computed from the alert's own labels.
 
 ```
-  today     GroupKey = f(org, source_id, receiver, AM's groupLabels)   keys.go:167
-  proposed  GroupKey = f(org, cluster,   alertname, namespace-or-∅)
+  before    GroupKey = f(org, source_id,  receiver,  AM's groupLabels)   keys.go:167
+  shipped   GroupKey = f(org, cluster_key, alertname, namespace-or-∅)    ADR 0038, 00050
 ```
 
 The axes are the ones `alerts/domain/labels.go` already promotes, minus the two that must not
@@ -221,13 +239,20 @@ data in hand; merging needs alerts that have not arrived yet, so it requires re-
     GET /api/v2/alerts does not return (today those groups get an empty receiver
     and no groupLabels, per 00008:81)
   ✓ continue:true double-threading disappears — receiver leaves the key
-  ✓ alert_groups.receiver / source_group_key become vestigial; ingest_batches
+  ✓ alert_groups.receiver / source_group_key leave the key; ingest_batches
     already records both, with the raw payload and the truncation count
 ```
 
 **Caveat.** Dropping `receiver` from the key merges two routes that deliberately separate the
 same alerts. `cluster_key` must be what distinguishes them — which it should be anyway, since
 alert identity is already `(org, cluster)`.
+
+> **Shipped differently (00050).** This document expected `alert_groups.receiver` and
+> `source_group_key` to become vestigial. **Both columns were kept**, as provenance rather than
+> identity: they record what the upstream said when the generation was first delivered into, and
+> `receiver` is still the `listAlertGroups` `receiver=` filter and still echoed in the webhook
+> envelope. Their column comments now read *"PROVENANCE ONLY since ADR 0038: … It is NOT part of
+> `group_key`."* Nothing else in this section changed.
 
 ### 5.3 What it deletes
 
@@ -236,29 +261,42 @@ With the key derived from the case's own labels, membership is *computed*, not r
 - Case → Group becomes **many-to-one**, like Case → Alert. Multi-membership disappears with
   `receiver`.
 - `alert_group_members` collapses into `alert_cases.group_id`, a column that already exists.
+  **Done in 00051.** The live membership of a generation is now
+  `alert_cases WHERE group_id = $1 AND ended_at IS NULL`; there is no join table and no
+  `left_at`.
 - `group.member_joined` and `group.member_left` become redundant — implied by `case.opened` and
   `case.resolved`/`case.expired` respectively. They were facts about the **case** phrased as if
-  the group were the actor.
+  the group were the actor. **Retired in 00051**, and — unlike the eight renamed `occurrence.*`
+  types — they stay on the contract as themselves, because they name a fact that stopped
+  existing rather than the same fact under a new word.
 - `group.opened`, `group.closed`, `group.storm_started`, `group.storm_ended` survive. Those are
   genuinely facts about the group.
 
-**A live defect this exposes.** `Leave` is implemented at three layers — `member.go:122`,
-`service.go:393`, `ports.go:51` — emits `group.member_left` at `service.go:406`, and **has no
-production caller**. So `left_at` is never set, every "current members" read matches everything
-that ever joined, `gm_current_idx` narrows nothing, the point-in-time replay is monotonic by
-construction, and an alert that resolves and re-fires inside one generation appears twice. It
-went unnoticed because group close is driven by `last_activity_at`, not by membership.
+**A live defect this exposed.** `Leave` was implemented at three layers — `member.go:122`,
+`service.go:393`, `ports.go:51` — emitted `group.member_left` at `service.go:406`, and **had no
+production caller**. So `left_at` was never set, every "current members" read matched everything
+that had ever joined, `gm_current_idx` narrowed nothing, the point-in-time replay was monotonic
+by construction, and an alert that resolved and re-fired inside one generation appeared twice.
+It went unnoticed because group close is driven by `last_activity_at`, not by membership.
+`Leave` was deleted with the table it wrote to: **there is no membership verb any more**, at any
+layer. An episode is in a generation because its own `group_id` says so, and it is live because
+its `ended_at` is NULL.
 
-Which also means the close condition should change with the rest: **close on "no live case with
-this split key"** rather than on an activity timestamp, so a generation cannot close over a live
-case.
+> **Not adopted.** This document also argued the close condition should change with the rest —
+> **close on "no live case with this split key"** rather than on an activity timestamp, so a
+> generation cannot close over a live case. **It was deliberately left activity-driven.** The
+> close sweep still selects `state = 'open' AND last_activity_at < $2`. The membership defect
+> that motivated the change is gone on its own (there is no stale `left_at` to be wrong about),
+> so the remaining question — whether a quiet generation with a live case in it should be
+> allowed to close — is a behaviour change to be argued separately, not a side effect of
+> deleting a join table.
 
 ---
 
 ## 6. The Quiet tab
 
-`alerts.snoozed_until` exists today to serve a base-table filter predicate and a badge. Both
-disappear if snoozed alerts get their own tab.
+`alerts.snoozed_until` existed to serve a base-table filter predicate and a badge. Both
+disappeared when snoozed alerts got their own tab, and the column went with them in 00048.
 
 ```
   main tab    unsnoozed only
@@ -272,7 +310,10 @@ disappear if snoozed alerts get their own tab.
 ```
 
 One index to add: `alert_snoozes (org_id, snoozed_until) WHERE ended_at IS NULL`. Neither
-existing index leads with `org_id` for this question.
+existing index leads with `org_id` for this question. **This is the one place the plan was
+wrong:** that index already existed. 00022 wrote it as `alert_snoozes_active_org_idx` for
+`GET /api/v1/snoozes`, for precisely the reason it was wanted again here, so 00048 widened its
+`COMMENT` instead of adding a fourth index.
 
 **This reverses a stated principle** — `filters.ts:78`: *"hiding snoozed alerts from the default
 list is how an incident is lost."* The reversal is defensible and must be recorded next to that
@@ -288,11 +329,11 @@ exists — `alert_snoozes_expiry_idx`, minus the "has run out" predicate.
 
 ## 7. Who may read what
 
-`notification` reads snooze state from `alerts.snoozed_until` today
-(`snapshot.go:110, :120, :129, :505`). That is a correctness read on the hot path expressed as a
+`notification` read snooze state from `alerts.snoozed_until` until 00048
+(`snapshot.go:110, :120, :129, :505`). That was a correctness read on the hot path expressed as a
 string literal in SQL, with no import and no compiler error to break.
 
-It moves to `alert_snoozes`, which is both cheap and better:
+It now reads `alert_snoozes`, which is both cheap and better:
 
 - The active-snooze partial index is a tiny relation; a hash join costs approximately nothing
   whether the group holds five members or five thousand.
@@ -302,8 +343,9 @@ It moves to `alert_snoozes`, which is both cheap and better:
   carries `snoozed_by`, `note` and `ended_reason`, and a bare timestamp does not.
 
 The same applies to `a.ack_state` at `snapshot.go:110/:129` feeding `view.go:359`: the group
-card's per-member ack should come from the member's own case. `alert_group_members` already
-carries `occurrence_id`, so the member row *is* a case.
+card's per-member ack comes from the member's own case, since 00049. There is nothing to join
+through — after 00051 the members of a generation *are* its cases (`alert_cases.group_id`,
+`ended_at IS NULL`), so the member row **is** a case and carries `ack_state` itself.
 
 ---
 
@@ -336,9 +378,9 @@ carries `occurrence_id`, so the member row *is* a case.
 
 The upstream half of an Alert is replayable from stored observations within the raw-retention
 window, subject to two documented supersession refusals (`replay.go`: `LimbOvertaken`,
-`LimbClosed`). The human half never is. After `ack_state` and `snoozed_until` leave `alerts`,
-the projection is upstream-derived with no human column — but that is a property of the table,
-not a claim that the product's state can be rebuilt from bytes.
+`LimbClosed`). The human half never is. Now that `ack_state` (00049) and `snoozed_until` (00048)
+have left `alerts`, the projection is upstream-derived with no human column — but that is a
+property of the table, not a claim that the product's state can be rebuilt from bytes.
 
 ---
 
@@ -371,6 +413,9 @@ Six tickets in `git bug`:
   needs to be asserted by a test.
 - **`service` as a fourth split axis.** Omitted at first. Add only if real threads are observed
   mixing unrelated services.
-- **Validating the split key before committing to it.** The key is computable from
-  `ingest_batches.payload`, which is retained 30 days. Replay a week and compare the thread count
-  the rule would have produced against what AM's grouping actually produced.
+- **Validating the split key against production payloads.** Still open, and it is the sharpest
+  one left: the key shipped ahead of its own validation. The tool exists — `tools/groupreplay`
+  computes the derived key over stored `ingest_batches.payload` bodies (retained 30 days) and
+  reports the resulting group-size distribution against the thread count Alertmanager's own
+  grouping produced — but **it has only been run against synthetic fixtures.** Replay a real
+  week before treating the three axes as settled.

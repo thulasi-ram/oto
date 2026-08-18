@@ -201,7 +201,7 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    **13 months**, but on ADR 0014's scale ceiling rather than the year-on-year
    reason that was recorded — year-on-year is served by `alert_quality_daily`,
    which is never reaped. Retention destroys the *narrative*, never the *record*:
-   `alerts`, `alert_occurrences`, `rule_snapshots`, `notifications`,
+   `alerts`, `alert_cases`, `rule_snapshots`, `notifications`,
    `notification_deliveries` and `channel_threads` have no reaper at all, so
    every clause of README's promise outlives both windows. What does die at 13
    months is human comments and unack notes, which live nowhere else — which is
@@ -223,7 +223,7 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    starts at the UPSTREAM `ended_at`, so a re-fire must pay the rule's whole
    `for:` again — 600s was unreachable for 76% of real rules; (b)
    `group_close_delay` was *shorter* than `refire_grace`, so the grace reopened
-   the occurrence and the closed generation posted a new Slack root anyway,
+   the case and the closed generation posted a new Slack root anyway,
    which is exactly what the grace exists to prevent; (c) the flap ceiling has a
    TRANSPORT floor the old arithmetic missed — a cycle costs
    `group_interval + max(group_interval, for)`, so a 30-minute window held at
