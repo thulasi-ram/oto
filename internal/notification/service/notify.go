@@ -72,9 +72,12 @@ type OrgDefaults struct {
 	// carried the org's `storm_cooldown_s` into the once-per-channel storm-notice
 	// latch, so that a storm's start and its own end each got through while every
 	// other group's storm inside the window collapsed into the first. There is no
-	// latch and no notice: nothing evaluates a storm. `storm_cooldown_s` is no longer
-	// an org setting either — migration 00059 removed all three `storm_*` keys along
-	// with `channels.storm_notice_at`.
+	// latch and no notice: nothing evaluates a storm. `storm_cooldown_s` is no longer an
+	// org setting either: all three `storm_*` keys are deleted from
+	// `identity/domain.settingBounds`, which is where a settings key is declared —
+	// `orgs.settings` is one JSONB document, so no migration drops a key from it, and
+	// `NewDeclarative` refuses a config still naming one with `unknown_key`. Migration
+	// 00059 dropped the column the latch itself lived in, `channels.storm_notice_at`.
 	//
 	// ReminderMention is who the ONE unacked reminder addresses (ADR 0020). The
 	// zero value is `none`, which is the shipped default and a deliberate one:
@@ -522,8 +525,13 @@ func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantSc
 // column turns on whether a root card already exists, and that is thread state
 // this method has no access to. `fanOut` re-applies the table against the thread
 // it just ensured — see modesFor — and that is where `Plan.Modes` becomes rows.
+// `scope` is `_`: planning is a pure decision over the snapshot, the match and the
+// org defaults, and it reads no tenant-scoped row. The parameter stays in the
+// signature because every sibling at this altitude carries the scope and dropping it
+// here would make `plan` the one method a reader has to check before trusting that a
+// tenant boundary is in hand.
 func (s *NotificationService) plan(
-	ctx context.Context, scope db.TenantScope, reason domain.Reason,
+	ctx context.Context, _ db.TenantScope, reason domain.Reason,
 	snap domain.Snapshot, match Match, def OrgDefaults,
 ) ([]destination, domain.Suppressors) {
 	var sup domain.Suppressors

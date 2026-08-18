@@ -12,7 +12,7 @@
 -- because "a stored row still has to say what it was about and a card still has
 -- to render it". That argument is a RETIREMENT argument, and a retirement only
 -- buys something when a row spelling the value can still exist. The maintainer
--- has authorised `just db-reset` on the only database in the world, so no such
+-- has authorised `just reset` on the only database in the world, so no such
 -- row exists and no binary that could have written one survives. What the
 -- retirement was protecting is a reader that cannot be constructed — and the
 -- cost of keeping it is a vocabulary entry in `notification/domain`, in
@@ -52,15 +52,61 @@
 -- the next removal of a CHECK value goes back to expand/contract, and this header
 -- is not a precedent for it.
 --
--- ⛔ THE NARROWING FAILS LOUDLY AND DOES NOT REWRITE A ROW. This is 00018's rule
+-- ⛔ THE NARROWING FAILS LOUDLY AND DOES NOT REWRITE HISTORY. This is 00018's rule
 -- and 00059's, verbatim: an enum narrowing with NO DOWNLEVEL MAPPING must FAIL
 -- rather than rewrite history. There is no honest value to turn a stored `storm`
 -- notification or a `group.storm_started` event into, and inventing one would make
 -- a timeline report a transition that never happened. So there is deliberately NO
--- `UPDATE` below. `ADD CONSTRAINT` validates the existing rows, so a database that
--- has ever recorded one of these values refuses this migration with a 23514 naming
--- the constraint, and the person holding it decides what to do. On a laptop the
--- answer is `just db-reset`; there is no other holder.
+-- `UPDATE` against `notifications` or `alert_events` below. `ADD CONSTRAINT`
+-- validates the existing rows, so a database that has ever recorded one of these
+-- values refuses this migration with a 23514 naming the constraint, and the person
+-- holding it decides what to do. On a laptop the answer is `just reset`; there
+-- is no other holder.
+--
+-- ⭐⭐ `notification_policies.reasons` IS THE ONE PLACE THAT IS REWRITTEN, AND THE
+-- LINE IS HISTORY VERSUS CONFIGURATION. 00018's rule (00018:71-75) is a rule about
+-- HISTORY, and it says so: `notifications.reason` and `alert_events.type` are an
+-- immutable record of what oto SENT and of what HAPPENED, so there is no honest
+-- downlevel value to turn a past fact into and the narrowing must abort rather than
+-- invent one. `notification_policies.reasons` is a record of nothing. It is LIVE
+-- CONFIGURATION -- a routing list an operator edits through the policies API
+-- whenever they like, and which says only WHAT WOULD BE ROUTED IF IT HAPPENED.
+-- Removing `storm` from such a list falsifies no claim: the policy never asserted
+-- the reason occurred, and after 00059 deleted every writer of it the reason cannot
+-- occur. Migrating configuration forward as the vocabulary moves is ordinary work,
+-- and the distinction is not a loophole in 00018's rule -- it is the boundary
+-- 00018's rule was drawn inside.
+--
+-- ⛔ AND THE REWRITE IS NOT OPTIONAL, BECAUSE `policies_reasons_ck` CANNOT SEE THE
+-- VALUE. That constraint tests CARDINALITY, NULL-freeness and SET-ness (00046) and
+-- has NEVER tested MEMBERSHIP -- there is no `reasons <@ ARRAY[...]` clause in it at
+-- 00011, at 00046, at 00058 or below. So unlike the two enums above, the narrowing
+-- here does not validate on `ADD CONSTRAINT` and would not abort. A policy holding
+-- `{fired,storm}` would survive this migration in silence, come back on
+-- `GET /api/v1/notification-policies`, and be REFUSED by `NotificationReasonSchema`
+-- in the generated frontend client -- a picklist that no longer contains `storm` --
+-- taking the whole Policies page down over one stale row. The only thing the
+-- constraint WOULD notice is the CEILING, and it would notice it wrongly: a policy
+-- naming all nineteen post-00058 values fails `cardinality BETWEEN 1 AND 18`
+-- outright, so without the strip this file aborts on data it left no path to clean.
+-- The strip therefore runs BEFORE the ceiling moves.
+--
+-- ⛔ A POLICY WHOSE ONLY REASON WAS `storm` IS DELETED, AND THE ALTERNATIVES ARE
+-- WORSE RATHER THAN MERELY DIFFERENT. Stripping the value would leave an EMPTY
+-- array, which `policies_reasons_ck` refuses at `cardinality >= 1`. Substituting any
+-- other reason would route facts the operator never asked for. Soft-deleting the row
+-- (`deleted_at`) does not help either, because a CHECK does not care whether a row is
+-- soft-deleted: the array would still have to keep `storm`, in a live column, where
+-- no constraint can ever see it again -- which is the exact defect this paragraph is
+-- about, hidden one filter deeper. What makes the deletion honest is that the row is
+-- ALREADY INERT: 00059 deleted every writer of `storm`, so a policy routing only
+-- `storm` routes nothing today and can never route anything, and deleting it removes
+-- a rule with no effect rather than a rule somebody is relying on. It is the same
+-- judgement 00058's Down made about a `digest`-only policy, for the same reason.
+-- `notifications.policy_id` is ON DELETE SET NULL (00011), so no notification is
+-- destroyed with it. IT IS STILL A DELETION AND IT IS WRITTEN DOWN HERE SO THAT IT
+-- IS NOT SILENT: on a database carrying such a policy the operator loses a named
+-- routing rule and gets no prompt, and this header is the notice.
 --
 -- ⚠️ `ev_type_ck` IS A SHAPE AND STAYS ONE. 00007 wrote it as
 -- `type ~ '^[a-z_]+\.[a-z_]+$'` — a shape, not a vocabulary — which is why the
@@ -68,8 +114,10 @@
 -- now. The narrowing adds a `NOT IN` naming exactly the four spellings and
 -- changes nothing else: the regex still admits any `<subject>.<fact>` string, so
 -- this constraint can refuse a value that LEFT `AllEventTypes` and still cannot
--- notice one that joined it. `components.schemas.AlertEventType` remains the only
--- enumeration of the live set.
+-- notice one that joined it. The live set is enumerated in exactly two places --
+-- `AllEventTypes` in `internal/alerts/domain/event.go` and
+-- `components.schemas.AlertEventType` -- and `TestContractEnumsMatchTheirDomainEnum`
+-- in `test/contract` is what holds the two to each other.
 --
 -- ⛔ THE THREE REMAINING RETIREMENTS ARE NOT TOUCHED AND MUST NOT BE.
 -- `group.member_joined` and `group.member_left` (retired by 00051, when the group
@@ -119,15 +167,40 @@ COMMENT ON COLUMN notifications.reason IS
 
 -- --------------------------------------------------- policies_reasons_ck
 --
+-- ⛔ THE ARRAYS ARE STRIPPED FIRST, AND THIS IS THE ONLY REWRITE IN THE FILE. See
+-- the header for why it is allowed where the two enums above forbid one: `reasons`
+-- is live configuration rather than history, and `policies_reasons_ck` constrains
+-- cardinality and set-ness but never MEMBERSHIP -- so nothing validates `storm` out
+-- of this TEXT[] the way `ADD CONSTRAINT` validates it out of `notifications.reason`.
+--
+-- ⚠️ ORDERING. Both statements run while the 00058 constraint (1..19, no NULLs, a
+-- set) is still standing, and both are legal against it: the DELETE removes exactly
+-- the rows the UPDATE would empty, so every array the UPDATE touches still has at
+-- least one element afterwards; `array_remove` can only SHORTEN a set, so set-ness
+-- and NULL-freeness are preserved; and no other policy CHECK is disturbed, because
+-- `policies_digest_reason_ck` (00058) is about `digest` and this touches `storm`.
+-- They must run BEFORE the ceiling drops to 18, or a policy naming all nineteen
+-- post-00058 values would abort the migration on data nothing here could reach.
+
+-- A policy whose ONLY reason was `storm` has no projection onto the eighteen that
+-- remain: emptying it violates `cardinality >= 1`, and any substitute reason routes
+-- facts nobody asked for. It is deleted, and the header says why that is a deletion
+-- of an already-inert rule rather than of live configuration.
+-- `notifications.policy_id` is ON DELETE SET NULL (00011), so nothing else moves.
+DELETE FROM notification_policies WHERE reasons = ARRAY['storm']::text[];
+
+UPDATE notification_policies
+   SET reasons = array_remove(reasons, 'storm'), updated_at = now()
+ WHERE 'storm' = ANY(reasons);
+
 -- The ceiling is the ENUM SIZE and moves with it in both directions: 18 at 00046,
 -- 19 when 00058 added `digest`, 18 again now. `reasons` is a SET (oto_array_is_set)
 -- over a closed eighteen-value vocabulary, so a nineteenth DISTINCT element is
 -- unreachable and a ceiling of 19 would be a number no row could ever test.
 --
--- ⚠️ THIS HALF CAN FAIL TOO, and differently from the two above: it refuses a
--- policy that names all nineteen reasons. Such a policy could only exist if it
--- named `storm`, which is the value being deleted, so the failure and the reset
--- are the same conversation.
+-- With the strip above already done, this ALTER validates against arrays drawn from
+-- the eighteen that remain, so it cannot fail on a nineteen-element policy: the only
+-- way to reach nineteen was to name `storm`, and no row names it any more.
 ALTER TABLE notification_policies DROP CONSTRAINT policies_reasons_ck;
 ALTER TABLE notification_policies ADD CONSTRAINT policies_reasons_ck
   CHECK (cardinality(reasons) BETWEEN 1 AND 18
@@ -136,15 +209,30 @@ ALTER TABLE notification_policies ADD CONSTRAINT policies_reasons_ck
 
 -- +goose StatementBegin
 COMMENT ON CONSTRAINT policies_reasons_ck ON notification_policies IS
-  'reasons is a set of 1..18 SPEC H.6 Reason values. Uniqueness is enforced here as well as in the DTO tag and the domain constructor because the contract publishes uniqueItems on the RESPONSE: a duplicate reaching this column comes back on a read as a row the generated frontend client refuses. The ceiling is the enum size and moves with it -- 00058 added digest, 00060 removed storm.';
+  'reasons is a set of 1..18 SPEC H.6 Reason values. Uniqueness is enforced here as well as in the DTO tag and the domain constructor because the contract publishes uniqueItems on the RESPONSE: a duplicate reaching this column comes back on a read as a row the generated frontend client refuses. The ceiling is the enum size and moves with it -- 00058 added digest, 00060 removed storm. ⛔ IT DOES NOT CONSTRAIN MEMBERSHIP: cardinality, NULL-freeness and set-ness are all it tests, so a retired Reason left in this array is invisible to the database and surfaces as a validator failure on the Policies page instead. Every narrowing of the Reason vocabulary must strip the retired value from this column by hand, the way 00060 does -- the constraint will not do it for you.';
 -- +goose StatementEnd
 
 -- +goose Down
 
--- The world as 00058 and 00007 left it. The widening direction is always safe:
--- nothing on disk can violate a check that admits strictly more, so this half
--- never fails. What it CANNOT restore is the rows: the Up did not delete any, but
--- a database reset between the two is not a migration and this Down cannot see it.
+-- The world as 00058 and 00007 left it, IN SHAPE ONLY. The widening direction is
+-- always safe -- nothing on disk can violate a check that admits strictly more, so
+-- this half never fails.
+--
+-- ⛔ THERE IS DELIBERATELY NO MIRROR OF THE POLICY STRIP, AND THIS DOWN IS NOT A
+-- CLEAN REVERSAL. The Up removed `storm` from every `notification_policies.reasons`
+-- array and deleted the policies whose only reason it was. Neither is recoverable
+-- here: the array no longer records that the value was ever present, so a mirroring
+-- `UPDATE` would have to guess WHICH policies to re-point at `storm`, and adding it
+-- back to all of them -- or to none -- would both be inventions. A deleted
+-- storm-only policy is gone with its name, its matchers and its channel list. So
+-- this half restores only the VOCABULARY the constraints admit: after it runs the
+-- schema will once again accept a policy naming `storm`, and no policy will name
+-- one. That is a downgrade an operator has to finish by hand, and saying so is
+-- better than an `UPDATE` that would look like a rollback and be a fabrication.
+--
+-- The same limit applies to the two enums for a different reason: the Up deleted no
+-- `notifications` or `alert_events` row, but a database reset between the two is not
+-- a migration and this Down cannot see it.
 
 ALTER TABLE notification_policies DROP CONSTRAINT policies_reasons_ck;
 ALTER TABLE notification_policies ADD CONSTRAINT policies_reasons_ck

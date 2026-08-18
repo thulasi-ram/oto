@@ -562,7 +562,11 @@ func (s *Service) applyEdge(
 	out.Clamped, out.ClampSkew = r.Clamped, r.ClampSkew
 	// ⛔⛔ A DEFERRED CLOSE ANNOUNCES NOTHING, AND THIS IS THE GATE (00057). The rest
 	// of this function is already correct for it — `r.Events` is empty and
-	// `r.From == r.To`, so nothing is appended and no state change is projected — but
+	// `r.From == r.To` (both `firing`, because the domain REFUSES the deferral from
+	// the suppressed arm: see the T5 arm's `from != StateSuppressed` guard, without
+	// which this edge returned `suppressed -> firing` and the `stateChanged` return
+	// below projected `alerts.suppression_reason = NULL` on a case nobody had
+	// unsilenced), so nothing is appended and no state change is projected — but
 	// `reasonFor` keys on the TRANSITION ID, and T5's reason is `resolved`. Without
 	// this test a flap damped into one case would still deliver one "resolved"
 	// notification per flap, which is the whole noise the retention window exists to

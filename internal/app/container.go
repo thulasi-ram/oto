@@ -599,7 +599,6 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		Timeline: c.Alerts,
 		Actions:  c.Alerts,
 		Stream:   stream,
-		Enqueuer: c.enqueuer,
 		Settings: settings,
 		Clock:    clk,
 		Logger:   logger,

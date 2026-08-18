@@ -17,7 +17,6 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/id"
-	"github.com/thulasiram/oto/internal/platform/jobs"
 )
 
 // Deps is the explicit dependency set of the grouping service.
@@ -34,7 +33,6 @@ type Deps struct {
 	Timeline TimelineReader
 	Actions  MemberActions
 	Stream   StreamAppender
-	Enqueuer db.Enqueuer
 	Settings SettingsReader
 
 	Clock  clock.Clock
@@ -59,7 +57,6 @@ type Service struct {
 	timeline TimelineReader
 	actions  MemberActions
 	stream   StreamAppender
-	enqueuer db.Enqueuer
 	settings SettingsReader
 
 	clock clock.Clock
@@ -92,7 +89,6 @@ func New(d Deps) (*Service, error) {
 		timeline: d.Timeline,
 		actions:  d.Actions,
 		stream:   d.Stream,
-		enqueuer: d.Enqueuer,
 		settings: d.Settings,
 		clock:    clk,
 		log:      logger,
@@ -122,7 +118,10 @@ func (s *Service) Now() time.Time { return s.clock.Now().UTC() }
 //
 // ⛔ IT WAS `domain.StormPolicy` AND IT CARRIED FOUR NUMBERS. Three of them were the
 // storm knobs; storm damping is removed, so `group_close_delay_s` is the whole policy
-// now. The three `storm_*` keys REMAIN readable on `orgs.settings` and decide nothing.
+// now. The three `storm_*` keys are DELETED from `identity/domain.settingBounds`, and
+// that deletion is the whole of their removal: `orgs.settings` is one JSONB document,
+// so no migration drops a key from it, and `NewDeclarative` now refuses a config that
+// still names one with `unknown_key` (§H.13).
 func (s *Service) policy(ctx context.Context, scope db.TenantScope) domain.LifecyclePolicy {
 	if s.settings == nil {
 		return domain.DefaultLifecyclePolicy()
@@ -342,7 +341,8 @@ func (s *Service) Resolve(
 // started withholding. All of it is gone: the collapse was oto deciding that many real
 // firings were not worth mentioning individually, and the thirty-nine replies it
 // dropped left no trace an operator could read. See the tombstone at the top of
-// `domain/lifecycle.go`. Nothing sets `alert_groups.storm_mode`, so it reads false.
+// `domain/lifecycle.go`. Migration 00059 drops `alert_groups.storm_mode`,
+// `storm_since` and `groups_storm_ck`, so there is no column left to read either.
 func (s *Service) Recompute(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, at time.Time,
 ) (domain.Group, error) {
@@ -571,20 +571,13 @@ func (s *Service) publish(ctx context.Context, scope db.TenantScope, g domain.Gr
 // migration 00060 narrows `notifications_reason_ck` to the eighteen that remain, so
 // the value is not decodable either. Nothing in this module may name it again.
 
-// enqueueNotify queues policy evaluation IN THE CALLER'S TRANSACTION — the
-// transactional outbox of ADR 0001.
-func (s *Service) enqueueNotify(ctx context.Context, g domain.Group, reason string) error {
-	if s.enqueuer == nil {
-		return nil
-	}
-	_, err := s.enqueuer.Enqueue(ctx, jobs.NotifyEvaluateArgs{
-		GroupID:      g.ID(),
-		Reason:       reason,
-		StateVersion: g.StateVersion(),
-	})
-	if err != nil {
-		return errs.Wrap(err, errs.KindInternal, "enqueue_notify_failed",
-			"could not queue notification evaluation")
-	}
-	return nil
-}
+// ⛔ `enqueueNotify` WAS HERE AND IS DELETED, AND SO IS `Deps.Enqueuer` WITH IT.
+// It queued policy evaluation in the caller's transaction — the transactional outbox
+// of ADR 0001 — and it had exactly ONE caller: the storm-transition block, announcing
+// that the channel was going quiet. Storm damping is removed (ADR 0042, migration
+// 00059), so the caller went and this was orphaned.
+//
+// ⭐ THIS MODULE NO LONGER ENQUEUES A NOTIFICATION AT ALL, and that is correct rather
+// than a gap: grouping only ever enqueued for storm. Every other road to
+// `notify.evaluate` runs from ingestion and from `alerts`, which is where the facts a
+// notification reports are decided.

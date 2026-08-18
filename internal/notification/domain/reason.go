@@ -170,7 +170,7 @@ const (
 // (notifications_subjkind_ck, widened by migration 00056).
 //
 // ⭐ IT IS ALSO THE MEMBERSHIP TEST FOR THE ENUM, AND THAT IS DELIBERATE. `Valid`
-// consults this map, so a twentieth Reason cannot be added without deciding what
+// consults this map, so a nineteenth Reason cannot be added without deciding what
 // it is about: a Reason declared with no subject fails validation at the door
 // instead of quietly inheriting the group, which is exactly how every fact came to
 // claim the group of forty in the first place. `allReasons` above is the ORDER
@@ -261,7 +261,7 @@ var reasonSubjects = map[Reason]SubjectKind{
 // `group_id` its `subject_id` must equal (notifications_subject_ck).
 //
 // ⛔ IT IS NOT WHERE THE FACT IS DELIVERED. `group_id` is the delivery target for
-// the eighteen signal Reasons and is mandatory for all eighteen
+// the seventeen signal Reasons and is mandatory for all seventeen
 // (notifications_target_ck); the thread is keyed by the AlertGroup generation
 // whatever this returns, so forty alerts still produce one thread.
 //

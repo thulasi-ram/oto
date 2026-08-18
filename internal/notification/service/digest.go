@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -43,6 +44,20 @@ import (
 // out quieter than the truth or fall below its floor and not be sent. It can never
 // invent activity, and it can never turn a quiet window into a loud one.
 const digestBucketLimit = 5000
+
+// errDigestWindowCovered ends the emit transaction because another tick already
+// holds this window: `notif_digest_uniq` refused the insert, which is the §C.7
+// mechanism working and not a failure.
+//
+// ⛔ IT IS AN ERROR TO THE TRANSACTION AND TO NOBODY ELSE. A 23505 has already
+// aborted the Postgres transaction by the time Go sees it, so the ONLY answer that
+// can be given inside `InTx` is a non-nil error — anything else asks `db.Tx` to
+// commit a transaction Postgres will only roll back (`pgx.ErrTxCommitRollback`),
+// which is how "this window is already covered" used to come back out as a failure
+// and cost the policy its remaining owed windows. `emit` recognises it, answers
+// `false, nil`, and the tick moves to the next window exactly as it would have if
+// the window had never been owed.
+var errDigestWindowCovered = errors.New("this digest window is already covered")
 
 // digestSpan is one half-open window `[start, end)`, and it is the bucket cache's
 // key. Both ends, because two policies with different window LENGTHS can share a
@@ -359,8 +374,25 @@ func (s *DigestService) emit(
 			// Postgres may report either — so a concurrent tick can surface as a bare
 			// 23505. It means precisely "this window is already covered", which is the
 			// answer, not an error.
+			//
+			// ⛔⛔ IT IS STILL AN ERROR TO **THIS TRANSACTION**, AND SAYING SO IS THE
+			// ONLY WAY THE ANSWER SURVIVES. Everywhere else in this tree a duplicate
+			// oto expected is swallowed by `ON CONFLICT DO NOTHING` before it becomes
+			// an error at all — `notifications.Insert` (repository/notifications.go:135),
+			// `deliveries.Create` (:136), `threads.Ensure` (:101), `alert_events`
+			// (alerts/repository/event.go:121), `idempotency_claims`
+			// (platform/idempotency/repository.go:43, whose mapErr calls a 23505 that
+			// reaches Go INTERNAL for exactly this reason). A 23505 that DOES reach Go
+			// has already aborted the Postgres transaction: every statement after it
+			// answers 25P02 and `COMMIT` answers `ErrTxCommitRollback`. Returning nil
+			// here — which is what this used to do — asked `db.Tx` to commit a dead
+			// transaction, so "already covered, carry on" came back out of `InTx` as an
+			// ERROR, and `sweepPolicy` gave up the policy's remaining owed windows for
+			// the whole tick. The sentinel below aborts the transaction honestly and is
+			// read as the answer OUTSIDE it, where there is no transaction left to
+			// corrupt — the shape `errFanOutSettled` uses in grouping/service.
 			if repository.IsUniqueViolation(err) {
-				return nil
+				return errDigestWindowCovered
 			}
 			return err
 		}
@@ -380,6 +412,14 @@ func (s *DigestService) emit(
 			ctx, scope, stored.ID, domain.StatusDispatched, n.CreatedAt)
 	})
 	if err != nil {
+		if errors.Is(err, errDigestWindowCovered) {
+			// ⭐ THE WINDOW IS COVERED, WHICH IS A SUCCESS WITH NOTHING TO SHOW FOR IT.
+			// The transaction that discovered it is rolled back — it created no row and
+			// had none to keep — and the tick carries on to the policy's next owed
+			// window. `created` is false, so nothing is logged and nothing is counted:
+			// the digest that covers this window is the other tick's.
+			return false, nil
+		}
 		return false, err
 	}
 	if created {

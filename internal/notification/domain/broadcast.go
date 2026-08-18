@@ -129,6 +129,6 @@ func (p BroadcastPolicy) Warrants(r Reason) bool {
 // available was "withheld". A latch that rations an announcement is a tell that the
 // announcement is about the tool rather than about the signal.
 //
-// ⛔ `channels.storm_notice_at` STAYS IN THE SCHEMA, unwritten and unread. Dropping
-// it is a migration, and the destructive half of this removal is deferred as its own
-// breaking change.
+// ⛔ `channels.storm_notice_at` LEFT THE SCHEMA WITH IT. Migration 00059 drops the
+// column: it windowed an announcement no code can produce, and a live-state column no
+// writer can reach again is not history, it is a value that can only read NULL.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,10 +48,28 @@ import (
 // digestTx runs the unit of work inline. `emit` uses the transaction for atomicity
 // between the row, its deliveries and their jobs — a guarantee about the DATABASE,
 // not about the decisions this file is testing.
-type digestTx struct{}
+//
+// ⛔ IT MODELS EXACTLY ONE THING pgx DOES THAT AN INLINE CALL DOES NOT: a
+// transaction whose statement failed with a SQLSTATE can only be ROLLED BACK.
+// `db.Tx` commits whenever the closure answers nil, and pgx answers a commit on a
+// failed transaction with `ErrTxCommitRollback` (`platform/db/tx.go`). Without
+// this, a closure that SWALLOWS an expected 23505 and returns nil looks like a
+// success here and comes back as an error in production — which is how "this
+// window is already covered" turned into a failed tick that dropped the policy's
+// remaining owed windows. A fake that always commits cannot see that bug.
+type digestTx struct{ notifs *digestNotifications }
 
-func (digestTx) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return fn(ctx)
+func (x digestTx) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if x.notifs != nil {
+		x.notifs.raised = false
+	}
+	if err := fn(ctx); err != nil {
+		return err // rolled back, which is always allowed
+	}
+	if x.notifs != nil && x.notifs.raised {
+		return pgx.ErrTxCommitRollback
+	}
+	return nil
 }
 
 // digestPolicies serves the tenant's digest policies. `notify_seq_test.go`'s
@@ -114,12 +133,21 @@ type digestNotifications struct {
 	// conflict makes Insert raise a BARE 23505 on the digest index rather than the
 	// idempotency one, which is the case `emit` has to read as "already covered".
 	conflict bool
+	// conflictOnce raises it on the FIRST insert only. That is the shape of the real
+	// race: ONE of a policy's owed windows was covered by another tick, and the ones
+	// behind it are still owed.
+	conflictOnce bool
+	// raised records that a statement in the CURRENT transaction failed, so digestTx
+	// can refuse to commit it exactly as Postgres does.
+	raised bool
 }
 
 func (n *digestNotifications) Insert(
 	_ context.Context, _ db.TenantScope, in domain.Notification,
 ) (domain.Notification, bool, error) {
-	if n.conflict {
+	if n.conflict || n.conflictOnce {
+		n.conflictOnce = false
+		n.raised = true
 		return domain.Notification{}, false, &pgconn.PgError{
 			Code: "23505", ConstraintName: "notif_digest_uniq",
 			Message: "duplicate key value violates unique constraint",
@@ -404,7 +432,7 @@ func newDigestRig(
 	)
 
 	notifier, err := service.NewNotificationService(service.NotificationConfig{
-		Tx:            digestTx{},
+		Tx:            digestTx{notifs: notifs},
 		Policies:      policySvc,
 		Notifications: notifs,
 		Deliveries:    deliver,
@@ -747,4 +775,50 @@ func TestAPolicyThatDoesNotRouteTheDigestReasonIsSkipped(t *testing.T) {
 		"a policy whose `reasons` omit `digest` minted one anyway; every window of it would "+
 			"be recorded and instantly suppressed as no_policy")
 	assert.Contains(t, rig.logs.String(), "does not route the digest reason")
+}
+
+// TestAWindowAnotherTickAlreadyCoveredDoesNotCostThePolicyItsOtherWindows is the
+// "another pod won the window" case read one level up: what happens to the windows
+// BEHIND the one that was already covered.
+//
+// ⛔⛔ THE RACE IS REAL AND IT IS NOT THE SAME KEY. Two ticks straddling a
+// `digest_window_s` edit compute the SAME `window_start` and a DIFFERENT window
+// ordinal, so the §C.7 idempotency key differs and `notifications.Insert`'s
+// `ON CONFLICT (org_id, idempotency_key)` arbiter does not fire. `notif_digest_uniq`
+// (org_id, policy_id, digest_window_start) does, as a bare 23505 — and a 23505 that
+// reaches Go has already aborted the transaction. Answering it with `nil` inside
+// `InTx` asks for a COMMIT that Postgres can only refuse (`ErrTxCommitRollback`), so
+// the benign race came back out of `emit` as an ERROR, `sweepPolicy` returned on it,
+// and the two windows the policy still owed were dropped for the whole tick — the
+// silence a digest exists to prevent, produced by the digest.
+func TestAWindowAnotherTickAlreadyCoveredDoesNotCostThePolicyItsOtherWindows(t *testing.T) {
+	t.Parallel()
+
+	reads := &digestReads{
+		// Three ten-minute windows are owed: 13:10, 13:20 and 13:30.
+		last:    time.Date(2026, 8, 18, 13, 5, 0, 0, time.UTC),
+		buckets: []repository.DigestBucket{bucket("observability", 9)},
+	}
+	// The FIRST of them is already covered by another pod; the two behind it are not.
+	notifs := &digestNotifications{conflictOnce: true}
+	rig := newDigestRig(t, tickNow, tickPolicy(10*time.Minute, 1), reads, notifs)
+
+	sent, err := rig.svc.SweepOrg(t.Context(), rig.scope)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, sent,
+		"the tick sent %d digests. A window somebody else covered is an ANSWER, not a "+
+			"failure: the two windows behind it are still owed and must still be written",
+		sent)
+
+	var got []time.Time
+	for _, n := range notifs.inserted {
+		require.NotNil(t, n.DigestWindowStart)
+		got = append(got, n.DigestWindowStart.UTC())
+	}
+	assert.Equal(t, []time.Time{
+		time.Date(2026, 8, 18, 13, 20, 0, 0, time.UTC),
+		time.Date(2026, 8, 18, 13, 30, 0, 0, time.UTC),
+	}, got, "the covered window is skipped and only it")
+	assert.Len(t, rig.deliver.created, 2, "one fan-out per digest actually minted")
 }

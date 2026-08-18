@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 55 {
-		t.Fatalf("latest migration is %d, want 55 — this test pins the number so that a "+
+	if latest != 60 {
+		t.Fatalf("latest migration is %d, want 60 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1371,6 +1371,542 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"— the assertion after 00052's Down is that this figure reaches zero, and a figure "+
 			"that was never four reaches zero without the Down doing anything at all", n)
 	}
+	// A column's declared nullability, as `information_schema` spells it: "YES" or
+	// "NO", and "" when the column is absent. 00058 is the only migration in this
+	// file whose subject is a NOT NULL rather than a constraint or a column, and
+	// nullability is invisible to every other reading here — `countColumns` counts
+	// the column either way, and no `pg_constraint` row carries it.
+	columnNullability := func(table, column string) string {
+		t.Helper()
+		var nullable string
+		if err := env.pool.QueryRow(env.ctx,
+			// Both sides cast to text for the reason `clockDefaults` casts them: the
+			// information_schema identifier columns are a domain over `name`.
+			`SELECT coalesce(max(is_nullable), '') FROM information_schema.columns
+			  WHERE table_name::text = $1 AND column_name::text = $2`, table, column).
+			Scan(&nullable); err != nil {
+			t.Fatalf("introspect %s.%s nullability: %v", table, column, err)
+		}
+		return nullable
+	}
+
+	// ⭐⭐ 00060 IS THREE ENUM NARROWINGS AND NOTHING ELSE: `notifications.reason`
+	// lost `storm`, `alert_events.type` gained a refusal of the four damper
+	// spellings that left with it, and `policies_reasons_ck`'s ceiling followed the
+	// Reason enum from nineteen back to eighteen. Its Down re-widens all three.
+	//
+	// ⛔ ALL THREE CONSTRAINTS KEEP THEIR NAMES ACROSS THIS MIGRATION, so a name
+	// count reads identically on both sides and proves nothing at all. The
+	// DEFINITION is the property, the way 00039's and 00035's are: a Down that
+	// dropped `notifications_reason_ck` and forgot to re-add the wide predicate
+	// leaves the release this rolls back to unable to write the storm announcement
+	// it still mints, and one that left `ev_type_ck`'s `NOT IN` standing refuses
+	// four timeline event types that release still writes.
+	//
+	// ⚠️ A NARROWING IS THE HALF THAT CAN FAIL AND A WIDENING IS THE HALF THAT
+	// CANNOT, which is exactly why the widening is the one asserted here rather
+	// than believed: `ADD CONSTRAINT` with a looser predicate validates every row
+	// trivially, so this Down cannot report its own failure at the exit code.
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'storm'") {
+		t.Fatalf("notifications_reason_ck still admits 'storm' at the top of the stack: %s — "+
+			"00060's whole subject is that value leaving the enum with the damper it announced "+
+			"(ADR 0042), and the Down assertion below cannot mean anything if the Up never "+
+			"happened", def)
+	} else if !strings.Contains(def, "'digest'") {
+		t.Fatalf("notifications_reason_ck does not admit 'digest' at the top of the stack: %s — "+
+			"00058 appended the nineteenth reason and 00060 removed only `storm`, so a reading "+
+			"without it means one of the two migrations rewrote the list rather than editing it",
+			def)
+	}
+	if def := constraintDef("ev_type_ck", "alert_events"); !strings.Contains(def, "group.storm_started") {
+		t.Fatalf("ev_type_ck does not refuse the damper event spellings at the top of the "+
+			"stack: %s — 00060 exists to add that NOT IN clause, and the Down assertion below "+
+			"is about it going away again", def)
+	}
+	if def := policyReasonsCheck(); strings.Contains(def, "19") {
+		t.Fatalf("policies_reasons_ck still carries a ceiling of 19 at the top of the stack: "+
+			"%s — the ceiling IS the enum size, and 00060 moved it back to 18 when it deleted "+
+			"`storm`; a ceiling of 19 over an eighteen-value vocabulary is a number no row "+
+			"could ever test", def)
+	}
+
+	down(60)
+
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "'storm'") {
+		t.Fatalf("notifications_reason_ck did not get 'storm' back after 00060's Down: %s — the "+
+			"constraint KEEPS ITS NAME across this migration, so a Down that dropped it and "+
+			"forgot to re-add the wide predicate leaves the release this rolls back to unable "+
+			"to record the one announcement it still knows how to mint", def)
+	} else if !strings.Contains(def, "'digest'") {
+		t.Fatalf("notifications_reason_ck lost 'digest' in 00060's Down: %s — the Down restores "+
+			"the world 00058 left, which is nineteen reasons; restoring 00018's eighteen here "+
+			"would silently undo a migration that is still applied", def)
+	}
+	if def := constraintDef("ev_type_ck", "alert_events"); strings.Contains(def, "group.storm_started") {
+		t.Fatalf("ev_type_ck still refuses the damper event spellings after 00060's Down: %s — "+
+			"the release this rolls back to can write all four, and a surviving NOT IN turns "+
+			"every one of them into a 23514 on the timeline write", def)
+	} else if !strings.Contains(def, "[a-z_]+") {
+		t.Fatalf("ev_type_ck came back without the SHAPE rule after 00060's Down: %s — the "+
+			"regex is the constraint's whole content on this side, and a Down that dropped the "+
+			"CHECK without restoring it lets any string at all into a timeline type", def)
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "19") {
+		t.Fatalf("policies_reasons_ck did not get its ceiling of 19 back after 00060's Down: "+
+			"%s — the release this rolls back to has nineteen reasons and a policy may name all "+
+			"of them, so a ceiling of 18 outlaws a policy that release calls legal", def)
+	}
+
+	// ⭐⭐ 00059 TOOK STORM DAMPING OUT OF THE SCHEMA: `alert_groups.storm_mode`
+	// and `storm_since` and the `groups_storm_ck` that paired them, plus
+	// `channels.storm_notice_at`, are DROPPED, and `notifications_suppmap_ck`
+	// narrows from 00018's EIGHT admitted values to six.
+	//
+	// ⛔ ITS DOWN IS THREE ADD COLUMNs AND A RE-WIDENING — every one of them the
+	// direction that cannot fail, and therefore every one of them invisible at the
+	// exit code. A Down that no-oped would be green, and would hand a rolled-back
+	// release an `alert_groups` INSERT naming two columns the database does not
+	// have and a `suppressed_reason` domain that refuses the two values it still
+	// computes.
+	//
+	// ⭐ THE DEFAULT ON `storm_mode` IS ASSERTED, NOT JUST THE COLUMN, for the
+	// reason 00038's is: the pair is all-or-nothing under `groups_storm_ck`, so the
+	// only value a restored `storm_mode` may take beside a NULL `storm_since` is
+	// `false` — and a nullable column with no default would 23502 the first
+	// generation the rolled-back release writes.
+	stormColumns := func() int {
+		t.Helper()
+		return countColumns("alert_groups", "storm_mode", "storm_since") +
+			countColumns("channels", "storm_notice_at")
+	}
+	if n := stormColumns(); n != 0 {
+		t.Fatalf("%d of 00059's three storm columns still exist at the top of the stack, want 0 "+
+			"— the migration exists to drop them, and while they are there the schema carries "+
+			"live state no writer can ever set again", n)
+	}
+	if def := constraintDef("groups_storm_ck", "alert_groups"); def != "" {
+		t.Fatalf("groups_storm_ck exists at the top of the stack: %s — it pairs two columns "+
+			"00059 dropped, so its presence means the Up left it behind", def)
+	}
+	suppressionMap := constraintDef("notifications_suppmap_ck", "notifications")
+	for _, gone := range []string{"'storm'", "'flapping'"} {
+		if strings.Contains(suppressionMap, gone) {
+			t.Fatalf("notifications_suppmap_ck still admits %s at the top of the stack: %s — the "+
+				"two dampers were the only values in this domain that were oto's own opinion "+
+				"that a real signal was not worth mentioning, and 00059 exists to remove them",
+				gone, suppressionMap)
+		}
+	}
+	if !strings.Contains(suppressionMap, "'duplicate_render'") {
+		t.Fatalf("notifications_suppmap_ck is not the six-value domain at the top of the stack: "+
+			"%s — 00059 narrows it, it does not replace it", suppressionMap)
+	}
+
+	down(59)
+
+	suppressionMap = constraintDef("notifications_suppmap_ck", "notifications")
+	for _, want := range []string{
+		"'no_policy'", "'throttled'", "'storm'", "'flapping'", "'snoozed'", "'verbosity'",
+		"'channel_disabled'", "'duplicate_render'",
+	} {
+		if !strings.Contains(suppressionMap, want) {
+			t.Fatalf("notifications_suppmap_ck did not come back as 00018's eight-value domain "+
+				"after 00059's Down (missing %s): %s — the constraint KEEPS ITS NAME across this "+
+				"migration, so a Down that dropped it and forgot the wide predicate leaves the "+
+				"release this rolls back to unable to record the two suppressions it still "+
+				"evaluates", want, suppressionMap)
+		}
+	}
+	if n := countColumns("alert_groups", "storm_mode", "storm_since"); n != 2 {
+		t.Fatalf("%d of alert_groups' two storm columns came back on 00059's Down, want 2 — the "+
+			"Down of a DROP COLUMN is an ADD COLUMN, the one statement in a rollback that cannot "+
+			"fail and therefore the one most likely never to have been run", n)
+	}
+	if n := countColumns("channels", "storm_notice_at"); n != 1 {
+		t.Fatal("channels.storm_notice_at did not come back on 00059's Down — it is the " +
+			"once-per-channel notice latch (00027, ADR 0020 Amendment 1), and the release this " +
+			"rolls back to writes it on every storm it announces")
+	}
+	if def := constraintDef("groups_storm_ck", "alert_groups"); def == "" {
+		t.Fatal("groups_storm_ck did not come back on 00059's Down — the two columns without " +
+			"the CHECK that pairs them all-or-nothing let a generation claim it is storming " +
+			"since never, which is the state the constraint has refused since 00008")
+	}
+	var stormNullable, stormDefault string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT is_nullable, coalesce(column_default, '') FROM information_schema.columns
+		  WHERE table_name = 'alert_groups' AND column_name = 'storm_mode'`).
+		Scan(&stormNullable, &stormDefault); err != nil {
+		t.Fatalf("introspect the restored storm_mode: %v", err)
+	}
+	if stormNullable != "NO" || !strings.HasPrefix(stormDefault, "false") {
+		t.Fatalf("alert_groups.storm_mode came back is_nullable=%q default=%q, want NO / false "+
+			"— `false` beside a NULL storm_since is the only pair groups_storm_ck admits, which "+
+			"is what lets the Down re-add the constraint with no backfill at all",
+			stormNullable, stormDefault)
+	}
+
+	// ⭐⭐ 00058 GAVE A NOTIFICATION A SUBJECT THAT IS NOT A ROW: a digest is a
+	// WINDOW over a namespace, so `notifications.group_id` — NOT NULL since 00011 —
+	// became nullable behind `notifications_target_ck`, four columns arrived, two
+	// subject-kind CHECKs admitted `digest`, and `notif_digest_uniq` made one
+	// digest per (tenant, policy, window).
+	//
+	// ⛔ THE NOT NULL IS THE PROPERTY THAT NO OTHER READING IN THIS FILE CAN SEE.
+	// `countColumns` counts `group_id` identically on both sides and no
+	// `pg_constraint` row carries nullability, so a Down that dropped the digest
+	// columns and forgot `SET NOT NULL` would be green on every other assertion
+	// here while leaving the release it rolled back to able to write a fact with
+	// nowhere to deliver it — the exact invariant 00058 was careful to keep as a
+	// CHECK when it relaxed the column.
+	//
+	// ⛔ AND THE REASON LIST GOES BACK TO EIGHTEEN, WHICH IS THE SAME NUMBER 00060
+	// LEFT AND A DIFFERENT LIST. 00060's Down restored `storm` and kept `digest`,
+	// nineteen; this Down removes `digest` and keeps `storm`, the eighteen 00018
+	// left. A Down that re-issued 00060's predicate would be off by exactly one
+	// value in each direction and would still be eighteen long.
+	digestColumns := func() int {
+		t.Helper()
+		return countColumns("notification_policies", "digest_window_s", "digest_floor") +
+			countColumns("notifications", "digest_window_start", "digest_count")
+	}
+	if n := digestColumns(); n != 4 {
+		t.Fatalf("%d of 00058's four digest columns exist at the top of the stack, want 4 — the "+
+			"Down assertion below is about them going away, and a short reading here means it "+
+			"would reach zero without the Down doing anything", n)
+	}
+	if def := constraintDef("notifications_target_ck", "notifications"); !strings.Contains(def, "'digest'") {
+		t.Fatalf("notifications_target_ck does not exempt the digest at the top of the stack: "+
+			"%s — it is the half of the old `group_id NOT NULL` that is true of every "+
+			"Notification, and 00058 keeps it as a CHECK precisely so that relaxing the column "+
+			"could not quietly let an ordinary fact lose its destination", def)
+	}
+	if nullable := columnNullability("notifications", "group_id"); nullable != "YES" {
+		t.Fatalf("notifications.group_id is is_nullable=%q at the top of the stack, want YES — "+
+			"00058's whole relaxation is that column, and the Down assertion below cannot mean "+
+			"anything if the Up never happened", nullable)
+	}
+	if def := indexDef("notif_digest_uniq"); def == "" {
+		t.Fatal("notif_digest_uniq is absent at the top of the stack; it is the readable " +
+			"spelling of the digest idempotency key and the cursor the tick reads backwards " +
+			"for the last window it covered")
+	} else if !strings.Contains(def, "digest_window_start") || !strings.Contains(def, "UNIQUE") {
+		t.Fatalf("notif_digest_uniq is not the unique index over the window at the top of the "+
+			"stack: %s — one digest per (tenant, policy, window) is the whole claim, and an "+
+			"index of that name without the window column or without UNIQUE is a different one",
+			def)
+	}
+	for _, kind := range []struct{ name, table string }{
+		{"notifications_subjkind_ck", "notifications"},
+		{"threads_subjkind_ck", "channel_threads"},
+	} {
+		if def := constraintDef(kind.name, kind.table); !strings.Contains(def, "'digest'") {
+			t.Fatalf("%s does not admit 'digest' at the top of the stack: %s — 00058 widens "+
+				"both, and the Down assertion below is about both narrowing again",
+				kind.name, def)
+		}
+	}
+
+	down(58)
+
+	if n := digestColumns(); n != 0 {
+		t.Fatalf("%d of 00058's four digest columns survived its Down, want 0 — a rolled-back "+
+			"release neither reads nor writes them, so what would be left is a window and a "+
+			"count nothing maintains", n)
+	}
+	if nullable := columnNullability("notifications", "group_id"); nullable != "NO" {
+		t.Fatalf("notifications.group_id is is_nullable=%q after 00058's Down, want NO — this "+
+			"is the assertion no other reading in this file can make: the column counts the "+
+			"same on both sides, so a Down that dropped the digest columns and forgot "+
+			"SET NOT NULL is green everywhere else while letting a fact exist with nowhere to "+
+			"deliver it", nullable)
+	}
+	for _, name := range []string{"notifications_target_ck", "notifications_digest_ck"} {
+		if def := constraintDef(name, "notifications"); def != "" {
+			t.Fatalf("%s survived 00058's Down: %s — it constrains columns that no longer exist "+
+				"on this side, so the next Up would fail to create them", name, def)
+		}
+	}
+	if def := indexDef("notif_digest_uniq"); def != "" {
+		t.Fatalf("notif_digest_uniq survived 00058's Down: %s — it is partial on a "+
+			"`subject_kind` value the narrowed CHECK no longer admits and indexes a column that "+
+			"has been dropped", def)
+	}
+	for _, kind := range []struct{ name, table string }{
+		{"notifications_subjkind_ck", "notifications"},
+		{"threads_subjkind_ck", "channel_threads"},
+	} {
+		def := constraintDef(kind.name, kind.table)
+		if strings.Contains(def, "'digest'") {
+			t.Fatalf("%s still admits 'digest' after 00058's Down: %s — the constraint keeps its "+
+				"name across this migration, so the rollback restored the name and not the "+
+				"domain", kind.name, def)
+		}
+		if !strings.Contains(def, "'case'") || !strings.Contains(def, "'alert_group'") {
+			t.Fatalf("%s did not come back as 00056's three-kind domain after 00058's Down: %s "+
+				"— narrowing past the migration that is still applied below it would leave a "+
+				"database no migration in the history describes", kind.name, def)
+		}
+	}
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "'digest'") {
+		t.Fatalf("notifications_reason_ck still admits 'digest' after 00058's Down: %s — the "+
+			"nineteenth reason arrived with this migration and leaves with it", def)
+	} else if !strings.Contains(def, "'storm'") {
+		t.Fatalf("notifications_reason_ck is not the eighteen 00018 left after 00058's Down: "+
+			"%s — this Down and 00060's both land on eighteen values and they are DIFFERENT "+
+			"eighteen, so a Down that re-issued the other one's predicate is off by one value "+
+			"in each direction and still the right length", def)
+	}
+	if def := policyReasonsCheck(); strings.Contains(def, "19") {
+		t.Fatalf("policies_reasons_ck kept its ceiling of 19 after 00058's Down: %s — the "+
+			"ceiling is the enum size and the nineteenth value has just been removed, so a "+
+			"policy could name a vocabulary one longer than the one that exists", def)
+	}
+
+	// ⭐⭐ 00057 LET A CASE OUTLIVE THE FLAP: `case_policy_config` carries the
+	// retention window W, and `alert_cases` gained `resolve_pending_at` /
+	// `resolve_pending_end_at`, four CHECKs and one partial index for the delayed
+	// close.
+	//
+	// ⛔ ITS DOWN SPENDS THE RECEIPT BEFORE DROPPING IT, AND THAT IS THE HALF
+	// WORTH ASSERTING. Dropping two columns and a table cannot fail; what can fail
+	// — silently, at the exit code — is the UPDATE that COMPLETES every pending
+	// close first. A Down that dropped the columns straight away would forget an
+	// upstream resolve oto was already holding, and the rolled-back release would
+	// end those episodes through the reaper as `expired`/`timeout`: oto claiming it
+	// stopped hearing about an alert whose resolution it had in hand.
+	//
+	// ⚠️ THAT PROPERTY IS VACUOUS WITHOUT A PENDING ROW, the way 00049's and
+	// 00048's were until an acked episode and an active snooze were seeded. So the
+	// live episode seeded above the rollback is ARMED here — it is open, carries no
+	// suppression reason, and started before the due time, which is exactly what
+	// `case_pending_open_ck`, `case_pending_supp_ck` and `case_pending_order_ck`
+	// require — and the completed close is read back off it BY VALUE.
+	//
+	// ⚠️ THE VOCABULARY IS STILL THE `case` ONE: `down(52)` is far below, and
+	// `alert_cases.state` is 00054's `open | closed` here, not 00007's four values.
+	if n := countTables("case_policy_config"); n != 1 {
+		t.Fatal("case_policy_config is absent at the top of the stack; 00057 exists to create " +
+			"it, and without it W has no home and every case closes on the resolve")
+	}
+	if n := countColumns("alert_cases", "resolve_pending_at", "resolve_pending_end_at"); n != 2 {
+		t.Fatalf("%d of 00057's two pending-close columns exist at the top of the stack, want 2 "+
+			"— the Down assertion below is about them going away, and about the close they "+
+			"carry being performed on the way out", n)
+	}
+	for _, name := range []string{
+		"case_pending_pair_ck", "case_pending_open_ck", "case_pending_order_ck",
+		"case_pending_supp_ck",
+	} {
+		if def := constraintDef(name, "alert_cases"); def == "" {
+			t.Fatalf("%s is absent at the top of the stack — 00057 adds all four, and they are "+
+				"what make the delayed close single-shot rather than a second ending", name)
+		}
+	}
+	if def := indexDef("case_close_due_idx"); def == "" {
+		t.Fatal("case_close_due_idx is absent at the top of the stack; it is the whole scan " +
+			"case.reap performs to find due closes")
+	} else if !strings.Contains(def, "resolve_pending_at IS NOT NULL") {
+		t.Fatalf("case_close_due_idx is not partial at the top of the stack: %s — unpartialled "+
+			"it spans every episode ever opened instead of the handful inside a retention "+
+			"window, which on a deployment that sets no W is none of them", def)
+	}
+	// The pending close 00057's Down has to complete. `pendingEnd` is the UPSTREAM
+	// claim the close will stamp as `ended_at`, and it is after `started_at`
+	// (episodeAt + 2h) so that `case_pending_order_ck` and `case_order_ck` both
+	// admit it. The due time is the same instant, which is what a W of zero would
+	// have produced.
+	pendingEnd := episodeAt.Add(3 * time.Hour)
+	if _, err := env.pool.Exec(env.ctx,
+		`UPDATE alert_cases
+		    SET resolve_pending_at = $2, resolve_pending_end_at = $2, updated_at = now()
+		  WHERE id = $1`, liveCase, pendingEnd); err != nil {
+		t.Fatalf("arm a pending close on the live episode: %v — 00057 exists to make these two "+
+			"columns writable on an open, unsuppressed episode, so a failure here means its Up "+
+			"never added them or one of its four CHECKs says something other than it claims", err)
+	}
+
+	down(57)
+
+	var closedState, closedReason string
+	var closedEnded *time.Time
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT state, coalesce(resolve_reason, ''), ended_at FROM alert_cases WHERE id = $1`,
+		liveCase).Scan(&closedState, &closedReason, &closedEnded); err != nil {
+		t.Fatalf("read the episode whose close was pending: %v", err)
+	}
+	if closedState != "closed" || closedReason != "upstream" {
+		t.Fatalf("the episode holding a pending close reads state=%q resolve_reason=%q after "+
+			"00057's Down, want closed/upstream — the Down has to SPEND the receipt before "+
+			"dropping the column that holds it, or the rolled-back release ends this episode "+
+			"through the reaper as expired/timeout: oto claiming it stopped hearing about an "+
+			"alert whose resolution it was already holding", closedState, closedReason)
+	}
+	if closedEnded == nil || !closedEnded.Equal(pendingEnd) {
+		t.Fatalf("the completed close stamped ended_at=%v, want the upstream claim %v — closing "+
+			"at the sweep's clock instead would charge W to the signal's firing duration, and "+
+			"every reader of ended_at would report an episode longer than the signal burned "+
+			"(R8)", closedEnded, pendingEnd)
+	}
+	if n := countColumns("alert_cases", "resolve_pending_at", "resolve_pending_end_at"); n != 0 {
+		t.Fatalf("%d of 00057's two pending-close columns survived its Down, want 0 — the "+
+			"release this rolls back to has no sweep that reads them, so what would be left is "+
+			"a due time nothing will ever act on", n)
+	}
+	for _, name := range []string{
+		"case_pending_pair_ck", "case_pending_open_ck", "case_pending_order_ck",
+		"case_pending_supp_ck",
+	} {
+		if def := constraintDef(name, "alert_cases"); def != "" {
+			t.Fatalf("%s survived 00057's Down: %s — it constrains columns that no longer exist "+
+				"on this side", name, def)
+		}
+	}
+	if def := indexDef("case_close_due_idx"); def != "" {
+		t.Fatalf("case_close_due_idx survived 00057's Down: %s", def)
+	}
+	if n := countTables("case_policy_config"); n != 0 {
+		t.Fatal("case_policy_config survived 00057's Down, so a rolled-back release keeps a " +
+			"table nothing writes and nothing reads, holding a window no code evaluates")
+	}
+
+	// ⭐⭐ 00056 GAVE A NOTIFICATION A SUBJECT: both `subject_kind` CHECKs widened
+	// from the single value `alert_group` to `alert | case | alert_group`,
+	// `notifications_subject_ck` tied `subject_id` to the id column its kind names,
+	// and `notif_group_idx` gave the two counting readers back the index the
+	// widening took from them.
+	//
+	// ⛔ ITS DOWN IS THE ONE IN THIS FILE THAT REFUSES TO RUN RATHER THAN LOSE
+	// SOMETHING, and the refusal is EXERCISED here the way 00039's is rather than
+	// believed. `notifications` is NORMALISED first — `subject_kind` back to
+	// `alert_group`, `subject_id` back to `group_id`, which is the pair release N
+	// wrote and which loses nothing, because the alert or case the row was about is
+	// still on `alert_id` / `case_id`. `channel_threads` deliberately gets NO such
+	// normalisation: a thread keyed by a case cannot be re-keyed onto its group
+	// without colliding under `threads_subject_uniq`, and deleting it would destroy
+	// oto's memory of Slack (C9). So a non-group thread makes this Down ABORT, which
+	// is the honest outcome for a provider handle a rollback cannot reconstruct.
+	//
+	// ⛔ AND THE ABORT HAS TO BE ATOMIC, for the reason 00039's does: the Down drops
+	// `notif_group_idx` and rewrites `notifications` BEFORE it reaches the narrowing
+	// that fails. A non-transactional Down would leave the index gone, the subjects
+	// flattened and goose still claiming 00056 is applied — neither schema, and
+	// nothing to roll forward to.
+	for _, kind := range []struct{ name, table string }{
+		{"notifications_subjkind_ck", "notifications"},
+		{"threads_subjkind_ck", "channel_threads"},
+	} {
+		def := constraintDef(kind.name, kind.table)
+		if !strings.Contains(def, "'alert'") || !strings.Contains(def, "'case'") {
+			t.Fatalf("%s is not the three-kind domain above 00056's Down: %s — the migration's "+
+				"whole subject is that a subject VARIES, and the Down assertion below cannot "+
+				"mean anything if the Up never happened", kind.name, def)
+		}
+	}
+	if def := constraintDef("notifications_subject_ck", "notifications"); def == "" {
+		t.Fatal("notifications_subject_ck is absent above 00056's Down — it is the CHECK that " +
+			"stands in for the foreign key a three-table reference cannot have, and without it " +
+			"subject_id means whatever the reader assumes it means")
+	} else if !strings.Contains(def, "alert_id") || !strings.Contains(def, "case_id") {
+		t.Fatalf("notifications_subject_ck does not tie subject_id to the typed columns: %s", def)
+	}
+	if def := indexDef("notif_group_idx"); def == "" {
+		t.Fatal("notif_group_idx is absent above 00056's Down; widening subject_kind took the " +
+			"policy throttle and the group notification receipt off notif_subject_idx, whose " +
+			"leading column was a constant while only one kind existed, and nothing else " +
+			"indexes group_id — the 00011 FK creates no index on the referencing side")
+	}
+	// The thread the narrowing cannot re-key. A `webhook` channel is used because
+	// `channels_cred_ck` exempts it from carrying a credential, and the thread is
+	// left in `opening` with no provider handle so that `threads_open_ck` and
+	// `threads_ts_ck` are satisfied without inventing a Slack ts. `created_at` and
+	// `updated_at` are NAMED on both inserts: 00032 took `channels`' DEFAULT now()
+	// away and 00034 took `channel_threads`', and both of those are BELOW this step
+	// and therefore still applied.
+	threadChannel, caseThread := id.New(), id.New()
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO channels (id, org_id, type, name, config, created_at, updated_at)
+		 VALUES ($1, $2, 'webhook', 'rollback-suite-thread',
+		         '{"url":"http://webhook.test/rollback"}'::jsonb, $3, $3)`,
+		threadChannel, episodeScope.OrgID(), time.Now().UTC()); err != nil {
+		t.Fatalf("seed the channel the thread hangs off: %v", err)
+	}
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO channel_threads (id, org_id, channel_id, subject_kind, subject_id,
+		                              created_at, updated_at)
+		 VALUES ($1, $2, $3, 'case', $4, $5, $5)`,
+		caseThread, episodeScope.OrgID(), threadChannel, liveCase, time.Now().UTC()); err != nil {
+		t.Fatalf("open a case-keyed conversation: %v — 00056 exists to make a non-group thread "+
+			"subject storable, so a 23514 here means its Up never widened threads_subjkind_ck", err)
+	}
+
+	// ⛔ 00056 down, ATTEMPT ONE: REFUSED, because a case-keyed thread is live.
+	if top := appliedTop(); top != 56 {
+		t.Fatalf("about to attempt %s against a live case-keyed thread, but the top applied "+
+			"migration is %s", migrate.FormatVersion(56), migrate.FormatVersion(top))
+	}
+	threadRefusal := migrate.Down(env.ctx, dsn)
+	if threadRefusal == nil {
+		t.Fatal("00056's Down succeeded with a case-keyed row in channel_threads — either the " +
+			"narrowed CHECK is not being re-added, or it was added NOT VALID, or somebody gave " +
+			"channel_threads the normalisation the header refuses it: re-keying the thread onto " +
+			"its group collides under threads_subject_uniq and deleting it destroys oto's only " +
+			"memory of a Slack conversation (C9)")
+	}
+	// Named, so that this step cannot start passing on an unrelated failure.
+	if !strings.Contains(threadRefusal.Error(), "threads_subjkind_ck") {
+		t.Fatalf("00056's Down failed, but not on the narrowed thread CHECK: %v", threadRefusal)
+	}
+	if top := appliedTop(); top != 56 {
+		t.Fatalf("00056 is recorded as %s after a FAILED Down — the rollback is not atomic, so "+
+			"the database is in a state no migration describes", migrate.FormatVersion(top))
+	}
+	if def := indexDef("notif_group_idx"); def == "" {
+		t.Fatal("notif_group_idx was dropped by a Down that then failed; the DROP INDEX, the " +
+			"subject normalisation and the two CHECK narrowings have to succeed or fail together")
+	}
+	if def := constraintDef("notifications_subjkind_ck", "notifications"); !strings.Contains(def, "'case'") {
+		t.Fatalf("notifications_subjkind_ck was narrowed by a Down that then failed: %s", def)
+	}
+
+	// What an operator holding this rollback has to decide first, and the reason
+	// the migration refuses to decide it for them. Here the conversation is a
+	// fixture and nothing was ever posted to it, so one DELETE stands in for that
+	// decision — what is under test is the migration, not the operator.
+	if _, err := env.pool.Exec(env.ctx,
+		`DELETE FROM channel_threads WHERE id = $1`, caseThread); err != nil {
+		t.Fatalf("dispose of the case-keyed thread: %v", err)
+	}
+
+	down(56)
+
+	for _, kind := range []struct{ name, table string }{
+		{"notifications_subjkind_ck", "notifications"},
+		{"threads_subjkind_ck", "channel_threads"},
+	} {
+		def := constraintDef(kind.name, kind.table)
+		if strings.Contains(def, "'case'") || strings.Contains(def, "'alert'") {
+			t.Fatalf("%s still admits a non-group subject after 00056's Down: %s — both "+
+				"constraints KEEP THEIR NAMES across this migration, so a Down that dropped "+
+				"them and forgot to re-add 00011's single-value predicate leaves the release "+
+				"this rolls back to able to store a subject it cannot resolve", kind.name, def)
+		}
+		if !strings.Contains(def, "'alert_group'") {
+			t.Fatalf("%s did not come back at all after 00056's Down: %s — a CHECK dropped and "+
+				"not restored is looser than either release ever intended", kind.name, def)
+		}
+	}
+	if def := constraintDef("notifications_subject_ck", "notifications"); def != "" {
+		t.Fatalf("notifications_subject_ck survived 00056's Down: %s — its `case` and `alert` "+
+			"arms name a subject_kind the narrowed CHECK no longer admits, and the release this "+
+			"rolls back to has never heard of the constraint at all", def)
+	}
+	if def := indexDef("notif_group_idx"); def != "" {
+		t.Fatalf("notif_group_idx survived 00056's Down: %s — the two counting readers go back "+
+			"to riding notif_subject_idx, whose leading column is a constant again once "+
+			"subject_kind can hold only one value", def)
+	}
+
 	// ⭐⭐ 00055 MADE SUPPRESSION AN AXIS: `alerts.state` narrowed to
 	// `firing | resolved | expired`, two columns arrived beside it, and
 	// `alerts_open_idx` stopped spelling liveness as a disjunction.

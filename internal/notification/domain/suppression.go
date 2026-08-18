@@ -65,7 +65,7 @@ const (
 // row can exist. Migration 00059 narrowed `notifications_suppmap_ck` to six and
 // migration 00060 narrows `notifications_reason_ck` the same way, and neither
 // performs an `UPDATE`: a database holding either value REFUSES the migration
-// outright. The maintainer has answered that with `just db-reset` on the only
+// outright. The maintainer has answered that with `just reset` on the only
 // database that exists, so there is no row left to decode and no binary left to
 // have written one. A value kept for a reader that cannot exist is not caution, it
 // is a vocabulary entry the next person has to rule out.

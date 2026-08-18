@@ -59,7 +59,7 @@
 -- `UPDATE notifications SET suppressed_reason = ...` below. `ADD CONSTRAINT`
 -- validates the existing rows, so a database that has ever recorded one of the
 -- two dampers refuses this migration with a 23514 naming the constraint, and the
--- person holding it decides what to do. On a laptop the answer is `just db-reset`;
+-- person holding it decides what to do. On a laptop the answer is `just reset`;
 -- there is no other holder.
 --
 -- ⚠️ SIX VALUES REMAIN, NOT FOUR AND NOT TWO. 00018 widened the check to eight

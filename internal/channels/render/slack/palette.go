@@ -16,9 +16,10 @@ type CardState string
 // it spent is retired with it. The hex is deliberately NOT written here: the palette
 // gate reads every colour literal out of this file and fails on one §H.2 does not
 // list, which is what makes the two agree.
-// A card state is a LIVE reading of a group; it is not a stored value
-// with a row to render, which is why it goes where `notifications.reason = 'storm'`
-// stays.
+// A card state is a LIVE reading of a group, so it went as soon as no group could
+// enter storm mode. The `storm` Reason was a stored value with a row to render and
+// outlived it by one migration; 00060 narrows `notifications_reason_ck` to the
+// eighteen that remain, so no row asks for this purple any more either.
 //
 // This palette is a SEPARATE, UNCHANGED system from the oto UI tokens. Do not
 // harmonise them: different substrate, different contrast contract. A renderer

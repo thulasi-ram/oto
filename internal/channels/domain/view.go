@@ -160,7 +160,7 @@ type PreviousState struct {
 //
 // Kind is a small closed vocabulary the renderer maps to an emoji and a verb —
 // `fired`, `acked`, `unacked`, `suppressed`, `unsuppressed`, `resolved`,
-// `expired`, `refired`, `storm`. It is deliberately NOT the raw
+// `expired`, `refired`. It is deliberately NOT the raw
 // `alert_events.type`: the renderer must not learn another module's enum, and a
 // type it does not recognise is dropped rather than printed raw.
 type TrailEntry struct {

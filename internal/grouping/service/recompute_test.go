@@ -322,7 +322,6 @@ func newJoinHarness(t *testing.T) *joinHarness {
 		Events:   h.events,
 		Stream:   h.stream,
 		Settings: h.settings,
-		Enqueuer: h.enqueuer,
 		Clock:    clock.NewFake(at),
 	})
 	if err != nil {

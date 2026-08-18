@@ -539,7 +539,41 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 			next.resolvePendingEndAt = time.Time{}
 			break
 		}
-		if cmd.CaseRetention > 0 {
+		// ⛔⛔ THE DEFERRAL IS REFUSED FROM THE SUPPRESSED ARM, BECAUSE A SILENT EDGE
+		// MAY NOT MOVE THE SUPPRESSION AXIS.
+		//
+		// T5 has two `from` rows and the suppressed one is reachable: a SILENCED
+		// episode whose alert resolves upstream. Deferring that resolve is not
+		// possible without breaking one of two rules, neither of which is negotiable.
+		//
+		//   * KEEP the suppression across the deferral and the row holds a receipt AND
+		//     a reason at once — which `case_pending_supp_ck` forbids in DDL and
+		//     `Case.check` refuses in Go (`case_pending_supp`). The resolve would be
+		//     lost as an internal error.
+		//   * CLEAR it, which is what this arm used to do, and the case silently stops
+		//     being suppressed: `From=suppressed`, `To=firing`, no `case.unsuppressed`,
+		//     no notification, and — because `applyEdge` reads `From != To` as a state
+		//     change — `alerts.suppression_reason` projected away to NULL. The UI drops
+		//     the silence chip and shows the episode FIRING for the length of W.
+		//     Suppression is an AXIS, not a state (ADR 0041 Amendment 1, §B.6), and the
+		//     end of one is a fact T4 ANNOUNCES; §B.8.4 makes the same ruling for
+		//     snooze, because a damper that cannot announce its own end is exactly the
+		//     silent suppression §B.6 forbids.
+		//
+		// So the suppressed arm falls through to the immediate close below:
+		// From=suppressed, To=resolved, one `case.resolved`, one notification — the
+		// suppression ends in the same breath as the episode, visibly, exactly as it
+		// did before W existed. Nothing W is for is lost by that. W damps a FLAP, and a
+		// suppressed alert is not delivering the re-fires that would flap —
+		// Alertmanager's MuteStage drops them before the webhook (C1) — so there is no
+		// episode for a receipt to hold open.
+		//
+		// ⭐ IT IS ALSO WHAT MAKES THE TABLE'S OWN CLAIM TRUE BY CONSTRUCTION. The
+		// `close_due` row says there is no `suppressed` twin and there cannot be,
+		// because an episode holding a receipt is always in the `firing` phase. That
+		// was asserted OF A CHECK CONSTRAINT, which can only refuse the row after the
+		// machine has decided to write it. This guard is the machine keeping it.
+		if cmd.CaseRetention > 0 && from != StateSuppressed {
 			// THE DEFERRAL. The episode does NOT close: `state`, `resolve_reason`
 			// and `ended_at` are left exactly as they are, and the resolve is
 			// recorded as a receipt for the sweep to spend once the window has
@@ -556,10 +590,15 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 			// notification are appended by the branch above, once, at the real
 			// close. Emitting them here would put the six pings back and leave a
 			// timeline claiming a resolve that had not happened yet.
+			//
+			// ⛔ IT TOUCHES NEITHER SUPPRESSION COLUMN, AND THAT IS THE GUARD ABOVE
+			// READ FROM THE OTHER END. It used to clear both here "exactly as an
+			// immediate T5 does" — but an immediate T5 clears them while ANNOUNCING
+			// the close, and this edge announces nothing. With the suppressed arm
+			// refused, `from` is `firing`, so `suppressionReason` is already zero by
+			// `lifecyclePhase`'s own definition and there is nothing left to clear.
 			next.resolvePendingAt = cmd.At.RecordedAt().Add(cmd.CaseRetention)
 			next.resolvePendingEndAt, clampDelta = clampEnd(cmd.At.OccurredAt(), o.startedAt)
-			next.suppressionReason = SuppressionReason{}
-			next.suppressedBy = SuppressedBy{}
 			next.lastObservedAt = cmd.At.RecordedAt()
 			next.observe(cmd)
 			recordClamp(extra, cmd.At.OccurredAt(), clampDelta)
@@ -656,9 +695,20 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 	}
 
 	// ⛔ A DEFERRED CLOSE IS SILENT. The row moved — the receipt is on it — but no
-	// §B.2 state changed, so `From` and `To` are both `firing` and there is nothing
-	// for `case.resolved` to be true about yet. The event and the notification are
-	// appended once, by the due close.
+	// §B.2 state changed and neither suppression column moved, so `From` and `To`
+	// are both `firing` and there is nothing for `case.resolved` to be true about
+	// yet. The event and the notification are appended once, by the due close.
+	//
+	// ⚠️ "BOTH `firing`" IS A CONSEQUENCE OF THE SUPPRESSED ARM'S REFUSAL, NOT AN
+	// OBSERVATION ABOUT IT. It was written here while the deferral could still be
+	// entered from `suppressed`, where it was false: that path returned
+	// `From=suppressed`, `To=firing` — an unsuppression with no event, no
+	// notification and a projection behind it. The T5 arm's `from != StateSuppressed`
+	// guard is what makes the sentence true, and the two must move together.
+	if deferred && from == StateSuppressed {
+		return TransitionResult{}, errs.New(errs.KindInternal, "deferred_from_suppressed",
+			"a deferred close may not be reached from a suppressed episode")
+	}
 	if deferred {
 		return res, nil
 	}

@@ -27,7 +27,7 @@ type GroupRepository interface {
 	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Group, error)
 	GetOpenByKey(ctx context.Context, s db.TenantScope, groupKey string) (domain.Group, bool, error)
 	OpenGeneration(ctx context.Context, s db.TenantScope, in repository.NewGeneration) (domain.Group, error)
-	// The three writers below are COMPARE-AND-SET on `alert_groups.state_version`:
+	// The two writers below are COMPARE-AND-SET on `alert_groups.state_version`:
 	// `fromVersion` is the version the caller READ, and a write whose version has
 	// moved returns errs.KindConflict rather than clobbering the winner. The
 	// column already existed for §C.7's idempotency key; using it as the
@@ -35,8 +35,11 @@ type GroupRepository interface {
 	SetRollup(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error
 	// ⛔ `SetStorm` WAS THE SECOND OF THE THREE AND IS DELETED. It wrote the
 	// `storm_mode`/`storm_since` pair under the same compare-and-set; storm damping is
-	// removed, so nothing decides storm mode and nothing writes it. The columns remain
-	// (see domain.Group.StormMode) and are read-only from here on.
+	// removed, so nothing decides storm mode and nothing writes it — it was the third
+	// compare-and-set writer. The columns are gone as well: migration 00059 drops
+	// `storm_mode`, `storm_since` and `groups_storm_ck`, and `domain.Group.StormMode`
+	// and `StormSince` are deleted with them, so nothing on this port could read them
+	// back either.
 	Close(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error
 	Touch(ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time) error
 	SetNotificationReason(ctx context.Context, s db.TenantScope, groupID uuid.UUID, reason string) error

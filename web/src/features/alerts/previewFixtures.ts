@@ -1375,22 +1375,31 @@ export const PREVIEW_DETAIL: AlertDetail = {
 
 /** The timeline, newest first — the order the detail screen opens in. */
 export const PREVIEW_EVENTS: readonly AlertEvent[] = [
-  // ⛔ A RETIRED EVENT TYPE, ON PURPOSE. Nothing mints `alert.flapping_started`
-  // any more — the flap detector went blind under the case retention window W
-  // (ADR 0041 Amendment 1) — and `alert_events` is retained thirteen months, so
-  // a real timeline still opens on rows like this one. It is here so the preview
-  // exercises the path that renders them, summary and payload exactly as the
-  // server wrote them at the time.
+  // ⛔ A RETIRED EVENT TYPE, ON PURPOSE, AND THE INTENT IS UNCHANGED.
+  // `alert_events` is retained thirteen months, so a real timeline still opens on
+  // rows nothing mints any more; this row is here so the preview exercises the
+  // path that renders them, summary and payload exactly as the server wrote them
+  // at the time.
+  //
+  // ⭐ IT USED TO BE `alert.flapping_started` AND IT CANNOT BE ANY MORE. Migration
+  // `00060` narrowed `ev_type_ck` to REFUSE that spelling — the flap detector had
+  // gone blind under the case retention window W (ADR 0041 Amendment 1) — with no
+  // backfill and after a database reset, so no row spelling it can exist and
+  // `AlertEventType` no longer admits the literal. `group.member_joined` carries
+  // the same case better: it was RETIRED by `00051`, when group membership became
+  // derived from `alert_cases.group_id`, and its CHECK was deliberately never
+  // narrowed. It is still in the enum, still in `EVENT_KINDS` — read but never
+  // written — which is exactly the shape of history this row exists to render.
   {
     id: "a1000000-0000-4000-8000-000000000001",
     alert_id: DETAIL_ID,
     case_id: CASE_ID,
-    type: "alert.flapping_started",
+    type: "group.member_joined",
     occurred_at: MIN_9,
     recorded_at: MIN_9,
-    actor_kind: "system",
-    summary: "Flap score crossed 5.0 — notifications switched to update-only with a digest",
-    payload: { flap_score: 7.4, threshold: 5 },
+    actor_kind: "ingest",
+    summary: "Case #19 joined generation 4 of payments · KubernetesStatefulSetReplicasMismatch",
+    payload: { group_generation: 4, seq: 19 },
   },
   {
     id: "a1000000-0000-4000-8000-000000000002",

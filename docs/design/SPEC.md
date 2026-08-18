@@ -229,11 +229,19 @@ every query treating `closed` as final was quietly wrong for one window's width.
 terminal: `open → closed`, once.** `T9`/`T10` keep their numbers because the labels are referenced
 across the tree; renumbering them to close the gap would rewrite every reference to buy nothing.
 
-⚠️ **`refire_grace` therefore no longer decides any transition.** The org setting survives —
-`group_close_delay_s` is pinned at or above it (§D.1) and the §C.5 ingest replay floor is derived from
-it (`MinRefireGraceSeconds = 2 × DedupTTL`) — but it is inert at the lifecycle layer, and whether it
-should be renamed, re-homed or removed is left open on purpose: deleting a settings key is a contract
-change of its own.
+⚠️ **`refire_grace` therefore no longer decides any transition, and ADR 0040 §6 decides its fate:
+the key STAYS — under its own name, in `orgs.settings`, with its bounds unchanged. Renaming,
+re-homing and removal are all REFUSED.** It is inert at the lifecycle layer and still constrains two
+numbers outside it, each held by its own test: its FLOOR is `MinRefireGraceSeconds = 2 × DedupTTL`,
+derived from the §C.5 replay window rather than chosen
+(`TestTheReplayWindowIsStrictlyInsideRefireGrace`), and `group_close_delay_s` is pinned at or above
+it (§D.1, `TestGroupCloseDelayDoesNotDefeatTheRefireGrace`). **Deleting or moving a settings key is a
+contract change of its own** — that rule is unchanged and is exactly why removal was refused — and
+there is nothing to buy by paying it here: the question this setting used to answer, *how much of a
+gap should be tolerated before a re-fire counts as a separate episode*, belongs at **case
+formation** rather than at the lifecycle boundary, so the knob for it would be a new key with new
+semantics rather than this one wearing a new label. Operator copy describes `refire_grace` as the
+number `group_close_delay` is tied to, and never as a window in which a case reopens.
 
 #### B.3.1 ⭐ T4 is triggered by ingest as well as the reconciler — and why
 
@@ -331,29 +339,50 @@ deleted from `orgs.settings`, from the declarative config layer, from the Helm v
 from the settings API. The `storm_mode` and `storm_since` response fields and the `?storm=`
 group filter go with them.
 
-**⛔ `notifications.reason` IS NOT TOUCHED, and the asymmetry is deliberate.**
-`notifications_reason_ck` still admits `storm` and `notification/domain.retiredReasons` still
-decodes it. The difference is which side of the wire the value sits on: `reason` is what a
-STORED ROW SAYS IT WAS ABOUT and a card still has to render it, so the value stays declared,
-stays `Valid` and is refused at the mint. `suppressed_reason` narrows because it is the same
-argument applied to a column whose values are all oto's reading of *why nothing was sent*.
-`alert_groups.storm_mode` goes for a third reason again: it is not evidence about a past
+**⛔ `notifications.reason` LOSES `storm` AS WELL, and the asymmetry that spared it is gone.**
+Migration `00060_no_enum_remembers_a_damper.sql` narrows `notifications_reason_ck` from the
+NINETEEN values 00058 left to **EIGHTEEN** by dropping `storm`, and follows the enum down with
+`policies_reasons_ck`, whose cardinality ceiling moves from 19 to 18 because that number has never
+been a judgement about request size — it is `len(AllReasons())`. `00059` had kept the value on a
+RETIREMENT argument: a stored row still has to say what it was about, and a card still has to
+render it. **A retirement only buys something when a row spelling the value can still exist.** The
+owner authorised `just reset` on the only database in the world, so no such row survives and no
+binary that could have written one survives either. What the retirement protected is a reader that
+cannot be constructed, and its cost was a vocabulary entry in `notification/domain`, in
+`components.schemas.NotificationReason`, in four verbosity sets, in the Slack reply headings and in
+the trail glyphs. `notification/domain.retiredReasons` is deleted with the value, and so are
+`reasonStorm`, `replyLead`'s storm heading and `reasonPhrase`'s *storm damping* words;
+`render/slack/reply.go:33` is the tombstone that names what was there. `suppressed_reason` narrows
+in `00059` because it is the same argument applied to a column whose values are all oto's reading of
+*why nothing was sent*. `alert_groups.storm_mode` goes for a third reason again: it is not evidence about a past
 delivery, it is LIVE STATE, and a live-state column no writer can ever set again is not
 history — it is a lie with a `NOT NULL DEFAULT false`.
 
-**It shipped as one destructive migration rather than under expand/contract**, which every
-other narrowing in this schema obeys (§P). The authorisation is a fact, not a preference: no
+**Both migrations are destructive in one release rather than expand/contract**, which every
+other narrowing in this schema obeys (§P). `00060` spends `00059`'s exemption a second time on the
+same facts rather than claiming a new one. The authorisation is a fact, not a preference: no
 oto database and no Helm release exists outside one laptop, so there is no row spelling
 `storm`, no running reader of the columns and no operator whose values file would CrashLoop
 on an unknown key at BOOT. Expand/contract protects a deployed population; there is none.
-When there is one, the rule returns unchanged.
+When there is one — the moment a tagged release exists — the rule returns unchanged and neither
+migration is a precedent for the next narrowing.
 
-**The two `alert_events.type` values are RETIRED, not deleted.** `group.storm_started` and
-`group.storm_ended` stay in the closed enum (§D.4.1), stay in `AllEventTypes()` and stay in
-`components.schemas.AlertEventType`, on migration 00051's terms: a value removed from the
-enum is a value `NewEventType` rejects on read, and a timeline that errors instead of
-rendering. `alerts/service.AppendTimelineEvent` refuses them at the writer. See
-**ADR 0042**.
+**The two `alert_events.type` values are DELETED, not retired.** `group.storm_started` and
+`group.storm_ended` leave the closed enum (§D.4.1), leave `AllEventTypes()` — which is thirty-two
+values, not thirty-six — and leave `components.schemas.AlertEventType`. Migration `00060` narrows
+`ev_type_ck` with a `NOT IN` clause naming exactly the four damper spellings, and performs no
+`UPDATE`: a database that has ever recorded one refuses the migration with a `23514` naming the
+constraint, and the authorised reset is the answer to it.
+
+⭐ **The line between RETIRED and DELETED is the CHECK, and nothing else.** A value is **retired**
+when the constraint that governs its column **still admits it** — it stays in the closed set, stays
+parseable, stays on the contract, and every writer refuses it, because a row on disk may still spell
+it and `NewEventType` rejecting history is a timeline that errors instead of rendering. A value is
+**deleted** when the constraint **was narrowed** to refuse it, at which point there is no row left to
+decode and a vocabulary entry with no reader is one more thing the next person has to rule out.
+`retiredEventTypes` therefore holds exactly **three**: `group.member_joined` and `group.member_left`
+(migration 00051) and `case.reopened` (migration 00054), whose CHECKs were never narrowed. The four
+damper types are not among them. See **ADR 0042**.
 
 #### B.6.2 Flap detection is RETIRED IN PLACE, because the score went BLIND
 
@@ -386,15 +415,25 @@ the damper that already works. One damper is the point.
 **What is DELETED**: the `flap.score` job kind, its periodic tick, its handler, the
 `ScoreFlaps` service method, the `EventCounter` port and `AlertRepository.SetFlap` — which was
 the only statement in the tree that wrote either column. The two timeline types
-`alert.flapping_started` and `alert.flapping_ended` are **RETIRED, not deleted**, on migration
-00051's terms: they stay in the closed enum (§D.4.1), in `AllEventTypes()` and in
-`components.schemas.AlertEventType`, and both write paths refuse them.
+`alert.flapping_started` and `alert.flapping_ended` are **DELETED, not retired**: migration
+`00060` narrows `ev_type_ck` to refuse their spellings alongside the two storm types, so they
+leave the closed enum (§D.4.1), leave `AllEventTypes()` and leave
+`components.schemas.AlertEventType`. Retirement is what a value gets while its CHECK still admits
+it (§B.6.1); once the CHECK was narrowed there is no row left for a decoder to meet.
 
 **What is KEPT, and this is the difference from storm.** `alerts.flap_score` and
 `alerts.is_flapping` are **RETIRED IN PLACE — readable, unwritable.** They stay in the schema
-with their last value: the list filter `?flapping=`, the alert rollup, the `alert.history`
-enrichment, the notification snapshot and the Slack card all still read them, and a value
-already on a row is HISTORY rather than a live judgement. Storm's `alert_groups.storm_mode`
+with their last value: the server-side list filter `?flapping=` (`alerts/api.query`), the alert
+rollup, the `alert.history` enrichment, the notification snapshot and the Slack card all still read
+them, and a value
+already on a row is HISTORY rather than a live judgement.
+
+⚠️ **The WEB filter is gone even though the server one is not, and the split is deliberate.**
+`web/src/features/alerts/filters.ts` no longer offers a `flapping` facet: a facet over a blind
+column returns a confidently empty list, which is a lie told to somebody looking for work to do.
+`GET /api/v1/alerts?flapping=` still parses and still answers, because a client asking about a
+column oto still stores must get the column's value rather than a `400 unknown_parameter` — that is
+the treatment `?ack=` got, and `?ack=` was removed because its column was removed. Storm's `alert_groups.storm_mode`
 was dropped instead because it was live state no writer could set again — "a lie with a
 `NOT NULL DEFAULT false`" — whereas these two are a *measurement taken at a time*, and the
 row that carries one stays interpretable. A future migration restates their
@@ -1470,14 +1509,13 @@ Partitions: **MONTHLY** on `recorded_at`. Pre-create 3 months ahead; detach + dr
 #### D.4.1 `alert_events.type` — the closed enum
 
 ```
-alert.created                 alert.mutated                 alert.flapping_started †
-alert.flapping_ended †
+alert.created                 alert.mutated
 case.opened             case.reopened †         case.suppressed
 case.unsuppressed       case.resolved           case.expired
 case.acknowledged       case.unacknowledged
 alert.snoozed                 alert.unsnoozed
 group.opened                  group.closed                  group.member_joined †
-group.member_left †           group.storm_started †         group.storm_ended †
+group.member_left †
 rule.snapshot_captured        rule.definition_changed       rule.lookup_failed
 enrichment.completed          enrichment.failed
 notification.created          notification.suppressed
@@ -1487,9 +1525,24 @@ comment.added
 source.unreachable            source.recovered              source.clock_skew
 ```
 
-Adding a type requires a SPEC amendment. Implementers MUST NOT invent types.
+**THIRTY-TWO values.** Adding a type requires a SPEC amendment. Implementers MUST NOT invent types.
+`AllEventTypes()` is this list and `components.schemas.AlertEventType` is its only other
+enumeration; `TestContractEnumsMatchTheirDomainEnum` is what fails when the two drift.
 
-**† RETIRED: MAY BE READ, MUST NOT BE WRITTEN.**
+⚠️ **`ev_type_ck` IS NOT A SECOND COPY OF THIS LIST.** It is a SHAPE —
+`type ~ '^[a-z_]+\.[a-z_]+$'` — plus the `NOT IN` clause migration `00060` added, naming exactly the
+four deleted damper spellings. It can refuse a value that LEFT this list; it still cannot notice one
+that joined it, so a type added here and nowhere else reaches the column, the timeline and the wire
+with no constraint objecting.
+
+**† RETIRED: MAY BE READ, MUST NOT BE WRITTEN.** ⭐ **Retired is not deleted, and the CHECK is the
+whole of the difference.** A value is retired when `ev_type_ck` **still admits it**: it stays in the
+closed set, stays parseable, stays on the contract, and every writer refuses it, because thirteen
+months of `alert_events` may still spell it and a value `NewEventType` rejects on read is a timeline
+that errors instead of rendering. A value is deleted when the CHECK **was narrowed** to refuse it,
+after which no row can carry it and a vocabulary entry with no reader is one more thing to rule out.
+**Exactly three values are retired** — `group.member_joined`, `group.member_left` and
+`case.reopened` — and `retiredEventTypes` holds those three and nothing else.
 
 `case.reopened` was retired by **migration 00054 / ADR 0040**, on the same terms and for the same
 reason. It was T8's event, and T8 no longer exists: a re-fire opens the next episode and appends
@@ -1505,22 +1558,18 @@ column through `alerts/service.appendEvents`, which that seam explicitly does no
 refusal is made at **both** writers, and the transition rows that constructed the value are gone as
 well.
 
-`group.storm_started` and `group.storm_ended` were retired by **ADR 0042**, which removed storm
-damping outright. They named a mode `alert_groups` no longer has a column for, and nothing has
-emitted them since. They stay in the closed enum for migration 00051's reason and not for a
-weaker one: `AllEventTypes()` feeds `components.schemas.AlertEventType`, and a value dropped from
-the enum is a value `NewEventType` rejects on read — a timeline that errors instead of rendering.
-`alerts/service.AppendTimelineEvent` is where the refusal is enforced. They leave the enum when
-the last partition that could hold them is dropped.
-
-`alert.flapping_started` and `alert.flapping_ended` were retired by **ADR 0041, Amendment 1**
-(§B.6.2), which retired flap detection itself. They recorded an Alert crossing `flap_threshold`,
+⛔ **FOUR VALUES WERE HERE, PASSED THROUGH THE † TREATMENT, AND ARE NOW DELETED.**
+`group.storm_started` and `group.storm_ended` named a damper oto no longer has (**ADR 0042**);
+`alert.flapping_started` and `alert.flapping_ended` recorded an Alert crossing `flap_threshold`,
 counted over the lifecycle events a flap damped inside the case retention window W no longer
-appends — so the crossing they announced had stopped meaning what it says, and
-`alert.flapping_ended` would have been minted *because* the flapping got worse. They stay in the
-closed enum on exactly the terms above. They were minted INSIDE `alerts`, by the `flap.score`
-job through `alerts/service.appendEvents`, so like `case.reopened` they need the refusal at
-**both** writers — and the job that built them is deleted as well.
+appends, so `alert.flapping_ended` would have been minted *because* the flapping got worse
+(**ADR 0041, Amendment 1**, §B.6.2). Both pairs were briefly kept as parseable history, on the
+argument above and at no schema cost, because `ev_type_ck` was a pure shape and admitted them.
+Migration `00060` narrows it to refuse exactly these four spellings and performs no `UPDATE`, so a
+database holding one refuses the migration with a `23514`; the owner authorised the database reset
+that answers it. With no row left to read back, the bargain buys nothing, and `NewEventType` now
+refuses the four exactly as the column does. `AllEventTypes()` went from thirty-six values to
+thirty-two.
 
 Membership stopped being an event at **migration 00051**, when the group key became derived (ADR 0038): `group.member_joined` is implied by `case.opened` and `group.member_left` by `case.resolved`/`case.expired`, and both were facts about the **episode** phrased as if the group were the actor. `group.member_left` was never emitted at all — `Leave` existed at three layers with no production caller. They stay in the closed enum, and therefore in `components.schemas.AlertEventType`, because `alert_events` is retained thirteen months and rows carrying `group.member_joined` already exist: a value removed from the enum is a value `NewEventType` rejects on read and a timeline that errors instead of rendering. `alerts/service.AppendTimelineEvent` refuses a retired type, which is where "never again" is enforced rather than asserted. They leave the enum when the last partition holding them is dropped.
 
@@ -1847,63 +1896,101 @@ CREATE INDEX threads_open_idx ON channel_threads (org_id, state) WHERE state IN 
 CREATE TABLE notifications (
   id              UUID        PRIMARY KEY,
   org_id          UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  subject_kind    TEXT        NOT NULL CHECK (subject_kind IN ('alert','case','alert_group')),
+  subject_kind    TEXT        NOT NULL,            -- notifications_subjkind_ck, below. FOUR kinds since 00058.
                                                    -- WHAT the fact is about. Which Reason declares which subject is the
                                                    -- domain allocation (`notification/domain/reason.go`, proven total by
                                                    -- a test), deliberately NOT a reason → subject CHECK: release N
                                                    -- writes 'alert_group' for every reason and both releases run at once.
-  subject_id      UUID        NOT NULL,            -- alerts.id | alert_cases.id | alert_groups.id, per subject_kind.
-                                                   -- No FK: one column cannot reference three tables — the tie is
+  subject_id      UUID        NOT NULL,            -- alerts.id | alert_cases.id | alert_groups.id, or — for a digest —
+                                                   -- notification_policies.id, the POLICY half of the (policy, window)
+                                                   -- pair. No FK: one column cannot reference four tables — the tie is
                                                    -- notifications_subject_ck.
-  group_id        UUID        NOT NULL REFERENCES alert_groups(id) ON DELETE CASCADE,
+  group_id        UUID        REFERENCES alert_groups(id) ON DELETE CASCADE,
                                                    -- the DELIVERY TARGET, not the subject: which thread the fact lands
-                                                   -- on. NOT NULL for all eighteen reasons, per-alert ones included.
+                                                   -- on. NULLABLE since 00058, and the obligation moved to
+                                                   -- notifications_target_ck: mandatory for every subject_kind EXCEPT
+                                                   -- `digest`, which spans many generations and opens its own thread
+                                                   -- keyed by its policy.
   alert_id        UUID,                            -- set when the fact is about one alert
   case_id   UUID,
+  digest_window_start TIMESTAMPTZ,                 -- 00058. The WINDOW half of a digest's subject: the inclusive start,
+                                                   -- aligned to floor(unix / policy.digest_window_s) in UTC.
+  digest_count        INT,                         -- 00058. How many Cases OPENED inside the window — STORED, not
+                                                   -- recomputed at claim time (a deliberate C11 exception: the window is
+                                                   -- closed, but `alert_cases` is reapable, so a recomputed count would
+                                                   -- shrink and the row would say a different thing every read).
   reason          TEXT        NOT NULL,            -- §H.6 Reason enum
   policy_id       UUID        REFERENCES notification_policies(id) ON DELETE SET NULL,
   state_version   INT         NOT NULL,
   idempotency_key TEXT        NOT NULL,            -- C.7
   status          TEXT        NOT NULL DEFAULT 'pending'
                               CHECK (status IN ('pending','dispatched','partial','delivered','failed','suppressed')),
-  suppressed_reason TEXT,                          -- no_policy | throttled | snoozed | verbosity |
-                                                   -- channel_disabled | duplicate_render
-                                                   -- SIX values. `storm` and `flapping` were removed
-                                                   -- by ADR 0042; oto never withholds for either.
-                                                   -- precedence order is fixed: see B.8.2
+  suppressed_reason TEXT,                          -- channel_disabled | no_policy | snoozed |
+                                                   -- throttled | verbosity | duplicate_render
+                                                   -- SIX values. `storm` (ADR 0042) and `flapping`
+                                                   -- (ADR 0041 Amendment 1) were removed together by
+                                                   -- 00059; oto never withholds for either. That
+                                                   -- listing IS the fixed precedence order: B.8.2.
   -- no DEFAULT now() (§D conventions); `NotificationRepository.Insert` and `SetStatus` stamp them.
   created_at      TIMESTAMPTZ NOT NULL,
   updated_at      TIMESTAMPTZ NOT NULL,
   CONSTRAINT notifications_idem_uniq UNIQUE (org_id, idempotency_key),
+  CONSTRAINT notifications_subjkind_ck CHECK (subject_kind IN ('alert','case','alert_group','digest')),
   CONSTRAINT notifications_reason_ck CHECK (reason IN
     ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
      'expired','refired','acked','unacked','snoozed','unsnoozed','enriched','rule_changed',
-     'comment','unacked_reminder','storm')),
-                                                   -- EIGHTEEN reasons, and `storm` is RETIRED
-                                                   -- rather than removed (ADR 0042): declared,
-                                                   -- decoded, renderable, refused at the mint.
-                                                   -- `refired` is retired on the same terms.
+     'comment','unacked_reminder','digest')),
+                                                   -- EIGHTEEN reasons: 00018's order, `digest`
+                                                   -- appended by 00058, `storm` DELETED by 00060.
+                                                   -- `refired` is RETIRED — nothing writes it since
+                                                   -- ADR 0040, the CHECK still admits it, and rows
+                                                   -- carrying it still render.
   CONSTRAINT notifications_sver_ck   CHECK (state_version >= 1),
   CONSTRAINT notifications_idem_ck   CHECK (idempotency_key ~ '^[0-9a-f]{64}$'),
   CONSTRAINT notifications_supp_ck   CHECK ((status = 'suppressed') = (suppressed_reason IS NOT NULL)),
   CONSTRAINT notifications_suppmap_ck CHECK (suppressed_reason IS NULL OR suppressed_reason IN
-    ('no_policy','throttled','snoozed','verbosity','channel_disabled','duplicate_render')),
+    ('channel_disabled','no_policy','snoozed','throttled','verbosity','duplicate_render')),
+  -- everything except a digest must name its delivery target. It is the half of the old
+  -- `group_id NOT NULL` that is true of every Notification, kept as a constraint when 00058
+  -- relaxed the column so that relaxing it could not quietly let an ordinary fact lose its
+  -- destination.
+  CONSTRAINT notifications_target_ck CHECK (subject_kind = 'digest' OR group_id IS NOT NULL),
+  -- the two digest columns are present exactly for a digest, and a stored count is at least 1.
+  -- The range test is a SEPARATE conjunct: folding it into the equality would make the whole
+  -- predicate NULL for a digest row with a missing count, and a CHECK passes on NULL.
+  CONSTRAINT notifications_digest_ck CHECK (
+    (subject_kind = 'digest') = (digest_window_start IS NOT NULL AND digest_count IS NOT NULL)
+    AND (digest_count IS NULL OR digest_count >= 1)),
   -- alert-scoped reasons must name the alert they are about
   CONSTRAINT notifications_focus_ck  CHECK (reason NOT IN ('acked','unacked','refired','rule_changed')
                                             OR alert_id IS NOT NULL),
   -- the subject is a (kind, id) PAIR: subject_id agrees with the id column its kind NAMES, and
-  -- that column is present. It stands in for the foreign key a three-table reference cannot
+  -- that column is present. It stands in for the foreign key a four-table reference cannot
   -- have, and it is what makes subject_id a usable join key instead of a convention.
   -- Each arm carries its own IS NOT NULL because `subject_id = alert_id` over a NULL alert_id
-  -- evaluates to NULL and a CHECK passes on NULL.
+  -- evaluates to NULL and a CHECK passes on NULL — the group arm gained its guard in 00058,
+  -- when `group_id` stopped being NOT NULL. The digest arm tolerates a NULL policy_id because
+  -- policy_id is ON DELETE SET NULL, and enforcing the tie unconditionally would make the first
+  -- digest ever sent turn its own policy undeletable.
   CONSTRAINT notifications_subject_ck CHECK (
        (subject_kind = 'alert'       AND alert_id IS NOT NULL AND subject_id = alert_id)
     OR (subject_kind = 'case'        AND case_id  IS NOT NULL AND subject_id = case_id)
-    OR (subject_kind = 'alert_group' AND subject_id = group_id)),
+    OR (subject_kind = 'alert_group' AND group_id IS NOT NULL AND subject_id = group_id)
+    OR (subject_kind = 'digest'      AND digest_window_start IS NOT NULL
+                                     AND (policy_id IS NULL OR subject_id = policy_id))),
   CONSTRAINT notifications_time_ck   CHECK (updated_at >= created_at)
 );
 CREATE INDEX notif_subject_idx ON notifications (org_id, subject_kind, subject_id, created_at DESC);
 CREATE INDEX notif_alert_idx   ON notifications (org_id, alert_id, created_at DESC);
+CREATE INDEX notif_case_idx    ON notifications (org_id, case_id) WHERE case_id IS NOT NULL;
+-- the DELIVERY TARGET, not the subject. It serves the policy throttle (windowed) and the group
+-- notification receipt (unbounded in time); both were subject-keyed until `subject_kind` admitted
+-- more than one value, and the 00011 FK to `alert_groups` creates no index on the referencing side.
+CREATE INDEX notif_group_idx   ON notifications (org_id, group_id, created_at DESC);
+-- one digest per (tenant, policy, window). The readable spelling of the key `notifications_idem_uniq`
+-- also enforces through the §C.7 hash, and the index the "last window covered" cursor reads backwards.
+CREATE UNIQUE INDEX notif_digest_uniq ON notifications (org_id, policy_id, digest_window_start)
+  WHERE subject_kind = 'digest';
 
 CREATE TABLE notification_deliveries (
   id                  UUID        PRIMARY KEY,
@@ -3715,7 +3802,7 @@ Implemented in `internal/channels/render/slack`. **Every renderer is a pure func
 >
 > **There are FIVE card states, and `storm` / `#7b1fa2` are DELETED** (ADR 0042 Amendment 1). `CardStorm` and its hex are gone from `internal/channels/render/slack/palette.go`, and the branch that selected them is gone from `cardState` (`renderer.go:131`). A card state is a LIVE reading of a group's member counts, and the two inputs that could ever return this one — `channels/domain.GroupView.StormMode` and `NotificationView.StormCount` — are deleted with `alert_groups.storm_mode`, the column that fed them (migration 00059). An unreachable state is not a retired value; it is dead code.
 >
-> ⛔ **A STORED value is a different question, and `notifications.reason = 'storm'` IS retired in place.** §H.5's `storm` reply still draws, because `notifications_reason_ck` still admits the value and `reasonStorm` (`render/slack/reply.go:38`) still names the reply. What has no stored form is the card's COLOUR: it was computed at render time from live state that no longer exists.
+> ⛔ **The STORED value went the same way one migration later, so there is no asymmetry left to explain.** `notifications.reason = 'storm'` was briefly retired in place; migration `00060` narrows `notifications_reason_ck` to eighteen values and drops it, the owner having authorised the database reset that answers a `23514`. `reasonStorm` is deleted from `render/slack/reply.go` — line 33 is the tombstone — and §H.5 has no `storm` reply. The card's COLOUR was never the same question: it was computed at render time from live state, and an unreachable render branch is dead code rather than a retired value.
 >
 > **This table is a gate.** `TestSlackPaletteUnchanged` (`render/slack/palette_test.go`) parses the rows above and fails unless their count, hexes and emoji match `palette.go` exactly — so a colour moves in this table first, and the OnCall provenance argument below has to be re-made.
 
@@ -3893,7 +3980,6 @@ Replies are posted with `thread_ts = channel_threads.provider_thread_id` (the **
 | `snoozed` | `snoozed` | 1 × `section` | `":zzz: *Notifications snoozed* by <@UA8RXUSPL> until <!date^1786468800^{time}\|17:00 UTC> — _\"waiting on the node pool rollout\"_. The alert is still firing."` |
 | `unsnoozed` | `unsnoozed` | 1 × `section` | `":bell: *Snooze ended* (expired) — notifications resume. Still firing since <!date^…^{time}\|09:14 UTC>."` |
 | `unacked_reminder` | `unacked_reminder` | 1 × `section`, **`reply_broadcast: true`** | `":rotating_light: *Still unacknowledged after 15m.* <!subteam^SAZ94GDB8> — <https://oto…\|open in oto>"` |
-| `storm` ‡ | `storm` | 1 × `section` | `":zap: *Storm damping on* — 214 alerts in 60s. Individual notifications are suppressed. <link\|see them all>"` |
 | `degraded` | *(system)* | 1 × `context` | `":warning: oto could not deliver an update to this thread (\`channel_not_found\`). See Deliveries in oto."` |
 | `continued` | *(system)* | 1 × `section` | `":arrow_right: *Continued in a new message* — this thread reached 30 replies. <link\|jump>"` |
 
@@ -3905,7 +3991,7 @@ a card rendering an existing notification must not fail on one. **Nothing produc
 came off `reopen_count` and now comes off `seq`, which says the same thing from a column that still
 exists: an episode above the first succeeded one that had ended.
 
-**‡ `storm` is RETAINED BUT UNREACHABLE (ADR 0042), on `refired`'s exact terms.** Storm damping is removed: nothing evaluates a storm, and `notify.evaluate` refuses the reason at the mint (`notification/domain.retiredReasons`). The row stays because `notifications_reason_ck` still admits the value, a customer's policy may already match on it, and a card rendering an existing notification must not fail on one. **Nothing produces it.**
+**⛔ THE `storm` REPLY WAS HERE AND IS DELETED (ADR 0042), which is NOT `refired`'s treatment.** `refired` keeps its row because `notifications_reason_ck` still admits the value: a stored row can spell it, a policy can match on it, and a card rendering one must not fail. `storm` had exactly that argument until migration `00060` narrowed the CHECK to eighteen values and the owner authorised the database reset, at which point no row can spell it and no reader can be constructed. `reasonStorm` is gone from `render/slack/reply.go` — line 33 is the tombstone — and so are `replyLead`'s `:zap: Storm damping on for:` heading and `reasonPhrase`'s *storm damping* words. **The test is whether a ROW can spell it, and after 00060 none can.**
 
 `rule_changed` is the headline differentiator and is **always** delivered as a reply, regardless of verbosity. There is no exception: the storm-mode carve-out went with ADR 0042.
 
@@ -3970,9 +4056,11 @@ Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason
 | `snoozed` | `update_root` + `thread_reply` | **always — exempt from snooze suppression (§B.8.4)** |
 | `unsnoozed` | `update_root` + `thread_reply` | **always — exempt from snooze suppression (§B.8.4)** |
 | `unacked_reminder` | `broadcast_reply` | always |
-| `storm` ‡ | `update_root` (or `post_root` if none exists) + `thread_reply` once | always |
+| `digest` ※ | `post_root` (or `update_root` if the policy's digest thread already exists) + `thread_reply` | reply at `all` |
 
-**‡ `storm` is retained but unreachable** — ADR 0042 removed storm damping, so nothing evaluates a storm and nothing mints the reason. The row stays for the same reason `refired`'s does. See the ‡ under §H.5.
+**⛔ THE `storm` ROW WAS HERE AND IS DELETED.** ADR 0042 removed storm damping and migration `00060` removed the Reason: `notifications_reason_ck` admits eighteen values and `storm` is not one of them, so no row can spell it and nothing can render it. It does not keep `refired`'s treatment, because `refired`'s CHECK still admits it and `storm`'s no longer does.
+
+**※ `digest` is the eighteenth Reason and the only one NO TRANSITION PRODUCES** (migration 00058). It is minted by the `notify.digest` tick: at the top of a policy's window the evaluator counts the Cases that OPENED inside it, and if the count clears the policy's floor it says so once. It has no Alertmanager equivalent because nothing happened — which is why it is in this table and not the one above. It is also the one Reason with **no `group_id`**: a digest spans many generations, so it opens its own conversation keyed by its policy (`notifications_target_ck`, §D.8). It is **not a damper** — a policy carrying a window sends the digest IN ADDITION to everything else it routes, and suppresses nothing.
 
 **† `refired` is retained but unreachable** — nothing has produced it since ADR 0040 retired T8, and a
 re-fire is delivered as `fired`. The row stays because stored notifications carry the value and must
@@ -3985,11 +4073,13 @@ still render. See the † under §H.5.
 | Value | Replies delivered |
 |---|---|
 | `all` | every reply type |
-| `status_changes` *(default)* | ack, unack, suppressed, unsuppressed, expired, refired, new_alerts, all_resolved, rule_changed, comment, snoozed, unsnoozed, unacked_reminder, storm |
-| `firing_and_resolved` | new_alerts, all_resolved, expired, rule_changed, snoozed, unsnoozed, unacked_reminder, storm |
-| `firing_only` | new_alerts, rule_changed, snoozed, unsnoozed, unacked_reminder, storm |
+| `status_changes` *(default)* | ack, unack, suppressed, unsuppressed, expired, refired, new_alerts, all_resolved, rule_changed, comment, snoozed, unsnoozed, unacked_reminder |
+| `firing_and_resolved` | new_alerts, all_resolved, expired, rule_changed, snoozed, unsnoozed, unacked_reminder |
+| `firing_only` | new_alerts, rule_changed, snoozed, unsnoozed, unacked_reminder |
 
-`storm` and `refired` are both listed and neither is reachable — a gate on a reason nothing produces decides nothing, and removing them from these lists would be the one edit that could break an old row's render if either ever came back.
+⛔ **`storm` was in all four sets and is gone from all four**, with the Reason itself (migration 00060). It survived even `firing_only` on the argument that a channel which asked for less has not asked to be lied to about oto withholding things — oto withholds nothing now, so there is no such fact and no Reason naming one. `refired` stays listed: nothing produces it since ADR 0040, but `notifications_reason_ck` still admits it, so a stored row can reach the gate and a gate that had forgotten it would decide wrongly.
+
+`digest` appears in none of the three named sets, which is `enriched`'s treatment and means the same thing: its reply is delivered at `all` and nowhere else. `internal/notification/domain/verbosity.go` is this table literally, and `all` is deliberately absent from it — "all means all" is the one rule that must never need maintenance.
 
 `channels.thread_updates = false` reduces every mode to `update_root` (except `unacked_reminder`, which is always broadcast). Root updates are **never** gated by verbosity.
 
@@ -4764,7 +4854,13 @@ type CreatePolicyRequest struct {
 	Priority       int             `json:"priority"        validate:"gte=0,lte=10000"`
 	Enabled        bool            `json:"enabled"`
 	Matchers       []MatcherDTO    `json:"matchers"        validate:"max=32,dive"`
-	Reasons        []string        `json:"reasons"         validate:"required,min=1,max=32,unique,dive,oneof=fired new_alerts some_resolved all_resolved repeat suppressed unsuppressed expired refired acked unacked snoozed unsnoozed enriched rule_changed comment unacked_reminder storm"`
+	// No `oneof` tag: the vocabulary is validated against the domain's closed set
+	// (`toReasons`), because a duplicated list here is the second copy that drifts.
+	// `max` is the SIZE OF THE ENUM — `unique` over a closed vocabulary makes an
+	// N+1'th element unreachable — so it moved 18 → 19 when 00058 added `digest`
+	// and 19 → 18 when 00060 deleted `storm`, alongside `domain.MaxPolicyReasons`,
+	// `policies_reasons_ck` and the contract's `maxItems`.
+	Reasons        []string        `json:"reasons"         validate:"required,min=1,max=18,unique"`
 	ChannelIDs     []uuid.UUID     `json:"channel_ids"     validate:"required,min=1,max=16,unique,dive,uuid"`
 	Throttle       *ThrottleDTO    `json:"throttle"        validate:"omitempty"`
 	UnackedReminderAfterS *int            `json:"unacked_reminder_after_seconds" validate:"omitempty,gte=60,lte=86400"`

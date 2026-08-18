@@ -401,9 +401,19 @@ than a stated refusal, because absence is not a decision anyone can defend or re
 **Snooze is unambiguously IN under this document's own test.** "Suppress *oto's* notifications for this
 `alert_key` until T" is a fact about a signal's notification, stored only in oto's database, changing
 nothing in the cluster, auto-expiring, attributed, and visible in the UI as a state — exactly the shape
-of `is_flapping` and `storm_mode`, which the spec already ships as damping mechanisms with visible UI
-states (B.6). It passes FR-1 (subject = a signal), H-1 (no obligation on anyone), H-2 (dies with the
-alert), and H-3 (no external write). It is nearer to `channels.verbosity` than to a silence.
+of `is_flapping` and `storm_mode`, which the spec shipped at the time as damping mechanisms with
+visible UI states (B.6, and see the note below). It passes FR-1 (subject = a signal), H-1 (no
+obligation on anyone), H-2 (dies with the alert), and H-3 (no external write). It is nearer to
+`channels.verbosity` than to a silence.
+
+⚠️ **Neither comparison holds today, and the two went different ways.** `storm_mode` is DELETED:
+storm damping is removed outright (ADR 0042) and migration `00059` dropped `alert_groups.storm_mode`,
+`storm_since`, `groups_storm_ck` and `channels.storm_notice_at`. `alerts.is_flapping` still EXISTS as
+a column and is RETIRED IN PLACE (ADR 0041 Amendment 1): no writer remains, every read is intact, and
+it keeps the last value it was written — but its UI is gone, the flapping chip and the `?flapping=`
+facet having been removed from the web app. The comparison this section draws is therefore historical;
+the ruling it argues for is not, because snooze shipped as the first-class, auto-expiring, attributed
+alert state described below.
 
 The argument for shipping it in **v1, not v1.1**: the failure mode the memo identifies as fatal is users
 muting the Slack channel (§3.4). Storm collapse and flap damping are automatic defences against oto's

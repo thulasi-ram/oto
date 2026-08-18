@@ -326,10 +326,30 @@ Four CHECKs and one index carry the invariants:
 
 `case_pending_supp_ck` is §4 and §5 restated in DDL. An upstream resolve is **positive proof of
 non-suppression** — Alertmanager would not have delivered it otherwise, which is the same argument
-§B.3.1 uses to let ingest drive T4 — so the deferral clears `suppression_reason` and `suppressed_by`
-exactly as an immediate T5 always did. §5's per-episode record is not lost by that:
-`suppress_count` is untouched, and it is the column §5 names as the one that makes the per-episode
-framing explicit.
+§B.3.1 uses to let ingest drive T4.
+
+~~so the deferral clears `suppression_reason` and `suppressed_by` exactly as an immediate T5 always
+did.~~
+
+> ⚠️ **CORRECTED, 2026-08-19.** That sentence was the origin of a real defect and the clause is now
+> unreachable. A silenced case that resolved upstream while W > 0 entered the deferral, which cleared
+> the suppression axis while leaving `state = open` — so the transition reported `From=suppressed`,
+> `To=firing`, emitted no events, and `CloseDeferred` suppressed the notification. `applyEdge`
+> reported `stateChanged`, `projectionFor` wrote `alerts.suppression_reason = NULL`, and the UI
+> dropped the silence chip and showed the case FIRING for the length of the window with no
+> `case.unsuppressed` event and nobody told.
+>
+> **The deferral is now refused from the suppressed arm and such a case closes immediately**
+> (`cmd.CaseRetention > 0 && from != StateSuppressed`). Preserving the axis across a deferral is not
+> available: `case_pending_supp_ck` and `Case.check` both forbid a receipt beside a reason. Clearing
+> it is the defect — suppression is an AXIS, not a state, and the end of one is announced by T4.
+> §B.8.4 makes the identical ruling for snooze: a silent edge may not move that axis, "or it becomes
+> the silent suppression that §B.6 forbids". Nothing W exists for is lost, because MuteStage (C1)
+> means a suppressed alert delivers no re-fires to damp in the first place. Held by
+> `TestASilencedCaseNeverDefersItsCloseIntoASilentUnsuppression`.
+
+The DDL claim above is unchanged. §5's per-episode record is not lost either: `suppress_count` is
+untouched, and it is the column §5 names as the one that makes the per-episode framing explicit.
 
 ### The receipt is what keeps "a resolution is never fabricated" true of a background sweep
 
@@ -383,10 +403,18 @@ unopposed.
 Damping a flap at delivery makes a withheld notification indistinguishable from a signal that never
 fired, which §B.6 refuses. W removes the cause, so the delivery-side damper is gone:
 
-- `SuppressedFlapping` is **retired at the writer**: `retiredSuppressedReasons`
+- ~~`SuppressedFlapping` is **retired at the writer**: `retiredSuppressedReasons`
   (`internal/notification/domain/suppression.go:104-105`), `Retired()` (`:109`), and the refusal
   inside `Add` (`:171`) — the one road into a `Suppressors` set. A comment saying "do not record
-  this" is advice; a refusal at the only writer is a guarantee.
+  this" is advice; a refusal at the only writer is a guarantee.~~ ⚠️ **That retirement was
+  superseded: the value is DELETED, and so is the mechanism.** Migration `00059` narrows
+  `notifications_suppmap_ck` to six values and migration `00060` narrows `notifications_reason_ck`
+  to eighteen; neither performs an `UPDATE`, and the maintainer authorised a reset of the only
+  database that exists rather than a downlevel mapping. **Retired means the CHECK still admits the
+  value; deleted means the CHECK was narrowed** — this is the second, so there is no older row
+  left for a decoder to meet. `SuppressedFlapping`, `SuppressedStorm` and
+  `retiredSuppressedReasons` are gone from `internal/notification/domain/suppression.go`, which now
+  declares six suppressors and no retirement table at all.
 - The flapping reply gate in `PlanFor` is **deleted** (`internal/notification/domain/mode.go:336`,
   where the comment stands in its place). It read `in.Flapping && in.Reason != ReasonRuleChanged`.
   A gate there now would drop the ONE reply a damped flap produces and leave the flap invisible in
@@ -445,7 +473,17 @@ teaches them the opposite.
 | `Service.ScoreFlaps` and `FlapResult` | `internal/alerts/service/sweep.go` (tombstone in place) |
 | the `EventCounter` port, `Deps.EventCounts`, `Service.eventCounts` and the container wiring | `internal/alerts/service/deps.go`, `service.go`, `internal/app/container.go` |
 | the `flap.score` job: kind, args, `Handlers` field, registration, periodic tick, handler | `internal/platform/jobs/{kinds,args,registry}.go`, `internal/app/workers.go` |
-| the timeline events `alert.flapping_started` / `alert.flapping_ended` — **RETIRED, not deleted** | `retiredEventTypes` in `internal/alerts/domain/event.go`; both write paths refuse them |
+| the timeline events `alert.flapping_started` / `alert.flapping_ended` — ~~**RETIRED, not deleted**~~ **DELETED** (⚠️ see below) | `internal/alerts/domain/event.go` (tombstone in place); migration `00060` narrows `ev_type_ck` to refuse both spellings |
+
+⚠️ **The two damper event types were RETIRED when this amendment was written and are now
+DELETED.** The retirement bargain keeps a value declared so a decoder meeting an older row can still
+render it, and it buys nothing once no such row can exist: migration `00060` narrows `ev_type_ck` to
+refuse `alert.flapping_started` and `alert.flapping_ended` outright, it performs no backfill, and the
+maintainer authorised a reset of the only database in the world rather than rewriting a type into a
+transition that never happened. **Retired means the CHECK still admits the value; deleted means the
+CHECK was narrowed.** `retiredEventTypes` (`internal/alerts/domain/event.go`) survives holding exactly
+three entries — `group.member_joined`, `group.member_left` and `case.reopened`, older retirements
+whose CHECKs were never narrowed — and neither damper type is among them.
 
 `EventRepository.StateChangeCounts` and `stateChangeCountsSQL` deliberately SURVIVE with no
 consumer: `test/arch/eventtype_test.go` registers that statement as one of the three SQL sites
@@ -454,8 +492,8 @@ that must spell both the canonical and the legacy form of a lifecycle type.
 **What is KEPT, and why that is not a contradiction.** Both columns stay in the schema with their
 last value, and every READ keeps working: `alertColumnList`, the `?flapping=` list filter, the
 alert rollup, the `alert.history` enrichment, the notification snapshot and the Slack card. This is
-the `retiredEventTypes` / `retiredSuppressedReasons` bargain applied to a pair of columns —
-**readable, unwritable** — and it is why no migration is required to land the retirement. A value
+the `retiredEventTypes` bargain applied to a pair of columns (`retiredSuppressedReasons` is struck
+above and no longer exists) — **readable, unwritable** — and it is why no migration is required to land the retirement. A value
 already on a row is a measurement taken at a time, i.e. history; dropping the columns would make
 oto unable to render its own past. That is also the difference from storm: `alert_groups.storm_mode`
 was LIVE STATE no writer could set again, "a lie with a `NOT NULL DEFAULT false`", so 00059 dropped

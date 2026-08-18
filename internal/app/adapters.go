@@ -714,8 +714,9 @@ func (o orgSettings) Lifecycle(ctx context.Context, s db.TenantScope) (alertsser
 // ⛔ IT WAS `Storm` AND RETURNED FOUR NUMBERS: `storm_threshold`, `storm_window_s`,
 // `storm_cooldown_s` and `group_close_delay_s`. Storm damping is removed
 // (`grouping/domain/lifecycle.go`), so the close delay is the whole policy — and the
-// three `storm_*` keys are gone from `orgs.settings`, from the settings API and from
-// `identity/domain` altogether (migration 00059).
+// three `storm_*` keys are gone from the settings API and from
+// `identity/domain.settingBounds`, which is where a settings key is declared:
+// `orgs.settings` is one JSONB document and no migration drops a key from it.
 //
 // The method is not called `Lifecycle` because `alerts/service.Lifecycle` above already
 // is, and one receiver cannot answer two ports with one name and two return types.

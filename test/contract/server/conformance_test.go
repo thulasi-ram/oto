@@ -122,7 +122,7 @@ func TestTheRunningServerMatchesTheContract(t *testing.T) {
 // it. The nine that do not reach 2xx each carry their reason in the probe's
 // `why` — a fixture with no rule provenance, a drill that cannot finish in a
 // container that works no jobs, a Slack callback nobody signed.
-const minimumSuccessfulOperations = 76
+const minimumSuccessfulOperations = 80
 
 /* -------------------------------------------------------------------------- */
 /* The three assertions                                                       */

@@ -721,3 +721,84 @@ func TestAHeldResolveIsNeverStampedExpired(t *testing.T) {
 		requireKind(t, err, errs.KindPrecondition, "close_pending")
 	})
 }
+
+// TestASilencedCaseNeverDefersItsCloseIntoASilentUnsuppression is the suppressed
+// arm of T5 under a CONFIGURED window, which is the one road by which W could
+// change the suppression axis.
+//
+// ⛔⛔ THE FAILURE IT PINS. W=600s on (prod, HighLatency); a silence is applied, so
+// the episode is `suppressed` with `silenced by @ram` on the card; Alertmanager
+// sends `resolved`. The deferral used to accept that edge and clear
+// `suppression_reason` while leaving the case OPEN, so `Apply` answered
+// `From=suppressed`, `To=firing` with NO events — an unsuppression with no
+// `case.unsuppressed`, no notification, and `applyEdge`'s `From != To` projecting
+// `alerts.suppression_reason = NULL` behind it. The UI dropped the chip and showed
+// the case FIRING for ten minutes. Suppression is an AXIS and not a state (ADR 0041
+// Amendment 1, §B.6): the end of one is announced by T4 or it is the silent
+// suppression §B.6 forbids.
+//
+// ⭐ THE ANSWER IS THAT W HAS NO EFFECT ON THIS ARM AT ALL, and the assertion says
+// exactly that: the post-image under a ten-minute window is byte-for-byte the
+// post-image at W=0.
+func TestASilencedCaseNeverDefersItsCloseIntoASilentUnsuppression(t *testing.T) {
+	const w = 10 * time.Minute
+	occurred := t0.Add(4 * time.Minute)
+	recorded := occurred.Add(time.Second)
+
+	silenced := caseIn(t, StateSuppressed) // open, suppression_reason = silence
+	cmd := TransitionCommand{
+		Trigger:       TriggerObserveResolved,
+		Actor:         actor(t, ActorIngest),
+		At:            at(t, occurred, recorded),
+		EventID:       eventIDFix,
+		CaseRetention: w,
+	}
+
+	res, err := Apply(silenced, cmd)
+	require.NoError(t, err)
+
+	assert.Equal(t, TransitionT5, res.ID)
+	assert.Equal(t, StateSuppressed, res.From)
+	assert.Equal(t, StateResolved, res.To,
+		"a silenced episode that resolves upstream CLOSES; it does not quietly un-silence")
+	assert.False(t, res.CloseDeferred, "the deferral is refused from the suppressed arm")
+
+	assert.False(t, res.Case.IsOpen(), "the episode is closed, once, here")
+	assert.Equal(t, ResolveUpstream, res.Case.ResolveReason())
+	assert.Equal(t, occurred, res.Case.EndedAt(), "the upstream claim, unclamped")
+	assert.False(t, res.Case.ClosePending(),
+		"no receipt is written: a closed episode has nothing left to close")
+	assert.True(t, res.Case.SuppressionReason().IsZero(),
+		"the suppression ends WITH the episode, not silently ahead of it")
+	assert.True(t, res.Case.SuppressedBy().IsZero())
+
+	// The close is ANNOUNCED, which is the whole difference between this and the
+	// deferral: a deferred close appends nothing, and nothing is what the old
+	// behaviour appended while dropping the silence.
+	require.Len(t, res.Events, 1, "one case.resolved")
+	assert.Equal(t, EventCaseResolved, res.Events[0].Type())
+	assert.Equal(t, "case:"+caseID.String()+":resolved", res.Events[0].DedupeKey())
+
+	t.Run("the window changes nothing on this arm", func(t *testing.T) {
+		zero := cmd
+		zero.CaseRetention = 0
+		atZero, err := Apply(silenced, zero)
+		require.NoError(t, err)
+		assert.Equal(t, atZero.Case, res.Case,
+			"the post-image under a configured W is the W=0 one, field for field")
+		assert.Equal(t, atZero.To, res.To)
+		assert.Equal(t, atZero.CloseDeferred, res.CloseDeferred)
+	})
+
+	t.Run("the same window still defers from the firing arm", func(t *testing.T) {
+		firing := cmd
+		res, err := Apply(caseIn(t, StateFiring), firing)
+		require.NoError(t, err)
+		assert.True(t, res.CloseDeferred,
+			"the refusal is about the suppression axis, not about W")
+		assert.True(t, res.Case.IsOpen())
+		assert.Equal(t, StateFiring, res.From)
+		assert.Equal(t, StateFiring, res.To)
+		assert.Empty(t, res.Events)
+	})
+}

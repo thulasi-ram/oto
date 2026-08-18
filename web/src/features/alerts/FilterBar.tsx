@@ -159,12 +159,13 @@ const SORT_OPTIONS: readonly SortKey[] = ["-last_seen_at", "-first_seen_at"];
  * controls for one axis would let the toolbar and the tab bar disagree.
  *
  * ⛔ AND THERE IS NO FLAPPING CONTROL, BECAUSE THE COLUMN BEHIND IT WENT BLIND.
- * `?flapping=` reads `alerts.is_flapping`, which `ScoreFlaps` derives from the
- * `case.*` lifecycle events inside `flap_window_s`. A flap damped by the case
- * retention window W appends none of them — one `case.opened` at the start of
- * the episode and one `case.resolved` at its real end, however many times the
- * signal oscillated in between (ADR 0041 Amendment 1) — so the flag reads false
- * exactly when an alert is flapping. Flap noise is removed at case formation
+ * `?flapping=` reads `alerts.is_flapping`, which the deleted `flap.score` job
+ * derived from the `case.*` lifecycle events inside `flap_window_s`; nothing
+ * recomputes the column now, so every row holds whatever that job last wrote. A
+ * flap damped by the case retention window W appends none of them — one
+ * `case.opened` at the start of the episode and one `case.resolved` at its real
+ * end, however many times the signal oscillated in between (ADR 0041 Amendment 1)
+ * — so the flag reads false exactly when an alert is flapping. Flap noise is removed at case formation
  * now, which is why nothing here presents flapping as a live signal any more; a
  * filter is the loudest possible claim that a column still means something.
  */

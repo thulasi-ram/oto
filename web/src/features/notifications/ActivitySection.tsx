@@ -326,9 +326,13 @@ const ActivityRow: Component<{ readonly notification: Notification }> = (props) 
           fallback={
             <span
               class="text-ink-subtle"
-              title="A fact about the whole notification group rather than about one alert."
+              title={
+                n().subject_kind === "digest"
+                  ? "A digest is about a policy's window over a set of alerts — not about one alert, and not about one group."
+                  : "A fact about the whole notification group rather than about one alert."
+              }
             >
-              about the group
+              {n().subject_kind === "digest" ? "about a window" : "about the group"}
             </span>
           }
         >
@@ -344,13 +348,34 @@ const ActivityRow: Component<{ readonly notification: Notification }> = (props) 
             handed a group id to the screen that renders one alert's firing
             episode. When the row also carries the case the intent was formed
             about, that link is offered beside it, because a Case is the thing a
-            person acts on. */}
-        <A
-          href={`/groups/${n().group_id}`}
-          class="text-ink-muted underline decoration-line underline-offset-2"
+            person acts on.
+
+            ⛔ AND IT IS OPTIONAL, SINCE MIGRATION `00058`. `group_id` is the
+            DELIVERY TARGET, and a digest has none: it is a window over a
+            namespace, spans many generations, and therefore lands in no group's
+            thread — `notifications_target_ck` requires a group for every
+            `subject_kind` EXCEPT `digest`. Reading it unguarded linked to
+            `/groups/null` and threw inside `shortId`, which took the WHOLE feed
+            down rather than the one row. Nothing is invented in its place: the
+            row's subject is the policy named in the chip above, and the window
+            it closed is not on this response at all. */}
+        <Show
+          when={n().group_id}
+          fallback={
+            <span
+              class="text-ink-subtle"
+              title="A digest spans many generations, so there is no one group thread for it to land in — it opens its own conversation, keyed by the policy above."
+            >
+              no group thread
+            </span>
+          }
         >
-          group {shortId(n().group_id)}
-        </A>
+          {(id) => (
+            <A href={`/groups/${id()}`} class="text-ink-muted underline decoration-line underline-offset-2">
+              group {shortId(id())}
+            </A>
+          )}
+        </Show>
         <Show when={n().case_id}>
           {(id) => (
             <A

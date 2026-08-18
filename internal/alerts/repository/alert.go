@@ -1224,9 +1224,11 @@ func (r *AlertRepository) SetProjectionBatch(
 // (`alerts/domain/event.go`) strikes for a value: readable, unwritable.
 //
 // The suppression reasons took the OTHER road and are worth the contrast: `storm`
-// and `flapping` were retired first and then DELETED outright by migration 00060,
-// because narrowing their CHECK meant no row could present one and decode-safety
-// bought nothing. These columns keep the opposite bargain because their CHECK was
+// and `flapping` were retired first and then DELETED outright by migration 00059,
+// which narrows `notifications_suppmap_ck` from eight admitted values to six —
+// once the CHECK refuses them no row can present one, and decode-safety bought
+// nothing. Migration 00060 walks the same road one step later for the `storm`
+// Reason and the four damper event types. These columns keep the opposite bargain because their CHECK was
 // never narrowed — `alerts_flap_ck` still stands and every stored verdict renders.
 //
 // ⛔ AND THE DETECTOR WAS NOT TUNED, IT WAS RETIRED, BECAUSE IT DID NOT GO DEAD —

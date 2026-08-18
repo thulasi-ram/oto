@@ -1177,7 +1177,18 @@ func TestACasePolicyWindowOutsideItsBoundIsRefusedWithTheFieldNamed(t *testing.T
 // ⛔ TestACasePolicyCannotMoveItsOwnAxes.
 //
 // The promise: `namespace` and `alertname` are unknown properties on the PATCH
-// body, so sending one is a 400 rather than a silent no-op.
+// body, so sending one is REFUSED WITH THE FIELD NAMED rather than being a silent
+// no-op.
+//
+// ⭐ THE REFUSAL IS A 422, not a 400. `UpdateCasePolicyRequest` is
+// `additionalProperties: false`, and §L.2.1's one door decodes with
+// `DisallowUnknownFields` — "trusted input: unknown fields are a client bug ->
+// 422" (SPEC §L.2.1). The body PARSED; what failed is a rule about its members,
+// which is the 422 half of the split `errs` spells out: `KindValidation` is 422 —
+// well-formed, semantically wrong; `KindMalformed` is 400 — unparseable body or
+// bad query string. `startDeliveryDrill` answers an unknown field the same way.
+// ee3ae9c decided the OTHER side of that line — an unknown or missing QUERY
+// parameter is the 400 family — and a query string is not what this sends.
 //
 // What breaks otherwise: the pair is the rule's identity under
 // `case_policy_axes_uniq`. A PATCH that accepted and ignored an `alertname` would
@@ -1187,18 +1198,21 @@ func TestACasePolicyWindowOutsideItsBoundIsRefusedWithTheFieldNamed(t *testing.T
 func TestACasePolicyCannotMoveItsOwnAxes(t *testing.T) {
 	t.Parallel()
 
-	for _, body := range []string{
-		`{"alertname":"SomethingElse"}`,
-		`{"namespace":"staging","retention_window_seconds":600}`,
+	for _, tc := range []struct{ body, field string }{
+		{`{"alertname":"SomethingElse"}`, "alertname"},
+		{`{"namespace":"staging","retention_window_seconds":600}`, "namespace"},
 	} {
-		t.Run(body, func(t *testing.T) {
+		t.Run(tc.body, func(t *testing.T) {
 			t.Parallel()
 
 			c, svc := newAlertsProbe(t)
 			resp := c.Raw(http.MethodPatch, "/case-policies/"+fxCasePolicyID.String(),
-				apitest.ContentTypeJSON, body).MustStatus(t, http.StatusBadRequest)
-			schema.AssertProblem(t, "updateCasePolicy", http.StatusBadRequest, resp.Body())
+				apitest.ContentTypeJSON, tc.body).MustStatus(t, http.StatusUnprocessableEntity)
+			schema.AssertProblem(t, "updateCasePolicy", http.StatusUnprocessableEntity, resp.Body())
 
+			// The FIELD, not just the status: a refusal that cannot say which
+			// property was rejected leaves the settings form with nothing to point at.
+			resp.MustViolate(t, tc.field)
 			if len(svc.calls) != 0 {
 				t.Fatalf("a request naming an immutable axis reached the service: %v", svc.calls)
 			}

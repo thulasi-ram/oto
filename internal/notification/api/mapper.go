@@ -67,9 +67,10 @@ func policyDTO(p domain.Policy) PolicyDTO {
 // nilUUID turns the domain's zero UUID into a JSON `null`.
 //
 // ⛔ IT IS NOT A CONVENIENCE. The domain represents "no group" as the zero UUID
-// because eighteen of the nineteen Reasons always have one and a pointer on every
-// path would be a cost paid to describe the nineteenth. On the wire the zero UUID is
-// not an absence but an ID THAT RESOLVES TO NOTHING, which every client would follow.
+// because seventeen of the eighteen Reasons always have one and a pointer on every
+// path would be a cost paid to describe the eighteenth, `digest`. On the wire the
+// zero UUID is not an absence but an ID THAT RESOLVES TO NOTHING, which every client
+// would follow.
 // This is the boundary where the two spellings meet.
 func nilUUID(id uuid.UUID) *uuid.UUID {
 	if id == uuid.Nil {
@@ -86,10 +87,10 @@ func notificationDTO(n domain.Notification, summary *DeliverySummaryDTO) Notific
 		SubjectKind: string(n.SubjectKind),
 		SubjectID:   n.SubjectID,
 		// nil for a digest, whose subject is a window rather than an object. The
-		// domain keeps the zero UUID for it (eighteen of nineteen reasons always have
-		// a group, so a pointer everywhere would be a cost paid to describe one); the
-		// wire says `null`, because a zero UUID on the wire is an id that resolves to
-		// nothing.
+		// domain keeps the zero UUID for it (seventeen of the eighteen reasons always
+		// have a group, so a pointer everywhere would be a cost paid to describe one);
+		// the wire says `null`, because a zero UUID on the wire is an id that resolves
+		// to nothing.
 		GroupID:         nilUUID(n.GroupID),
 		AlertID:         n.AlertID,
 		CaseID:          n.CaseID,

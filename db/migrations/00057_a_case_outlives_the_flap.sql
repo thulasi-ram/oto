@@ -243,12 +243,46 @@ COMMENT ON INDEX case_close_due_idx IS
 -- is left exactly as an immediate T5 leaves it -- the accessor masks a witness set
 -- with no reason beside it, and 00007 makes the column NOT NULL, so there is no
 -- NULL to write into it.
+--
+-- ⛔⛔ THE TWO PENDING COLUMNS ARE CLEARED IN THIS SAME UPDATE, AND THAT IS NOT
+-- TIDINESS -- IT IS THE ONLY WAY THIS STATEMENT CAN RUN AT ALL. Every constraint
+-- added above is still LIVE here: they are dropped forty lines down, after this.
+-- `case_pending_open_ck` (`resolve_pending_at IS NULL OR state = 'open'`) is
+-- checked against the PROPOSED tuple, so writing `state = 'closed'` while leaving
+-- `resolve_pending_at` set violates it on EVERY row this WHERE clause matches --
+-- a 23514 that aborts the Down whenever it has any work to do, and succeeds only
+-- when there is nothing to reverse. Clearing both columns here satisfies all four
+-- pending CHECKs at once (`_pair_ck` and `_order_ck` are vacuous on two NULLs,
+-- `_open_ck` on a NULL due time, `_supp_ck` was already true), and it is the SAME
+-- shape the delayed close has in the release being rolled back: `case_pending_
+-- open_ck`'s own COMMENT says the close "writes ended_at and clears both pending
+-- columns in one UPDATE", which is exactly this statement.
+--
+-- ⭐ `ended_at` STILL RECEIVES THE RECEIPT. Every expression on the right of a SET
+-- is evaluated against the OLD tuple, so `ended_at = resolve_pending_end_at` takes
+-- the stored upstream claim even though the same statement sets that column to
+-- NULL. The receipt is SPENT, not discarded -- which is the whole point of doing
+-- this before the columns are dropped.
+--
+-- The rest of `alert_cases`'s live constraints are satisfied by construction:
+-- `case_terminal_ended` ((state='closed') = (ended_at IS NOT NULL)) because
+-- `case_pending_pair_ck` guarantees a non-NULL `resolve_pending_end_at` on every
+-- matched row; `case_resolve_ck` because `resolve_reason` is written in the same
+-- statement; `case_order_ck` (ended_at >= started_at) because
+-- `case_pending_order_ck` has held the value at or above `started_at` since it was
+-- written; `case_suppress_ck` because `case_pending_supp_ck` already forbids a
+-- reason beside a receipt; and `case_one_open_idx` (UNIQUE (alert_id) WHERE
+-- ended_at IS NULL) because this statement only REMOVES rows from that partial
+-- index. It runs first, while `case_close_due_idx` still exists, so the scan for
+-- `resolve_pending_at IS NOT NULL` is the index it was built for.
 UPDATE alert_cases
-   SET state          = 'closed',
-       resolve_reason = 'upstream',
-       ended_at       = resolve_pending_end_at,
-       state_version  = state_version + 1,
-       updated_at     = now()
+   SET state                  = 'closed',
+       resolve_reason         = 'upstream',
+       ended_at               = resolve_pending_end_at,
+       resolve_pending_at     = NULL,
+       resolve_pending_end_at = NULL,
+       state_version          = state_version + 1,
+       updated_at             = now()
  WHERE resolve_pending_at IS NOT NULL;
 
 DROP INDEX IF EXISTS case_close_due_idx;

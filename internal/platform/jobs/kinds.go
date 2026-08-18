@@ -58,7 +58,7 @@ const (
 	// false exactly when the alert was flapping — so the detector is retired and
 	// the two columns keep their last value, readable and unwritten (ADR 0041,
 	// Amendment 1). A queued tick of this kind is unhandled after this change;
-	// there is no deployment to strand, and `just db-reset` is the answer on the
+	// there is no deployment to strand, and `just reset` is the answer on the
 	// only database that exists (migration 00059 spends the same argument).
 	KindNotifyUnackedReminder = "notify.unacked_reminder"
 	// KindNotifyDigest is the DIGEST TICK: at each window boundary, count what

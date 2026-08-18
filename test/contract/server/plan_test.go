@@ -419,6 +419,32 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 
+		/* ------------------------------------------------------- case policies */
+		// The case RETENTION WINDOW W, per (namespace, alertname). The shape is
+		// `/api/v1/clusters`'s and so is the probe order: list, create by the
+		// immutable natural key, patch the one mutable value by the id the create
+		// handed back. The DELETE is in the teardown group with the others.
+		//
+		// ⭐ THE `alertname` IS ONE NO OTHER PROBE INGESTS. W decides when a case
+		// closes, so a window written here against `GateG2` would change what the
+		// case probes above observe depending on where in the table it ran.
+		{method: http.MethodGet, tmpl: "/api/v1/case-policies", want: http.StatusOK},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/case-policies",
+			body: map[string]any{
+				"namespace":                "staging",
+				"alertname":                "GateG2CasePolicy",
+				"retention_window_seconds": 600,
+			},
+			want:    http.StatusCreated,
+			capture: map[string][]string{"casepolicy": {"data", "id"}},
+		},
+		{
+			method: http.MethodPatch, tmpl: "/api/v1/case-policies/{id}", url: "/api/v1/case-policies/{{casepolicy}}",
+			body: map[string]any{"retention_window_seconds": 1200},
+			want: http.StatusOK,
+		},
+
 		/* -------------------------------------------------------- alert groups */
 		{method: http.MethodGet, tmpl: "/api/v1/alert-groups", want: http.StatusOK},
 		{
@@ -570,7 +596,13 @@ func plan() []probe {
 
 		/* ------------------------------------------------- teardown (DELETEs) */
 		// Last, and in dependency order: a policy references a channel, so the
-		// policy goes first.
+		// policy goes first. The case retention window goes ahead of all of them
+		// because nothing points at it — removing the row simply restores W=0.
+		{
+			method: http.MethodDelete, tmpl: "/api/v1/case-policies/{id}",
+			url:  "/api/v1/case-policies/{{casepolicy}}",
+			want: http.StatusNoContent,
+		},
 		{
 			method: http.MethodDelete, tmpl: "/api/v1/notification-policies/{id}",
 			url:  "/api/v1/notification-policies/{{policy}}",

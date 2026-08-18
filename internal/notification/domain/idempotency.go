@@ -18,7 +18,7 @@ import (
 // beginning.
 //
 // ⛔ THE KIND IS WHAT THE FACT IS ABOUT, NEVER WHERE IT IS DELIVERED.
-// `notifications.group_id` is the delivery target for the eighteen signal Reasons
+// `notifications.group_id` is the delivery target for the seventeen signal Reasons
 // and a thread is keyed by the AlertGroup generation whatever this says. `digest`
 // is the exception in both halves: it has no group (notifications_target_ck) and
 // its thread is keyed by the policy.

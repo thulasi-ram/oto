@@ -19,7 +19,7 @@ type notificationRow struct {
 	subjectKind string
 	subjectID   uuid.UUID
 	// groupID IS A POINTER SINCE MIGRATION 00058, and the pointer is the change.
-	// `notifications.group_id` was NOT NULL for all eighteen signal Reasons and is
+	// `notifications.group_id` was NOT NULL for all seventeen signal Reasons and is
 	// NULL for a digest, which spans many generations and has no single thread to
 	// land in. Scanning a NULL into a bare `uuid.UUID` is a driver error, not a zero
 	// value, so this field cannot stay a value type without failing every read that
@@ -70,9 +70,10 @@ func (r notificationRow) toDomain() domain.Notification {
 		CreatedAt:         r.createdAt,
 		UpdatedAt:         r.updatedAt,
 	}
-	// The domain keeps `GroupID` a value, because eighteen of nineteen Reasons always
-	// have one and forcing every reader through a pointer would be a cost paid on
-	// every path to describe one. The zero UUID IS the absence, and
+	// The domain keeps `GroupID` a value, because seventeen of the eighteen Reasons
+	// always have one and forcing every reader through a pointer would be a cost paid
+	// on every path to describe one — `digest` is the eighteenth and the only Reason
+	// without a group. The zero UUID IS the absence, and
 	// `Notification.Digest()` is how a caller asks whether to expect it.
 	if r.groupID != nil {
 		n.GroupID = *r.groupID
@@ -249,21 +250,25 @@ func (r *NotificationRepository) SetStatus(
 // `alert_group` to `alert | case | alert_group`, so a subject predicate that used
 // to match EVERY row now matches only the group-subject subset. The question this
 // count answers is "how much has oto already said into this group's thread", and
-// the answer is on `group_id`: it is NOT NULL for all eighteen Reasons, it carries
-// the FK, and the thread is keyed by it whatever the subject says. Keying on the
+// the answer is on `group_id`: it is NOT NULL for all seventeen signal Reasons, it
+// carries the FK, and the thread is keyed by it whatever the subject says. `digest`
+// is the eighteenth Reason and the one exception — it has no group, and `$2` is never
+// NULL here, so a digest row can match no group's numerator. Keying on the
 // subject would silently exclude the per-alert facts (suppressed, unsuppressed,
 // snoozed, unsnoozed, comment) and the per-case ones (acked, unacked, expired,
 // refired, enriched, rule_changed) and make the throttle more permissive with
 // every new subject somebody allocates.
 //
-// ⚠️ NO INDEX SERVES IT EXACTLY. `notifications` carries `notif_subject_idx`,
+// ⚠️ `notif_group_idx (org_id, group_id, created_at DESC)` SERVES IT, and migration
+// 00056 created it in the same change for this query and for the group notification
+// receipt in `snapshot.go`. Both readers used to filter `subject_kind = 'alert_group'`
+// and ride `notif_subject_idx`, whose leading kind column was a constant while only
+// one kind existed; widening the kind took that index away from them, and the 00011
+// FK to `alert_groups` creates none on the referencing side. The trailing
+// `created_at DESC` covers the window predicate below, so the throttle reads one
+// index range rather than the org's whole day filtered by `group_id`.
 // `notif_alert_idx`, `notif_case_idx` and `notif_created_idx (org_id, created_at)`
-// but nothing on `group_id` — the FK to `alert_groups` does not create one. The
-// planner rides `notif_created_idx` for `org_id` plus the window and filters
-// `group_id`, which is bounded by the throttle window and therefore small. The
-// index to add if this ever shows up in a plan is
-// `notif_group_idx (org_id, group_id, created_at DESC)`; adding it is a migration,
-// deliberately not made here.
+// answer other questions.
 const countRecentSQL = `
 SELECT count(*)
   FROM notifications

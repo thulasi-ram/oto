@@ -77,7 +77,6 @@ func newResolveHarness(t *testing.T) (*joinHarness, *capturingGroups) {
 		Events:   h.events,
 		Stream:   h.stream,
 		Settings: h.settings,
-		Enqueuer: h.enqueuer,
 		Clock:    clock.NewFake(h.at),
 	})
 	if err != nil {

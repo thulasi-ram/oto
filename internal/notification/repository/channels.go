@@ -204,8 +204,10 @@ func (r *ChannelRepository) SetHealth(
 //
 // ⭐ NOTHING REPLACES IT, BECAUSE NOTHING WITHHOLDS. Storm damping is removed
 // entirely; a product that does not decide to be quiet has no quiet to announce and
-// nothing to ration. `channels.storm_notice_at` REMAINS in the schema, never written
-// and never read — dropping a column is the deferred, breaking half of this removal.
+// nothing to ration. `channels.storm_notice_at` HAS LEFT THE SCHEMA TOO: migration
+// 00059 drops the column, because a latch is LIVE STATE — "when was this channel last
+// told" — and a latch on an announcement no code can produce could only ever read
+// NULL.
 
 const getCredentialSQL = `
 SELECT id, kind, sealed, key_version

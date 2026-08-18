@@ -412,16 +412,18 @@ SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
 // as their subject. The old `subject_kind = 'alert_group' AND subject_id = $2`
 // predicate only looked total because every row said `alert_group`; the number a
 // user reads would now be smaller than what they watched arrive. `group_id` is
-// NOT NULL for every Reason and is the column the thread itself is keyed by, so
+// NOT NULL for the seventeen signal Reasons — `digest`, the eighteenth, spans many
+// generations and has none — and is the column the thread itself is keyed by, so
 // it is the complete key — and it stays correct when the next SubjectKind is
 // allocated in reason.go.
 //
-// ⚠️ NO INDEX SERVES THIS EXACTLY. It used to ride `notif_subject_idx (org_id,
-// subject_kind, subject_id, …)`; on `group_id` the planner falls back to
-// `notif_created_idx (org_id, created_at)` plus a filter. It is one count per
-// delivery snapshot, not the hot path, and adding an index is a migration this
-// change deliberately does not make: `notif_group_idx (org_id, group_id)` is the
-// one to add if it ever shows up in a plan.
+// ⚠️ `notif_group_idx (org_id, group_id, created_at DESC)` SERVES THIS. It used to
+// ride `notif_subject_idx (org_id, subject_kind, subject_id, …)`, whose leading kind
+// column was a constant while only one kind existed; migration 00056 widened the kind
+// and created this index in the same change, for this count and for the policy
+// throttle in `notifications.go`. The count is unbounded in time and reads the whole
+// `(org_id, group_id)` range, which is why `created_at` comes last in the index and
+// this query names no window.
 const groupNotificationsSQL = `
 SELECT count(*)
   FROM notifications

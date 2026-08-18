@@ -77,13 +77,15 @@ type GroupFacts struct {
 	// THE COLUMNS THEY MIRRORED (migration 00059). `alert_groups.storm_mode` and
 	// `storm_since` were LIVE STATE about a generation — "this one is collapsed
 	// right now" — and nothing evaluates a storm any more, so no writer could ever
-	// set them again. That is different from `ReasonStorm` and `SuppressedStorm`,
-	// which are RETIRED rather than deleted: those describe a delivery that already
-	// happened and a stored row still has to render.
+	// set them again. `ReasonStorm` and `SuppressedStorm` were briefly RETIRED on that
+	// argument — a stored row still has to render — and then went the same way:
+	// migration 00059 narrows `notifications_suppmap_ck` to six values and migration
+	// 00060 narrows `notifications_reason_ck` to eighteen, and the database reset the
+	// maintainer authorised means there is no row left to decode.
 	//
 	// ⚠️ `channels/domain.GroupView.StormMode` and `NotificationView.StormCount` are
-	// what this used to feed, and they still exist because the Slack renderer still
-	// draws a stored `storm` notification. Nothing in production writes them now.
+	// what this used to feed, and both are deleted too: with no `storm` Reason there is
+	// no stored notification for the Slack renderer to draw a storm card from.
 
 	// NotificationReason is `alert_groups.last_notification_reason` — the wire
 	// value Alertmanager put on the most recent batch for this generation (§H.6).

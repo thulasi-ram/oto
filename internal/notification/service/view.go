@@ -198,11 +198,11 @@ func (v *ViewService) project(snap domain.Snapshot, req ViewRequest) *Notificati
 		}
 	}
 
-	// ⛔ `view.StormCount` WAS SET HERE FROM `snap.Group.StormMode`. The snapshot no
-	// longer carries either (migration 00059 dropped `alert_groups.storm_mode` and
-	// `storm_since`), so nothing populates the field. The renderer still reads it,
-	// because a stored `storm` notification still has to draw; it will simply be
-	// zero on every view oto builds from now on.
+	// ⛔ `view.StormCount` WAS SET HERE FROM `snap.Group.StormMode`, and neither end of
+	// that assignment exists now. Migration 00059 drops `alert_groups.storm_mode` and
+	// `storm_since`, so the snapshot carries no storm state, and the field is gone from
+	// `NotificationView` as well: migration 00060 deletes the `storm` Reason, so there
+	// is no stored notification left for the renderer to draw a count on.
 
 	// §H.4's strikethrough trick needs the state the card showed BEFORE this
 	// delivery, and the Reason is where that fact lives: a Reason is the name of a

@@ -314,7 +314,7 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 // constructors. `Text` is an ordinary exported struct with a string field, and a
 // `Text{Text: "…"}` written without its type marshals as `{"type":"","text":"…"}`,
 // which Slack refuses and oto used to send.
-func checkTextObject(payload json.RawMessage, check, where string, t Text, max int) error {
+func checkTextObject(payload json.RawMessage, check, where string, t Text, limit int) error {
 	switch t.Type {
 	case TypeMrkdwn, TypePlainText:
 	default:
@@ -324,8 +324,8 @@ func checkTextObject(payload json.RawMessage, check, where string, t Text, max i
 	if strings.TrimSpace(t.Text) == "" {
 		return fail(payload, check, "%s text object is empty", where)
 	}
-	if len(t.Text) > max {
-		return fail(payload, check, "%s text is %d chars, limit %d", where, len(t.Text), max)
+	if len(t.Text) > limit {
+		return fail(payload, check, "%s text is %d chars, limit %d", where, len(t.Text), limit)
 	}
 	return nil
 }
