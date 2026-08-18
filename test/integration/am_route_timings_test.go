@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 60 {
-		t.Fatalf("latest migration is %d, want 60 — this test pins the number so that a "+
+	if latest != 61 {
+		t.Fatalf("latest migration is %d, want 61 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1428,6 +1428,32 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"%s — the ceiling IS the enum size, and 00060 moved it back to 18 when it deleted "+
 			"`storm`; a ceiling of 19 over an eighteen-value vocabulary is a number no row "+
 			"could ever test", def)
+	}
+
+	// 00061 restates two table comments 00036 shipped and later changes made false.
+	// A comment is not a constraint, so nothing else in this suite would notice it
+	// silently reverting — which is exactly why it is pinned on both sides.
+	if c := tableComment("ingest_batches"); !strings.Contains(c, "CHOSEN, NOT DERIVED") {
+		t.Fatalf("ingest_batches does not say the thirty days is chosen at the top of the "+
+			"stack: %s — 00061 exists to replace 00036's derivation claim, which `oto replay` "+
+			"falsified when it started gating on supersession rather than on age", c)
+	}
+	if c := tableComment("ingest_rejections"); strings.Contains(c, "No API reads this table yet") {
+		t.Fatalf("ingest_rejections still warns that no API reads it: %s — "+
+			"GET /api/v1/sources/{id}/rejections is the feed it was waiting for and it "+
+			"shipped, so the warning now hides the cost of lowering raw_retention_days", c)
+	}
+
+	down(61)
+
+	if c := tableComment("ingest_batches"); !strings.Contains(c, "DERIVED, NOT CHOSEN") {
+		t.Fatalf("ingest_batches did not get 00036's derivation wording back after 00061's "+
+			"Down: %s — the Down restores the comment the release this rolls back to shipped, "+
+			"and a Down that only dropped the new text would leave the schema describing "+
+			"neither version", c)
+	}
+	if c := tableComment("ingest_rejections"); !strings.Contains(c, "No API reads this table yet") {
+		t.Fatalf("ingest_rejections did not get 00036's warning back after 00061's Down: %s", c)
 	}
 
 	down(60)
