@@ -57,7 +57,13 @@ type AlertRepository interface {
 	// collapsed its writes to the last one per alert, and a duplicate here would
 	// leave which projection lands to the planner.
 	SetProjectionBatch(ctx context.Context, s db.TenantScope, in []domain.AlertProjectionWrite) error
-	SetFlap(ctx context.Context, s db.TenantScope, alertID uuid.UUID, score float32, flapping bool) error
+	// ⛔ THERE IS NO `SetFlap` ON THIS PORT ANY MORE. It was the only way to write
+	// `alerts.flap_score` / `alerts.is_flapping`, and the two columns are RETIRED IN
+	// PLACE: still selected by every read above, never written again. The window W
+	// damps a flap at case formation (migration 00057), which left the score
+	// counting events a damped flap no longer appends — blind, not dead, and
+	// anti-correlated with the phenomenon. See the tombstone in
+	// `alerts/repository/alert.go` and ADR 0041, Amendment 1.
 	// The two discovery reads return the alert COUNT alongside each name and
 	// value. The contract has declared `alert_count` on both DTOs since the
 	// first draft; returning a bare []string is what left it permanently absent.
@@ -101,6 +107,52 @@ type CaseRepository interface {
 	// case whose AlertSource is not healthy is HELD, never expired. Losing
 	// sight of an alert is not the same as the alert resolving.
 	ReapCandidates(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]domain.Case, error)
+	// CloseDueCandidates feeds the DELAYED CLOSE (migration 00057): open episodes
+	// whose upstream resolve has been held for the whole case retention window W.
+	//
+	// ⛔ IT NEEDS NO §B.4 GUARD, unlike ReapCandidates above, and the asymmetry is
+	// the guard's own reasoning. §B.4 stops oto INFERRING an ending out of silence;
+	// here there is no inference — the ending was stated upstream and the row
+	// carries it. A source going dark after a resolve arrived does not un-resolve
+	// the alert.
+	CloseDueCandidates(ctx context.Context, s db.TenantScope, asOf time.Time, limit int) ([]domain.Case, error)
+}
+
+// CasePolicyRepository reads `case_policy_config` — the per (namespace, alertname)
+// shaping of the Case itself (migration 00057). Today that is one knob: W, the case
+// retention window.
+//
+// ⭐⭐ IT IS OPTIONAL, AND THE NIL PORT IS THE SHIPPED DEFAULT. A Service built
+// without one reads W as 0 for every alert, which is byte-for-byte the pre-00057
+// close path — the same "not wired means the old behaviour" shape `occSources` and
+// `health` already have in this file. A deployment therefore opts in twice: by
+// wiring the port and by writing a row.
+type CasePolicyRepository interface {
+	// RetentionWindow is W for one (namespace, alertname). NO ROW MEANS 0, which is
+	// not an error and not a distinguishable state: 0 is the shipped default.
+	RetentionWindow(ctx context.Context, s db.TenantScope, namespace, alertname string) (time.Duration, error)
+}
+
+// CasePolicyConfigStore is the SETTINGS side of `case_policy_config`: the four
+// operations `/api/v1/case-policies` needs.
+//
+// ⛔ IT IS A SECOND PORT OVER ONE TABLE AND NOT AN EXTENSION OF THE FIRST. The
+// reader above is what the §B.3 machine consults on the ingest path; keeping the
+// writer out of that interface is what makes "the evaluator cannot rewrite the
+// rule it is evaluating" a property of the type system rather than of everyone's
+// good behaviour. `internal/alerts/repository` satisfies both with two types, the
+// way `notification/repository` does for policies.
+//
+// ⭐⭐ IT IS OPTIONAL, AND THE NIL PORT IS AN HONEST `503`. A deployment without
+// one can still read W — the reader is wired separately — it simply cannot be
+// configured over HTTP, and every handler says so out loud rather than panicking
+// or pretending the write succeeded.
+type CasePolicyConfigStore interface {
+	ListCasePolicies(ctx context.Context, s db.TenantScope, p db.Keyset) ([]domain.CasePolicy, db.Cursor, error)
+	GetCasePolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) (domain.CasePolicy, error)
+	CreateCasePolicy(ctx context.Context, s db.TenantScope, in domain.CasePolicyDraft) (domain.CasePolicy, error)
+	UpdateCasePolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID, p domain.CasePolicyPatch) (domain.CasePolicy, error)
+	DeleteCasePolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) error
 }
 
 // EventRepository is APPEND ONLY. There is no Update and there is no Delete —

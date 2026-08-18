@@ -19,10 +19,9 @@ import (
 	"github.com/thulasiram/oto/test/harness"
 )
 
-// These are the sweep tests: the §B.4 batch health guard of `case.reap`
-// and the steady-state write elision of `flap.score`. They run against the same
-// real Postgres as the race tests above them, because the properties under test
-// end in rows — what expired, what was held, and above all what was NOT written.
+// These are the sweep tests: the §B.4 batch health guard of `case.reap`. They run
+// against the same real Postgres as the race tests above them, because the
+// properties under test end in rows — what expired and what was held.
 
 // ------------------------------------------------------------------ reap fakes
 
@@ -67,23 +66,22 @@ func (f *fakeHealth) HealthyFor(
 }
 
 // sweepService builds a service over the fixture's pool with the ports the
-// sweeps use: the reaper's resolver and health guard, and the flap scorer's
-// event counter. The nil-port degradations are covered by using nil here too.
+// sweeps use: the reaper's resolver and health guard. The nil-port degradations
+// are covered by using nil here too.
 func (f *fixture) sweepService(occSources CaseSourceResolver, health SourceHealth) *Service {
 	f.t.Helper()
 	svc, err := New(Deps{
-		Alerts:      repository.NewAlertRepository(f.pool, f.clk, false),
-		Cases:       repository.NewCaseRepository(f.pool),
-		Events:      repository.NewEventRepository(f.pool, f.clk),
-		Snoozes:     repository.NewSnoozeRepository(f.pool, f.clk),
-		Tx:          repository.NewTxRunner(f.pool),
-		AlertBatch:  repository.NewAlertRepository(f.pool, f.clk, false),
-		OccBatch:    repository.NewCaseRepository(f.pool),
-		OccSources:  occSources,
-		Health:      health,
-		EventCounts: repository.NewEventRepository(f.pool, f.clk),
-		Clock:       f.clk,
-		Logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		Alerts:     repository.NewAlertRepository(f.pool, f.clk, false),
+		Cases:      repository.NewCaseRepository(f.pool),
+		Events:     repository.NewEventRepository(f.pool, f.clk),
+		Snoozes:    repository.NewSnoozeRepository(f.pool, f.clk),
+		Tx:         repository.NewTxRunner(f.pool),
+		AlertBatch: repository.NewAlertRepository(f.pool, f.clk, false),
+		OccBatch:   repository.NewCaseRepository(f.pool),
+		OccSources: occSources,
+		Health:     health,
+		Clock:      f.clk,
+		Logger:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	})
 	if err != nil {
 		f.t.Fatalf("build sweep service: %v", err)
@@ -270,81 +268,13 @@ func TestReapHoldsEveryCandidateWhenTheHealthLookupFails(t *testing.T) {
 	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ2.ID()))
 }
 
-// ---------------------------------------------------------------- flap scoring
+// ------------------------------------------------- flap scoring (RETIRED)
 
-// alertRowVersion reads the alert row's xmin, which moves on every UPDATE and
-// only on an UPDATE. It is the direct witness of "nothing wrote", which no
-// value column can be: an unconditional UPDATE writes the same values back and
-// leaves every readable column looking untouched.
-func (f *fixture) alertRowVersion() string {
-	f.t.Helper()
-	var v string
-	if err := f.pool.QueryRow(f.t.Context(),
-		`SELECT xmin::text FROM alerts WHERE org_id = $1 AND alert_key = $2`,
-		f.orgID, f.alertKey.String()).Scan(&v); err != nil {
-		f.t.Fatalf("read alert row version: %v", err)
-	}
-	return v
-}
-
-// flapScore reads the projected score straight from the row.
-func (f *fixture) flapScore() float32 {
-	f.t.Helper()
-	var v float32
-	if err := f.pool.QueryRow(f.t.Context(),
-		`SELECT flap_score FROM alerts WHERE org_id = $1 AND alert_key = $2`,
-		f.orgID, f.alertKey.String()).Scan(&v); err != nil {
-		f.t.Fatalf("read flap score: %v", err)
-	}
-	return v
-}
-
-// TestScoreFlapsSkipsTheSteadyStateWrite is the WAL-churn guard: a tick that
-// recomputes the same score for the same alert writes NOTHING, and a tick that
-// computes a different one still writes. `flap_score` is REAL, so the skip's
-// float32 comparison is exact round-trip equality, which is what makes "same
-// score" decidable at all.
-func TestScoreFlapsSkipsTheSteadyStateWrite(t *testing.T) {
-	now := harness.Epoch
-	f := newFixture(t, now)
-	ctx := t.Context()
-
-	// One opened transition, recorded at Epoch. The scorer's window is
-	// [now-2h, now) with an EXCLUSIVE upper bound, so the clock must move past
-	// the append before the event is countable.
-	f.openFiring(now.Add(-2*time.Hour), now.Add(30*time.Minute))
-	f.clk.Advance(time.Minute)
-
-	svc := f.sweepService(nil, nil)
-
-	// Tick 1: the score moves off its default, so the row is written.
-	res1, err := svc.ScoreFlaps(ctx, f.scope, 10)
-	require.NoError(t, err)
-	require.Equal(t, 1, res1.Scored)
-	score1 := f.flapScore()
-	require.Greater(t, score1, float32(0), "the first tick must have written a real score")
-	version1 := f.alertRowVersion()
-
-	// Tick 2: same window, same count, same flag — the steady state.
-	res2, err := svc.ScoreFlaps(ctx, f.scope, 10)
-	require.NoError(t, err)
-	require.Equal(t, 1, res2.Scored, "a skipped write is still a scored alert")
-	require.Equal(t, version1, f.alertRowVersion(),
-		"the steady state must not touch the row: an UPDATE that changes neither column is "+
-			"pure WAL churn on the hottest table in the system")
-	require.Equal(t, score1, f.flapScore())
-
-	// The case resolves, adding a second transition to the window: the
-	// score CHANGES, so the elision must not suppress this write.
-	resolved := f.observation(domain.ObservedByIngest, "resolved",
-		f.clk.Now(), now.Add(-2*time.Hour), f.clk.Now())
-	_, err = f.svc.ObserveBatch(ctx, f.scope, []domain.Observation{resolved}, ObserveOptions{})
-	require.NoError(t, err)
-	f.clk.Advance(time.Minute)
-
-	res3, err := svc.ScoreFlaps(ctx, f.scope, 10)
-	require.NoError(t, err)
-	require.Equal(t, 1, res3.Scored)
-	require.NotEqual(t, version1, f.alertRowVersion(), "a changed score must still be written")
-	require.Greater(t, f.flapScore(), score1)
-}
+// ⛔ THE FLAP TESTS ARE GONE BECAUSE `ScoreFlaps` IS. The WAL-churn guard here
+// asserted that a tick recomputing the same score wrote NOTHING and a tick
+// computing a different one still wrote — a property of a detector oto no longer
+// has. The case retention window W (migration 00057) damps a flap at CASE
+// FORMATION, which left the score counting lifecycle events a damped flap does not
+// append: `is_flapping` read false exactly when the alert was flapping. The two
+// columns are retired IN PLACE — every read still works, nothing writes them — so
+// there is no write to make a claim about. See `sweep.go` and ADR 0041, Amendment 1.

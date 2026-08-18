@@ -38,8 +38,18 @@ type Deps struct {
 	AlertBatch    AlertBatchReader
 	OccBatch      CaseBatchReader
 	OccSources    CaseSourceResolver
-	EventCounts   EventCounter
 	SnoozeHistory SnoozeHistoryReader
+	// CasePolicies reads `case_policy_config` — the case retention window W
+	// (migration 00057). ⭐ UNWIRED MEANS W=0 FOR EVERY ALERT, which is the
+	// pre-00057 close path exactly: a case closes on the resolve. Nothing degrades
+	// and nothing is silently disabled, because 0 is also the shipped default for a
+	// deployment that HAS the port.
+	CasePolicies CasePolicyRepository
+	// CasePolicyConfig is the SETTINGS side of the same table — list, create,
+	// patch, delete. ⭐ UNWIRED MEANS THE FOUR `/api/v1/case-policies` OPERATIONS
+	// ANSWER `503`, and nothing else changes: reading W does not depend on it, so a
+	// deployment that omits it behaves exactly as one whose table is empty.
+	CasePolicyConfig CasePolicyConfigStore
 
 	// Claims is the `Idempotency-Key` claim store (§E.1). It is optional in the
 	// same sense the rest of this block is — oto runs without it — but a KEYED
@@ -77,8 +87,9 @@ type Service struct {
 	cases       CaseRepository
 	occBatch    CaseBatchReader
 	occSources  CaseSourceResolver
+	casePolicy  CasePolicyRepository
+	casePolicyW CasePolicyConfigStore
 	events      EventRepository
-	eventCounts EventCounter
 	snoozes     SnoozeRepository
 	snoozeHist  SnoozeHistoryReader
 
@@ -127,8 +138,9 @@ func New(d Deps) (*Service, error) {
 		cases:         d.Cases,
 		occBatch:      d.OccBatch,
 		occSources:    d.OccSources,
+		casePolicy:    d.CasePolicies,
+		casePolicyW:   d.CasePolicyConfig,
 		events:        d.Events,
-		eventCounts:   d.EventCounts,
 		snoozes:       d.Snoozes,
 		snoozeHist:    d.SnoozeHistory,
 		tx:            d.Tx,

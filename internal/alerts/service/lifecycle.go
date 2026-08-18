@@ -385,6 +385,18 @@ func (s *Service) observeOne(
 		if err != nil {
 			return err
 		}
+		// ⭐ W IS READ FOR THE ONE EDGE THAT READS IT. Only T5 consults
+		// `CaseRetention`, and T5 is the only row a `resolved` observation can run,
+		// so asking on any other trigger would put a lookup on the hottest path in
+		// oto for a value nothing would use. It stays zero everywhere else, which is
+		// the pre-00057 command exactly.
+		if trigger == domain.TriggerObserveResolved {
+			w, err := s.caseRetention(ctx, scope, alert)
+			if err != nil {
+				return err
+			}
+			cmd.CaseRetention = w
+		}
 		r, err := domain.Apply(current, cmd)
 		if err != nil {
 			// A precondition failure is the machine saying "no §B.3 row permits this
@@ -548,7 +560,14 @@ func (s *Service) applyEdge(
 	out.Transition = r.ID.String()
 	out.From, out.To = r.From.String(), r.To.String()
 	out.Clamped, out.ClampSkew = r.Clamped, r.ClampSkew
-	if reason := reasonFor(r.ID); reason != "" {
+	// ⛔⛔ A DEFERRED CLOSE ANNOUNCES NOTHING, AND THIS IS THE GATE (00057). The rest
+	// of this function is already correct for it — `r.Events` is empty and
+	// `r.From == r.To`, so nothing is appended and no state change is projected — but
+	// `reasonFor` keys on the TRANSITION ID, and T5's reason is `resolved`. Without
+	// this test a flap damped into one case would still deliver one "resolved"
+	// notification per flap, which is the whole noise the retention window exists to
+	// stop. It is false at W=0, where no close is ever deferred.
+	if reason := reasonFor(r.ID); reason != "" && !r.CloseDeferred {
 		acc.notifies = append(acc.notifies, notifyRequest{
 			groupID: groupOf(opt, ac),
 			reason:  reason,
@@ -642,6 +661,12 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 		SourceEndsAt:   nilTime(o.SourceEndsAt()),
 		Value:          o.Value(),
 		Clamped:        r.Clamped,
+		// The DELAYED CLOSE's receipt, carried verbatim (migration 00057). Both are
+		// nil on every edge but the deferral, and nil CLEARS the column — see
+		// domain.Transition. On a deployment with no configured retention window
+		// they are always nil, which is the same UPDATE this statement always made.
+		ResolvePendingAt:    nilTime(o.ResolvePendingAt()),
+		ResolvePendingEndAt: nilTime(o.ResolvePendingEndAt()),
 		// ⭐ The compare-and-set pre-image, taken from the row the machine actually
 		// read. It is derived here and nowhere else, so no call site can persist an
 		// edge against a pre-image it did not decide from.
@@ -885,6 +910,29 @@ func (s *Service) edgeCommand(
 			current.GeneratorURL())
 	}
 	return cmd, nil
+}
+
+// caseRetention is W for this Alert's (namespace, alertname) — the case retention
+// window `case_policy_config` holds (migration 00057).
+//
+// ⭐⭐ EVERY ROAD TO "NO WINDOW" ENDS AT ZERO, AND ZERO IS TODAY'S BEHAVIOUR. The
+// port unwired, the table empty, the row absent, the row saying 0 — all four are
+// the same answer, and the §B.3 T5 arm takes no deferral branch on it. That is why
+// this returns a bare duration rather than a `(value, found)` pair: there is no
+// second thing a caller could do with the difference.
+//
+// ⛔ A FAILED LOOKUP IS AN ERROR AND NOT A ZERO. Falling back to 0 would silently
+// return the operator to the noise they configured a window to escape, and §B.6's
+// rule is that oto never dampens — or stops dampening — without saying so. The
+// caller fails the batch, the webhook is retried, and Alertmanager's at-least-once
+// delivery is what makes that the safe direction.
+func (s *Service) caseRetention(
+	ctx context.Context, scope db.TenantScope, alert domain.Alert,
+) (time.Duration, error) {
+	if s.casePolicy == nil {
+		return 0, nil
+	}
+	return s.casePolicy.RetentionWindow(ctx, scope, alert.Namespace(), alert.AlertName())
 }
 
 // suppressionReasonOf maps Alertmanager's witnesses onto its four suppression

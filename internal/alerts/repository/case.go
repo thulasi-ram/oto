@@ -37,6 +37,9 @@ type caseRow struct {
 
 	resolveReason *string
 
+	resolvePendingAt    *time.Time
+	resolvePendingEndAt *time.Time
+
 	stateVersion  int32
 	suppressCount int32
 
@@ -54,7 +57,8 @@ type caseRow struct {
 var caseColumnList = []string{
 	"id", "org_id", "alert_id", "group_id", "seq", "state", "suppression_reason", "suppressed_by",
 	"started_at", "ended_at", "last_observed_at", "source_starts_at", "source_ends_at",
-	"source_updated_at", "resolve_reason", "state_version",
+	"source_updated_at", "resolve_reason",
+	"resolve_pending_at", "resolve_pending_end_at", "state_version",
 	"suppress_count", "ack_state", "acked_by",
 	"acked_by_label", "acked_at", "ack_note", "rule_snapshot_id", "value", "observed_skew_ms",
 }
@@ -66,6 +70,7 @@ func (r *caseRow) scanDest() []any {
 		&r.id, &r.orgID, &r.alertID, &r.groupID, &r.seq, &r.state, &r.suppressionReason,
 		&r.suppressedBy, &r.startedAt, &r.endedAt, &r.lastObservedAt, &r.sourceStartsAt,
 		&r.sourceEndsAt, &r.sourceUpdatedAt, &r.resolveReason,
+		&r.resolvePendingAt, &r.resolvePendingEndAt,
 		&r.stateVersion, &r.suppressCount, &r.ackState, &r.ackedBy, &r.ackedByLabel, &r.ackedAt, &r.ackNote, &r.ruleSnapshotID,
 		&r.value, &r.observedSkewMS,
 	}
@@ -125,16 +130,21 @@ func (r *caseRow) toDomain() (domain.Case, error) {
 		SourceEndsAt:      timeOrZero(r.sourceEndsAt),
 		SourceUpdatedAt:   timeOrZero(r.sourceUpdatedAt),
 		ResolveReason:     res,
-		StateVersion:      int(r.stateVersion),
-		SuppressCount:     int(r.suppressCount),
-		AckState:          ack,
-		AckedBy:           idOrNil(r.ackedBy),
-		AckedByLabel:      strOrEmpty(r.ackedByLabel),
-		AckedAt:           timeOrZero(r.ackedAt),
-		AckNote:           strOrEmpty(r.ackNote),
-		RuleSnapshotID:    idOrNil(r.ruleSnapshotID),
-		Value:             r.value,
-		ObservedSkew:      time.Duration(r.observedSkewMS) * time.Millisecond,
+		// The DELAYED CLOSE's receipt (migration 00057). NULL on every row until an
+		// operator configures a retention window, which rehydrates exactly the Case
+		// this mapper built before the columns existed.
+		ResolvePendingAt:    timeOrZero(r.resolvePendingAt),
+		ResolvePendingEndAt: timeOrZero(r.resolvePendingEndAt),
+		StateVersion:        int(r.stateVersion),
+		SuppressCount:       int(r.suppressCount),
+		AckState:            ack,
+		AckedBy:             idOrNil(r.ackedBy),
+		AckedByLabel:        strOrEmpty(r.ackedByLabel),
+		AckedAt:             timeOrZero(r.ackedAt),
+		AckNote:             strOrEmpty(r.ackNote),
+		RuleSnapshotID:      idOrNil(r.ruleSnapshotID),
+		Value:               r.value,
+		ObservedSkew:        time.Duration(r.observedSkewMS) * time.Millisecond,
 	})
 	if err != nil {
 		return domain.Case{}, errs.Internal("case_row_invalid", err)
@@ -674,6 +684,17 @@ UPDATE alert_cases SET
     source_updated_at = GREATEST(source_updated_at, $5),
     value             = COALESCE($6, value),
     observed_skew_ms  = $7,
+    -- ⭐⭐ A REPEAT FIRING OBSERVATION CANCELS A PENDING CLOSE (migration 00057).
+    -- T2 is the edge a re-fire inside the retention window runs, and it persists
+    -- HERE rather than through transitionSQL, so the clearing the domain performs
+    -- on the Case has to be spelled again in this statement or it would never reach
+    -- the row. A receipt left behind on a re-fired episode is a close waiting to
+    -- happen against an alert that is demonstrably on fire.
+    --
+    -- Unconditional and safe: on a deployment with no configured window both
+    -- columns are already NULL for every row, so this writes NULL over NULL.
+    resolve_pending_at     = NULL,
+    resolve_pending_end_at = NULL,
     state_version     = state_version + 1,
     updated_at        = now()
 WHERE org_id = $1 AND id = $2`
@@ -738,9 +759,16 @@ UPDATE alert_cases SET
     source_updated_at  = COALESCE($10, source_updated_at),
     suppress_count     = COALESCE($11, suppress_count),
     value              = COALESCE($12, value),
+    -- ⛔ WRITTEN VERBATIM, NOT COALESCEd, AND THAT IS DELIBERATE (migration 00057).
+    -- These two are the DELAYED CLOSE's receipt, and every edge but the deferral
+    -- itself passes NULL because it either never had one or has just spent it. A
+    -- COALESCE here would leave a stale receipt on a re-fired episode and the sweep
+    -- would close a case that is on fire.
+    resolve_pending_at     = $13,
+    resolve_pending_end_at = $14,
     state_version      = state_version + 1,
     updated_at         = now()
-WHERE org_id = $1 AND id = $2 AND state_version = $13`
+WHERE org_id = $1 AND id = $2 AND state_version = $15`
 
 const caseExistsSQL = `SELECT state_version FROM alert_cases WHERE org_id = $1 AND id = $2`
 
@@ -801,7 +829,8 @@ func (r *CaseRepository) Transition(
 	tag, err := r.db(ctx).Exec(ctx, transitionSQL, s.OrgID(), id,
 		t.ToState.String(), t.SuppressionReason, suppressedBy, t.ResolveReason,
 		t.EndedAt, t.LastObservedAt.UTC(), t.SourceEndsAt, t.SourceUpdatedAt,
-		t.SuppressCount, t.Value, t.Expected.StateVersion)
+		t.SuppressCount, t.Value,
+		t.ResolvePendingAt, t.ResolvePendingEndAt, t.Expected.StateVersion)
 	if err != nil {
 		return mapErr(err, "apply transition")
 	}
@@ -957,6 +986,15 @@ SELECT ` + caseColumns + `
    AND ended_at IS NULL
    AND source_ends_at IS NOT NULL
    AND source_ends_at < $2
+   -- ⛔ AN EPISODE HOLDING AN UPSTREAM RESOLVE IS NOT A REAP CANDIDATE (00057).
+   -- A pending close leaves ended_at NULL, so without this line every case
+   -- inside its retention window would be handed to T6 on the next tick and
+   -- expired as timeout -- oto claiming it stopped hearing about an alert whose
+   -- resolution it was holding, which is the one fabrication 00007 forbids. The
+   -- domain refuses it and unreapable refuses it; this stops the sweep spending
+   -- its whole budget on candidates that will all be turned down. It also keeps
+   -- case_reap_idx usable: the predicate is a filter on the same index scan.
+   AND resolve_pending_at IS NULL
  ORDER BY source_ends_at ASC
  LIMIT $3`
 
@@ -987,6 +1025,57 @@ func (r *CaseRepository) ReapCandidates(
 	rows, err := r.db(ctx).Query(ctx, reapCandidatesSQL, s.OrgID(), before.UTC(), n)
 	if err != nil {
 		return nil, mapErr(err, "list reap candidates")
+	}
+	defer rows.Close()
+	return collectCases(rows, n)
+}
+
+// ---------------------------------------------------- the delayed close (00057)
+
+var closeDueCandidatesSQL = `
+SELECT ` + caseColumns + `
+  FROM alert_cases
+ WHERE org_id = $1
+   AND resolve_pending_at IS NOT NULL
+   AND resolve_pending_at <= $2
+ ORDER BY resolve_pending_at ASC
+ LIMIT $3`
+
+// CloseDueCandidates feeds the DELAYED CLOSE: open episodes whose upstream resolve
+// has been held for the whole case retention window W and may now be closed
+// (migration 00057).
+//
+// ⛔⛔ IT SELECTS ONLY ROWS THAT ALREADY CARRY A RECEIPT, AND THAT IS WHAT KEEPS
+// "A RESOLUTION IS NEVER FABRICATED" TRUE OF A BACKGROUND SWEEP. Only an explicit
+// upstream `status="resolved"` writes `resolve_pending_at`, so this statement
+// cannot reach an episode nobody has resolved: it finds resolves that have been
+// WAITING, never invents one. `ended_at IS NULL` is deliberately not repeated —
+// `case_pending_open_ck` makes it redundant, and a redundant predicate in a scan
+// is one more thing that can silently disagree with the CHECK.
+//
+// ⭐ IT IS EMPTY ON EVERY DEPLOYMENT THAT HAS SET NO W, and `case_close_due_idx` is
+// empty with it, because 0 is the default window and a case with W=0 closes on the
+// resolve without ever writing these columns.
+//
+// Like ReapCandidates this returns CANDIDATES, not verdicts: the caller re-reads
+// each row inside its own transaction and writes as a compare-and-set. Unlike
+// ReapCandidates it needs NO source-health guard — §B.4 protects oto from inferring
+// an ending out of silence, and there is no inference here; the ending was stated
+// upstream and is on the row.
+func (r *CaseRepository) CloseDueCandidates(
+	ctx context.Context, s db.TenantScope, asOf time.Time, limit int,
+) ([]domain.Case, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	if asOf.IsZero() {
+		return nil, errs.Internal("close_due_bound_missing", errsMissing("as_of is required"))
+	}
+	n := db.ClampLimit(limit)
+
+	rows, err := r.db(ctx).Query(ctx, closeDueCandidatesSQL, s.OrgID(), asOf.UTC(), n)
+	if err != nil {
+		return nil, mapErr(err, "list due closes")
 	}
 	defer rows.Close()
 	return collectCases(rows, n)

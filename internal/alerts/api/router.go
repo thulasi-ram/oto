@@ -84,6 +84,21 @@ type AlertService interface {
 	// quiet about, soonest wake-up first. It is what the persistent banner is
 	// built from, and it is the reason a snooze cannot be forgotten.
 	ActiveSnoozes(ctx context.Context, s db.TenantScope, p db.Keyset) (service.ActiveSnoozeResult, error)
+
+	// ⭐⭐ THE CONFIGURATION HALF OF THE CASE. These four are `case_policy_config`
+	// (migration 00057): the CASE RETENTION WINDOW W per (namespace, alertname),
+	// which decides WHEN a resolved case closes and therefore whether a flap is one
+	// episode or six. They are on THIS interface — the alerts module's — because the
+	// module that owns the Case owns the rule that shapes it; they are not on the
+	// reader the §B.3 machine consults, because the evaluator must not be able to
+	// rewrite the rule it is evaluating (see service.CasePolicyConfigStore).
+	//
+	// CreateCasePolicy's second result reports "this was a replay" for the same
+	// reason Comment's and Snooze's do.
+	CasePolicies(ctx context.Context, s db.TenantScope, p db.Keyset) ([]domain.CasePolicy, db.Cursor, error)
+	CreateCasePolicy(ctx context.Context, s db.TenantScope, in domain.CasePolicyDraft, idem service.Idempotency) (domain.CasePolicy, bool, error)
+	UpdateCasePolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID, p domain.CasePolicyPatch) (domain.CasePolicy, error)
+	DeleteCasePolicy(ctx context.Context, s db.TenantScope, policyID uuid.UUID) error
 }
 
 // Compile-time proof that the service satisfies the port this layer declares.
@@ -167,8 +182,48 @@ func (rt *Router) Register(r chi.Router) {
 		r.Post("/unack", rt.unackCase)
 	})
 
+	// ⭐⭐ THE CASE RETENTION WINDOW W, per (namespace, alertname) — migration
+	// 00057's `case_policy_config`. It is CONFIGURATION about the Case, so it lives
+	// on the router that owns the Case, and it is a sibling of `/cases` rather than a
+	// sub-resource of it: the subject is a RULE that outlives every episode it shapes,
+	// and there is no case id that could address it.
+	//
+	// The verb set is `/api/v1/clusters`'s, which is oto's existing per-org config
+	// collection with an immutable natural key: list, create, patch by id, delete by
+	// id. There is no `PUT` anywhere in this codebase and no upsert-by-natural-key on
+	// a human-facing collection — a duplicate (namespace, alertname) is a `409` from
+	// `case_policy_axes_uniq`, and `Idempotency-Key` is what makes the retry safe.
+	r.Route("/case-policies", func(r chi.Router) {
+		r.Get("/", rt.listCasePolicies)
+		r.Post("/", rt.createCasePolicy)
+		r.Patch("/{id}", rt.updateCasePolicy)
+		r.Delete("/{id}", rt.deleteCasePolicy)
+	})
+
 	r.Get("/labels", rt.listLabelNames)
 	r.Get("/labels/{name}/values", rt.listLabelValues)
+}
+
+// subject resolves the tenant and the path id, and rejects unknown query
+// parameters, for every endpoint addressed by `{id}` that is NOT a human verb.
+//
+// ⭐ IT IS NOT `action`. `action` (helpers.go) additionally demands a HUMAN actor,
+// because an acknowledgement nobody signed is not a receipt. Configuration is not
+// attributed — a retention window is a rule, not a receipt — so it must not require
+// one, or a PAT could never write it.
+func (rt *Router) subject(r *http.Request) (db.TenantScope, uuid.UUID, error) {
+	scope, err := scopeOf(r)
+	if err != nil {
+		return db.TenantScope{}, uuid.Nil, err
+	}
+	id, err := httpx.PathUUID(r, "id")
+	if err != nil {
+		return db.TenantScope{}, uuid.Nil, err
+	}
+	if err := httpx.NewParams(r).Err(); err != nil {
+		return db.TenantScope{}, uuid.Nil, err
+	}
+	return scope, id, nil
 }
 
 // Mount is Register under the name the other domain routers use.

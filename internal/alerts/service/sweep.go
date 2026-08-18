@@ -345,6 +345,14 @@ func (s *Service) expire(
 // only form of the question that cannot be answered about the wrong row.
 func unreapable(row domain.Case, now time.Time, grace time.Duration) string {
 	switch {
+	case row.ClosePending():
+		// ⛔ FIRST, because a held resolve outranks every other refusal here: the
+		// row already carries an explicit upstream `status="resolved"`, so expiring
+		// it would stamp `timeout` over a resolution oto has in hand — the
+		// resolved-versus-expired fabrication 00007 calls the distinction oto must
+		// never blur. The due close is the only edge that may end such a row.
+		// Unreachable at W=0: no row can carry a pending close.
+		return "case holds an upstream resolve"
 	case !row.IsOpen():
 		// The loudest case: overwriting a `resolved` with `expired` replaces a
 		// fact somebody upstream stated with one oto inferred, and leaves the
@@ -359,6 +367,266 @@ func unreapable(row domain.Case, now time.Time, grace time.Duration) string {
 		// A fresh observation pushed `source_ends_at` forward. The alert is
 		// demonstrably still firing and there is nothing here to expire.
 		return "resolve_grace has not elapsed since source_ends_at"
+	default:
+		return ""
+	}
+}
+
+// ------------------------------------------------------- the delayed close (W)
+
+// CloseDueResult is the audit of one due-close pass.
+type CloseDueResult struct {
+	// Considered is how many episodes were past their retention window.
+	Considered int
+	// Closed is how many were closed as `resolved`/`upstream` — the resolve that
+	// had been waiting, finally spent.
+	Closed int
+	// Superseded is how many were ABANDONED because the row had moved since the
+	// scan: the alert re-fired inside the window and the receipt was cleared, or
+	// somebody else ended the episode.
+	//
+	// THIS NUMBER IS THE FEATURE WORKING. Every increment is a flap that landed in
+	// the still-open case instead of opening a new one — which is the entire point
+	// of W — or a race the compare-and-set caught.
+	Superseded int
+}
+
+// CloseDue performs the DELAYED CLOSE: it closes every episode whose upstream
+// resolve has now been held for the whole case retention window W
+// (`case_policy_config.retention_window_s`, migration 00057).
+//
+// ⭐⭐ WHY THIS EXISTS. Without W a flapping alert produces one Case per flap — six
+// cases, six root cards, six pings — and since ADR 0040 a Case is strictly terminal
+// so nothing merges them. The only damper left was at DELIVERY, and a withheld
+// notification is indistinguishable from a signal that never fired, which is the
+// one thing an alerting product cannot afford (§B.6). W shapes the CASE instead: a
+// re-fire inside the window finds the episode still open and runs T2, so the noise
+// never exists.
+//
+// ⛔⛔ THIS METHOD DOES PRODUCE `resolved`, AND IT IS NOT A HOLE IN RULE 1 ABOVE.
+// Read Reap's rule 1 precisely: A RESOLUTION IS NEVER FABRICATED. This closes an
+// episode whose row ALREADY CARRIES the receipt for an explicit upstream
+// `status="resolved"` — `resolve_pending_at`/`resolve_pending_end_at`, written by
+// §B.3's T5 arm from an ingest observation and by nothing else. It SPENDS a
+// resolution; it cannot mint one. Three mechanisms hold that line:
+//
+//  1. `CloseDueCandidates` selects only rows with a receipt, so an episode nobody
+//     resolved is unreachable from here.
+//  2. `TriggerCloseDue` refuses the edge when the FRESH row has no pending close —
+//     the same shape as `unreapable`, asking the row about to be overwritten.
+//  3. The assertion below refuses anything but `resolved`/`upstream`, exactly as
+//     Reap's refuses anything but `expired`/`timeout`.
+//
+// ⭐ AND `ended_at` IS THE UPSTREAM CLAIM, NOT THIS SWEEP'S CLOCK. The window is
+// oto's own damper and must not be charged to the signal: closing at `now` would
+// make every reader of firing duration (R8) — the case list, the daily rollup, the
+// history enrichment's percentiles — report an episode W longer than the signal
+// actually burned. The machine stamps `resolve_pending_end_at`, which is what the
+// resolve observation claimed.
+//
+// ⛔ NO §B.4 SOURCE-HEALTH GUARD, and the asymmetry with Reap is the guard's own
+// reasoning rather than an omission. §B.4 stops oto INFERRING an ending out of
+// silence; there is no inference here. A source going dark after a resolve arrived
+// does not un-resolve the alert, and holding the close would leave the episode open
+// for the whole outage — which is the failure mode W was supposed to remove.
+//
+// It is a NO-OP on every deployment that has set no W: the candidate scan rides a
+// partial index that is empty when no row carries a pending close.
+func (s *Service) CloseDue(
+	ctx context.Context, scope db.TenantScope, limit int,
+) (CloseDueResult, error) {
+	if limit <= 0 {
+		limit = DefaultSweepLimit
+	}
+	now := s.Now()
+
+	candidates, err := s.cases.CloseDueCandidates(ctx, scope, now, limit)
+	if err != nil {
+		return CloseDueResult{}, err
+	}
+	if len(candidates) == 0 {
+		return CloseDueResult{}, nil
+	}
+
+	res := CloseDueResult{Considered: len(candidates)}
+	for _, ac := range candidates {
+		closed, err := s.closeDue(ctx, scope, ac, now)
+		if err != nil {
+			// One case failing must not cost the rest of the pass; the next tick
+			// sees it again, and the receipt is still on the row.
+			s.log.WarnContext(ctx, "alerts: could not close case at end of retention window",
+				"case_id", ac.ID(), "error", err)
+			continue
+		}
+		if closed {
+			res.Closed++
+		} else {
+			res.Superseded++
+		}
+	}
+	return res, nil
+}
+
+// closeDue moves ONE case through the delayed half of T5, in its own transaction
+// so a single failure cannot roll back the whole pass.
+//
+// `candidate` is the STALE SNAPSHOT the scan returned and is used for its id alone.
+// Everything the verdict rests on is re-read inside the transaction: between the
+// scan and here a webhook has had every opportunity to land, and a webhook landing
+// is exactly the case W exists to serve — the re-fire clears the receipt and this
+// must then close nothing.
+//
+// It reports false with no error when the transition was abandoned, which the
+// caller counts as Superseded.
+//
+// ⚠️ LOCK ORDER: THIS TRANSACTION TAKES `alert_cases` BEFORE `alerts`, the same
+// order `expire` above takes them and the OPPOSITE of `Service.observe`. The note
+// on `expire` is the whole argument and it applies here verbatim: the correctness of
+// this path rests on the compare-and-set, not on a lock, precisely so that no lock
+// has to be held across a sweep. ⛔ Do not add one to this site alone.
+func (s *Service) closeDue(
+	ctx context.Context, scope db.TenantScope, candidate domain.Case, now time.Time,
+) (bool, error) {
+	actor, err := domain.SystemActor(domain.ActorReaper)
+	if err != nil {
+		return false, err
+	}
+	at, err := domain.NewObservationTime(now, now)
+	if err != nil {
+		return false, err
+	}
+
+	closed := false
+	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		// ⭐ THE RE-READ. The candidate came from a scan outside any transaction;
+		// this row is the one that will actually be overwritten.
+		fresh, err := s.cases.GetByID(ctx, scope, candidate.ID())
+		if err != nil {
+			if errs.IsKind(err, errs.KindNotFound) {
+				return nil // deleted under us; there is nothing to close
+			}
+			return err
+		}
+
+		// ⛔⛔ THE ASSERTION THAT MAKES "SPENDS, NEVER MINTS" MECHANICAL. It
+		// interrogates THE ROW ABOUT TO BE OVERWRITTEN, which is the only form of
+		// the question that cannot be answered about the wrong row — see the note
+		// on `unreapable`. A re-fire inside the window lands here as
+		// "no resolve is pending", and standing down IS the feature: the episode
+		// stays open and carries the flap.
+		if reason := unclosable(fresh, now); reason != "" {
+			s.log.DebugContext(ctx, "alerts: delayed close stood down, the row disproved it",
+				"case_id", fresh.ID(), "reason", reason)
+			return nil
+		}
+
+		r, err := domain.Apply(fresh, domain.TransitionCommand{
+			Trigger: domain.TriggerCloseDue,
+			Actor:   actor,
+			At:      at,
+			EventID: id.New(),
+		})
+		if err != nil {
+			if errs.IsKind(err, errs.KindPrecondition) {
+				return nil
+			}
+			return err
+		}
+		if r.To != domain.StateResolved || r.Case.ResolveReason() != domain.ResolveUpstream {
+			return errs.Internal("delayed_close_would_change_meaning",
+				errsInvariant("the delayed close produced "+r.To.String()+
+					"; only resolved/upstream is permitted"))
+		}
+
+		// No witnesses: a resolve names no suppressor, and `transitionOf` clears the
+		// column. The precondition is `fresh`'s `state_version`, and EVERY write that
+		// moves a decision input bumps it — `Observe` included — so a re-fire landing
+		// in the microseconds between the re-read and this UPDATE loses this pass its
+		// compare-and-set even though the row is still open. That is the intended
+		// reading: an episode oto has heard from since it read the row is not one to
+		// close on a resolve that predates the hearing.
+		trans := transitionOf(r, domain.SuppressedBy{})
+		if err := s.cases.Transition(ctx, scope, r.Case.ID(), trans); err != nil {
+			// ⛔ ABANDON, never re-decide — the same rule the reaper follows and for a
+			// stronger reason: every way to lose this compare-and-set is a way of
+			// learning something new about an alert oto was about to declare over. The
+			// receipt is still on the row if it should be, and the next tick re-reads
+			// from scratch.
+			if errs.IsKind(err, errs.KindConflict) {
+				s.log.InfoContext(ctx, "alerts: delayed close lost the compare-and-set, abandoned",
+					"case_id", r.Case.ID())
+				return nil
+			}
+			return err
+		}
+
+		alert, err := s.alerts.GetByID(ctx, scope, r.Case.AlertID())
+		if err != nil {
+			return err
+		}
+		if err := s.projectFromCase(ctx, scope, alert, r.Case, at, true, 0); err != nil {
+			return err
+		}
+		if _, err := s.appendEvents(ctx, scope, r.Events); err != nil {
+			return err
+		}
+		if err := s.publishCase(ctx, scope, r.Case); err != nil {
+			return err
+		}
+		if err := s.publishAlert(ctx, scope, alert.ID(), map[string]any{
+			"state": domain.StateResolved.String(),
+		}); err != nil {
+			return err
+		}
+		// ⭐ ONE NOTIFICATION FOR THE WHOLE FLAP, AND THIS IS IT. The deferred T5s
+		// that ran inside the window announced nothing (see
+		// TransitionResult.CloseDeferred), so this is the first and only time the
+		// channel is told the episode ended.
+		if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
+			groupID: r.Case.GroupID(),
+			// `some_resolved`, exactly as an immediate T5 produces — whether the
+			// GROUP is wholly resolved is a fact about membership this module does
+			// not read, and the notify worker upgrades it. See reasonFor.
+			reason:  reasonSomeResolved,
+			alertID: ptr(alert.ID()),
+			caseID:  ptr(r.Case.ID()),
+			actor:   domain.ActorReaper.String(),
+		}}, nil); err != nil {
+			return err
+		}
+		closed = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return closed, nil
+}
+
+// unclosable re-proves the delayed close's preconditions AGAINST THE ROW THE SWEEP
+// IS ABOUT TO OVERWRITE, and names the one that failed. An empty string means the
+// row itself justifies the close.
+//
+// It is deliberately a duplicate of the checks inside domain.Apply's due-close
+// branch, for the reason `unreapable` states: Apply answers about whatever case it
+// is handed, and the failure being guarded against is Apply being handed a snapshot
+// that had stopped being true.
+func unclosable(row domain.Case, now time.Time) string {
+	switch {
+	case !row.IsOpen():
+		// Somebody ended the episode first — an immediate T5 after the operator
+		// narrowed W, or a rollback completing the close. There is nothing left to
+		// do and nothing to correct.
+		return "case is already " + row.AlertState().String()
+	case !row.ClosePending():
+		// ⭐ THE FEATURE, NOT A FAILURE. The alert re-fired inside the window, T2
+		// cleared the receipt, and this episode is carrying the flap exactly as
+		// intended. It is the reason this pass logs at debug rather than info.
+		return "the alert re-fired inside the retention window"
+	case !row.CloseDue(now):
+		// A fresh resolve moved the due time forward: the rule is "stayed resolved
+		// for W", so the window restarts on every resolve.
+		return "the retention window has not elapsed"
 	default:
 		return ""
 	}
@@ -441,123 +709,39 @@ func (s *Service) ExpireSnoozes(
 	return res, nil
 }
 
-// ---------------------------------------------------------------- flap score
+// ------------------------------------------------------ flap score (RETIRED)
 
-// FlapResult is the audit of one `flap.score` tick.
-type FlapResult struct {
-	Scored          int
-	FlappingStarted int
-	FlappingEnded   int
-}
-
-// ScoreFlaps recomputes flap scores (§B.6).
+// ⛔⛔ THERE IS NO `ScoreFlaps` ANY MORE, AND NO `FlapResult` WITH IT. It was the
+// `flap.score` job (§B.6): count each Alert's lifecycle transitions inside
+// `flap_window`, divide by the window to get transitions per hour, write the pair
+// `alerts.flap_score` / `alerts.is_flapping` through `SetFlap`, and mint
+// `alert.flapping_started` / `alert.flapping_ended` on a crossing. All of it is
+// gone — the job kind, the periodic tick, the handler, the port method and the
+// UPDATE — and the two event types are retired in `alerts/domain/event.go`.
 //
-// The score is transitions per hour over the configured window, and an Alert
-// above `flap_threshold` is MARKED flapping. Marking is the whole point:
-// cases still open and close normally and nothing is hidden — flapping is a
-// VISIBLE UI state, never silent suppression. What changes is downstream, where
-// `notify.evaluate` switches to update-only mode.
+// ⭐⭐ IT DID NOT GO DEAD. IT WENT BLIND, AND THAT IS WHY TUNING IT WAS NOT AN
+// OPTION. The count came from `stateChangeCountsSQL`, which counts `case.opened`,
+// `case.resolved`, `case.expired`, `case.suppressed` and `case.unsuppressed`. The
+// case retention window W (migration 00057) damps a flap AT CASE FORMATION: a
+// re-fire inside W lands in the STILL-OPEN case, so the resolve is held and no new
+// case opens, and the damped episode appends NEITHER of the two events the score
+// lives on. Six flaps in ten minutes used to append twelve counted events; damped
+// they append about two, against `DefaultFlapThreshold = 5` over
+// `DefaultFlapWindow = 7200 s`. `is_flapping` therefore read FALSE exactly when the
+// alert was flapping, and `alert.flapping_ended` would have been minted BECAUSE the
+// flapping got worse. A detector that lies is worse than no detector.
 //
-// The crossing is recorded on the timeline as `alert.flapping_started` /
-// `alert.flapping_ended`, so a user can always see why oto went quieter.
-func (s *Service) ScoreFlaps(ctx context.Context, scope db.TenantScope, limit int) (FlapResult, error) {
-	if s.eventCounts == nil {
-		return FlapResult{}, nil
-	}
-	if limit <= 0 {
-		limit = DefaultSweepLimit
-	}
-	cfg := s.lifecycleSettings(ctx, scope)
-	now := s.Now()
-	window := db.TimeWindow{From: now.Add(-cfg.FlapWindow), To: now}
-
-	// The cap travels WITH the query. Which alerts get scored when it binds is
-	// the port's contract — most-changed first — not an artifact of iterating
-	// this map, so everything that comes back is processed.
-	counts, err := s.eventCounts.StateChangeCounts(ctx, scope, window, limit)
-	if err != nil {
-		return FlapResult{}, err
-	}
-	if len(counts) == 0 {
-		return FlapResult{}, nil
-	}
-
-	at, err := domain.NewObservationTime(now, now)
-	if err != nil {
-		return FlapResult{}, err
-	}
-	actor, err := domain.SystemActor(domain.ActorSystem)
-	if err != nil {
-		return FlapResult{}, err
-	}
-
-	res := FlapResult{}
-	for alertID, n := range counts {
-		perHour := float32(n) / float32(cfg.FlapWindow.Hours())
-		flapping := n >= cfg.FlapThreshold
-
-		err := s.tx.InTx(ctx, func(ctx context.Context) error {
-			alert, err := s.alerts.GetByID(ctx, scope, alertID)
-			if err != nil {
-				return err
-			}
-			// The steady state writes nothing. Most ticks recompute the same score
-			// for the same alerts, and an UPDATE that changes neither column is
-			// pure WAL churn on the hottest table in the system. The float32
-			// comparison is exact: `flap_score` is REAL, so the value read back is
-			// bit-for-bit the value SetFlap wrote.
-			if alert.IsFlapping() == flapping && alert.FlapScore() == perHour {
-				return nil
-			}
-			if err := s.alerts.SetFlap(ctx, scope, alertID, perHour, flapping); err != nil {
-				return err
-			}
-			if alert.IsFlapping() == flapping {
-				return nil
-			}
-			typ := domain.EventAlertFlappingEnded
-			summary := "Alert stopped flapping"
-			if flapping {
-				typ = domain.EventAlertFlappingStarted
-				summary = "Alert is flapping: notifications switch to update-only"
-			}
-			ev, err := domain.NewEvent(domain.EventParams{
-				ID:      id.New(),
-				OrgID:   scope.OrgID(),
-				AlertID: alertID,
-				Type:    typ,
-				At:      at,
-				Actor:   actor,
-				Summary: summary,
-				Payload: map[string]any{
-					"flap_score":  perHour,
-					"transitions": n,
-					"window_s":    int64(cfg.FlapWindow.Seconds()),
-				},
-				DedupeKey: "alert:" + alertID.String() + ":flap:" + typ.String() + ":" +
-					now.Truncate(cfg.FlapWindow).Format(time.RFC3339),
-			})
-			if err != nil {
-				return err
-			}
-			if _, err := s.appendEvents(ctx, scope, []domain.Event{ev}); err != nil {
-				return err
-			}
-			if flapping {
-				res.FlappingStarted++
-			} else {
-				res.FlappingEnded++
-			}
-			return nil
-		})
-		if err != nil {
-			s.log.WarnContext(ctx, "alerts: could not score flap", "alert_id", alertID, "error", err)
-			continue
-		}
-		res.Scored++
-	}
-	return res, nil
-}
+// ⛔ THE FIX THAT WAS REFUSED, so nobody re-proposes it: feeding the deferred
+// resolve into the score needs a NEW `alert_events.type` for an edge that records a
+// resolve without performing it — an API-contract change minted to keep a
+// second-order damper alive behind the one that already works. W IS the flap
+// answer now (ADR 0041, Amendment 1), and one damper is the whole point.
+//
+// ⭐ WHAT SURVIVES, AND WHY IT IS NOT A CONTRADICTION. `alerts.flap_score` and
+// `alerts.is_flapping` are RETIRED IN PLACE, not dropped: every read keeps working —
+// the list filter, the rollup, the enrichment card, the notification snapshot — so
+// the last value a row carries stays interpretable rather than becoming a column
+// that errors. Retired is not deleted; unwritable is not unreadable.
 
 // PruneEventKeys ages out the C.8 dedupe keys of `alert_event_keys` and reports
 // how many went. It is the alerts half of `retention.prune`.

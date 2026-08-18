@@ -445,6 +445,18 @@ type Transition struct {
 	LastObservedAt  time.Time
 	SourceEndsAt    *time.Time
 	SourceUpdatedAt *time.Time
+	// ResolvePendingAt and ResolvePendingEndAt are the post-image of the DELAYED
+	// CLOSE (migration 00057), and NIL CLEARS THE COLUMN — deliberately, unlike the
+	// `COALESCE`d columns beside them.
+	//
+	// ⭐ CLEARING IS THE COMMON CASE AND IT IS WHAT KEEPS THE RECEIPT HONEST. Every
+	// edge except the deferral itself either has no pending close or has just spent
+	// one: a re-fire (T2, which persists through Observe), a suppression (T3), the
+	// due close and an immediate close all leave both columns NULL. Writing them
+	// with `COALESCE(..., resolve_pending_at)` would leave a spent or stale receipt
+	// on the row, and a stale receipt closes an episode that is on fire.
+	ResolvePendingAt    *time.Time
+	ResolvePendingEndAt *time.Time
 	// SuppressCount is the post-image `suppress_count`. T3 increments it; every
 	// other edge leaves it alone, and nil means "do not write this column".
 	SuppressCount *int

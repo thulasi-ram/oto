@@ -27,13 +27,14 @@ package api
 //     named (§B.8.3), because an unexpiring snooze is a mute;
 //   - a delivery roll-up that could not be read FAILS the request rather than
 //     rendering an alert page that quietly claims silence it never checked;
-//   - and, above all, that another tenant's id answers 404 on all thirteen
+//   - and, above all, that another tenant's id answers 404 on all fifteen
 //     id-addressed operations — never 403, which would confirm the row exists.
 
 import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -1054,13 +1055,217 @@ func TestACommentMustCarryABody(t *testing.T) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* The case retention window (case_policy_config, migration 00057)            */
+/* -------------------------------------------------------------------------- */
+
+// TestListCasePoliciesAnswersThePageTheContractDeclares.
+//
+// The promise: `GET /api/v1/case-policies` is a keyset page of `CasePolicyDTO`,
+// and the EMPTY namespace survives serialisation as `""`.
+//
+// ⛔ WHAT IT REALLY GUARDS IS THE EMPTY STRING. `""` is the absent-namespace
+// partition — the one every alert with no `namespace` label falls into — and it is
+// the only namespace most deployments will ever key on. A DTO with `omitempty` on
+// that field, or a client that read a missing key as "unknown", would make the most
+// commonly used rule in the collection invisible on the page that lists it.
+func TestListCasePoliciesAnswersThePageTheContractDeclares(t *testing.T) {
+	t.Parallel()
+
+	c, svc := newAlertsProbe(t)
+	resp := c.GET("/case-policies").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listCasePolicies", http.StatusOK, resp.Body())
+
+	rows, ok := resp.JSON(t)["data"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("data = %v, want the two fixture rules: %s", resp.JSON(t)["data"], resp)
+	}
+	second, _ := rows[1].(map[string]any)
+	ns, present := second["namespace"]
+	if !present {
+		t.Fatal("the absent-namespace rule shipped without a `namespace` key; \"\" is a " +
+			"partition, not a missing value")
+	}
+	if ns != "" {
+		t.Fatalf("namespace = %v, want the empty string", ns)
+	}
+	if w := second["retention_window_seconds"]; w != float64(0) {
+		t.Fatalf("retention_window_seconds = %v, want 0 — a stored zero is a decision and "+
+			"must not be omitted", w)
+	}
+	if svc.calls["CasePolicies"] != 1 {
+		t.Fatalf("the service was consulted %d time(s), want 1", svc.calls["CasePolicies"])
+	}
+	// ⛔ The tenant came off the principal and nowhere else.
+	if svc.lastScope.OrgID() != apitest.OrgID {
+		t.Fatalf("the handler read as org %s, want the caller's %s",
+			svc.lastScope.OrgID(), apitest.OrgID)
+	}
+}
+
+// TestCreateCasePolicyStoresTheWindowTheCallerAsked.
+//
+// The promise: `POST /api/v1/case-policies` answers 201 with the stored rule, and
+// the seconds on the wire arrive at the domain as a Duration.
+//
+// ⭐ W=0 IS A LEGAL CREATE and is asserted here on purpose. A stored 0 and an
+// absent row are the same instruction to the §B.3 machine, so it would be easy to
+// "helpfully" refuse it — but recording "this alertname gets no window,
+// deliberately" is a decision, and refusing it would leave the absence of a row
+// ambiguous between "not decided" and "decided to be zero".
+func TestCreateCasePolicyStoresTheWindowTheCallerAsked(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want time.Duration
+		ns   string
+	}{
+		{"a ten minute window", `{"namespace":"production","alertname":"HighErrorRate","retention_window_seconds":600}`, 10 * time.Minute, "production"},
+		{"the absent namespace", `{"alertname":"HighErrorRate","retention_window_seconds":600}`, 10 * time.Minute, ""},
+		{"an explicit zero", `{"alertname":"HighErrorRate","retention_window_seconds":0}`, 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c, svc := newAlertsProbe(t)
+			resp := sendJSON(t, c, "createCasePolicy", http.MethodPost, "/case-policies", tc.body).
+				MustStatus(t, http.StatusCreated)
+			schema.Assert(t, "createCasePolicy", http.StatusCreated, resp.Body())
+
+			if got := svc.lastCasePolicyDraft.RetentionWindow; got != tc.want {
+				t.Fatalf("the service was asked for %s, want %s", got, tc.want)
+			}
+			if got := svc.lastCasePolicyDraft.Namespace; got != tc.ns {
+				t.Fatalf("namespace reached the service as %q, want %q", got, tc.ns)
+			}
+		})
+	}
+}
+
+// ⛔ TestACasePolicyWindowOutsideItsBoundIsRefusedWithTheFieldNamed.
+//
+// The promise: a window above 86400 or below 0 is a 422 naming
+// `retention_window_seconds`, and the service is never reached.
+//
+// What breaks otherwise: `case_policy_window_ck` catches it as a 23514, which
+// surfaces as a 500 — a server error for a request the operator could have fixed,
+// with no field for the settings form to point at.
+func TestACasePolicyWindowOutsideItsBoundIsRefusedWithTheFieldNamed(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"alertname":"HighErrorRate","retention_window_seconds":86401}`,
+		`{"alertname":"HighErrorRate","retention_window_seconds":-1}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+
+			c, svc := newAlertsProbe(t)
+			resp := c.Raw(http.MethodPost, "/case-policies", apitest.ContentTypeJSON, body).
+				MustStatus(t, http.StatusUnprocessableEntity)
+			schema.AssertProblem(t, "createCasePolicy", http.StatusUnprocessableEntity, resp.Body())
+
+			resp.MustViolate(t, "retention_window_seconds")
+			if len(svc.calls) != 0 {
+				t.Fatalf("an out-of-range window reached the service: %v", svc.calls)
+			}
+		})
+	}
+}
+
+// ⛔ TestACasePolicyCannotMoveItsOwnAxes.
+//
+// The promise: `namespace` and `alertname` are unknown properties on the PATCH
+// body, so sending one is a 400 rather than a silent no-op.
+//
+// What breaks otherwise: the pair is the rule's identity under
+// `case_policy_axes_uniq`. A PATCH that accepted and ignored an `alertname` would
+// let an operator believe a window had been moved to a different alert — and the
+// alert they meant to quieten would go on producing six cases per flap while the
+// screen said otherwise.
+func TestACasePolicyCannotMoveItsOwnAxes(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"alertname":"SomethingElse"}`,
+		`{"namespace":"staging","retention_window_seconds":600}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+
+			c, svc := newAlertsProbe(t)
+			resp := c.Raw(http.MethodPatch, "/case-policies/"+fxCasePolicyID.String(),
+				apitest.ContentTypeJSON, body).MustStatus(t, http.StatusBadRequest)
+			schema.AssertProblem(t, "updateCasePolicy", http.StatusBadRequest, resp.Body())
+
+			if len(svc.calls) != 0 {
+				t.Fatalf("a request naming an immutable axis reached the service: %v", svc.calls)
+			}
+		})
+	}
+}
+
+// TestUpdateCasePolicyChangesTheWindowAndNothingElse, and TestDeleteCasePolicy
+// proves the removal is a 204 with no body.
+//
+// ⭐ REMOVING THE ROW RESTORES W=0, which is the close-on-resolve behaviour oto
+// had before migration 00057 — not a broken state and not a disabled feature.
+func TestUpdateAndDeleteCasePolicy(t *testing.T) {
+	t.Parallel()
+
+	t.Run("updateCasePolicy", func(t *testing.T) {
+		t.Parallel()
+
+		c, svc := newAlertsProbe(t)
+		resp := sendJSON(t, c, "updateCasePolicy", http.MethodPatch,
+			"/case-policies/"+fxCasePolicyID.String(), `{"retention_window_seconds":1200}`).
+			MustStatus(t, http.StatusOK)
+		schema.Assert(t, "updateCasePolicy", http.StatusOK, resp.Body())
+
+		if svc.lastCasePolicyPatch.RetentionWindow == nil {
+			t.Fatal("the patch reached the service with no window")
+		} else if got := *svc.lastCasePolicyPatch.RetentionWindow; got != 20*time.Minute {
+			t.Fatalf("the service was asked for %s, want 20m", got)
+		}
+	})
+
+	t.Run("an empty patch", func(t *testing.T) {
+		t.Parallel()
+
+		c, svc := newAlertsProbe(t)
+		resp := c.Raw(http.MethodPatch, "/case-policies/"+fxCasePolicyID.String(),
+			apitest.ContentTypeJSON, `{}`).MustStatus(t, http.StatusUnprocessableEntity)
+		schema.AssertProblem(t, "updateCasePolicy", http.StatusUnprocessableEntity, resp.Body())
+
+		if len(svc.calls) != 0 {
+			t.Fatalf("an empty patch reached the service: %v", svc.calls)
+		}
+	})
+
+	t.Run("deleteCasePolicy", func(t *testing.T) {
+		t.Parallel()
+
+		c, svc := newAlertsProbe(t)
+		resp := c.DELETE("/case-policies/"+fxCasePolicyID.String()).
+			MustStatus(t, http.StatusNoContent)
+		schema.AssertNoBody(t, "deleteCasePolicy", http.StatusNoContent, resp.Body())
+
+		if svc.calls["DeleteCasePolicy"] != 1 {
+			t.Fatalf("the service was consulted %d time(s), want 1",
+				svc.calls["DeleteCasePolicy"])
+		}
+	})
+}
+
+/* -------------------------------------------------------------------------- */
 /* The tenant boundary                                                        */
 /* -------------------------------------------------------------------------- */
 
 // idAddressedOperations is every operation in this package that takes a resource
 // id — which is every operation a missing `WHERE org_id = $1` could leak through.
 //
-// It is a TABLE rather than thirteen hand-written tests for one reason: the probe
+// It is a TABLE rather than fifteen hand-written tests for one reason: the probe
 // is the highest-value assertion in this suite and the one most easily forgotten,
 // and a table makes forgetting one visible.
 func idAddressedOperations(id string) []apitest.Route {
@@ -1078,6 +1283,12 @@ func idAddressedOperations(id string) []apitest.Route {
 		{Op: "listCaseEvents", Method: http.MethodGet, Path: "/cases/" + id + "/events"},
 		{Op: "ackCase", Method: http.MethodPost, Path: "/cases/" + id + "/ack", Body: `{"note":"looking"}`},
 		{Op: "unackCase", Method: http.MethodPost, Path: "/cases/" + id + "/unack", Body: `{"note":"handing back"}`},
+		// The CASE RETENTION WINDOW rules. A config row is as tenant-owned as an
+		// alert is: another org's retention window must be a 404 and never a 403,
+		// or the id space becomes an existence oracle over somebody else's
+		// alertnames — which is a leak of what they monitor, not merely of a uuid.
+		{Op: "updateCasePolicy", Method: http.MethodPatch, Path: "/case-policies/" + id, Body: `{"retention_window_seconds":600}`},
+		{Op: "deleteCasePolicy", Method: http.MethodDelete, Path: "/case-policies/" + id},
 	}
 }
 

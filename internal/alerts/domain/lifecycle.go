@@ -55,13 +55,29 @@ var (
 	// stopped hearing about. It drives T6 and is the ONLY way a case
 	// becomes expired.
 	TriggerReap = Trigger{"reap"}
+	// TriggerCloseDue is the sweep finding an episode whose CASE RETENTION WINDOW
+	// has elapsed (migration 00057). It drives the delayed half of T5 and nothing
+	// else.
+	//
+	// ⛔⛔ IT CANNOT FABRICATE A RESOLUTION, AND THE RECEIPT IS WHY. The row it runs
+	// against already carries `resolve_pending_at`/`resolve_pending_end_at`, which
+	// only an explicit upstream `status="resolved"` can write. This trigger SPENDS
+	// that receipt; it cannot mint one. A case with no pending close refuses the
+	// edge — see Apply's T5 arm — so "resolved means upstream said so" (C2, 00007)
+	// survives a second actor on the edge with its meaning intact.
+	//
+	// ⭐ IT IS A SEPARATE TRIGGER RATHER THAN A SECOND ACTOR ON THE EXISTING T5
+	// ROWS. Widening `actors` there would let the reaper resolve ANY firing case it
+	// was handed; a trigger of its own makes the delayed close reachable only from
+	// the one caller that has re-read the row and proved the receipt.
+	TriggerCloseDue = Trigger{"close_due"}
 )
 
 // NewTrigger parses a trigger name.
 func NewTrigger(s string) (Trigger, error) {
 	switch s {
 	case TriggerObserveFiring.s, TriggerObserveSuppressed.s,
-		TriggerObserveResolved.s, TriggerReap.s:
+		TriggerObserveResolved.s, TriggerReap.s, TriggerCloseDue.s:
 		return Trigger{s: s}, nil
 	default:
 		return Trigger{}, errs.Newf(errs.KindValidation, "enum", "%q is not a lifecycle trigger", s)
@@ -185,6 +201,19 @@ var transitionTable = []transitionRule{
 		id: TransitionT5, actors: []ActorKind{ActorIngest},
 		event: EventCaseResolved,
 	},
+	// ⭐ THE DELAYED HALF OF T5 (migration 00057). Same edge, same event, same
+	// `resolve_reason` — a different WITNESS. The upstream resolve arrived earlier
+	// and was recorded on the row as a pending close; this row is the sweep coming
+	// back for it once the retention window has elapsed.
+	//
+	// There is no `suppressed` twin, and there cannot be: `case_pending_supp_ck`
+	// keeps a pending close and a suppression reason off the same row, so an
+	// episode holding a receipt is always in the `firing` phase.
+	{
+		from: StateFiring, to: StateResolved, trigger: TriggerCloseDue,
+		id: TransitionT5, actors: []ActorKind{ActorReaper},
+		event: EventCaseResolved,
+	},
 	{
 		from: StateFiring, to: StateExpired, trigger: TriggerReap,
 		id: TransitionT6, actors: []ActorKind{ActorReaper},
@@ -286,6 +315,20 @@ type TransitionCommand struct {
 	// Zero means DefaultResolveGrace.
 	ResolveGrace time.Duration
 
+	// CaseRetention is W, the case retention window for this Alert's
+	// (namespace, alertname) — `case_policy_config.retention_window_s`, migration
+	// 00057. It is read by T5 and ignored on every other edge.
+	//
+	// ⭐⭐ ZERO IS NOT A SPECIAL CASE, IT IS THE ABSENCE OF ONE. Unlike ResolveGrace
+	// above, a zero here does NOT mean "use a default": it means the operator has
+	// configured no window, which is the shipped default and every deployment until
+	// somebody writes a `case_policy_config` row. The T5 arm's deferral branch is
+	// guarded on `> 0`, so at zero the machine executes the same statements in the
+	// same order it executed before this field was added. That is what makes W
+	// safe to ship: the zero-value path is not equivalent to the old path, it IS
+	// the old path.
+	CaseRetention time.Duration
+
 	// SourceHealthy gates T6 and nothing else. THE REAPER GUARD (§B.4) IS THE
 	// HIGHEST-VALUE CORRECTNESS RULE IN THE SYSTEM: losing sight of an alert is
 	// not the same as the alert resolving, so a case whose AlertSource is
@@ -350,6 +393,18 @@ type TransitionResult struct {
 	// export it as oto_clock_skew_seconds: the skew is MEASURED AND SURFACED,
 	// never rejected (C12).
 	ClampSkew time.Duration
+
+	// CloseDeferred marks a T5 that RECORDED an upstream resolve without performing
+	// the close, because the Alert's case retention window W has not elapsed
+	// (migration 00057). `Case` is the still-OPEN episode carrying the receipt.
+	//
+	// ⛔ A CALLER MUST NOT ANNOUNCE A RESOLUTION ON THIS RESULT. `Events` is empty
+	// and `From`/`To` are equal, so a caller that keys on those two alone is already
+	// correct; the flag exists for the one that keys on the TRANSITION ID, because
+	// `reasonFor(T5)` is `resolved` and delivering that here would put back exactly
+	// the six pings W exists to prevent. It is false at W=0, where nothing about
+	// this result differs from what it was before W existed.
+	CloseDeferred bool
 }
 
 // Apply runs the SPEC §B.3 state machine over one AlertCase.
@@ -393,6 +448,9 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 	// they are computed, not supplied.
 	extra := map[string]any{}
 	var clampDelta time.Duration
+	// deferred marks the one edge that RECORDS a resolve without performing it.
+	// See the T5 arm and TransitionResult.CloseDeferred.
+	var deferred bool
 	switch rule.id {
 	case TransitionT1:
 		return TransitionResult{}, errs.New(errs.KindPrecondition, "no_open_case",
@@ -401,6 +459,20 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 	case TransitionT2:
 		next.lastObservedAt = cmd.At.RecordedAt()
 		next.observe(cmd)
+		// ⭐⭐ THE RE-FIRE INSIDE W LANDS HERE, AND CLEARING THE RECEIPT IS WHAT
+		// MAKES THAT SAFE. A firing observation is proof the alert is firing again,
+		// so a pending close must not survive it: left behind, the sweep would come
+		// back at the due time and close an episode that is demonstrably on fire.
+		// This is also the single line that turns six cases into one — the case is
+		// still open, so §B.3 routes the re-fire to T2 rather than T7, and no new
+		// `seq`, root card, thread or ping is minted.
+		//
+		// ⚠️ IT IS CLEARED IN SQL TOO, and it has to be: T2 persists through
+		// `Observe`, not `Transition` (alerts/service/lifecycle.go
+		// persistTransition), so `observeSQL` carries the same clearing. Two writers
+		// of one fact, because the two statements are two different UPDATEs.
+		next.resolvePendingAt = time.Time{}
+		next.resolvePendingEndAt = time.Time{}
 
 	case TransitionT3:
 		if cmd.SuppressionReason.IsZero() {
@@ -417,6 +489,13 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 		next.suppressCount = o.suppressCount + 1
 		next.lastObservedAt = cmd.At.RecordedAt()
 		next.observe(cmd)
+		// A suppressed observation says the alert is PRESENT upstream and muted, so
+		// a pending resolve on the row is stale and is dropped exactly as a re-fire
+		// drops it. False at W=0, where no row carries one.
+		if o.ClosePending() {
+			next.resolvePendingAt = time.Time{}
+			next.resolvePendingEndAt = time.Time{}
+		}
 
 	case TransitionT4:
 		// `detected_by` records WHICH of the two witnesses saw suppression end.
@@ -430,6 +509,63 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 		extra["detected_by"] = detectedBy(cmd.Actor.Kind())
 
 	case TransitionT5:
+		// ⭐⭐ THE TWO WITNESSES OF ONE EDGE, AND THE ORDER OF THIS ARM IS THE WHOLE
+		// SAFETY ARGUMENT FOR THE CASE RETENTION WINDOW.
+		//
+		// Both branches below are ENTERED ONLY BY A CONFIGURED WINDOW OR BY THE
+		// SWEEP. `CaseRetention` is zero on every deployment that has written no
+		// `case_policy_config` row, and `TriggerCloseDue` is reachable from one
+		// caller. So at W=0 control falls straight through to the statements after
+		// them, which are the pre-00057 T5 arm, unedited and in their original
+		// order. There is no "W=0 branch that should behave the same"; there is no
+		// W=0 branch at all.
+		if cmd.Trigger == TriggerCloseDue {
+			// THE DELAYED CLOSE COMPLETING. The resolve arrived earlier and is on
+			// the row; this spends it. `ended_at` is the stored UPSTREAM claim and
+			// not the sweep's clock, so the window is not charged to the signal's
+			// firing duration (R8), and it needs no clamp because
+			// `case_pending_order_ck` and `check` already hold it at or above
+			// `started_at`.
+			if !o.ClosePending() {
+				return TransitionResult{}, errs.New(errs.KindPrecondition, "no_pending_close",
+					"a due close requires a pending resolve on the row")
+			}
+			next.state = CaseClosed
+			next.resolveReason = ResolveUpstream
+			next.suppressionReason = SuppressionReason{}
+			next.suppressedBy = SuppressedBy{}
+			next.endedAt = o.resolvePendingEndAt
+			next.resolvePendingAt = time.Time{}
+			next.resolvePendingEndAt = time.Time{}
+			break
+		}
+		if cmd.CaseRetention > 0 {
+			// THE DEFERRAL. The episode does NOT close: `state`, `resolve_reason`
+			// and `ended_at` are left exactly as they are, and the resolve is
+			// recorded as a receipt for the sweep to spend once the window has
+			// elapsed. A re-fire inside the window therefore finds this case still
+			// open and runs T2 — one case across the flap.
+			//
+			// ⭐ THE DUE TIME MOVES FORWARD ON EVERY RESOLVE, which is what makes
+			// the rule "stayed resolved for W" rather than "resolved W ago": two
+			// resolves nine minutes apart under a ten-minute window close once, ten
+			// minutes after the SECOND one.
+			//
+			// ⛔ THIS EDGE APPENDS NOTHING AND NOTIFIES NOTHING, and that is the
+			// point of the whole ticket. `case.resolved` and the resolved
+			// notification are appended by the branch above, once, at the real
+			// close. Emitting them here would put the six pings back and leave a
+			// timeline claiming a resolve that had not happened yet.
+			next.resolvePendingAt = cmd.At.RecordedAt().Add(cmd.CaseRetention)
+			next.resolvePendingEndAt, clampDelta = clampEnd(cmd.At.OccurredAt(), o.startedAt)
+			next.suppressionReason = SuppressionReason{}
+			next.suppressedBy = SuppressedBy{}
+			next.lastObservedAt = cmd.At.RecordedAt()
+			next.observe(cmd)
+			recordClamp(extra, cmd.At.OccurredAt(), clampDelta)
+			deferred = true
+			break
+		}
 		// T5 sets ended_at from the UPSTREAM claim. A skewed upstream clock could
 		// place it before started_at, which case_order_ck forbids, so it is
 		// clamped: skew is measured, never a reason to lose the resolution (C12).
@@ -441,8 +577,32 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 		next.lastObservedAt = cmd.At.RecordedAt()
 		next.observe(cmd)
 		recordClamp(extra, cmd.At.OccurredAt(), clampDelta)
+		// ⭐ A FALSE BRANCH AT W=0, AND THAT IS THE POINT: `ClosePending` can only be
+		// true on a row a CONFIGURED window wrote, so nothing above or below it
+		// executes differently on a deployment that has set no W. It exists for the
+		// one sequence that can reach here holding a receipt — an operator narrowing
+		// W to 0 between the resolve and the next observation — where the close is
+		// simply performed now, which is what W=0 means.
+		if o.ClosePending() {
+			next.resolvePendingAt = time.Time{}
+			next.resolvePendingEndAt = time.Time{}
+		}
 
 	case TransitionT6:
+		// ⛔⛔ AN EPISODE HOLDING AN UPSTREAM RESOLVE IS NOT ONE OTO HAS STOPPED
+		// HEARING ABOUT. Expiring it would stamp `timeout` over a resolve already in
+		// hand — oto claiming it lost sight of an alert whose resolution it was
+		// holding, which is precisely the resolved-versus-expired fabrication 00007
+		// calls the distinction it must never blur. The due close is the only edge
+		// that may end such a row, so this refuses rather than races it. The sweep's
+		// candidate scan and `unreapable` refuse it too; a state machine that trusts
+		// its caller is not a guard.
+		//
+		// It is unreachable at W=0: no row can carry a pending close.
+		if o.ClosePending() {
+			return TransitionResult{}, errs.New(errs.KindPrecondition, "close_pending",
+				"a case holding an upstream resolve closes as resolved, never expired")
+		}
 		if !cmd.SourceHealthy {
 			return TransitionResult{}, errs.New(errs.KindPrecondition, "source_not_healthy",
 				"a case is held, never expired, while its AlertSource is not healthy")
@@ -489,9 +649,18 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 
 	res := TransitionResult{
 		ID: rule.id, From: from, To: next.lifecyclePhase(), Case: next, Before: o,
-		DetectedBy: detectedBy(cmd.Actor.Kind()),
-		Clamped:    clampDelta > 0,
-		ClampSkew:  clampDelta,
+		DetectedBy:    detectedBy(cmd.Actor.Kind()),
+		Clamped:       clampDelta > 0,
+		ClampSkew:     clampDelta,
+		CloseDeferred: deferred,
+	}
+
+	// ⛔ A DEFERRED CLOSE IS SILENT. The row moved — the receipt is on it — but no
+	// §B.2 state changed, so `From` and `To` are both `firing` and there is nothing
+	// for `case.resolved` to be true about yet. The event and the notification are
+	// appended once, by the due close.
+	if deferred {
+		return res, nil
 	}
 
 	eventType := rule.event

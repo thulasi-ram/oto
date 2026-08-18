@@ -15,7 +15,7 @@ import (
 	"github.com/thulasiram/oto/test/contract/apitest"
 )
 
-// The harness for the nineteen operations this package serves.
+// The harness for the twenty-three operations this package serves.
 //
 // # What these tests protect
 //
@@ -39,7 +39,7 @@ import (
 //
 // ⛔ THIS FILE IS THE HARNESS, NOT DEAD CODE. Its consumers live in
 // alerts_contract_test.go; deleting it because a linter cannot see through a
-// test-only constructor deletes the only evidence nineteen operations have.
+// test-only constructor deletes the only evidence twenty-three operations have.
 
 /* -------------------------------------------------------------------------- */
 /* The fake service port                                                      */
@@ -56,10 +56,11 @@ import (
 type fakeAlertsService struct {
 	now time.Time
 
-	// The three ids this tenant owns. Anything else is a stranger.
-	alertID  uuid.UUID
-	alertKey string
-	caseID   uuid.UUID
+	// The ids this tenant owns. Anything else is a stranger.
+	alertID      uuid.UUID
+	alertKey     string
+	caseID       uuid.UUID
+	casePolicyID uuid.UUID
 
 	detail        service.AlertDetail
 	list          service.ListResult
@@ -75,9 +76,13 @@ type fakeAlertsService struct {
 	activeSnoozes service.ActiveSnoozeResult
 	labelNames    []domain.LabelCount
 	labelValues   []domain.LabelCount
-	ackedCase     domain.Case
-	commentEvent  domain.Event
-	snoozeRow     domain.Snooze
+	// The CASE RETENTION WINDOW rules (migration 00057). Two rows, so the list
+	// proves the alertname-then-namespace order the endpoint promises.
+	casePolicies     []domain.CasePolicy
+	casePolicyCursor db.Cursor
+	ackedCase        domain.Case
+	commentEvent     domain.Event
+	snoozeRow        domain.Snooze
 
 	// Injected failures, for the branches where oto's silence must stay
 	// distinguishable from an answer.
@@ -104,8 +109,12 @@ type fakeAlertsService struct {
 	lastLabelPrefix   string
 	lastUnsnoozeIDs   []uuid.UUID
 	lastUnsnoozeNote  string
-	lastLimit         int
-	calls             map[string]int
+	// What the case-policy handlers passed down, so a test can prove the mapper
+	// converted seconds to a Duration and trimmed the namespace.
+	lastCasePolicyDraft domain.CasePolicyDraft
+	lastCasePolicyPatch domain.CasePolicyPatch
+	lastLimit           int
+	calls               map[string]int
 }
 
 func (f *fakeAlertsService) note(name string, s db.TenantScope) {
@@ -403,6 +412,68 @@ func (f *fakeAlertsService) ActiveSnoozes(
 	return f.activeSnoozes, nil
 }
 
+// strangerCasePolicy is the refusal a tenant-scoped read makes for somebody
+// else's retention-rule id — a 404, never a 403.
+func strangerCasePolicy() error {
+	return errs.NotFound("case_policy_not_found", "no such case retention policy")
+}
+
+func (f *fakeAlertsService) ownsCasePolicy(id uuid.UUID) error {
+	if id != f.casePolicyID {
+		return strangerCasePolicy()
+	}
+	return nil
+}
+
+func (f *fakeAlertsService) CasePolicies(
+	_ context.Context, s db.TenantScope, p db.Keyset,
+) ([]domain.CasePolicy, db.Cursor, error) {
+	f.note("CasePolicies", s)
+	f.lastKeyset = p
+	return f.casePolicies, f.casePolicyCursor, nil
+}
+
+func (f *fakeAlertsService) CreateCasePolicy(
+	_ context.Context, s db.TenantScope, in domain.CasePolicyDraft, idem service.Idempotency,
+) (domain.CasePolicy, bool, error) {
+	f.note("CreateCasePolicy", s)
+	f.lastCasePolicyDraft = in
+	f.lastIdempotency = idem
+	if f.failVerb != nil {
+		return domain.CasePolicy{}, false, f.failVerb
+	}
+	return domain.CasePolicy{
+		ID:              f.casePolicyID,
+		Namespace:       in.Namespace,
+		Alertname:       in.Alertname,
+		RetentionWindow: in.RetentionWindow,
+		CreatedAt:       f.now,
+		UpdatedAt:       f.now,
+	}, false, nil
+}
+
+func (f *fakeAlertsService) UpdateCasePolicy(
+	_ context.Context, s db.TenantScope, policyID uuid.UUID, p domain.CasePolicyPatch,
+) (domain.CasePolicy, error) {
+	f.note("UpdateCasePolicy", s)
+	f.lastCasePolicyPatch = p
+	if err := f.ownsCasePolicy(policyID); err != nil {
+		return domain.CasePolicy{}, err
+	}
+	out := f.casePolicies[0]
+	if p.RetentionWindow != nil {
+		out.RetentionWindow = *p.RetentionWindow
+	}
+	return out, nil
+}
+
+func (f *fakeAlertsService) DeleteCasePolicy(
+	_ context.Context, s db.TenantScope, policyID uuid.UUID,
+) error {
+	f.note("DeleteCasePolicy", s)
+	return f.ownsCasePolicy(policyID)
+}
+
 // The fake really does satisfy the port the handlers were written against; if it
 // ever stops, this line fails before any test does.
 var _ AlertService = (*fakeAlertsService)(nil)
@@ -435,6 +506,9 @@ var (
 	fxEventAcked  = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b89")
 	fxEventNote   = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8a")
 	fxCursorID    = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8b")
+	// The two `case_policy_config` rows the fixture world holds.
+	fxCasePolicyID  = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8c")
+	fxCasePolicy2ID = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b8d")
 )
 
 // fxLabels is the label set every fixture Alert carries. It exercises the
@@ -740,10 +814,34 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 	cursor := db.Cursor{SortKey: now.Add(-time.Hour), ID: fxCursorID, HasMore: true}
 
 	f := &fakeAlertsService{
-		now:      now,
-		alertID:  fxAlertID,
-		alertKey: alert.Key().String(),
-		caseID:   fxCase,
+		now:          now,
+		alertID:      fxAlertID,
+		alertKey:     alert.Key().String(),
+		caseID:       fxCase,
+		casePolicyID: fxCasePolicyID,
+
+		// ⭐ THE SECOND ROW CARRIES THE EMPTY NAMESPACE, which is the
+		// absent-namespace partition and not a missing value. A fixture with only a
+		// populated namespace would never notice a serialiser that dropped `""`.
+		casePolicies: []domain.CasePolicy{
+			{
+				ID:              fxCasePolicyID,
+				Namespace:       "production",
+				Alertname:       "HighErrorRate",
+				RetentionWindow: 10 * time.Minute,
+				CreatedAt:       now.Add(-time.Hour),
+				UpdatedAt:       now.Add(-time.Minute),
+			},
+			{
+				ID:              fxCasePolicy2ID,
+				Namespace:       "",
+				Alertname:       "KubePodCrashLooping",
+				RetentionWindow: 0,
+				CreatedAt:       now.Add(-2 * time.Hour),
+				UpdatedAt:       now.Add(-2 * time.Hour),
+			},
+		},
+		casePolicyCursor: db.Cursor{ID: fxCasePolicy2ID, HasMore: true},
 
 		detail: service.AlertDetail{
 			Alert:       alert,

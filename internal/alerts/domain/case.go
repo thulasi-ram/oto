@@ -60,6 +60,39 @@ type Case struct {
 
 	resolveReason ResolveReason
 
+	// resolvePendingAt and resolvePendingEndAt are THE PENDING CLOSE — the
+	// `alert_cases` columns migration 00057 added, and the whole of the case
+	// retention window W.
+	//
+	// ⭐⭐ W MOVES *WHEN* A CASE CLOSES AND NOTHING ELSE. A case whose alert has
+	// resolved stays OPEN for W and closes only once the alert has stayed resolved
+	// for W, so a re-fire inside W is an ordinary repeat observation (T2) landing in
+	// the still-open episode rather than the next `seq`. That is what turns six
+	// flaps into ONE case, one notification and one thread reply — the noise never
+	// exists, instead of existing and being withheld at delivery, which is the
+	// distinction §B.6 refuses to blur.
+	//
+	// ⛔ IT IS A DELAYED CLOSE AND NEVER A REOPEN. A Case is still strictly
+	// terminal (ADR 0040): `ended_at` is written ONCE, `case_terminal_ended` still
+	// refuses a closed row with no end, and `case_pending_open_ck` refuses a
+	// pending close on a row that has one. T8 is not coming back.
+	//
+	// ⭐ WHY TWO VALUES AND NOT ONE. `resolvePendingAt` is oto's clock: when the
+	// close falls due, i.e. the LAST upstream resolve plus W. It moves forward on
+	// each fresh resolve inside the window, because the rule is "stayed resolved
+	// for W" and not "resolved W ago". `resolvePendingEndAt` is the `ended_at` that
+	// close will stamp — the UPSTREAM claim, already clamped by §B.3.2 — so W is
+	// never charged to the signal's firing duration (R8). Closing at the sweep's
+	// clock instead would make every reader of `ended_at` report an episode W
+	// longer than the signal actually burned.
+	//
+	// ⭐ BOTH ARE ZERO ON EVERY ROW UNTIL AN OPERATOR SETS W. W defaults to 0 and
+	// the T5 arm's deferral branch is not entered at 0, so a deployment that has
+	// configured nothing has no pending closes at all and reads exactly as it read
+	// before this field existed.
+	resolvePendingAt    time.Time
+	resolvePendingEndAt time.Time
+
 	// stateVersion is the row's optimistic lock. It is READ from the database and
 	// asserted on write; the machine never sets it, because a version the domain
 	// invented would guard nothing.
@@ -107,6 +140,13 @@ type CaseParams struct {
 	SourceUpdatedAt time.Time
 
 	ResolveReason ResolveReason
+
+	// ResolvePendingAt and ResolvePendingEndAt are `alert_cases.resolve_pending_at`
+	// and `.resolve_pending_end_at` as read (migration 00057). Both zero — which is
+	// every row until an operator sets a retention window — rehydrates a case with
+	// no pending close, which is what every case was before W existed.
+	ResolvePendingAt    time.Time
+	ResolvePendingEndAt time.Time
 
 	// StateVersion is `alert_cases.state_version` as read. A zero value
 	// rehydrates as 1 (the column's DEFAULT), so an in-memory case built for
@@ -197,6 +237,12 @@ func NewCase(p CaseParams) (Case, error) {
 	if !p.AckedAt.IsZero() {
 		o.ackedAt = p.AckedAt.UTC()
 	}
+	if !p.ResolvePendingAt.IsZero() {
+		o.resolvePendingAt = p.ResolvePendingAt.UTC()
+	}
+	if !p.ResolvePendingEndAt.IsZero() {
+		o.resolvePendingEndAt = p.ResolvePendingEndAt.UTC()
+	}
 	if o.ackState.IsZero() {
 		o.ackState = AckStateUnacked
 	}
@@ -249,6 +295,35 @@ func (o Case) check() error {
 	if o.state.IsClosed() != !o.resolveReason.IsZero() {
 		return errs.New(errs.KindInternal, "case_resolve_reason",
 			"resolve_reason exists exactly on a closed episode")
+	}
+	// case_pending_pair_ck / case_pending_open_ck / case_pending_order_ck /
+	// case_pending_supp_ck (migration 00057) — the four DDL CHECKs that keep a
+	// DELAYED close from becoming a second one.
+	if o.resolvePendingAt.IsZero() != o.resolvePendingEndAt.IsZero() {
+		return errs.New(errs.KindInternal, "case_pending_pair",
+			"resolve_pending_at and resolve_pending_end_at must agree")
+	}
+	if !o.resolvePendingAt.IsZero() {
+		// The one that makes the close SINGLE-SHOT. A closed episode carrying a
+		// pending close is a second close waiting to happen, and a Case closes
+		// exactly once (ADR 0040).
+		if !o.state.IsOpen() {
+			return errs.New(errs.KindInternal, "case_pending_open",
+				"a pending close exists only while the episode is open")
+		}
+		if o.resolvePendingEndAt.Before(o.startedAt) {
+			return errs.New(errs.KindInternal, "case_pending_order",
+				"resolve_pending_end_at must be >= started_at")
+		}
+		// An upstream resolve is POSITIVE PROOF OF NON-SUPPRESSION — Alertmanager
+		// would not have delivered it otherwise, the same argument §B.3.1 uses to
+		// let ingest drive T4 — so the deferral clears the witnesses exactly as an
+		// immediate T5 does. Nothing may say "silenced by <id>" about an episode
+		// whose alert upstream has already called resolved.
+		if !o.suppressionReason.IsZero() {
+			return errs.New(errs.KindInternal, "case_pending_supp",
+				"a pending close cannot coexist with a suppression reason")
+		}
 	}
 	// case_ack_ck / case_acklabel_ck / case_ackorder_ck: ack fields are all-or-nothing.
 	if o.ackState.IsAcked() != !o.ackedAt.IsZero() {
@@ -399,6 +474,34 @@ func (o Case) SourceUpdatedAt() time.Time { return o.sourceUpdatedAt }
 // ResolveReason says how the case ended: upstream said so, or oto timed it out.
 func (o Case) ResolveReason() ResolveReason { return o.resolveReason }
 
+// ResolvePendingAt is when this episode's DELAYED CLOSE falls due — the last
+// upstream resolve plus the retention window W — and is zero when no close is
+// pending, which is every episode on a deployment that has set no W.
+func (o Case) ResolvePendingAt() time.Time { return o.resolvePendingAt }
+
+// ResolvePendingEndAt is the `ended_at` the pending close will stamp: the upstream
+// claim from the resolve observation, already clamped to >= `started_at` (§B.3.2).
+// It is what keeps W off the signal's firing duration.
+func (o Case) ResolvePendingEndAt() time.Time { return o.resolvePendingEndAt }
+
+// ClosePending reports that upstream has resolved this episode and the close is
+// waiting for the retention window to elapse.
+//
+// ⛔ IT IS NOT "THE CASE IS CLOSED" AND IT IS NOT "THE ALERT IS FIRING AGAIN".
+// The episode is OPEN — `IsOpen`, `AlertState` and `alerts.state` all say firing,
+// because a case is the unit oto reasons in and this one has not ended. What this
+// answers is the one question those cannot: is there a resolve on the row already,
+// waiting to be spent? The reaper asks it, because an episode holding a resolve is
+// not one oto has stopped hearing about, and T6 must not overwrite `upstream` with
+// `timeout` — which is exactly the fabrication 00007 forbids.
+func (o Case) ClosePending() bool { return !o.resolvePendingAt.IsZero() }
+
+// CloseDue reports that a pending close has come due as of asOf. The clock arrives
+// as a parameter: the domain never calls time.Now().
+func (o Case) CloseDue(asOf time.Time) bool {
+	return o.ClosePending() && !asOf.Before(o.resolvePendingAt)
+}
+
 // StateVersion is the row's optimistic lock (case_sver_ck, >= 1). It is the whole
 // compare-and-set predicate for a §B.3 transition: see TransitionPrecondition.
 func (o Case) StateVersion() int { return o.stateVersion }
@@ -446,6 +549,15 @@ func (o Case) IsOpen() bool { return o.endedAt.IsZero() }
 // Duration is how long the episode ran, measured to endedAt once closed and to
 // asOf while still open. It takes the clock reading as a parameter: the domain
 // never calls time.Now().
+//
+// ⭐ THE RETENTION WINDOW IS NOT CHARGED TO THE SIGNAL, and this is where that is
+// visible. Once closed, `endedAt` is the UPSTREAM claim the pending close carried
+// (`resolvePendingEndAt`), never the sweep's clock, so a flap damped into one case
+// measures from its first firing to its last resolve and gains no W. While a close
+// is pending the episode is still open and this still measures to `asOf`, which
+// grows by up to W and then settles back on the true end at close — the one
+// transient the design accepts, because the alternative is a case that reports a
+// duration before it has ended.
 func (o Case) Duration(asOf time.Time) time.Duration {
 	if !o.endedAt.IsZero() {
 		return o.endedAt.Sub(o.startedAt)
