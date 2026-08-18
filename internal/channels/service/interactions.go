@@ -33,8 +33,9 @@ const (
 	// alert belongs to a person, and the day this button implies one is the day
 	// oto has become the product it exists not to be.
 	ActionAcknowledge = "oto.ack"
-	// ActionUnacknowledge drops an acknowledgement. The card renders it, and oto
-	// answers it honestly — see applyUnacknowledge.
+	// ActionUnacknowledge takes that receipt back, over the same members and by
+	// the same fan-out — see applyUnacknowledge. It is the ONLY withdrawal this
+	// surface has, because ack is the only thing it writes.
 	ActionUnacknowledge = "oto.unack"
 	// ActionNoopPrefix marks the URL buttons. Slack delivers an interaction for
 	// every one of them and oto must acknowledge it; there is nothing to do
@@ -103,11 +104,12 @@ type SlackActor struct {
 
 // AlertGroups is the fan-out of a human verb over one group generation.
 //
-// ⛔ There is exactly ONE verb here and there is no second one coming from this
-// surface. A chat message is not a place to resolve, close, silence or assign
-// anything: it has no confirmation, no audit trail of oto's own and no undo.
-// Acknowledge is a fact ABOUT the alert; every other verb would be a claim about
-// a person.
+// ⛔ There are exactly TWO verbs here, and they are ONE VERB AND ITS UNDO. A chat
+// message is not a place to resolve, close, silence or assign anything: it has no
+// confirmation, no audit trail of oto's own and no undo. Acknowledge is a fact
+// ABOUT the alert, which is precisely why it may be withdrawn — the withdrawal
+// says "that receipt was wrong", and nothing about a person. Every other verb
+// would be a claim about one.
 type AlertGroups interface {
 	// GroupExists reports whether one generation is visible in this tenant. It is
 	// the tenancy check made explicit: a group id from another org answers false
@@ -115,6 +117,11 @@ type AlertGroups interface {
 	GroupExists(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (bool, error)
 	// AcknowledgeGroup acks every OPEN member episode of one generation.
 	AcknowledgeGroup(ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+		actorKind, actorID, actorLabel string) (GroupAckResult, error)
+	// UnacknowledgeGroup withdraws the acknowledgement from every OPEN member
+	// episode of one generation. It returns the same account for the same reason:
+	// a withdrawal that covered 500 of 5 000 members has to be able to say so.
+	UnacknowledgeGroup(ctx context.Context, s db.TenantScope, groupID uuid.UUID,
 		actorKind, actorID, actorLabel string) (GroupAckResult, error)
 }
 
@@ -133,9 +140,9 @@ type GroupAckResult struct {
 	// the bound.
 	//
 	// ⭐ IT IS HERE SO THE BUTTON CANNOT LOOK LIKE IT WORKED. That is this
-	// surface's whole standard — see applyUnacknowledge — and an ack that
-	// silently covered a tenth of a five-thousand-alert group would fail it more
-	// quietly than the bug that standard was written for.
+	// surface's whole standard — see partialAckText — and an ack that silently
+	// covered a tenth of a five-thousand-alert group would fail it more quietly
+	// than the bug that standard was written for.
 	Unreached int
 }
 
@@ -356,7 +363,7 @@ func (s *InteractionService) Apply(ctx context.Context, args jobs.SlackInteracti
 	case ActionAcknowledge:
 		return s.applyAcknowledge(ctx, logger, scope, args)
 	case ActionUnacknowledge:
-		return s.applyUnacknowledge(ctx, args)
+		return s.applyUnacknowledge(ctx, logger, scope, args)
 	default:
 		// Reachable only across a deploy: `Handle` enqueues nothing it cannot
 		// route, so a job carrying an unserved action is one an OLDER binary
@@ -438,7 +445,7 @@ func (s *InteractionService) applyAcknowledge(
 	// domain.FanOutLimit whose oldest 500 members are ALREADY acknowledged applies
 	// nothing, and fell through to "Already acknowledged" while thousands of its
 	// alerts behind the ceiling were not. That is the failure this whole surface's
-	// standard is against — see applyUnacknowledge — told from the other side: not
+	// standard is against — see partialAckText — told from the other side: not
 	// a button that pretends it worked, but one that pretends there is nothing
 	// left to do. An unreached member is an unacknowledged alert whatever the
 	// members in front of it answered.
@@ -454,17 +461,96 @@ func (s *InteractionService) applyAcknowledge(
 	return nil
 }
 
-// applyUnacknowledge answers the Un-acknowledge button HONESTLY.
+// applyUnacknowledge is applyAcknowledge READ BACKWARDS, and the symmetry is the
+// design rather than a coincidence of implementation.
 //
-// ⛔ It is deliberately not implemented, and it deliberately does not pretend to
-// be. `grouping` has no un-acknowledge fan-out — the group verbs are ack,
-// comment and snooze — so wiring this button would mean inventing a fourth, and
-// that is a scope decision, not a Slack one. Until it is made, the button says
-// where the action does exist. The one thing it must never do is what the
-// Acknowledge button used to: look like it worked.
-func (s *InteractionService) applyUnacknowledge(ctx context.Context, args jobs.SlackInteractionArgs) error {
-	s.tell(ctx, args, "Removing an acknowledgement is not available from Slack yet. "+
-		"Open the alert group in oto to un-acknowledge it.")
+// ⭐ THE FOUR NUMBERED STEPS ARE THE SAME FOUR, IN THE SAME ORDER, FOR THE SAME
+// REASONS. Subject, tenancy, human, receipt — every one of them argued above and
+// none of them re-argued here. `grouping.Unacknowledge` fans out over the same
+// candidate read the ack does, under the same `domain.FanOutLimit`, and returns
+// the same account; there is no group-level ack column for either verb to touch
+// and there will not be one, so "the group has been un-acknowledged" means, and
+// only means, that no member carries a receipt.
+//
+// ⛔ WHAT IS NOT SHARED IS THE COPY, and that is the only reason this surface
+// needed anything at all once the domain verb existed. "Somebody already acked
+// this" and "there was no receipt here to take back" are different afternoons in
+// the mirror exactly as they are in the original, and a withdrawal that answered
+// both with the ack's sentences would be describing the wrong nothing. See
+// nothingWithdrawnText.
+//
+// ⛔ IT WITHDRAWS A RECEIPT AND NOTHING ELSE (§E.1.1). It does not reopen an
+// alert, it does not re-notify, it does not hand the alert back to anybody — there
+// is nobody to hand it to — and no sentence below may suggest otherwise.
+func (s *InteractionService) applyUnacknowledge(
+	ctx context.Context, logger *slog.Logger, scope db.TenantScope, args jobs.SlackInteractionArgs,
+) error {
+	// ---- 2. THE SUBJECT ------------------------------------------------
+	groupID, err := uuid.Parse(args.Value)
+	if err != nil || groupID == uuid.Nil {
+		logger.Warn("channels: an Un-acknowledge button carried a value that is not an id")
+		s.tell(ctx, args, "oto could not read that button. It may have been posted by an older version — "+
+			"open the alert in oto and withdraw the acknowledgement there.")
+		return nil
+	}
+	logger = logger.With(slog.String("group_id", groupID.String()))
+
+	// ⛔⛔ THE TENANCY CHECK, MADE EXPLICIT — for the reason given on the ack. A
+	// scoped withdrawal of another org's group would find no members and withdraw
+	// nothing, which is the silent nothing this whole file exists to abolish.
+	exists, err := s.groups.GroupExists(ctx, scope, groupID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		logger.Warn("channels: a Slack interaction named a group that is not in this tenant")
+		s.tell(ctx, args, "oto can no longer find that alert group from this channel. "+
+			"It may have been removed, or it belongs to a different oto organisation.")
+		return nil
+	}
+
+	// ---- 3. THE HUMAN --------------------------------------------------
+	//
+	// ⚠️ IT IS WHOEVER PRESSED, AND IT NEED NOT BE WHOEVER ACKED. oto has no axis
+	// on which a receipt belongs to the person who wrote it, so there is nothing
+	// here to check permission against; the withdrawal is recorded against the
+	// presser, which is what oto actually observed.
+	kind, actorID, label := s.actor(ctx, scope, args)
+
+	// ---- 4. THE WITHDRAWAL ---------------------------------------------
+	res, err := s.groups.UnacknowledgeGroup(ctx, scope, groupID, kind, actorID, label)
+	if err != nil {
+		if errs.IsKind(err, errs.KindNotFound) {
+			s.tell(ctx, args, "That alert group is no longer available.")
+			return nil
+		}
+		return err
+	}
+
+	// ⭐ NOTHING IS POSTED FROM HERE, for the reason given on the ack: the card is
+	// updated by the dispatch path, which is the only place thread ordering,
+	// delivery idempotency and the per-channel rate limit hold (§G.5, §G.7, §H.9).
+	if res.Applied > 0 {
+		logger.Info("channels: un-acknowledged from Slack",
+			slog.Int("members", res.Members), slog.Int("applied", res.Applied),
+			slog.Int("unreached", res.Unreached))
+	} else {
+		logger.Info("channels: a Slack un-acknowledgement applied to nothing",
+			slog.Int("members", res.Members), slog.Any("skipped", res.SkippedCodes),
+			slog.Int("unreached", res.Unreached))
+	}
+
+	// ⛔ REACH IS ANSWERED FIRST HERE TOO, AND IT MATTERS MORE. A bounded
+	// withdrawal leaves receipts standing on every member behind the ceiling, and
+	// those are the alerts the card will keep counting as seen. Saying "already
+	// withdrawn" of a group that still has 4 500 acknowledged members would be the
+	// ack's original defect wearing the mirror's clothes.
+	switch {
+	case res.Unreached > 0:
+		s.tell(ctx, args, partialUnackText(res))
+	case res.Applied == 0:
+		s.tell(ctx, args, nothingWithdrawnText(res))
+	}
 	return nil
 }
 
@@ -496,6 +582,33 @@ func partialAckText(res GroupAckResult) string {
 		res.Applied, res.Unreached)
 }
 
+// partialUnackText is partialAckText in the mirror, and the sentence that changes
+// most is the last one.
+//
+// ⛔ THE OUTSTANDING COUNT MEANS THE OPPOSITE THING HERE, so it may not be
+// borrowed. An ack that did not reach a member leaves it UNACKNOWLEDGED; a
+// withdrawal that did not reach one leaves it ACKNOWLEDGED — a receipt standing on
+// an alert nobody has looked at since. "Still unacknowledged" said of those alerts
+// would be precisely backwards, and it is the one thing the person pressing needs
+// to be told correctly.
+//
+// It promises nothing it cannot do, and in particular does not say "press again":
+// a second press walks the same members in the same order and concludes on the
+// same ceiling.
+func partialUnackText(res GroupAckResult) string {
+	if res.Applied == 0 {
+		return fmt.Sprintf(
+			"The alerts this withdrawal reached were not acknowledged, or have resolved. "+
+				"This group is larger than one withdrawal covers: %d of its alerts were "+
+				"not reached and may still be acknowledged.",
+			res.Unreached)
+	}
+	return fmt.Sprintf(
+		"Withdrew the acknowledgement from %d alerts. This group is larger than one "+
+			"withdrawal covers: %d of its alerts were not reached and may still be acknowledged.",
+		res.Applied, res.Unreached)
+}
+
 // nothingAppliedText says WHICH kind of nothing happened.
 //
 // "Already acknowledged" and "it resolved while you were reading it" are
@@ -520,6 +633,37 @@ func nothingAppliedText(res GroupAckResult) string {
 		return "Nothing to do: part of this group was already acknowledged and the rest has resolved or expired."
 	default:
 		return "There is nothing to acknowledge — every alert in this group has already resolved or expired."
+	}
+}
+
+// nothingWithdrawnText is nothingAppliedText in the mirror: it says WHICH kind of
+// nothing happened, keyed on `not_acked` where that one keys on `already_acked`.
+//
+// ⛔ THE TWO CODES ARE NOT INTERCHANGEABLE AND NEITHER ARE THESE SENTENCES.
+// `not_acked` is an OPEN alert carrying no receipt — nothing to take back, and
+// quite possibly because somebody took it back a second earlier. `no_open_case` is
+// an episode that has already ended, which is the same "nothing" the ack reports
+// and the one the group contract answers `412` to. Telling a human the alert
+// resolved when in fact it is still firing unacknowledged is the worst sentence
+// this file could say.
+//
+// ⚠️ EVERY SENTENCE HERE IS ABOUT THE WHOLE GROUP, so it is only reached when the
+// fan-out reached the whole group; an incomplete one is answered by
+// partialUnackText instead.
+func nothingWithdrawnText(res GroupAckResult) string {
+	switch {
+	case res.Members == 0:
+		return "There is nothing to withdraw — this alert group has no live alerts left."
+	case res.SkippedCodes["not_acked"] == res.Skipped() && res.Skipped() > 0:
+		// The double-click, and "somebody got here first". Either way the group
+		// carries no receipt now, which is what the press was asking for.
+		return "Not acknowledged — there is no receipt here to take back. Withdrawing an " +
+			"acknowledgement removes the record that somebody has seen this; it does not " +
+			"change the alert's state."
+	case res.SkippedCodes["not_acked"] > 0:
+		return "Nothing to do: part of this group was not acknowledged and the rest has resolved or expired."
+	default:
+		return "There is nothing to withdraw — every alert in this group has already resolved or expired."
 	}
 }
 

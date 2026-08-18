@@ -1,22 +1,43 @@
 /**
- * `/groups/:id` — one group generation.
+ * `/cases/:id` — one case.
  *
- * The same timeline component the alert detail uses, because a group's history
- * is the same kind of thing: an ordered stream of immutable, attributed events.
+ * ⭐ THIS IS THE SCREEN AN OPERATOR ACTS ON, and the controls in its header are
+ * why. Acknowledging and snoozing used to live on the alert detail, one
+ * signal at a time; they are here now, wired to the case-scoped endpoints
+ * (`POST /api/v1/alert-groups/{id}/ack|unack|snooze|unsnooze`), because a case is
+ * the unit a human responds to. Forty pods crash-looping is one thing happening, and
+ * a receipt written on one of the forty is a receipt everybody else misreads.
+ *
+ * ⛔ EVERY CONTROL HERE HAS ITS WAY BACK, and that is a rule rather than a
+ * coincidence. When these moved off the alert detail the ack arrived without one:
+ * `unack` was case-scoped nowhere, so the widest gesture in the product was also its
+ * only irreversible one and the route back was forty alert pages.
+ *
+ * ⛔ "CASE" HERE IS THE CORRELATION — one generation of one Alertmanager
+ * notification group, derived from `(source, receiver, groupLabels)` and owning
+ * exactly one chat thread. It is NOT `AlertCase` (`internal/alerts/domain/case.go`),
+ * which is one ALERT'S FIRING EPISODE. The API and the database still say "group"
+ * for this object and "case" for the episode; the collision is accepted, and it is
+ * kept off the screen by never calling an episode a case in any string a person
+ * reads. Where this screen touches the episode — the members list's ack note — it
+ * says *episode*.
+ *
+ * The same timeline component the alert detail uses, because a case's history is
+ * the same kind of thing: an ordered stream of immutable, attributed events.
  * Reusing it means the two screens can never drift in how they present a clock
  * skew or an unknown event type.
  *
- * "Who was told" is the interesting extra. A group generation is the thing oto
- * actually notifies about — the intents are keyed on it — so whether its fan-out
- * landed is a fact about THIS screen and nowhere else.
+ * "Who was told" is the interesting extra. A case is the thing oto actually
+ * notifies about — the intents are keyed on it — so whether its fan-out landed is
+ * a fact about THIS screen and nowhere else.
  *
- * This panel used to be "Where this is being narrated", listing chat threads
- * from `GroupDetailDTO.threads`. That field was in the contract, was rendered
- * here, and was emitted by no server code at all: there was no ChannelThreadDTO
- * in oto's Go tree, so the panel was permanently in its empty state and a group
- * being actively discussed in Slack looked identical to one nobody had been told
- * about. `delivery_summary` answers the question the panel was reaching for,
- * from data the group module can actually see.
+ * That panel used to be "Where this is being narrated", listing chat threads from
+ * `GroupDetailDTO.threads`. That field was in the contract, was rendered here, and
+ * was emitted by no server code at all: there was no ChannelThreadDTO in oto's Go
+ * tree, so the panel was permanently in its empty state and a case being actively
+ * discussed in Slack looked identical to one nobody had been told about.
+ * `delivery_summary` answers the question the panel was reaching for, from data
+ * the module can actually see.
  */
 import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { A, useParams } from "@solidjs/router";
@@ -28,10 +49,12 @@ import {
   getAlertGroupTimeline,
   listAlertGroupAlerts,
   snoozeAlertGroup,
+  unackAlertGroup,
   unsnoozeAlertGroup,
 } from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import type { AlertEvent, DeliverySummary, SnoozeRequest, TimelineQuery } from "~/api/types";
+import { AckDialog } from "~/features/alerts/AckDialog";
 import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 import { RelativeTime } from "~/components/Time";
 import { SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
@@ -45,7 +68,7 @@ import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFee
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
 
-export default function GroupDetailRoute() {
+export default function CaseDetailRoute() {
   const params = useParams<{ id: string }>();
   const client = useQueryClient();
 
@@ -90,23 +113,48 @@ export default function GroupDetailRoute() {
   }));
 
   /**
-   * Acking a group is a **fan-out of the same primitive**, not a new one: one
-   * receipt per currently-joined member. Alerts that join later are not
-   * acknowledged, because a receipt is never predictive — and the copy says so.
+   * Both mutations touch both lists: a case-wide ack changes every member's
+   * receipt, so the alert list is as stale as the case list afterwards.
    */
   const invalidate = (): void => {
     void client.invalidateQueries({ queryKey: qk.groups.all() });
     void client.invalidateQueries({ queryKey: qk.alerts.all() });
   };
 
-  const ack = useMutation(() => ({
-    mutationFn: () => ackAlertGroup(params.id, undefined, idempotencyKey()),
-    onSuccess: invalidate,
-  }));
+  /**
+   * Acking a case is a **fan-out of the per-alert primitive**, not a new one: one
+   * receipt per currently-joined member. Alerts that join later are not
+   * acknowledged, because a receipt is never predictive — and the copy says so.
+   *
+   * ⛔ IT GOES THROUGH A DIALOG, AND THE DIALOG IS THE POINT. This is the widest
+   * gesture in the product: one click writes a receipt on every member, and
+   * everybody else then reads "a human has seen this" about all of them. It used
+   * to fire straight from the button with no note field and no confirmation,
+   * which meant the operator could not say *why* — and the note is what whoever
+   * reads the timeline next actually needs. `AckDialog` is shared with the alert
+   * surface for the same reason `SnoozeDialog` is: one copy of the sentence
+   * explaining that a receipt does not change the signal.
+   */
+  const [ackOpen, setAckOpen] = createSignal(false);
 
   /**
-   * Snoozing a group is the same fan-out: one quiet period per currently-joined
-   * member. Alerts that join later are not snoozed, because a group-level mute
+   * ⛔ THE WAY BACK, AND IT IS NOT OPTIONAL. When acknowledging moved onto this
+   * screen it arrived without its withdrawal: the case-scoped ack was reachable and
+   * `POST /alert-groups/{id}/unack` did not exist, so the widest gesture in the
+   * product was also the only irreversible one — an operator who acknowledged forty
+   * alerts could only undo it by visiting forty alert pages. A control that writes a
+   * record on forty signals must be able to unwrite it from the same place.
+   *
+   * It goes through the SAME dialog, in withdrawing mode, because the note matters
+   * more here than it does on the way in: "un-acking, it's back" is the sentence
+   * whoever reads the timeline next actually needs, and it lands on each member's
+   * timeline rather than on the case, which has nowhere left to keep it.
+   */
+  const [withdrawOpen, setWithdrawOpen] = createSignal(false);
+
+  /**
+   * Snoozing a case is the same fan-out: one quiet period per currently-joined
+   * member. Alerts that join later are not snoozed, because a case-level mute
    * covering future members would silence alerts nobody has ever seen.
    */
   const [snoozeOpen, setSnoozeOpen] = createSignal(false);
@@ -186,11 +234,24 @@ export default function GroupDetailRoute() {
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
                   <Button
                     size="sm"
-                    busy={ack.isPending}
-                    onClick={() => ack.mutate()}
+                    onClick={() => setAckOpen(true)}
                     title="Records a receipt on every member that has already joined. Members that join later are not included — a receipt is never predictive."
                   >
                     Acknowledge every current member
+                  </Button>
+                  {/* ⛔ ALWAYS OFFERED, NEVER CONDITIONAL ON THE COUNT. `acked_count`
+                      is a roll-up over episodes and a partially-acked case is the
+                      normal shape of one, so hiding this below some threshold would
+                      hide the way back from exactly the operator who needs it. When
+                      there is nothing to withdraw the server says so — the same
+                      contract the ack has. */}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setWithdrawOpen(true)}
+                    title="Removes the receipt from every member whose episode is still open. A member that carries no receipt is skipped rather than failing the request."
+                  >
+                    Withdraw acknowledgement
                   </Button>
                   <Button
                     variant="secondary"
@@ -212,9 +273,6 @@ export default function GroupDetailRoute() {
                 </div>
               </div>
 
-              <Show when={ack.error !== null}>
-                <ErrorBanner error={ack.error} class="mt-2" />
-              </Show>
               <Show when={unsnooze.error !== null}>
                 <ErrorBanner class="mt-2">
                   {unsnooze.error instanceof ApiError && unsnooze.error.status === 412
@@ -223,10 +281,36 @@ export default function GroupDetailRoute() {
                 </ErrorBanner>
               </Show>
 
+              {/* Three dialogs, all shared with the alert surface, all wired to
+                  the case-scoped endpoints. None runs its own request: the
+                  screen supplies `onSubmit`, the dialog mints the one
+                  idempotency key per gesture. */}
+              <AckDialog
+                open={ackOpen()}
+                onClose={() => setAckOpen(false)}
+                subject="case"
+                onSubmit={(note: string | undefined, key: string) =>
+                  ackAlertGroup(params.id, note, key)
+                }
+                onSuccess={invalidate}
+              />
+              {/* The same dialog, `withdrawing`, which is what gates it on the
+                  contract's `UnackRequest` rather than `AckRequest`. Two endpoints
+                  are two generated schemas even while they carry the same field. */}
+              <AckDialog
+                open={withdrawOpen()}
+                onClose={() => setWithdrawOpen(false)}
+                subject="case"
+                withdrawing
+                onSubmit={(note: string | undefined, key: string) =>
+                  unackAlertGroup(params.id, note, key)
+                }
+                onSuccess={invalidate}
+              />
               <SnoozeDialog
                 open={snoozeOpen()}
                 onClose={() => setSnoozeOpen(false)}
-                subject="group"
+                subject="case"
                 onSubmit={(body: SnoozeRequest, key: string) =>
                   snoozeAlertGroup(params.id, body, key)
                 }
@@ -237,7 +321,7 @@ export default function GroupDetailRoute() {
             <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-auto p-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] xl:overflow-hidden">
               <Panel class="flex min-h-0 flex-col xl:overflow-hidden">
                 <PanelHeader>
-                  <PanelTitle>Group timeline</PanelTitle>
+                  <PanelTitle>Case timeline</PanelTitle>
                 </PanelHeader>
                 <Switch>
                   <Match when={timeline.isPending && feed.rows().length === 0}>
@@ -300,10 +384,10 @@ export default function GroupDetailRoute() {
                                 <StateChip state={alert.state} size="sm" />
                                 {/* ⛔ NO ACK CHIP HERE. An ack belongs to one
                                     firing episode and this row is an Alert, which
-                                    outlives its episodes. The generation's own
-                                    acked count above IS case-scoped — it counts
-                                    acknowledged cases — and the alert page
-                                    one click away shows the episode's receipt. */}
+                                    outlives its episodes. The count above is
+                                    episode-scoped — it counts acknowledged firing
+                                    episodes — and the alert page one click away
+                                    shows the episode's receipt. */}
                               </A>
                             </li>
                           )}
@@ -321,10 +405,18 @@ export default function GroupDetailRoute() {
                   <DeliveryRollup summary={g().delivery_summary} />
                 </Panel>
 
-                {/* Group labels */}
+                {/* The labels the case is keyed on.
+
+                    ⛔ THE SUBTITLE IS NOT DECORATION. Calling these "Case labels"
+                    with nothing beside it would say oto chose them, and oto
+                    chooses nothing here: `group_by` in alertmanager.yml decides
+                    what a case is, and oto mirrors the decision. The panel has to
+                    keep saying whose labels these are now that the title no
+                    longer does. */}
                 <Panel>
                   <PanelHeader>
-                    <PanelTitle>Group labels</PanelTitle>
+                    <PanelTitle>Case labels</PanelTitle>
+                    <span class="text-meta text-ink-subtle">Alertmanager grouped on these</span>
                   </PanelHeader>
                   <div class="p-3">
                     <dl class="space-y-0.5">

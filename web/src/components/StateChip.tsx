@@ -239,7 +239,7 @@ export const StormChip: Component<{ readonly class?: string }> = (props) => (
       "bg-info-fill px-1 py-px text-meta font-medium leading-4 text-info-text",
       props.class,
     )}
-    title="More alerts joined this group at once than the storm threshold. oto posts one message with a count instead of one per alert."
+    title="More alerts joined this case at once than the storm threshold. oto posts one message with a count instead of one per alert."
   >
     Storm
   </span>

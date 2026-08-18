@@ -31,6 +31,13 @@ type GroupService interface {
 	Members(ctx context.Context, s db.TenantScope, groupID uuid.UUID, p db.Keyset) (service.MemberResult, error)
 	Timeline(ctx context.Context, s db.TenantScope, groupID uuid.UUID, w db.TimeWindow, p db.Keyset) (alerts.TimelineResult, error)
 	Acknowledge(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, note string) (service.FanOutResult, error)
+
+	// ⛔ Unacknowledge IS NOT OPTIONAL AND IS NOT A FOURTH VERB. It is Acknowledge
+	// read backwards, and it is declared beside it because an ack this surface could
+	// offer but not take back is a one-way gesture over every member of a storm —
+	// which is what `/alert-groups/{id}/ack` was, alone, until this line existed.
+	Unacknowledge(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, note string) (service.FanOutResult, error)
+
 	Comment(ctx context.Context, s db.TenantScope, groupID uuid.UUID, actorKind, actorID, actorLabel, body string, idem alerts.Idempotency) (service.CommentResult, error)
 
 	// ⛔ The group snooze is a FAN-OUT OF THE SAME PRIMITIVE, never a new one:
@@ -109,6 +116,7 @@ func (rt *Router) Register(r chi.Router) {
 			r.Get("/alerts", rt.listAlertGroupAlerts)
 			r.Get("/timeline", rt.getAlertGroupTimeline)
 			r.Post("/ack", rt.ackAlertGroup)
+			r.Post("/unack", rt.unackAlertGroup)
 			r.Post("/comments", rt.commentOnAlertGroup)
 			r.Post("/snooze", rt.snoozeAlertGroup)
 			r.Post("/unsnooze", rt.unsnoozeAlertGroup)
@@ -198,6 +206,15 @@ func parseListGroups(r *http.Request) (groupsListRequest, error) {
 		// `acked` means EVERY member carries a receipt; `unacked` means at least
 		// one does not. Ack is orthogonal to state — an acked group is still
 		// firing — so this never touches `state` (§B.1).
+		//
+		// ⭐ THIS IS ALSO THE DEFINITION THE TWO GROUP VERBS ARE WRITTEN AGAINST,
+		// and it is the only place it is stated. `POST .../ack` makes every member
+		// carry a receipt, so a generation it completes on matches `acked`;
+		// `POST .../unack` leaves NO member carrying one, so a generation it
+		// completes on cannot. Neither writes a group-level ack column — there is
+		// none, and the filter needs none, because "has this group been
+		// acknowledged" is a question about its members and is answered by counting
+		// them.
 		fully := q.Ack == "acked"
 		f.FullyAcked = &fully
 	}

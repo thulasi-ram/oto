@@ -186,8 +186,14 @@ interface NavItem {
 }
 
 const NAV: readonly NavItem[] = [
+  // ⭐ CASES COME FIRST, AND THE ORDER IS THE ARGUMENT. A case is the unit an
+  // operator responds to — forty pods crash-looping is one thing happening — so
+  // the rail opens on the correlation and offers the raw alert stream second.
+  // Leading with Alerts taught the eye that the individual firing was the
+  // primary object and the correlation an optional summary of it, which is
+  // backwards: nobody acknowledges forty rows one at a time.
+  { href: "/cases", label: "Cases", prefix: "/cases" },
   { href: "/alerts", label: "Alerts", prefix: "/alerts" },
-  { href: "/groups", label: "Groups", prefix: "/groups" },
   // ADR 0034. The BARE path, not `/notifications/policies` — the route redirects
   // to its first section, and an href the location never exactly equals is what
   // stops `<A>` from stamping its own `aria-current="page"` on a row whose child

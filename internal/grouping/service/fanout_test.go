@@ -220,6 +220,16 @@ func (a *recordingActions) AcknowledgeAs(
 	return nil
 }
 
+// UnacknowledgeAs records into the same slice: the ceiling this fake exists to
+// measure is a property of the fan-out and not of the verb, so the withdrawal is
+// counted the same way the receipt is.
+func (a *recordingActions) UnacknowledgeAs(
+	_ context.Context, _ db.TenantScope, alertID uuid.UUID, _, _, _, _ string,
+) error {
+	a.acked = append(a.acked, alertID)
+	return nil
+}
+
 func (a *recordingActions) CommentAs(
 	_ context.Context, _ db.TenantScope, _ uuid.UUID, _, _, _, _ string, _ alerts.Idempotency,
 ) (kernel.Event, bool, error) {
@@ -257,6 +267,13 @@ func (a *failingActions) AcknowledgeAs(
 		return errs.Internal("member_action_failed", errors.New("the connection went away"))
 	}
 	return a.inner.AcknowledgeAs(ctx, s, alertID, actorKind, actorID, actorLabel, note)
+}
+
+func (a *failingActions) UnacknowledgeAs(
+	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+	actorKind, actorID, actorLabel, note string,
+) error {
+	return a.inner.UnacknowledgeAs(ctx, s, alertID, actorKind, actorID, actorLabel, note)
 }
 
 func (a *failingActions) CommentAs(

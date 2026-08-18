@@ -270,7 +270,8 @@ type FanOutResult struct {
 	// ⭐ It exists because "nothing happened" has more than one honest
 	// explanation, and a caller that has to tell a human which one it was cannot
 	// get it from a count. `already_acked` means somebody got there first;
-	// `no_open_case` means every episode has already resolved or expired.
+	// `not_acked` is its mirror on the withdrawal — there was no receipt to take
+	// back; `no_open_case` means every episode has already resolved or expired.
 	// Those are different sentences, and a surface that cannot say which — the
 	// Slack Acknowledge button, in particular — is back to being a button that
 	// silently does nothing.
@@ -316,6 +317,37 @@ func (s *Service) Acknowledge(
 ) (FanOutResult, error) {
 	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
 		return s.actions.AcknowledgeAs(ctx, scope, alertID, actorKind, actorID, actorLabel, note)
+	})
+}
+
+// Unacknowledge serves `POST /api/v1/alert-groups/{id}/unack`: withdraw the
+// acknowledgement from every OPEN member episode.
+//
+// ⛔ IT IS THE EXACT INVERSE OF Acknowledge AND NOTHING MORE. There is no
+// group-level ack_state column for it to clear, so what it means is stated in the
+// members' terms: where the group ack means EVERY MEMBER CARRIES A RECEIPT, the
+// group unack means NO MEMBER CARRIES ONE. That is the reading the `ack` filter
+// already uses — `ack=acked` matches a generation only while every member is acked
+// (see grouping/api/router.go) — so a completed unack is precisely a generation
+// that can no longer match it.
+//
+// ⭐ IT NEEDS NO IDEMPOTENCY KEY, for the same reason Acknowledge does not: the
+// transition is a compare-and-set on the episode and a second pass is refused by
+// code (`not_acked`, the mirror of `already_acked`). A member that is not
+// acknowledged is SKIPPED and counted, never allowed to fail the request — see
+// fanOut.
+//
+// ⛔ IT WROTE NO GROUP-LEVEL EVENT AND MUST NOT. Each member appends its own
+// `case.unacknowledged` with `reason: manual`, which is what distinguishes a human
+// taking a receipt back from the automatic withdrawal a new episode performs. A
+// `group.unacknowledged` beside them would be a fact about signals phrased as if
+// the group were the actor — the mistake `group.member_joined` was retired for.
+func (s *Service) Unacknowledge(
+	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
+	actorKind, actorID, actorLabel, note string,
+) (FanOutResult, error) {
+	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
+		return s.actions.UnacknowledgeAs(ctx, scope, alertID, actorKind, actorID, actorLabel, note)
 	})
 }
 
@@ -493,9 +525,9 @@ func (s *Service) Unsnooze(
 // — the member that failed, the ones behind it, and anything past the ceiling —
 // is counted in Unreached, so no member is silently dropped in either direction.
 //
-// ⛔ RE-RUNNING IT UNKEYED IS SAFE FOR TWO OF THE FOUR VERBS AND NOT FOR THE
-// OTHER TWO. Ack and unsnooze are compare-and-set on the episode and refuse a
-// second pass by code (`already_acked` and friends), so a retry finishes the job
+// ⛔ RE-RUNNING IT UNKEYED IS SAFE FOR THREE OF THE FIVE FAN-OUTS AND NOT FOR THE
+// OTHER TWO. Ack, unack and unsnooze are compare-and-set on the episode and refuse
+// a second pass by code (`already_acked`, `not_acked` and friends), so a retry finishes the job
 // without disturbing what committed. A COMMENT IS AN APPEND and a SNOOZE
 // supersedes its own incumbent; neither has such a refusal, and since the account
 // rides out with the error, a caller that retries on error is the normal way to

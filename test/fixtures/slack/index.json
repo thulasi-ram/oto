@@ -9,9 +9,9 @@
       "name": "broadcast_unacked_reminder",
       "paste_into_builder": "broadcast_unacked_reminder.blockkit.json",
       "reason": "unacked_reminder",
-      "rendered_hash": "3339b7f13c71fe97c92357345831523874186360322baee9bd4ada8c7e0dabf6",
+      "rendered_hash": "314f5aa5fb61235570985ce31554ca327ef638dde1efea03ca53436dbb100a98",
       "what": "A reply posted with reply_broadcast=true. Its top-level text must be self-sufficient (ADR 0020 rule 4) and it carries the mention audience.",
-      "wire_bytes": 844
+      "wire_bytes": 843
     },
     {
       "attachment_color": "#a30200",
@@ -22,9 +22,9 @@
       "name": "root_firing",
       "paste_into_builder": "root_firing.blockkit.json",
       "reason": "fired",
-      "rendered_hash": "1de309265b412e16907748ef940cd262b2b42a9e3f91e65fc4d5c821c195fb35",
+      "rendered_hash": "793d494c531f31370ee83efe2fbcd004155be34a849509e4494101cd960cc3c7",
       "what": "The first card. Posted once per generation with chat.postMessage; everything after it is an edit of this message.",
-      "wire_bytes": 3700
+      "wire_bytes": 3697
     },
     {
       "attachment_color": "#2eb886",
@@ -35,9 +35,9 @@
       "name": "root_resolved",
       "paste_into_builder": "root_resolved.blockkit.json",
       "reason": "all_resolved",
-      "rendered_hash": "11be2482973385207b2b9e28ac1e5823cf02871636685ed523b50af73f1ad25d",
+      "rendered_hash": "4f5c05185f3fd9fa9cd35127b3bd6578c5ac2c8a86a6a84cadce67ee036e9135",
       "what": "The terminal card, produced by chat.update. It is the ONLY record left in the channel, because the update that made it was silent.",
-      "wire_bytes": 3769
+      "wire_bytes": 3766
     },
     {
       "attachment_color": "#dddddd",
@@ -48,9 +48,9 @@
       "name": "root_silenced",
       "paste_into_builder": "root_silenced.blockkit.json",
       "reason": "suppressed",
-      "rendered_hash": "cea9e3c7b83cfeaf1d8211a86d38fafeecf5e5c693351ac90c36d962ccf5c6b2",
+      "rendered_hash": "bf278b5af714e9f40708857498059aa661eaebd7a4f62c692673c4321e6a4983",
       "what": "The silenced card — oto's nearest thing to \"snoozed\". Only the reconciler can produce this state, and the colour is the near-white #dddddd.",
-      "wire_bytes": 3985
+      "wire_bytes": 3982
     },
     {
       "attachment_color": "#daa038",
@@ -61,9 +61,9 @@
       "name": "root_update_acked",
       "paste_into_builder": "root_update_acked.blockkit.json",
       "reason": "acked",
-      "rendered_hash": "f4e9f301ce34e36abb85e86bed6fc287794d385125574cc37af40ae1ffbcfa92",
+      "rendered_hash": "490abedb2bfaa8899a9accaa7cc18e0c33b0e3c22a17367418c6e5562282300d",
       "what": "The SAME root message after chat.update. This is ADR 0008's primary verb: colour, status and footer move; the ts does not.",
-      "wire_bytes": 3986
+      "wire_bytes": 3983
     },
     {
       "attachment_color": "#7b1fa2",
@@ -74,9 +74,9 @@
       "name": "storm_notice",
       "paste_into_builder": "storm_notice.blockkit.json",
       "reason": "storm",
-      "rendered_hash": "c6b4c3b1bdceadea855e6714552c0e3904e00169498d59f2964e71633582ca81",
+      "rendered_hash": "53b2114bf1351fee400198e08c577bc1e25a69ca82950067987c39fd35d2508d",
       "what": "The once-per-channel storm notice (ADR 0020 Amendment 1). It broadcasts, and it is the only broadcast permitted while damping is on.",
-      "wire_bytes": 787
+      "wire_bytes": 786
     },
     {
       "attachment_color": "#daa038",

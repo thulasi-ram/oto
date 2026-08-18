@@ -97,14 +97,14 @@ describe("the six-at-once trap", () => {
   });
 
   it("puts exactly one motif on the full-page one", () => {
-    const { container } = render(() => <PageEmptyState motif="kumo" title="No groups match." />);
+    const { container } = render(() => <PageEmptyState motif="kumo" title="No cases match." />);
     expect(
       container.querySelectorAll(".oto-ink"),
       "one motif per state, never both: the moment a panel carries clouds AND petals the " +
         "distinction they exist to draw is gone (§M.9).",
     ).toHaveLength(1);
     // U1: the sentence still carries the whole fact with the ink removed.
-    expect(container.textContent).toContain("No groups match.");
+    expect(container.textContent).toContain("No cases match.");
   });
 
   it("keeps every alert-detail sub-panel off the full-page component", () => {

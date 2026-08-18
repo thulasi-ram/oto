@@ -370,6 +370,16 @@ func plan() []probe {
 			body: map[string]any{"note": "on it"}, header: idempotency("group-ack"),
 			want: http.StatusOK,
 		},
+		// ⭐ ORDER MATTERS: this runs AFTER the ack above, so the generation has a
+		// receipt to take back and the withdrawal is a 200 rather than the 412 a
+		// never-acked group would earn. The ack surface moved onto the Case detail
+		// and a case you can ack but never un-ack is a trap, which is why this verb
+		// exists at all.
+		{
+			method: http.MethodPost, tmpl: "/api/v1/alert-groups/{id}/unack", url: "/api/v1/alert-groups/{{group}}/unack",
+			body: map[string]any{"note": "handing back"}, header: idempotency("group-unack"),
+			want: http.StatusOK,
+		},
 		{
 			method: http.MethodPost, tmpl: "/api/v1/alert-groups/{id}/comments", url: "/api/v1/alert-groups/{{group}}/comments",
 			body: map[string]any{"body": "group note"}, header: idempotency("group-comment"),

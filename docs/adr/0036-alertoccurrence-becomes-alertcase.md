@@ -208,3 +208,50 @@ which is what makes the word safe here and would not make it safe on any object 
 - **Argue that `case` needs no FR-1 defence because §A.1 does not list it.** True on the letter and
   corrosive in practice. §A.1's list is not the boundary; FR-1 is, and the list is its cached result. A
   word admitted because it was not yet written down is how the next word gets in.
+
+---
+
+## Amendment, 2026-08-18 — the UI spends `Case` on the correlation, not on the episode
+
+**Status:** Accepted, by the owner, over this ADR's own objection. Recorded because an
+unwritten contradiction is worse than a written one.
+
+§3 above draws the Case/correlation line at *how many alert identities are spanned*: one for a
+Case, many for a correlation. The operator-facing UI now **disregards that line**. The nav's first
+destination is **Cases**, and what it lists is `alert_groups` — the correlation. `AlertCase`, the
+per-alert firing episode this ADR renamed, is not what the word points at on screen.
+
+So `case` now names two objects:
+
+| where | what `Case` means | the object |
+|---|---|---|
+| Go, SQL, the API contract | one contiguous firing episode of one Alert | `alert_cases` |
+| the UI's nav, list and detail | one generation of a correlation | `alert_groups` |
+
+### What this costs, stated plainly
+
+- **§2.5 of the anti-caseload clause is void.** It forbade caseload UI copy; the primary
+  destination is now called Cases. The remaining five points stand and are still enforced
+  (`test/scope/forbidden_columns_test.go`), so the *schema* commitments this ADR made are intact —
+  it is only the copy commitment that fell.
+- **§3's line no longer survives contact with a screen.** An engineer reading `alert_cases` and an
+  operator reading "Cases" are looking at different objects, and nothing in the product says so.
+- The FR-1 argument in §1 is **unaffected**: it turns on the row being a fact about a signal rather
+  than a unit of human work, and that is true of `alert_groups` as it is of `alert_cases`. Neither
+  gains a human-writable `state`, an assignee or a create endpoint. The word got looser; it did not
+  cross FR-1.
+
+### The mitigation that is actually in the code
+
+The UI must never show both objects under the same word on one screen. Where a surface shows the
+per-alert episode — the alert detail's history, the timeline, `GET /alerts/{id}/cases` — the UI says
+**firing episode**, never "Case". That is the whole of the defence, and it is a convention, not a
+gate: no test enforces it.
+
+### What would retire this amendment
+
+Renaming the domain type so the two stop colliding — `alert_cases` back to an episode-flavoured
+noun, leaving `Case` to the correlation alone. That is a second rename of the size of the first
+(~230 identifiers, a table, 27 constraints, the persisted-string canonicalisation) and was not
+undertaken here. If the collision starts costing review time, that is the fix, and this section is
+the argument for paying for it.

@@ -1,18 +1,24 @@
 /**
- * `/groups` — notification-group generations.
+ * `/cases` — the correlations, and the product's first screen.
  *
- * A group is **one generation of one Alertmanager notification group**, derived
+ * A **case** is one generation of one Alertmanager notification group, derived
  * from `(source, receiver, groupLabels)`. It is the unit humans actually respond
  * to: forty pods crash-looping is one thing happening, not forty. It owns
  * exactly one chat thread, which is why a new generation is what produces a new
  * root message rather than a reply.
  *
+ * ⛔ THIS "CASE" IS NOT `AlertCase` (`internal/alerts/domain/case.go`), which is
+ * ONE ALERT'S FIRING EPISODE. The collision is accepted in the code — the API and
+ * the database still call this object a group — and it is kept off the screen by
+ * one rule: an episode is never called a case in any string a person reads. Every
+ * surface that shows the per-alert episode says *episode*.
+ *
  * This is deliberately *not* "the alert list, grouped" — that is
- * `GET /api/v1/alerts/rollups`, behind the grouping control on `/alerts`. The
- * two are separate endpoints because they are separate concepts: a roll-up
- * bucket is a view computed for one query, with no row, no generation and no
- * thread. Conflating them would suggest oto invents groupings, and it does not:
- * grouping is Alertmanager's decision, mirrored.
+ * `GET /api/v1/alerts/rollups`, behind the roll-up control on `/alerts`. The two
+ * are separate endpoints because they are separate concepts: a roll-up bucket is
+ * a view computed for one query, with no row, no generation and no thread.
+ * Conflating them would suggest oto invents cases, and it does not: the grouping
+ * is Alertmanager's decision, mirrored.
  */
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
@@ -63,7 +69,7 @@ const PAGE_SIZE = 50;
 const GROUP_STATES: readonly GroupState[] = GroupStateSchema.options;
 const STATE_LABEL: Record<GroupState, string> = { open: "Open", closed: "Closed" };
 
-export default function GroupsRoute() {
+export default function CasesRoute() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
 
@@ -92,7 +98,7 @@ export default function GroupsRoute() {
     if (value === null || value === "") next.delete(key);
     else next.set(key, value);
     const s = next.toString();
-    navigate(`/groups${s === "" ? "" : `?${s}`}`, { scroll: false });
+    navigate(`/cases${s === "" ? "" : `?${s}`}`, { scroll: false });
   };
 
   // A cursor is minted under the whole filter set — state, search, storm and
@@ -147,12 +153,12 @@ export default function GroupsRoute() {
           onChange={setDraft}
         >
           <TextFieldLabel class="sr-only-focusable">
-            Search group titles and labels
+            Search case titles and labels
           </TextFieldLabel>
           <TextFieldInput
-            id="group-q"
+            id="case-q"
             type="search"
-            placeholder="Search group titles and group labels…"
+            placeholder="Search case titles and case labels…"
             onKeyDown={(e) => {
               if (e.key === "Enter") setParam("q", e.currentTarget.value);
             }}
@@ -160,7 +166,7 @@ export default function GroupsRoute() {
           />
         </TextField>
 
-        <ToggleGroup legend="Group state" multiple value={[...states()]} onChange={(next) => setParam("state", next.length > 0 ? next.join(",") : null)}>
+        <ToggleGroup legend="Case state" multiple value={[...states()]} onChange={(next) => setParam("state", next.length > 0 ? next.join(",") : null)}>
           <For each={GROUP_STATES}>
             {(s) => <ToggleGroupItem value={s}>{STATE_LABEL[s]}</ToggleGroupItem>}
           </For>
@@ -179,7 +185,7 @@ export default function GroupsRoute() {
           >
             <SelectTrigger
               aria-label="Ack"
-              title="`unacked` returns groups with at least one unacknowledged member."
+              title="`unacked` returns cases with at least one unacknowledged member."
             >
               <SelectValue<Opt<"" | "acked" | "unacked">>>
                 {(state) => state.selectedOption().label}
@@ -214,7 +220,7 @@ export default function GroupsRoute() {
 
         <span class="ml-auto text-body tabular-nums text-ink-muted" aria-live="polite">
           {fmtCount(all().length)}
-          {feed.hasMore() ? "+" : ""} groups
+          {feed.hasMore() ? "+" : ""} cases
         </span>
       </FilterRow>
 
@@ -228,14 +234,14 @@ export default function GroupsRoute() {
         <Match when={all().length === 0}>
           <PageEmptyState
             motif="kumo"
-            title="No groups match."
-            body="A group appears when Alertmanager routes a notification to oto. If nothing has been routed yet, there is nothing to group."
+            title="No cases match."
+            body="A case appears when Alertmanager routes a notification to oto. If nothing has been routed yet, there is nothing to correlate."
           />
         </Match>
         <Match when={true}>
           <div class="min-h-0 flex-1 overflow-auto">
             <ul>
-              <For each={all()}>{(group) => <GroupRow group={group} />}</For>
+              <For each={all()}>{(c) => <CaseRow group={c} />}</For>
             </ul>
 
             <Show when={feed.hasMore()}>
@@ -252,16 +258,16 @@ export default function GroupsRoute() {
   );
 }
 
-const GroupRow = (props: { readonly group: Group }) => {
+const CaseRow = (props: { readonly group: Group }) => {
   const g = (): Group => props.group;
-  /** A group is as alive as its liveliest member. */
+  /** A case is as alive as its liveliest member. */
   const live = (): boolean => g().firing_count > 0;
   const unacked = (): number => Math.max(0, g().total_count - g().acked_count);
 
   return (
     <li class={cn("border-b border-line", live() ? "bg-firing-fill/30" : "bg-surface")}>
       <A
-        href={`/groups/${g().id}`}
+        href={`/cases/${g().id}`}
         class="flex items-start gap-3 px-3 py-2.5 hover:bg-raised/60"
       >
         <span
@@ -278,7 +284,7 @@ const GroupRow = (props: { readonly group: Group }) => {
           <div class="flex flex-wrap items-center gap-2">
             <span class="min-w-0 truncate text-item font-medium text-ink">{g().title}</span>
             <Show when={g().generation > 1}>
-              <Chip title="A new generation opens when a closed group re-opens. One generation owns exactly one chat thread.">
+              <Chip title="A new generation opens when a closed case re-opens. One generation owns exactly one chat thread.">
                 gen {g().generation}
               </Chip>
             </Show>

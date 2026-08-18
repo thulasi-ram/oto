@@ -38,7 +38,7 @@ const STAGE_TITLE: Record<DrillStageName, string> = {
   process: "Processed",
   identity: "Alert identity",
   case: "Firing episode",
-  group: "Grouped",
+  group: "Joined a case",
   rule_snapshot: "Rule snapshot",
   policy: "Notification policy",
   thread: "Chat thread",
@@ -123,7 +123,7 @@ export const DrillPanel: Component<{ readonly sourceID: string }> = (props) => {
           Delivery drill
         </button>
         <span class="text-meta text-ink-subtle">
-          Pushes one synthetic alert through the real pipeline — ingestion, grouping, the policy
+          Pushes one synthetic alert through the real pipeline — ingestion, correlation, the policy
           match, the thread, the delivery record — and names the stage that fails.
         </span>
       </div>

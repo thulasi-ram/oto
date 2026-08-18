@@ -105,8 +105,8 @@ const EnrichmentRow: Component<{ readonly enrichment: Enrichment }> = (props) =>
         <Chip
           title={
             e().from_cache
-              ? "Served from cache — this result was computed for an earlier case."
-              : "Computed fresh for this case."
+              ? "Served from cache — this result was computed for an earlier firing episode."
+              : "Computed fresh for this firing episode."
           }
         >
           {e().from_cache ? "cached" : "fresh"}

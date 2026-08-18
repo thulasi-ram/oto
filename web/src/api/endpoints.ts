@@ -387,6 +387,27 @@ export function ackAlertGroup(id: Uuid, note: string | undefined, key: string): 
   return postItem<GroupDetail>(`${V1}/alert-groups/${id}/ack`, body, { idempotencyKey: key });
 }
 
+/**
+ * Withdraw the receipt from every open member. Recorded with `reason: manual`.
+ *
+ * ⛔ IT EXISTS BECAUSE `ackAlertGroup` DOES. Acknowledging a case is the widest
+ * gesture in the product, and for a while it was also the only one-way one: the
+ * case-scoped ack had no counterpart on the API at all, so an operator who
+ * acknowledged a storm of forty could only take it back by opening each member
+ * alert and withdrawing its receipt individually.
+ *
+ * A member that carries no receipt is skipped, not refused — the mirror of the
+ * ack's tolerance for a member somebody already acked.
+ */
+export function unackAlertGroup(
+  id: Uuid,
+  note: string | undefined,
+  key: string,
+): Promise<GroupDetail> {
+  const body = note !== undefined && note !== "" ? { note } : {};
+  return postItem<GroupDetail>(`${V1}/alert-groups/${id}/unack`, body, { idempotencyKey: key });
+}
+
 export function commentOnAlertGroup(id: Uuid, body: string, key: string): Promise<AlertEvent> {
   return postItem<AlertEvent>(
     `${V1}/alert-groups/${id}/comments`,

@@ -59,7 +59,7 @@ func humanVerbView(reason string) *domain.NotificationView {
 			AckedAt:      &attributionAt,
 			AckedByLabel: ackerLabel,
 		},
-		Links:      domain.Links{Group: "https://oto.example.com/groups/g1"},
+		Links:      domain.Links{Group: "https://oto.example.com/cases/g1"},
 		RenderedAt: attributionAt.Add(time.Second),
 	}
 }

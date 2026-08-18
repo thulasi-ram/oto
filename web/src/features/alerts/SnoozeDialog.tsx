@@ -1,5 +1,5 @@
 /**
- * oto's quiet button (§B.8), shared by the alert detail and the group fan-out.
+ * oto's quiet button (§B.8), shared by one alert and the case-wide fan-out.
  *
  * The vocabulary is governed by SCOPE-BOUNDARY and §B.8, and none of it is
  * decoration:
@@ -179,7 +179,14 @@ function toLocalInputValue(at: Date): string {
 /* The dialog                                                                 */
 /* -------------------------------------------------------------------------- */
 
-export type SnoozeSubject = "alert" | "group";
+/**
+ * ⛔ `"case"` HERE IS THE **CORRELATION** — what the UI calls a Case and the API
+ * still calls an alert group. It is NOT `AlertCase`, the per-alert firing episode
+ * (`internal/alerts/domain/case.go`). The two words collide in the codebase by an
+ * accepted decision; on screen they never do, because the episode is only ever
+ * called an *episode*.
+ */
+export type SnoozeSubject = "alert" | "case";
 
 export interface SnoozeDialogProps {
   readonly open: boolean;
@@ -194,8 +201,7 @@ export interface SnoozeDialogProps {
 const SUBJECT_DESCRIPTION: Record<SnoozeSubject, string> = {
   alert:
     "Stops oto's own notifications for this alert until a fixed time. It is not a silence: nothing changes in your cluster, the alert keeps firing, and it stays visible here at full severity.",
-  group:
-    "Stops oto's own notifications for every alert currently in this group, until a fixed time. Alerts that join later are not snoozed — a snooze is never predictive.",
+  case: "Stops oto's own notifications for every alert currently in this case, until a fixed time. Alerts that join later are not snoozed — a snooze is never predictive.",
 };
 
 export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
@@ -261,7 +267,7 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
       <ModalContent>
         <ModalHeader>
           <ModalTitle>
-            {props.subject === "group" ? "Snooze every current member" : "Snooze notifications"}
+            {props.subject === "case" ? "Snooze every current member" : "Snooze notifications"}
           </ModalTitle>
           <ModalDescription>{SUBJECT_DESCRIPTION[props.subject]}</ModalDescription>
         </ModalHeader>
@@ -275,8 +281,8 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
 
           <Show when={mutation.error instanceof ApiError && mutation.error.status === 412}>
             <ErrorBanner>
-              {props.subject === "group"
-                ? "There is nothing here to snooze — this group has no currently-joined member. A snooze is never predictive, so there is nothing for it to attach to."
+              {props.subject === "case"
+                ? "There is nothing here to snooze — this case has no currently-joined member. A snooze is never predictive, so there is nothing for it to attach to."
                 : "This alert is in the wrong state for a snooze. The request itself was fine; the entity moved while the dialog was open."}
             </ErrorBanner>
           </Show>
@@ -389,7 +395,7 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
           </TextField>
 
           <p class="text-meta leading-snug text-ink-subtle">
-            {props.subject === "group"
+            {props.subject === "case"
               ? "Every member stays firing, stays whatever severity it was, and stays in the default alert list. A member that cannot be snoozed is skipped rather than failing the request."
               : "A snoozed alert is still firing and is still rendered as firing."}{" "}
             Snoozing suppresses every notification reason for it — including a rule change — except the

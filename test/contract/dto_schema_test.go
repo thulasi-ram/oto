@@ -109,6 +109,7 @@ var bindings = []binding{
 	{"grouping", "DeliverySummaryDTO", groupingapi.DeliverySummaryDTO{}},
 	{"grouping", "SnoozeDTO", groupingapi.SnoozeDTO{}},
 	{"grouping", "AckRequest", groupingapi.AckRequest{}},
+	{"grouping", "UnackRequest", groupingapi.UnackRequest{}},
 	{"grouping", "CommentRequest", groupingapi.CommentRequest{}},
 	{"grouping", "SnoozeRequest", groupingapi.SnoozeRequest{}},
 	{"grouping", "UnsnoozeRequest", groupingapi.UnsnoozeRequest{}},

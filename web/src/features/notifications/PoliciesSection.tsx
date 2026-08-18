@@ -879,7 +879,7 @@ const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, strin
   // act, and therefore the most useful thing to say about a silence.
   snoozed: "someone is holding oto's notifications for this alert until a fixed time",
   throttled: "the throttle is already spent",
-  storm: "the group is in storm mode",
+  storm: "the case is in storm mode",
   flapping: "this alert is damped as flapping",
   verbosity: "the channel's verbosity does not carry this",
   channel_disabled: "the channel is disabled",

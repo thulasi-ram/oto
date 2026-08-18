@@ -328,6 +328,19 @@ func (f *fakeGroupService) Acknowledge(
 	return gsvc.FanOutResult{Members: len(f.members), Applied: f.ackApplied}, nil
 }
 
+// Unacknowledge shares `ackApplied` with Acknowledge on purpose: it is the same
+// verb read backwards, so "how many member cases accepted it" is the same knob, and
+// a second counter would let this fake describe a group whose ack and unack
+// disagree about how many open members it has.
+func (f *fakeGroupService) Unacknowledge(
+	_ context.Context, _ db.TenantScope, id uuid.UUID, _, _, _, _ string,
+) (gsvc.FanOutResult, error) {
+	if err := f.own(id); err != nil {
+		return gsvc.FanOutResult{}, err
+	}
+	return gsvc.FanOutResult{Members: len(f.members), Applied: f.ackApplied}, nil
+}
+
 func (f *fakeGroupService) Comment(
 	_ context.Context, _ db.TenantScope, id uuid.UUID, _, _, _, _ string, _ alerts.Idempotency,
 ) (gsvc.CommentResult, error) {
@@ -534,6 +547,30 @@ func TestAckingAGroupAnswersWithTheUpdatedGroup(t *testing.T) {
 	schema.Assert(t, "ackAlertGroup", http.StatusOK, resp.Body())
 }
 
+// ⭐ TestUnackingAGroupAnswersWithTheUpdatedGroup.
+//
+// ⛔ THE ENDPOINT EXISTS BECAUSE THE ACK DOES. For a while the group surface had
+// `ack` and no counterpart, so the widest gesture in the product was also the only
+// one-way one: an operator who acknowledged a storm of forty could not take it back
+// except by opening each member alert in turn. The body is optional — a withdrawal
+// needs no argument — and the answer is the whole updated generation, the same
+// `GroupDetailResponse` the ack returns, so the card that offered the control can
+// repaint itself without a second request.
+func TestUnackingAGroupAnswersWithTheUpdatedGroup(t *testing.T) {
+	t.Parallel()
+
+	rt, _ := newGroupRouter(t)
+	body := map[string]any{"note": "false alarm, handing it back"}
+	schema.AssertRequest(t, "unackAlertGroup", mustJSON(t, body))
+
+	resp := apitest.New(rt).POST(t, groupPath("/unack"), body).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "unackAlertGroup", http.StatusOK, resp.Body())
+
+	// And bodyless, which is what a plain "Withdraw" press sends.
+	bare := apitest.New(rt).POST(t, groupPath("/unack"), nil).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "unackAlertGroup", http.StatusOK, bare.Body())
+}
+
 // TestACommentIsAnsweredWithTheEventItWrote.
 //
 // The 201 body is the event the WRITE returned, never one read back afterwards:
@@ -627,7 +664,7 @@ func TestTheMemberListCollapsesAnAlertThatJoinedTwice(t *testing.T) {
 //
 // v1 has no roles, so the org boundary is the ONLY boundary there is, and every
 // operation that takes an id in its path is a place it can leak. The answer must
-// be 404 on all seven:
+// be 404 on all eight:
 //
 //   - never 200, which would hand another tenant their neighbour's incident;
 //   - never 403, which confirms the row exists in somebody's org and turns the
@@ -652,6 +689,7 @@ func TestAnotherOrgsGroupIsIndistinguishableFromOneThatDoesNotExist(t *testing.T
 		{"listAlertGroupAlerts", http.MethodGet, stranger + "/alerts", nil},
 		{"getAlertGroupTimeline", http.MethodGet, stranger + "/timeline", nil},
 		{"ackAlertGroup", http.MethodPost, stranger + "/ack", nil},
+		{"unackAlertGroup", http.MethodPost, stranger + "/unack", nil},
 		{"commentOnAlertGroup", http.MethodPost, stranger + "/comments", map[string]any{"body": "hello"}},
 		{"snoozeAlertGroup", http.MethodPost, stranger + "/snooze", map[string]any{"duration_seconds": 3600}},
 		{"unsnoozeAlertGroup", http.MethodPost, stranger + "/unsnooze", nil},
@@ -695,6 +733,9 @@ func TestANonHumanCannotAcknowledgeAGroup(t *testing.T) {
 
 	for _, tc := range []struct{ op, suffix string }{
 		{"ackAlertGroup", "/ack"},
+		// Withdrawing is signed too: a receipt taken back by nobody is as useless a
+		// record as one written by nobody.
+		{"unackAlertGroup", "/unack"},
 		{"snoozeAlertGroup", "/snooze"},
 		{"unsnoozeAlertGroup", "/unsnooze"},
 	} {
@@ -736,6 +777,29 @@ func TestAckingAGroupWithNothingOpenIsAPrecondition(t *testing.T) {
 	if code := resp.Problem(t).Code; code != "no_open_case" {
 		t.Fatalf("code = %q, want no_open_case — a client has to be able to say WHICH "+
 			"nothing-happened this was\n%s", code, resp)
+	}
+}
+
+// TestUnackingAGroupWithNothingOpenIsAPrecondition.
+//
+// The mirror of the ack's 412, with the mirror's own code. A member that carries no
+// receipt is SKIPPED (`not_acked`) — the same tolerance the ack shows a member that
+// already carries one — but a group where nothing at all was open is
+// `no_open_case`, exactly as it is for the ack, because that is the condition the
+// contract's precondition names.
+func TestUnackingAGroupWithNothingOpenIsAPrecondition(t *testing.T) {
+	t.Parallel()
+
+	rt, svc := newGroupRouter(t)
+	svc.ackApplied = 0
+
+	resp := apitest.New(rt).POST(t, groupPath("/unack"), nil).
+		MustStatus(t, http.StatusPreconditionFailed)
+
+	schema.AssertProblem(t, "unackAlertGroup", http.StatusPreconditionFailed, resp.Body())
+	if code := resp.Problem(t).Code; code != "no_open_case" {
+		t.Fatalf("code = %q, want no_open_case — the withdrawal names the same nothing "+
+			"the ack does\n%s", code, resp)
 	}
 }
 

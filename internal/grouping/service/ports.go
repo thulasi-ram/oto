@@ -117,12 +117,23 @@ type TimelineReader interface {
 // MemberActions is the fan-out of the human verbs over a group's CURRENTLY-JOINED
 // members (§E.2, §B.8.3).
 //
-// ⛔ There are exactly three, and they are the same three that exist on one alert:
-// ack, comment and snooze. A group has no verbs of its own — "ack this group" is
-// a receipt written once per member signal, never a claim over a set of them
-// (§E.1.1).
+// ⛔ There are exactly three VERBS, and they are the same three that exist on one
+// alert: ack, comment and snooze. Two of them have a withdrawal (unack, unsnooze),
+// which is the same verb read backwards and not a fourth one. A group has no verbs
+// of its own — "ack this group" is a receipt written once per member signal, never
+// a claim over a set of them (§E.1.1).
+//
+// ⚠️ UNACK IS HERE BECAUSE ACK IS. A group ack an operator could not take back is
+// a one-way gesture over forty signals, and for a while it was exactly that: the
+// group surface offered `ack` with no counterpart, so the only route back was
+// opening each member alert and withdrawing its receipt one at a time.
 type MemberActions interface {
 	AcknowledgeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, note string) error
+	// UnacknowledgeAs is AcknowledgeAs read backwards, and the note lands in a
+	// different place: an ack note is a property of the acknowledgement and is
+	// stored on the case, while a withdrawal's note has nothing left to hang on and
+	// goes onto the timeline in the `case.unacknowledged` payload.
+	UnacknowledgeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, note string) error
 	// CommentAs returns the APPENDED EVENT, not just an error. The group comment
 	// endpoint answers `201` with the event it wrote, and reading it back off the
 	// timeline afterwards — which is what the handler used to do — is a second

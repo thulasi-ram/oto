@@ -741,6 +741,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alert-groups/{id}/unack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Withdraw the acknowledgement from every open member case
+         * @description The exact inverse of the group ack, and a fan-out of the same per-alert primitive. Where the
+         *     ack means "every member carries a receipt", this means **no member carries one**: every open
+         *     member case is returned to `unacked`, each appending its own `case.unacknowledged` event with
+         *     `reason: manual` — distinguishing a deliberate withdrawal from the automatic unack that happens
+         *     when a new case opens.
+         *
+         *     A member that is not currently acknowledged is skipped rather than failing the request — the
+         *     same rule the group ack follows for members that are already acked, and for the same reason:
+         *     refusing the other thirty-nine because one had already been withdrawn would make the button
+         *     unusable in exactly the storm it exists for. Member cases that have already ended are skipped
+         *     too; a group with **no** open members at all is a `412`.
+         *
+         *     Because the group is `acked` in `GET /alert-groups?ack=` only while *every* member carries a
+         *     receipt, a group that completes this call can no longer match `ack=acked`.
+         *
+         *     The withdrawal note does **not** go back onto the case — `ack_note` describes the
+         *     acknowledgement being removed and is cleared by the transition — it goes onto each member's
+         *     timeline, in the `case.unacknowledged` event payload.
+         */
+        post: operations["unackAlertGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alert-groups/{id}/comments": {
         parameters: {
             query?: never;
@@ -8109,6 +8146,103 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": components["schemas"]["AckRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated group. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupDetailResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    unackAlertGroup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UnackRequest"];
             };
         };
         responses: {

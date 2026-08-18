@@ -487,11 +487,11 @@ const DetailHeader: Component = () => (
       <Show when={PREVIEW_DETAIL.group}>
         {(group) => (
           <A
-            href={`/groups/${group().id}`}
+            href={`/cases/${group().id}`}
             class="text-meta text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
-            title="The Alertmanager notification group this episode joined"
+            title="The case this firing episode joined — Alertmanager's notification group, mirrored"
           >
-            In group: {group().title} ↗
+            In case: {group().title} ↗
           </A>
         )}
       </Show>

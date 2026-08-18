@@ -1262,9 +1262,10 @@ func (a slackActors) SlackActor(
 
 // slackGroupActions adapts `grouping/service` onto the narrow verb port.
 //
-// ⛔ ONE VERB. The port could name `Snooze` and `Comment` too — the service has
-// them — and it deliberately does not: what a chat button may do is a product
-// decision, and the narrowest possible port is where that decision is legible.
+// ⛔ ONE VERB AND ITS UNDO. The port could name `Snooze` and `Comment` too — the
+// service has them — and it deliberately does not: what a chat button may do is a
+// product decision, and the narrowest possible port is where that decision is
+// legible.
 type slackGroupActions struct {
 	grouping *groupingservice.Service
 }
@@ -1299,6 +1300,32 @@ func (g slackGroupActions) AcknowledgeGroup(
 	// No note. A Slack button carries no text field, and inventing one — "acked
 	// from Slack" — would put oto's words on a human's timeline entry.
 	res, err := g.grouping.Acknowledge(ctx, s, groupID, actorKind, actorID, actorLabel, "")
+	if err != nil {
+		return channelsservice.GroupAckResult{}, err
+	}
+	return channelsservice.GroupAckResult{
+		Members:      res.Members,
+		Applied:      res.Applied,
+		SkippedCodes: res.SkippedCodes,
+		Unreached:    res.Unreached,
+	}, nil
+}
+
+// UnacknowledgeGroup is AcknowledgeGroup read backwards, over the same fan-out and
+// with the same account. Neither takes an `Idempotency-Key`: both are
+// compare-and-set on the episode, so a job retry meets `already_acked` /
+// `not_acked` and converges.
+func (g slackGroupActions) UnacknowledgeGroup(
+	ctx context.Context, s db.TenantScope, groupID uuid.UUID,
+	actorKind, actorID, actorLabel string,
+) (channelsservice.GroupAckResult, error) {
+	if g.grouping == nil {
+		return channelsservice.GroupAckResult{}, errs.Unavailable("grouping_unavailable",
+			"the grouping service is not wired in this deployment", 0)
+	}
+	// No note, for the reason given on the ack: a Slack button carries no text
+	// field, and inventing one would put oto's words on a human's timeline entry.
+	res, err := g.grouping.Unacknowledge(ctx, s, groupID, actorKind, actorID, actorLabel, "")
 	if err != nil {
 		return channelsservice.GroupAckResult{}, err
 	}

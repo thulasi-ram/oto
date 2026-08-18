@@ -131,8 +131,8 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     shape: "ring",
   },
 
-  "group.opened": { label: "Group opened", category: "group", tone: NEUTRAL, shape: "square" },
-  "group.closed": { label: "Group closed", category: "group", tone: NEUTRAL, shape: "square" },
+  "group.opened": { label: "Case opened", category: "group", tone: NEUTRAL, shape: "square" },
+  "group.closed": { label: "Case closed", category: "group", tone: NEUTRAL, shape: "square" },
   // ⛔ RETIRED, AND KEPT ANYWAY. Nothing has written either of these since
   // membership became a property of the case rather than an event (migration
   // 00051) — `group.member_left` never had a production writer at all. They stay
@@ -141,21 +141,21 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
   // as nothing, which is the one outcome a timeline may not have. Delete them when
   // the last partition holding them is dropped.
   "group.member_joined": {
-    label: "Joined a group",
+    label: "Joined a case",
     category: "group",
     tone: NEUTRAL,
     shape: "dot",
   },
-  "group.member_left": { label: "Left a group", category: "group", tone: NEUTRAL, shape: "dot" },
+  "group.member_left": { label: "Left a case", category: "group", tone: NEUTRAL, shape: "dot" },
   "group.storm_started": {
-    label: "Group entered storm mode",
+    label: "Case entered storm mode",
     category: "group",
     tone: NEUTRAL_STRONG,
     shape: "bar",
     note: "More alerts joined at once than the storm threshold. One message with a count is posted instead of one per alert.",
   },
   "group.storm_ended": {
-    label: "Group left storm mode",
+    label: "Case left storm mode",
     category: "group",
     tone: NEUTRAL,
     shape: "bar",
@@ -180,7 +180,7 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     category: "rule",
     tone: NEUTRAL,
     shape: "diamond",
-    note: "oto could not reach the rule's origin, so this case has no snapshot.",
+    note: "oto could not reach the rule's origin, so this firing episode has no snapshot.",
   },
 
   "enrichment.completed": {
@@ -312,7 +312,7 @@ export const CATEGORY_LABEL: Record<EventCategory, string> = {
   rule: "Rule",
   enrichment: "Enrichment",
   notification: "Notifications",
-  group: "Grouping",
+  group: "Case",
   source: "Source",
 };
 

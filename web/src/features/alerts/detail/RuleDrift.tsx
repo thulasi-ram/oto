@@ -483,7 +483,7 @@ export const RulePanel: Component<{ readonly history: RuleHistory }> = (props) =
                 <span class="font-mono text-body">{rule().rule_name}</span>
               </DataRow>
               <Show when={rule().rule_group !== ""}>
-                <DataRow term="Group">
+                <DataRow term="Rule group">
                   <span class="font-mono text-body">{rule().rule_group}</span>
                 </DataRow>
               </Show>
@@ -652,7 +652,7 @@ const VersionHistory: Component<{
           <li
             class={cn(
               "border-b border-line px-md py-sm last:border-b-0",
-              // Neutral, not accented (§0.6). "The one bound to this case"
+              // Neutral, not accented (§0.6). "The one bound to this episode"
               // is chrome; the words in the row already say so.
               v.id === props.currentId ? "border-l-2 border-l-ink-muted bg-sunken" : "",
             )}
@@ -667,7 +667,7 @@ const VersionHistory: Component<{
               <span class="text-meta text-ink-subtle">for {duration(v.for_seconds)}</span>
               <Show when={v.id === props.currentId}>
                 <span class="ml-auto text-micro font-semibold uppercase tracking-wide text-ink">
-                  bound to this case
+                  bound to this episode
                 </span>
               </Show>
             </div>

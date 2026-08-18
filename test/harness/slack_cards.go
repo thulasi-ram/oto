@@ -250,8 +250,8 @@ func baseView() *chdomain.NotificationView {
 			},
 		},
 		Links: chdomain.Links{
-			Group:        "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a",
-			Timeline:     "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
+			Group:        "https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a",
+			Timeline:     "https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
 			Runbook:      "https://runbooks.example.com/checkout-error-rate",
 			Prometheus:   "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1",
 			Alertmanager: "https://am.example.com/#/alerts?filter=%7Balertname%3D%22CheckoutErrorRateHigh%22%7D",

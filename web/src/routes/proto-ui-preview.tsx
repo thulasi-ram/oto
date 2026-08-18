@@ -236,7 +236,7 @@ const SnoozeBand: Component = () => {
         Snooze an alert
       </Button>
       <Button variant="secondary" size="sm" onClick={() => setOpenGroup(true)}>
-        Snooze a group
+        Snooze a case
       </Button>
       <SnoozeDialog
         open={openAlert()}
@@ -248,7 +248,7 @@ const SnoozeBand: Component = () => {
       <SnoozeDialog
         open={openGroup()}
         onClose={() => setOpenGroup(false)}
-        subject="group"
+        subject="case"
         onSubmit={() => Promise.resolve(null)}
         onSuccess={() => undefined}
       />

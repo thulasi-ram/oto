@@ -1847,6 +1847,69 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/alert-groups/{id}/unack:
+    post:
+      operationId: unackAlertGroup
+      summary: Withdraw the acknowledgement from every open member case
+      tags: [Groups]
+      description: |
+        The exact inverse of the group ack, and a fan-out of the same per-alert primitive. Where the
+        ack means "every member carries a receipt", this means **no member carries one**: every open
+        member case is returned to `unacked`, each appending its own `case.unacknowledged` event with
+        `reason: manual` — distinguishing a deliberate withdrawal from the automatic unack that happens
+        when a new case opens.
+
+        A member that is not currently acknowledged is skipped rather than failing the request — the
+        same rule the group ack follows for members that are already acked, and for the same reason:
+        refusing the other thirty-nine because one had already been withdrawn would make the button
+        unusable in exactly the storm it exists for. Member cases that have already ended are skipped
+        too; a group with **no** open members at all is a `412`.
+
+        Because the group is `acked` in `GET /alert-groups?ack=` only while *every* member carries a
+        receipt, a group that completes this call can no longer match `ack=acked`.
+
+        The withdrawal note does **not** go back onto the case — `ack_note` describes the
+        acknowledgement being removed and is cleared by the transition — it goes onto each member's
+        timeline, in the `case.unacknowledged` event payload.
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnackRequest'
+      responses:
+        '200':
+          description: The updated group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableContent'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/alert-groups/{id}/comments:
     post:
       operationId: commentOnAlertGroup

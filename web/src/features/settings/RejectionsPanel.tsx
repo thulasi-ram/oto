@@ -103,7 +103,7 @@ const VALUE_CHARS = 28;
  * all — that is open ticket `56c4728`, and this panel had it seven times over.
  * So each async section mounts exactly one region before any answer exists and
  * only ever swaps its words, which is the shape that works in `AppShell`,
- * `routes/alerts` and `routes/groups`. `tone` carries the styling that used to
+ * `routes/alerts` and `routes/cases`. `tone` carries the styling that used to
  * live on the branch this sentence was hoisted out of; an empty `text` renders
  * an empty block, which takes no room and stays mounted for the recovery.
  */

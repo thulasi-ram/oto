@@ -3,7 +3,7 @@
  *
  * ⭐ THEY HANG UNDER THEIR PARENT DESTINATION, NOT IN A ZONE OF THEIR OWN. This
  * used to be a separate block at the bottom of the rail, under a hairline: the
- * rail read Alerts / Groups / Notifications / Settings, then a rule, then
+ * rail read Cases / Alerts / Notifications / Settings, then a rule, then
  * Policies / Activity log floating unattached. Nothing on screen said which of
  * the four those two belonged to — they read as a second, peer-level list that
  * happened to change when you navigated. Indented directly beneath the

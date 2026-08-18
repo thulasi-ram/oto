@@ -29,6 +29,17 @@ import type { Problem, Violation } from "~/api/types";
 export interface RenderOptions {
   /** Start the memory router here, for screens that read the location. */
   readonly path?: string;
+  /**
+   * The route PATTERN to mount the screen under, when the screen reads route
+   * params rather than the location.
+   *
+   * The default `"*"` matches anything and supplies no params, which is right
+   * for every screen whose input arrives as a query string. A screen calling
+   * `useParams()` needs the real pattern — `"/cases/:id"` — because a wildcard
+   * route hands it an empty params object and the screen then requests
+   * `/api/v1/alert-groups/undefined`, which is a passing test of nothing.
+   */
+  readonly routePath?: string;
 }
 
 export interface Rendered extends ReturnType<typeof render> {
@@ -59,7 +70,7 @@ export function renderScreen(ui: () => JSX.Element, options: RenderOptions = {})
   const result = render(() => (
     <QueryClientProvider client={client}>
       <MemoryRouter history={history} root={(p) => <>{p.children}</>}>
-        <Route path="*" component={() => <>{ui()}</>} />
+        <Route path={options.routePath ?? "*"} component={() => <>{ui()}</>} />
       </MemoryRouter>
     </QueryClientProvider>
   ));

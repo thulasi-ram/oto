@@ -5,7 +5,7 @@
       "block_id": "oto_title_0688c83b5d",
       "text": {
         "type": "mrkdwn",
-        "text": ":rotating_light: *<https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a|CheckoutErrorRateHigh>*  ·  `eu-west-1`\n_5xx rate on checkout-api is 11.4% over the last five minutes, against a 5% threshold._"
+        "text": ":rotating_light: *<https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a|CheckoutErrorRateHigh>*  ·  `eu-west-1`\n_5xx rate on checkout-api is 11.4% over the last five minutes, against a 5% threshold._"
       }
     },
     {
@@ -113,7 +113,7 @@
                 "text": ":blue_book: Show timeline",
                 "emoji": true
               },
-              "url": "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
+              "url": "https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
             },
             {
               "text": {
@@ -137,7 +137,7 @@
                 "text": ":scroll: Rule history",
                 "emoji": true
               },
-              "url": "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a"
+              "url": "https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a"
             },
             {
               "text": {

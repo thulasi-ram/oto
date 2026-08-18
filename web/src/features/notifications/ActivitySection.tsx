@@ -256,7 +256,7 @@ export const ActivitySection: Component = () => {
         <Match when={rows().length === 0}>
           <p class={cn(PANEL_BODY, "text-body leading-snug text-ink-muted")}>
             oto records an intent to communicate even when it decides not to send, so an empty log
-            means nothing has been computed yet — no alert has reached a group generation, or this
+            means nothing has been computed yet — no alert has reached a case, or this
             deployment runs with notifications wired out entirely.
           </p>
         </Match>
@@ -324,8 +324,8 @@ const ActivityRow: Component<{ readonly notification: Notification }> = (props) 
         <Show
           when={n().alert_id}
           fallback={
-            <span class="text-ink-subtle" title="A fact about the whole group generation rather than about one alert.">
-              about the group
+            <span class="text-ink-subtle" title="A fact about the whole case rather than about one alert.">
+              about the case
             </span>
           }
         >
@@ -336,10 +336,10 @@ const ActivityRow: Component<{ readonly notification: Notification }> = (props) 
           )}
         </Show>
         <A
-          href={`/groups/${n().group_id}`}
+          href={`/cases/${n().group_id}`}
           class="text-ink-muted underline decoration-line underline-offset-2"
         >
-          group {shortId(n().group_id)}
+          case {shortId(n().group_id)}
         </A>
       </div>
 

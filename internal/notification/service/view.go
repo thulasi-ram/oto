@@ -431,7 +431,14 @@ func ruleChangeView(c domain.RuleChangeFacts) *RuleChangeView {
 func (v *ViewService) links(snap domain.Snapshot) Links {
 	var l Links
 	if v.baseURL != "" {
-		l.Group = v.baseURL + "/groups/" + snap.Group.ID.String()
+		// ⛔ `/cases/`, NOT `/groups/`, AND THE OLD PATH IS NOT DEAD. The UI calls
+		// this object a Case, so a card minted today must land on the screen that
+		// exists; but every card oto has already sent carries `/groups/<id>`, and
+		// `web/src/App.tsx` keeps `/groups` and `/groups/:id` as redirects onto the
+		// case precisely so a year of chat history keeps resolving. Renaming a screen
+		// is a vocabulary decision; breaking an already-delivered link would be a
+		// data-loss one, so the redirect goes before the rename and outlives it.
+		l.Group = v.baseURL + "/cases/" + snap.Group.ID.String()
 		l.Timeline = l.Group + "/timeline"
 		if snap.Focus != nil {
 			l.Alert = v.baseURL + "/alerts/" + snap.Focus.ID.String()

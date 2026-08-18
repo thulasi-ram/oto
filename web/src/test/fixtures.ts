@@ -14,6 +14,7 @@ import type {
   Channel,
   Cluster,
   DeliveryDrill,
+  GroupDetail,
   Notification,
   Case,
   OrgSettingsView,
@@ -113,6 +114,45 @@ export function alertDetail(patch: Partial<AlertDetail> = {}): AlertDetail {
     delivery_summary: { total: 0, sent: 0, failed: 0, pending: 0, suppressed: 0 },
     ...patch,
   } as AlertDetail;
+}
+
+/**
+ * One **case** — the correlation, which the contract still calls an alert group.
+ *
+ * ⛔ NOT `alertCase()` ABOVE IT. That builds a `Case`, which is one ALERT'S
+ * FIRING EPISODE; this builds the notification-group generation the UI calls a
+ * Case. The two are different objects that share a word by an accepted decision,
+ * so the names here stay apart from the screen's vocabulary rather than following
+ * it — a fixture called `case()` would be ambiguous at every call site.
+ */
+export function groupDetail(patch: Partial<GroupDetail> = {}): GroupDetail {
+  return {
+    id: "0f1e2d3c-4b5a-4697-8899-aabbccddeeff",
+    group_key: "alertname=HighErrorRate,namespace=payments",
+    generation: 1,
+    source_id: "1a2b3c4d-5e6f-4708-8192-a3b4c5d6e7f8",
+    cluster_key: "prod",
+    receiver: "platform-alerts",
+    group_labels: { alertname: "HighErrorRate", namespace: "payments" },
+    title: "HighErrorRate in payments",
+    state: "open",
+    severity: "critical",
+    state_version: 1,
+    firing_count: 3,
+    suppressed_count: 0,
+    resolved_count: 0,
+    expired_count: 0,
+    total_count: 3,
+    acked_count: 0,
+    snoozed_count: 0,
+    storm_mode: false,
+    first_seen_at: T0,
+    last_activity_at: T0,
+    severity_counts: { critical: 3 },
+    top_alerts: [],
+    delivery_summary: { total: 0, sent: 0, failed: 0, dead: 0, skipped: 0, pending: 0 },
+    ...patch,
+  } as GroupDetail;
 }
 
 export function cluster(patch: Partial<Cluster> = {}): Cluster {

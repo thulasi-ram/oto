@@ -169,7 +169,7 @@ in this domain.
 | T7 | `resolved`\|`expired` | *(new case `firing`)* | Same `alert_key` fires again **after** `refire_grace` | Ingest | New case `seq+1`; **new AlertGroup generation** if the group was closed → **new Slack root message**; emit `case.opened` with `reopen_of`; `alerts.total_cases += 1`; recompute `flap_score` |
 | T8 | `resolved`\|`expired` | `firing` *(same case)* | Same `alert_key` fires again **within** `refire_grace` (default 20m) | Ingest | Clear `ended_at`, `reopen_count += 1`; emit `case.reopened`; enqueue `notify.evaluate(reason=refired)`; **reuse the existing thread** |
 | T9 | any | `ack_state = acked` | Human via `POST /alerts/{id}/ack`, `POST /alert-groups/{id}/ack`, or Slack `oto.ack` button | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `case.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
-| T10 | `acked` | `unacked` | Human unack, **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
+| T10 | `acked` | `unacked` | Human unack via `POST /alerts/{id}/unack` or `POST /alert-groups/{id}/unack`, **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
 | T11 | any | *(no state change)* | An Enricher completes | Enrichment worker | Emit `enrichment.completed` \| `enrichment.failed`; enqueue `notify.evaluate(reason=enriched)` (debounced 10s) |
 | T12 | any | *(no state change)* | `rule_fingerprint` for this case differs from the previous case's for the same `RuleKey` | Rules service | Emit `rule.definition_changed` with a structured diff; enqueue `notify.evaluate(reason=rule_changed)` |
 | T13 | any | *(no state change)* | Notification / delivery progresses | Notify, Deliver workers | Emit `notification.created`, `delivery.sent`, `delivery.failed`, `delivery.skipped`, `delivery.dead` |
@@ -1936,6 +1936,7 @@ RETURNING *, (xmax = 0) AS was_inserted;
 | GET | `/api/v1/alert-groups/{id}/alerts` | Member alerts | `PageQuery` | `[]AlertDTO` | `session\|pat` |
 | GET | `/api/v1/alert-groups/{id}/timeline` | **Merged, ordered lifecycle timeline** — the signature view | `TimelineQuery` | `[]AlertEventDTO` | `session\|pat` |
 | POST | `/api/v1/alert-groups/{id}/ack` | Ack every open member case | `AckRequest` | `GroupDetailDTO` | `session\|pat` |
+| POST | `/api/v1/alert-groups/{id}/unack` | Fan-out: withdraw the receipt from every open member case (T10, `reason=manual`). The inverse of the row above — *no* member carries a receipt afterwards. | `UnackRequest` | `GroupDetailDTO` | `session\|pat` |
 | POST | `/api/v1/alert-groups/{id}/comments` | Note on the group timeline | `CommentRequest` | `AlertEventDTO` | `session\|pat` |
 | POST | `/api/v1/alert-groups/{id}/snooze` | Fan-out: snooze every **currently-joined** member alert (§B.8.3). Not predictive. | `SnoozeRequest` | `GroupDetailDTO` | `session\|pat` |
 | POST | `/api/v1/alert-groups/{id}/unsnooze` | Fan-out: end snoozes on currently-joined members | — | `GroupDetailDTO` | `session\|pat` |

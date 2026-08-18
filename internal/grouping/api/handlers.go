@@ -132,6 +132,71 @@ func (rt *Router) ackAlertGroup(w http.ResponseWriter, r *http.Request) {
 	rt.writeDetail(w, r, scope, detail, started)
 }
 
+// unackAlertGroup is `POST /api/v1/alert-groups/{id}/unack`.
+//
+// ⛔ IT IS ackAlertGroup READ BACKWARDS, STEP FOR STEP, and the symmetry is the
+// specification. Where the ack means "every member carries a receipt", this means
+// NO member carries one — the reading the `ack` filter already uses (see the note
+// in router.go), so a generation this completes on can no longer match
+// `ack=acked`. There is no group-level ack column to clear, and no
+// `group.unacknowledged` event: each member appends its own `case.unacknowledged`
+// with `reason: manual`, which is what tells a deliberate withdrawal apart from the
+// automatic one a new episode performs.
+//
+// A member that is not acknowledged is SKIPPED (`not_acked`, the mirror of the
+// ack's `already_acked`) rather than failing the request, and so is one whose
+// episode has already ended. A group with no open members at all is a 412.
+//
+// ⭐ IT TAKES NO IDEMPOTENCY-KEY OF ITS OWN, exactly as the ack does not: the
+// transition is a compare-and-set on the episode, so the state after N calls is the
+// state after one and a bare retry is safe. The contract still declares the header
+// because every write does; nothing here reads it, and nothing should.
+func (rt *Router) unackAlertGroup(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, id, err := rt.subject(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	kind, actorID, label, err := actorOf(r.Context())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	body, err := optionalBody[UnackRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	res, err := rt.svc.Unacknowledge(r.Context(), scope, id, kind, actorID, label, body.Note)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	// ⚠️ THE GATE ASKS THE SAME QUESTION THE ACK'S DOES, and answers it with the
+	// same code. The contract's precondition is "a group with no open members at
+	// all", and the only evidence that settles it is the REFUSAL CODE: `no_open_case`
+	// is a member whose episode has ended and is the one refusal meaning there was
+	// nothing to withdraw from. `not_acked` is the opposite — that member is open, it
+	// simply carries no receipt, possibly because somebody withdrew it a second
+	// earlier — and answering that with `no_open_case` would be oto naming the wrong
+	// nothing. It is deliberately not `Complete()`, for the reason argued on the ack.
+	if res.Applied == 0 && res.SkippedCodes["no_open_case"] == res.Skipped() {
+		httpx.WriteProblem(w, r, errs.Precondition("no_open_case",
+			"this group has no open member case to un-acknowledge"))
+		return
+	}
+
+	detail, err := rt.svc.Get(r.Context(), scope, id)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	rt.writeDetail(w, r, scope, detail, started)
+}
+
 // commentOnAlertGroup is `POST /api/v1/alert-groups/{id}/comments`.
 //
 // The contract returns the appended event. A group comment fans out onto every

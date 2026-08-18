@@ -196,6 +196,31 @@ func (s *Service) AcknowledgeAs(
 	return err
 }
 
+// UnacknowledgeAs is Unacknowledge with the actor described in primitives.
+//
+// It is the fan-out entry point for `POST /api/v1/alert-groups/{id}/unack`, the
+// exact inverse of AcknowledgeAs above: where the group ack means "every member
+// carries a receipt", the group unack means NO member carries one. It is still one
+// withdrawal per signal and never a claim over a set of them (§E.1.1), and the
+// reason is `manual` — a deliberate withdrawal, not the automatic unack a new
+// episode performs.
+//
+// ⛔ THE NOTE DOES NOT GO BACK ONTO THE CASE. `ack_note` describes the
+// acknowledgement being removed and is cleared by the transition; the withdrawal's
+// own explanation lands in the `case.unacknowledged` event payload, on each
+// member's timeline. See Unacknowledge.
+func (s *Service) UnacknowledgeAs(
+	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
+	actorKind, actorID, actorLabel, note string,
+) error {
+	actor, err := humanActor(actorKind, actorID, actorLabel)
+	if err != nil {
+		return err
+	}
+	_, err = s.Unacknowledge(ctx, scope, alertID, actor, note)
+	return err
+}
+
 // SnoozeAs is Snooze with the actor described in primitives.
 //
 // It is the fan-out entry point for `POST /api/v1/alert-groups/{id}/snooze`,

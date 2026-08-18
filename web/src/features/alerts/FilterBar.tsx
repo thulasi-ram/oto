@@ -194,9 +194,15 @@ const ALL_CLUSTERS: ClusterOption = { cluster_key: "", display_name: "All cluste
 
 /**
  * The word "Group" is deliberately absent. It used to collide with `/groups`
- * elsewhere in the app — notification-group generations, an unrelated feature —
- * and a tab strip that already reads as "how is this list arranged" does not
- * need the word repeated in every label.
+ * elsewhere in the app; that screen is `/cases` now and the collision is gone,
+ * but the labels stay as they are for the other reason they were chosen: a tab
+ * strip that already reads as "how is this list arranged" does not need the word
+ * repeated in every label.
+ *
+ * ⛔ THIS CONTROL IS A ROLL-UP AXIS AND NOT A CASE. It buckets whatever the
+ * current query returned (`GET /api/v1/alerts/rollups`) — no row, no generation,
+ * no chat thread — so nothing here may borrow the word Case, which now names the
+ * correlation on `/cases`.
  */
 const GROUP_TAB_LABEL: Record<GroupBy, string> = {
   none: "All",

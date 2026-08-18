@@ -222,6 +222,17 @@ type AckRequest struct {
 	Note string `json:"note" validate:"omitempty,max=2000"`
 }
 
+// UnackRequest is the body of `POST /alert-groups/{id}/unack`.
+//
+// ⛔ THE NOTE LANDS SOMEWHERE ELSE THAN AckRequest's. An ack note is a property of
+// the acknowledgement and is stored on the case; a withdrawal clears that column,
+// so its own note has nothing left to hang on and goes onto each member's timeline
+// in the `case.unacknowledged` payload. Same shape on the wire, different
+// destination — which is why it is its own type rather than a reuse of AckRequest.
+type UnackRequest struct {
+	Note string `json:"note" validate:"omitempty,max=2000"`
+}
+
 // CommentRequest is the body of `POST /alert-groups/{id}/comments`.
 type CommentRequest struct {
 	Body string `json:"body" validate:"required,notblank,min=1,max=10000"`
