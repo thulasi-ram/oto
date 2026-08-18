@@ -18,7 +18,7 @@
  */
 import { type Component } from "solid-js";
 
-import { SeverityBars, StateGlyph, WaveGlyph } from "~/components/glyphs";
+import { SeverityBars, StateGlyph } from "~/components/glyphs";
 import { cn } from "~/lib/cn";
 import type { AckState, Case, ResolveReason, State } from "~/api/types";
 
@@ -336,36 +336,26 @@ export const SeverityMark: Component<SeverityMarkProps> = (props) => {
 /* Derived signals that are not states                                        */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Flapping is a **derived signal, never a state** (`AlertDTO.flap_score`), and
- * it is deliberately visible: oto switches a flapping alert to update-only
- * notification with a digest, and a silent drop would be the thing §B.6 forbids.
+/*
+ * ⛔ THERE IS NO CHIP HERE ANY MORE, AND THE ABSENCE IS THE DECISION.
+ *
+ * `FlappingChip` and `StormChip` both said "oto is damping this right now", and
+ * neither statement is one oto can still make.
+ *
+ *   - **Storm damping is removed** (ADR 0042, migration `00059`). Nothing
+ *     evaluates a storm, `alert_groups.storm_mode` is dropped and the field is
+ *     gone from the contract, so a chip reading it had nothing to read.
+ *   - **The flap detector is blind, not live** (ADR 0041 Amendment 1). A flap
+ *     damped by the case retention window W appends no `case.opened` /
+ *     `case.resolved` pair, and those are exactly the events `flap_score`
+ *     counts — so `is_flapping` reads false precisely when an alert flaps.
+ *     Flap noise is removed at case formation now, and a chip claiming
+ *     "notifications became update-only with a digest" described a gate that no
+ *     longer exists.
+ *
+ * The `alert.flapping_*` and `group.storm_*` timeline events were kept for one
+ * more cut so that history could still render, and they are gone too: migration
+ * `00060` narrows `ev_type_ck` to refuse all four spellings, so no timeline can
+ * carry one and `features/alerts/detail/eventKinds` no longer names them.
  */
-export const FlappingChip: Component<{ readonly class?: string }> = (props) => (
-  <span
-    class={cn(
-      "inline-flex shrink-0 items-center gap-1 rounded-chip border border-info-border",
-      "bg-info-fill px-1 py-px text-meta font-medium leading-4 text-info-text",
-      props.class,
-    )}
-    title="oto has damped this as flapping. Notifications become update-only with a periodic digest — nothing is dropped."
-  >
-    <WaveGlyph class="size-3" />
-    Flapping
-  </span>
-);
-
-/** Storm mode: one root message with a count, per-alert replies suppressed. */
-export const StormChip: Component<{ readonly class?: string }> = (props) => (
-  <span
-    class={cn(
-      "inline-flex shrink-0 items-center gap-1 rounded-chip border border-info-border",
-      "bg-info-fill px-1 py-px text-meta font-medium leading-4 text-info-text",
-      props.class,
-    )}
-    title="More alerts arrived in one notification group at once than the storm threshold. oto posts one message with a count instead of one per alert."
-  >
-    Storm
-  </span>
-);
 

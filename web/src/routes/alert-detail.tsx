@@ -26,7 +26,6 @@ import {
 import { qk } from "~/api/keys";
 import type { AlertEvent, TimelineQuery } from "~/api/types";
 import {
-  FlappingChip,
   STATE_BAR,
   STATE_MEANING,
   SeverityMark,
@@ -186,9 +185,13 @@ export default function AlertDetailRoute() {
                         normaliseSeverity(data().severity) === "critical"
                       }
                     />
-                    <Show when={data().is_flapping}>
-                      <FlappingChip />
-                    </Show>
+                    {/* ⛔ NO FLAPPING CHIP. `is_flapping` is still on the DTO and
+                        no longer means anything live: an episode damped by the
+                        case retention window W appends none of the `case.*`
+                        events `flap_score` counts, so the flag reads false
+                        exactly when an alert flaps (ADR 0041 Amendment 1). The
+                        retired `alert.flapping_*` events still render on the
+                        timeline below, because history is a different claim. */}
                     {/* Beside the state chip, never instead of it (§B.8.6): the
                         three axes are orthogonal, and a snoozed critical alert
                         still reads critical and still reads firing. */}
@@ -249,12 +252,6 @@ export default function AlertDetailRoute() {
                       cases{" "}
                       <span class="text-ink-muted">{fmtCount(data().total_cases)}</span>
                     </span>
-                    <Show when={data().is_flapping || data().flap_score > 0}>
-                      <span title="EWMA of state transitions per hour. A derived signal, never a state.">
-                        flap score{" "}
-                        <span class="text-ink-muted">{data().flap_score.toFixed(1)}</span>
-                      </span>
-                    </Show>
                   </div>
                 </div>
 

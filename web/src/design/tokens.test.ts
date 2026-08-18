@@ -5,7 +5,7 @@
  *
  * ⭐ THEME PARITY. Every token must be declared in BOTH themes. A token defined
  * in light only does not fall back to a default in dark: the custom property is
- * simply undefined, `var(--oto-state-storm-fill)` resolves to nothing, and the
+ * simply undefined, `var(--oto-state-expired-fill)` resolves to nothing, and the
  * element renders with a transparent background against whatever is behind it.
  * In dark that is usually still legible enough to survive review, which is how a
  * one-theme token gets shipped. Nothing in the type system, the build or the

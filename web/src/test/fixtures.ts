@@ -184,7 +184,6 @@ export function groupDetail(patch: Partial<GroupDetail> = {}): GroupDetail {
     total_count: 3,
     acked_count: 0,
     snoozed_count: 0,
-    storm_mode: false,
     first_seen_at: T0,
     last_activity_at: T0,
     severity_counts: { critical: 3 },
@@ -407,9 +406,6 @@ export function orgSettings(
     flap_threshold: 5,
     flap_window_s: 7200,
     flap_digest_interval_s: 900,
-    storm_threshold: 10,
-    storm_window_s: 60,
-    storm_cooldown_s: 600,
     raw_retention_days: 30,
     event_retention_months: 13,
     unacked_reminder_after_s: 0,
@@ -484,7 +480,7 @@ export function drill(
 export function statsOverview(patch: Partial<StatsOverview> = {}): StatsOverview {
   return {
     alerts: { firing: 0, suppressed: 0, resolved: 0, expired: 0, acked: 0, unacked: 0, flapping: 0 },
-    groups: { open: 0, closed: 0, storm: 0 },
+    groups: { open: 0, closed: 0 },
     deliveries: { sent: 0, failed: 0, dead: 0, skipped: 0, pending: 0, ambiguous: 0 },
     sources: { healthy: 0, degraded: 0, unreachable: 0, unknown: 0 },
     channels: { healthy: 0, degraded: 0, auth_failed: 0, config_invalid: 0 },

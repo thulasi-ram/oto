@@ -104,7 +104,7 @@ export interface AlertFilters {
   readonly cluster: readonly string[];
   readonly namespace: readonly string[];
   readonly alertname: readonly string[];
-  /**
+  /*
    * ⛔ THERE IS NO `ack` FILTER, AND ITS ABSENCE IS THE POINT.
    *
    * `?ack=` filtered `alerts.ack_state`, a column that no longer exists. An
@@ -118,8 +118,17 @@ export interface AlertFilters {
    * is what `/cases` is built on, and the case a row here already expands via
    * `include=current_case`. Sending `ack=` to `GET /alerts` is now
    * `400 unknown_parameter`.
+   *
+   * ⛔ AND THERE IS NO `flapping` FILTER EITHER, FOR THE ADJACENT REASON: the
+   * column is still there and no longer means anything. `alerts.is_flapping` is
+   * derived from the `case.*` lifecycle events counted inside `flap_window_s`,
+   * and a flap damped by the case retention window W appends none of them — one
+   * `case.opened` when the episode starts and one `case.resolved` when it really
+   * ends, however many times the signal oscillated in between (ADR 0041
+   * Amendment 1). The flag therefore reads false exactly when an alert flaps.
+   * Flap noise is removed at case formation now, and a facet over a blind column
+   * would return a confidently empty list.
    */
-  readonly flapping: boolean | null;
   /**
    * Which tab, not which filter — see `AlertTab` for why the old rule here was
    * reversed. It lives in `AlertFilters` because it changes the request and
@@ -143,7 +152,6 @@ export const DEFAULT_FILTERS: AlertFilters = {
   cluster: [],
   namespace: [],
   alertname: [],
-  flapping: null,
   tab: "active",
   since: null,
   q: "",
@@ -182,7 +190,6 @@ function nothingElseFilters(f: AlertFilters): boolean {
     f.cluster.length === 0 &&
     f.namespace.length === 0 &&
     f.alertname.length === 0 &&
-    f.flapping === null &&
     f.since === null &&
     f.q.trim() === "" &&
     f.matcherText.trim() === ""
@@ -197,7 +204,6 @@ export function activeFilterCount(f: AlertFilters): number {
   if (f.cluster.length > 0) n += 1;
   if (f.namespace.length > 0) n += 1;
   if (f.alertname.length > 0) n += 1;
-  if (f.flapping !== null) n += 1;
   if (f.since !== null) n += 1;
   if (f.q.trim() !== "") n += 1;
   if (f.matcherText.trim() !== "") n += 1;
@@ -241,9 +247,6 @@ export function filtersFromSearch(search: string): AlertFilters {
   const sortRaw = p.get("sort");
   const sort: SortKey = sortRaw === "-first_seen_at" ? "-first_seen_at" : "-last_seen_at";
 
-  const flapRaw = p.get("flapping");
-  const flapping = flapRaw === "true" ? true : flapRaw === "false" ? false : null;
-
   // An unrecognised `tab=` degrades to the main list rather than to an error
   // page, exactly as an unrecognised `state=` is dropped.
   const tab: AlertTab = p.get("tab") === "quiet" ? "quiet" : "active";
@@ -254,7 +257,6 @@ export function filtersFromSearch(search: string): AlertFilters {
     cluster: csv(p.get("cluster")),
     namespace: csv(p.get("namespace")),
     alertname: csv(p.get("alertname")),
-    flapping,
     tab,
     since: p.get("since"),
     q: p.get("q") ?? "",
@@ -277,7 +279,6 @@ export function searchFromFilters(f: AlertFilters): string {
   if (f.cluster.length > 0) p.set("cluster", f.cluster.join(","));
   if (f.namespace.length > 0) p.set("namespace", f.namespace.join(","));
   if (f.alertname.length > 0) p.set("alertname", f.alertname.join(","));
-  if (f.flapping !== null) p.set("flapping", String(f.flapping));
   if (f.tab !== "active") p.set("tab", f.tab);
   if (f.since !== null && f.since !== "") p.set("since", f.since);
   if (f.q.trim() !== "") p.set("q", f.q.trim());
@@ -330,7 +331,6 @@ function sharedFilters(f: AlertFilters): {
   if (f.cluster.length > 0) query["cluster"] = [...f.cluster];
   if (f.namespace.length > 0) query["namespace"] = [...f.namespace];
   if (f.alertname.length > 0) query["alertname"] = [...f.alertname];
-  if (f.flapping !== null) query["flapping"] = f.flapping;
   // ⛔ ALWAYS SENT, NEVER OMITTED. Omitting it asks the server for both tabs at
   // once — a list with no honest heading, and on the main tab the exact behaviour
   // this change replaced. The server answers both spellings from `alert_snoozes`:

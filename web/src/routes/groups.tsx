@@ -34,7 +34,7 @@ import { GroupStateSchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
 import type { Group, GroupListQuery, GroupState } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { SeverityMark, StormChip } from "~/components/StateChip";
+import { SeverityMark } from "~/components/StateChip";
 import { Button } from "~/components/ui/Button";
 import { FilterRow } from "~/components/ui/FilterRow";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/Select";
@@ -56,12 +56,6 @@ const ACK_OPTIONS: Opt<"" | "acked" | "unacked">[] = [
   { value: "", label: "Any" },
   { value: "unacked", label: "Has an unacknowledged member" },
   { value: "acked", label: "Every member acknowledged" },
-];
-
-const STORM_OPTIONS: Opt<"" | "true" | "false">[] = [
-  { value: "", label: "Any" },
-  { value: "true", label: "In storm mode" },
-  { value: "false", label: "Not in storm mode" },
 ];
 
 const PAGE_SIZE = 50;
@@ -86,10 +80,6 @@ export default function GroupsRoute() {
   });
 
   const search = (): string => (typeof params["q"] === "string" ? params["q"] : "");
-  const storm = (): boolean | null => {
-    const raw = params["storm"];
-    return raw === "true" ? true : raw === "false" ? false : null;
-  };
   const ack = (): "acked" | "unacked" | null => {
     const raw = params["ack"];
     return raw === "acked" || raw === "unacked" ? raw : null;
@@ -106,13 +96,11 @@ export default function GroupsRoute() {
     navigate(`/groups${s === "" ? "" : `?${s}`}`, { scroll: false });
   };
 
-  // A cursor is minted under the whole filter set — state, search, storm and
-  // ack, all of them URL params — and §E.3 answers one carried across a filter
-  // change with `400 cursor_filter_mismatch`. The fingerprint is those four,
-  // so any of them changing discards the held pages (see `createKeysetFeed`).
-  const fingerprint = createMemo(
-    () => `${states().join(",")}|${search()}|${String(storm())}|${String(ack())}`,
-  );
+  // A cursor is minted under the whole filter set — state, search and ack, all
+  // of them URL params — and §E.3 answers one carried across a filter change
+  // with `400 cursor_filter_mismatch`. The fingerprint is those three, so any of
+  // them changing discards the held pages (see `createKeysetFeed`).
+  const fingerprint = createMemo(() => `${states().join(",")}|${search()}|${String(ack())}`);
 
   // The annotation cuts the type-inference loop the closure creates: the feed
   // reads the query's envelope, and the query's key carries the feed's cursor.
@@ -127,7 +115,6 @@ export default function GroupsRoute() {
     const q: Record<string, unknown> = { limit: PAGE_SIZE, sort: "-last_activity_at" };
     if (states().length > 0) q["state"] = [...states()];
     if (search() !== "") q["q"] = search();
-    if (storm() !== null) q["storm"] = storm();
     if (ack() !== null) q["ack"] = ack();
     if (feed.cursor() !== null) q["cursor"] = feed.cursor();
     return q as GroupListQuery;
@@ -193,29 +180,6 @@ export default function GroupsRoute() {
               title="A receipt belongs to a member's own firing episode. `unacked` returns groups holding at least one member whose open case carries none."
             >
               <SelectValue<Opt<"" | "acked" | "unacked">>>
-                {(state) => state.selectedOption().label}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent />
-          </Select>
-        </label>
-
-        <label class="flex items-center gap-1.5 text-body text-ink-muted">
-          <span>Storm</span>
-          <Select<Opt<"" | "true" | "false">>
-            multiple={false}
-            options={STORM_OPTIONS}
-            optionValue="value"
-            optionTextValue="label"
-            value={
-              STORM_OPTIONS.find((o) => o.value === (storm() === null ? "" : String(storm()))) ??
-              STORM_OPTIONS[0]!
-            }
-            onChange={(opt) => setParam("storm", opt && opt.value !== "" ? opt.value : null)}
-            itemComponent={(p) => <SelectItem item={p.item}>{p.item.rawValue.label}</SelectItem>}
-          >
-            <SelectTrigger aria-label="Storm">
-              <SelectValue<Opt<"" | "true" | "false">>>
                 {(state) => state.selectedOption().label}
               </SelectValue>
             </SelectTrigger>
@@ -292,9 +256,6 @@ const GroupRow = (props: { readonly group: Group }) => {
               <Chip title="A new generation opens when a closed group re-opens. One generation owns exactly one chat thread.">
                 gen {g().generation}
               </Chip>
-            </Show>
-            <Show when={g().storm_mode}>
-              <StormChip />
             </Show>
             <Show when={g().state === "closed"}>
               <Chip>closed</Chip>

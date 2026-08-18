@@ -93,9 +93,9 @@ function topSeverity(bucket: AlertRollup): string | null {
 }
 
 /**
- * The bucket row's grid, so a chip that only sometimes renders — unacked,
- * flapping, snoozed — can never shift "Last seen" sideways depending on which
- * of its neighbours happened to show up on *this* bucket. Every track but the
+ * The bucket row's grid, so a cell whose content varies in width from bucket to
+ * bucket — the state counts, above all — can never shift "Last seen" sideways
+ * depending on what happened to show up on *this* bucket. Every track but the
  * bucket name is a fixed width, sized for its worst realistic
  * content: the div-soup equivalent of `AlertTable`'s `<colgroup>`, one grid per
  * row rather than shared table columns, so this string is the single source
@@ -120,18 +120,28 @@ function topSeverity(bucket: AlertRollup): string | null {
  * 701 px including the gutter, leaving the bucket name — the one thing the view
  * exists to show — 275 px at 1280 px. Re-measured against what each cell
  * actually renders (severity's widest label is the 82 px "no severity"; "Total"
- * never exceeds 47 px; four state counts want 131 px and three signal chips want
- * 210 px, and those two have always clipped by design) the tracks now total
- * 693 px, leaving the name **283 px**.
+ * never exceeds 47 px; four state counts want 131 px and have always clipped by
+ * design) the tracks now total 565 px, leaving the name **411 px**.
  *
- * The clipping is deliberately unequal, and that is the decision: `By state` and
- * `Signals` lose their last chip before the bucket name loses a character,
- * because a count you can read three of is still a count and a name cut in half
- * is not a name. The `minmax` floor is what turns any further squeeze into an
- * honest scrollbar rather than a silently crushed name; 16 rem is the width
- * below which a bucket key stops being identifiable.
+ * The clipping is deliberately unequal, and that is the decision: `By state`
+ * loses its last count before the bucket name loses a character, because a count
+ * you can read three of is still a count and a name cut in half is not a name.
+ * The `minmax` floor is what turns any further squeeze into an honest scrollbar
+ * rather than a silently crushed name; 16 rem is the width below which a bucket
+ * key stops being identifiable.
+ *
+ * ⛔ THERE IS NO `Signals` TRACK ANY MORE, AND ITS 8 rem WENT TO THE NAME. The
+ * column reserved a fixed width for three chips, and every one of them has since
+ * been withdrawn for its own reason: `unacked_count`, because an ack is a receipt
+ * on ONE firing and a bucket counts identities; `snoozed`, because a roll-up
+ * shares the list's tab and so could only read 0 or the bucket's whole total;
+ * and `flapping_count`, because the flap detector went blind (ADR 0041
+ * Amendment 1) — an episode damped by the case retention window W appends none of
+ * the lifecycle events `flap_score` counts, so the number reads 0 exactly when an
+ * alert is oscillating. A reserved track for chips that can never render is width
+ * taken from the one thing this view exists to show.
  */
-const BUCKET_TRACKS = `${TRACK.severity} minmax(16rem,1fr) ${TRACK.state} 5rem 7rem 8rem ${TRACK.seen}`;
+const BUCKET_TRACKS = `${TRACK.severity} minmax(16rem,1fr) ${TRACK.state} 5rem 7rem ${TRACK.seen}`;
 
 /**
  * The row's shared class half; the tracks above arrive via `style`.
@@ -201,7 +211,6 @@ export const GroupedAlerts: Component<GroupedAlertsProps> = (props) => (
           <span class={cn(BUCKET_CELL, "truncate")}>State</span>
           <span class={cn(BUCKET_CELL, "truncate")}>Total</span>
           <span class={cn(BUCKET_CELL, "truncate")}>By state</span>
-          <span class={cn(BUCKET_CELL, "truncate")}>Signals</span>
           <span class={cn(BUCKET_CELL, "truncate text-right")}>Last seen</span>
         </div>
       </div>
@@ -331,33 +340,13 @@ const BucketRow: Component<{
         </For>
       </span>
 
-      {/* The chips below are each conditional on their own count, but together
-          they still occupy exactly one grid cell: the reserved column is the
-          same width whether none or all of them render, so it alone absorbs
-          that variability and nothing after it has to.
-
-          ⛔ THERE IS NO "N unseen" CHIP. It counted `unacked_count`, which the
-          bucket no longer carries: every other counter here is a property of
-          the Alert, and an ack is a receipt for one of its firings. A bucket
-          that said "12 unseen" while some of those twelve had been acknowledged
-          during a firing that ended months ago is worse than no number. */}
-      <div class={cn(BUCKET_CELL, "flex items-center gap-xs overflow-hidden")}>
-        <Show when={b().flapping_count > 0}>
-          <span
-            class="shrink-0 rounded-chip border border-line bg-surface px-2xs text-meta leading-4 text-ink-muted"
-            title="Members oto has damped as flapping. A visible state, never a silent drop."
-          >
-            {b().flapping_count} flapping
-          </span>
-        </Show>
-
-        {/* ⛔ THERE IS NO `snoozed` CHIP, AND ITS ABSENCE IS NOT AN OVERSIGHT. A
-            roll-up shares the filter of the list it summarises, and the list is
-            always on one tab or the other — so this count could only ever read 0
-            (main tab) or the bucket's whole total (Quiet). It would be a
-            restatement of which tab you are on, drawn once per bucket. The
-            Quiet tab's own badge is where the number lives now. */}
-      </div>
+      {/* ⛔ THE `Signals` CELL IS GONE ENTIRELY, AND `BUCKET_TRACKS` CARRIES THE
+          WHOLE ARGUMENT. Its last surviving chip read `flapping_count`, and the
+          flap detector no longer sees a flap: an episode damped by the case
+          retention window W appends none of the lifecycle events `flap_score`
+          counts, so the count reads 0 precisely when an alert is oscillating. A
+          chip that goes quiet exactly when its subject occurs is worse than no
+          chip at all. */}
 
       <span class={cn(BUCKET_CELL, "truncate text-right text-meta text-ink-subtle")}>
         <RelativeTime value={b().last_seen_at} label="Newest activity" />

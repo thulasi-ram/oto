@@ -63,20 +63,14 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     tone: NEUTRAL,
     shape: "dot",
   },
-  "alert.flapping_started": {
-    label: "Damped as flapping",
-    category: "lifecycle",
-    tone: NEUTRAL_STRONG,
-    shape: "bar",
-    note: "Notifications become update-only with a periodic digest. Nothing is dropped.",
-  },
-  "alert.flapping_ended": {
-    label: "No longer flapping",
-    category: "lifecycle",
-    tone: NEUTRAL,
-    shape: "bar",
-  },
-
+  // ⛔ `alert.flapping_started` AND `alert.flapping_ended` WERE HERE AND ARE GONE
+  // FROM THE ENUM (migration `00060`). The flap detector went blind under the case
+  // retention window W (ADR 0041 Amendment 1) rather than merely idle: an episode
+  // damped by W appends none of the `case.*` events `flap_score` counts, so the
+  // crossing fell below the threshold exactly when an alert was flapping hardest.
+  // They were briefly kept here so an old timeline could still render one; the
+  // CHECK now refuses the spellings and the database was reset, so there is no
+  // such row to render.
   "case.opened": {
     label: "Started firing",
     category: "lifecycle",
@@ -160,20 +154,13 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     tone: NEUTRAL,
     shape: "dot",
   },
-  "group.storm_started": {
-    label: "Alert group entered storm mode",
-    category: "group",
-    tone: NEUTRAL_STRONG,
-    shape: "bar",
-    note: "More alerts arrived in one group at once than the storm threshold. One message with a count is posted instead of one per alert.",
-  },
-  "group.storm_ended": {
-    label: "Alert group left storm mode",
-    category: "group",
-    tone: NEUTRAL,
-    shape: "bar",
-  },
-
+  // ⛔ `group.storm_started` AND `group.storm_ended` WERE HERE AND ARE GONE FROM
+  // THE ENUM (ADR 0042, migration `00060`). Storm damping is REMOVED, not paused:
+  // a flood of two hundred real firings is a truthful report that something is
+  // badly wrong, and withholding it made oto's silence indistinguishable from a
+  // signal that never fired (§B.6). Unlike `group.member_joined` above — which is
+  // RETIRED and stays, because `ev_type_ck` still admits it — the CHECK now
+  // refuses these two spellings outright.
   "rule.snapshot_captured": {
     label: "Rule captured",
     category: "rule",

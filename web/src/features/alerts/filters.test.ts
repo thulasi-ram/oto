@@ -62,7 +62,6 @@ describe("filters <-> URL", () => {
       cluster: ["prod-eu"],
       namespace: ["payments"],
       alertname: ["HighErrorRate"],
-      flapping: true,
       tab: "quiet",
       since: "2026-08-01T00:00:00.000Z",
       q: "error rate",
@@ -125,7 +124,9 @@ describe("counting what is on", () => {
   });
 
   it("counts each axis once", () => {
-    expect(activeFilterCount(f({ state: ["firing", "resolved"], flapping: true, q: "x" }))).toBe(3);
+    expect(activeFilterCount(f({ state: ["firing", "resolved"], severity: ["critical"], q: "x" }))).toBe(
+      3,
+    );
   });
 
   // §M.9 / ADR 0035. `expired` is the one state whose meaning is transience —

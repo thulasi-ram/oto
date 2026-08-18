@@ -17,9 +17,9 @@
  *
  * The spread is chosen to make the design answer for itself: every lifecycle
  * state, both acknowledgement states, the three common severities plus an
- * operator-invented one and an absent one, flapping rows, snoozed rows, rows
- * with no namespace and no service, and alert names long enough to force the
- * name column to truncate.
+ * operator-invented one and an absent one, snoozed rows, rows with no namespace
+ * and no service, and alert names long enough to force the name column to
+ * truncate.
  */
 import type {
   Alert,
@@ -1281,9 +1281,9 @@ const CASE_ID = "0f8fad5b-d9cb-469f-a165-708677289501";
 const GROUP_ID = "5e2b8c1d-4a6f-4b8c-9d0e-1f2a3b4c5d6e";
 
 /**
- * The alert the detail section is drawn for: flapping, unacknowledged, critical
- * and long-named, because that is the row every part of the header has to cope
- * with at once.
+ * The alert the detail section is drawn for: unacknowledged, critical and
+ * long-named, because that is the row every part of the header has to cope with
+ * at once.
  */
 export const PREVIEW_DETAIL: AlertDetail = {
   id: DETAIL_ID,
@@ -1369,13 +1369,18 @@ export const PREVIEW_DETAIL: AlertDetail = {
     generation: 4,
     title: "payments · KubernetesStatefulSetReplicasMismatch",
     state: "open",
-    storm_mode: false,
   },
   delivery_summary: { total: 11, sent: 8, failed: 2, dead: 1, skipped: 3, pending: 0 },
 };
 
 /** The timeline, newest first — the order the detail screen opens in. */
 export const PREVIEW_EVENTS: readonly AlertEvent[] = [
+  // ⛔ A RETIRED EVENT TYPE, ON PURPOSE. Nothing mints `alert.flapping_started`
+  // any more — the flap detector went blind under the case retention window W
+  // (ADR 0041 Amendment 1) — and `alert_events` is retained thirteen months, so
+  // a real timeline still opens on rows like this one. It is here so the preview
+  // exercises the path that renders them, summary and payload exactly as the
+  // server wrote them at the time.
   {
     id: "a1000000-0000-4000-8000-000000000001",
     alert_id: DETAIL_ID,

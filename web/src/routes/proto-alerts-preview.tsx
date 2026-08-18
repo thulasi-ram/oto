@@ -42,7 +42,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { clustersQuery, labelNamesQuery } from "~/api/queries";
 import type { Alert, ListEnvelope, Cluster, State } from "~/api/types";
 import {
-  FlappingChip,
   STATE_BAR,
   STATE_MEANING,
   SeverityMark,
@@ -147,8 +146,8 @@ for (const [key, data] of PREVIEW_FIXTURES) previewClient.setQueryData(key, data
  * The real screen sends every one of these to the server, and this preview has
  * no server — but a filter panel whose controls change nothing cannot be
  * reviewed, so the axes that need no index (state, severity, cluster, namespace,
- * flapping, snoozed and free text) are honoured locally. Matchers, `since`
- * and sorting are not: approximating those is how a preview starts lying.
+ * snoozed and free text) are honoured locally. Matchers, `since` and sorting are
+ * not: approximating those is how a preview starts lying.
  */
 function matchesPreviewFilters(alert: Alert, f: AlertFilters): boolean {
   if (f.state.length > 0 && !f.state.includes(alert.state)) return false;
@@ -156,7 +155,6 @@ function matchesPreviewFilters(alert: Alert, f: AlertFilters): boolean {
   if (f.cluster.length > 0 && !f.cluster.includes(alert.cluster_key)) return false;
   if (f.namespace.length > 0 && !f.namespace.includes(alert.namespace ?? "")) return false;
   if (f.alertname.length > 0 && !f.alertname.includes(alert.alertname)) return false;
-  if (f.flapping !== null && alert.is_flapping !== f.flapping) return false;
   // The tab, applied client-side the way the server applies `?snoozed=`: the
   // main tab is the alerts with no snooze in force, Quiet is the rest.
   const quiet = alert.snooze !== null && alert.snooze !== undefined;
@@ -232,7 +230,7 @@ const ListBand: Component = () => {
   return (
     <Band
       title="Alert list — filter toolbar and table"
-      note="The shipping FilterBar and AlertTable, stacked in the layout /alerts uses. The toolbar filters these fixtures for real on state, severity, cluster, namespace, ack, flapping, snoozed and free text."
+      note="The shipping FilterBar and AlertTable, stacked in the layout /alerts uses. The toolbar filters these fixtures for real on state, severity, cluster, namespace, snoozed and free text."
     >
       <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <FilterBar
@@ -411,10 +409,10 @@ const DetailHeader: Component = () => (
             }
           />
           {/* No `AckChip`: `acked` is not a state an ALERT can be in — a receipt
-              belongs to one firing, and this preview mirrors the real header. */}
-          <Show when={PREVIEW_DETAIL.is_flapping}>
-            <FlappingChip />
-          </Show>
+              belongs to one firing, and this preview mirrors the real header.
+              No `FlappingChip` either: the flap detector went blind under the
+              case retention window W (ADR 0041 Amendment 1), so nothing presents
+              flapping as a live signal any more. */}
           <SnoozeChip snooze={PREVIEW_DETAIL.snooze ?? null} />
         </div>
 
@@ -459,9 +457,6 @@ const DetailHeader: Component = () => (
           <span title="Firing episodes since oto first saw this identity">
             episodes{" "}
             <span class="text-ink-muted">{fmtCount(PREVIEW_DETAIL.total_cases)}</span>
-          </span>
-          <span title="EWMA of state transitions per hour. A derived signal, never a state.">
-            flap score <span class="text-ink-muted">{PREVIEW_DETAIL.flap_score.toFixed(1)}</span>
           </span>
         </div>
       </div>

@@ -73,7 +73,6 @@ import {
   createEffect,
   createMemo,
   createSignal,
-  createUniqueId,
   type Component,
   type JSX,
   type ParentComponent,
@@ -81,7 +80,7 @@ import {
 import { useQuery } from "@tanstack/solid-query";
 
 import { clustersQuery, labelNamesQuery } from "~/api/queries";
-import { SeverityBars, StateGlyph, WaveGlyph } from "~/components/glyphs";
+import { SeverityBars, StateGlyph } from "~/components/glyphs";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/Popover";
 import {
   Select,
@@ -142,10 +141,9 @@ const SORT_LABEL: Record<SortKey, string> = {
 };
 const SORT_OPTIONS: readonly SortKey[] = ["-last_seen_at", "-first_seen_at"];
 
-/**
- * Flapping is a nullable boolean stood in for as a string tri-state — `""` for
- * "unset" — because that is the value type both a native `<select>` and the
- * Kobalte listbox key that replaces it need.
+/*
+ * ⛔ THIS TOOLBAR NARROWS FOUR AXES, AND THE THREE IT DOES NOT ARE EACH ABSENT
+ * FOR THEIR OWN REASON. Every one of them was a tri-state here once.
  *
  * ⛔ THERE IS NO ACK CONTROL, AND THERE MUST NOT BE ONE HERE. `?ack=` read
  * `alerts.ack_state`, a column that no longer exists: an acknowledgement is a
@@ -159,27 +157,17 @@ const SORT_OPTIONS: readonly SortKey[] = ["-last_seen_at", "-first_seen_at"];
  * snoozed alerts safe — say, permanently and at rest, how many are being held
  * back and whether any of them is still firing. `AlertTabs` does that, and two
  * controls for one axis would let the toolbar and the tab bar disagree.
- */
-const FLAPPING_OPTIONS = ["", "true", "false"] as const;
-const FLAPPING_LABEL: Record<(typeof FLAPPING_OPTIONS)[number], string> = {
-  "": "Any",
-  true: "Damped as flapping",
-  false: "Not flapping",
-};
-
-/**
- * ⛔ THE TRI-STATE TRIGGERS SAY THEIR OWN LABEL RATHER THAN ASKING `SelectValue`.
  *
- * Kobalte's `Select.Value` renders its selection, and an empty-string key is not
- * one as far as it is concerned — so the three tri-states, whose "no filter"
- * member is `""` by construction (see the note above), rendered a **blank
- * trigger** in their default state. A control that has stopped saying "Any" is
- * a control an operator reads as broken, or worse, as unset when it is set.
- * Reading the label straight off the filter set costs one lookup and cannot
- * disagree with the listbox, because both index the same `*_LABEL` record.
+ * ⛔ AND THERE IS NO FLAPPING CONTROL, BECAUSE THE COLUMN BEHIND IT WENT BLIND.
+ * `?flapping=` reads `alerts.is_flapping`, which `ScoreFlaps` derives from the
+ * `case.*` lifecycle events inside `flap_window_s`. A flap damped by the case
+ * retention window W appends none of them — one `case.opened` at the start of
+ * the episode and one `case.resolved` at its real end, however many times the
+ * signal oscillated in between (ADR 0041 Amendment 1) — so the flag reads false
+ * exactly when an alert is flapping. Flap noise is removed at case formation
+ * now, which is why nothing here presents flapping as a live signal any more; a
+ * filter is the loudest possible claim that a column still means something.
  */
-const TRI_STATE_KEY = (value: boolean | null): "" | "true" | "false" =>
-  value === null ? "" : value ? "true" : "false";
 
 /**
  * The Cluster picker's own "no filter" row — a real entry in its `options`,
@@ -822,21 +810,12 @@ const FilterMenu: ParentComponent<{
  * A labelled band inside a menu.
  *
  * The label is the quietest type in the app (`text-micro`, `text-ink-subtle`)
- * on purpose, and it is a real `id` target: the control under it points at it
- * with `aria-labelledby`, so each axis is named exactly once — on screen and in
- * the accessibility tree alike.
+ * on purpose: each axis is named exactly once, above the control that narrows
+ * it, so nothing inside has to repeat the word.
  */
-const MenuSection: ParentComponent<{
-  readonly label: string;
-  readonly labelId?: string | undefined;
-  /** A glyph from the §0.3 alphabet, beside the label. Tier A ink. */
-  readonly leading?: JSX.Element;
-}> = (props) => (
+const MenuSection: ParentComponent<{ readonly label: string }> = (props) => (
   <div class="flex min-w-0 flex-col gap-2xs">
-    <h3 class={cn(SECTION_LABEL, "flex items-center gap-2xs text-ink-subtle")}>
-      {props.leading}
-      <span id={props.labelId}>{props.label}</span>
-    </h3>
+    <h3 class={cn(SECTION_LABEL, "flex items-center gap-2xs text-ink-subtle")}>{props.label}</h3>
     {props.children}
   </div>
 );
@@ -1024,13 +1003,6 @@ function summarise(parts: readonly string[]): string | undefined {
 export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
   const clusters = useQuery(() => clustersQuery());
 
-  /**
-   * Each menu section names its own axis, and the control inside points at that
-   * name rather than repeating it. One visible label per axis, one accessible
-   * name per control, and no second copy to drift.
-   */
-  const flappingLabelId = createUniqueId();
-
   const clusterOptions = createMemo<readonly ClusterOption[]>(() => [
     ALL_CLUSTERS,
     ...(clusters.data?.data ?? []),
@@ -1071,7 +1043,6 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
     const f = props.filters;
     const out: string[] = [];
     for (const s of f.state) out.push(STATE_LABEL[s]);
-    if (f.flapping !== null) out.push(f.flapping ? "Flapping" : "Steady");
     return out;
   });
 
@@ -1241,38 +1212,6 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
                   )}
                 </For>
               </ToggleGroup>
-            </MenuSection>
-
-            {/* The square wave is the §0.3 mark for flapping, and it is not in
-                the state alphabet on purpose: flapping is a derived signal, not
-                a state. Tier A ink here, like every other glyph in this file. */}
-            <MenuSection
-              label="Flapping"
-              labelId={flappingLabelId}
-              leading={<WaveGlyph class="size-3" />}
-            >
-              <Select<(typeof FLAPPING_OPTIONS)[number]>
-                options={[...FLAPPING_OPTIONS]}
-                optionTextValue={(v) => FLAPPING_LABEL[v]}
-                value={TRI_STATE_KEY(props.filters.flapping)}
-                onChange={(v) => {
-                  if (v === null) return;
-                  patch({ flapping: v === "" ? null : v === "true" });
-                }}
-                itemComponent={(itemProps) => (
-                  <SelectItem item={itemProps.item}>
-                    {FLAPPING_LABEL[itemProps.item.rawValue]}
-                  </SelectItem>
-                )}
-              >
-                <SelectTrigger id="alert-flapping" aria-labelledby={flappingLabelId}>
-                  <span class="min-w-0 truncate text-left">
-                    {FLAPPING_LABEL[TRI_STATE_KEY(props.filters.flapping)]}
-                  </span>
-                </SelectTrigger>
-                <SelectHiddenSelect />
-                <SelectContent />
-              </Select>
             </MenuSection>
           </FilterMenu>
 

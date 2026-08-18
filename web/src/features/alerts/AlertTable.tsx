@@ -65,13 +65,7 @@ import { A } from "@solidjs/router";
 
 import type { Alert, RuleSnapshot } from "~/api/types";
 import { RelativeTime, Elapsed } from "~/components/Time";
-import {
-  FlappingChip,
-  SeverityMark,
-  STATE_BAR,
-  StateChip,
-  normaliseSeverity,
-} from "~/components/StateChip";
+import { SeverityMark, STATE_BAR, StateChip, normaliseSeverity } from "~/components/StateChip";
 import { SnoozeChipUnknownUntil } from "~/components/SnoozeChip";
 import { Button } from "~/components/ui/Button";
 import {
@@ -200,10 +194,9 @@ export const TRACK = {
   rule: "7.5rem",
   /**
    * `StateChip` plus whichever derived chip is beside it, measured:
-   * `Firing`+`Flapping` is 131 px and `Firing`+`Notifications held` is wider
-   * still, so 144 px of content clears the pair that actually occurs on a busy
-   * list. The three-chip row (194 px) clips its last chip, which is the
-   * deliberate part — a third chip must never be able to shove `Last seen`
+   * `Firing`+`Notifications held` is the widest pair that occurs, so 144 px of
+   * content clears it on a busy list. A third chip clips at the column edge,
+   * which is the deliberate part — it must never be able to shove `Last seen`
    * sideways.
    */
   state: "10.5rem",
@@ -972,9 +965,6 @@ const AlertRow: Component<AlertRowProps> = (props) => {
             reports "acknowledged" as something the alert is. */}
         <div class="flex min-w-0 items-center gap-2xs overflow-hidden">
           <StateChip state={props.alert.state} size="sm" urgent={urgent()} />
-          <Show when={props.alert.is_flapping}>
-            <FlappingChip />
-          </Show>
           {/* Tier A, and beside the state chip rather than instead of it: the
               row keeps its firing tint and its true severity. Snoozing holds
               oto's notifications, it does not make the alert less serious. */}

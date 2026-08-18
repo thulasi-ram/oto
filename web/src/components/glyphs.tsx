@@ -224,26 +224,14 @@ export const StateGlyph: Component<StateGlyphProps> = (props) => (
 /* Derived signals                                                            */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Flapping is not a state, so it is not in the state alphabet: a square wave,
- * drawn with the same stroke and the same 1..13 box. Two full cycles read as
- * "this has been up and down" at 14px without any curve in the file.
+/*
+ * ⛔ THE ALPHABET HAS NO MARK FOR A DERIVED SIGNAL ANY MORE. `WaveGlyph` — a
+ * square wave, deliberately outside the state alphabet because flapping is not a
+ * state — had exactly one subject, and the flap detector no longer sees it: an
+ * episode damped by the case retention window W appends none of the `case.*`
+ * events `flap_score` counts, so `is_flapping` reads false precisely when an
+ * alert oscillates (ADR 0041 Amendment 1). Nothing in the UI presents flapping
+ * as a live signal, so nothing needs the mark. The path was
+ * `M1 11 V3 H4.5 V11 H8 V3 H11.5 V11 H13`, on the same 1..13 box and the same
+ * stroke as every glyph above, if a derived signal ever earns one again.
  */
-const WAVE_PATH = "M1 11 V3 H4.5 V11 H8 V3 H11.5 V11 H13";
-
-export const WaveGlyph: Component<{ readonly label?: string; readonly class?: string }> = (
-  props,
-) => (
-  <svg
-    viewBox="0 0 14 14"
-    class={cn("size-3.5 shrink-0", props.class)}
-    fill="none"
-    stroke-linecap="butt"
-    stroke-linejoin="miter"
-    role={props.label === undefined ? undefined : "img"}
-    aria-label={props.label}
-    aria-hidden={props.label === undefined ? "true" : undefined}
-  >
-    <path d={WAVE_PATH} stroke="currentColor" stroke-width={STROKE} />
-  </svg>
-);

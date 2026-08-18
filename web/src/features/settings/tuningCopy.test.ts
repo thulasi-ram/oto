@@ -120,8 +120,6 @@ const SHIPPED: Readonly<Partial<Record<KnobKey, number>>> = {
   flap_threshold: 5,
   flap_window_s: 7200,
   flap_digest_interval_s: 900,
-  storm_window_s: 60,
-  storm_cooldown_s: 600,
   // DefaultUnackedReminderAfter is ZERO, and the zero is the decision: oto ships
   // no org-level reminder default at all (`identity/domain/org.go:246-250`).
   unacked_reminder_after_s: 0,
@@ -194,26 +192,25 @@ function shapeOf(key: KnobKey, am: AmRef = AM, num: Num = N): readonly GuidanceL
 /* -------------------------------------------------------------------------- */
 
 describe("the guided knobs as a set", () => {
-  it("is the nine the screen computes for, and the other eight are the ones the doc declines to rule on", () => {
-    // The count is the ticket's own. It is asserted rather than trusted because
-    // `KnobKey` is derived from the write contract: the day the contract grows a
-    // setting, this number is the thing that should be reconsidered.
-    expect(GUIDED).toHaveLength(9);
+  it("is the seven the screen computes for, and the other seven are the ones the doc declines to rule on", () => {
+    // The count is asserted rather than trusted because `KnobKey` is derived from
+    // the write contract: the day the contract grows a setting, this number is the
+    // thing that should be reconsidered. It was nine and eight until ADR 0042
+    // deleted `storm_threshold`, `storm_window_s` and `storm_cooldown_s`.
+    expect(GUIDED).toHaveLength(7);
 
     const unguided = (Object.keys(KNOBS) as KnobKey[]).filter(
       (k) => KNOBS[k].guide === undefined,
     );
     // Each of these is unguided for a stated reason, and none of the reasons is
-    // "nobody got round to it": `storm_threshold` depends on `group_by`
-    // cardinality, which is not a duration; the mention rows are Slack questions;
-    // retention and verbosity have no Alertmanager term at all. Inventing a
-    // threshold for any of them is the one thing this screen must not do.
+    // "nobody got round to it": the mention rows are Slack questions; retention and
+    // verbosity have no Alertmanager term at all. Inventing a threshold for any of
+    // them is the one thing this screen must not do.
     expect([...unguided].sort()).toEqual([
       "broadcast_on_resolved",
       "default_verbosity",
       "event_retention_months",
       "raw_retention_days",
-      "storm_threshold",
       "unacked_reminder_mention",
       "unacked_reminder_mention_list",
       "unacked_reminder_mention_min_severity",
@@ -251,8 +248,6 @@ describe("the guided knobs as a set", () => {
       flap_threshold: ["groupInterval"],
       flap_window_s: ["groupInterval"],
       flap_digest_interval_s: ["groupInterval"],
-      storm_window_s: ["groupWait"],
-      storm_cooldown_s: ["groupInterval"],
       unacked_reminder_after_s: ["repeatInterval"],
     };
 
@@ -293,9 +288,9 @@ describe("the guided knobs as a set", () => {
       }
     }
 
-    const worded = guideOf("storm_cooldown_s")(60, asDefault, N);
+    const worded = guideOf("flap_digest_interval_s")(60, asDefault, N);
     expect(worded?.text).toContain("Alertmanager's default group_interval");
-    expect(guideOf("storm_cooldown_s")(60, AM, N)?.text).toContain("your group_interval");
+    expect(guideOf("flap_digest_interval_s")(60, AM, N)?.text).toContain("your group_interval");
   });
 
   it("calls every shipped default consistent against Alertmanager's own defaults", () => {
@@ -902,118 +897,15 @@ describe("flap_digest_interval_s", () => {
     // the file whose whole discipline is that every sentence is reachable.
     //
     // This pins what the arithmetic WOULD do, so that the day something else makes a
-    // zero reachable the shape is already written down. `storm_window_s` is the
-    // separate case: `group_wait: 0` IS legal upstream, and that one is guarded.
+    // zero reachable the shape is already written down. No guide reads `group_wait`
+    // any more — `storm_window_s` was the only one, and ADR 0042 deleted it — so a
+    // legal upstream `group_wait: 0` now reaches no arithmetic at all.
     const zero = amRef({ groupInterval: observed(0) });
     expect(g(0, zero, N)?.text).toContain("NaN x group_interval");
     const positive = g(900, zero, N);
     expect(positive?.level).toBe("tight");
     expect(positive?.suggest).toBe(0);
     expect(positive!.suggest!).toBeLessThan(boundsOf("flap_digest_interval_s").min);
-  });
-});
-
-/* -------------------------------------------------------------------------- */
-/* Storm collapse                                                             */
-/* -------------------------------------------------------------------------- */
-
-describe("storm_window_s", () => {
-  const g = guideOf("storm_window_s");
-
-  it("degrades in one direction only: unreachable, then tight, then consistent", () => {
-    expect(shapeOf("storm_window_s")).toEqual(["inert", "tight", "ok"]);
-  });
-
-  it("demands STRICTLY longer than group_wait, so equality is unreachable rather than tight", () => {
-    // `amRule`: "It must be longer than group_wait". A window equal to group_wait
-    // sees a burst Alertmanager is still batching arrive in one delivery after the
-    // window closed, so it never looks like a burst — that is inert, not tight,
-    // and it is the only guide on the screen using a non-strict comparison to say
-    // so.
-    expect(g(AM_GROUP_WAIT_S, AM, N)?.level).toBe("inert");
-    expect(g(AM_GROUP_WAIT_S + 1, AM, N)?.level).toBe("tight");
-  });
-
-  it("puts the shipped default at the 2 × group_wait shape and accepts nothing less", () => {
-    expect(SHIPPED.storm_window_s).toBe(2 * AM_GROUP_WAIT_S);
-    expect(g(2 * AM_GROUP_WAIT_S, AM, N)?.level).toBe("ok");
-    expect(g(2 * AM_GROUP_WAIT_S - 1, AM, N)?.level).toBe("tight");
-    for (const v of [10, 30, 31, 59]) {
-      expect(g(v, AM, N)?.suggest, `at ${v}`).toBe(2 * AM_GROUP_WAIT_S);
-    }
-  });
-
-  it("tracks a raised group_wait rather than a constant, which is the whole advice", () => {
-    // `amRule`: "If you have raised group_wait to reduce noise, raise this with
-    // it." So the shipped 60 must stop being consistent once group_wait passes 30.
-    expect(g(60, amRef({ groupWait: observed(30) }), N)?.level).toBe("ok");
-    expect(g(60, amRef({ groupWait: observed(60) }), N)?.level).toBe("inert");
-    expect(g(60, amRef({ groupWait: observed(45) }), N)?.level).toBe("tight");
-  });
-
-  it("says what a group_wait of 0 means instead of dividing by it", () => {
-    // ⛔ THE ONE REACHABLE ZERO OF THE THREE, WHICH IS WHY THIS ONE IS GUARDED.
-    // Unlike `group_interval`, Alertmanager accepts `group_wait: 0` — it is what an
-    // operator writes to switch the batching delay off — and oto's own parser covers
-    // it (`amconfig_test.go:158`). Every legal window therefore reported "Infinity x
-    // group_wait": a number nobody can act on, attached to a value that is in fact
-    // fine. With no batching delay there is no batch boundary, and that is what the
-    // sentence says now.
-    const zero = amRef({ groupWait: observed(0) });
-    for (const v of [10, 60, 3600, boundsOf("storm_window_s").max]) {
-      const fine = g(v, zero, N);
-      expect(fine?.level, `at ${v}`).toBe("ok");
-      expect(fine?.text, `at ${v}`).not.toContain("Infinity");
-      expect(fine?.text, `at ${v}`).toContain("No batching delay at all");
-    }
-    // Below the guard, the `2 x` shape degenerates to 0 — which is only reachable at
-    // a window of 0, itself below the knob's minimum, and which
-    // `TuningSection.tsx:1393-1400` clamps into bounds before it reaches the button.
-    const verdict = g(0, zero, N);
-    expect(verdict?.level).toBe("inert");
-    expect(verdict?.suggest).toBe(0);
-    expect(verdict!.suggest!).toBeLessThan(boundsOf("storm_window_s").min);
-  });
-});
-
-describe("storm_cooldown_s", () => {
-  const g = guideOf("storm_cooldown_s");
-
-  it("has a floor and deliberately no ceiling: unreachable, then consistent", () => {
-    // The doc gives one inequality for this knob and declines to give an upper
-    // rule, so the closure must not manufacture one — a value at the top of the
-    // write range is still consistent.
-    expect(shapeOf("storm_cooldown_s")).toEqual(["inert", "ok"]);
-    expect(g(boundsOf("storm_cooldown_s").max, AM, N)?.level).toBe("ok");
-  });
-
-  it("accepts equality with group_interval, the boundary the flicker argument draws", () => {
-    // `amRule`: "Keep it at or above group_interval, otherwise storm mode flickers
-    // across consecutive batches." At exactly group_interval there is no flicker.
-    expect(g(AM_GROUP_INTERVAL_S - 1, AM, N)?.level).toBe("inert");
-    expect(g(AM_GROUP_INTERVAL_S, AM, N)?.level).toBe("ok");
-  });
-
-  it("suggests the 2 × shape the shipped default uses", () => {
-    // `amRule`: "The shipped 10m is 2 x the Alertmanager default."
-    expect(SHIPPED.storm_cooldown_s).toBe(2 * AM_GROUP_INTERVAL_S);
-    const verdict = g(60, AM, N);
-    expect(verdict?.suggest).toBe(2 * AM_GROUP_INTERVAL_S);
-    expect(g(verdict!.suggest!, AM, N)?.level).toBe("ok");
-  });
-
-  it("would render a ratio against a group_interval of 0, which no running Alertmanager can report", () => {
-    // ⭐ RULED NOT REACHABLE for the same reason as `flap_digest_interval_s`: these
-    // numbers come off a running Alertmanager, which refuses to start with
-    // `group_interval: 0`. The code is left alone and the shape is pinned. This knob
-    // has only a lower branch, so a zero would not produce an out-of-bounds
-    // suggestion — it would produce a confident CONSISTENT for every value, worded
-    // with a number no operator can act on.
-    const zero = amRef({ groupInterval: observed(0) });
-    const verdict = g(600, zero, N);
-    expect(verdict?.level).toBe("ok");
-    expect(verdict?.text).toContain("Infinity x group_interval");
-    expect(g(0, zero, N)?.text).toContain("NaN x group_interval");
   });
 });
 

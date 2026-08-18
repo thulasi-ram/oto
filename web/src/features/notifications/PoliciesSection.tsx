@@ -265,15 +265,29 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   // notion of who is next — which is why the reason is not called what the rest
   // of this industry calls it (SPEC §G.9.1, §A.1).
   unacked_reminder: "still firing and unacknowledged",
-  // A fact about ONE group going quiet, and it stays on that group's thread.
-  // The channel-level "oto has started withholding" notice is a separate,
-  // once-per-channel decision and is not a Reason a policy selects.
-  //
   // There is deliberately no `severity_raised` here: `severity` is an ordinary
   // Prometheus label and is hashed into `alert_key`, so two severities of one
   // rule are two Alerts rather than one Alert changing. Nothing can observe a
   // rise, so nothing could ever write it (openapi `NotificationReason`).
-  storm: "storm mode",
+  //
+  // ⛔ `storm` WAS HERE, LABELLED "(retired)", AND IS NOW GONE FROM THE ENUM
+  // ENTIRELY (ADR 0042, migration `00060`). Keeping a selectable-but-inert value
+  // was the honest reading of ADR 0042 §5 while `notifications_reason_ck` still
+  // admitted the reason and a stored policy could still carry it. 00060 narrows
+  // that CHECK and `policies_reasons_ck` follows the enum down to eighteen, so
+  // neither a notification nor a policy can spell it. `REASONS` is still the
+  // contract's own picklist and is still not hand-filtered: the value left the
+  // contract, so it left the picklist by itself.
+  // ⭐ THE WINDOW FACT, AND FOR A POLICY WITH A WINDOW IT IS NOT OPTIONAL. A
+  // digest is one message about a window over a namespace rather than about any
+  // object: at each closed boundary a tick counts the cases that opened inside
+  // the window and sends if the count clears the policy's floor (migration
+  // `00058`). The server refuses a policy that sets a digest window without this
+  // fact selected — its digests would be recorded as suppressed `no_policy`, once
+  // per window, forever (`policies_digest_reason_ck`, `Policy.Validate`). It
+  // damps nothing: a policy with a window sends the digest IN ADDITION to
+  // whatever else it routes.
+  digest: "window summary",
 };
 
 export const PoliciesSection: Component = () => {
@@ -872,6 +886,14 @@ const ChannelPicker: Component<{
  * belongs, in the one place on the screen whose whole job is to explain a
  * silence before it happens. With the exhaustive type, the next reason the
  * server publishes is a build failure instead.
+ *
+ * ⛔ SIX VALUES, AND THE TWO THAT LEFT WERE THE ONLY TWO THAT WERE OTO'S OWN
+ * OPINION ABOUT A SIGNAL. `storm` and `flapping` are gone from
+ * `notifications_suppmap_ck` (migration `00059`, ADR 0042), which narrowed with
+ * NO backfill and therefore FAILS on a database that ever recorded either — so
+ * there is no stored row left for this map to explain. What the six have in
+ * common is the argument: two mean there was nowhere to send, two are a human
+ * asking for less, one is the world's rate limit, one is that nothing changed.
  */
 const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, string> = {
   no_policy: "no policy matched",
@@ -879,8 +901,6 @@ const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>, strin
   // act, and therefore the most useful thing to say about a silence.
   snoozed: "someone is holding oto's notifications for this alert until a fixed time",
   throttled: "the throttle is already spent",
-  storm: "the case is in storm mode",
-  flapping: "this alert is damped as flapping",
   verbosity: "the channel's verbosity does not carry this",
   channel_disabled: "the channel is disabled",
   duplicate_render: "the message would be identical to the last one",

@@ -349,15 +349,15 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "refire_grace_s",
     kind: "seconds",
     label: "Re-fire grace",
-    what: "An alert resolves, then the same alert fires again. Inside this window the existing case reopens, oto reuses the existing Slack thread and the card updates in place — the one case that produces no new root message, and therefore the one oto surfaces in the channel so it is not missed. Outside the window a new case opens, and if the alert group it is notified under has closed in the meantime that means a new generation: a brand-new Slack root message and a brand-new thread.",
+    what: "An alert resolves, then the same alert fires again. This window no longer decides what happens to that alert: a case is terminal, so every re-fire opens the next case, unacknowledged, however fast it arrives. Nothing reopens a closed case. What the number still does is bound two others — its floor is twice the 5-minute ingest replay window, because a re-fire arriving inside that window is dropped as a duplicate delivery before anything can see it, and Group close delay ships pinned equal to it. Whether a re-fire gets a brand-new Slack root message and thread, or updates the open generation's existing card in its existing thread, is decided entirely by Group close delay.",
     risks: [
       {
         label: "Too short",
-        text: "Every re-fire opens a new Slack thread. Alertmanager will not report a changed group sooner than one group_interval after the last notification, so if the grace window is shorter than that it has always expired by the time oto is even capable of hearing about the re-fire. You get the wall of near-identical messages oto exists to prevent, produced by a setting that looks like it should have prevented it.",
+        text: "A window nothing can arrive in. Alertmanager will not report a changed group sooner than one group_interval after the last notification, and oto drops a replayed batch for 5 minutes, so a grace below either floor describes a band no re-fire can land in. Nothing breaks — the setting decides no transition — but it also stops describing anything, and because Group close delay is meant to sit at or above it, a low value here is the number an operator lowers that one against. That is the setting that fragments your Slack threads.",
       },
       {
         label: "Too long",
-        text: "History that lies. Two genuinely separate outages hours apart are recorded as one case that reopened — one thread, one firing duration with a long gap in the middle, and this morning's thread grows a reply about tonight's incident. Case counts under-report and duration statistics stop meaning anything.",
+        text: "Case counts and durations are unaffected — two outages hours apart are always two cases, each with its own ack and its own firing duration. What a long value costs you is Slack: Group close delay is pinned at or above this one, so raising this raises the floor under how long a generation is held open, and this morning's thread grows a reply about tonight's incident. Above a day, two genuinely separate incidents share one root card.",
       },
     ],
     amRule:
@@ -377,14 +377,14 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       if (v < gi) {
         return {
           level: "inert",
-          text: `Unreachable. Shorter than ${named}, so the window has always expired before oto can hear about a re-fire at all. Every re-fire will open a new Slack thread.`,
+          text: `Unreachable. Shorter than ${named}, so the window has always expired before oto can hear about a re-fire at all. The case is new either way; what this value stops doing is describing anything, and it is the floor Group close delay is set against.`,
           suggest: want,
         };
       }
       if (v < ASSUMED_RULE_FOR_S) {
         return {
           level: "inert",
-          text: `Unreachable for an ordinary rule. With ${basis}, a re-fire cannot be detected by Prometheus until ${duration(ASSUMED_RULE_FOR_S)} after the resolve, and oto hears about it up to one ${named} later still. Every re-fire will open a new Slack thread.`,
+          text: `Unreachable for an ordinary rule. With ${basis}, a re-fire cannot be detected by Prometheus until ${duration(ASSUMED_RULE_FOR_S)} after the resolve, and oto hears about it up to one ${named} later still. The case is new either way; what this value stops doing is describing anything, and it is the floor Group close delay is set against.`,
           suggest: want,
         };
       }
@@ -479,26 +479,26 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     },
   },
 
-  /* ---- flap damping ------------------------------------------------------ */
+  /* ---- flap keys, retained and inert (migration 00057, ADR 0041 Am. 1) --- */
 
   flap_threshold: {
     key: "flap_threshold",
     kind: "count",
     label: "Flap threshold",
     unit: "transitions",
-    what: "Transitions inside the flap window before oto marks an alert flapping. A flapping alert still opens and closes cases and its card still updates; what stops is the per-transition thread replies, replaced by one coalesced digest. Flapping is a visible state, never a silent drop.",
+    what: "Retained, and it changes no delivery. It sized the retired flap.score job, which counted an alert's case.opened and case.resolved events over the flap window and marked the alert flapping past this many transitions; nothing recomputes flap_score or is_flapping now (ADR 0041 Amendment 1), and nothing withholds or coalesces a notification because an alert oscillates. Flap noise is absorbed one layer earlier, at case formation, by the case-retention window W.",
     risks: [
       {
         label: "Too high",
-        text: "The damper never engages. Every individual transition keeps its own reply for an alert that is oscillating — the noisiest possible outcome, and the exact thing the feature exists to stop. Worse, it looks correctly configured right up until someone asks why a wildly oscillating alert was never marked as flapping.",
+        text: "Nothing fails to engage, because there is nothing left to engage. The damper this number sized was at delivery — a withheld reply plus a coalesced summary — and it is gone: the writer refuses to record `flapping` as a suppression reason at all, so no value here can make oto quieter about a firing.",
       },
       {
         label: "Too low",
-        text: "Real transitions get folded into a digest. An alert that legitimately fired, resolved and fired again during a rolling deploy is marked flapping, and the second firing arrives inside a digest instead of being announced — so you find out late. Flapping is shown in the UI, so a healthy alert is displayed as noisy and someone eventually deletes a useful rule because of it.",
+        text: "Nothing is marked flapping either, at any value: the score that read this threshold is not computed. The one failure left is a person changing this number and believing they changed oto's behaviour. The control that actually decides what a flap costs is the case-retention window W, set per (namespace, alertname) from 0 to 86400 seconds, and 0 — no window, no damping — is what ships.",
       },
     ],
     amRule:
-      "The for: trap. One observable fire-resolve-fire cycle pays the larger of two floors — the rule's for: dwell, and one group_interval per notification, of which a cycle needs two — so a cycle costs group_interval + max(group_interval, for) and yields two counted transitions. The ceiling in a window W is about 2 x floor(W / cycle); set the threshold at roughly half of it. For long-for: rules do not lower the threshold to 2 — two transitions is a normal deploy. Widen the window instead.",
+      "The arithmetic below is the retired detector's, kept because the live verdicts on this row still compute it; no value here changes what is delivered. The for: trap. One observable fire-resolve-fire cycle pays the larger of two floors — the rule's for: dwell, and one group_interval per notification, of which a cycle needs two — so a cycle costs group_interval + max(group_interval, for) and yields two counted transitions. The ceiling in a window W is about 2 x floor(W / cycle); set the threshold at roughly half of it. For long-for: rules do not lower the threshold to 2 — two transitions is a normal deploy. Widen the window instead.",
     guide: (v, am, num) => {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
@@ -539,19 +539,19 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "flap_window_s",
     kind: "seconds",
     label: "Flap window",
-    what: "The span the transition count is measured over. Widening it is the correct response to a threshold that cannot be reached, because lowering the threshold instead labels ordinary deploys as flapping.",
+    what: "Retained, and it changes no delivery. It was the span the retired flap score counted transitions over. What absorbs a flap now is the case-retention window W: a resolve holds the case open for W and closes it only once the alert has stayed resolved for W, so a re-fire inside W joins the still-open case — one case across the flap, one notification, one thread reply. W is a different setting on a different axis, per (namespace, alertname), and is not this number.",
     risks: [
       {
         label: "Too short",
-        text: "A window shorter than one group_interval cannot contain two transitions oto is able to observe, so the threshold becomes unreachable at any value and the damper is dead code.",
+        text: "Nothing narrows. A window shorter than one group_interval could not hold two transitions oto is able to observe, which is what made the old 30m default unreachable for every rule shape; with nothing counting transitions, no width here suppresses, coalesces or delays anything.",
       },
       {
         label: "Too long",
-        text: "An alert that misbehaved once last week still counts toward today's score, and something long since fixed stays marked as flapping in the UI.",
+        text: "Nothing stays marked flapping for longer, because nothing is marked flapping. alerts.flap_score and alerts.is_flapping keep the last value they were written and are never recomputed — they are readable and unwritable — so no width here can put an alert back on a flapping list.",
       },
     ],
     amRule:
-      "For a rule with a long for:, widen this rather than lowering the threshold: flap_window is about flap_threshold x the observable cycle, and the cycle is group_interval + max(group_interval, for). With for: 15m and group_interval 5m the cycle is 20m, so a threshold of 5 needs about 100 minutes — which is where the shipped 2h comes from, and why the old 30m window made the threshold unreachable for every rule shape.",
+      "The arithmetic below is the retired detector's, kept because the live verdicts on this row still compute it; no value here changes what is delivered. For a rule with a long for:, widen this rather than lowering the threshold: flap_window is about flap_threshold x the observable cycle, and the cycle is group_interval + max(group_interval, for). With for: 15m and group_interval 5m the cycle is 20m, so a threshold of 5 needs about 100 minutes — which is where the shipped 2h comes from, and why the old 30m window made the threshold unreachable for every rule shape.",
     guide: (v, am, num) => {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
@@ -598,19 +598,19 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "flap_digest_interval_s",
     kind: "seconds",
     label: "Flap digest interval",
-    what: "How often a flapping alert is allowed one coalesced summary reply in place of the individual transition replies it would otherwise have posted.",
+    what: "Retained, and it changes no delivery. It paced the coalesced summary a flapping alert used to receive in place of its per-transition replies; that summary is deleted along with the flapping arm of the damper, and no notification is coalesced on flapping any more. A flap that the case-retention window W absorbs never produces the extra replies there would be something to summarise.",
     risks: [
       {
         label: "Too short",
-        text: "Not a digest. Below group_interval it cannot produce more digests than the upstream produces batches — it only adds jitter to when they land.",
+        text: "Nothing lands more often. No flapping summary is produced at any interval, so this cannot outrun group_interval or anything else.",
       },
       {
         label: "Too long",
-        text: "The summary arrives long after anyone cared, and in the meantime a flapping alert is effectively silent in the thread.",
+        text: "Nothing lands later, and nothing is quiet in the meantime: the replies this interval used to stand in for are no longer withheld. The failure left here is the name — a notification policy's digest window (digest_window_seconds, migration 00058) is a summary of a window over a namespace, on a different object, and this key does not pace it.",
       },
     ],
     amRule:
-      "Keep it at or above group_interval. Two to four times group_interval is the useful range.",
+      "The arithmetic below is the retired damper's, kept because the live verdicts on this row still compute it; no value here changes what is delivered. Keep it at or above group_interval. Two to four times group_interval is the useful range.",
     guide: (v, am) => {
       const gi = amSeconds(am.groupInterval);
       if (gi === null) return null;
@@ -640,112 +640,6 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
         v < gi * 2
           ? `${ratio} — at or above ${named}, so it is a real digest, though the useful range starts at 2 x (${duration(gi * 2)}).`
           : `${ratio} — inside the useful 2 x to 4 x range, against ${named}.`,
-      );
-    },
-  },
-
-  /* ---- storm collapse ---------------------------------------------------- */
-
-  storm_threshold: {
-    key: "storm_threshold",
-    kind: "count",
-    label: "Storm threshold",
-    unit: "alerts in the window",
-    what: "Distinct alerts arriving in one alert group inside the storm window before that group collapses. In storm mode oto posts or updates exactly one root message carrying a count and a link, and suppresses every per-alert thread reply until the cooldown elapses with no new members. The channel is told once that oto has started withholding — once for the channel, not once per group, because a per-group announcement of going quiet would be the flood it is damping. Like flapping, it is a visible state, never a silent drop.",
-    risks: [
-      {
-        label: "Too high",
-        text: "The flood you configured this for. A node pool dies, two hundred pods alert, and oto faithfully posts two hundred thread replies — strictly worse than posting none. You will also hit Slack's roughly one-message-per-second-per-channel limit and spend twenty minutes delivering a backlog nobody will read.",
-      },
-      {
-        label: "Too low",
-        text: "oto goes quiet exactly when you want detail. A routine deploy touching six services collapses into one line saying six alerts, and the operator has to leave Slack to find out which six. Storm mode is a defence against a flood, not a summarisation strategy.",
-      },
-    ],
-    amRule:
-      "Your group_by decides whether this knob can do anything at all. Storm collapse counts alerts arriving in ONE group, so if group_by contains a high-cardinality label (instance, pod, container) no group ever accumulates enough members and storm collapse is unreachable at any threshold — you get one root card per alert instead, which is a flood by a different route. That fix is in alertmanager.yml, not here: group on the labels that describe the problem, not the ones that describe the instance. Otherwise set it above your largest normal group and below your smallest abnormal one; the replica count of your largest deployment is a useful proxy.",
-  },
-
-  storm_window_s: {
-    key: "storm_window_s",
-    kind: "seconds",
-    label: "Storm window",
-    what: "The span over which arriving members are counted toward the storm threshold.",
-    risks: [
-      {
-        label: "Too short",
-        text: "A burst Alertmanager is still batching does not look like a burst to oto: the members arrive together in one delivery, after the window has already closed.",
-      },
-      {
-        label: "Too long",
-        text: "Alerts that arrived minutes apart for unrelated reasons are counted as one burst, and a slow trickle trips storm mode — which then suppresses the per-alert detail you wanted.",
-      },
-    ],
-    amRule:
-      "It must be longer than group_wait, and about 2 x group_wait is the shipped shape. If you have raised group_wait to reduce noise, raise this with it, or storm mode triggers inconsistently depending on where a burst falls relative to the batch boundary.",
-    guide: (v, am) => {
-      const gw = amSeconds(am.groupWait);
-      if (gw === null) return null;
-      const named = amPhrase("group_wait", am.groupWait);
-      if (v <= gw) {
-        return {
-          level: "inert",
-          text: `Not longer than ${named}. A burst Alertmanager is still batching arrives in a single delivery after this window closes, so it never looks like a burst.`,
-          suggest: gw * 2,
-        };
-      }
-      if (v < gw * 2) {
-        return {
-          level: "tight",
-          text: `Above ${named} but below the 2 x shape the default uses (${duration(gw * 2)}). Storm detection will depend on where a burst falls relative to the batch boundary.`,
-          suggest: gw * 2,
-        };
-      }
-      // ⛔ `group_wait: 0` IS A REAL SETTING AND THE RATIO DIVIDED BY IT. It is what
-      // an operator writes to switch batching delay off entirely, oto's own parser
-      // covers it (`amconfig_test.go:158`), and `RouteTimingDTO.value_ms` says
-      // outright that `0` is never a stand-in for "not known" — so every legal
-      // window here reported "Infinity x group_wait", a number nobody can act on,
-      // for a value that is in fact fine. With no batching delay there is no batch
-      // boundary to be past, and that is what the sentence says instead.
-      return ok(
-        gw > 0
-          ? `${(v / gw).toFixed(1)} x group_wait — comfortably past the batch boundary, against ${named}.`
-          : `No batching delay at all (${named}), so there is no batch boundary for a burst to fall either side of.`,
-      );
-    },
-  },
-
-  storm_cooldown_s: {
-    key: "storm_cooldown_s",
-    kind: "seconds",
-    label: "Storm cooldown",
-    what: "How long the group must be quiet before per-alert behaviour resumes. It is also the gap oto holds between two channel-level storm notices, so that a storm's start and its end can each be announced while every other group's storm inside that span is collapsed into them.",
-    risks: [
-      {
-        label: "Too short",
-        text: "Storm mode flickers on and off across consecutive Alertmanager batches, and the channel gets a storm announcement every time it re-engages.",
-      },
-      {
-        label: "Too long",
-        text: "Per-alert replies stay suppressed long after the flood ended, so everything arriving in the tail of the event is invisible in the thread.",
-      },
-    ],
-    amRule:
-      "Keep it at or above group_interval, otherwise storm mode flickers across consecutive batches. The shipped 10m is 2 x the Alertmanager default.",
-    guide: (v, am) => {
-      const gi = amSeconds(am.groupInterval);
-      if (gi === null) return null;
-      const named = amPhrase("group_interval", am.groupInterval);
-      if (v < gi) {
-        return {
-          level: "inert",
-          text: `Below ${named}. Storm mode will flicker on and off across consecutive batches.`,
-          suggest: gi * 2,
-        };
-      }
-      return ok(
-        `${(v / gi).toFixed(1)} x group_interval — no flicker across consecutive batches, against ${named}.`,
       );
     },
   },
@@ -894,15 +788,15 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     risks: [
       {
         label: "Too short",
-        text: "You lose the ability to reproduce an ingestion bug from the payload that caused it, and to replay a stored batch after a parser fix. An ingestion defect reported three weeks late can no longer be shown the bytes that caused it. The alerts themselves, their episodes, acks and timelines are untouched.",
+        text: "You lose the ability to reproduce an ingestion bug from the payload that caused it, and to replay a stored batch after a parser fix. A replay reads the stored bytes: past this boundary there are none, and no flag overrides that. An ingestion defect reported three weeks late can no longer be shown the bytes that caused it. The alerts themselves, their cases, acks and timelines are untouched.",
       },
       {
         label: "Too long",
-        text: "Past thirty days a stored batch can no longer be replayed safely anyway — oto's event-dedupe keys have aged out, so re-processing it would append the timeline a second time. Beyond that horizon you are paying disk for bytes nothing can act on.",
+        text: "Age is not what makes a replay unsafe, so a long window costs disk rather than correctness. A replay is refused when an alert the batch would touch has moved on since the batch arrived — a later batch already wrote to that alert, or its case has closed while this batch still says firing — and it is allowed at any age the bytes survive. The disk: thirty days of payloads is 51 MB at 1 000 alert firings a day and 510 MB at 10 000; ninety days is 153 MB and 1.5 GB. Each extra day also keeps a day of event-dedupe rows, and both windows are set by the longest window any single org asked for, so one org on 365 days sets them for every tenant.",
       },
     ],
     amRule:
-      "Nothing in alertmanager.yml bears on this. The shipped thirty days is derived, not chosen: it is oto's event-idempotency horizon, the longest window in which replaying a stored batch still converges.",
+      "Nothing in alertmanager.yml bears on this. The shipped thirty days is chosen, not derived: it was derived from oto's event-idempotency horizon until replay moved its gate from age to supersession, and nothing derives it now. What it is: the depth of the rejections and failed-batch feeds, which take no date range, and the window an ingestion defect gets to be found and replayed in. Raising it is free; lowering it drops days that cannot come back, and it reclaims payload bytes and nothing else — the thirty-day event-dedupe floor is held by the reconciler re-applying transitions, not by replay.",
   },
 
   event_retention_months: {
@@ -935,17 +829,10 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
   },
   {
     id: "flap",
-    title: "Flap damping",
+    title: "Flap damping (retired)",
     blurb:
-      "When an alert oscillates, individual transition replies are replaced by one coalesced digest. Flapping is a visible state in the UI, never a silent drop.",
+      "Nothing here damps a flap. Flap noise is absorbed at case formation by the case-retention window W (migration 00057, ADR 0041 Amendment 1): a re-fire inside W lands in the still-open case, so an oscillating alert is one case with one thread reply rather than one of each per flap. These three keys are kept because deleting a settings key is a contract change of its own, and whether they are renamed, re-homed or removed is left open on purpose — they change no delivery at any value.",
     keys: ["flap_threshold", "flap_window_s", "flap_digest_interval_s"],
-  },
-  {
-    id: "storm",
-    title: "Storm collapse",
-    blurb:
-      "When many alerts join one generation at once, oto posts one root message with a count and suppresses the per-alert replies. Also a visible state.",
-    keys: ["storm_threshold", "storm_window_s", "storm_cooldown_s"],
   },
   {
     id: "channel",

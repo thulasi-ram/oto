@@ -56,7 +56,7 @@ import { qk } from "~/api/keys";
 import type { AlertEvent, DeliverySummary, TimelineQuery } from "~/api/types";
 import { AckDialog } from "~/features/alerts/AckDialog";
 import { RelativeTime } from "~/components/Time";
-import { SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
+import { SeverityMark, STATE_BAR, StateChip } from "~/components/StateChip";
 import { Button } from "~/components/ui/Button";
 import { Chip, DataRow, PageHeading, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
@@ -178,9 +178,6 @@ export default function GroupDetailRoute() {
                         shapes and it is what that row can carry. */}
                     <PageHeading brush="rule">{g().title}</PageHeading>
                     <SeverityMark severity={g().severity} withLabel />
-                    <Show when={g().storm_mode}>
-                      <StormChip />
-                    </Show>
                     <Chip title="A generation owns exactly one chat thread.">
                       generation {g().generation}
                     </Chip>

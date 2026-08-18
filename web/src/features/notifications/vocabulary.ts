@@ -50,7 +50,19 @@ export const REASON_LABEL: Record<NotificationReason, string> = {
   // channel. There is no ladder, no rota and no notion of who is next, which is
   // why this is not called what the rest of the industry calls it (§G.9.1, §A.1).
   unacked_reminder: "still firing and unacknowledged",
-  storm: "storm",
+  // ⛔ `storm` WAS HERE AND IS GONE FROM THE ENUM (ADR 0042, migration `00060`).
+  // It was kept for one cut as a RETIRED reason, on the argument that
+  // `notifications.reason` is what a STORED ROW SAYS IT WAS ABOUT and that
+  // `notifications_reason_ck` still admitted it. 00060 narrows that CHECK with no
+  // backfill and the database was reset, so no row spells it and there is nothing
+  // for this map to have to say.
+  // ⭐ THE ONE REASON NO TRANSITION PRODUCED, AND THE ONLY ONE WHOSE SUBJECT IS
+  // NOT AN OBJECT. A digest is a WINDOW OVER A NAMESPACE (migration `00058`): at
+  // each closed window boundary a tick counts the cases that OPENED inside the
+  // window and sends one message if the count clears the policy's `digest_floor`.
+  // So the label names the window, never an alert — this row is about no alert,
+  // no case and no generation, and it is the one notification with no `group_id`.
+  digest: "a window closed with enough new cases to report",
 };
 
 /**
@@ -66,12 +78,25 @@ export const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>
   snoozed:
     "a person asked oto to hold its notifications for this alert until a fixed time — the alert itself kept firing",
   throttled: "the per-subject throttle was already spent",
-  storm: "the alert group was in storm mode — one message with a count was posted instead",
-  flapping: "this alert is damped as flapping, so updates are digested rather than sent one by one",
   verbosity: "the channel's verbosity setting does not carry this kind of update",
   channel_disabled: "every matching channel is disabled",
   duplicate_render: "the message would have been byte-identical to the one already posted",
 };
+
+/*
+ * ⛔ THE SIX ARE THE WHOLE LIST, AND WHAT THEY HAVE IN COMMON IS THE ARGUMENT.
+ * `channel_disabled` and `no_policy` mean there was nowhere to send; `snoozed`
+ * and `verbosity` are a human asking for less; `throttled` is the world's rate
+ * limit; `duplicate_render` is that nothing changed. Not one of them is oto's own
+ * opinion that a real firing was not worth mentioning — and the two that were,
+ * `storm` and `flapping`, are gone. Migration `00059` narrowed
+ * `notifications_suppmap_ck` to these six with NO backfill, so it FAILS on a
+ * database that ever recorded either rather than rewriting the reason into one
+ * that never applied: there is no stored row left for this map to have to explain.
+ * `REASON_LABEL` above lost its `storm` entry on the same terms one cut later
+ * (migration `00060`), so the two maps now say the same thing about the dampers
+ * rather than disagreeing on purpose.
+ */
 
 /**
  * A reason oto has never heard of renders as its raw wire value rather than as
