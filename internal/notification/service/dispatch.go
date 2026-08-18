@@ -736,6 +736,26 @@ func (s *DispatchService) effectiveMode(
 	}
 
 	switch {
+	case mode == domain.ModePostRoot && th.SubjectKind == domain.SubjectDigest && th.RootLanded():
+		// ⛔ A DIGEST IS NEVER AMENDED, AND THIS IS THE ARM THAT KEEPS IT SO. A digest
+		// thread is one ongoing conversation per policy with ONE REPLY PER WINDOW, and
+		// each reply is a different window's summary — so amending the root would
+		// overwrite last window's numbers with this window's, destroying exactly the
+		// history a digest exists to provide. The generic arm below would do that: it
+		// reads a landed root plus `post_root` as "a second incident is about to
+		// appear", which is right for a signal card and wrong here.
+		//
+		// The race is narrow and real: two windows minted before the first one's root
+		// landed both carry `post_root`, and by the time the second is claimed the root
+		// exists. It becomes the reply it should have been.
+		//
+		// A destination that can amend but cannot thread posts a second card instead,
+		// which is honest — two summaries — where an amend would be a silent overwrite.
+		if c.Capabilities.Has(domain.CapThreading) {
+			return domain.ModeThreadReply
+		}
+		return domain.ModePostRoot
+
 	case mode == domain.ModePostRoot && th.RootLanded():
 		// A root already exists for this generation. Posting a second one would
 		// read, to everybody in the channel, as a second incident.
