@@ -128,7 +128,7 @@ test/contract/    the drift gates. Nine test files, including
                   is added to `api/openapi/openapi.yaml` with no test behind it.
                   `server/` drives the real container over a real Postgres. G1
                   and G2 below run from here, and CI runs them.
-test/load/        the storm cases: `storm_test.go` over `driver_test.go` and
+test/load/        the burst cases: `burst_test.go` over `driver_test.go` and
                   `env_test.go`, with `RESULTS.md` recording what a run actually
                   measured. ⚠️ THEY ARE BEHIND `//go:build load`, so
                   `go test ./...` does not compile them in and CI never runs
@@ -198,7 +198,7 @@ express direction or acyclicity.
 - `docs/setup/slack.md` — connecting a workspace: the three credentials, and what to do about
   every Slack error oto classifies. Paste `deploy/slack/manifest.yaml` into Slack's
   "Create an app from manifest" flow rather than ticking scopes by hand.
-- `docs/setup/tuning.md` — `refire_grace`, the flap and storm thresholds, and how the right value
+- `docs/setup/tuning.md` — `refire_grace`, the flap thresholds, and how the right value
   for each is derived from your own `alertmanager.yml` and your rules' `for:` durations.
 - `docs/runbooks/` — one page per `oto_*` metric: what it counts, what a sustained value means,
   what to check and what to do. [The index](docs/runbooks/README.md) says which metrics are worth

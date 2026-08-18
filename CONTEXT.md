@@ -156,7 +156,7 @@ Rules you must not get wrong:
 | `sources` | CORE | Alertmanager/Prometheus registry, credentials, health; owns the AM v2 + Prom v1 clients. |
 | `ingestion` | CORE | Durably accept raw batches and normalise them to Observations. Nothing else — and **not** the reconciler: SPEC §I.2's tree draws `ingestion/worker/reconcile_source`, but it is implemented in `sources` (`internal/sources/service/reconcile.go`, which says so), because every collaborator it needs is owned there. |
 | `alerts` | CORE | Identity/dedup, the case state machine, the append-only timeline. The heart. |
-| `grouping` | CORE | Durable groups, generations, membership, storm detection. |
+| `grouping` | CORE | Durable groups, generations, derived membership, group lifecycle. |
 | `rules` | CORE | Fetch, content-address, version and diff rule definitions at fire time. |
 | `enrichment` | CORE | The `Enricher` port, the budgeted pipeline, caching, provenanced results. |
 | `notification` | CORE | Policy matching, idempotent intents, fan-out, thread ordering, throttle/damping. |
@@ -407,7 +407,7 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 - Real Postgres via `testcontainers-go`. Mocked DBs lie about SQL semantics.
 - Renderers are pure functions with checked-in `testdata/*.golden.json` + a CI Block Kit validator.
 - Real upstream payloads live in `test/fixtures/` and are replayed deterministically.
-- **Write `test/load/storm_test.go` (a 5 000-alert batch) before the feature that handles it.**
+- **Write `test/load/burst_test.go` (a 5 000-alert batch) before the feature that handles it.**
 
 **Ingest path — the rules that must never be broken**
 - 202 on accept. **503 + `Retry-After` for anything transient. NEVER 429. NEVER 4xx.**
@@ -431,8 +431,10 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
 - **oto never reads Slack back.** Our DB is the memory of Slack.
 
 **Product and ethics (requirements, not aspirations)**
-- **Default to quiet.** Grouping, flap damping, storm collapse ON by default; snooze is the manual
-  sibling. All of them are **visible UI states**, never silent suppression — silence destroys trust.
+- **Default to quiet, but never silent.** Grouping and flap damping ON by default; snooze is the
+  manual sibling. All of them are **visible UI states**, never silent suppression — silence destroys
+  trust. ⛔ Storm collapse was removed for failing exactly that test (ADR 0042): oto never decides
+  a real firing was not worth mentioning.
 - **Never claim resolved when we mean expired.**
 - **Delivery failure must be visible per alert.** oto's silence must never be indistinguishable from
   "no alert".

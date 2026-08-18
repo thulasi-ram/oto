@@ -17,7 +17,7 @@ func specPath() string { return filepath.Join("..", "..", "docs", "design", "SPE
 // h2Hex reads the hex out of one row of §H.2's state table.
 var h2Hex = regexp.MustCompile("(?m)^\\|\\s*`[a-z]+`[^|]*\\|\\s*`(#[0-9a-f]{6})`\\s*\\|\\s*`:")
 
-// slackHexes are the six §H.2 attachment colours, read off the page. The count is
+// slackHexes are the five §H.2 attachment colours, read off the page. The count is
 // asserted by the callers: a parser that returns nothing must not read as "no
 // violations found".
 func slackHexes(t *testing.T) []string {
@@ -42,8 +42,8 @@ func slackHexes(t *testing.T) []string {
 	for _, m := range h2Hex.FindAllStringSubmatch(rest, -1) {
 		hexes = append(hexes, m[1])
 	}
-	if len(hexes) != 6 {
-		t.Fatalf("read %d colours out of §H.2's state table and expected 6", len(hexes))
+	if len(hexes) != 5 {
+		t.Fatalf("read %d colours out of §H.2's state table and expected 5", len(hexes))
 	}
 	return hexes
 }

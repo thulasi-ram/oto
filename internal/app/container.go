@@ -185,6 +185,7 @@ type Container struct {
 	Policies        *notifservice.PolicyService
 	Views           *notifservice.ViewService
 	Reminders       *notifservice.ReminderService
+	Digests         *notifservice.DigestService
 	NotifyHistory   *notifservice.HistoryService
 	NotifyWorkers   *notifworker.Workers
 	NotifyScopes    *notifrepo.ScopeResolver
@@ -538,6 +539,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// needs a group's state_version. Both holders answer safely until filled.
 	alertRepo := alertsrepo.NewAlertRepository(general, clk, trigramAvailable)
 	caseRepo := alertsrepo.NewCaseRepository(general)
+	// `case_policy_config` — the case retention window W (migration 00057). Wiring
+	// it changes nothing on its own: the table starts empty and an absent row means
+	// W=0, which is the close-on-resolve behaviour oto has always had.
+	casePolicyRepo := alertsrepo.NewCasePolicyRepository(general)
+	// The same table read the other way round: `CasePolicies` is the lifecycle's
+	// read of W at transition time, `casePolicyConfigRepo` is the settings surface
+	// behind /api/v1/case-policies. Unwired, those four routes answer 503.
+	casePolicyConfigRepo := alertsrepo.NewCasePolicyConfigRepository(general, clk)
 	eventRepo := alertsrepo.NewEventRepository(general, clk)
 	snoozeRepo := alertsrepo.NewSnoozeRepository(general, clk)
 	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general).WithLogger(logger)
@@ -546,24 +555,25 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	notificationsPort := &notificationReader{}
 
 	c.Alerts, err = alertsservice.New(alertsservice.Deps{
-		Alerts:        alertRepo,
-		Cases:         caseRepo,
-		Events:        eventRepo,
-		Snoozes:       snoozeRepo,
-		Tx:            alertsrepo.NewTxRunner(general),
-		AlertLister:   alertRepo,
-		AlertBatch:    alertRepo,
-		OccBatch:      caseRepo,
-		OccSources:    caseRepo,
-		EventCounts:   eventRepo,
-		SnoozeHistory: snoozeRepo,
-		Enqueuer:      c.enqueuer,
-		Stream:        stream,
-		Health:        sourceHealth{svc: c.Sources},
-		Settings:      settings,
-		GroupVersions: groupVersionsPort,
-		Enrichments:   enrichmentReader{repo: enrichmentRepo},
-		Notifications: notificationsPort,
+		Alerts:           alertRepo,
+		Cases:            caseRepo,
+		Events:           eventRepo,
+		Snoozes:          snoozeRepo,
+		Tx:               alertsrepo.NewTxRunner(general),
+		AlertLister:      alertRepo,
+		AlertBatch:       alertRepo,
+		OccBatch:         caseRepo,
+		OccSources:       caseRepo,
+		CasePolicies:     casePolicyRepo,
+		CasePolicyConfig: casePolicyConfigRepo,
+		SnoozeHistory:    snoozeRepo,
+		Enqueuer:         c.enqueuer,
+		Stream:           stream,
+		Health:           sourceHealth{svc: c.Sources},
+		Settings:         settings,
+		GroupVersions:    groupVersionsPort,
+		Enrichments:      enrichmentReader{repo: enrichmentRepo},
+		Notifications:    notificationsPort,
 		// `commentOnAlert` and `snoozeAlert` take their claim inside the same
 		// transaction as the write, on the store every other guarded operation
 		// claims in. A comment is the one action a retry duplicates VISIBLY —
@@ -580,7 +590,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// through this one line (§D.4.1, T11 and T12).
 	timeline.svc = c.Alerts
 
-	// ---- grouping: durable generations, membership, storm damping --------
+	// ---- grouping: durable generations, membership, group lifecycle ------
 	c.Grouping, err = groupingservice.New(groupingservice.Deps{
 		Groups:   groupingrepo.NewGroupRepository(general, clk),
 		Members:  groupingrepo.NewMemberRepository(general, clk),
@@ -782,15 +792,16 @@ func (c *Container) buildNotification(
 	threadRepo := notifrepo.NewThreadRepository(general)
 	eventRepo := notifrepo.NewEventRepository(general, clk)
 	reminderRepo := notifrepo.NewReminderRepository(general)
+	digestRepo := notifrepo.NewDigestRepository(general)
 	txRunner := notifrepo.NewTxRunner(general)
 
 	c.NotifyScopes = notifrepo.NewScopeResolver(general)
 	c.notifConfigRepo = notifrepo.NewConfigRepository(general, clk)
 
 	// The same `orgs.settings` adapter the alerts and grouping modules read their
-	// tuning through. One adapter means one answer: the storm threshold that
-	// collapses a group and the broadcast policy that decides whether the collapse
-	// is announced cannot come from two different reads of the same row.
+	// tuning through. One adapter means one answer: the group close delay that
+	// freezes a thread and the broadcast policy that decides how loudly a
+	// transition lands cannot come from two different reads of the same row.
 	settings := orgSettings{svc: c.Identity}
 
 	var err error
@@ -836,8 +847,8 @@ func (c *Container) buildNotification(
 		Enqueuer:      c.enqueuer,
 		Channels:      channelRepo,
 		// ADR 0020's broadcast policy and the org's fallback verbosity, read from
-		// `orgs.settings` on every evaluation — the same adapter the lifecycle and
-		// storm ports use.
+		// `orgs.settings` on every evaluation — the same adapter the alerts and
+		// grouping lifecycle ports use.
 		Settings: settings,
 		Clock:    clk,
 		Logger:   logger,
@@ -889,6 +900,23 @@ func (c *Container) buildNotification(
 		return err
 	}
 
+	// The digest tick (migration 00058). It takes the notification service for its
+	// FAN-OUT and for nothing else: a digest is not routed (its policy is the input),
+	// not snoozed (a snooze is keyed by `alert_key` and a digest names no alert) and
+	// not throttled by a group cap (it lands on no group's thread) — see
+	// DigestService.emit. It takes no settings reader, deliberately: there is no
+	// org-level digest default and there must not be one, because a window is a
+	// per-policy subscription rather than a volume dial.
+	if c.Digests, err = notifservice.NewDigestService(notifservice.DigestConfig{
+		Policies: policyRepo,
+		Digests:  digestRepo,
+		Notifier: c.Notify,
+		Clock:    clk,
+		Logger:   logger,
+	}); err != nil {
+		return err
+	}
+
 	if c.NotifyHistory, err = notifservice.NewHistoryService(notificationRepo); err != nil {
 		return err
 	}
@@ -898,6 +926,7 @@ func (c *Container) buildNotification(
 		Notifier:  c.Notify,
 		Dispatch:  c.Dispatch,
 		Reminders: c.Reminders,
+		Digests:   c.Digests,
 		Logger:    logger,
 	})
 	return err

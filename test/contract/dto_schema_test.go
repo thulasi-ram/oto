@@ -98,6 +98,12 @@ var bindings = []binding{
 	{"alerts", "CaseDTO", alertsapi.CaseDTO{}},
 	{"alerts", "CaseDetailDTO", alertsapi.CaseDetailDTO{}},
 	{"alerts", "CaseListItemDTO", alertsapi.CaseListItemDTO{}},
+	// The CASE RETENTION WINDOW W (migration 00057). It is bound in the alerts tag
+	// rather than a settings one because the module that owns the Case owns the rule
+	// that shapes it.
+	{"alerts", "CasePolicyDTO", alertsapi.CasePolicyDTO{}},
+	{"alerts", "CreateCasePolicyRequest", alertsapi.CreateCasePolicyRequest{}},
+	{"alerts", "UpdateCasePolicyRequest", alertsapi.UpdateCasePolicyRequest{}},
 	{"alerts", "EnrichmentDTO", alertsapi.EnrichmentDTO{}},
 	{"alerts", "EnrichmentSummaryDTO", alertsapi.EnrichmentSummaryDTO{}},
 	{"alerts", "DeliverySummaryDTO", alertsapi.DeliverySummaryDTO{}},
