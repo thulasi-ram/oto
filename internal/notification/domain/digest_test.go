@@ -529,3 +529,56 @@ func TestAnExplicitZeroDigestFloorIsRefusedOnThePatchPath(t *testing.T) {
 		require.NoError(t, domain.PolicyPatch{}.ValidateExplicit())
 	})
 }
+
+// TestNoWindowDigestWindowsProducesHasAnOrdinalBelowOne is git-bug 7c7ff0b.
+//
+// `WindowOrdinal` is integer division of the start's Unix seconds by the window
+// length, so the window that STARTS at the epoch has ordinal 0 for EVERY window
+// length -- and a digest stores that ordinal in `state_version`, where
+// `notifications_sver_ck` has required >= 1 since 00011.
+//
+// ⛔ THE EPOCH WINDOW WAS REACHABLE FROM `DigestWindows`, NOT MERELY CONSTRUCTIBLE
+// BY HAND. The guard read `newest.Before(epoch)` -- before, not at-or-before -- so
+// when `now` fell in the SECOND window since 1970, `newest` was exactly the epoch,
+// the guard did not fire, and the insert died with a 23514 naming a constraint the
+// caller believed it satisfied. Unreachable in production, where `now` is not
+// 1970; entirely reachable from a test, because oto injects its clock everywhere
+// precisely so a test can put it wherever it likes, and `time.Unix(0, 0)` is the
+// obvious thing to reach for.
+//
+// The bound is asserted over the EPOCH rather than over a comfortable timestamp,
+// because a comfortable timestamp is what let this stand.
+func TestNoWindowDigestWindowsProducesHasAnOrdinalBelowOne(t *testing.T) {
+	t.Parallel()
+
+	epoch := time.Unix(0, 0).UTC()
+
+	for _, w := range []time.Duration{
+		5 * time.Minute, 10 * time.Minute, time.Hour, 24 * time.Hour,
+	} {
+		d := domain.Digest{Window: w, Floor: 1}
+
+		// The ordinal of the epoch window is the value the CHECK refuses. Asserted
+		// so the exclusion below is protecting against something real.
+		if got := d.WindowOrdinal(epoch); got != 0 {
+			t.Fatalf("window %s: WindowOrdinal(epoch) = %d, want 0 — the premise of "+
+				"this test is that the epoch window is the one the CHECK refuses", w, got)
+		}
+
+		// `now` inside the SECOND window since the epoch: the exact position that
+		// used to make `newest` land on the epoch itself.
+		now := epoch.Add(w).Add(w / 2)
+		starts, abandoned := d.DigestWindows(now, time.Time{})
+		if abandoned != 0 {
+			t.Errorf("window %s: %d abandoned windows before 1970 has closed", w, abandoned)
+		}
+		for _, start := range starts {
+			if ord := d.WindowOrdinal(start); ord < 1 {
+				t.Errorf("window %s: DigestWindows produced start %s with ordinal %d, "+
+					"which notifications_sver_ck (>= 1) refuses — the insert fails as a "+
+					"23514 with no field name and takes the whole tick for that policy",
+					w, start.UTC(), ord)
+			}
+		}
+	}
+}

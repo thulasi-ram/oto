@@ -111,7 +111,10 @@
 --     ORDINAL (`floor(window_start / window_s)`). §C.7 defines `state_version` as
 --     "the version of the subject this intent was minted against", and for a
 --     subject that IS a window the ordinal is exactly that version. It satisfies
---     `notifications_sver_ck (>= 1)` for every window after 1970.
+--     `notifications_sver_ck (>= 1)` for every window `DigestWindows` can produce,
+--     which holds because that function EXCLUDES the window starting at the epoch
+--     -- whose ordinal is 0 for every window length -- and not because the integer
+--     division cannot reach it (git-bug 7c7ff0b).
 --
 -- Two declarations of one key is not redundancy here: the hash is what makes the
 -- §C.7 insert path converge without a special case, and the index is what makes

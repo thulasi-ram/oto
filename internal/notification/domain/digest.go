@@ -132,8 +132,16 @@ func (d Digest) WindowEnd(start time.Time) time.Time { return start.Add(d.Window
 // against. For the three signal subjects that is `alert_groups.state_version`; for
 // a subject that IS a window, the ordinal is exactly that version — it increments
 // once per window and never repeats. Using it keeps the §C.7 key shape unchanged
-// while making one window's digest a different intent from the next one's, and it
-// satisfies notifications_sver_ck (>= 1) for every window after the first of 1970.
+// while making one window's digest a different intent from the next one's.
+//
+// ⭐ IT SATISFIES notifications_sver_ck (>= 1) FOR EVERY WINDOW `DigestWindows` CAN
+// PRODUCE, and that is a statement about the caller rather than about this
+// arithmetic. The ordinal of the window starting at the epoch is 0 — integer
+// division, for every window length — so the bound holds because `DigestWindows`
+// excludes that one window, not because the division cannot reach it. This comment
+// used to end "for every window after the first of 1970", and that qualifier was
+// the defect: the escape clause was written down and then not enforced anywhere.
+// Call this with a hand-built epoch start and you still get 0.
 func (d Digest) WindowOrdinal(start time.Time) int {
 	if !d.Enabled() {
 		return 0
@@ -191,7 +199,22 @@ func (d Digest) DigestWindows(now, lastCovered time.Time) ([]time.Time, int) {
 
 	// The newest window that has CLOSED: one step back from the one `now` is in.
 	newest := d.WindowStart(now).Add(-d.Window)
-	if newest.Before(time.Unix(0, 0)) {
+
+	// ⛔ THE EPOCH WINDOW IS EXCLUDED, NOT MERELY EVERYTHING BEFORE IT, AND THE
+	// `!After` IS THE WHOLE FIX (git-bug 7c7ff0b). `WindowOrdinal` is integer
+	// division of the start's Unix seconds by the window length, so the window that
+	// STARTS at the epoch has ordinal 0 for every window length — and a digest
+	// stores that ordinal in `state_version`, where `notifications_sver_ck` has
+	// required >= 1 since 00011. A `Before` guard admits exactly that one window:
+	// when `now` falls in the SECOND window since 1970, `newest` is precisely
+	// time.Unix(0,0), the guard does not fire, and the insert dies with a 23514
+	// naming a constraint the caller believed it satisfied.
+	//
+	// Excluding the window here rather than rebasing the ordinal is deliberate. The
+	// ordinal feeds the §C.7 idempotency key, so making it 1-based would change
+	// `state_version` on stored digest rows and risk re-minting an intent for a
+	// window already sent. Losing the single window of 1970-01-01 costs nothing.
+	if !newest.After(time.Unix(0, 0)) {
 		return nil, 0
 	}
 
