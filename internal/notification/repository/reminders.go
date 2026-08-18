@@ -45,12 +45,31 @@ func (r *ReminderRepository) db(ctx context.Context) db.Querier { return db.From
 // `alert_cases.group_id`, which since migration 00051 IS the membership —
 // there is no join table and no `left_at IS NULL` to carry.
 //
-// ⭐ AND THE LIVENESS CLAUSE IS ALREADY HERE, IN TWO PARTS SINCE ADR 0040.
-// `o.state = 'open'` is membership — `case_terminal_ended` makes it identical to
-// `ended_at IS NULL` — and `a.state = 'firing'` is the STRICTER half: a suppressed
-// episode is still a live member and is not one a reminder should be minted for.
+// ⭐ AND THE LIVENESS CLAUSE IS ALREADY HERE, IN FOUR PARTS. It arrived in three
+// instalments; the header counted two for as long as only the first had landed:
 //
-// ⛔ THE SECOND HALF HAS TO COME FROM THE ALERT NOW, AND THE JOIN IS A PRIMARY-KEY
+//	o.state = 'open'               ADR 0040 — membership. `case_terminal_ended`
+//	                               makes it identical to `ended_at IS NULL`.
+//	a.state = 'firing'             ADR 0040 — the label set is burning.
+//	a.suppression_reason IS NULL   ADR 0041 — suppression moved OFF `alerts.state`,
+//	                               so what had been a SIDE EFFECT of that column
+//	                               now has to be written down.
+//	o.resolve_pending_at IS NULL   migration 00057 — the retention window W holds
+//	                               the close open, so 'firing' stopped meaning
+//	                               "still burning".
+//
+// ⛔ `a.state = 'firing'` IS NO LONGER SUFFICIENT ON ITS OWN, AND THAT IS THE
+// SENTENCE TO CARRY AWAY FROM HERE. It once was — which is why the two predicates
+// under it read like refinements when they are repairs. ADR 0041 took `suppressed`
+// out of that column, so it stopped excluding silenced alerts. Migration 00057
+// made a resolve inside W keep the alert at 'firing', so it stopped telling
+// "still burning" apart from "resolved, close held". A maintainer who writes the
+// next query of this shape from the strictness of `a.state` alone reproduces
+// exactly the two bugs these lines were added to fix: nagging about an alert a
+// human has already silenced, and nagging about one upstream has already
+// resolved. Each predicate carries its own argument inline, below.
+//
+// ⛔ THE FIRING TEST HAS TO COME FROM THE ALERT NOW, AND THE JOIN IS A PRIMARY-KEY
 // PROBE. `alert_cases.state` is `open | closed` (migration 00054), so `firing`
 // apart from `suppressed` is a fact about the label set rather than the episode.
 // The join is safe on exactly the rows this asks about: an OPEN case is its
