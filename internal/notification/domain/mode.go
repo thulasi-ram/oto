@@ -175,6 +175,13 @@ type PlanInput struct {
 	// exactly when an alert was flapping hardest, and a detector that lies is worse
 	// than no detector. So the words this field can support are "the last stored
 	// verdict", never "is flapping now".
+	//
+	//oto:retired the flap detector was retired in place — `flap.score` and
+	// `AlertRepository.SetFlap` are deleted and `PlanFor` deliberately ignores this
+	// field, so it has no production reader BY DESIGN. This is not debt and not
+	// analyzer blindness: the two paragraphs above are the argument for keeping the
+	// declaration while its last reader is gone. `reachable-ok` would be the wrong
+	// marker here — it claims a route exists, and the whole point is that none does.
 	Flapping bool
 	// Broadcast is the org's policy over which transitions surface in the channel
 	// (ADR 0020). The zero value is the approved default set.

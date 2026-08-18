@@ -142,7 +142,6 @@ noread:github.com/thulasiram/oto/internal/notification/domain.Thread.NextSeq	fie
 noread:github.com/thulasiram/oto/internal/notification/domain.Thread.OrgID	field is never read in production — the value goes nowhere (internal/notification/domain/thread.go:131)
 noread:github.com/thulasiram/oto/internal/notification/domain.Thread.RootDeliveryID	field is never read in production — the value goes nowhere (internal/notification/domain/thread.go:143)
 noread:github.com/thulasiram/oto/internal/notification/domain.Thread.SubjectID	field is never read in production — the value goes nowhere (internal/notification/domain/thread.go:136)
-noread:github.com/thulasiram/oto/internal/notification/domain.Thread.SubjectKind	field is never read in production — the value goes nowhere (internal/notification/domain/thread.go:133)
 noread:github.com/thulasiram/oto/internal/notification/domain.Thread.UpdatedAt	field is never read in production — the value goes nowhere (internal/notification/domain/thread.go:156)
 noread:github.com/thulasiram/oto/internal/notification/service.Intent.Actor	field is never read in production — the value goes nowhere (internal/notification/service/notify.go:38)
 noread:github.com/thulasiram/oto/internal/notification/service.Match.Channels	field is never read in production — the value goes nowhere (internal/notification/service/policy.go:52)

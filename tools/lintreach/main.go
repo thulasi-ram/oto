@@ -118,6 +118,25 @@
 // it. The reason is mandatory and a suppression that matches nothing is an error,
 // so the escape hatch cannot rot.
 //
+// `//oto:retired <reason>` also exempts, and it makes the OPPOSITE claim. The two
+// are not interchangeable and must not be used for each other's case:
+//
+//   - `reachable-ok` means THE ANALYZER IS BLIND HERE: a route exists that this
+//     tool cannot see, so the finding is wrong.
+//   - `retired` means THE FINDING IS CORRECT AND THAT IS THE POINT: the field is
+//     genuinely unreachable, deliberately, because a feature was retired in place
+//     — its readers were deleted and the declaration was kept on purpose (a stored
+//     row or a decoder may still need it).
+//
+// Retire-in-place is a pattern this repo has chosen repeatedly, and it is exactly
+// how a `noread` finding is created. Before this marker existed, landing such a
+// change green required writing a `reachable-ok` reason that asserted the reverse
+// of the truth, which would have made every `reachable-ok` in the tree ambiguous
+// between "the analyzer is blind" and "this is retired".
+//
+// Both markers carry a mandatory reason and both are errors when they match
+// nothing, so neither exemption can rot.
+//
 // `baseline.txt` is `<key>\t<reason>`, one per line: findings that exist today and
 // whose fix belongs to a change other than this one. They are reported and do not
 // fail the build. A finding NOT on the list fails immediately, so the debt can
@@ -147,6 +166,7 @@ import (
 const (
 	modulePath   = "github.com/thulasiram/oto"
 	marker       = "//oto:reachable-ok"
+	retiredMark  = "//oto:retired"
 	baselinePath = "tools/lintreach/baseline.txt"
 	openAPIPath  = "api/openapi/openapi.yaml"
 )
@@ -208,7 +228,11 @@ func main() {
 
 	if *verbose {
 		for _, s := range suppressed {
-			fmt.Printf("suppressed %s — %s\n", s.key, s.why)
+			label := "suppressed"
+			if s.kind == retiredMark {
+				label = "retired"
+			}
+			fmt.Printf("%s %s — %s\n", label, s.key, s.why)
 		}
 		for _, k := range known {
 			fmt.Printf("known debt %s\n", k.String())
@@ -229,8 +253,18 @@ func main() {
 	}
 	sort.Strings(stale)
 
-	fmt.Printf("lintreach: %d packages, %d fields, %d decode targets — %d new, %d known debt, %d suppressed\n",
-		a.pkgCount, len(a.fields), a.decodeCount, len(fresh), len(known), len(suppressed))
+	// Retired and suppressed are counted apart. They are both exemptions, but they
+	// are opposite claims about the code — "unreachable on purpose" versus "the
+	// analyzer cannot see the route" — and a single total would hide which one the
+	// tree is accumulating.
+	var retiredN int
+	for _, s := range suppressed {
+		if s.kind == retiredMark {
+			retiredN++
+		}
+	}
+	fmt.Printf("lintreach: %d packages, %d fields, %d decode targets — %d new, %d known debt, %d suppressed, %d retired\n",
+		a.pkgCount, len(a.fields), a.decodeCount, len(fresh), len(known), len(suppressed)-retiredN, retiredN)
 
 	// A package that did not type-check contributes no reads and no writes, so
 	// every field it touches reads as unreachable. Silence here would be the
@@ -251,9 +285,13 @@ func main() {
 	if len(fresh) > 0 {
 		fmt.Fprintf(os.Stderr,
 			"\nlintreach: %d NEW unreachable declarations.\n"+
-				"Wire it up, or delete it. If it is genuinely reachable by a route this analyzer\n"+
-				"cannot see, put `%s <reason>` on the declaration or in its doc comment.\n",
-			len(fresh), marker)
+				"Wire it up, or delete it. Otherwise pick the marker that states what is TRUE,\n"+
+				"on the declaration or in its doc comment — they are opposite claims:\n"+
+				"  `%s <reason>`  the analyzer is blind here: a route exists that it cannot see.\n"+
+				"  `%s <reason>`        the finding is right and deliberate: the feature was\n"+
+				"                            retired in place, its readers deleted, the field kept.\n"+
+				"Using one for the other's case makes every marker in the tree ambiguous.\n",
+			len(fresh), marker, retiredMark)
 	}
 	for _, s := range stale {
 		fmt.Fprintf(os.Stderr, "lintreach: %s matches nothing — the debt was paid; delete the line.\n", s)
@@ -271,6 +309,7 @@ type finding struct {
 	pos  string // file:line, or "" for contract-level findings
 	why  string
 	note string
+	kind string // when suppressed: which marker did it, so the two claims stay distinct
 }
 
 func (f finding) String() string {
@@ -325,6 +364,15 @@ type edge struct {
 	ref    argRef
 }
 
+// mark is one suppression comment: why it was written, and WHICH CLAIM it makes.
+// kind is the marker literal, so a message can quote back the exact thing the
+// author wrote rather than a paraphrase of it.
+type mark struct {
+	reason string
+	kind   string
+	block  int // identifies the marker comment these lines came from
+}
+
 type analyzer struct {
 	fset     *token.FileSet
 	fields   map[string]*fieldRec // "<pkgpath>.<Type>.<Field>"
@@ -341,8 +389,9 @@ type analyzer struct {
 	decode      map[string]bool
 	decodeCount int
 
-	marks     map[string]map[int]string // file -> line -> reason
+	marks     map[string]map[int]mark // file -> line -> marker
 	markUsed  map[string]map[int]bool
+	blockSeq  int // hands out mark.block ids
 	generated map[string]bool
 
 	units    []unit
@@ -356,7 +405,7 @@ func newAnalyzer() *analyzer {
 		structs: map[string][]string{}, fieldTyp: map[string][]string{},
 		ctors: map[string]*ctorRec{}, apiTags: map[string]token.Position{},
 		allTags: map[string]bool{},
-		decode:  map[string]bool{}, marks: map[string]map[int]string{},
+		decode:  map[string]bool{}, marks: map[string]map[int]mark{},
 		markUsed: map[string]map[int]bool{}, generated: map[string]bool{},
 	}
 }
@@ -1152,24 +1201,35 @@ func (a *analyzer) collectMarkers(f *ast.File) {
 	file := a.fset.Position(f.Pos()).Filename
 	for _, cg := range f.Comments {
 		for _, c := range cg.List {
-			i := strings.Index(c.Text, marker)
-			if i < 0 {
+			// `//oto:retired` is tested FIRST and matched exactly, because
+			// `strings.Index` for the other marker would not match it anyway —
+			// but ordering it first keeps the two independent if either literal
+			// is ever changed to share a prefix with the other.
+			which := ""
+			switch {
+			case strings.Contains(c.Text, retiredMark):
+				which = retiredMark
+			case strings.Contains(c.Text, marker):
+				which = marker
+			default:
 				continue
 			}
-			reason := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(c.Text[i+len(marker):]), ":—-"))
+			i := strings.Index(c.Text, which)
+			reason := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(c.Text[i+len(which):]), ":—-"))
 			if reason == "" {
 				reason = "(NO REASON GIVEN)"
 			}
 			if a.marks[file] == nil {
-				a.marks[file] = map[int]string{}
+				a.marks[file] = map[int]mark{}
 				a.markUsed[file] = map[int]bool{}
 			}
 			// Applies to the comment's own line and to the declaration that
 			// immediately follows the comment group it belongs to.
+			a.blockSeq++
 			from := a.fset.Position(c.Pos()).Line
 			to := a.fset.Position(cg.End()).Line + 1
 			for l := from; l <= to; l++ {
-				a.marks[file][l] = reason
+				a.marks[file][l] = mark{reason: reason, kind: which, block: a.blockSeq}
 			}
 		}
 	}
@@ -1179,9 +1239,10 @@ func (a *analyzer) applySuppressions(in []finding) (kept, sup []finding) {
 	for _, f := range in {
 		file, line, ok := splitPos(f.pos)
 		if ok {
-			if reason, hit := a.marks[file][line]; hit {
+			if m, hit := a.marks[file][line]; hit {
 				a.markUsed[file][line] = true
-				f.why = reason
+				f.why = m.reason
+				f.kind = m.kind
 				sup = append(sup, f)
 				continue
 			}
@@ -1192,35 +1253,45 @@ func (a *analyzer) applySuppressions(in []finding) (kept, sup []finding) {
 }
 
 func (a *analyzer) unusedMarkers() []string {
+	// Grouped by the marker comment the lines came from, NOT by a fixed line
+	// window. A marker's reason may run to any number of lines, and a window
+	// narrower than the reason reports a marker that IS doing work as rotted —
+	// which would push an author towards writing a shorter, worse reason.
+	type blockInfo struct {
+		file   string
+		reason string
+		kind   string
+		used   bool
+	}
+	blocks := map[int]*blockInfo{}
+	for file, lines := range a.marks {
+		for line, m := range lines {
+			b := blocks[m.block]
+			if b == nil {
+				b = &blockInfo{file: file, reason: m.reason, kind: m.kind}
+				blocks[m.block] = b
+			}
+			if a.markUsed[file][line] {
+				b.used = true
+			}
+		}
+	}
 	seen := map[string]bool{}
 	var out []string
-	for file, lines := range a.marks {
-		for line, reason := range lines {
-			if a.markUsed[file][line] {
-				continue
-			}
-			// A marker covers a small line range; report the block once.
-			rel, err := filepath.Rel(mustWD(), file)
-			if err != nil {
-				rel = file
-			}
-			k := fmt.Sprintf("%s [%s]", rel, reason)
-			if seen[k] {
-				continue
-			}
-			// Only complain if NO line in the block was used.
-			used := false
-			for l := line - 3; l <= line+3; l++ {
-				if a.markUsed[file][l] {
-					used = true
-				}
-			}
-			if used {
-				continue
-			}
-			seen[k] = true
-			out = append(out, k)
+	for _, b := range blocks {
+		if b.used {
+			continue
 		}
+		rel, err := filepath.Rel(mustWD(), b.file)
+		if err != nil {
+			rel = b.file
+		}
+		k := fmt.Sprintf("%s %s [%s]", rel, b.kind, b.reason)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
 	}
 	return out
 }
