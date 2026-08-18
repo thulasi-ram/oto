@@ -249,7 +249,7 @@ func seedQuietCase(
 	h.Exec(`INSERT INTO alert_cases
 	          (id, org_id, alert_id, group_id, seq, state, started_at,
 	           last_observed_at, source_starts_at, ack_state)
-	        VALUES ($1, $2, $3, $4, 1, 'firing', $5, $5, $5, 'unacked')`,
+	        VALUES ($1, $2, $3, $4, 1, 'open', $5, $5, $5, 'unacked')`,
 		caseID, fx.scope.OrgID(), alertID, fx.groupID, startedAt)
 	return caseID
 }

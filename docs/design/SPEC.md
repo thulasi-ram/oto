@@ -135,7 +135,7 @@ The authoritative machine runs on **AlertCase**. `Alert.state` and `AlertGroup.s
 
 ### B.1 Two orthogonal axes
 
-- `case.state` — *what the world is doing.* Owned by ingestion and the reconciler. `firing | suppressed | resolved | expired`.
+- `case.state` — *what the world is doing.* Owned by ingestion and the reconciler. The **column** holds `open | closed` and nothing else; the four-way word `firing | suppressed | resolved | expired` is the **Alert's**, and a Case's reading of it is derived (§B.2, ADR 0040). Where this document says a surface "follows `case.state`", it means that derived reading — the axis, not the column.
 - `case.ack_state` — *what humans have done.* Owned by the API. `unacked | acked`. An acked alert is still firing.
 - **snooze** (§B.8) — *whether oto is notifying.* Owned by the API and stored in `alert_snoozes`, which every suppression decision reads DIRECTLY. There is no projection: `alerts.snoozed_until` was dropped by 00048, because a projection is a second copy that can disagree with the row it copies. **A snoozed alert is still firing and is still rendered as firing.** Snooze is never a `state` and never a `suppression_reason`.
 - `alert.flap_score` — a derived signal, **never** a state.
@@ -146,6 +146,40 @@ in this domain.
 
 ### B.2 States
 
+⭐⭐ **These four values describe the ALERT.** They live on `alerts.state` and on every alert-shaped
+object in the API. **`alert_cases.state` is `open | closed` and nothing else** (`case_state_ck`,
+migration 00054, ADR 0040). An AlertCase is one ephemeral firing episode of an Alert, and the only
+question an episode can answer about itself is whether it is still running; `suppressed` is a fact
+about a label set rather than about one firing of it, and `resolved`/`expired` is a claim about WHY
+an episode ended, which `resolve_reason` has recorded since 00007.
+
+Nothing is lost, because the four-way reading of a Case is **derived**, and the derivation is total:
+
+```
+state='open'   AND suppression_reason IS NULL      ->  firing
+state='open'   AND suppression_reason IS NOT NULL  ->  suppressed
+state='closed' AND resolve_reason = 'upstream'     ->  resolved
+state='closed' AND resolve_reason = 'timeout'      ->  expired
+```
+
+`case_resolve_ck` makes `resolve_reason` present exactly when closed and `case_resreason_ck` bounds
+it to those two values, so the closed half is exhaustive; `case_suppress_ck` keeps
+`suppression_reason` off a closed row, so the open half is. `Case.AlertState()` is that table in Go
+and `Case.check()` is what makes it total.
+
+⛔ **In SQL, the OPEN half asks the ALERT rather than the Case, and the asymmetry is deliberate.**
+After 00054 nothing CHECKS `suppression_reason` against a state — the biconditional had a
+`state = 'suppressed'` side and that side no longer exists — so a query reading the column as *"this
+is suppressed"* would be trusting an invariant the schema stopped enforcing. `alerts.state` is a
+first-class CHECKed enum, so every aggregate that needs `firing` apart from `suppressed` joins the
+Alert and reads it there, guarded by `o.state = 'open'`: `case_one_open_idx` is
+`UNIQUE (alert_id) WHERE ended_at IS NULL`, so an **open** case *is* its Alert's current one and
+`alerts.state` *is* that episode's state — while over a CLOSED row the same read would report a
+re-fired alert's ended episodes as firing. It costs nothing: the group rollup that renders "12
+alerts, 3 firing, 9 resolved" has joined `alerts` since it was written, for `max(a.severity)`, so
+the derivation reads one more column off a row the plan already fetched by primary key (same
+`case_group_idx`, same cost).
+
 | State | Terminal | Meaning | Set by |
 |---|---|---|---|
 | `firing` | no | Alertmanager reports this label set active and not suppressed. | Ingest (webhook), Reconciler |
@@ -153,10 +187,16 @@ in this domain.
 | `resolved` | yes | An explicit per-alert `status="resolved"` observation was received. | Ingest only |
 | `expired` | yes | oto stopped hearing about it: `now > source_ends_at + resolve_grace` **and** the AlertSource is healthy. Means *"Prometheus or Alertmanager went away"*, not *"the problem went away"*. | Reaper job |
 
-`alert.state` = state of the current open case; if none is open, the state of the most recent case.
-`alert_group.state` = `open` if ≥1 member case is `firing` or `suppressed`, else `closed` after `group_close_delay` (default 5m).
+`alert.state` = the four-way reading of the current open case; if none is open, the reading of the most recent case.
+`alert_group.state` = `open` if ≥1 member case is open, else `closed` after `group_close_delay` (default 5m).
 
 ### B.3 Transition table
+
+**`From` and `To` are the §B.2 four-way words — the ALERT's reading of the episode either side of the
+edge.** What the edge WRITES to `alert_cases.state` is `open` or `closed` (§B.2), and the two are the
+same fact: `State.CaseState()` is the write half of the derivation, `Case.AlertState()` the read half.
+Naming the edges in the four-way vocabulary is what keeps `suppressed` and `expired` nameable at all —
+they are edges, not columns.
 
 | # | From | To | Trigger | Actor | Side effects (all in ONE transaction) |
 |---|---|---|---|---|---|
@@ -166,15 +206,34 @@ in this domain.
 | T4 | `suppressed` | `firing` | **(a)** Reconciler observes `status.state == "active"`, **OR** **(b)** ANY ingest observation with `status == "firing"` arrives for this case | **Reconciler AND Ingest** | Clear `suppression_reason` and `suppressed_by`; emit `case.unsuppressed` with `detected_by ∈ {reconciler, webhook}`; enqueue `notify.evaluate(reason=unsuppressed)` |
 | T5 | `firing`\|`suppressed` | `resolved` | Per-alert `status == "resolved"` | Ingest | Set `ended_at = max(occurred_at, started_at)` **(clamped — see B.3.2)**, `resolve_reason='upstream'`; emit `case.resolved`; enqueue `notify.evaluate(reason=all_resolved\|some_resolved)` |
 | T6 | `firing`\|`suppressed` | `expired` | `now > source_ends_at + resolve_grace` AND `source_health.status = 'healthy'` | Reaper | Set `ended_at = now`, `resolve_reason='timeout'`; emit `case.expired`; enqueue `notify.evaluate(reason=expired)` |
-| T7 | `resolved`\|`expired` | *(new case `firing`)* | Same `alert_key` fires again **after** `refire_grace` | Ingest | New case `seq+1`; **new AlertGroup generation** if the group was closed → **new Slack root message**; emit `case.opened` with `reopen_of`; `alerts.total_cases += 1`; recompute `flap_score` |
-| T8 | `resolved`\|`expired` | `firing` *(same case)* | Same `alert_key` fires again **within** `refire_grace` (default 20m) | Ingest | Clear `ended_at`, `reopen_count += 1`; emit `case.reopened`; enqueue `notify.evaluate(reason=refired)`; **reuse the existing thread** |
-| T9 | any | `ack_state = acked` | Human via `POST /alerts/{id}/ack`, `POST /alert-groups/{id}/ack`, or Slack `oto.ack` button | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `case.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
-| T10 | `acked` | `unacked` | Human unack via `POST /alerts/{id}/unack` or `POST /alert-groups/{id}/unack`, **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
+| T7 | `resolved`\|`expired` | *(new case `firing`)* | Same `alert_key` fires again — **always, whatever the clock says** | Ingest | The closed case is left exactly as it is; new case `seq+1`, **`unacked`**; **new AlertGroup generation** if the group was closed → **new Slack root message**; emit `case.opened`; `alerts.total_cases += 1`; recompute `flap_score` |
+| T9 | any | `ack_state = acked` | Human via `POST /cases/{id}/ack`, `POST /alert-groups/{id}/ack` (fan-out over each member's OPEN case), or Slack `oto.ack` button | Human | Set `acked_by`, `acked_at`, `ack_note`; emit `case.acknowledged`; enqueue `notify.evaluate(reason=acked)` |
+| T10 | `acked` | `unacked` | Human unack via `POST /cases/{id}/unack` or `POST /alert-groups/{id}/unack` (the same fan-out), **or** a new case opens (T7) | Human, Ingest | Emit `case.unacknowledged` with `reason ∈ {manual, new_case}`; enqueue `notify.evaluate(reason=unacked)` |
 | T11 | any | *(no state change)* | An Enricher completes | Enrichment worker | Emit `enrichment.completed` \| `enrichment.failed`; enqueue `notify.evaluate(reason=enriched)` (debounced 10s) |
 | T12 | any | *(no state change)* | `rule_fingerprint` for this case differs from the previous case's for the same `RuleKey` | Rules service | Emit `rule.definition_changed` with a structured diff; enqueue `notify.evaluate(reason=rule_changed)` |
 | T13 | any | *(no state change)* | Notification / delivery progresses | Notify, Deliver workers | Emit `notification.created`, `delivery.sent`, `delivery.failed`, `delivery.skipped`, `delivery.dead` |
 | T14 | any | *(no state change)* | Human comment | Human | Emit `comment.added`; enqueue `notify.evaluate(reason=comment)` |
 | T15 | any | *(no state change)* | Human snooze / unsnooze, or snooze expiry (§B.8.3) | Human, Reaper | Write/close `alert_snoozes` (no projection to update since 00048); emit `alert.snoozed` \| `alert.unsnoozed`; enqueue `notify.evaluate(reason=snoozed\|unsnoozed)` |
+
+⛔ **There is no T8, the numbering hole is deliberate, and a future reader must not fill it.** T8 was
+a second row out of each terminal state, taken when the re-fire landed inside `refire_grace`: it
+cleared `ended_at` on the closed episode, let it run again, and **kept the acknowledgement that had
+been taken on it**. ADR 0040 deleted it. Every re-fire is T7. The argument is the one 00049 made when
+it dropped `alerts.ack_state` — **an acknowledgement is a receipt for one firing, and the second
+firing is not the one that was signed for.** A gap in the firing is exactly the event a receipt should
+not cross; T8 made *"how long was the gap?"* decide whether a human's attention was still assumed,
+which put a clock in charge of a claim about a person. It also made a Case non-terminal, which is a
+larger cost than it looks: `ended_at` could return to NULL, so `case_one_open_idx` could be re-entered
+by a row that had left it, the reaper and ingest could race over an episode closed a moment ago, and
+every query treating `closed` as final was quietly wrong for one window's width. **A Case is strictly
+terminal: `open → closed`, once.** `T9`/`T10` keep their numbers because the labels are referenced
+across the tree; renumbering them to close the gap would rewrite every reference to buy nothing.
+
+⚠️ **`refire_grace` therefore no longer decides any transition.** The org setting survives —
+`group_close_delay_s` is pinned at or above it (§D.1) and the §C.5 ingest replay floor is derived from
+it (`MinRefireGraceSeconds = 2 × DedupTTL`) — but it is inert at the lifecycle layer, and whether it
+should be renamed, re-homed or removed is left open on purpose: deleting a settings key is a contract
+change of its own.
 
 #### B.3.1 ⭐ T4 is triggered by ingest as well as the reconciler — and why
 
@@ -202,7 +261,7 @@ turning a customer's NTP problem into oto dropping a batch.
 on the `case.resolved` event's `occurred_at` and in `payload.source_ends_at`, the clamp is
 recorded as `payload.clamped = true`, and the skew is accumulated into
 `source_health.clock_skew_ms` and exported as `oto_clock_skew_seconds`. **The skew is measured and
-surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`) and T8 (reopen).
+surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`).
 
 ### B.4 Reaper guard (highest-value correctness rule in the system)
 
@@ -212,9 +271,14 @@ surfaced, never rejected** (C12). The same clamp applies to T6 (`expired`) and T
 
 ### B.5 Re-fire policy (stated plainly)
 
-> A re-fire after resolve is a **NEW `AlertCase` on the SAME `Alert`** — unless it happens within `refire_grace` (default 20 minutes — ADR 0026), in which case it **REOPENS the existing case**.
+> A re-fire after resolve is a **NEW `AlertCase` on the SAME `Alert`** — always, at `seq + 1`, and
+> **`unacked`**. There is no window in which it is anything else (ADR 0040). The closed episode is not
+> touched: a Case opens once, closes once, and nothing reopens it.
 >
-> A **NEW Slack root message** is posted only when a **new AlertGroup generation** opens. Reopening a case, or a new case joining a still-open group generation, produces a `chat.update` (+ optional thread reply), never a new root.
+> A **NEW Slack root message** is posted only when a **new AlertGroup generation** opens. A new case
+> joining a still-open group generation produces a `chat.update` (+ optional thread reply), never a new
+> root — so whether a re-fire is loud is decided by `group_close_delay`, which is a fact about the
+> **notification grouping**, and never by a fact about the episode.
 
 ### B.6 Flapping and storm damping (on by default)
 
@@ -237,16 +301,20 @@ stateDiagram-v2
     firing --> expired : T6 reaper (source healthy)
     suppressed --> expired : T6 reaper (source healthy)
 
-    resolved --> firing : T8 refire within refire_grace (same case)
-    expired --> firing : T8 refire within refire_grace (same case)
-
-    resolved --> [*] : T7 refire after grace -> new case
-    expired --> [*] : T7 refire after grace -> new case
+    resolved --> [*] : T7 refire -> NEW case, seq+1, unacked
+    expired --> [*] : T7 refire -> NEW case, seq+1, unacked
 
     note right of expired
         expired != resolved.
         Reaper is BLOCKED while
         source_health != healthy.
+    end note
+
+    note right of resolved
+        Terminal means terminal.
+        There is no edge BACK: the
+        old T8 reopen is retired
+        (ADR 0040).
     end note
 ```
 
@@ -305,7 +373,7 @@ same lie §E.1.1 exists to prevent.
 These are two different facts about two different systems. **Neither overrides the other; both are
 recorded and both are displayed.**
 
-| | `case.state = 'suppressed'` | snooze |
+| | the `suppressed` reading of a case (§B.2) | snooze |
 |---|---|---|
 | Owner | **Reconciler only** (C1) | A human, via oto's API or the Slack button |
 | Means | *Alertmanager is not delivering this* | *oto is not notifying about this* |
@@ -317,8 +385,8 @@ recorded and both are displayed.**
 > #### ⛔ BINDING: `snoozed` is NOT a `suppression_reason`
 >
 > `alert_cases.suppression_reason` mirrors **Alertmanager's four suppression reasons** and
-> nothing else. **`snoozed` MUST NEVER be added to that enum**, and `case.state` MUST NEVER
-> take the value `snoozed`. Conflating them would mean oto reports *"Alertmanager is suppressing
+> nothing else. **`snoozed` MUST NEVER be added to that enum**, and no state column — neither
+> `alerts.state` nor `alert_cases.state` — may ever take the value `snoozed`. Conflating them would mean oto reports *"Alertmanager is suppressing
 > this"* when the truth is *"a human asked oto to be quiet"* — a lie about the world, in the one
 > table whose job is to mirror the world.
 >
@@ -660,7 +728,7 @@ idempotency_key := hex( sha256(
 
 ### C.8 `alert_events` idempotency
 
-Every event write MAY carry a `dedupe_key` (e.g. `case:{case_id}:opened`, `case:{id}:reopened:{n}`). The writer inserts into the unpartitioned `alert_event_keys` first:
+Every event write MAY carry a `dedupe_key` (e.g. `case:{case_id}:opened`, `case:{id}:suppressed:{n}`, where `{n}` is the episode's `suppress_count` — an ordinal, never a clock). The writer inserts into the unpartitioned `alert_event_keys` first:
 
 ```sql
 INSERT INTO alert_event_keys (org_id, dedupe_key, event_id, created_at)
@@ -741,7 +809,10 @@ CREATE TABLE orgs (
   slug         CITEXT      NOT NULL UNIQUE,
   name         TEXT        NOT NULL,
   settings     JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    -- keys: refire_grace_s(1200), resolve_grace_s(300), group_close_delay_s(1200), -- ADR 0026
+    -- keys: refire_grace_s(1200) [INERT at the lifecycle layer since ADR 0040: it decides no
+    --         transition; it survives because group_close_delay_s is pinned at or above it and the
+    --         §C.5 replay floor is derived from it. Its future is undecided.],
+    --       resolve_grace_s(300), group_close_delay_s(1200),                       -- ADR 0026
     --       flap_threshold(5), flap_window_s(7200), flap_digest_interval_s(900),  -- ADR 0026
     --       storm_threshold(25), storm_window_s(60), storm_cooldown_s(600),
     --       raw_retention_days(30), event_retention_months(13)   -- ADR 0024
@@ -1063,7 +1134,18 @@ CREATE TABLE alerts (
   -- `test/arch/snoozecolumn_test.go`, which replay the migrations against the
   -- LIVE schema; the snooze one also walks every SQL literal in `internal` and
   -- `cmd`. Both carry a planted-violation test, so the gate has teeth.
-  state                 TEXT        NOT NULL CHECK (state IN ('firing','suppressed','resolved','expired')),
+  --
+  -- ⚠️ AMENDED — 00055 / ADR 0041. SUPPRESSION IS AN AXIS, NOT A STATE. `state`
+  -- admits `firing | resolved | expired` and nothing else; whether ALERTMANAGER
+  -- is delivering the signal is `suppression_reason` / `suppressed_by` BESIDE it.
+  -- `suppressed` used to occupy the slot `firing` needed, so every reader asking
+  -- `state = 'firing'` silently missed every alert somebody had silenced — and a
+  -- silence is the most common thing an operator does to a firing alert. The
+  -- four-value §B.2 word survives as a DISPLAY reading, recomposed at the DTO
+  -- boundary from the two axes, so no API contract moved.
+  state                 TEXT        NOT NULL CHECK (state IN ('firing','resolved','expired')),
+  suppression_reason    TEXT,       -- silence | inhibition | mute_time_interval | active_time_interval
+  suppressed_by         JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- {silencedBy:[],inhibitedBy:[],mutedBy:[]}
   current_case_id UUID,
 
   -- history
@@ -1086,6 +1168,16 @@ CREATE TABLE alerts (
   CONSTRAINT alerts_clusterk_ck CHECK (length(btrim(cluster_key)) > 0),
   CONSTRAINT alerts_labels_ck   CHECK (jsonb_typeof(labels) = 'object'),
   CONSTRAINT alerts_annot_ck    CHECK (jsonb_typeof(annotations) = 'object'),
+  -- ADR 0041. The reason mirrors ALERTMANAGER'S FOUR and nothing else -- a snooze
+  -- is oto being quiet about itself and lives in alert_snoozes, so putting it
+  -- here would report another system saying something it never said. The third is
+  -- the one place the two axes touch: a terminal alert is not being delivered
+  -- because there is nothing to deliver, and a witness left on it makes oto go on
+  -- saying "silenced by <id>" about a signal that has ended.
+  CONSTRAINT alerts_supreason_ck CHECK (suppression_reason IS NULL OR suppression_reason IN
+                                  ('silence','inhibition','mute_time_interval','active_time_interval')),
+  CONSTRAINT alerts_suppby_ck   CHECK (jsonb_typeof(suppressed_by) = 'object'),
+  CONSTRAINT alerts_suppress_ck CHECK (suppression_reason IS NULL OR state = 'firing'),
   CONSTRAINT alerts_case_ck      CHECK (total_cases >= 0),
   CONSTRAINT alerts_flap_ck     CHECK (flap_score >= 0),
   CONSTRAINT alerts_seen_ck     CHECK (last_seen_at >= first_seen_at),
@@ -1094,8 +1186,12 @@ CREATE TABLE alerts (
 );
 
 CREATE INDEX alerts_list_idx   ON alerts (org_id, state, last_seen_at DESC, id DESC);
+-- ⚠️ AMENDED — 00055 / ADR 0041. The disjunction is GONE. It was 00007's
+-- workaround for `suppressed` occupying the slot `firing` needed: liveness could
+-- not be spelled `state = 'firing'`, so the index spelled it as a set. It is now
+-- a single equality, and removing it is the observable point of the ADR.
 CREATE INDEX alerts_open_idx   ON alerts (org_id, last_seen_at DESC, id DESC)
-                                WHERE state IN ('firing','suppressed');
+                                WHERE state = 'firing';
 CREATE INDEX alerts_name_idx   ON alerts (org_id, alertname, last_seen_at DESC);
 CREATE INDEX alerts_ns_idx     ON alerts (org_id, cluster_key, namespace, state);
 CREATE INDEX alerts_sev_idx    ON alerts (org_id, severity, state, last_seen_at DESC);
@@ -1116,13 +1212,17 @@ CREATE TABLE alert_cases (
   group_id           UUID,                          -- FK added in 00006
   seq                INT         NOT NULL,          -- 1,2,3… per alert
 
-  state              TEXT        NOT NULL CHECK (state IN ('firing','suppressed','resolved','expired')),
+  -- open | closed, and nothing else (ADR 0040 / 00054). The four §B.2 words describe the ALERT:
+  -- firing-vs-suppressed is alerts.state, resolved-vs-expired is this row's own resolve_reason.
+  state              TEXT        NOT NULL CHECK (state IN ('open','closed')),
   suppression_reason TEXT        CHECK (suppression_reason IS NULL OR suppression_reason IN
                                   ('silence','inhibition','mute_time_interval','active_time_interval')),
   suppressed_by      JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- {silencedBy:[],inhibitedBy:[],mutedBy:[]}
 
   -- oto clock
   started_at         TIMESTAMPTZ NOT NULL,
+  -- NULL exactly while the episode is open (case_terminal_ended), which since 00054 makes it the
+  -- SAME fact as `state` — and the only spelling of it a partial index can be proved against (§E.3b).
   ended_at           TIMESTAMPTZ,
   last_observed_at   TIMESTAMPTZ NOT NULL,
   -- upstream clock
@@ -1130,9 +1230,12 @@ CREATE TABLE alert_cases (
   source_ends_at     TIMESTAMPTZ,
   source_updated_at  TIMESTAMPTZ,
 
+  -- Since 00054 this is the SOLE record of resolved-vs-expired on a Case, so case_resolve_ck
+  -- below is load-bearing rather than redundant: a closed episode MUST say how it ended.
   resolve_reason     TEXT        CHECK (resolve_reason IS NULL OR resolve_reason IN ('upstream','timeout')),
-  reopen_count       INT         NOT NULL DEFAULT 0,
-  reopen_of          UUID,                          -- previous case when T7 followed a close
+  -- ⛔ NO reopen_count, NO reopen_of (dropped by 00054). A Case is strictly terminal, so there is
+  -- nothing to count; and `seq` is 1-based and gapless, so the episode this one succeeds is the
+  -- row at `seq - 1` and a column repeating that was a second spelling of the same edge.
 
   ack_state          TEXT        NOT NULL DEFAULT 'unacked' CHECK (ack_state IN ('unacked','acked')),
   acked_by           UUID        REFERENCES users(id) ON DELETE SET NULL,
@@ -1147,26 +1250,28 @@ CREATE TABLE alert_cases (
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT case_seq_uniq       UNIQUE (alert_id, seq),
-  CONSTRAINT case_terminal_ended CHECK ((state IN ('resolved','expired')) = (ended_at IS NOT NULL)),
+  CONSTRAINT case_terminal_ended CHECK ((state = 'closed') = (ended_at IS NOT NULL)),
   CONSTRAINT case_seq_ck         CHECK (seq >= 1),
-  CONSTRAINT case_reopen_ck      CHECK (reopen_count >= 0),
   CONSTRAINT case_order_ck       CHECK (ended_at IS NULL OR ended_at >= started_at),
   CONSTRAINT case_obs_ck         CHECK (last_observed_at >= started_at),
   CONSTRAINT case_src_order_ck   CHECK (source_ends_at IS NULL OR source_ends_at >= source_starts_at),
-  -- suppression_reason and suppressed_by exist ONLY while suppressed (C1: reconciler-only)
-  CONSTRAINT case_suppress_ck    CHECK ((state = 'suppressed') = (suppression_reason IS NOT NULL)),
+  -- ⚠️ The SURVIVING HALF of the old biconditional: a CLOSED case cannot be suppressed. The other
+  -- half — that a suppressed episode HAS a reason — became a TAUTOLOGY at 00054, because
+  -- "suppressed" is now the READING OF having one (§B.2). Case.check() re-proves this direction on
+  -- every construction; nothing in SQL relies on the direction that went.
+  CONSTRAINT case_suppress_ck    CHECK (suppression_reason IS NULL OR state = 'open'),
   CONSTRAINT case_suppby_ck      CHECK (jsonb_typeof(suppressed_by) = 'object'),
-  -- resolve_reason exists ONLY on a terminal state, and matches it
-  CONSTRAINT case_resolve_ck     CHECK ((state IN ('resolved','expired')) = (resolve_reason IS NOT NULL)),
-  CONSTRAINT case_resolve_map_ck CHECK (resolve_reason IS NULL
-                                       OR (state = 'resolved' AND resolve_reason = 'upstream')
-                                       OR (state = 'expired'  AND resolve_reason = 'timeout')),
+  -- resolve_reason exists exactly when the episode is closed
+  CONSTRAINT case_resolve_ck     CHECK ((state = 'closed') = (resolve_reason IS NOT NULL)),
+  -- ⛔ NO case_resolve_map_ck. It locked `state` to `resolve_reason` because the two carried the
+  -- SAME fact; 00054 left only one of them carrying it, so there is nothing left to lock together.
+  -- The column CHECK above (`case_resreason_ck`) needs no widening: `upstream` IS resolved and
+  -- `timeout` IS expired, which is precisely why the map constraint could exist in the first place.
   -- ack fields are all-or-nothing
   CONSTRAINT case_ack_ck         CHECK ((ack_state = 'acked') = (acked_at IS NOT NULL)),
   CONSTRAINT case_acklabel_ck    CHECK ((acked_at IS NULL) = (acked_by_label IS NULL)),
   CONSTRAINT case_ackorder_ck    CHECK (acked_at IS NULL OR acked_at >= started_at),
   CONSTRAINT case_acknote_ck     CHECK (ack_note IS NULL OR length(ack_note) <= 2000),
-  CONSTRAINT case_reopenof_ck    CHECK (reopen_of IS NULL OR reopen_of <> id),
   CONSTRAINT case_time_ck        CHECK (updated_at >= created_at)
 );
 
@@ -1176,8 +1281,18 @@ CREATE INDEX case_alert_idx  ON alert_cases (org_id, alert_id, seq DESC);
 CREATE INDEX case_group_idx  ON alert_cases (org_id, group_id, started_at DESC);
 CREATE INDEX case_reap_idx   ON alert_cases (source_ends_at)
                              WHERE ended_at IS NULL AND source_ends_at IS NOT NULL;
-CREATE INDEX case_ack_idx    ON alert_cases (org_id, ack_state, started_at DESC)
+-- ⭐ THE LAST COLUMN OF EACH IS THE KEYSET TIEBREAK (00053), AND IT IS NOT
+-- DECORATION. One Alertmanager batch opens every episode in it at the SAME
+-- INSTANT, so `started_at` alone is not a total order and a page boundary inside
+-- a batch is not reproducible. Both indexes stopped one column short and paid an
+-- Incremental Sort for the tiebreak; widened, the LIMIT stops the scan.
+CREATE INDEX case_ack_idx    ON alert_cases (org_id, ack_state, started_at DESC, id DESC)
                              WHERE ended_at IS NULL;
+-- Serves the `occ` CTE of stats.rollup, the `candidates` CTE of relatedAlertsSQL,
+-- and — since ADR 0040 removed the `?open=` boolean — every page of
+-- `GET /api/v1/cases` that is not restricted to live episodes (§E.3b), read
+-- backwards for `ORDER BY started_at DESC, id DESC`.
+CREATE INDEX case_started_idx ON alert_cases (org_id, started_at, id);
 
 ALTER TABLE alerts ADD CONSTRAINT alerts_current_case_fk
   FOREIGN KEY (current_case_id) REFERENCES alert_cases(id) ON DELETE SET NULL;
@@ -1235,7 +1350,7 @@ Partitions: **MONTHLY** on `recorded_at`. Pre-create 3 months ahead; detach + dr
 ```
 alert.created                 alert.mutated                 alert.flapping_started
 alert.flapping_ended
-case.opened             case.reopened           case.suppressed
+case.opened             case.reopened †         case.suppressed
 case.unsuppressed       case.resolved           case.expired
 case.acknowledged       case.unacknowledged
 alert.snoozed                 alert.unsnoozed
@@ -1252,7 +1367,23 @@ source.unreachable            source.recovered              source.clock_skew
 
 Adding a type requires a SPEC amendment. Implementers MUST NOT invent types.
 
-**† RETIRED (migration 00051): MAY BE READ, MUST NOT BE WRITTEN.** Membership stopped being an event when the group key became derived (ADR 0038): `group.member_joined` is implied by `case.opened` and `group.member_left` by `case.resolved`/`case.expired`, and both were facts about the **episode** phrased as if the group were the actor. `group.member_left` was never emitted at all — `Leave` existed at three layers with no production caller. They stay in the closed enum, and therefore in `components.schemas.AlertEventType`, because `alert_events` is retained thirteen months and rows carrying `group.member_joined` already exist: a value removed from the enum is a value `NewEventType` rejects on read and a timeline that errors instead of rendering. `alerts/service.AppendTimelineEvent` refuses a retired type, which is where "never again" is enforced rather than asserted. They leave the enum when the last partition holding them is dropped.
+**† RETIRED: MAY BE READ, MUST NOT BE WRITTEN.**
+
+`case.reopened` was retired by **migration 00054 / ADR 0040**, on the same terms and for the same
+reason. It was T8's event, and T8 no longer exists: a re-fire opens the next episode and appends
+`case.opened`. Thirteen months of `alert_events` rows spell it — and, before ADR 0036, spell it
+`occurrence.reopened` — so it stays in the closed enum, stays parseable, stays canonicalising from the
+legacy spelling, stays in `AllEventTypes()` and therefore in `components.schemas.AlertEventType`, and
+stays in all three hand-written `type IN (…)` predicates in **both** spellings.
+
+⚠️ **It needed a SECOND refusal, and that is the one difference from 00051.** The two membership events
+were emitted from another module, so `alerts/service.AppendTimelineEvent` was the only door and one
+check there closed it. `case.reopened` was minted by `alerts`' own transition table and reached the
+column through `alerts/service.appendEvents`, which that seam explicitly does not cover — so the
+refusal is made at **both** writers, and the transition rows that constructed the value are gone as
+well.
+
+Membership stopped being an event at **migration 00051**, when the group key became derived (ADR 0038): `group.member_joined` is implied by `case.opened` and `group.member_left` by `case.resolved`/`case.expired`, and both were facts about the **episode** phrased as if the group were the actor. `group.member_left` was never emitted at all — `Leave` existed at three layers with no production caller. They stay in the closed enum, and therefore in `components.schemas.AlertEventType`, because `alert_events` is retained thirteen months and rows carrying `group.member_joined` already exist: a value removed from the enum is a value `NewEventType` rejects on read and a timeline that errors instead of rendering. `alerts/service.AppendTimelineEvent` refuses a retired type, which is where "never again" is enforced rather than asserted. They leave the enum when the last partition holding them is dropped.
 
 ### D.5 Groups
 
@@ -1322,7 +1453,9 @@ ALTER TABLE alert_cases ADD CONSTRAINT case_group_fk
 
 -- The generation's LIVE membership: current-member page, twenty-row preview,
 -- fan-out candidates and their count. `case_terminal_ended` makes
--- `ended_at IS NULL` identical to `state IN ('firing','suppressed')`.
+-- `ended_at IS NULL` identical to `state = 'open'` — and the LITERAL is what the
+-- query must emit, because a partial index is matched against the query's own
+-- clauses and never against a CHECK (§E.3b, ADR 0040 §5).
 CREATE INDEX case_group_live_idx ON alert_cases (org_id, group_id, started_at DESC, id DESC)
   WHERE ended_at IS NULL;
 ```
@@ -1780,6 +1913,10 @@ CREATE TABLE alert_quality_daily (
   notifications     INT         NOT NULL DEFAULT 0,
   deliveries        INT         NOT NULL DEFAULT 0,
   acked_cases INT         NOT NULL DEFAULT 0,
+  -- ⭐ BOTH COME FROM `resolve_reason`, NOT FROM A STATE LITERAL: `stats.rollup` counts
+  -- `resolve_reason = 'upstream'` as auto_resolved and `'timeout'` as expired. Since ADR 0040 a
+  -- Case's state says only that the episode closed, and `resolve_reason` is the sole record of
+  -- WHICH — which is exactly why `case_resolve_ck` guarantees a closed episode has one.
   auto_resolved     INT         NOT NULL DEFAULT 0,
   expired           INT         NOT NULL DEFAULT 0,
   total_firing_seconds BIGINT   NOT NULL DEFAULT 0,
@@ -1921,21 +2058,22 @@ RETURNING *, (xmax = 0) AS was_inserted;
 | GET | `/api/v1/alerts/{id}/enrichments` | All enrichment results with provenance | — | `[]EnrichmentDTO` | `session\|pat` |
 | GET | `/api/v1/alerts/{id}/rule` | **Rule snapshot bound to the current case + full version history** | `RuleHistoryQuery` | `RuleHistoryDTO` | `session\|pat` |
 | GET | `/api/v1/alerts/{id}/notifications` | Notifications + deliveries for this alert | `PageQuery` | `[]NotificationDTO` | `session\|pat` |
-| POST | `/api/v1/alerts/{id}/ack` | Ack the current case (T9) | `AckRequest` | `CaseDTO` | `session\|pat` |
-| POST | `/api/v1/alerts/{id}/unack` | Unack (T10) | `UnackRequest` | `CaseDTO` | `session\|pat` |
 | POST | `/api/v1/alerts/{id}/comments` | Add a human note to the timeline (T14) | `CommentRequest` | `AlertEventDTO` | `session\|pat` |
 | POST | `/api/v1/alerts/{id}/snooze` | **Suppress oto's own notifications for this alert until T** (§B.8). Does not touch the cluster. | `SnoozeRequest` | `AlertDetailDTO` | `session\|pat` |
 | POST | `/api/v1/alerts/{id}/unsnooze` | End an active snooze early | — | `AlertDetailDTO` | `session\|pat` |
 | **Cases** | | | | | |
+| GET | `/api/v1/cases` | **The ORG-WIDE episode list — the triage surface.** The only list filterable by acknowledgement, because `alerts` has no ack column (§E.3b) | `CaseListQuery` | `[]CaseListItemDTO` | `session\|pat` |
 | GET | `/api/v1/cases/{id}` | Episode detail | — | `CaseDetailDTO` | `session\|pat` |
 | GET | `/api/v1/cases/{id}/events` | Episode timeline | `TimelineQuery` | `[]AlertEventDTO` | `session\|pat` |
 | GET | `/api/v1/cases/{id}/rule` | Rule snapshot as of this episode's fire time | — | `RuleSnapshotDTO` | `session\|pat` |
+| POST | `/api/v1/cases/{id}/ack` | Ack THIS episode (T9). Addressed by case id because the receipt is stored on `alert_cases` and is cleared when the next episode opens | `AckRequest` | `CaseDTO` | `session\|pat` |
+| POST | `/api/v1/cases/{id}/unack` | Unack (T10, `reason=manual`) | `UnackRequest` | `CaseDTO` | `session\|pat` |
 | **Groups** | | | | | |
 | GET | `/api/v1/alert-groups` | List groups — the default UI landing view | `GroupListQuery` | `[]GroupDTO` | `session\|pat` |
 | GET | `/api/v1/alert-groups/{id}` | Group detail + rollup counts | — | `GroupDetailDTO` | `session\|pat` |
 | GET | `/api/v1/alert-groups/{id}/alerts` | Member alerts | `PageQuery` | `[]AlertDTO` | `session\|pat` |
 | GET | `/api/v1/alert-groups/{id}/timeline` | **Merged, ordered lifecycle timeline** — the signature view | `TimelineQuery` | `[]AlertEventDTO` | `session\|pat` |
-| POST | `/api/v1/alert-groups/{id}/ack` | Ack every open member case | `AckRequest` | `GroupDetailDTO` | `session\|pat` |
+| POST | `/api/v1/alert-groups/{id}/ack` | **Fan-out**: resolve each currently-joined member's OPEN case and ack that case. Not a group-level ack — there is no group ack column | `AckRequest` | `GroupDetailDTO` | `session\|pat` |
 | POST | `/api/v1/alert-groups/{id}/unack` | Fan-out: withdraw the receipt from every open member case (T10, `reason=manual`). The inverse of the row above — *no* member carries a receipt afterwards. | `UnackRequest` | `GroupDetailDTO` | `session\|pat` |
 | POST | `/api/v1/alert-groups/{id}/comments` | Note on the group timeline | `CommentRequest` | `AlertEventDTO` | `session\|pat` |
 | POST | `/api/v1/alert-groups/{id}/snooze` | Fan-out: snooze every **currently-joined** member alert (§B.8.3). Not predictive. | `SnoozeRequest` | `GroupDetailDTO` | `session\|pat` |
@@ -2030,6 +2168,70 @@ RETURNING *, (xmax = 0) AS was_inserted;
 ```
 
 Repeated `label[k]=v` across distinct `k` ANDs. Unknown query parameters are **rejected** `400 unknown_parameter` (this is how the UI and API stay honest).
+
+### E.3b Filtering contract for `GET /api/v1/cases`
+
+The org-wide episode list. It is a **sibling of the alert list, not a mode of it**: the row shape is a
+Case, the keyset is over `started_at`, and the acknowledgement facet exists only here — `alerts` has
+carried no ack column since migration 00049, because a receipt belongs to the firing it was given for
+and the Alert outlives that firing.
+
+```
+?state=open                  -> ended_at IS NULL         -- ⭐ THE LIVE QUEUE. maxItems 2
+&ack=unacked                 -> alert_cases.ack_state     -- the facet the endpoint exists for
+&group_id=<uuid>             -> the notification grouping an episode joined
+&severity=critical,warning   -\
+&cluster=prod-eu              |  the four IDENTITY facets, reached through `alerts`
+&namespace=payments           |  by a correlated EXISTS (never a JOIN: the two tables
+&alertname=KubePodCrashLooping/  share id, org_id, state, created_at, updated_at)
+&synthetic=true              -- ABSENT means EXCLUDE, exactly as on the alert list
+&since=2026-08-01T00:00:00Z  -> started_at >= since, the same column the keyset walks
+&limit=50&cursor=…
+```
+
+**`state` is `open|closed`, `maxItems 2`, and it is the ONE liveness axis this endpoint has.** There
+is no `?open=` — `?open=true` is now a `400 unknown_parameter`. While `state` held four values the two
+were genuinely different questions: `open` asked about liveness, `state` narrowed within it, and only
+`open` produced a predicate the planner could match a partial index against. Since ADR 0040 narrowed
+the column to two values they are one question asked twice, so the boolean is gone and `state`
+inherited its spelling. Naming both values, or neither, is no constraint at all — the column has
+exactly two.
+
+⚠️ **The planner still cannot read `state`, and the repository therefore emits the axis as the literal
+`ended_at IS NULL` / `IS NOT NULL`.** This was measured rather than assumed: a partial index is matched
+against the query's own restriction clauses and **never** against the table's CHECK constraints, so
+`case_terminal_ended` does not help it, and `state = 'open'` alone falls off `case_ack_idx` onto the
+full `case_started_idx` with both equalities demoted to heap filters. Emitting both spellings is worse
+than emitting one — it adds a filter that can never fail and multiplies one restriction's selectivity
+estimate twice, which is a worse input to every later join decision for no rows saved. **ADR 0040 §5
+carries the measured plans**; `alerts/repository.ListCases` carries the same table beside the SQL. A
+bound parameter cannot do this at all — `$n IS NULL OR state = ANY($n)` is opaque at plan time — which
+is exactly why `?open=` had to exist as a separate boolean while `state` still held four values.
+
+`?state=closed` reaches none of the partial indexes, and that is correct rather than a gap:
+`ended_at IS NOT NULL` is the complement of both partial predicates, so the full
+`case_started_idx (org_id, started_at, id)` — which carries the whole sort key — is the right access
+path for a page of ended episodes.
+
+**The four-way word is not asked for here.** An episode's `firing|suppressed|resolved|expired` reading
+is derived (§B.2), and the two halves of that derivation live on two different tables; a filter over it
+would be a filter the planner has to reconstruct per row. `GET /api/v1/alerts?state=…` is where the
+four-way question is asked, because it is a question about the Alert.
+
+**Ordering is fixed at `-started_at`, tiebroken on the case id, and there is no `sort` parameter.** A
+keyset cursor is sound only over an indexed total order and this list has exactly one; an enum with a
+single legal value would be a parameter that cannot change the answer.
+
+**Every row carries its `alert`** — a required `AlertRefDTO`, batch-loaded for the whole page in one
+further query. An episode has no `alertname` and no `severity` of its own, so a row without the
+reference could not be rendered without a request per row.
+
+**What this endpoint deliberately does NOT accept**, each a `400 unknown_parameter`: the `label[…]`
+selector, `matcher`, free-text `q`, `flapping` and `snoozed`. The first three are answered by GIN
+indexes on `alerts` and reaching them once per case row turns a keyset page into a scan of the
+identity table; the last two are properties of the identity that say nothing about which of its
+episodes you are looking at. `GET /api/v1/alerts` is where those questions are asked, and
+`GET /api/v1/alerts/{id}/cases` is how one identity's history is opened.
 
 ### E.4 SSE stream contract (`GET /api/v1/stream`)
 
@@ -2344,11 +2546,14 @@ type AlertView struct {
 type CaseView struct {
 	ID string
 	Seq int
+	// State is `open` | `closed`. The four-way word is composed from
+	// SuppressionReason and ResolveReason exactly as the server composes it (§B.2).
+	// ⛔ THERE IS NO ReopenCount: a Case is strictly terminal, so `Seq > 1` is the
+	// surviving witness that this episode succeeded one that had ended.
 	State, AckState, SuppressionReason, ResolveReason string
 	StartedAt time.Time
 	EndedAt   *time.Time
 	Duration  time.Duration
-	ReopenCount int
 	AckedByLabel string
 	AckedAt   *time.Time
 	AckNote   string
@@ -2879,7 +3084,8 @@ type OpenCase struct {
 	SourceStartsAt  time.Time
 	SourceEndsAt    *time.Time
 	SourceUpdatedAt *time.Time
-	ReopenOf        *uuid.UUID
+	// ⛔ THERE IS NO ReopenOf. `seq` is 1-based and gapless, so the episode this
+	// one succeeds is the row at `seq - 1` (ADR 0040).
 	Value           *float64
 	SkewMS          int64
 }
@@ -2893,14 +3099,18 @@ const (
 	TransitionUnsuppress  TransitionKind = "unsuppress"   // T4  (reconciler OR ingest, §B.3.1)
 	TransitionResolve     TransitionKind = "resolve"      // T5
 	TransitionExpire      TransitionKind = "expire"       // T6
-	TransitionReopen      TransitionKind = "reopen"       // T8
+	// ⛔ THERE IS NO `reopen`. T8 is retired (ADR 0040) and T7 moves no case at
+	// all — it leaves the closed episode untouched and opens the next one, which
+	// is `OpenCase`'s job rather than an edge's.
 )
 
 // Transition is the persisted effect of one edge. Produced by Case.Transition,
 // never assembled by hand in a repository or a handler.
 type Transition struct {
 	Kind              TransitionKind
-	ToState           State
+	ToState           CaseState // the CASE's post-image, `open` | `closed` — the value written to
+	                            // alert_cases.state. The §B.2 name of the edge is Kind, and the
+	                            // ALERT's post-image is projected separately (ADR 0040).
 	SuppressionReason *string
 	SuppressedBy      *SuppressedBy
 	ResolveReason     *string
@@ -2908,7 +3118,7 @@ type Transition struct {
 	LastObservedAt    time.Time
 	SourceEndsAt      *time.Time
 	SourceUpdatedAt   *time.Time
-	ReopenCount       *int
+	SuppressCount     *int // T3 increments; every other edge leaves it alone
 	Value             *float64
 	DetectedBy        ObservationSource
 	Clamped           bool // true when EndedAt was clamped; surfaced on the event payload
@@ -3282,7 +3492,7 @@ Implemented in `internal/channels/render/slack`. **Every renderer is a pure func
 | S13 | All timestamps use `<!date^<epoch>^{time}|09:14 UTC>` so they render in each viewer's timezone. Durations are computed server-side and re-rendered on update. | Research B9 |
 | S14 | Start a **fresh root card** when a thread exceeds **30 replies** (`channel_threads.reply_count`), linking back to the previous thread. | Research B8b/Knock |
 | S15 | The title is the alert's **NAME**, never a serialised label map. `cluster` is the chip beside it, `namespace`/`service` are fields; only labels the card shows nowhere else are appended as `k=v`. A title reading `alertname=X, cluster=Y` spends the two words an operator actually reads on the string `alertname=`. | Live run |
-| S16 | **`Started` is upstream's `startsAt`, and `Firing for` is measured from it, over the GROUP.** oto's own first sighting is a different fact — it lags by `group_wait` plus ingest latency, twenty-one minutes in the first live run — and belongs in the footer, if anywhere. A duration taken from the triggering alert's case describes that alert, not the outage, and reads `under a second` on a group that has been firing for eighty. | Live run |
+| S16 | **`Started` is upstream's `startsAt`, and `Firing for` is measured from it, over the GROUP.** oto's own first sighting is a different fact — it lags by `group_wait` plus ingest latency, twenty-one minutes in the first live run — and belongs in the footer, if anywhere. A duration taken from the triggering alert's case describes that alert, not the whole grouping the card speaks for, and reads `under a second` on a group that has been firing for eighty. | Live run |
 | S17 | Prose in the top-level `text` is cut at a **sentence or clause boundary**, and the terminator is never stacked on an ellipsis. `…no real service…. Severity critical` is what a naive rune cut plus a caller's own full stop produces, and it reads as software that ran out of something. | Live run |
 
 ### H.2 Palettes (binding)
@@ -3462,7 +3672,7 @@ Replies are posted with `thread_ts = channel_threads.provider_thread_id` (the **
 | `ack` | `acked` | 1 × `section` | `":eyes: *Acknowledged* by <@UA8RXUSPL> — _\"looking at the pod restarts\"_"` |
 | `unack` | `unacked` | 1 × `section` | `":arrow_uturn_left: *Un-acknowledged* by <@UA8RXUSPL>"` (or `— new case opened`) |
 | `new_alerts` | `new_alerts` | 1 × `section` | `":heavy_plus_sign: *2 more instances now firing* — \`api-9x2f\`, \`api-4k1p\` (12 total)"` |
-| `refired` | `refired` | 1 × `section` | `":repeat: *Re-fired* after 3m 12s — case #4, reopen #2"` |
+| `refired` † | `refired` | 1 × `section` | `":repeat: *Re-fired* after 3m 12s — case #4"` |
 | `resolved` | `all_resolved` | 1 × `section` | `":white_check_mark: *All resolved* after 21m 10s — 12 of 12 instances"` |
 | `expired` | `expired` | 1 × `section` | `":grey_question: *Expired* — oto has not heard about this since <!date^…^{time}\|09:41 UTC>. This is NOT a resolution."` |
 | `suppressed` | `suppressed` | 1 × `section` | `":mute: *Silenced* by \`ram@example.com\` until <!date^…^{time}\|14:00 UTC> — _\"maintenance window\"_"` |
@@ -3475,6 +3685,14 @@ Replies are posted with `thread_ts = channel_threads.provider_thread_id` (the **
 | `storm` | `storm` | 1 × `section` | `":zap: *Storm damping on* — 214 alerts in 60s. Individual notifications are suppressed. <link\|see them all>"` |
 | `degraded` | *(system)* | 1 × `context` | `":warning: oto could not deliver an update to this thread (\`channel_not_found\`). See Deliveries in oto."` |
 | `continued` | *(system)* | 1 × `section` | `":arrow_right: *Continued in a new message* — this thread reached 30 replies. <link\|jump>"` |
+
+**† `refired` is RETAINED BUT UNREACHABLE (ADR 0040), and the renderer still has to draw one.** It was
+T8's reason — the edge that reopened a closed episode inside `refire_grace` — and every re-fire is now
+a new episode, whose reason is `fired`. The value stays declared, stays in `notifications_reason_ck`
+and keeps its row here, because rows already carry it, a customer's policy may already match on it, and
+a card rendering an existing notification must not fail on one. **Nothing produces it.** The ordinal
+came off `reopen_count` and now comes off `seq`, which says the same thing from a column that still
+exists: an episode above the first succeeded one that had ended.
 
 `rule_changed` is the headline differentiator and is **always** delivered as a reply, regardless of verbosity, unless the group is in storm mode.
 
@@ -3492,7 +3710,8 @@ Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason
 > The two vocabularies answer different questions and **both are needed**:
 >
 > - **oto's transitions** know WHAT CHANGED about one alert. They are the only source for `acked`,
->   `refired`, `expired` and `suppressed` — facts Alertmanager cannot see or has no word for.
+>   `expired` and `suppressed` — facts Alertmanager cannot see or has no word for. (`refired` was a
+>   fourth until ADR 0040 retired the edge behind it; see the † under §H.5.)
 > - **`notification_reason`** knows WHY THIS BATCH WAS DELIVERED about a whole group. It is the only
 >   source that can tell a first fire from a member joining an already-notified group, because the
 >   per-alert view of both is identical: a case opened.
@@ -3529,7 +3748,7 @@ Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason
 | `suppressed` | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
 | `unsuppressed` | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
 | `expired` | `update_root` + `thread_reply` | always (an expiry must never be silent) |
-| `refired` | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
+| `refired` † | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
 | `acked` | `update_root` + `thread_reply` | reply at `all` \| `status_changes` |
 | `unacked` | **`update_root` only** | always |
 | `enriched` | **`update_root` only** (+ `thread_reply` at `all`) | always |
@@ -3539,6 +3758,10 @@ Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason
 | `unsnoozed` | `update_root` + `thread_reply` | **always — exempt from snooze suppression (§B.8.4)** |
 | `unacked_reminder` | `broadcast_reply` | always |
 | `storm` | `update_root` (or `post_root` if none exists) + `thread_reply` once | always |
+
+**† `refired` is retained but unreachable** — nothing has produced it since ADR 0040 retired T8, and a
+re-fire is delivered as `fired`. The row stays because stored notifications carry the value and must
+still render. See the † under §H.5.
 
 > **`repeat interval elapsed → update-only` is the single biggest noise reduction available to oto**, and it is exactly what stock Alertmanager and Grafana Alerting get wrong (both repost). It is also the cheapest: `chat.update` is Tier 3 (50/min) while `chat.postMessage` is ~1/s/channel.
 
@@ -3873,8 +4096,8 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
 8. The Alertmanager UI shows an alert as silenced; within one reconcile interval oto shows it as **`suppressed`** with the silence's creator, comment and expiry, and the Slack card turns grey. (This is impossible from webhooks alone.)
 9. Killing Alertmanager does **not** cause oto to mark alerts resolved or expired. The source is shown `unreachable`, a banner appears, and cases are held.
 10. An alert whose `endsAt` lapses while the source is healthy becomes **`expired`**, is visibly distinguished from `resolved` in the UI and in Slack, and the copy never claims it resolved.
-11. An alert that resolves and re-fires 2 minutes later reopens the **same case** and posts a thread reply. Re-firing 2 hours later creates **case #N+1** and, if the group had closed, a **new root message**.
-12. Acking from the Slack button and acking from `POST /api/v1/alerts/{id}/ack` produce byte-identical state and go through the **same service method**.
+11. An alert that resolves and re-fires 2 minutes later creates **case #N+1**, `unacked`, and — the group generation still being open — posts a thread reply against the existing root. Re-firing 2 hours later also creates **case #N+1**, and, the group having closed in the meantime, a **new root message**. The clock changes which Slack message the fact lands on; it never changes the episode.
+12. Acking from the Slack button and acking from `POST /api/v1/cases/{id}/ack` produce byte-identical state and go through the **same service method**.
 13. An alert flapping 30 times an hour produces at most one root card and one digest reply per 15 minutes, and the UI shows a **visible** "flapping — damped" state.
 14. 300 alerts arriving for one group in 30 seconds produce **one** storm card with a count, not 300 messages, and the UI shows storm mode.
 
@@ -4566,10 +4789,14 @@ func (o Case) Transition(t TransitionKind, at ObservationTime, actor Actor) (Cas
 ```
 
 Invariants enforced inside `Transition` (each mirrored by a DDL `CHECK` in §D.4):
-1. A terminal state (`resolved`/`expired`) can only be left by T7 or T8.
+1. A terminal state (`resolved`/`expired`) can only be left by T7 — and T7 does not move the case: it
+   leaves the closed row exactly as it is and opens the next `seq`, `unacked`. A Case is strictly
+   terminal, `open → closed`, once (ADR 0040).
 2. `suppressed` can only be entered by a `reconciler` actor (C1). An `ingest` actor attempting
    T3 is a programming error and returns `KindInternal`.
-3. `resolved` requires `resolve_reason='upstream'`; `expired` requires `resolve_reason='timeout'`.
+3. `resolved` *is* `closed` + `resolve_reason='upstream'`; `expired` *is* `closed` +
+   `resolve_reason='timeout'`. Since ADR 0040 that is a derivation rather than a pair of columns
+   agreeing, which is why `case_resolve_ck` — a closed episode HAS a reason — became load-bearing.
 4. `ended_at >= started_at`, always.
 5. Ack fields are all-or-nothing.
 6. At most one open case per alert (also a partial unique index — belt and braces).
@@ -5582,7 +5809,7 @@ Implementers who find an ambiguity MUST raise it rather than choose. An undocume
 |---|---|---|
 | **P-5** | Rename throughout `internal/` and `web/src/`: `escalate_after_s`→`unacked_reminder_after_s`; `escalate_after_seconds`→`unacked_reminder_after_seconds`; `EscalateAfterS`→`UnackedReminderAfterS`; job `escalation.check`→`notify.unacked_reminder`; package `notification/worker/escalate`→`notification/worker/reminder`; `Reason` constant `escalation`→`unacked_reminder`; Slack config key `mention_on_escalation`→`mention_on_reminder`. After this, `escalation` must not appear in any Go identifier, JSON field or UI string. | §G.9, §A.1 |
 | **P-6** | **⭐ Highest value.** `Case.Transition` must accept `TransitionUnsuppress` from `ObservedByIngest`, not only `ObservedByReconciler`. Any ingest observation with `status="firing"` against a `suppressed` case transitions it to `firing` and emits `case.unsuppressed` with `payload.detected_by="webhook"`. **T3 stays reconciler-only** — the asymmetry is deliberate and must be asserted by a test. Without this, a live firing alert renders as "silenced by @ram" for up to a full reconcile interval. | §B.3.1 |
-| **P-7** | Clamp `ended_at = max(occurred_at, started_at)` in T5, T6 and T8. Set `payload.clamped = true` and preserve the raw upstream value in `payload.source_ends_at` when the clamp fires; accumulate the delta into `source_health.clock_skew_ms` and `oto_clock_skew_seconds`. A backward-skewed upstream clock must never abort an ingest transaction. | §B.3.2 |
+| **P-7** | Clamp `ended_at = max(occurred_at, started_at)` in T5 and T6 — every edge that writes the column, which since ADR 0040 retired T8 is those two. Set `payload.clamped = true` and preserve the raw upstream value in `payload.source_ends_at` when the clamp fires; accumulate the delta into `source_health.clock_skew_ms` and `oto_clock_skew_seconds`. A backward-skewed upstream clock must never abort an ingest transaction. | §B.3.2 |
 | **P-8** | Confirm `alerts.severity` persists the **raw** label value and that `SeverityFromLabel` is applied only at render/normalisation time. If the shipped ingest normalises before persisting, revert that — it destroys the user's own filter vocabulary (`sev1`, `P1`, `page`). | §L.4.2 |
 | **P-9** | Reproduce three ⛔ comment blocks **verbatim** in the migration files, so they are read by whoever is about to add the column rather than only by whoever reads this spec: (a) §D.4.0 the column ban → `00006_alerts.sql` and `00007_grouping.sql`; (b) the `alert_quality_daily` no-latency guard → `00012_platform.sql`; (c) the `notification_policies` no-people guard → `00010_notification.sql`. | §D.4.0, §D.10, §D.8 |
 | **P-10** | `isAbsoluteHTTPURL` must reject a trailing slash, a fragment and a query string, mirroring **both** halves of `alert_sources_base_ck`. Add the defensive trailing-slash strip in `CreateSourceRequest.toDomain()` / `UpdateSourceRequest.toDomain()`. Extend `TestValidatorMatchesDDL` to compare *predicate sets*, not just regexes — this gap existed because the test only compared the regex half. | §L.2.4 |

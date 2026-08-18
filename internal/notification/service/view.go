@@ -379,7 +379,6 @@ func (v *ViewService) caseView(snap domain.Snapshot) *CaseView {
 		// Computed server-side and re-computed on every update, because a duration
 		// baked into a message at post time is wrong one second later.
 		Duration:     o.Duration(snap.TakenAt),
-		ReopenCount:  o.ReopenCount,
 		AckedByLabel: o.AckedByLabel,
 		AckedAt:      o.AckedAt,
 		AckNote:      o.AckNote,
@@ -431,14 +430,13 @@ func ruleChangeView(c domain.RuleChangeFacts) *RuleChangeView {
 func (v *ViewService) links(snap domain.Snapshot) Links {
 	var l Links
 	if v.baseURL != "" {
-		// ⛔ `/cases/`, NOT `/groups/`, AND THE OLD PATH IS NOT DEAD. The UI calls
-		// this object a Case, so a card minted today must land on the screen that
-		// exists; but every card oto has already sent carries `/groups/<id>`, and
-		// `web/src/App.tsx` keeps `/groups` and `/groups/:id` as redirects onto the
-		// case precisely so a year of chat history keeps resolving. Renaming a screen
-		// is a vocabulary decision; breaking an already-delivered link would be a
-		// data-loss one, so the redirect goes before the rename and outlives it.
-		l.Group = v.baseURL + "/cases/" + snap.Group.ID.String()
+		// ⛔ `/groups/`, AND NOT `/cases/`. A card is about an ALERTGROUP: the
+		// group is what owns this Slack thread, and `snap.Group.ID` is an
+		// `alert_groups` id, so the only screen this link can honestly open is the
+		// group's. A Case is one alert's firing episode and has its own id and its
+		// own screen; minting `/cases/<group id>` sent an operator to a detail page
+		// addressed by an id that names a different table.
+		l.Group = v.baseURL + "/groups/" + snap.Group.ID.String()
 		l.Timeline = l.Group + "/timeline"
 		if snap.Focus != nil {
 			l.Alert = v.baseURL + "/alerts/" + snap.Focus.ID.String()

@@ -72,7 +72,7 @@ func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
 
 	// ⭐ THE ASSERTION THAT MATTERS.
 	after := f.currentCase()
-	require.Equal(t, domain.StateFiring, after.State(),
+	require.Equal(t, domain.StateFiring, after.AlertState(),
 		"a firing alert was expired from a stale read")
 	require.True(t, after.EndedAt().IsZero(), "ended_at must not have been written")
 	require.True(t, after.ResolveReason().IsZero(), "resolve_reason must not have been written")
@@ -134,7 +134,7 @@ func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
 	assert.False(t, got.expired, "the reaper must abandon a transition it lost")
 
 	after := f.currentCase()
-	require.Equal(t, domain.StateResolved, after.State(),
+	require.Equal(t, domain.StateResolved, after.AlertState(),
 		"an upstream resolution was overwritten with a fabricated expiry")
 	require.Equal(t, domain.ResolveUpstream, after.ResolveReason())
 	require.False(t, after.EndedAt().IsZero())
@@ -160,7 +160,7 @@ func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 
 	// The snapshot BOTH witnesses hold.
 	pre := f.currentCase()
-	require.Equal(t, domain.StateFiring, pre.State())
+	require.Equal(t, domain.StateFiring, pre.AlertState())
 
 	// Ingest wins the race and commits T5.
 	res := f.observation(domain.ObservedByIngest, "resolved", now, startsAt, now)
@@ -168,7 +168,7 @@ func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 	require.NoError(t, err)
 
 	won := f.currentCase()
-	require.Equal(t, domain.StateResolved, won.State())
+	require.Equal(t, domain.StateResolved, won.AlertState())
 	endedAt := won.EndedAt()
 	require.False(t, endedAt.IsZero())
 
@@ -184,7 +184,7 @@ func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 		"expected a conflict, got %v (%s)", err, errs.KindOf(err))
 
 	after := f.currentCase()
-	require.Equal(t, domain.StateResolved, after.State(), "a resolved episode was resurrected")
+	require.Equal(t, domain.StateResolved, after.AlertState(), "a resolved episode was resurrected")
 	require.Equal(t, domain.ResolveUpstream, after.ResolveReason())
 	require.WithinDuration(t, endedAt, after.EndedAt(), 0, "ended_at was erased")
 	require.True(t, after.SuppressionReason().IsZero())
@@ -238,7 +238,10 @@ func TestTwoConcurrentReconcilerPassesAppendOneSuppressedEvent(t *testing.T) {
 		"one suppression must append exactly one case.suppressed event (§C.8)")
 
 	after := f.currentCase()
-	require.Equal(t, domain.StateSuppressed, after.State())
+	// ⭐ ADR 0041: `AlertState` is `firing` throughout a silence — the whole point
+	// — so "is it suppressed?" is asked of the AXIS. That is where the fact lives
+	// now, and it is the only reading that can distinguish the two.
+	require.Equal(t, domain.StateFiring, after.AlertState())
 	require.Equal(t, domain.SuppressionSilence, after.SuppressionReason())
 }
 
@@ -323,7 +326,9 @@ func TestRepeatedSuppressionInOneEpisodeIsCounted(t *testing.T) {
 	after := f.currentCase()
 	require.Equal(t, 2, after.SuppressCount(),
 		"two suppressions of one episode must be counted, not collapsed")
-	require.Equal(t, domain.StateSuppressed, after.State())
+	// ADR 0041: the axis, not the state. The episode is firing and muted.
+	require.Equal(t, domain.StateFiring, after.AlertState())
+	require.Equal(t, domain.SuppressionSilence, after.SuppressionReason())
 	require.Equal(t, 2, f.countEvents(domain.EventCaseSuppressed.String()))
 	require.Equal(t, 1, f.countEvents(domain.EventCaseUnsuppressed.String()))
 }
@@ -374,7 +379,7 @@ func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
 	}
 
 	after := f.currentCase()
-	require.Equal(t, domain.StateFiring, after.State(),
+	require.Equal(t, domain.StateFiring, after.AlertState(),
 		"a firing alert was expired because a late webhook rewound source_ends_at")
 	require.True(t, after.EndedAt().IsZero())
 	require.Zero(t, f.countEvents(domain.EventCaseExpired.String()))
@@ -398,7 +403,7 @@ func TestAcknowledgeCannotLandOnAnEpisodeThatEnded(t *testing.T) {
 
 	// What the human's request read.
 	pre := f.currentCase()
-	require.Equal(t, domain.StateFiring, pre.State())
+	require.Equal(t, domain.StateFiring, pre.AlertState())
 
 	// Upstream resolves while the human is deciding.
 	res := f.observation(domain.ObservedByIngest, "resolved", now, startsAt, now)
@@ -417,7 +422,7 @@ func TestAcknowledgeCannotLandOnAnEpisodeThatEnded(t *testing.T) {
 		"expected a conflict, got %v (%s)", err, errs.KindOf(err))
 
 	after := f.currentCase()
-	require.Equal(t, domain.StateResolved, after.State())
+	require.Equal(t, domain.StateResolved, after.AlertState())
 	require.Equal(t, domain.AckStateUnacked, after.AckState(),
 		"a resolved episode was acknowledged")
 }
@@ -471,7 +476,7 @@ func firingCase(t *testing.T, now time.Time) domain.Case {
 		OrgID:          id.New(),
 		AlertID:        id.New(),
 		Seq:            1,
-		State:          domain.StateFiring,
+		State:          domain.CaseOpen,
 		StartedAt:      now.Add(-time.Hour),
 		LastObservedAt: now.Add(-time.Minute),
 		SourceStartsAt: now.Add(-time.Hour),

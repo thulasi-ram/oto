@@ -215,7 +215,6 @@ type CaseFacts struct {
 	ResolveReason     string
 	StartedAt         time.Time
 	EndedAt           *time.Time
-	ReopenCount       int
 	AckedByLabel      string
 	AckedAt           *time.Time
 	AckNote           string

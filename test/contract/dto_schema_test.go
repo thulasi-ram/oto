@@ -83,6 +83,13 @@ var bindings = []binding{
 	{"alerts", "CommentRequest", alertsapi.CommentRequest{}},
 	{"alerts", "SnoozeRequest", alertsapi.SnoozeRequest{}},
 	{"alerts", "UnsnoozeRequest", alertsapi.UnsnoozeRequest{}},
+	// The BULK wake, `POST /alerts/unsnooze`. Its account is the only response in
+	// the Alerts tag that is neither a resource nor a page, so all three of its
+	// shapes are bound: a per-alert outcome list that drifted from the contract
+	// would leave a caller unable to tell a skip from a wake.
+	{"alerts", "UnsnoozeAlertsRequest", alertsapi.UnsnoozeAlertsRequest{}},
+	{"alerts", "UnsnoozeAlertsDTO", alertsapi.UnsnoozeAlertsDTO{}},
+	{"alerts", "UnsnoozeOutcomeDTO", alertsapi.UnsnoozeOutcomeDTO{}},
 	{"alerts", "AlertDTO", alertsapi.AlertDTO{}},
 	{"alerts", "AlertDetailDTO", alertsapi.AlertDetailDTO{}},
 	{"alerts", "AlertRefDTO", alertsapi.AlertRefDTO{}},
@@ -90,6 +97,7 @@ var bindings = []binding{
 	{"alerts", "AlertRollupDTO", alertsapi.AlertRollupDTO{}},
 	{"alerts", "CaseDTO", alertsapi.CaseDTO{}},
 	{"alerts", "CaseDetailDTO", alertsapi.CaseDetailDTO{}},
+	{"alerts", "CaseListItemDTO", alertsapi.CaseListItemDTO{}},
 	{"alerts", "EnrichmentDTO", alertsapi.EnrichmentDTO{}},
 	{"alerts", "EnrichmentSummaryDTO", alertsapi.EnrichmentSummaryDTO{}},
 	{"alerts", "DeliverySummaryDTO", alertsapi.DeliverySummaryDTO{}},
@@ -224,6 +232,7 @@ var bindings = []binding{
 var queryObjects = map[string]bool{
 	"alerts.ListAlertsQuery":     true,
 	"alerts.ListRollupsQuery":    true,
+	"alerts.ListCasesQuery":      true,
 	"alerts.TimelineQuery":       true,
 	"alerts.LabelQuery":          true,
 	"grouping.ListGroupsQuery":   true,
@@ -960,6 +969,7 @@ var queryBindings = []queryBinding{
 		deepObject: map[string]string{"label": labelSelectorParam}},
 	{pkg: "alerts", opIDs: []string{"listAlertRollups"}, v: alertsapi.ListRollupsQuery{},
 		deepObject: map[string]string{"label": labelSelectorParam}},
+	{pkg: "alerts", opIDs: []string{"listCases"}, v: alertsapi.ListCasesQuery{}},
 	{pkg: "alerts", opIDs: []string{"listAlertEvents", "listCaseEvents"},
 		v: alertsapi.TimelineQuery{}},
 	{pkg: "alerts", opIDs: []string{"listLabelNames"}, v: alertsapi.LabelQuery{}},

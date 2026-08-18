@@ -104,7 +104,12 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 		// actor — which is why this call site passes `v.Actor != nil` itself.
 		body = ":arrow_uturn_left: *Un-acknowledged*" +
 			by(actorLabel(v), " automatically", v.Actor != nil)
-		if v.Case != nil && v.Case.ReopenCount > 0 {
+		// ⭐ `Seq > 1` IS THE SURVIVING WITNESS. This used to read `ReopenCount > 0`
+		// and meant "the receipt lapsed because the alert came back". Since ADR 0040
+		// a re-fire ALWAYS opens the next episode, so the episode ordinal says the
+		// same thing and says it from a column that still exists: an episode above
+		// the first succeeded one that had ended.
+		if v.Case != nil && v.Case.Seq > 1 {
 			body += " — new case opened"
 		}
 
@@ -126,10 +131,9 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 			if v.Case.Duration > 0 {
 				body += " after " + humanDuration(v.Case.Duration)
 			}
+			// The episode ordinal is the whole story now: a re-fire is a NEW case at
+			// the next `seq`, never a reopen of this one (ADR 0040).
 			body += " — case #" + strconv.Itoa(v.Case.Seq)
-			if v.Case.ReopenCount > 0 {
-				body += ", reopen #" + strconv.Itoa(v.Case.ReopenCount)
-			}
 		}
 
 	case reasonAllResolved:

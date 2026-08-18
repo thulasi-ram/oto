@@ -17,6 +17,18 @@ const MaxAckNoteBytes = 2000
 // duration is measured over. The authoritative lifecycle state machine runs
 // here; Alert.state and AlertGroup.state are projections of it.
 //
+// ⭐⭐ ITS OWN STATE IS `open | closed` AND NOTHING ELSE (ADR 0040). The §B.2
+// values belong to the ALERT; this episode's part in them is `resolveReason` (WHY
+// it ended), which AlertState reads the terminal half back out of. A Case is
+// STRICTLY TERMINAL: it closes once and a re-fire opens the next `seq`,
+// unacknowledged.
+//
+// ⭐ `suppressionReason` IS NOT PART OF THAT READING ANY MORE (ADR 0041). It is
+// the SUPPRESSION AXIS — which silence muted this firing — and it sits beside the
+// state rather than inside it, because a silenced alert is still firing and every
+// counter has to say so. `lifecyclePhase` is the one reading that still folds the
+// two together, and it exists only for the §B.3 transition table.
+//
 // Every field is unexported. A Case can only come from a constructor or
 // from a transition, so an illegal combination — `resolved` without an
 // `ended_at`, `acked` without an `acked_at` — cannot be built at all. Each
@@ -28,7 +40,7 @@ type Case struct {
 	groupID uuid.UUID
 	seq     int
 
-	state             State
+	state             CaseState
 	suppressionReason SuppressionReason
 	// suppressedBy is `alert_cases.suppressed_by`: the ids Alertmanager
 	// named — `silencedBy`, `inhibitedBy`, `mutedBy` — on the observation that
@@ -47,8 +59,6 @@ type Case struct {
 	sourceUpdatedAt time.Time
 
 	resolveReason ResolveReason
-	reopenCount   int
-	reopenOf      uuid.UUID
 
 	// stateVersion is the row's optimistic lock. It is READ from the database and
 	// asserted on write; the machine never sets it, because a version the domain
@@ -82,7 +92,7 @@ type CaseParams struct {
 	// Seq is the 1-based episode number within the Alert.
 	Seq int
 
-	State             State
+	State             CaseState
 	SuppressionReason SuppressionReason
 	// SuppressedBy is `alert_cases.suppressed_by` as read. It is carried
 	// only while the case is suppressed; see the SuppressedBy accessor.
@@ -97,9 +107,6 @@ type CaseParams struct {
 	SourceUpdatedAt time.Time
 
 	ResolveReason ResolveReason
-	ReopenCount   int
-	// ReopenOf is the previous case when T7 followed a close.
-	ReopenOf uuid.UUID
 
 	// StateVersion is `alert_cases.state_version` as read. A zero value
 	// rehydrates as 1 (the column's DEFAULT), so an in-memory case built for
@@ -136,16 +143,13 @@ func NewCase(p CaseParams) (Case, error) {
 	if p.Seq < 1 {
 		return Case{}, errs.New(errs.KindValidation, "min", "case seq must be >= 1")
 	}
-	if p.ReopenCount < 0 {
-		return Case{}, errs.New(errs.KindValidation, "min", "reopen_count must be >= 0")
-	}
 	if p.SuppressCount < 0 {
 		return Case{}, errs.New(errs.KindValidation, "min", "suppress_count must be >= 0")
 	}
 	if p.StateVersion < 0 {
 		return Case{}, errs.New(errs.KindValidation, "min", "state_version must be >= 1")
 	}
-	if !p.State.IsOpen() && !p.State.IsTerminal() {
+	if p.State.IsZero() {
 		return Case{}, errs.New(errs.KindValidation, "required", "case state is required")
 	}
 	if p.StartedAt.IsZero() {
@@ -156,10 +160,6 @@ func NewCase(p CaseParams) (Case, error) {
 	}
 	if p.SourceStartsAt.IsZero() {
 		return Case{}, errs.New(errs.KindValidation, "required", "source_starts_at is required")
-	}
-	if p.ReopenOf == p.ID && p.ReopenOf != uuid.Nil {
-		return Case{}, errs.New(errs.KindValidation, "field_order",
-			"a case cannot reopen itself")
 	}
 
 	o := Case{
@@ -175,8 +175,6 @@ func NewCase(p CaseParams) (Case, error) {
 		lastObservedAt:    p.LastObservedAt.UTC(),
 		sourceStartsAt:    p.SourceStartsAt.UTC(),
 		resolveReason:     p.ResolveReason,
-		reopenCount:       p.ReopenCount,
-		reopenOf:          p.ReopenOf,
 		stateVersion:      max(p.StateVersion, 1),
 		suppressCount:     p.SuppressCount,
 		ackState:          p.AckState,
@@ -213,8 +211,8 @@ func NewCase(p CaseParams) (Case, error) {
 // construction and after every transition, so no code path can produce an
 // Case the database would refuse.
 func (o Case) check() error {
-	// case_terminal_ended: terminal iff ended_at is set.
-	if o.state.IsTerminal() != !o.endedAt.IsZero() {
+	// case_terminal_ended: closed iff ended_at is set.
+	if o.state.IsClosed() != !o.endedAt.IsZero() {
 		return errs.Newf(errs.KindInternal, "case_terminal_ended",
 			"state %q and ended_at disagree", o.state)
 	}
@@ -231,25 +229,26 @@ func (o Case) check() error {
 		return errs.New(errs.KindInternal, "case_source_order",
 			"source_ends_at must be >= source_starts_at")
 	}
-	// case_suppress_ck: suppression_reason exists iff suppressed (C1).
-	if (o.state == StateSuppressed) != !o.suppressionReason.IsZero() {
+	// case_suppress_ck: a CLOSED episode cannot be suppressed (C1).
+	//
+	// ⭐ THIS IS ONE DIRECTION AND THE OLD INVARIANT WAS TWO, AND NOTHING WAS
+	// WEAKENED BY THE LOSS. It used to read `(state == suppressed) ==
+	// (suppression_reason set)`; since ADR 0040 "suppressed" IS "open with a
+	// suppression reason" — AlertState is the definition — so the other direction
+	// became a tautology rather than a check. What remains is the half that can
+	// still be false: a reason left behind on an episode that has ended, which
+	// would make oto keep saying "silenced by <id>" about a firing that is over.
+	if !o.suppressionReason.IsZero() && !o.state.IsOpen() {
 		return errs.New(errs.KindInternal, "case_suppression",
-			"suppression_reason exists only while suppressed")
+			"suppression_reason exists only while the episode is open")
 	}
-	// case_resolve_ck / case_resolve_map_ck: the terminal state and its reason are
-	// bound one-to-one, which is what stops oto claiming resolved when it means
-	// expired.
-	if o.state.IsTerminal() != !o.resolveReason.IsZero() {
+	// case_resolve_ck: a closed episode says why it closed, and an open one has
+	// nothing to say. `resolve_reason` is the SOLE record of resolved-versus-
+	// expired since ADR 0040, which is what makes AlertState total below and what
+	// stops oto claiming resolved when it means expired.
+	if o.state.IsClosed() != !o.resolveReason.IsZero() {
 		return errs.New(errs.KindInternal, "case_resolve_reason",
-			"resolve_reason exists only on a terminal state")
-	}
-	if o.state == StateResolved && o.resolveReason != ResolveUpstream {
-		return errs.New(errs.KindInternal, "case_resolve_map",
-			"resolved requires resolve_reason=upstream")
-	}
-	if o.state == StateExpired && o.resolveReason != ResolveTimeout {
-		return errs.New(errs.KindInternal, "case_resolve_map",
-			"expired requires resolve_reason=timeout")
+			"resolve_reason exists exactly on a closed episode")
 	}
 	// case_ack_ck / case_acklabel_ck / case_ackorder_ck: ack fields are all-or-nothing.
 	if o.ackState.IsAcked() != !o.ackedAt.IsZero() {
@@ -287,8 +286,70 @@ func (o Case) GroupID() uuid.UUID { return o.groupID }
 // Seq is the 1-based episode number within the Alert.
 func (o Case) Seq() int { return o.seq }
 
-// State is what the world is doing to this case.
-func (o Case) State() State { return o.state }
+// State is the case's OWN state: open while the episode runs, closed once it has
+// ended. These are the only two values `alert_cases.state` may hold (ADR 0040).
+func (o Case) State() CaseState { return o.state }
+
+// AlertState is the §B.2 state of the ALERT as this episode last observed it,
+// DERIVED and never stored (ADR 0040). It is exactly what `alerts.state` holds:
+// `firing | resolved | expired`.
+//
+// ⛔⭐ IT DOES NOT CONSULT SUPPRESSION, AND THAT IS ADR 0041. It used to test
+// suppression FIRST and return StateSuppressed, which made StateFiring
+// UNREACHABLE for a silenced open episode — and this method is what
+// `AlertProjection` writes to `alerts.state`, so every reader asking
+// `state = 'firing'` silently missed every alert that was firing while silenced.
+// A silence is the most common thing an operator does to a firing alert, so what
+// that lost was not an edge case: "is anything still on fire?" could not be
+// answered from the column whose job is to answer it.
+//
+// Suppression is a STATEMENT ABOUT ANOTHER SYSTEM — is Alertmanager delivering
+// this — and the signal goes on firing underneath it. It is therefore an
+// orthogonal axis, read from `SuppressionReason()` beside this value and never
+// inside it, exactly as snooze has been since 00017 and for the argument written
+// out in snooze.go:25-32.
+//
+// ⭐ THE DERIVATION IS STILL TOTAL, and `check` is what makes it so: a closed
+// episode always carries a `resolve_reason` and it is one of exactly two values,
+// so the closed half is exhaustive; the open half is now a single answer and
+// cannot fail to be.
+//
+// It returns StateNone only for the zero Case, which is the state T1's row comes
+// from — an Alert with no episode at all.
+func (o Case) AlertState() State {
+	switch {
+	case o.state.IsOpen():
+		return StateFiring
+	case o.state.IsClosed() && o.resolveReason == ResolveTimeout:
+		return StateExpired
+	case o.state.IsClosed():
+		return StateResolved
+	default:
+		return StateNone
+	}
+}
+
+// lifecyclePhase is the SPEC §B.3 machine's reading of this episode, and it is
+// the ONLY reading that still folds suppression into a State value.
+//
+// ⭐⭐ IT IS SEPARATE FROM AlertState ON PURPOSE, AND THE SPLIT IS THE WHOLE OF
+// ADR 0041 IN TWO METHODS. The transition table's `from`/`to` columns route T3
+// (firing → suppressed), T4 (suppressed → firing), and the suppressed arms of T5
+// and T6; collapsing them would make four edges unreachable and stop the Case
+// recording that it was ever muted. But `alerts.state` is a PROJECTION READ BY
+// AGGREGATES, and there `suppressed` hid firing alerts inside another word.
+//
+// So the machine keeps its four phases and the column loses one: the same fact,
+// read for two different purposes, and neither purpose has to lie to serve the
+// other. It is unexported because a caller outside this package asking "what
+// phase is the machine in?" is asking the wrong question — it wants AlertState
+// and SuppressionReason, which are the two axes.
+func (o Case) lifecyclePhase() State {
+	if o.state.IsOpen() && !o.suppressionReason.IsZero() {
+		return StateSuppressed
+	}
+	return o.AlertState()
+}
 
 // SuppressionReason says why the case is suppressed, set only while it is.
 func (o Case) SuppressionReason() SuppressionReason { return o.suppressionReason }
@@ -296,15 +357,21 @@ func (o Case) SuppressionReason() SuppressionReason { return o.suppressionReason
 // SuppressedBy names WHICH upstream objects are suppressing this episode:
 // Alertmanager's `silencedBy`, `inhibitedBy` and `mutedBy`, all three.
 //
-// ⛔ IT IS EMPTY UNLESS THE CASE IS SUPPRESSED, and the gate is here rather
-// than at every write site for the same reason `case_suppress_ck` ties
-// `suppression_reason` to `state = 'suppressed'`: witnesses left behind on an
-// case that is demonstrably firing would make oto keep saying "silenced by
-// <id>" about an alert nobody is silencing. The persistence path clears the
-// column on every non-suppressed edge; this makes a row written before it did —
-// or by anything else — read the same way.
+// ⛔ IT IS EMPTY UNLESS THE CASE IS SUPPRESSED, and the gate is here rather than
+// at every write site for the same reason `case_suppress_ck` keeps
+// `suppression_reason` off a closed episode: witnesses left behind on a case that
+// is demonstrably firing would make oto keep saying "silenced by <id>" about an
+// alert nobody is silencing. The persistence path clears the column on every
+// non-suppressed edge; this makes a row written before it did — or by anything
+// else — read the same way.
+//
+// Since ADR 0041 the gate asks `suppressionReason` DIRECTLY rather than asking
+// AlertState, because AlertState no longer knows: suppression is an axis beside
+// the state, so "is this suppressed" is the presence of a reason and nothing
+// else. `case_suppress_ck` and `check` together keep a reason off a closed
+// episode, so this is still the same question it was asking before.
 func (o Case) SuppressedBy() SuppressedBy {
-	if o.state != StateSuppressed {
+	if o.suppressionReason.IsZero() {
 		return SuppressedBy{}
 	}
 	return o.suppressedBy
@@ -332,19 +399,14 @@ func (o Case) SourceUpdatedAt() time.Time { return o.sourceUpdatedAt }
 // ResolveReason says how the case ended: upstream said so, or oto timed it out.
 func (o Case) ResolveReason() ResolveReason { return o.resolveReason }
 
-// ReopenCount is how many times this case re-fired inside refire_grace.
-func (o Case) ReopenCount() int { return o.reopenCount }
-
-// ReopenOf is the previous case a T7 re-fire followed, or uuid.Nil.
-func (o Case) ReopenOf() uuid.UUID { return o.reopenOf }
-
 // StateVersion is the row's optimistic lock (case_sver_ck, >= 1). It is the whole
 // compare-and-set predicate for a §B.3 transition: see TransitionPrecondition.
 func (o Case) StateVersion() int { return o.stateVersion }
 
 // SuppressCount is how many times this episode has entered `suppressed`. It is
-// what makes T3 and T4's §C.8 dedupe keys stable, exactly as ReopenCount does for
-// T8 — a suppression is a COUNTED fact, not a timestamped one.
+// what makes T3 and T4's §C.8 dedupe keys stable — a suppression is a COUNTED
+// fact, not a timestamped one, and two passes over the same suppression must not
+// mint two events.
 func (o Case) SuppressCount() int { return o.suppressCount }
 
 // AckState is what humans have done. It is orthogonal to State.

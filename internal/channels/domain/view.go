@@ -93,6 +93,16 @@ type AlertView struct {
 }
 
 // CaseView is one firing episode as a renderer sees it.
+//
+// ⭐ `State` IS THE FOUR-WORD §B.2 READING AND NOT `alert_cases.state`. A card
+// says "firing" or "resolved" about an episode and always has; the column behind
+// it holds `open | closed` since ADR 0040, and `notification/repository`
+// recomposes the word before a renderer ever sees it. Renderers are unchanged by
+// that migration, deliberately — the frozen `oto.notification.v1` envelope could
+// not have absorbed it.
+//
+// ⛔ THERE IS NO `ReopenCount`. A Case is strictly terminal, so the number could
+// only ever be zero.
 type CaseView struct {
 	ID                                                string
 	Seq                                               int
@@ -100,7 +110,6 @@ type CaseView struct {
 	StartedAt                                         time.Time
 	EndedAt                                           *time.Time
 	Duration                                          time.Duration
-	ReopenCount                                       int
 	AckedByLabel                                      string
 	AckedAt                                           *time.Time
 	AckNote                                           string

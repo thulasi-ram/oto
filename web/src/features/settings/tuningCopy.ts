@@ -349,7 +349,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "refire_grace_s",
     kind: "seconds",
     label: "Re-fire grace",
-    what: "An alert resolves, then the same alert fires again. Inside this window the existing case reopens, oto reuses the existing Slack thread and the card updates in place — the one case that produces no new root message, and therefore the one oto surfaces in the channel so it is not missed. Outside the window a new case opens, and once the case has closed that means a new generation: a brand-new Slack root message and a brand-new thread.",
+    what: "An alert resolves, then the same alert fires again. Inside this window the existing case reopens, oto reuses the existing Slack thread and the card updates in place — the one case that produces no new root message, and therefore the one oto surfaces in the channel so it is not missed. Outside the window a new case opens, and if the alert group it is notified under has closed in the meantime that means a new generation: a brand-new Slack root message and a brand-new thread.",
     risks: [
       {
         label: "Too short",
@@ -404,12 +404,12 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
   group_close_delay_s: {
     key: "group_close_delay_s",
     kind: "seconds",
-    label: "Case close delay",
-    what: "How long a case stays open after its last member stops firing. Closing a case is what makes the next fire open a new generation, and a new generation is a new Slack root message.",
+    label: "Group close delay",
+    what: "How long an alert group stays open after its last member's case ends. A group is Alertmanager's batch of alerts, not one alert's firing — closing one is what makes the next fire open a new generation, and a new generation is a new Slack root message.",
     risks: [
       {
         label: "Too short",
-        text: "A generation closes between two Alertmanager batches of the same incident, so the second half of one outage arrives as a brand-new case with a brand-new root card.",
+        text: "A generation closes between two Alertmanager batches of the same problem, so the second half of it arrives as a brand-new group with a brand-new root card.",
       },
       {
         label: "Too long",
@@ -417,7 +417,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       },
     ],
     amRule:
-      "Keep it at or above group_interval, and at or above the re-fire grace — the second one is not a suggestion. A close delay shorter than the grace gives you a re-fire that oto correctly classified as the same problem coming back, and then posts a brand-new root card for it anyway, which is the entire thing the grace exists to prevent. oto shipped 5m against a 10m grace and defeated half its own grace that way; the two defaults are now equal. Equal is safe rather than racy: this clock starts at the case's last activity, which is the resolve as oto observed it, while the grace clock starts at the upstream ended_at, which is the same instant or earlier.",
+      "Keep it at or above group_interval, and at or above the re-fire grace — the second one is not a suggestion. A close delay shorter than the grace gives you a re-fire that oto correctly classified as the same problem coming back, and then posts a brand-new root card for it anyway, which is the entire thing the grace exists to prevent. oto shipped 5m against a 10m grace and defeated half its own grace that way; the two defaults are now equal. Equal is safe rather than racy: this clock starts at the group's last activity, which is the resolve as oto observed it, while the grace clock starts at the case's upstream ended_at, which is the same instant or earlier.",
     // ⛔ ONE SUGGESTION CLEARS BOTH FLOORS, BECAUSE THERE ARE TWO AND THE BUTTON
     // WRITES ONE NUMBER. The first branch used to offer `group_interval` alone
     // while saying nothing about the grace — so against the shipped pair
@@ -442,7 +442,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       if (Number.isFinite(refire) && v < refire) {
         return {
           level: "tight",
-          text: `Shorter than the re-fire grace (${duration(refire)}). A re-fire inside the grace window would still find a closed case, so it gets a new root message despite the grace.`,
+          text: `Shorter than the re-fire grace (${duration(refire)}). A re-fire inside the grace window would still find a closed group, so it gets a new root message despite the grace.`,
           suggest: want,
         };
       }
@@ -651,7 +651,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     kind: "count",
     label: "Storm threshold",
     unit: "alerts in the window",
-    what: "Distinct alerts joining one case inside the storm window before the case collapses. In storm mode oto posts or updates exactly one root message carrying a count and a link, and suppresses every per-alert thread reply until the cooldown elapses with no new members. The channel is told once that oto has started withholding — once for the channel, not once per case, because a per-case announcement of going quiet would be the flood it is damping. Like flapping, it is a visible state, never a silent drop.",
+    what: "Distinct alerts arriving in one alert group inside the storm window before that group collapses. In storm mode oto posts or updates exactly one root message carrying a count and a link, and suppresses every per-alert thread reply until the cooldown elapses with no new members. The channel is told once that oto has started withholding — once for the channel, not once per group, because a per-group announcement of going quiet would be the flood it is damping. Like flapping, it is a visible state, never a silent drop.",
     risks: [
       {
         label: "Too high",
@@ -663,14 +663,14 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       },
     ],
     amRule:
-      "Your group_by decides whether this knob can do anything at all. Storm collapse counts alerts joining ONE case, so if group_by contains a high-cardinality label (instance, pod, container) no case ever accumulates enough members and storm collapse is unreachable at any threshold — you get one root card per alert instead, which is a flood by a different route. That fix is in alertmanager.yml, not here: group on the labels that describe the problem, not the ones that describe the instance. Otherwise set it above your largest normal case and below your smallest abnormal one; the replica count of your largest deployment is a useful proxy.",
+      "Your group_by decides whether this knob can do anything at all. Storm collapse counts alerts arriving in ONE group, so if group_by contains a high-cardinality label (instance, pod, container) no group ever accumulates enough members and storm collapse is unreachable at any threshold — you get one root card per alert instead, which is a flood by a different route. That fix is in alertmanager.yml, not here: group on the labels that describe the problem, not the ones that describe the instance. Otherwise set it above your largest normal group and below your smallest abnormal one; the replica count of your largest deployment is a useful proxy.",
   },
 
   storm_window_s: {
     key: "storm_window_s",
     kind: "seconds",
     label: "Storm window",
-    what: "The span over which joining members are counted toward the storm threshold.",
+    what: "The span over which arriving members are counted toward the storm threshold.",
     risks: [
       {
         label: "Too short",
@@ -720,7 +720,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "storm_cooldown_s",
     kind: "seconds",
     label: "Storm cooldown",
-    what: "How long the case must be quiet before per-alert behaviour resumes. It is also the gap oto holds between two channel-level storm notices, so that a storm's start and its end can each be announced while every other case's storm inside that span is collapsed into them.",
+    what: "How long the group must be quiet before per-alert behaviour resumes. It is also the gap oto holds between two channel-level storm notices, so that a storm's start and its end can each be announced while every other group's storm inside that span is collapsed into them.",
     risks: [
       {
         label: "Too short",

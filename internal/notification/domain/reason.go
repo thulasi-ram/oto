@@ -31,6 +31,12 @@ const (
 	// ReasonExpired is oto losing sight of the signal. NEVER a resolution.
 	ReasonExpired Reason = "expired"
 	// ReasonRefired is a re-fire inside the grace window.
+	//
+	// ⛔ NOTHING PRODUCES IT ANY MORE (ADR 0040). It was T8's reason — the edge
+	// that reopened a closed episode inside `refire_grace` — and a re-fire now
+	// always opens a new episode, which is `ReasonFired`. The value stays declared
+	// and stays in `notifications_reason_ck` because rows already carry it, a
+	// policy may already match on it, and the renderer still has to draw one.
 	ReasonRefired Reason = "refired"
 	// ReasonAcked is a human acknowledging.
 	ReasonAcked Reason = "acked"

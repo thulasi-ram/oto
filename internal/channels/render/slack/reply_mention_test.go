@@ -38,7 +38,7 @@ func reminderView() *domain.NotificationView {
 			GroupLabels: map[string]string{"alertname": "HighErrorRate"},
 			FiringCount: 1, TotalCount: 1, ClusterKey: "prod-eu",
 		},
-		Links: domain.Links{Group: "https://oto.example.com/cases/g1"},
+		Links: domain.Links{Group: "https://oto.example.com/groups/g1"},
 	}
 }
 

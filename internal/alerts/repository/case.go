@@ -36,8 +36,6 @@ type caseRow struct {
 	sourceUpdatedAt *time.Time
 
 	resolveReason *string
-	reopenCount   int32
-	reopenOf      *uuid.UUID
 
 	stateVersion  int32
 	suppressCount int32
@@ -56,7 +54,7 @@ type caseRow struct {
 var caseColumnList = []string{
 	"id", "org_id", "alert_id", "group_id", "seq", "state", "suppression_reason", "suppressed_by",
 	"started_at", "ended_at", "last_observed_at", "source_starts_at", "source_ends_at",
-	"source_updated_at", "resolve_reason", "reopen_count", "reopen_of", "state_version",
+	"source_updated_at", "resolve_reason", "state_version",
 	"suppress_count", "ack_state", "acked_by",
 	"acked_by_label", "acked_at", "ack_note", "rule_snapshot_id", "value", "observed_skew_ms",
 }
@@ -67,14 +65,14 @@ func (r *caseRow) scanDest() []any {
 	return []any{
 		&r.id, &r.orgID, &r.alertID, &r.groupID, &r.seq, &r.state, &r.suppressionReason,
 		&r.suppressedBy, &r.startedAt, &r.endedAt, &r.lastObservedAt, &r.sourceStartsAt,
-		&r.sourceEndsAt, &r.sourceUpdatedAt, &r.resolveReason, &r.reopenCount, &r.reopenOf,
+		&r.sourceEndsAt, &r.sourceUpdatedAt, &r.resolveReason,
 		&r.stateVersion, &r.suppressCount, &r.ackState, &r.ackedBy, &r.ackedByLabel, &r.ackedAt, &r.ackNote, &r.ruleSnapshotID,
 		&r.value, &r.observedSkewMS,
 	}
 }
 
 func (r *caseRow) toDomain() (domain.Case, error) {
-	state, err := domain.NewState(r.state)
+	state, err := domain.NewCaseState(r.state)
 	if err != nil {
 		return domain.Case{}, errs.Internal("case_state_invalid", err)
 	}
@@ -127,8 +125,6 @@ func (r *caseRow) toDomain() (domain.Case, error) {
 		SourceEndsAt:      timeOrZero(r.sourceEndsAt),
 		SourceUpdatedAt:   timeOrZero(r.sourceUpdatedAt),
 		ResolveReason:     res,
-		ReopenCount:       int(r.reopenCount),
-		ReopenOf:          idOrNil(r.reopenOf),
 		StateVersion:      int(r.stateVersion),
 		SuppressCount:     int(r.suppressCount),
 		AckState:          ack,
@@ -171,15 +167,14 @@ func (r *CaseRepository) db(ctx context.Context) db.Querier { return db.FromCont
 var openCaseSQL = `
 INSERT INTO alert_cases (
     id, org_id, alert_id, group_id, seq, state, started_at, ended_at, last_observed_at,
-    source_starts_at, source_ends_at, source_updated_at, reopen_of, value, observed_skew_ms,
+    source_starts_at, source_ends_at, source_updated_at, value, observed_skew_ms,
     ack_state)
-SELECT $1, a.org_id, a.id, $4, $5, 'firing', $6, NULL, $6, $7, $8, $9, $10, $11, $12, 'unacked'
+SELECT $1, a.org_id, a.id, $4, $5, 'open', $6, NULL, $6, $7, $8, $9, $10, $11, 'unacked'
   FROM alerts a
  WHERE a.org_id = $2 AND a.id = $3
 RETURNING ` + caseColumns
 
-// OpenCase opens a new firing episode — T1 (first sighting) and T7 (a
-// re-fire beyond refire_grace).
+// OpenCase opens a new firing episode — T1 (first sighting) and T7 (a re-fire).
 //
 // A new case ALWAYS starts unacked: T10 says an acknowledgement does not
 // survive into a new episode. The "at most one open case per alert"
@@ -210,7 +205,7 @@ func (r *CaseRepository) OpenCase(
 	var row caseRow
 	err := r.db(ctx).QueryRow(ctx, openCaseSQL,
 		in.ID, s.OrgID(), in.AlertID, in.GroupID, in.Seq, in.StartedAt.UTC(),
-		in.SourceStartsAt.UTC(), in.SourceEndsAt, in.SourceUpdatedAt, in.ReopenOf,
+		in.SourceStartsAt.UTC(), in.SourceEndsAt, in.SourceUpdatedAt,
 		in.Value, in.SkewMS,
 	).Scan(row.scanDest()...)
 	if err != nil {
@@ -407,6 +402,227 @@ func (r *CaseRepository) ListByAlert(
 	return page, db.NextCursor(last.StartedAt(), last.ID(), p.Cursor.Hash, hasMore), nil
 }
 
+// listCasesHead is everything before the two spliced dimensions. The keyset, the
+// ordering and the `alerts` reach are all in listCasesTail; only the predicates
+// whose SHAPE the planner has to see are assembled between them.
+var listCasesHead = `
+SELECT ` + caseColumns + `
+  FROM alert_cases
+ WHERE org_id = $1
+   AND ($3::uuid[] IS NULL OR group_id = ANY($3))
+   AND ($4::timestamptz IS NULL OR started_at >= $4)`
+
+// The three spellings of the state facet — the ONE liveness axis this endpoint
+// has since ADR 0040 collapsed `?open=` into `?state=`.
+//
+// ⭐⭐ IT IS SPLICED TEXT AND IT IS SPELLED IN `ended_at`, AND BOTH HALVES OF THAT
+// ARE MEASURED RATHER THAN ASSUMED. `case_terminal_ended` proves `state='open'`
+// and `ended_at IS NULL` select exactly the same rows, so the two are the same
+// question to a READER. They are not the same question to the PLANNER: a partial
+// index is matched against the query's own restriction clauses and never against
+// the table's CHECK constraints, and two of the three indexes in reach here are
+// partial on `ended_at IS NULL`. Measured on Postgres 17 over 200k rows, the
+// unacked-and-open page:
+//
+//	state = 'open'                       Index Scan on the FULL (org_id,
+//	                                     started_at, id) index, `state` and
+//	                                     `ack_state` both heap filters.
+//	ended_at IS NULL                     Index Only Scan on the partial ack index,
+//	                                     both equalities as Index Cond.
+//	state = 'open' AND ended_at IS NULL  the partial index, and a redundant
+//	                                     `state` filter that can never fail — plus
+//	                                     a selectivity estimate multiplied twice
+//	                                     for one restriction (211 rows against
+//	                                     5299), which is a worse input to every
+//	                                     later join decision for no rows saved.
+//
+// So the axis is emitted as the one spelling that is BOTH correct and visible,
+// and the redundant one is left out. A parameter cannot do this at all: `$n IS
+// NULL OR state = ANY($n)` is opaque at plan time, which is exactly why `?open=`
+// had to exist as a separate boolean while `state` still held four values.
+//
+// ⛔ IT CARRIES NO CALLER INPUT. `f.States` is a parsed `[]domain.CaseState` over
+// a two-value closed enum, and the branch below chooses between three CONSTANTS.
+const (
+	stateOpen   = "\n   AND ended_at IS NULL"
+	stateClosed = "\n   AND ended_at IS NOT NULL"
+)
+
+// The two spellings of the ack facet, both reading the SAME `$3::text[]`.
+//
+// ⭐⭐ THE ONE-VALUE FORM IS AN EQUALITY AND NOT A ONE-ELEMENT `ANY`, AND THE
+// DIFFERENCE IS WHETHER `LIMIT` STOPS THE SCAN. Measured on Postgres 17 against
+// `case_ack_idx (org_id, ack_state, started_at DESC) WHERE ended_at IS NULL`:
+//
+//	ack_state = ANY($2)         Index Scan, ack_state as a FILTER, then a full
+//	                            Sort — a ScalarArrayOp can return rows out of
+//	                            `started_at` order across the array's values, so
+//	                            Postgres cannot call the index presorted and has
+//	                            to materialise every open unacked case in the org
+//	                            before it can take fifty.
+//	ack_state = ($2::text[])[1] Index Scan with BOTH equalities as Index Cond,
+//	                            `Presorted Key: started_at`, and an Incremental
+//	                            Sort that only breaks `started_at` ties on `id`.
+//
+// `?ack=unacked` is the whole point of this endpoint, so the hot shape is the one
+// that gets the equality. The subscript is a stable expression over a bound
+// parameter, which is why it plans as an index condition.
+//
+// ⛔ BOTH ARMS NAME `$2`, AND NEITHER MAY STOP DOING SO. Postgres derives a
+// statement's parameter count from the highest `$n` its text mentions, so an arm
+// that dropped the reference would leave `$2` typeless and the Parse would fail
+// with "could not determine data type of parameter $2" — which is why "no ack
+// filter" is spelled as the null-guard below rather than as an empty string. It
+// is also why ADR 0040 RENUMBERED this statement when the state parameter went:
+// leaving a `$2` nothing mentions behind would have failed the Parse for exactly
+// the same reason, with the far less obvious symptom of an endpoint that never
+// answers at all.
+const (
+	ackAnyOf   = "\n   AND ($2::text[] IS NULL OR ack_state = ANY($2))"
+	ackEqualTo = "\n   AND ack_state = ($2::text[])[1]"
+)
+
+// listCasesTail reaches `alerts` for the four IDENTITY facets.
+//
+// ⛔ IT IS `EXISTS`, NOT A JOIN, and the reason is the same one `applyAlertFilter`
+// gives for the snooze anti-join one table over: `alerts` and `alert_cases` share
+// `id`, `org_id`, `state`, `created_at` and `updated_at`, so a real JOIN would
+// make `caseColumns` and half the predicates above ambiguous and every one of
+// them would need qualifying. Postgres flattens a correlated EXISTS into a
+// semi-join anyway, and it cannot duplicate a row even if it did not, because
+// `alert_id` is a FK onto a primary key.
+//
+// ⭐ THE `synthetic` PREDICATE IS UNCONDITIONAL, which is what makes the EXISTS
+// unconditional. A synthetic alert is one oto manufactured for a delivery drill;
+// its episodes are not part of the customer's history, so the default list must
+// exclude them, and that means every row on this page has had its alert proven to
+// exist inside the caller's org rather than merely referenced by a denormalised
+// `alert_cases.org_id`.
+var listCasesTail = `
+   AND EXISTS (SELECT 1
+                 FROM alerts a
+                WHERE a.id = alert_cases.alert_id
+                  AND a.org_id = alert_cases.org_id
+                  AND a.synthetic = $5
+                  AND ($6::text[] IS NULL OR a.severity    = ANY($6))
+                  AND ($7::text[] IS NULL OR a.namespace   = ANY($7))
+                  AND ($8::text[] IS NULL OR a.cluster_key = ANY($8))
+                  AND ($9::text[] IS NULL OR a.alertname   = ANY($9)))
+   AND ($10::timestamptz IS NULL OR (started_at, id) < ($10, $11))
+ ORDER BY started_at DESC, id DESC
+ LIMIT $12`
+
+// ListCases is `GET /api/v1/cases` (§E.3b): the ORG-WIDE episode list, newest
+// first, keyset-paginated over `(started_at DESC, id DESC)`.
+//
+// ⭐ ONE LIVENESS AXIS, SPELLED THE WAY THE PLANNER CAN READ IT. `?state=` and
+// `?open=` were the same axis asked twice once ADR 0040 narrowed the column to
+// two values, so `open` is gone and `state` inherited its spliced spelling — see
+// the constants above for the measurement behind that.
+//
+// NOTE (planner). Three indexes are in reach, and 00053 widened two of them by
+// `id` so the first two carry the whole keyset sort key:
+//
+//   - `?state=open&ack=unacked` — the queue this endpoint exists for — rides
+//     case_ack_idx `(org_id, ack_state, started_at DESC, id DESC) WHERE ended_at
+//     IS NULL`. It carries both equalities, the partial predicate and the whole
+//     sort key, so LIMIT stops the scan and no Sort node appears.
+//   - `?state=open&group_id=…` rides case_group_live_idx `(org_id, group_id,
+//     started_at DESC, id DESC) WHERE ended_at IS NULL`.
+//   - Everything else falls to case_started_idx `(org_id, started_at, id)`, read
+//     backwards for the DESC order.
+//
+// ⚠️ AND `?state=closed` REACHES NONE OF THE PARTIAL ONES, WHICH IS CORRECT
+// RATHER THAN A GAP: `ended_at IS NOT NULL` is the complement of both partial
+// predicates, so no partial index on live rows could serve it and the full
+// case_started_idx — which carries the whole sort key — is the right access path
+// for a page of ended episodes.
+func (r *CaseRepository) ListCases(
+	ctx context.Context, s db.TenantScope, f domain.CaseFilter, p db.Keyset,
+) ([]domain.Case, db.Cursor, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, db.Cursor{}, err
+	}
+	limit := db.ClampLimit(p.Limit)
+
+	// Both values is no constraint at all, and so is neither: the column has
+	// exactly two, so a filter naming both selects every row and spelling it out
+	// would cost a predicate to save nothing.
+	state := ""
+	if len(f.States) == 1 {
+		if f.States[0].IsOpen() {
+			state = stateOpen
+		} else {
+			state = stateClosed
+		}
+	}
+
+	acks := make([]string, 0, len(f.AckStates))
+	for _, a := range f.AckStates {
+		acks = append(acks, a.String())
+	}
+	ack := ackAnyOf
+	if len(acks) == 1 {
+		ack = ackEqualTo
+	}
+
+	// nil means EXCLUDE, exactly as it does on the alert list.
+	synthetic := false
+	if f.Synthetic != nil {
+		synthetic = *f.Synthetic
+	}
+
+	var cursorAt *time.Time
+	var cursorID uuid.UUID
+	if !p.Cursor.IsZero() {
+		cursorAt = timePtr(p.Cursor.SortKey.UTC())
+		cursorID = p.Cursor.ID
+	}
+	var since *time.Time
+	if f.Since != nil {
+		since = timePtr(f.Since.UTC())
+	}
+
+	rows, err := r.db(ctx).Query(ctx, listCasesHead+ack+state+listCasesTail,
+		s.OrgID(), nilIfNoRows(acks), nilIfNoIDs(f.GroupIDs), since,
+		synthetic, nilIfNoRows(f.Severities), nilIfNoRows(f.Namespaces),
+		nilIfNoRows(f.ClusterKeys), nilIfNoRows(f.AlertNames),
+		cursorAt, cursorID, limit+1)
+	if err != nil {
+		return nil, db.Cursor{}, mapErr(err, "list cases")
+	}
+	defer rows.Close()
+
+	collected, err := collectCases(rows, limit+1)
+	if err != nil {
+		return nil, db.Cursor{}, err
+	}
+	page, hasMore := db.PageOf(collected, limit)
+	if len(page) == 0 {
+		return nil, db.Cursor{Hash: f.FilterHash}, nil
+	}
+	last := page[len(page)-1]
+	return page, db.NextCursor(last.StartedAt(), last.ID(), f.FilterHash, hasMore), nil
+}
+
+// nilIfNoRows makes "no constraint" a SQL NULL rather than an empty array, which
+// is what lets one static statement carry every optional dimension: `= ANY('{}')`
+// matches nothing, while `$n IS NULL OR …` short-circuits the predicate away.
+func nilIfNoRows(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	return in
+}
+
+// nilIfNoIDs is nilIfNoRows for the one uuid-typed dimension.
+func nilIfNoIDs(in []uuid.UUID) []uuid.UUID {
+	if len(in) == 0 {
+		return nil
+	}
+	return in
+}
+
 func collectCases(rows pgx.Rows, capacity int) ([]domain.Case, error) {
 	out := make([]domain.Case, 0, capacity)
 	for rows.Next() {
@@ -520,12 +736,11 @@ UPDATE alert_cases SET
     last_observed_at   = GREATEST(last_observed_at, $8),
     source_ends_at     = COALESCE($9, source_ends_at),
     source_updated_at  = COALESCE($10, source_updated_at),
-    reopen_count       = COALESCE($11, reopen_count),
-    suppress_count     = COALESCE($12, suppress_count),
-    value              = COALESCE($13, value),
+    suppress_count     = COALESCE($11, suppress_count),
+    value              = COALESCE($12, value),
     state_version      = state_version + 1,
     updated_at         = now()
-WHERE org_id = $1 AND id = $2 AND state_version = $14`
+WHERE org_id = $1 AND id = $2 AND state_version = $13`
 
 const caseExistsSQL = `SELECT state_version FROM alert_cases WHERE org_id = $1 AND id = $2`
 
@@ -533,8 +748,14 @@ const caseExistsSQL = `SELECT state_version FROM alert_cases WHERE org_id = $1 A
 // as a COMPARE-AND-SET against the `state_version` the machine read.
 //
 // `ended_at` is written verbatim: it has ALREADY been clamped to >= started_at by
-// §B.3.2 and re-deriving it here would give two answers to one question. A nil
-// EndedAt CLEARS the column, which is what makes T8 (reopen) work.
+// §B.3.2 and re-deriving it here would give two answers to one question.
+//
+// ⛔ A NIL `EndedAt` CLEARS THE COLUMN, AND SINCE ADR 0040 NOTHING MAY USE THAT.
+// It is what made T8 work — the reopen edge that put a closed episode back into
+// `case_one_open_idx` — and T8 is retired. Every surviving edge that reaches this
+// statement either leaves `ended_at` NULL (T2, T3, T4, on an already-open episode)
+// or sets it (T5, T6). `case_terminal_ended` is what refuses the combination that
+// would resurrect a closed one.
 //
 // ⛔ A Transition with no `Expected.StateVersion` is REFUSED. The precondition
 // travels on the Transition rather than as an argument precisely so that it
@@ -557,7 +778,7 @@ func (r *CaseRepository) Transition(
 	if err := db.RequireID("case id", id); err != nil {
 		return err
 	}
-	if !t.ToState.IsOpen() && !t.ToState.IsTerminal() {
+	if t.ToState.IsZero() {
 		return errs.Internal("transition_state_invalid", errsMissing("to_state is required"))
 	}
 	if t.LastObservedAt.IsZero() {
@@ -580,7 +801,7 @@ func (r *CaseRepository) Transition(
 	tag, err := r.db(ctx).Exec(ctx, transitionSQL, s.OrgID(), id,
 		t.ToState.String(), t.SuppressionReason, suppressedBy, t.ResolveReason,
 		t.EndedAt, t.LastObservedAt.UTC(), t.SourceEndsAt, t.SourceUpdatedAt,
-		t.ReopenCount, t.SuppressCount, t.Value, t.Expected.StateVersion)
+		t.SuppressCount, t.Value, t.Expected.StateVersion)
 	if err != nil {
 		return mapErr(err, "apply transition")
 	}

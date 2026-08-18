@@ -97,8 +97,12 @@ func TestObserveOne_T1_OpensTheFirstEpisode(t *testing.T) {
 
 	ac := f.currentCase()
 	assert.Equal(t, ac.ID(), out.CaseID)
+	// ⭐ `seq` 1 IS WHAT SAYS THIS EPISODE SUCCEEDS NOTHING, now that `reopen_of` is
+	// gone: the episode a case follows is the row at `seq - 1`, and for the first
+	// there is none. Its own state is `open`; `firing` is the ALERT's reading of it.
 	assert.Equal(t, 1, ac.Seq())
-	assert.Equal(t, uuid.Nil, ac.ReopenOf())
+	assert.Equal(t, domain.CaseOpen, ac.State())
+	assert.Equal(t, domain.StateFiring, ac.AlertState())
 
 	assert.Equal(t, []uuid.UUID{ac.ID()}, acc.enrichIDs)
 	assert.Equal(t, 1, acc.newEpisode[out.AlertID])
@@ -153,7 +157,9 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	assert.Equal(t, domain.TransitionT5.String(), resolved.outcomes[0].Transition)
 	require.True(t, f.currentCase().AckState().IsAcked())
 
-	// 4. It fires again, hours later — beyond refire_grace, so T7 and not T8.
+	// 4. It fires again, hours later. A closed episode is strictly terminal since
+	//    ADR 0040, so there is no window to be inside or beyond: every re-fire is
+	//    T7 and opens the next `seq`.
 	acc := f.observeOnce(f.observation(domain.ObservedByIngest, "firing",
 		now, now, time.Time{}), opt)
 
@@ -170,8 +176,10 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	opened := f.currentCase()
 	assert.Equal(t, opened.ID(), out.CaseID)
 	assert.NotEqual(t, first.ID(), opened.ID(), "T7 opens a NEW episode")
+	// ⭐ `seq` IS THE WHOLE LINK BACK. `reopen_of` used to repeat it as a column;
+	// the episode this one succeeds is the row at `seq - 1`, which is `first`.
 	assert.Equal(t, 2, opened.Seq())
-	assert.Equal(t, first.ID(), opened.ReopenOf())
+	assert.Equal(t, first.Seq()+1, opened.Seq())
 	assert.False(t, opened.AckState().IsAcked(), "a new episode always starts unacked (T10)")
 
 	// The timeline records the dropped acknowledgement against the NEW episode.
@@ -202,7 +210,8 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	prev, err := f.cases.GetByID(ctx, f.scope, first.ID())
 	require.NoError(t, err)
 	assert.True(t, prev.AckState().IsAcked())
-	assert.Equal(t, domain.StateResolved, prev.State())
+	assert.Equal(t, domain.CaseClosed, prev.State())
+	assert.Equal(t, domain.StateResolved, prev.AlertState())
 }
 
 // TestObserveOne_NoLegalRowRecordsTheOutcomeAndNothingElse pins the give-up path:

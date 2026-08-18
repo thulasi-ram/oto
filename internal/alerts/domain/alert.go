@@ -45,6 +45,18 @@ type Alert struct {
 	state         State
 	currentCaseID uuid.UUID
 
+	// ⭐ THE SUPPRESSION AXIS (ADR 0041). It sits BESIDE `state`, never inside it:
+	// a firing, silenced alert is `state = firing` with a reason here. It used to
+	// be `state = suppressed`, which made `firing` unreachable for exactly the
+	// alerts an operator had silenced — and silencing a firing alert is the most
+	// common thing an operator does.
+	//
+	// This is what ALERTMANAGER is doing (observed). What oto decides about its
+	// own noise is a snooze, and lives in `alert_snoozes` for the reasons the
+	// deleted `snoozedUntil` note below still gives.
+	suppressionReason SuppressionReason
+	suppressedBy      SuppressedBy
+
 	// ⛔ THERE IS NO `snoozedUntil` HERE ANY MORE, AND THAT IS THE POINT. Snooze
 	// is the THIRD ORTHOGONAL AXIS (§B.1) and its authoritative home is
 	// `alert_snoozes` — the row that also knows who asked for quiet, what they
@@ -86,6 +98,11 @@ type AlertParams struct {
 	GeneratorURL string
 
 	State State
+	// SuppressionReason and SuppressedBy are the suppression axis, independent of
+	// State (ADR 0041). Both are zero unless Alertmanager is declining to deliver
+	// the signal right now.
+	SuppressionReason SuppressionReason
+	SuppressedBy      SuppressedBy
 	// CurrentCaseID is the open case, or uuid.Nil when none is open.
 	CurrentCaseID uuid.UUID
 
@@ -163,6 +180,8 @@ func NewAlert(p AlertParams) (Alert, error) {
 		annotations:       p.Annotations,
 		generatorURL:      p.GeneratorURL,
 		state:             p.State,
+		suppressionReason: p.SuppressionReason,
+		suppressedBy:      p.SuppressedBy,
 		currentCaseID:     p.CurrentCaseID,
 		firstSeenAt:       p.FirstSeenAt.UTC(),
 		lastSeenAt:        p.LastSeenAt.UTC(),
@@ -217,6 +236,46 @@ func (a Alert) Service() string { return a.labels.Service() }
 // State is the projection of the current case's state, or of the most
 // recent case when none is open.
 func (a Alert) State() State { return a.state }
+
+// SuppressionReason says whether ALERTMANAGER is delivering this signal right
+// now, and why not. It is ORTHOGONAL to State (ADR 0041): a firing alert that
+// somebody has silenced reads StateFiring here and a non-zero reason, and both
+// facts are displayed.
+func (a Alert) SuppressionReason() SuppressionReason { return a.suppressionReason }
+
+// SuppressedBy names WHICH upstream objects are suppressing this signal:
+// Alertmanager's `silencedBy`, `inhibitedBy` and `mutedBy`, all three.
+//
+// ⛔ IT IS EMPTY UNLESS SOMETHING IS SUPPRESSING, and the gate is here for the
+// same reason `Case.SuppressedBy` carries one: witnesses left behind on a signal
+// nobody is silencing would make oto go on saying "silenced by <id>" about an
+// alert that is being delivered normally.
+func (a Alert) SuppressedBy() SuppressedBy {
+	if a.suppressionReason.IsZero() {
+		return SuppressedBy{}
+	}
+	return a.suppressedBy
+}
+
+// DisplayState is the FOUR-VALUE §B.2 reading a human is shown, recomposed from
+// the two axes.
+//
+// ⭐⭐ IT IS A PRESENTATION READING AND `State` IS THE STORED ONE, and ADR 0041
+// is the whole of the difference. `alerts.state` narrowed to three values so
+// that every AGGREGATE — "how many are firing?" — counts a silenced firing alert
+// as firing, which is the only honest answer. A human looking at one row still
+// wants to be told that nobody is being paged about it, and "Suppressed" is the
+// word this product has always used for that.
+//
+// ⛔ NOTHING MAY PERSIST THIS, and nothing may COUNT with it. It exists for the
+// DTO boundary and the chip that renders from it. A query that filters on it has
+// re-created the defect this ADR removed.
+func (a Alert) DisplayState() State {
+	if a.state == StateFiring && !a.suppressionReason.IsZero() {
+		return StateSuppressed
+	}
+	return a.state
+}
 
 // CurrentCaseID is the open AlertCase, or uuid.Nil when none is open.
 func (a Alert) CurrentCaseID() uuid.UUID { return a.currentCaseID }

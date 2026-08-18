@@ -11,8 +11,7 @@
  *     token moved up to a liberal 48/36 px; nothing here hardcodes a height, so
  *     the row got taller without a single call site learning the number. That
  *     height is *spent*, not merely declared: the alert name sits on the first
- *     line and its namespace/service and summary on a second beneath it, and
- *     the row's ack and snooze buttons live in a fixed trailing anchor.
+ *     line and its namespace/service and summary on a second beneath it.
  *   - Every fixed column is budgeted against 976 px — the width this table
  *     actually gets at a 1280 px viewport — so the elastic alert column keeps a
  *     real width there instead of being crushed to nothing. See `TRACK`.
@@ -35,6 +34,18 @@
  *     behind an explicit, always-present menu trigger. A control that appears
  *     under the cursor on a list that re-sorts as alerts fire is a misclick
  *     generator, and it is unreachable by keyboard until it is too late.
+ *   - ⛔ **THE ROW CARRIES NO ACKNOWLEDGE AND NO SNOOZE**, and that is the
+ *     decision, not an omission. A row in this list is an **Alert** — the
+ *     identity of a label set, which outlives every one of its firings — while
+ *     acknowledging is a receipt on ONE firing episode, so it lives on the
+ *     **Case** surface (`/cases`, `/cases/:id`). Snooze *is* alert-scoped but is
+ *     a dialog about one alert, so it is offered from that alert's own screen
+ *     rather than from a hundred rows at once.
+ *   - ⭐ **THE ONE EXCEPTION IS `Resume`, ON THE QUIET TAB ONLY** (see `quiet`).
+ *     That tab is the list of alerts oto is currently holding its tongue about,
+ *     which makes it the one screen where waking one is a gesture whose subject
+ *     *and whose whole set* are both on screen. It is the undo of a snooze and
+ *     nothing else: there is no bulk snooze and never will be.
  */
 import {
   For,
@@ -51,23 +62,18 @@ import {
   type JSX,
 } from "solid-js";
 import { A } from "@solidjs/router";
-import { useMutation, useQueryClient } from "@tanstack/solid-query";
 
-import { ackAlert, snoozeAlert } from "~/api/endpoints";
-import { qk } from "~/api/keys";
-import type { Alert, RuleSnapshot, SnoozeRequest } from "~/api/types";
+import type { Alert, RuleSnapshot } from "~/api/types";
 import { RelativeTime, Elapsed } from "~/components/Time";
 import {
-  AckChip,
   FlappingChip,
   SeverityMark,
   STATE_BAR,
   StateChip,
-  StateGlyph,
   normaliseSeverity,
 } from "~/components/StateChip";
 import { SnoozeChipUnknownUntil } from "~/components/SnoozeChip";
-import { Button, Spinner } from "~/components/ui/Button";
+import { Button } from "~/components/ui/Button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -77,14 +83,8 @@ import {
 } from "~/components/ui/DropdownMenu";
 import { Chip, SECTION_LABEL } from "~/components/ui/surfaces";
 import { density } from "~/design/theme";
-import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 import { cn } from "~/lib/cn";
-import {
-  count as fmtCount,
-  duration as fmtDuration,
-  idempotencyKey,
-  truncate,
-} from "~/lib/format";
+import { count as fmtCount, duration as fmtDuration, truncate } from "~/lib/format";
 import { createVirtualiser, readRowHeight } from "~/lib/virtual";
 
 export interface AlertTableProps {
@@ -115,16 +115,21 @@ export interface AlertTableProps {
   /** Picking a label filters by it — the fastest drill-down there is. */
   readonly onFilterLabel: (name: string, value: string) => void;
   /**
-   * Called when a row's snooze succeeds, with the alert that went quiet.
+   * End the quiet period on these alerts. **Given only on the Quiet tab**, which
+   * is what puts the `Resume` column on the row at all.
    *
-   * ⭐ IT EXISTS BECAUSE THE ROW LEAVES. On the main tab a snoozed alert is no
-   * longer a member of the list it was snoozed from, so the row that would have
-   * carried the confirmation is gone by the time there is anything to confirm —
-   * and an operator who watches a row vanish with nothing said has been handed a
-   * disappearance rather than a result. The sentence has to be rendered by
-   * whoever owns the screen; this is how it hears about it.
+   * ⭐ IT TAKES A LIST OF IDS FROM THE FIRST DAY IT EXISTS, AND IT IS ONE ROW'S
+   * BUTTON THAT CALLS IT WITH ONE. §B.8 offers a bulk wake (`POST
+   * /alerts/unsnooze`, an account rather than a bare count) precisely because
+   * "resume these nine" is the gesture this tab is for; a `(id: string) => void`
+   * here would have to be widened, and every call site rewritten, the day the
+   * checkbox column lands. The route decides which endpoint a given length
+   * deserves — one id is the single-alert `unsnooze`, which is the only form that
+   * can answer `412 not_snoozed` about a specific alert.
    */
-  readonly onSnoozed?: (alert: Alert) => void;
+  readonly onResume?: ((alertIds: readonly string[]) => void) | undefined;
+  /** The alert ids whose resume is in flight, so a row can say it is working. */
+  readonly resuming?: ReadonlySet<string>;
   /** Rendered after the last row: the "load more" affordance or a total. */
   readonly footer?: JSX.Element;
 }
@@ -194,11 +199,12 @@ export const TRACK = {
   /** A truncating expression with the whole of it in the tooltip. Wide only. */
   rule: "7.5rem",
   /**
-   * `StateChip` + `AckChip` side by side, measured: `Firing`+`Flapping` is
-   * 131 px and `Firing`+`Acked` is 119 px, so 144 px of content clears both of
-   * the pairs that actually occur on a busy list. The three-chip row (194 px)
-   * still clips its last chip, which is the deliberate part — a fourth chip
-   * must never be able to shove `Last seen` sideways.
+   * `StateChip` plus whichever derived chip is beside it, measured:
+   * `Firing`+`Flapping` is 131 px and `Firing`+`Notifications held` is wider
+   * still, so 144 px of content clears the pair that actually occurs on a busy
+   * list. The three-chip row (194 px) clips its last chip, which is the
+   * deliberate part — a third chip must never be able to shove `Last seen`
+   * sideways.
    */
   state: "10.5rem",
   /** The cluster chip measures 76 px and the header word 51; 72 px of content. */
@@ -209,8 +215,14 @@ export const TRACK = {
   count: "5.5rem",
   /** Header-bound: "LAST SEEN" measures 62 px, so 88 px is the honest floor. */
   seen: "5.5rem",
-  /** The two 24 px lifecycle buttons plus their gap (§0.4). */
-  actions: "5rem",
+  /**
+   * The `Resume` button, and it is spent out of NOBODY's budget on the main tab
+   * because the column does not exist there (see `ORDER`). On the Quiet tab the
+   * alert name gives up 88 px, which is the one screen where that is the right
+   * trade: every row on it is being held back, and ending the hold is the reason
+   * an operator opened the tab.
+   */
+  resume: "5.5rem",
 } as const;
 
 /**
@@ -252,7 +264,7 @@ type ColumnKey =
   | "firing"
   | "count"
   | "seen"
-  | "actions";
+  | "resume";
 
 interface Column {
   readonly key: ColumnKey;
@@ -342,15 +354,31 @@ const COLUMN: Record<ColumnKey, Column> = {
   firing: { key: "firing", label: "Firing for", width: TRACK.firing, min: "5.5rem", cell: NUMERIC },
   count: { key: "count", label: "Episodes", width: TRACK.count, min: "5.5rem", cell: NUMERIC },
   seen: { key: "seen", label: "Last seen", width: TRACK.seen, min: "5.5rem", cell: NUMERIC },
-  actions: {
-    key: "actions",
-    label: "Actions",
-    width: TRACK.actions,
+  // The trailing anchor, and it is anchored on purpose: a control that changes
+  // column as the window resizes is a control you have to look for.
+  resume: {
+    key: "resume",
+    label: "Resume",
+    width: TRACK.resume,
     min: "5rem",
-    cell: "px-md py-2xs text-right align-middle overflow-hidden",
+    cell: cn(CELL, "min-w-0 text-right"),
   },
 };
 
+/**
+ * ⛔ THERE IS NO `actions` TRACK, AND THE 80 px IT USED TO HOLD WENT BACK TO THE
+ * ALERT NAME. The trailing anchor existed for a per-row Acknowledge and Snooze:
+ * the first is addressed to a **Case** — one firing episode — and not to the
+ * Alert this row renders, and the second is a dialog about one alert. An empty
+ * 5 rem column under an "Actions" header would be a promise the row cannot keep,
+ * so the column is gone rather than blank.
+ *
+ * ⭐ `resume` IS THE ONE COLUMN THAT COMES BACK, AND ONLY WHERE ITS SUBJECT IS
+ * CERTAIN. It is filtered out unless the rows came from the Quiet tab (see
+ * `columns()`), where every row is by construction an alert oto is holding — so
+ * the button can never be aimed at a guess, and the main tab's budget is
+ * untouched.
+ */
 const ORDER: readonly ColumnKey[] = [
   "severity",
   "alert",
@@ -360,7 +388,7 @@ const ORDER: readonly ColumnKey[] = [
   "firing",
   "count",
   "seen",
-  "actions",
+  "resume",
 ];
 
 const COLUMNS: readonly Column[] = ORDER.map((key) => COLUMN[key]);
@@ -413,10 +441,20 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
   const showRule = (): boolean => hasRules() && wide();
   const showCount = (): boolean => wide();
 
+  /**
+   * ⛔ BOTH HALVES, NEVER EITHER ONE. The column is a promise that the row can end
+   * this alert's quiet period, and it takes a caller who wired the mutation
+   * (`onResume`) AND a tab where every row is certainly snoozed (`quiet`). Gating
+   * on `quiet` alone would render a button with nothing behind it; gating on
+   * `onResume` alone would offer to wake an alert that was never asleep.
+   */
+  const showResume = (): boolean => props.quiet === true && props.onResume !== undefined;
+
   const columns = createMemo(() =>
     COLUMNS.filter((c) => {
       if (c.key === "rule") return showRule();
       if (c.key === "count") return showCount();
+      if (c.key === "resume") return showResume();
       return true;
     }),
   );
@@ -452,19 +490,6 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
     if (id === null) return -1;
     return props.alerts.findIndex((a) => a.id === id);
   });
-
-  /**
-   * ⭐ ONE TAB STOP FOR THE ROW ACTIONS, NOT ONE PER ROW PER BUTTON.
-   *
-   * §0.4 wants the ack/snooze controls *visible* on every row, which is exactly
-   * the arrangement that would otherwise put two extra tab stops on each of a
-   * thousand rows and make Tab useless on this screen. So they rove with the
-   * cursor: only the focused row's buttons are in the tab order, every other
-   * row's are `tabindex="-1"` and reachable by moving the cursor there with
-   * `j`/`k` first. Before anything is focused the first row holds the stop, so
-   * Tab out of the region always lands somewhere.
-   */
-  const rovingIndex = createMemo(() => (focusIndex() < 0 ? 0 : focusIndex()));
 
   /**
    * ⛔ THE ROW HEIGHT FOLLOWS THE DENSITY SWITCH, OR THE VIRTUALISER LIES.
@@ -706,15 +731,16 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
                 alert={alert}
                 index={win().start + i()}
                 focused={alert.id === focusId()}
-                tabbable={win().start + i() === rovingIndex()}
                 snoozed={props.quiet === true}
                 showRule={showRule()}
                 showCount={showCount()}
+                showResume={showResume()}
+                resuming={props.resuming?.has(alert.id) === true}
                 rules={props.rules ?? NO_RULES}
                 rulesPending={props.rulesPending === true}
                 onFocus={() => setFocusId(alert.id)}
                 onFilterLabel={props.onFilterLabel}
-                onSnoozed={props.onSnoozed}
+                onResume={props.onResume}
               />
             )}
           </For>
@@ -740,8 +766,6 @@ interface AlertRowProps {
   readonly alert: Alert;
   readonly index: number;
   readonly focused: boolean;
-  /** True on the one row whose action buttons hold the roving tab stop. */
-  readonly tabbable: boolean;
   /** Certainly snoozed, because the row came from the Quiet tab. */
   readonly snoozed: boolean;
   /**
@@ -751,11 +775,16 @@ interface AlertRowProps {
   readonly showRule: boolean;
   /** False below `WIDE_QUERY`, where the alert name needs the 88 px more. */
   readonly showCount: boolean;
+  /** True on the Quiet tab, where the row may end this alert's quiet period. */
+  readonly showResume: boolean;
+  /** This alert's own resume is in flight. */
+  readonly resuming: boolean;
   readonly rules: ReadonlyMap<string, RuleSnapshot>;
   readonly rulesPending: boolean;
   readonly onFocus: () => void;
-  readonly onSnoozed?: ((alert: Alert) => void) | undefined;
   readonly onFilterLabel: (name: string, value: string) => void;
+  /** Plural for the same reason the table's prop is — see `AlertTableProps`. */
+  readonly onResume?: ((alertIds: readonly string[]) => void) | undefined;
 }
 
 const AlertRow: Component<AlertRowProps> = (props) => {
@@ -932,9 +961,17 @@ const AlertRow: Component<AlertRowProps> = (props) => {
         {/* `overflow-hidden` so the rarer third and fourth chip clip at the
             column's edge instead of widening the track — under `table-layout:
             auto` every pixel they took came out of the alert name. */}
+        {/* ⛔ NO `AckChip` HERE, AND ITS ABSENCE IS THE SAME DECISION AS THE
+            MISSING ACKNOWLEDGE BUTTON. `acked` is not a state an Alert can be
+            in: a receipt is written on ONE firing, and an identity outlives its
+            firings — so an "Acked" chip on this row claimed a property of the
+            identity from a fact about whichever episode happened to be open. The
+            receipt is shown where it was written, on `/cases` and `/cases/:id`.
+            The unacked-critical pulse below is a different thing: it reads the
+            open episode to decide how loudly to say `firing`, and it never
+            reports "acknowledged" as something the alert is. */}
         <div class="flex min-w-0 items-center gap-2xs overflow-hidden">
           <StateChip state={props.alert.state} size="sm" urgent={urgent()} />
-          <AckChip ackState={ac()?.ack_state} />
           <Show when={props.alert.is_flapping}>
             <FlappingChip />
           </Show>
@@ -963,7 +1000,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
 
       <Show when={props.showCount}>
         <td class={cn(td(COLUMN.count), "text-ink-muted")}>
-          <span title={`${props.alert.total_cases} firing episodes since first seen`}>
+          <span title={`${props.alert.total_cases} cases — firing episodes — since first seen`}>
             {fmtCount(props.alert.total_cases)}
           </span>
         </td>
@@ -973,158 +1010,32 @@ const AlertRow: Component<AlertRowProps> = (props) => {
         <RelativeTime value={props.alert.last_seen_at} label="Last seen" />
       </td>
 
-      <td class={td(COLUMN.actions)}>
-        <RowActions alert={props.alert} tabbable={props.tabbable} onSnoozed={props.onSnoozed} />
-      </td>
+      {/* ⛔ VISIBLE ON EVERY ROW OF THIS TAB, ON EVERY PAINT, WITH OR WITHOUT A
+          POINTER (§0.4) — the same rule the label menu above obeys. A wake
+          control that materialises under the cursor, on a list that re-sorts as
+          snoozes expire, is a 3am misclick generator, and what it would misclick
+          is a channel starting to notify again. */}
+      <Show when={props.showResume}>
+        <td class={td(COLUMN.resume)}>
+          <Button
+            variant="secondary"
+            size="sm"
+            busy={props.resuming}
+            // ⛔ THE ROW HANDS ITS ID TO THE CALLER AND MINTS NOTHING. The
+            // idempotency key belongs to the gesture, and the gesture is the
+            // route's mutation — a key minted here would be re-minted on every
+            // re-render of a virtualised row.
+            onClick={() => props.onResume?.([props.alert.id])}
+            aria-label={`Resume notifications for ${props.alert.alertname}`}
+            title="Ends the quiet period on this alert now. oto starts notifying about it again, and the wake announces itself in the channel."
+          >
+            Resume
+          </Button>
+        </td>
+      </Show>
     </tr>
   );
 };
-
-/* -------------------------------------------------------------------------- */
-/* The per-row action anchor                                                  */
-/* -------------------------------------------------------------------------- */
-
-/**
- * ⛔ VISIBLE ON EVERY ROW, ON EVERY PAINT, WITH OR WITHOUT A POINTER (§0.4).
- *
- * This is what the 48 px row was *for*: `tokens.css` justifies the taller row
- * with "the per-row actions the list now shows persistently", and until now the
- * list showed none at all. They are never revealed by hover — a list that
- * re-sorts as alerts fire, with an ack control that materialises under the
- * cursor, is a 3am misclick generator — so the anchor is a fixed-width trailing
- * column and both buttons occupy it whether they are usable or not. A disabled
- * button that says *why* in its tooltip is information; a button that appears
- * and disappears is a hazard.
- *
- * ⭐ THE ENDPOINTS AND THE CONFIRMATION ARE THE DETAIL SCREEN'S, NOT NEW ONES.
- * `ackAlert` / `snoozeAlert` are the same functions `detail/Actions.tsx` calls,
- * with the same one-key-per-gesture idempotency and the same
- * `qk.alerts.all()` invalidation, and snooze opens the very same `SnoozeDialog`
- * component — so the note field, the bounds, the presets and the refusal copy
- * cannot drift between the two screens.
- *
- * What deliberately does NOT appear here is everything that takes something
- * away or writes prose: withdrawing an acknowledgement and commenting stay on
- * the alert's own screen, where there is room for the note that belongs on the
- * record. Ack is the one control §M says an operator should be able to hit
- * without thinking, and it is the only one here that acts on a single click.
- */
-const RowActions: Component<{
-  readonly alert: Alert;
-  readonly tabbable: boolean;
-  readonly onSnoozed?: ((alert: Alert) => void) | undefined;
-}> = (props) => {
-  const client = useQueryClient();
-  const [snoozeOpen, setSnoozeOpen] = createSignal(false);
-
-  const invalidate = (): void => {
-    void client.invalidateQueries({ queryKey: qk.alerts.all() });
-  };
-
-  const ack = useMutation(() => ({
-    // One key per gesture, minted at the click. The server's idempotency
-    // promise only holds if the client stops re-minting on every retry.
-    mutationFn: () => ackAlert(props.alert.id, undefined, idempotencyKey()),
-    onSuccess: invalidate,
-  }));
-
-  const acked = (): boolean => (props.alert.current_case?.ack_state ?? null) === "acked";
-
-  /** Acking an ended episode is a 412 by contract; saying so first is kinder. */
-  const caseOpen = (): boolean => {
-    const ac = props.alert.current_case ?? null;
-    return ac !== null && (ac.ended_at ?? null) === null;
-  };
-
-  const ackError = (): string | null =>
-    ack.error === null ? null : ((ack.error as Error).message ?? "The request failed.");
-
-  const ackTitle = (): string => {
-    const failure = ackError();
-    if (failure !== null) return `oto could not acknowledge this: ${failure}`;
-    if (acked()) {
-      return "Already acknowledged. Withdrawing is on the alert's own screen, where the note goes on the record.";
-    }
-    if (!caseOpen()) {
-      return "This episode has already ended, so there is nothing to acknowledge.";
-    }
-    return "Record that a human has seen this. It stays firing, at the same severity.";
-  };
-
-  const tabindex = (): number => (props.tabbable ? 0 : -1);
-
-  return (
-    <div class="flex items-center justify-end gap-2xs">
-      <Button
-        variant="ghost"
-        size="sm"
-        class="size-6 shrink-0 px-0"
-        tabindex={tabindex()}
-        disabled={acked() || !caseOpen() || ack.isPending}
-        aria-busy={ack.isPending ? "true" : undefined}
-        aria-label={`Acknowledge ${props.alert.alertname}`}
-        title={ackTitle()}
-        onClick={() => ack.mutate()}
-      >
-        <Show when={ack.isPending} fallback={<StateGlyph state="acked" tone="inherit" />}>
-          <Spinner />
-        </Show>
-      </Button>
-
-      <Button
-        variant="ghost"
-        size="sm"
-        class="size-6 shrink-0 px-0"
-        tabindex={tabindex()}
-        aria-label={`Snooze notifications for ${props.alert.alertname}`}
-        aria-haspopup="dialog"
-        title="Stop oto's own notifications for this alert until a fixed time. It keeps firing and keeps its severity — it moves to the Quiet tab, it does not go away."
-        onClick={() => setSnoozeOpen(true)}
-      >
-        <SnoozeGlyph />
-      </Button>
-
-      {/* A failure with no dialog to land in still has to be *said*: silence
-          about a refusal is the one thing oto is not allowed to do. */}
-      <Show when={ackError()}>
-        {(message) => (
-          <span role="alert" class="sr-only-focusable">
-            {`Could not acknowledge ${props.alert.alertname}: ${message()}`}
-          </span>
-        )}
-      </Show>
-
-      {/* Mounted only while open: forty virtualised rows must not carry forty
-          dialog roots between them. */}
-      <Show when={snoozeOpen()}>
-        <SnoozeDialog
-          open
-          onClose={() => setSnoozeOpen(false)}
-          subject="alert"
-          onSubmit={(body: SnoozeRequest, key: string) => snoozeAlert(props.alert.id, body, key)}
-          onSuccess={() => {
-            invalidate();
-            props.onSnoozed?.(props.alert);
-          }}
-        />
-      </Show>
-    </div>
-  );
-};
-
-/** The `Zzz` of the snooze vocabulary, at the row's button size. */
-const SnoozeGlyph: Component = () => (
-  <svg viewBox="0 0 14 14" class="shrink-0" aria-hidden="true">
-    <path
-      d="M2.5 3h4.5L2.5 7.6H7M7.6 7.4h3.9L7.6 11.2h3.9"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="butt"
-      stroke-linejoin="miter"
-    />
-  </svg>
-);
 
 /* -------------------------------------------------------------------------- */
 /* Drill down by label                                                        */
@@ -1135,9 +1046,10 @@ const SnoozeGlyph: Component = () => (
  *
  * These label chips used to be `hidden … group-hover:inline-flex`: buttons that
  * materialised under the pointer, on a list that re-sorts itself as alerts fire
- * and resolve. Whatever the button did — and on this row the neighbours are ack
- * and silence — it was one insert away from being the wrong one, and a keyboard
- * user could not see it at all until they had already tabbed into the row.
+ * and resolve. Whatever the button did, it was one insert away from doing it to
+ * the wrong alert, and a keyboard user could not see it at all until they had
+ * already tabbed into the row. The `Resume` control on the Quiet tab is held to
+ * the same rule for the same reason.
  *
  * So the trigger is *always* there, at a constant size and a constant place,
  * and the labels live behind it. One tab stop per row instead of up to six, no
@@ -1243,7 +1155,7 @@ const RuleCell: Component<RuleCellProps> = (props) => {
       <Match when={props.snapshotId === null}>
         <span
           class="text-ink-subtle"
-          title="No rule definition was captured for this episode."
+          title="No rule definition was captured for this case."
         >
           —
         </span>

@@ -219,7 +219,7 @@ func (e *ingestEnv) expireCase(t *testing.T, alertname string, endedAt time.Time
 	t.Helper()
 	tag, err := e.pool.Exec(e.ctx, `
 UPDATE alert_cases o
-   SET state = 'expired', resolve_reason = 'timeout', ended_at = $3
+   SET state = 'closed', resolve_reason = 'timeout', ended_at = $3
   FROM alerts a
  WHERE a.id = o.alert_id AND a.org_id = $1 AND a.alertname = $2`,
 		e.orgID, alertname, endedAt)

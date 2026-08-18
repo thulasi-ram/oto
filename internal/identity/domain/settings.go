@@ -112,8 +112,14 @@ func (b Bound) Clamp(v int) int {
 //
 // Twice, not once, so that the reachable band is as wide as the window it has to
 // clear. At the floor a re-fire between 5 and 10 minutes after a resolve is both
-// visible to ingest and inside the grace, which is the T8 case; below the floor
-// that band is empty and `refire_grace` is a control with no effect.
+// visible to ingest and inside the grace; below the floor that band is empty.
+//
+// ⚠️ THE BAND NO LONGER SELECTS A TRANSITION (ADR 0040) — every re-fire opens a
+// new episode whatever the clock says — so what an empty band costs today is
+// smaller than it was: a control with no effect rather than a reopen nobody could
+// reach. The arithmetic is kept intact because the floor is what stops the two
+// numbers being edited into contradiction, and because `refire_grace`'s own
+// future is undecided.
 //
 // ⛔ It is not imported from `ingestion` — a settings vocabulary must not depend
 // on the ingest path — so the two numbers are tied by a test that imports both
@@ -130,11 +136,14 @@ var settingBounds = map[SettingKey]Bound{
 	//
 	// §C.5 suppresses a replayed batch — an HA sibling, a retry — for
 	// `ingestion/domain.DedupTTL`. A re-fire whose alert set is unchanged produces
-	// a byte-identical dedup key, so a `refire_grace` at or below that window makes
-	// T8 UNREACHABLE: every re-fire oto can still observe is, by arithmetic,
-	// already outside the grace and opens a new generation and a new Slack root —
-	// precisely the wall of near-identical messages oto exists to prevent, produced
-	// by a setting that looks like it should have prevented it.
+	// a byte-identical dedup key, so a `refire_grace` at or below that window puts
+	// every re-fire oto can still observe OUTSIDE the grace by arithmetic, which
+	// made the setting a control with no reachable effect.
+	//
+	// ⚠️ SINCE ADR 0040 THAT IS ALL IT COSTS. The grace no longer decides whether a
+	// re-fire reopens the closed episode — nothing reopens one — so an unreachable
+	// band no longer hides an edge, it merely makes a knob inert. The floor stays
+	// because it is what stops the two numbers being edited into contradiction.
 	//
 	// They WERE equal (both ten minutes) and the first live tester had to alter the
 	// alert set to exercise re-fire at all. `MinRefireGrace` is derived from the
@@ -154,14 +163,13 @@ var settingBounds = map[SettingKey]Bound{
 	// it, because the §C.5 replay window is a property of Alertmanager's retry
 	// budget rather than of anybody's route timing.
 	KeyRefireGrace: {Min: MinRefireGraceSeconds, Max: 86400,
-		Why: "seconds, 600..86400: the floor is twice the §C.5 ingest replay window, because a re-fire inside that window is dropped as a duplicate delivery and the grace can never be reached; above a day two separate incidents merge into one case and the history lies"},
+		Why: "seconds, 600..86400: the floor is twice the §C.5 ingest replay window, because a re-fire inside that window is dropped as a duplicate delivery and the grace can never be reached; above a day two separate incidents share one Slack thread, because group_close_delay is pinned at or above this"},
 	KeyResolveGrace: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: must exceed the EndsAt lease Prometheus refreshes (typically 3-4 minutes) or one missed scrape looks like an expiry"},
 	// The SECOND relationship, and the one the shipped defaults used to break:
 	// keep it at or above `refire_grace`. Closing a generation freezes its thread,
 	// so a re-fire that oto classified as "the same problem coming back" still gets
-	// a brand-new root card when the generation closed first — the grace reopens
-	// the case and buys nothing visible. It is not enforced as a cross-key
+	// a brand-new root card when the generation closed first. It is not enforced as a cross-key
 	// bound because a cross-key bound would reject a legal partial PATCH that
 	// merely arrives in the wrong order; the settings screen warns instead.
 	KeyGroupCloseDelay: {Min: 60, Max: 86400,

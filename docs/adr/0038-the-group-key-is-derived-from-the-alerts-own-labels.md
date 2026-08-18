@@ -76,7 +76,8 @@ SplitLabels(ls) = { alertname: ls.alertname }  ∪  { namespace: ls.namespace } 
   exists to record.**
 - **Dropping `source_id` merges HA Alertmanager replicas.** Two replicas are two Sources sharing one
   Cluster and reporting the same alert set; keying by the replica that happened to deliver the
-  webhook gave one incident two threads. This one is strictly a fix.
+  webhook split one grouping into two generations and therefore two threads. This one is strictly a
+  fix.
 - **A label-based split is structurally safe.** Alert identity *is* the label set, so an alert's
   split key is immutable for its whole life and no alert can ever move between threads — which
   matters, because Slack threads cannot be re-parented. The residual risk is choosing too *finely*

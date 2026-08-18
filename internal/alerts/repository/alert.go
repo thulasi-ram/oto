@@ -36,8 +36,10 @@ type alertRow struct {
 	annotations  []byte
 	generatorURL *string
 
-	state         string
-	currentCaseID *uuid.UUID
+	state             string
+	suppressionReason *string
+	suppressedBy      []byte
+	currentCaseID     *uuid.UUID
 
 	firstSeenAt       time.Time
 	lastSeenAt        time.Time
@@ -55,6 +57,7 @@ type alertRow struct {
 var alertColumnList = []string{
 	"id", "org_id", "cluster_id", "alert_key", "source_fingerprint", "alertname", "severity",
 	"namespace", "service", "cluster_key", "labels", "annotations", "generator_url", "state",
+	"suppression_reason", "suppressed_by",
 	"current_case_id", "first_seen_at", "last_seen_at",
 	"last_state_change_at", "total_cases", "flap_score", "is_flapping", "synthetic",
 }
@@ -66,7 +69,7 @@ func (r *alertRow) scanDest() []any {
 	return []any{
 		&r.id, &r.orgID, &r.clusterID, &r.alertKey, &r.fingerprint, &r.alertName, &r.severity,
 		&r.namespace, &r.service, &r.clusterKey, &r.labels, &r.annotations, &r.generatorURL,
-		&r.state, &r.currentCaseID, &r.firstSeenAt,
+		&r.state, &r.suppressionReason, &r.suppressedBy, &r.currentCaseID, &r.firstSeenAt,
 		&r.lastSeenAt, &r.lastStateChangeAt, &r.totalCases, &r.flapScore, &r.isFlapping,
 		&r.synthetic,
 	}
@@ -108,6 +111,24 @@ func (r *alertRow) toDomain() (domain.Alert, error) {
 	if err != nil {
 		return domain.Alert{}, errs.Internal("alert_state_invalid", err)
 	}
+	// The suppression axis (ADR 0041). A reason the enum does not know is a
+	// mapper bug and says so; a malformed `suppressed_by` is NOT fatal, exactly as
+	// on the Case — it is a foreign system's raw attribution, and refusing to
+	// rehydrate a signal because a deep link is unreadable would take the alert
+	// off the screen to protect the link.
+	var supReason domain.SuppressionReason
+	if r.suppressionReason != nil {
+		supReason, err = domain.NewSuppressionReason(*r.suppressionReason)
+		if err != nil {
+			return domain.Alert{}, errs.Internal("alert_suppression_reason_invalid", err)
+		}
+	}
+	var suppressedBy domain.SuppressedBy
+	if len(r.suppressedBy) > 0 {
+		if err := suppressedBy.UnmarshalJSON(r.suppressedBy); err != nil {
+			suppressedBy = domain.SuppressedBy{}
+		}
+	}
 
 	a, err := domain.NewAlert(domain.AlertParams{
 		ID:                r.id,
@@ -120,6 +141,8 @@ func (r *alertRow) toDomain() (domain.Alert, error) {
 		Annotations:       ann,
 		GeneratorURL:      strOrEmpty(r.generatorURL),
 		State:             state,
+		SuppressionReason: supReason,
+		SuppressedBy:      suppressedBy,
 		CurrentCaseID:     idOrNil(r.currentCaseID),
 		FirstSeenAt:       r.firstSeenAt,
 		LastSeenAt:        r.lastSeenAt,
@@ -492,6 +515,51 @@ func (r *AlertRepository) GetByAlertKeys(
 	return out, nil
 }
 
+// GetByIDs reads many Alerts by id in one round trip.
+//
+// ⭐ IT IS WHAT KEEPS `GET /api/v1/cases` OFF THE N+1. A case row carries
+// `alert_id` and nothing else about the identity — `alertname`, `severity`,
+// `cluster_key` and `namespace` are columns of `alerts`, because they describe
+// the identity rather than the episode — so a case list that renders a readable
+// row has to reach the alert. It reaches it ONCE for the whole page, by primary
+// key, and the result is a map the mapper indexes rather than a join whose
+// columns would collide with the case's own.
+func (r *AlertRepository) GetByIDs(
+	ctx context.Context, s db.TenantScope, ids []uuid.UUID,
+) (map[uuid.UUID]domain.Alert, error) {
+	if err := db.RequireScope(s); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return map[uuid.UUID]domain.Alert{}, nil
+	}
+
+	rows, err := r.db(ctx).Query(ctx,
+		`SELECT `+alertColumns+` FROM alerts WHERE org_id = $1 AND id = ANY($2)`,
+		s.OrgID(), ids)
+	if err != nil {
+		return nil, mapErr(err, "read alerts by id")
+	}
+	defer rows.Close()
+
+	out := make(map[uuid.UUID]domain.Alert, len(ids))
+	for rows.Next() {
+		var row alertRow
+		if err := rows.Scan(row.scanDest()...); err != nil {
+			return nil, mapErr(err, "scan alert")
+		}
+		a, err := row.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out[a.ID()] = a
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "read alerts by id")
+	}
+	return out, nil
+}
+
 func (r *AlertRepository) getOne(ctx context.Context, sql string, args ...any) (domain.Alert, error) {
 	var row alertRow
 	if err := r.db(ctx).QueryRow(ctx, sql, args...).Scan(row.scanDest()...); err != nil {
@@ -641,12 +709,40 @@ func applyAlertFilter(
 	} else {
 		q = q.Where(sq.Eq{"synthetic": *f.Synthetic})
 	}
+	// ⭐⭐ `?state=` IS THE FOUR-VALUE DISPLAY VOCABULARY AND THE COLUMN HOLDS
+	// THREE (ADR 0041), so `suppressed` COMPILES ONTO THE AXIS. It is not a value
+	// `alerts.state` can hold any more; asking for it as one would return an empty
+	// page forever, and a filter that silently matches nothing is worse than a
+	// filter that refuses.
+	//
+	// ⛔ `firing` STILL MEANS FIRING — INCLUDING THE SILENCED ONES — and it is
+	// deliberately NOT narrowed to `suppression_reason IS NULL`. That narrowing is
+	// exactly the under-report this ADR removed, and re-introducing it here would
+	// put it back at the one place a user asks the question out loud. So
+	// `state=firing,suppressed`, which is what every client sends for "the live
+	// queue", collapses to the whole live set, and `state=suppressed` alone is the
+	// silenced subset of it.
 	if len(f.States) > 0 {
-		states := make([]string, len(f.States))
-		for i, st := range f.States {
-			states[i] = st.String()
+		var stored []string
+		wantSuppressed := false
+		for _, st := range f.States {
+			if st == domain.StateSuppressed {
+				wantSuppressed = true
+				continue
+			}
+			stored = append(stored, st.String())
 		}
-		q = q.Where(sq.Eq{"state": states})
+		switch {
+		case wantSuppressed && len(stored) > 0:
+			q = q.Where(sq.Or{
+				sq.Eq{"state": stored},
+				sq.Expr("suppression_reason IS NOT NULL"),
+			})
+		case wantSuppressed:
+			q = q.Where(sq.Expr("suppression_reason IS NOT NULL"))
+		default:
+			q = q.Where(sq.Eq{"state": stored})
+		}
 	}
 	if len(f.Severities) > 0 {
 		q = q.Where(sq.Eq{"severity": f.Severities})
@@ -878,8 +974,18 @@ func (r *AlertRepository) Rollup(
 		Select(expr + " AS bucket").
 		Column("COALESCE(severity, '') AS sev").
 		Column("count(*) AS n").
+		// ⭐⭐ `firing` NOW COUNTS THE SILENCED ONES TOO, AND THAT IS ADR 0041's
+		// WHOLE OBSERVABLE EFFECT. `state` used to hold `suppressed` in the slot
+		// `firing` needed, so this counter under-reported by exactly the alerts
+		// somebody had silenced — during exactly the window somebody had silenced
+		// them. The predicate is unchanged; the column stopped lying.
+		//
+		// ⭐ SO THE FOUR COUNTERS NO LONGER PARTITION THE BUCKET, deliberately.
+		// `suppressed` is a SUBSET of `firing`, because suppression is an axis and
+		// not a state: it answers "and how many of those is nobody being told
+		// about?". `firing + resolved + expired` is still the total.
 		Column("count(*) FILTER (WHERE state = 'firing') AS firing").
-		Column("count(*) FILTER (WHERE state = 'suppressed') AS suppressed").
+		Column("count(*) FILTER (WHERE suppression_reason IS NOT NULL) AS suppressed").
 		Column("count(*) FILTER (WHERE state = 'resolved') AS resolved").
 		Column("count(*) FILTER (WHERE state = 'expired') AS expired").
 		Column("count(*) FILTER (WHERE is_flapping) AS flapping").
@@ -956,18 +1062,33 @@ SELECT bucket,
 
 // ------------------------------------------------------------------ writes
 
+// ⭐ THE SUPPRESSION AXIS IS WRITTEN BY THIS STATEMENT AND ONLY THIS ONE (ADR
+// 0041). `state` and `suppression_reason` are two independent facts about one
+// signal, and they are set together from ONE case so they can never disagree:
+// a separate write would leave a window in which `alerts` claimed a suppression
+// its own `current_case_id` was not carrying.
+//
+// ⛔ `suppressed_by` IS ASSIGNED, NEVER COALESCED. The case-level write uses
+// `COALESCE($5, suppressed_by)` because a transition may legitimately say
+// nothing about the witnesses; a projection always speaks for the whole current
+// episode, so "no witnesses" means `{}` and must overwrite. Preserving the old
+// value here would leave oto naming a silence that had already expired.
 const setProjectionBatchSQL = `
 UPDATE alerts a SET
     state                 = p.state,
+    suppression_reason    = p.suppression_reason,
+    suppressed_by         = p.suppressed_by,
     current_case_id = p.current_case_id,
     last_seen_at          = GREATEST(a.last_seen_at, p.last_seen_at),
     last_state_change_at  = GREATEST(a.first_seen_at, p.last_state_change_at),
     total_cases     = p.total_cases,
     updated_at            = now()
   FROM unnest($2::uuid[], $3::text[], $4::uuid[],
-              $5::timestamptz[], $6::timestamptz[], $7::int[])
+              $5::timestamptz[], $6::timestamptz[], $7::int[],
+              $8::text[], $9::jsonb[])
        AS p(alert_id, state, current_case_id,
-            last_seen_at, last_state_change_at, total_cases)
+            last_seen_at, last_state_change_at, total_cases,
+            suppression_reason, suppressed_by)
  WHERE a.org_id = $1 AND a.id = p.alert_id`
 
 // SetProjection writes the denormalised current-state summary onto `alerts`.
@@ -1031,6 +1152,8 @@ func (r *AlertRepository) SetProjectionBatch(
 	lastSeen := make([]time.Time, n)
 	lastChange := make([]time.Time, n)
 	totals := make([]int32, n)
+	supReasons := make([]*string, n)
+	supBy := make([][]byte, n)
 
 	seen := make(map[uuid.UUID]struct{}, n)
 	for i, w := range in {
@@ -1049,16 +1172,30 @@ func (r *AlertRepository) SetProjectionBatch(
 		if p.TotalCases < 0 {
 			return errs.Internal("alert_projection_invalid", errsMissing("total_cases must be >= 0"))
 		}
+		// ⛔ THE AXIS IS REFUSED ON A TERMINAL PROJECTION HERE RATHER THAN LEFT TO
+		// `alerts_suppress_ck`, because a 23514 in the middle of an ingest batch
+		// names a constraint and not the caller that broke it. A resolved alert
+		// carrying a silence witness is a projection bug, so it is KindInternal.
+		if !p.SuppressionReason.IsZero() && p.State != domain.StateFiring {
+			return errs.Internal("alert_projection_invalid",
+				errsMissing("suppression_reason exists only while the alert is firing"))
+		}
+		by, err := p.SuppressedBy.MarshalJSON()
+		if err != nil {
+			return errs.Internal("suppressed_by_encode_failed", err)
+		}
 		ids[i] = w.AlertID
 		states[i] = p.State.String()
 		currentCases[i] = p.CurrentCaseID
 		lastSeen[i] = p.LastSeenAt.UTC()
 		lastChange[i] = p.LastStateChangeAt.UTC()
 		totals[i] = int32(p.TotalCases)
+		supReasons[i] = strPtr(p.SuppressionReason.String())
+		supBy[i] = by
 	}
 
 	tag, err := r.db(ctx).Exec(ctx, setProjectionBatchSQL, s.OrgID(), ids, states,
-		currentCases, lastSeen, lastChange, totals)
+		currentCases, lastSeen, lastChange, totals, supReasons, supBy)
 	if err != nil {
 		return mapErr(err, "write alert projection")
 	}

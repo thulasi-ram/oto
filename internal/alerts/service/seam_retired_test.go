@@ -32,8 +32,18 @@ import (
 // future membership event and thirteen months of timeline that must never gain
 // one.
 //
-// ⚠️ THE OTHER HALF IS AS IMPORTANT AS THE REFUSAL. Retired is not deleted. The
-// same two values must still PARSE, because `alert_events` contains rows carrying
+// ⭐⭐ AND `case.reopened` JOINED THEM, WHICH IS WHY THE SEAM IS NO LONGER THE
+// WHOLE STORY. ADR 0040 retired T8 — a closed Case is terminal and a re-fire opens
+// the next `seq` — so nothing may append `case.reopened` again either. But the two
+// `group.*` values were only ever minted OUTSIDE `alerts`, which is what made one
+// check on the seam sufficient for them; `case.reopened` was minted by this
+// module's OWN transition table and reached the column through `appendEvents` and
+// `appendEventsBatched`, neither of which touches the seam. So the retirement
+// needed a second refusal, `refuseRetired`, on the in-module path — and this file
+// covers both, because a guarantee proved at one of two doors is not one.
+//
+// ⚠️ THE OTHER HALF IS AS IMPORTANT AS THE REFUSAL. Retired is not deleted. All
+// three values must still PARSE, because `alert_events` contains rows carrying
 // them and a timeline that errors is worse than one that renders a fact nobody
 // writes any more. A guard that refused them on read as well would satisfy the
 // first half of this file and destroy the product. The read side is proved
@@ -115,6 +125,11 @@ func TestAppendTimelineEventRefusesARetiredType(t *testing.T) {
 	for _, typ := range []domain.EventType{
 		domain.EventGroupMemberJoined,
 		domain.EventGroupMemberLeft,
+		// ⭐ THE SEAM REFUSES `case.reopened` TOO, and it costs nothing to say so:
+		// the check asks `Retired()` rather than naming values, so the third
+		// retirement was free here. It is NOT free on the in-module path, which is
+		// what the next test is for.
+		domain.EventCaseReopened,
 	} {
 		t.Run(typ.String(), func(t *testing.T) {
 			svc, events := newSeamService(t)
@@ -123,7 +138,8 @@ func TestAppendTimelineEventRefusesARetiredType(t *testing.T) {
 				Type:    typ,
 				GroupID: groupID,
 				AlertID: uuid.New(),
-				Summary: "an alert joined the generation",
+				CaseID:  uuid.New(),
+				Summary: "a fact nothing may record any more",
 			})
 			if err == nil {
 				t.Fatalf("%s was appended. It is retired: `alert_events` still CONTAINS it and "+
@@ -195,13 +211,86 @@ func TestAppendTimelineEventStillAcceptsLiveTypes(t *testing.T) {
 	}
 }
 
+// TestTheModulesOwnAppendPathRefusesARetiredType is the half the seam could not
+// cover, and the half ADR 0040 made necessary.
+//
+// ⭐ `case.reopened` NEVER CAME THROUGH `AppendTimelineEvent`. It was built by this
+// module's own transition table and handed straight to `appendEvents`, so a
+// refusal on the seam would have refused it from every caller that never minted
+// one and from nobody who did. The T8 rows that built one are gone, which is what
+// SHOULD make this unreachable; this is what makes "should" into "cannot".
+//
+// ⛔ AND NOTHING REACHES THE REPOSITORY. `recordingEvents` counts batches, so a
+// guard that ran after the INSERT would be visible here as a batch that should not
+// exist rather than as a passing test.
+func TestTheModulesOwnAppendPathRefusesARetiredType(t *testing.T) {
+	t.Parallel()
+
+	scope := retiredTestScope(t)
+	svc, events := newSeamService(t)
+
+	ev := retiredEvent(t, scope.OrgID(), domain.EventCaseReopened)
+	n, err := svc.appendEvents(context.Background(), scope, []domain.Event{ev})
+	if err == nil {
+		t.Fatalf("%s was appended through the in-module path (%d rows). ADR 0040 retired T8, "+
+			"so nothing may mint one again — and this path never touches the seam, so this "+
+			"refusal is the only place the distinction can be made here.", ev.Type(), n)
+	}
+	if got := errs.KindOf(err); got != errs.KindInternal {
+		t.Errorf("kind = %v, want %v — no request can ask for a retired type, so reaching "+
+			"this means code asked for it and a 4xx would blame the caller", got, errs.KindInternal)
+	}
+	if got := errs.CodeOf(err); got != "event_type_retired" {
+		t.Errorf("code = %q, want \"event_type_retired\"", got)
+	}
+	if !strings.Contains(err.Error(), ev.Type().String()) {
+		t.Errorf("the error does not name the type it refused: %v", err)
+	}
+	if n := len(events.batches); n != 0 {
+		t.Errorf("the repository saw %d append batch(es): %v", n, events.written())
+	}
+}
+
+// retiredEvent builds a well-formed AlertEvent of a retired type. `NewEvent` does
+// NOT refuse one, and that is deliberate rather than a gap: the same constructor
+// rehydrates the rows `alert_events` already carries, so a kernel that could not
+// build one could not read the timeline back.
+func retiredEvent(t *testing.T, orgID uuid.UUID, typ domain.EventType) domain.Event {
+	t.Helper()
+
+	at, err := domain.NewObservationTime(retiredEventAt, retiredEventAt)
+	if err != nil {
+		t.Fatalf("observation time: %v", err)
+	}
+	actor, err := domain.SystemActor(domain.ActorIngest)
+	if err != nil {
+		t.Fatalf("ingest actor: %v", err)
+	}
+	ev, err := domain.NewEvent(domain.EventParams{
+		ID:      uuid.New(),
+		OrgID:   orgID,
+		AlertID: uuid.New(),
+		CaseID:  uuid.New(),
+		Type:    typ,
+		At:      at,
+		Actor:   actor,
+		Summary: "a fact nothing may record any more",
+	})
+	if err != nil {
+		t.Fatalf("build a %s event: %v", typ, err)
+	}
+	return ev
+}
+
+var retiredEventAt = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
 // TestRetiredTypesAreRefusedOnWriteAndNotOnRead states the asymmetry in one
 // place, because it is the whole design and the two halves live in different
 // packages.
 func TestRetiredTypesAreRefusedOnWriteAndNotOnRead(t *testing.T) {
 	t.Parallel()
 
-	for _, s := range []string{"group.member_joined", "group.member_left"} {
+	for _, s := range []string{"group.member_joined", "group.member_left", "case.reopened"} {
 		t.Run(s, func(t *testing.T) {
 			typ, err := domain.NewEventType(s)
 			if err != nil {

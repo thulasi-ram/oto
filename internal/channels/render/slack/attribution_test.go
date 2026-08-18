@@ -59,7 +59,7 @@ func humanVerbView(reason string) *domain.NotificationView {
 			AckedAt:      &attributionAt,
 			AckedByLabel: ackerLabel,
 		},
-		Links:      domain.Links{Group: "https://oto.example.com/cases/g1"},
+		Links:      domain.Links{Group: "https://oto.example.com/groups/g1"},
 		RenderedAt: attributionAt.Add(time.Second),
 	}
 }
@@ -104,7 +104,9 @@ func TestASystemTransitionSaysItWasAutomaticInsteadOfNamingNobody(t *testing.T) 
 	v.Case.AckState = "unacked"
 	v.Case.AckedAt = nil
 	v.Case.AckedByLabel = ""
-	v.Case.ReopenCount = 1
+	// Seq 2 is what a re-fire leaves behind now: the receipt lapsed because the
+	// alert came back and a NEW episode opened above the one that ended (ADR 0040).
+	v.Case.Seq = 2
 	// No id and no label: only a human actor is guaranteed either (ev_actor_ck).
 	v.Actor = &domain.ActorView{Kind: "system"}
 

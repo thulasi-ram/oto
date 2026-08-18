@@ -75,8 +75,8 @@ func baseView() *domain.NotificationView {
 			StartedAt: caseStart, Duration: 300 * time.Millisecond,
 		},
 		Links: domain.Links{
-			Group:    "http://localhost:8080/cases/019fe297-d84f-7599-b5b2-1f231749104a",
-			Timeline: "http://localhost:8080/cases/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
+			Group:    "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a",
+			Timeline: "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
 		},
 		RenderedAt: renderedAt,
 	}

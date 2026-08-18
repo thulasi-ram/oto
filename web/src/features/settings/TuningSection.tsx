@@ -882,7 +882,7 @@ const RouteRow: Component<{ readonly route: ReceiverRoute; readonly ownDepth: nu
         <Show when={props.route.group_by_all}>
           <span
             class="rounded-chip border border-line-strong px-1 text-micro leading-4 text-ink-muted"
-            title="group_by: ['...'] groups by every label, so no case ever accumulates a second member and storm collapse is unreachable at any threshold. That fix is in alertmanager.yml, not on this screen."
+            title="group_by: ['...'] groups by every label, so no alert group ever accumulates a second member and storm collapse is unreachable at any threshold. That fix is in alertmanager.yml, not on this screen."
           >
             group_by: ...
           </span>
@@ -1195,7 +1195,7 @@ const AlertmanagerPanel: Component<{
         captures: if your <code class="font-mono text-ink-muted">group_by</code> contains a
         per-replica label such as <code class="font-mono text-ink-muted">instance</code> or{" "}
         <code class="font-mono text-ink-muted">pod</code>, storm collapse is unreachable at any
-        threshold, because no case ever accumulates members. That fix is in{" "}
+        threshold, because no alert group ever accumulates members. That fix is in{" "}
         <code class="font-mono text-ink-muted">alertmanager.yml</code>, not on this screen.
       </p>
     </div>

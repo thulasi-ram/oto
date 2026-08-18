@@ -697,7 +697,6 @@ func (o orgSettings) Lifecycle(ctx context.Context, s db.TenantScope) (alertsser
 	}
 	cfg := org.Settings.Normalise()
 	return alertsservice.Settings{
-		RefireGrace:   cfg.RefireGrace,
 		ResolveGrace:  cfg.ResolveGrace,
 		FlapThreshold: cfg.FlapThreshold,
 		FlapWindow:    cfg.FlapWindow,

@@ -1,16 +1,22 @@
 /**
- * Every firing episode of this identity.
+ * Every **case** of this identity — one row per firing episode.
  *
  * This is the history Alertmanager does not keep: an alert that has fired forty
  * times has forty rows here, each with its own duration, its own acknowledgement
  * and its own reason for ending. "Has this happened before?" is a question with
  * an answer, and it is on this panel.
+ *
+ * ⛔ A ROW HERE IS A CASE AND EVERY LABEL SAYS SO. It is not a group: the
+ * batching Alertmanager notified this alert under lives at `/groups`, spans
+ * several alerts, and is not what an acknowledgement is written on. Each row
+ * links to its own case screen, which is where the receipt is written.
  */
 import { For, Match, Show, Switch, type Component } from "solid-js";
+import { A } from "@solidjs/router";
 
 import type { Case, ResolveReason, SuppressionReason } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
-import { STATE_BAR, StateChip } from "~/components/StateChip";
+import { CASE_STATE_RAIL, CaseStateChip } from "~/components/StateChip";
 import { Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { EmptyState, ErrorState, LoadingLine } from "~/components/ui/states";
 import { cn } from "~/lib/cn";
@@ -66,7 +72,7 @@ export interface CasePanelProps {
 export const CasePanel: Component<CasePanelProps> = (props) => (
   <Panel>
     <PanelHeader class={PANEL_HEADER}>
-      <PanelTitle>Firing episodes</PanelTitle>
+      <PanelTitle>Cases</PanelTitle>
       <Show when={props.cases.length > 0}>
         <span class="shrink-0 text-meta text-ink-subtle">{props.cases.length} shown</span>
       </Show>
@@ -80,7 +86,7 @@ export const CasePanel: Component<CasePanelProps> = (props) => (
         <ErrorState error={props.error} />
       </Match>
       <Match when={props.cases.length === 0}>
-        <EmptyState title="No episodes recorded." />
+        <EmptyState title="No cases recorded — this alert has never fired." />
       </Match>
       <Match when={true}>
         <ol>
@@ -90,22 +96,38 @@ export const CasePanel: Component<CasePanelProps> = (props) => (
                 class={cn(
                   "flex items-start gap-md border-b border-line last:border-b-0",
                   PANEL_ROW,
-                  // §0.6: "this is the episode you are looking at" is chrome, not
+                  // §0.6: "this is the case you are looking at" is chrome, not
                   // state, so it is said with a neutral tone shift rather than
                   // with the accent tint that used to sit here — the same idiom
                   // `SnoozePanel` already uses for the snooze in force.
                   ac.id === props.currentId ? "border-l-2 border-l-ink-muted bg-sunken" : "",
                 )}
               >
+                {/* ⛔ THE RAIL IS NEUTRAL, AND THAT FOLLOWS FROM WHAT IT ENCODES.
+                    It used to be the lifecycle bar keyed on the case's state,
+                    back when a case had four of them; an episode has two, the
+                    panel sits under an alert whose own state is already on the
+                    screen above it, and §M.2 spends a saturated colour only
+                    where it means "this is the state of an alert". */}
                 <span
                   aria-hidden="true"
-                  class={cn("mt-2xs h-6 w-2xs shrink-0 rounded-full", STATE_BAR[ac.state])}
+                  class={cn("mt-2xs h-6 w-2xs shrink-0 rounded-full", CASE_STATE_RAIL[ac.state])}
                 />
 
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-x-sm gap-y-2xs">
-                    <span class="font-mono text-body font-medium text-ink">#{ac.seq}</span>
-                    <StateChip state={ac.state} size="sm" />
+                    <A
+                      href={`/cases/${ac.id}`}
+                      class="font-mono text-body font-medium text-ink underline decoration-line-strong underline-offset-2 hover:text-ink-muted"
+                      title="Open this case — where it is acknowledged, and what happened during it."
+                    >
+                      #{ac.seq}
+                    </A>
+                    {/* No `resolveReason` here on purpose: the meta line below
+                        already says "ended because oto stopped hearing about it"
+                        in full, and a chip repeating it as "timed out" would be
+                        the same fact in two vocabularies two lines apart. */}
+                    <CaseStateChip state={ac.state} size="sm" />
                     <Show when={ac.ack_state === "acked"}>
                       <span
                         class="text-meta text-ink-muted"
@@ -120,9 +142,9 @@ export const CasePanel: Component<CasePanelProps> = (props) => (
                   </div>
 
                   <div class="mt-2xs flex flex-wrap items-center gap-x-md gap-y-2xs text-meta text-ink-muted">
-                    <span title="How long this episode was firing. oto times the signal, not anyone's response.">
+                    <span title="How long this case was firing. oto times the signal, not anyone's response.">
                       fired for {duration(ac.duration_seconds)}
-                      {ac.ended_at === null || ac.ended_at === undefined ? " so far" : ""}
+                      {ac.state === "open" ? " so far" : ""}
                     </span>
 
                     <Show when={ac.resolve_reason}>
@@ -144,12 +166,6 @@ export const CasePanel: Component<CasePanelProps> = (props) => (
                           {ids()}
                         </span>
                       )}
-                    </Show>
-
-                    <Show when={ac.reopen_count > 0}>
-                      <span title="Re-fires inside the grace window reopen the same episode rather than starting a new one.">
-                        reopened {ac.reopen_count}×
-                      </span>
                     </Show>
 
                     <Show when={ac.value !== null && ac.value !== undefined}>

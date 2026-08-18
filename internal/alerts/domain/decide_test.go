@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,7 +22,6 @@ import (
 // refireGraceFix is the window that resolves T7 against T8 in these tests.
 // `caseIn` ends a terminal episode at t0+1m, so `withinGrace` reopens and
 // `beyondGrace` opens a new episode.
-const refireGraceFix = 15 * time.Minute
 
 var (
 	withinGrace = t0.Add(2 * time.Minute)
@@ -56,7 +54,6 @@ func (c decideCase) cmd(t *testing.T) TransitionCommand {
 		Actor:             actor(t, c.actor),
 		At:                at(t, c.recorded, c.recorded),
 		EventID:           eventIDFix,
-		RefireGrace:       refireGraceFix,
 		ResolveGrace:      5 * time.Minute,
 		SuppressionReason: c.suppressionReason,
 		SourceHealthy:     c.sourceHealthy,
@@ -91,7 +88,7 @@ func decideCases(t *testing.T) []decideCase {
 			recorded: t0,
 			want: Decision{
 				ID: TransitionT1, From: StateNone,
-				OpensEpisode: true, Seq: 1, ReopenOf: uuid.Nil,
+				OpensEpisode: true, Seq: 1,
 			},
 		},
 		{
@@ -165,58 +162,62 @@ func decideCases(t *testing.T) []decideCase {
 		},
 
 		// ------------------------------------------------------------ the re-fire
+		//
+		// ⭐⭐ THERE IS ONE ROW HERE NOW, AND THE CLOCK DOES NOT APPEAR IN IT. There
+		// used to be two: T8 inside `refire_grace`, which reopened the closed
+		// episode and KEPT its acknowledgement, and T7 outside it, which opened a
+		// new one. ADR 0040 retired T8 — a Case is strictly terminal — so the two
+		// cases below are the same decision reached at two very different instants,
+		// which is the whole assertion.
 		{
-			name:     "a re-fire inside refire_grace reopens the SAME episode (T8)",
-			current:  caseIn(t, StateResolved),
+			name:     "a re-fire moments after the close still opens a NEW episode (T7)",
+			current:  caseIn(t, StateResolved, seq(3)),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: withinGrace,
-			want:     Decision{ID: TransitionT8, From: StateResolved},
+			want: Decision{
+				ID: TransitionT7, From: StateResolved,
+				OpensEpisode: true, Seq: 4,
+			},
 		},
 		{
-			name:     "a re-fire inside refire_grace out of an ACKED episode keeps the ack",
-			current:  caseIn(t, StateResolved, acked),
-			trigger:  TriggerObserveFiring,
-			actor:    ActorIngest,
-			recorded: withinGrace,
-			// DropsAck is false: T8 is the SAME episode, and the acknowledgement
-			// that was taken on it still applies to it.
-			want: Decision{ID: TransitionT8, From: StateResolved},
-		},
-		{
-			name:     "a re-fire beyond refire_grace opens a NEW episode (T7)",
+			name:     "and so does one long afterwards",
 			current:  caseIn(t, StateResolved, seq(3)),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: beyondGrace,
 			want: Decision{
 				ID: TransitionT7, From: StateResolved,
-				OpensEpisode: true, Seq: 4, ReopenOf: caseID,
+				OpensEpisode: true, Seq: 4,
 			},
 		},
 		{
-			name:     "an EXPIRED episode re-fires beyond refire_grace (T7)",
+			name:     "an EXPIRED episode re-fires the same way (T7)",
 			current:  caseIn(t, StateExpired),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: beyondGrace,
 			want: Decision{
 				ID: TransitionT7, From: StateExpired,
-				OpensEpisode: true, Seq: 2, ReopenOf: caseID,
+				OpensEpisode: true, Seq: 2,
 			},
 		},
 		{
 			// T10 by the `new_case` road. It is decided HERE, once, for both
 			// rows that open an episode — the two call sites that used to decide it
 			// separately had already drifted apart on what to do about it.
+			//
+			// ⭐ AND IT IS NOW THE ONLY ROAD OUT OF A CLOSED EPISODE, so no
+			// acknowledgement survives any re-fire, however quickly it arrives. The
+			// case above proves the "however quickly" half.
 			name:     "T7 out of an ACKED episode drops the acknowledgement",
 			current:  caseIn(t, StateResolved, acked),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
-			recorded: beyondGrace,
+			recorded: withinGrace,
 			want: Decision{
 				ID: TransitionT7, From: StateResolved,
-				OpensEpisode: true, Seq: 2, ReopenOf: caseID, DropsAck: true,
+				OpensEpisode: true, Seq: 2, DropsAck: true,
 			},
 		},
 
@@ -286,17 +287,17 @@ func TestDecide_OpensAnEpisodeExactlyForT1AndT7(t *testing.T) {
 			require.Equal(t, opening[d.ID], d.OpensEpisode)
 			if !d.OpensEpisode {
 				assert.Zero(t, d.Seq, "a row that moves an episode opens none")
-				assert.Equal(t, uuid.Nil, d.ReopenOf)
 				assert.False(t, d.DropsAck)
 				return
 			}
-			// ⭐ T1 AND T7 ARE DECIDED IDENTICALLY, and this is what that means:
-			// the same three values, computed the same way, differing only in what
-			// the previous episode was. A caller cannot treat them differently
-			// because it is not told which one it is holding.
+			// ⭐ T1 AND T7 ARE DECIDED IDENTICALLY, and this is what that means: the
+			// same values, computed the same way, differing only in the sequence
+			// number. A caller cannot treat them differently because it is not told
+			// which one it is holding — and since ADR 0040 dropped `ReopenOf`, the
+			// episode a new one succeeds is simply the row at `seq - 1`.
 			assert.GreaterOrEqual(t, d.Seq, 1, "a new episode is numbered from 1")
-			assert.Equal(t, d.From == StateNone, d.ReopenOf == uuid.Nil,
-				"an episode succeeds one exactly when there was one")
+			assert.Equal(t, d.From == StateNone, d.Seq == 1,
+				"only the FIRST episode of an Alert comes from no state at all")
 			assert.Equal(t, c.current.AckState().IsAcked(), d.DropsAck,
 				"an acknowledgement does not survive into a new episode (T10)")
 		})

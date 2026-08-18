@@ -402,10 +402,14 @@ func TestEveryShippedDefaultIsInsideItsOwnBound(t *testing.T) {
 func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 	t.Parallel()
 
-	if alerts.DefaultRefireGrace != identity.DefaultRefireGrace {
-		t.Errorf("alerts/domain.DefaultRefireGrace = %s, identity/domain says %s",
-			alerts.DefaultRefireGrace, identity.DefaultRefireGrace)
-	}
+	// ⭐ `refire_grace` IS NOT CHECKED AGAINST THE ALERTS SIDE ANY MORE, AND THE
+	// ABSENCE IS THE POINT. ADR 0040 retired T8, so the lifecycle machine no longer
+	// measures a re-fire against a grace window and neither `alerts/domain` nor
+	// `alerts/service` keeps a fallback for one. The SETTING survives untouched — an
+	// org still tunes `refire_grace_s` and `identity/domain` still ships the default
+	// the derivation at the top of this file computes — so the agreement that still
+	// has two sides is identity's with `platform/tuning`, asserted at the foot of
+	// this test. There is no alerts-side copy left that could drift from it.
 	if alerts.DefaultResolveGrace != identity.DefaultResolveGrace {
 		t.Errorf("alerts/domain.DefaultResolveGrace = %s, identity/domain says %s",
 			alerts.DefaultResolveGrace, identity.DefaultResolveGrace)
@@ -428,10 +432,6 @@ func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 	}
 
 	svc := lifecycle.DefaultSettings()
-	if svc.RefireGrace != identity.DefaultRefireGrace {
-		t.Errorf("alerts/service.DefaultSettings().RefireGrace = %s, identity/domain says %s",
-			svc.RefireGrace, identity.DefaultRefireGrace)
-	}
 	if svc.ResolveGrace != identity.DefaultResolveGrace {
 		t.Errorf("alerts/service.DefaultSettings().ResolveGrace = %s, identity/domain says %s",
 			svc.ResolveGrace, identity.DefaultResolveGrace)

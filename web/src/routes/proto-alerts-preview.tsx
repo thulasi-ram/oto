@@ -42,7 +42,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { clustersQuery, labelNamesQuery } from "~/api/queries";
 import type { Alert, ListEnvelope, Cluster, State } from "~/api/types";
 import {
-  AckChip,
   FlappingChip,
   STATE_BAR,
   STATE_MEANING,
@@ -411,7 +410,8 @@ const DetailHeader: Component = () => (
               normaliseSeverity(PREVIEW_DETAIL.severity) === "critical"
             }
           />
-          <AckChip ackState={PREVIEW_DETAIL.current_case?.ack_state} />
+          {/* No `AckChip`: `acked` is not a state an ALERT can be in — a receipt
+              belongs to one firing, and this preview mirrors the real header. */}
           <Show when={PREVIEW_DETAIL.is_flapping}>
             <FlappingChip />
           </Show>
@@ -487,11 +487,11 @@ const DetailHeader: Component = () => (
       <Show when={PREVIEW_DETAIL.group}>
         {(group) => (
           <A
-            href={`/cases/${group().id}`}
+            href={`/groups/${group().id}`}
             class="text-meta text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
-            title="The case this firing episode joined — Alertmanager's notification group, mirrored"
+            title="The notification group this alert's current firing was batched into. Alertmanager decided the batching; oto mirrors it."
           >
-            In case: {group().title} ↗
+            Notified in: {group().title} ↗
           </A>
         )}
       </Show>

@@ -80,9 +80,9 @@ Permanently out of scope, with hand-offs: SPEC §I.1.1.
 | Term | Means |
 |---|---|
 | **Alert** | The **identity of a label set** within `(org, cluster)`. Created on first sight, survives resolution forever. oto's answer to Sentry's *Issue*. |
-| **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). |
+| **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). **Strictly terminal**: `open → closed`, once. A re-fire opens the next `seq`, never revives this one (ADR 0040). |
 | **AlertEvent** | One **immutable thing that happened at one instant**. The timeline. Append-only. |
-| **AlertGroup** | One **generation of a correlation**, keyed by `(org, cluster, alertname, namespace-or-∅)` derived from the alert's OWN labels (ADR 0038). `receiver`/`source_group_key` survive as provenance, not identity. **Owns exactly one Slack thread.** |
+| **AlertGroup** | One **generation of a NOTIFICATION GROUPING** — Alertmanager's grouping concept, now derived by oto — keyed by `(org, cluster, alertname, namespace-or-∅)` from the alert's OWN labels (ADR 0038). `receiver`/`source_group_key` survive as provenance, not identity. **Owns exactly one Slack thread.** It decides which facts share a message; it is **not** a `correlation` (deferred, and it would need a stated algorithm) and **not** an incident (permanently out). |
 | **RuleSnapshot** | A content-addressed capture of a Prometheus alerting rule at a point in time. The differentiator. |
 | **AlertSource** | One configured Alertmanager (+ optional Prometheus). HA replicas share a Cluster. |
 | **Cluster** | Identity/failure domain. `cluster_key` participates in alert identity. |
@@ -113,6 +113,14 @@ not incidents.
 `ack_state` (`unacked`|`acked`) and **snooze** (§B.8). An acked alert is still firing. **A snoozed
 alert is still firing and must still be rendered as firing** — colouring it calm would be a lie.
 
+**The four words are the ALERT's.** They live on `alerts.state`. `alert_cases.state` holds
+`open | closed` and nothing else (ADR 0040): an episode's only fact about itself is whether it is
+still running. The four-way reading of a Case is derived and total — open + no `suppression_reason` is
+`firing`, open + one is `suppressed`, closed + `resolve_reason='upstream'` is `resolved`, closed +
+`'timeout'` is `expired`. Say **an episode is open or closed**, and **an alert is firing, suppressed,
+resolved or expired**; the two vocabularies are not interchangeable and swapping them is how the
+column acquired four values in the first place.
+
 **Snooze** suppresses *oto's own notifications* for one `alert_key` until T. It is stored only in
 oto (`alert_snoozes`), auto-expires (5 min…30 days, never indefinite), is attributed and visible,
 and touches nothing in the cluster. It is nearer to `channels.verbosity` than to a silence.
@@ -128,6 +136,10 @@ Rules you must not get wrong:
   the webhook, so only the reconciler can **enter** `suppressed` (T3). But **either the reconciler
   or ingest can leave it** (T4): a webhook arrival is *positive proof* of non-suppression, because a
   suppressed alert would never have been sent. The asymmetry is deliberate.
+- **A closed case never reopens.** A re-fire always opens the next `seq`, **unacknowledged**, whatever
+  the clock says (T7; there is no T8 — ADR 0040). An acknowledgement is a receipt for *one* firing, and
+  the second firing is not the one that was signed for. `refire_grace` no longer decides this, or any
+  other, transition.
 - **`ended_at` is clamped to `started_at`.** A backward-skewed upstream clock must never abort an
   ingest transaction. Clamp, flag `clamped: true`, measure the skew — never reject.
 - **Losing sight of an alert is not the alert resolving.** The reaper is *blocked* while

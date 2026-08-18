@@ -341,7 +341,7 @@ func (h *H) Case(a Alert, g Group) Case {
 	h.Exec(`INSERT INTO alert_cases
 	          (id, org_id, alert_id, group_id, seq, state, started_at, last_observed_at,
 	           source_starts_at, source_updated_at)
-	        VALUES ($1, $2, $3, $4, $5, 'firing', $6, $6, $6, $6)`,
+	        VALUES ($1, $2, $3, $4, $5, 'open', $6, $6, $6, $6)`,
 		o.ID, o.OrgID, o.AlertID, nullableUUID(o.GroupID), o.Seq, now)
 	h.Exec(`UPDATE alerts SET current_case_id = $1 WHERE id = $2`, o.ID, a.ID)
 	return o

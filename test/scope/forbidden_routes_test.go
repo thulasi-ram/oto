@@ -125,7 +125,7 @@ func resolutionRoutes(rs []route) []route {
 // `internal/app/routes.go`. If one is renamed, replace it with its neighbour.
 var anchorRoutes = []route{
 	{method: "GET", pattern: "/healthz"},
-	{method: "POST", pattern: "/api/v1/alerts/{id}/ack"},
+	{method: "POST", pattern: "/api/v1/cases/{id}/ack"},
 	{method: "GET", pattern: "/api/v1/me"},
 	{method: "POST", pattern: "/api/v1/ingest/alertmanager/{source_id}"},
 }

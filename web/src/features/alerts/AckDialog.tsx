@@ -13,16 +13,16 @@
  *
  * ⛔ IT NEVER RUNS THE REQUEST ITSELF. The caller hands in `onSubmit`, because
  * the receipt is written by a different endpoint depending on what is being
- * acknowledged — `POST /alerts/{id}/ack` for one alert, or
- * `POST /alert-groups/{id}/ack` for a whole case, and `…/unack` for either when
- * `withdrawing` — and the idempotency key is minted here, once per gesture, so a
- * caller cannot re-mint one on a retry.
+ * acknowledged — `POST /cases/{id}/ack` for one firing episode, or
+ * `POST /alert-groups/{id}/ack` to fan one out across a group's members, and
+ * `…/unack` for either when `withdrawing` — and the idempotency key is minted
+ * here, once per gesture, so a caller cannot re-mint one on a retry.
  *
  * ⚠️ `withdrawing` IS NOT DECORATION AND WAS NOT ALWAYS REACHABLE. The prop and its
  * second generated gate existed for a while with no caller passing them, because
- * the case-scoped `unack` endpoint did not exist: acknowledging a case was a
- * one-way gesture over every one of its members. The dialog was one prop away from
- * working, and the missing half was on the server.
+ * the group-scoped `unack` endpoint did not exist: fanning an acknowledgement out
+ * across a group was a one-way gesture over every one of its members. The dialog
+ * was one prop away from working, and the missing half was on the server.
  *
  * Validation is local **and** server-side, and the two are not redundant: the
  * local pass (valibot, mirroring the contract's bounds) stops an obviously bad
@@ -116,13 +116,21 @@ const UnackFormSchema = v.pipe(
 /* -------------------------------------------------------------------------- */
 
 /**
- * ⛔ `"case"` HERE IS THE **CORRELATION** — what the UI calls a Case and the API
- * still calls an alert group. It is NOT `AlertCase`, the per-alert firing episode
- * (`internal/alerts/domain/case.go`). The two words collide in the codebase by an
- * accepted decision; on screen they never do, because the episode is only ever
- * called an *episode*.
+ * What a receipt is being written on.
+ *
+ * ⛔ `"case"` IS THE ONLY REAL SUBJECT. A Case is one contiguous firing episode
+ * of one alert, and it is the thing a human can have seen — which is why the
+ * endpoint is `POST /cases/{id}/ack` and why the receipt clears itself when the
+ * next episode opens. There is no receipt on an Alert: an identity outlives its
+ * firings, so "seen" would go on saying so about a firing nobody has looked at.
+ *
+ * ⛔ `"group"` IS A FAN-OUT AND NOT A SUBJECT AT ALL. `POST
+ * /alert-groups/{id}/ack` writes one receipt onto each member's open case; the
+ * group itself carries none, and every string under this mode says whose
+ * receipts are being written rather than pretending the batch can be
+ * acknowledged.
  */
-export type AckSubject = "alert" | "case";
+export type AckSubject = "case" | "group";
 
 export interface AckDialogProps {
   readonly open: boolean;
@@ -141,35 +149,36 @@ export interface AckDialogProps {
 }
 
 const TITLE: Record<AckSubject, string> = {
-  alert: "Acknowledge this alert",
-  case: "Acknowledge every current member",
+  case: "Acknowledge this case",
+  group: "Acknowledge every member's open case",
 };
 
 /**
- * ⭐ THE CASE SENTENCE SAYS WHAT THE FAN-OUT DOES **NOT** COVER. Acknowledging a
- * case is one receipt per currently-joined member, and nothing more: an alert
- * that joins in ten minutes is unacknowledged, because a receipt is a record that
- * a human saw something and cannot be written in advance of their seeing it. An
- * operator who believes otherwise has silenced their own future signal, so the
- * limit is stated at the moment they commit rather than discovered later.
+ * ⭐ THE GROUP SENTENCE SAYS WHAT THE FAN-OUT DOES **NOT** COVER. It writes one
+ * receipt per member that is in the group now, and nothing more: an alert
+ * notified under it ten minutes from now is unacknowledged, because a receipt is
+ * a record that a human saw something and cannot be written in advance of their
+ * seeing it. An operator who believes otherwise has silenced their own future
+ * signal, so the limit is stated at the moment they commit rather than
+ * discovered later.
  */
 const DESCRIPTION: Record<AckSubject, string> = {
-  alert:
-    "A receipt that a human has seen this signal. It does not change the alert: it stays firing until the upstream says otherwise.",
-  case: "One receipt per alert that has already joined this case. It changes nothing about the signals — they stay firing until the upstream says otherwise — and members that join later are NOT acknowledged, because a receipt is never predictive.",
+  case: "A receipt that a human has seen this firing. It does not change the alert: it stays firing until the upstream says otherwise, and the receipt clears itself when the next firing opens.",
+  group:
+    "One receipt per member whose case is still open. It changes nothing about the signals — they stay firing until the upstream says otherwise — and alerts notified under this group afterwards are NOT acknowledged, because a receipt is never predictive.",
 };
 
 /**
- * ⭐ THE CASE SENTENCE SAYS THE WITHDRAWAL IS A FAN-OUT TOO. Where the case ack
- * writes one receipt per currently-joined member, the case withdrawal removes one
- * per member — it is the same verb read backwards and not a claim over the set, so
- * an alert that joins in ten minutes was never acknowledged and is not "un-acked"
- * either. Members that carry no receipt are simply skipped.
+ * ⭐ THE GROUP SENTENCE SAYS THE WITHDRAWAL IS A FAN-OUT TOO. Where the group ack
+ * writes one receipt per member, the withdrawal removes one per member — it is
+ * the same verb read backwards and not a claim over the set, so an alert
+ * notified under the group afterwards was never acknowledged and is not
+ * "un-acked" either. Members that carry no receipt are simply skipped.
  */
 const WITHDRAW_DESCRIPTION: Record<AckSubject, string> = {
-  alert:
-    "Recorded as a deliberate withdrawal, which is distinct from the automatic one that happens when a new episode opens.",
-  case: "Removes the receipt from every alert currently in this case, recorded as a deliberate withdrawal — distinct from the automatic one that happens when a new episode opens. A member that carries no receipt is skipped rather than failing the request.",
+  case: "Recorded as a deliberate withdrawal, which is distinct from the automatic one that happens when the next firing opens.",
+  group:
+    "Removes the receipt from every member whose case is still open, recorded as a deliberate withdrawal — distinct from the automatic one that happens when the next firing opens. A member that carries no receipt is skipped rather than failing the request.",
 };
 
 export const AckDialog: Component<AckDialogProps> = (props) => {
@@ -234,21 +243,21 @@ export const AckDialog: Component<AckDialogProps> = (props) => {
           <Show when={mutation.error instanceof ApiError && mutation.error.status === 412}>
             <ErrorBanner>
               <Switch>
-                <Match when={props.withdrawing === true && props.subject === "case"}>
-                  There is nothing here to withdraw — this case has no currently-joined member whose
-                  episode is still open. It may have resolved while this dialog was open.
+                <Match when={props.withdrawing === true && props.subject === "group"}>
+                  There is nothing here to withdraw — no member of this group has a case that is
+                  still open. They may have resolved while this dialog was open.
                 </Match>
                 <Match when={props.withdrawing === true}>
-                  This episode ended before the request landed, so there is no receipt left to
+                  This case ended before the request landed, so there is no receipt left to
                   withdraw. The alert may have resolved while this dialog was open.
                 </Match>
-                <Match when={props.subject === "case"}>
-                  There is nothing here to acknowledge — this case has no currently-joined member
-                  whose episode is still open. It may have resolved while this dialog was open.
+                <Match when={props.subject === "group"}>
+                  There is nothing here to acknowledge — no member of this group has a case that is
+                  still open. They may have resolved while this dialog was open.
                 </Match>
                 <Match when={true}>
-                  This episode ended before the request landed, so there is nothing to acknowledge.
-                  The alert may have resolved while this dialog was open.
+                  This case ended before the request landed, so there is nothing to acknowledge. The
+                  alert may have resolved while this dialog was open.
                 </Match>
               </Switch>
             </ErrorBanner>

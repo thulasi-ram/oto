@@ -1274,8 +1274,8 @@ func (a alertStates) StatesByAlertKey(
 			continue
 		}
 
-		st.State = ac.State().String()
-		st.Terminal = ac.State().IsTerminal()
+		st.State = ac.AlertState().String()
+		st.Terminal = ac.State().IsClosed()
 		st.SourceUpdatedAt = ac.SourceUpdatedAt()
 		// ⛔ THE LATER OF THE TWO, AND `ended_at` IS WHY. Reaper expiry closes an
 		// case without any upstream saying so and never touches

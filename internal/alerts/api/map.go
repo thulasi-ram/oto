@@ -28,7 +28,14 @@ func alertDTO(a domain.Alert) AlertDTO {
 		Labels:            emptyMap(a.Labels().Map()),
 		Annotations:       emptyMap(a.Annotations().Map()),
 		GeneratorURL:      strPtr(a.GeneratorURL()),
-		State:             a.State().String(),
+		// ⭐ THE DISPLAY READING, NOT THE STORED ONE (ADR 0041). `alerts.state`
+		// narrowed to `firing | resolved | expired` so that every AGGREGATE counts
+		// a silenced firing alert as firing; a human looking at ONE row still wants
+		// to be told nobody is being paged about it, and `suppressed` is the word
+		// this product has always used. The contract is therefore unchanged — the
+		// four values, the chip and `?state=suppressed` all still mean what they
+		// meant — and the column underneath them stopped hiding firing alerts.
+		State:             a.DisplayState().String(),
 		FirstSeenAt:       utc(a.FirstSeenAt()),
 		LastSeenAt:        utc(a.LastSeenAt()),
 		LastStateChangeAt: utc(a.LastStateChangeAt()),
@@ -47,7 +54,7 @@ func alertRefDTO(a domain.Alert) AlertRefDTO {
 		Severity:   strPtr(a.Severity().String()),
 		Namespace:  strPtr(a.Namespace()),
 		ClusterKey: a.ClusterKey().String(),
-		State:      a.State().String(),
+		State:      a.DisplayState().String(),
 	}
 }
 
@@ -72,8 +79,6 @@ func caseDTO(o domain.Case, now time.Time) CaseDTO {
 		LastObservedAt: utc(o.LastObservedAt()),
 		SourceStartsAt: utc(o.SourceStartsAt()),
 		SourceEndsAt:   timePtr(o.SourceEndsAt()),
-		ReopenCount:    int32(o.ReopenCount()),
-		ReopenOf:       idPtr(o.ReopenOf()),
 		RuleSnapshotID: idPtr(o.RuleSnapshotID()),
 		Value:          o.Value(),
 		ObservedSkewMS: o.ObservedSkew().Milliseconds(),
@@ -97,6 +102,21 @@ func caseDTO(o domain.Case, now time.Time) CaseDTO {
 	secs := o.Duration(now).Seconds()
 	dto.DurationSeconds = &secs
 	return dto
+}
+
+// caseListItemDTO renders one row of the org-wide case list: the episode, plus
+// the identity it belongs to.
+//
+// The alert arrives from the map the service batch-loaded beside the page. A
+// zero Alert cannot occur — the repository proved the row's alert is in the
+// caller's org before returning it — and `alertRefDTO` of a zero value would
+// still marshal, so the honest thing is to render what was handed over rather
+// than to invent a fallback for a state the query cannot produce.
+func caseListItemDTO(o domain.Case, a domain.Alert, now time.Time) CaseListItemDTO {
+	return CaseListItemDTO{
+		CaseDTO: caseDTO(o, now),
+		Alert:   alertRefDTO(a),
+	}
 }
 
 func eventDTO(e domain.Event) AlertEventDTO {
@@ -301,6 +321,47 @@ func snoozeHistoryDTO(s domain.Snooze) SnoozeHistoryDTO {
 	out.EndedByLabel = strPtr(s.EndedByLabel())
 	return out
 }
+
+// unsnoozeAlertsDTO renders the account of a bulk wake.
+//
+// ⭐ `requested` IS DERIVED FROM `results` AND NOT CARRIED SEPARATELY, so the
+// invariant the contract promises — `woken + skipped == requested ==
+// results.length` — holds by construction rather than by two writers agreeing.
+// A number that could disagree with the list beside it is a number a client would
+// eventually have to distrust.
+//
+// ⛔ `Results` IS ALWAYS A LIST AND NEVER `null`. The contract declares it
+// required and non-nullable, and a nil Go slice marshals to `null`, which is the
+// one shape a caller iterating the account cannot handle.
+func unsnoozeAlertsDTO(res service.UnsnoozeManyResult) UnsnoozeAlertsDTO {
+	out := UnsnoozeAlertsDTO{
+		Requested: len(res.Outcomes),
+		Woken:     res.Woken(),
+		Skipped:   res.Skipped(),
+		Results:   make([]UnsnoozeOutcomeDTO, 0, len(res.Outcomes)),
+	}
+	for _, o := range res.Outcomes {
+		row := UnsnoozeOutcomeDTO{AlertID: o.AlertID, Outcome: outcomeSkipped}
+		if o.Woken {
+			row.Outcome = outcomeWoken
+		} else {
+			// The refusal's own code, so a surface can say "already awake" and
+			// "no longer here" in different words. It is nil on a wake, because
+			// there is nothing to explain.
+			row.Reason = strPtr(o.Code)
+		}
+		out.Results = append(out.Results, row)
+	}
+	return out
+}
+
+// The two members of `UnsnoozeOutcomeDTO.outcome`. They are constants because the
+// contract closes the enum, and a typo in a string literal is a response no
+// generated client can parse.
+const (
+	outcomeWoken   = "woken"
+	outcomeSkipped = "skipped"
+)
 
 // rollupDTO renders one §E.3a bucket.
 //

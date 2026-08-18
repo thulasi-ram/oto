@@ -65,7 +65,8 @@ var (
 
 	// EventCaseOpened records a new firing episode (T1, T7).
 	EventCaseOpened = EventType{"case.opened"}
-	// EventCaseReopened records a re-fire inside refire_grace (T8).
+	// EventCaseReopened recorded a re-fire inside refire_grace (T8).
+	// ⛔ RETIRED — see `retiredEventTypes`. Nothing appends it.
 	EventCaseReopened = EventType{"case.reopened"}
 	// EventCaseSuppressed records the reconciler seeing suppression (T3).
 	EventCaseSuppressed = EventType{"case.suppressed"}
@@ -177,20 +178,31 @@ func init() {
 // refuses a retired type at `AppendTimelineEvent`. A comment saying "do not emit
 // this" is advice; a refusal at the write path is a guarantee.
 //
-// ⚠️ AND THE GUARANTEE IS EXACTLY AS WIDE AS THAT SEAM, WHICH IS WIDE ENOUGH FOR
-// THESE TWO AND NOT FOR AN ARBITRARY VALUE. Both are `group.*`, and grouping is
-// a different module, so every caller that could emit one has to come through
-// `AppendTimelineEvent`. `alert_events` has two other writers — `alerts`' own
-// `appendEvents`, which takes built `domain.Event`s from the lifecycle, and
-// `notification/repository`, which INSERTs its own `notification.*`/`delivery.*`
-// rows — and neither passes the check. `alerts/service/seam.go` says the same
-// thing from the other side.
+// ⭐⭐ AND `case.reopened` JOINED THEM FOR THE SAME REASON AT A DIFFERENT LAYER
+// (ADR 0040, migration 00054). A Case is strictly terminal now: a re-fire opens
+// the NEXT episode, unacknowledged, so there is no T8 and nothing left for the
+// value to record. Thirteen months of rows still spell it — in both the `case.`
+// and the pre-ADR-0036 `occurrence.` form — so it is retired on exactly the same
+// terms: parseable, canonicalising, in `AllEventTypes`, in
+// `components.schemas.AlertEventType`, and unwritable.
+//
+// ⚠️ THE GUARANTEE IS EXACTLY AS WIDE AS THE WRITE PATHS THAT CHECK IT, AND
+// `case.reopened` NEEDED A SECOND ONE. The two `group.*` values are emitted from
+// ANOTHER MODULE, so every caller that could append one has to come through
+// `AppendTimelineEvent`, and one check there covered them. `case.reopened` was
+// emitted from INSIDE `alerts`, by the transition table, and those events reach
+// the column through `alerts/service.appendEvents` — which `seam.go` documents as
+// bypassing the seam. So the refusal is now made TWICE, once at each writer, and
+// the transition rows that built the value are gone as well. The third writer,
+// `notification/repository`, INSERTs only its own `notification.*`/`delivery.*`
+// rows and can no more reach these values than it can invent one.
 //
 // They leave this file when the last partition holding them is dropped, and not
 // before.
 var retiredEventTypes = map[string]struct{}{
 	EventGroupMemberJoined.s: {},
 	EventGroupMemberLeft.s:   {},
+	EventCaseReopened.s:      {},
 }
 
 // Retired reports whether this type may still be READ but no longer WRITTEN.

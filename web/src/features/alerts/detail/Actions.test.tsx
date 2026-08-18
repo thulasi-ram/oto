@@ -2,13 +2,22 @@
  * What the alert detail's action bar offers — and, just as much, what it no
  * longer offers.
  *
- * ⛔ ACKNOWLEDGE AND SNOOZE MOVED TO THE CASE, AND THE FIRST DESCRIBE BELOW IS
- * THE GUARD THAT THEY STAY THERE. Their behaviour — the rollback assertions, the
- * 412 sentences, the one-idempotency-key-per-gesture rule — did not go away; it
- * lives in `routes/case-detail.test.tsx` against the case-scoped endpoints. What
- * is asserted here is that this bar cannot grow them back by accident, because
- * an Acknowledge button on one alert is how thirty-nine of forty members end up
- * unacknowledged while the channel reads "a human has seen this".
+ * ⛔ ACKNOWLEDGE MOVED TO THE CASE, AND THE FIRST DESCRIBE BELOW IS THE GUARD
+ * THAT IT STAYS THERE. A receipt belongs to ONE FIRING — an identity outlives
+ * its firings, so "seen" written on the identity would go on being true about a
+ * firing nobody has looked at — and the endpoint is addressed by case id for
+ * exactly that reason. Its behaviour (the rollback assertions, the 412
+ * sentences, the one-idempotency-key-per-gesture rule) lives in
+ * `routes/case-detail.test.tsx`. What is asserted here is that this bar cannot
+ * grow an alert-addressed ack back by accident.
+ *
+ * ⭐ SNOOZE **IS** ON THIS BAR, AND THE SECOND DESCRIBE IS THE GUARD THAT IT STAYS
+ * HERE. A snooze holds oto's notifications for the IDENTITY until a fixed time, so
+ * it outlives the firing it was taken from — which makes the alert the only screen
+ * whose heading is its subject. `Resume` is deliberately NOT beside it: ending a
+ * hold belongs to the Quiet tab of `/alerts`, the list of everything oto is
+ * currently not saying, so nothing can leave that list from a screen that never
+ * showed it was on it.
  *
  * Comment stays, and so does the dialog-labelling suite: the wrong-label bug this
  * file was written around was a property of several dialogs sharing one document,
@@ -112,23 +121,66 @@ describe("the controls that belong to the case, not to one alert", () => {
     expect(barButtons("Acknowledge")).toHaveLength(0);
   });
 
-  it("offers no snooze, and no resume even while a hold is running", async () => {
+  it("offers no resume, even while a hold is running", async () => {
     mount(firing({ snooze: snooze() }));
     await commentButton();
 
-    // ⛔ `Resume notifications` is the one that matters. A per-alert wake control
-    // beside a case-wide snooze would let an operator quietly reverse one member
-    // of a decision they made about the whole case, and nothing on the case
-    // screen would say so.
-    expect(barButtons("Snooze")).toHaveLength(0);
+    // ⛔ THE WAKE CONTROL IS NOT HERE, AND IT IS NOT AN OVERSIGHT. Resuming is
+    // offered from the Quiet tab of `/alerts`, where the whole set of held-back
+    // alerts is on screen; a button here would let one leave that list from a
+    // screen that never showed it was on it.
     expect(barButtons("Resume notifications")).toHaveLength(0);
+    expect(barButtons("Resume")).toHaveLength(0);
   });
 
-  it("leaves Comment as the only control on the bar", async () => {
+  it("leaves Comment and Snooze as the only controls on the bar", async () => {
     mount(firing({ snooze: snooze() }));
     await commentButton();
 
-    expect(barButtons(/.*/)).toHaveLength(1);
+    expect(barButtons(/.*/)).toHaveLength(2);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The snooze, whose subject is this alert                                    */
+/* -------------------------------------------------------------------------- */
+
+describe("holding this alert's notifications", () => {
+  async function snoozeButton(): Promise<HTMLElement> {
+    await until(() => expect(barButtons("Snooze")).toHaveLength(1));
+    return barButton("Snooze");
+  }
+
+  it("posts the snooze to THIS alert, with one idempotency key and one window", async () => {
+    const { net } = mount(firing());
+    net.on(`POST ${PATH}/snooze`, () => ({ json: item(firing()) }));
+
+    fireEvent.click(await snoozeButton());
+    // The dialog opens on a preset, so committing needs no further input.
+    fireEvent.click(openDialog().getByRole("button", { name: /^Hold notifications until/ }));
+
+    await until(() => expect(net.to("/snooze")).toHaveLength(1));
+    const posts = net.to("/snooze");
+    expect(posts[0]?.path).toBe(`${PATH}/snooze`);
+    expect(posts[0]?.headers["Idempotency-Key"]).toBeTruthy();
+    // Exactly one of the two forms, never both — there is no indefinite snooze.
+    expect(posts[0]?.body).toEqual({ duration_seconds: 3600 });
+  });
+
+  it("⭐ says the hold is on the alert and outlasts whichever firing it came from", async () => {
+    mount(firing());
+    fireEvent.click(await snoozeButton());
+    expect(
+      openDialog().getByText(/outlasts whichever firing you took it from/i),
+      "the dialog does not say whose quiet period this is",
+    ).toBeTruthy();
+  });
+
+  it("keeps offering the snooze while one is already running, because it is not a no-op", async () => {
+    // §B.8.6: the contract closes the incumbent hold and opens a new window, so
+    // the control has something to do and stays live rather than going inert.
+    mount(firing({ snooze: snooze() }));
+    expect(await snoozeButton()).not.toBeDisabled();
   });
 });
 

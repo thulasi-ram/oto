@@ -251,7 +251,7 @@ func ruleContractCase(t *testing.T, id uuid.UUID, seq int, snapID uuid.UUID) ale
 		AlertID:         ruleContractAlertID,
 		GroupID:         ruleContractGroupID,
 		Seq:             seq,
-		State:           alertdomain.StateFiring,
+		State:           alertdomain.CaseOpen,
 		AckState:        alertdomain.AckStateUnacked,
 		StartedAt:       started,
 		LastObservedAt:  started.Add(2 * time.Minute),

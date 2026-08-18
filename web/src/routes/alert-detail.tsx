@@ -26,7 +26,6 @@ import {
 import { qk } from "~/api/keys";
 import type { AlertEvent, TimelineQuery } from "~/api/types";
 import {
-  AckChip,
   FlappingChip,
   STATE_BAR,
   STATE_MEANING,
@@ -166,7 +165,17 @@ export default function AlertDetailRoute() {
                   <PageHeading brush="swipe">{data().alertname}</PageHeading>
 
                   {/* The three orthogonal axes, on their own line so they read as
-                      one group instead of competing with the name. */}
+                      one group instead of competing with the name.
+
+                      ⛔ AND `acked` IS NOT ONE OF THEM. An `AckChip` stood here,
+                      fed from `current_case.ack_state`, which made a receipt on
+                      one firing look like a property of the identity — an alert
+                      that has fired forty times would have worn "Acked" because
+                      somebody signed for the fortieth. A receipt is shown where it
+                      was written: on the case, and the case panel below links to
+                      it. The pulse on the state chip is a different thing — it
+                      reads the open episode to decide how loudly to say `firing`,
+                      and it never reports "acknowledged" as a state. */}
                   <div class="mt-sm flex flex-wrap items-center gap-sm">
                     <SeverityMark severity={data().severity} withLabel />
                     <StateChip
@@ -177,7 +186,6 @@ export default function AlertDetailRoute() {
                         normaliseSeverity(data().severity) === "critical"
                       }
                     />
-                    <AckChip ackState={data().current_case?.ack_state} />
                     <Show when={data().is_flapping}>
                       <FlappingChip />
                     </Show>
@@ -237,8 +245,8 @@ export default function AlertDetailRoute() {
                         </span>
                       )}
                     </Show>
-                    <span title="Firing episodes since oto first saw this identity">
-                      episodes{" "}
+                    <span title="Firing episodes — cases — since oto first saw this identity">
+                      cases{" "}
                       <span class="text-ink-muted">{fmtCount(data().total_cases)}</span>
                     </span>
                     <Show when={data().is_flapping || data().flap_score > 0}>
@@ -278,11 +286,11 @@ export default function AlertDetailRoute() {
                 <Show when={data().group}>
                   {(group) => (
                     <A
-                      href={`/cases/${group().id}`}
+                      href={`/groups/${group().id}`}
                       class="text-meta text-ink-muted underline decoration-line-strong underline-offset-2 hover:text-ink"
-                      title="The case this firing episode joined — Alertmanager's notification group, mirrored"
+                      title="The notification group this alert's current firing was batched into. Alertmanager decided the batching; oto mirrors it."
                     >
-                      In case: {group().title} ↗
+                      Notified in: {group().title} ↗
                     </A>
                   )}
                 </Show>

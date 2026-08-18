@@ -10,6 +10,7 @@ import (
 	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	alerts "github.com/thulasiram/oto/internal/alerts/service"
 	"github.com/thulasiram/oto/internal/grouping/domain"
+	"github.com/thulasiram/oto/internal/grouping/repository"
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
@@ -311,12 +312,19 @@ func (r FanOutResult) Skipped() int {
 // group-level ack_state column and there will not be one: ack is a receipt
 // written on a SIGNAL, and "I acked the group" means "I have seen each of these",
 // never "this group is mine" and never "this group is over" (§E.1.1).
+//
+// ⭐ WHAT IT REACHES IS EACH MEMBER'S OPEN CASE, AND IT NEVER HAD TO LOOK ONE UP.
+// Membership IS an open episode — `CurrentMemberAlerts` selects `(alert_id, id)`
+// from `alert_cases WHERE group_id = … AND ended_at IS NULL` (00051) — so the
+// case id is already in hand and is handed straight to the case-addressed verb.
+// A member whose episode ended between the candidate read and its turn refuses
+// with `case_terminal`, which fanOut counts as a skip rather than a failure.
 func (s *Service) Acknowledge(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
 	actorKind, actorID, actorLabel, note string,
 ) (FanOutResult, error) {
-	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
-		return s.actions.AcknowledgeAs(ctx, scope, alertID, actorKind, actorID, actorLabel, note)
+	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, m repository.MemberAlert) error {
+		return s.actions.AcknowledgeAs(ctx, scope, m.CaseID, actorKind, actorID, actorLabel, note)
 	})
 }
 
@@ -346,8 +354,8 @@ func (s *Service) Unacknowledge(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
 	actorKind, actorID, actorLabel, note string,
 ) (FanOutResult, error) {
-	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
-		return s.actions.UnacknowledgeAs(ctx, scope, alertID, actorKind, actorID, actorLabel, note)
+	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, m repository.MemberAlert) error {
+		return s.actions.UnacknowledgeAs(ctx, scope, m.CaseID, actorKind, actorID, actorLabel, note)
 	})
 }
 
@@ -403,9 +411,9 @@ func (s *Service) Comment(
 		got     bool
 		claimed bool
 	)
-	res, err := s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
+	res, err := s.fanOut(ctx, scope, groupID, func(ctx context.Context, m repository.MemberAlert) error {
 		member := memberIntent(idem, claimed)
-		ev, replayed, err := s.actions.CommentAs(ctx, scope, alertID,
+		ev, replayed, err := s.actions.CommentAs(ctx, scope, m.AlertID,
 			actorKind, actorID, actorLabel, body, member)
 		if err != nil {
 			return err
@@ -451,9 +459,9 @@ func (s *Service) Snooze(
 	idem alerts.Idempotency,
 ) (FanOutResult, error) {
 	claimed := false
-	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
+	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, m repository.MemberAlert) error {
 		member := memberIntent(idem, claimed)
-		replayed, err := s.actions.SnoozeAs(ctx, scope, alertID,
+		replayed, err := s.actions.SnoozeAs(ctx, scope, m.AlertID,
 			actorKind, actorID, actorLabel, until, note, member)
 		if err != nil {
 			return err
@@ -489,8 +497,8 @@ func (s *Service) Unsnooze(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
 	actorKind, actorID, actorLabel, note string,
 ) (FanOutResult, error) {
-	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, alertID uuid.UUID) error {
-		return s.actions.UnsnoozeAs(ctx, scope, alertID, actorKind, actorID, actorLabel, note)
+	return s.fanOut(ctx, scope, groupID, func(ctx context.Context, m repository.MemberAlert) error {
+		return s.actions.UnsnoozeAs(ctx, scope, m.AlertID, actorKind, actorID, actorLabel, note)
 	})
 }
 
@@ -535,7 +543,7 @@ func (s *Service) Unsnooze(
 // claimed on the first member that runs — see Comment.
 func (s *Service) fanOut(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID,
-	apply func(ctx context.Context, alertID uuid.UUID) error,
+	apply func(ctx context.Context, m repository.MemberAlert) error,
 ) (FanOutResult, error) {
 	if s.actions == nil {
 		return FanOutResult{}, errs.Internal("member_actions_missing", errMissingDep("MemberActions"))
@@ -561,14 +569,17 @@ func (s *Service) fanOut(
 	var res FanOutResult
 	seen := make(map[uuid.UUID]struct{}, len(members))
 	for i, m := range members {
-		// One alert can be in the generation through more than one episode; the
-		// verb is about the SIGNAL, so it is applied once.
+		// One alert appears at most once in this candidate read — the read is
+		// partial on `ended_at IS NULL` and `case_one_open_idx` is UNIQUE on
+		// `(alert_id) WHERE ended_at IS NULL` — but the dedupe stays, because the
+		// three alert-scoped verbs below are about the SIGNAL and must be applied
+		// once per signal whatever the read returns.
 		if _, dup := seen[m.AlertID]; dup {
 			continue
 		}
 		seen[m.AlertID] = struct{}{}
 
-		if err := apply(ctx, m.AlertID); err != nil {
+		if err := apply(ctx, m); err != nil {
 			if errors.Is(err, errFanOutSettled) {
 				// ⭐ THE CALLER'S KEY WAS ALREADY CLAIMED, so this whole gesture
 				// landed once already and the members behind this one were annotated

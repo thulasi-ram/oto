@@ -32,7 +32,10 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/test/contract/apitest"
@@ -144,6 +147,98 @@ func TestListAlertCasesAnswersThePageTheContractDeclares(t *testing.T) {
 	}
 	if svc.calls["Cases"] != 1 {
 		t.Fatalf("the service was consulted %d time(s), want 1", svc.calls["Cases"])
+	}
+}
+
+// TestListCasesAnswersThePageTheContractDeclares.
+//
+// The promise: `GET /api/v1/cases` is a keyset page of `CaseListItemDTO` — an
+// episode plus the identity it belongs to — and it renders an OPEN, an ENDED and
+// a SUPPRESSED episode under one schema.
+//
+// ⛔ WHAT IT REALLY GUARDS IS `alert`. The whole reason this endpoint is not
+// `GET /alerts?ack=` is that an operator triages by name and severity, and those
+// are columns of `alerts` rather than of the episode. The contract declares the
+// reference REQUIRED, so a row that shipped without it would fail here rather
+// than in a browser rendering a list of bare uuids.
+func TestListCasesAnswersThePageTheContractDeclares(t *testing.T) {
+	t.Parallel()
+
+	c, svc := newAlertsProbe(t)
+	// `?state=open` is the live queue's spelling since ADR 0040 collapsed `?open=`
+	// into it; the fake service ignores the filter and returns all three rows,
+	// which is what lets one request exercise the whole schema.
+	resp := c.GET("/cases?state=open&ack=unacked").MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listCases", http.StatusOK, resp.Body())
+
+	rows, ok := resp.JSON(t)["data"].([]any)
+	if !ok || len(rows) != 3 {
+		t.Fatalf("data = %v, want the open, ended and suppressed episodes: %s",
+			resp.JSON(t)["data"], resp)
+	}
+	for i, row := range rows {
+		r, _ := row.(map[string]any)
+		if _, present := r["alert"]; !present {
+			t.Fatalf("row %d carries no `alert`; the list would need one request per "+
+				"row to be readable, which is the N+1 this shape exists to avoid", i)
+		}
+	}
+	if svc.calls["ListCases"] != 1 {
+		t.Fatalf("the service was consulted %d time(s), want 1", svc.calls["ListCases"])
+	}
+	// ⛔ The tenant came off the principal and nowhere else.
+	if svc.lastScope.OrgID() != apitest.OrgID {
+		t.Fatalf("the handler read as org %s, want the caller's %s",
+			svc.lastScope.OrgID(), apitest.OrgID)
+	}
+}
+
+// ⛔ TestTheCaseListRefusesAParameterItDoesNotServe.
+//
+// The promise: `?q=`, `?label[…]=` and `?snoozed=` are `400 unknown_parameter` on
+// this endpoint, not silently ignored.
+//
+// What breaks otherwise: those three ARE served on `GET /alerts`, so a caller
+// copying a filter bar across would get an unfiltered page of episodes that looks
+// exactly like a filtered one. A triage queue that quietly widens is how an
+// operator concludes there is nothing left to look at.
+func TestTheCaseListRefusesAParameterItDoesNotServe(t *testing.T) {
+	t.Parallel()
+
+	for _, q := range []string{"q=oom", "label[team]=core", "snoozed=true", "sort=-started_at"} {
+		t.Run(q, func(t *testing.T) {
+			t.Parallel()
+
+			c, svc := newAlertsProbe(t)
+			resp := c.GET("/cases?"+q).MustStatus(t, http.StatusBadRequest)
+			schema.AssertProblem(t, "listCases", http.StatusBadRequest, resp.Body())
+
+			if len(svc.calls) != 0 {
+				t.Fatalf("an unserved parameter reached the service: %v", svc.calls)
+			}
+		})
+	}
+}
+
+// TestTheCaseListBindsItsCursorToItsFilter (§E.1).
+//
+// The promise: a cursor minted under one filter and replayed against another is
+// refused. What it protects is a page served from the middle of a list that no
+// longer exists, with nothing about the response looking wrong.
+func TestTheCaseListBindsItsCursorToItsFilter(t *testing.T) {
+	t.Parallel()
+
+	c, _ := newAlertsProbe(t)
+	first := c.GET("/cases?ack=unacked").MustStatus(t, http.StatusOK)
+	page, _ := first.JSON(t)["page"].(map[string]any)
+	next, _ := page["next_cursor"].(string)
+	if next == "" {
+		t.Fatal("the first page minted no cursor; there is nothing to replay")
+	}
+
+	resp := c.GET("/cases?ack=acked&cursor="+next).MustStatus(t, http.StatusBadRequest)
+	if code := resp.Problem(t).Code; code != "cursor_filter_mismatch" {
+		t.Fatalf("code = %q, want cursor_filter_mismatch", code)
 	}
 }
 
@@ -472,24 +567,31 @@ func TestAnUnknownQueryParameterIsRefusedRatherThanIgnored(t *testing.T) {
 /* The human verbs                                                            */
 /* -------------------------------------------------------------------------- */
 
-// humanVerb is one of the five write operations a person can perform on an alert.
+// humanVerb is one of the five write operations a person can perform.
 // They are tabled because they share every property that matters — attribution,
 // tenancy, and the shape of their answer — and five hand-written copies is how one
 // of them quietly acquires a different rule.
+//
+// ⭐ `target` IS THE WHOLE PATH AND NOT A SUFFIX, BECAUSE THE FIVE NO LONGER SHARE
+// A SUBJECT. Ack and unack are addressed by CASE id: a receipt is a fact about one
+// firing episode and is stored on `alert_cases`. Comment and the two snooze verbs
+// are addressed by ALERT id: a snooze is a row in `alert_snoozes` keyed by
+// `alert_id` and outlives every episode, and a comment annotates the identity's
+// timeline. A shared `alertPath` prefix would have hidden that split.
 type humanVerb struct {
 	op     string
-	path   string
+	target string
 	body   string
 	status int
 }
 
 func humanVerbs() []humanVerb {
 	return []humanVerb{
-		{"ackAlert", "/ack", `{"note":"Known deploy, rolling back"}`, http.StatusOK},
-		{"unackAlert", "/unack", `{"note":"not the deploy after all"}`, http.StatusOK},
-		{"commentOnAlert", "/comments", `{"body":"Confirmed upstream provider incident."}`, http.StatusCreated},
-		{"snoozeAlert", "/snooze", `{"duration_seconds":14400,"note":"deploy window"}`, http.StatusOK},
-		{"unsnoozeAlert", "/unsnooze", `{"note":"deploy finished early"}`, http.StatusOK},
+		{"ackCase", casePath("/ack"), `{"note":"Known deploy, rolling back"}`, http.StatusOK},
+		{"unackCase", casePath("/unack"), `{"note":"not the deploy after all"}`, http.StatusOK},
+		{"commentOnAlert", alertPath("/comments"), `{"body":"Confirmed upstream provider incident."}`, http.StatusCreated},
+		{"snoozeAlert", alertPath("/snooze"), `{"duration_seconds":14400,"note":"deploy window"}`, http.StatusOK},
+		{"unsnoozeAlert", alertPath("/unsnooze"), `{"note":"deploy finished early"}`, http.StatusOK},
 	}
 }
 
@@ -511,7 +613,7 @@ func TestEveryHumanVerbAnswersTheShapeTheContractDeclares(t *testing.T) {
 			t.Parallel()
 
 			c, svc := newAlertsProbe(t)
-			resp := sendJSON(t, c, v.op, http.MethodPost, alertPath(v.path), v.body).
+			resp := sendJSON(t, c, v.op, http.MethodPost, v.target, v.body).
 				MustStatus(t, v.status)
 			schema.Assert(t, v.op, v.status, resp.Body())
 
@@ -540,16 +642,16 @@ func TestEveryHumanVerbAnswersTheShapeTheContractDeclares(t *testing.T) {
 func TestTheAckVerbsAcceptNoBodyAtAll(t *testing.T) {
 	t.Parallel()
 
-	for _, v := range []struct{ op, path string }{
-		{"ackAlert", "/ack"},
-		{"unackAlert", "/unack"},
-		{"unsnoozeAlert", "/unsnooze"},
+	for _, v := range []struct{ op, target string }{
+		{"ackCase", casePath("/ack")},
+		{"unackCase", casePath("/unack")},
+		{"unsnoozeAlert", alertPath("/unsnooze")},
 	} {
 		t.Run(v.op, func(t *testing.T) {
 			t.Parallel()
 
 			c, _ := newAlertsProbe(t)
-			resp := c.POST(t, alertPath(v.path), nil).MustStatus(t, http.StatusOK)
+			resp := c.POST(t, v.target, nil).MustStatus(t, http.StatusOK)
 			schema.Assert(t, v.op, http.StatusOK, resp.Body())
 		})
 	}
@@ -572,7 +674,7 @@ func TestANonHumanPrincipalCannotSignAHumanVerb(t *testing.T) {
 
 			c, svc := newAlertsProbe(t)
 			resp := c.As(apitest.Machine()).
-				Raw(http.MethodPost, alertPath(v.path), apitest.ContentTypeJSON, v.body).
+				Raw(http.MethodPost, v.target, apitest.ContentTypeJSON, v.body).
 				MustStatus(t, http.StatusForbidden)
 			schema.AssertProblem(t, v.op, http.StatusForbidden, resp.Body())
 
@@ -608,7 +710,7 @@ func TestAVerbTheAlertIsInTheWrongStateForIsA412AndNotA409(t *testing.T) {
 			svc.failVerb = errs.Precondition("case_ended",
 				"this case has already ended")
 
-			resp := c.Raw(http.MethodPost, alertPath(v.path), apitest.ContentTypeJSON, v.body).
+			resp := c.Raw(http.MethodPost, v.target, apitest.ContentTypeJSON, v.body).
 				MustStatus(t, http.StatusPreconditionFailed)
 			schema.AssertProblem(t, v.op, http.StatusPreconditionFailed, resp.Body())
 
@@ -686,6 +788,228 @@ func TestASnoozeMustEnd(t *testing.T) {
 	}
 }
 
+/* -------------------------------------------------------------------------- */
+/* The bulk wake                                                              */
+/* -------------------------------------------------------------------------- */
+
+// unsnoozeAlertsPath is the BULK wake. It has no `{id}`: its subjects are named in
+// the body, which is the whole point of the endpoint.
+const unsnoozeAlertsPath = "/alerts/unsnooze"
+
+// ⭐⭐ TestTheBulkWakeAnswersAnAccountAndNotACount.
+//
+// The promise: `POST /api/v1/alerts/unsnooze` answers `200` with one entry per
+// requested id, in request order, and `woken + skipped == requested ==
+// results.length`.
+//
+// What broke: a bulk action that answers a bare number cannot tell the operator
+// which rows it left behind. "3 of 5" is the answer a person needs, and the two
+// missing rows have different explanations — one was already awake, one is not in
+// this org — which no count can carry.
+func TestTheBulkWakeAnswersAnAccountAndNotACount(t *testing.T) {
+	t.Parallel()
+
+	c, svc := newAlertsProbe(t)
+	body := `{"alert_ids":["` + fxAlertID.String() + `","` + apitest.StrangerID.String() + `"],` +
+		`"note":"deploy finished early"}`
+
+	resp := sendJSON(t, c, "unsnoozeAlerts", http.MethodPost, unsnoozeAlertsPath, body).
+		MustStatus(t, http.StatusOK)
+	schema.Assert(t, "unsnoozeAlerts", http.StatusOK, resp.Body())
+
+	data, ok := resp.JSON(t)["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("the response carries no data object:\n%s", resp.Body())
+	}
+	for field, want := range map[string]float64{"requested": 2, "woken": 1, "skipped": 1} {
+		if got, _ := data[field].(float64); got != want {
+			t.Errorf("data.%s = %v, want %v", field, data[field], want)
+		}
+	}
+
+	rows, ok := data["results"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("results is not a list of two outcomes:\n%s", resp.Body())
+	}
+	// ⛔ ORDER IS PART OF THE CONTRACT. A surface renders the account against the
+	// rows the operator ticked, and an account it has to re-join by id is one that
+	// will be re-joined wrongly.
+	first, _ := rows[0].(map[string]any)
+	second, _ := rows[1].(map[string]any)
+	if id, _ := first["alert_id"].(string); id != fxAlertID.String() {
+		t.Errorf("results[0].alert_id = %v, want the first id the request named", first["alert_id"])
+	}
+	if got, _ := first["outcome"].(string); got != "woken" {
+		t.Errorf("results[0].outcome = %v, want woken", first["outcome"])
+	}
+	if first["reason"] != nil {
+		t.Errorf("results[0].reason = %v; a wake has nothing to explain", first["reason"])
+	}
+
+	// ⛔⛔ ANOTHER TENANT'S ID IS A SKIP AND NOT A LEAK. It is reported exactly as an
+	// id belonging to nobody would be — `alert_not_found` — because any other
+	// treatment is an existence oracle, and this endpoint would let one be walked a
+	// hundred ids per request.
+	if got, _ := second["outcome"].(string); got != "skipped" {
+		t.Errorf("results[1].outcome = %v, want skipped", second["outcome"])
+	}
+	if got, _ := second["reason"].(string); got != "alert_not_found" {
+		t.Errorf("results[1].reason = %v, want alert_not_found", second["reason"])
+	}
+
+	if svc.calls["UnsnoozeMany"] != 1 {
+		t.Fatalf("the service was called %d time(s); one request is one fan-out",
+			svc.calls["UnsnoozeMany"])
+	}
+	if svc.lastActor.ID() != apitest.UserID.String() || !svc.lastActor.Kind().IsHuman() {
+		t.Fatalf("the wake was attributed to %q (%s), want the human caller %s",
+			svc.lastActor.ID(), svc.lastActor.Kind(), apitest.UserID)
+	}
+	// The note rides along to every wake-up: the fan-out is of the primitive, note
+	// and all, exactly as the group unsnooze does it.
+	if svc.lastUnsnoozeNote != "deploy finished early" {
+		t.Errorf("the note reached the service as %q", svc.lastUnsnoozeNote)
+	}
+}
+
+// ⭐ TestABulkWakeThatWokeNothingIsStillA200.
+//
+// The promise: every id already awake is a `200` whose account says so — never the
+// `412 not_snoozed` the single-alert route answers.
+//
+// What broke: the single route addresses ONE entity and has nothing to report but
+// its state, so a `412` is the whole answer there. Here there is always an account,
+// and "all of them were already awake" is a complete and correct one. A `412` would
+// also destroy the account, which is the only record of what the press did.
+func TestABulkWakeThatWokeNothingIsStillA200(t *testing.T) {
+	t.Parallel()
+
+	c, svc := newAlertsProbe(t)
+	svc.failVerb = errs.Precondition("not_snoozed", "this alert is not snoozed")
+
+	body := `{"alert_ids":["` + fxAlertID.String() + `"]}`
+	resp := sendJSON(t, c, "unsnoozeAlerts", http.MethodPost, unsnoozeAlertsPath, body).
+		MustStatus(t, http.StatusOK)
+	schema.Assert(t, "unsnoozeAlerts", http.StatusOK, resp.Body())
+
+	data, _ := resp.JSON(t)["data"].(map[string]any)
+	if got, _ := data["woken"].(float64); got != 0 {
+		t.Errorf("woken = %v, want 0", data["woken"])
+	}
+	if got, _ := data["skipped"].(float64); got != 1 {
+		t.Errorf("skipped = %v, want 1", data["skipped"])
+	}
+	rows, _ := data["results"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("results should still name the id that was asked about:\n%s", resp.Body())
+	}
+	row, _ := rows[0].(map[string]any)
+	if got, _ := row["reason"].(string); got != "not_snoozed" {
+		t.Errorf("results[0].reason = %v, want not_snoozed — a skip must say WHICH skip", row["reason"])
+	}
+}
+
+// ⛔⛔ TestTheBulkWakeRefusesAListItCannotBound.
+//
+// The promise: `alert_ids` is required, must name at least one alert, may not
+// repeat one, and is capped at MaxUnsnoozeAlertIDs. Each refusal is a `422` naming
+// `alert_ids`, which is what every other bounded list in this API answers.
+//
+// What broke: the cap is the only thing standing between one press and an unbounded
+// number of write transactions inside one request — and the REQUIRED-ness is what
+// stops `{}` meaning "wake everything", which is the reading this endpoint exists
+// to refuse.
+func TestTheBulkWakeRefusesAListItCannotBound(t *testing.T) {
+	t.Parallel()
+
+	overCap := make([]string, MaxUnsnoozeAlertIDs+1)
+	for i := range overCap {
+		overCap[i] = `"` + uuid.New().String() + `"`
+	}
+
+	cases := []struct{ name, body, code string }{
+		{"no list at all", `{"note":"wake up"}`, "required"},
+		{"an empty list", `{"alert_ids":[]}`, "min_items"},
+		{
+			"the same alert twice",
+			`{"alert_ids":["` + fxAlertID.String() + `","` + fxAlertID.String() + `"]}`,
+			"duplicate_items",
+		},
+		{"one past the cap", `{"alert_ids":[` + strings.Join(overCap, ",") + `]}`, "max_items"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c, svc := newAlertsProbe(t)
+			resp := c.Raw(http.MethodPost, unsnoozeAlertsPath, apitest.ContentTypeJSON, tc.body).
+				MustStatus(t, http.StatusUnprocessableEntity)
+			schema.AssertProblem(t, "unsnoozeAlerts", http.StatusUnprocessableEntity, resp.Body())
+
+			p := resp.MustViolate(t, "alert_ids")
+			for _, v := range p.Violations {
+				if v.Field == "alert_ids" && v.Code != tc.code {
+					t.Fatalf("violations[alert_ids].code = %q, want %q", v.Code, tc.code)
+				}
+			}
+			// ⛔ A REFUSED LIST NEVER REACHES THE SERVICE. An over-cap list that got
+			// through would be the unbounded fan-out the cap exists to prevent, and it
+			// would have written half of it before anybody noticed.
+			if svc.calls["UnsnoozeMany"] != 0 {
+				t.Fatal("a refused bulk wake still reached the service")
+			}
+		})
+	}
+}
+
+// ⛔ TestANonHumanPrincipalCannotWakeAlertsInBulk — §E.1.1.
+//
+// The promise: a machine credential is a `403` and the service is never reached,
+// exactly as it is on the five single-subject human verbs.
+//
+// What broke: every wake-up this endpoint performs enqueues a notification and
+// appends an attributed `alert.unsnoozed` event. An unattributed bulk wake is a
+// hundred timeline entries signed by nobody.
+func TestANonHumanPrincipalCannotWakeAlertsInBulk(t *testing.T) {
+	t.Parallel()
+
+	c, svc := newAlertsProbe(t)
+	body := `{"alert_ids":["` + fxAlertID.String() + `"]}`
+
+	resp := c.As(apitest.Machine()).
+		Raw(http.MethodPost, unsnoozeAlertsPath, apitest.ContentTypeJSON, body).
+		MustStatus(t, http.StatusForbidden)
+	schema.AssertProblem(t, "unsnoozeAlerts", http.StatusForbidden, resp.Body())
+
+	if len(svc.calls) != 0 {
+		t.Fatalf("a machine principal reached the service: %v", svc.calls)
+	}
+}
+
+// ⭐ TestTheBulkWakeIsNotShadowedByTheSingleAlertRoute.
+//
+// The promise: `/alerts/unsnooze` reaches the bulk handler and `/alerts/{id}/unsnooze`
+// still reaches the single one.
+//
+// What broke: the bulk path's first segment after `/alerts` is a STATIC segment
+// sitting where `{id}` also matches. If the trie resolved it as an alert id the
+// endpoint would answer `400 invalid_uuid` for the literal word `unsnooze` — a
+// route that exists, is documented, and cannot be called.
+func TestTheBulkWakeIsNotShadowedByTheSingleAlertRoute(t *testing.T) {
+	t.Parallel()
+
+	c, svc := newAlertsProbe(t)
+
+	sendJSON(t, c, "unsnoozeAlerts", http.MethodPost, unsnoozeAlertsPath,
+		`{"alert_ids":["`+fxAlertID.String()+`"]}`).MustStatus(t, http.StatusOK)
+	c.POST(t, alertPath("/unsnooze"), nil).MustStatus(t, http.StatusOK)
+
+	if svc.calls["UnsnoozeMany"] != 1 || svc.calls["Unsnooze"] != 1 {
+		t.Fatalf("the two routes did not land on their own handlers: %v", svc.calls)
+	}
+}
+
 // TestACommentMustCarryABody.
 //
 // The promise: a blank comment is a 422 naming `body`; a request with no body at
@@ -747,13 +1071,13 @@ func idAddressedOperations(id string) []apitest.Route {
 		{Op: "listAlertEnrichments", Method: http.MethodGet, Path: "/alerts/" + id + "/enrichments"},
 		{Op: "listAlertNotifications", Method: http.MethodGet, Path: "/alerts/" + id + "/notifications"},
 		{Op: "listAlertSnoozes", Method: http.MethodGet, Path: "/alerts/" + id + "/snoozes"},
-		{Op: "ackAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/ack", Body: `{"note":"looking"}`},
-		{Op: "unackAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/unack", Body: `{"note":"handing back"}`},
 		{Op: "commentOnAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/comments", Body: `{"body":"who owns this?"}`},
 		{Op: "snoozeAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/snooze", Body: `{"duration_seconds":3600}`},
 		{Op: "unsnoozeAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/unsnooze", Body: `{"note":"awake"}`},
 		{Op: "getCase", Method: http.MethodGet, Path: "/cases/" + id},
 		{Op: "listCaseEvents", Method: http.MethodGet, Path: "/cases/" + id + "/events"},
+		{Op: "ackCase", Method: http.MethodPost, Path: "/cases/" + id + "/ack", Body: `{"note":"looking"}`},
+		{Op: "unackCase", Method: http.MethodPost, Path: "/cases/" + id + "/unack", Body: `{"note":"handing back"}`},
 	}
 }
 

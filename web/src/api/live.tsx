@@ -65,6 +65,10 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
         void queryClient.invalidateQueries({ queryKey: qk.notifications.all() });
         break;
       case "case.upserted":
+        // The frame the case list exists for: an episode opening, being
+        // acknowledged, or ending is exactly what moves a row in and out of the
+        // queue on `/cases`.
+        void queryClient.invalidateQueries({ queryKey: qk.cases.all() });
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
         void queryClient.invalidateQueries({ queryKey: qk.groups.all() });
         break;
@@ -73,6 +77,7 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
         break;
       case "event.appended":
         // The timeline is the differentiator; it must never lag its own stream.
+        void queryClient.invalidateQueries({ queryKey: qk.cases.all() });
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
         void queryClient.invalidateQueries({ queryKey: qk.groups.all() });
         void queryClient.invalidateQueries({ queryKey: qk.notifications.all() });

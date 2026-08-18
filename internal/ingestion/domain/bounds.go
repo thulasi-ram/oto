@@ -113,13 +113,13 @@ const (
 //
 // ⛔ IT MUST STAY STRICTLY BELOW `refire_grace`, AND THAT IS NOT A COINCIDENCE
 // TO BE PRESERVED BY LUCK. It was ten minutes, and `refire_grace` then defaulted
-// to ten minutes too, so the two windows were exactly equal — which made the T8
-// re-fire path UNREACHABLE by construction:
+// to ten minutes too, so the two windows were exactly equal — which made the
+// inside-the-grace re-fire path UNREACHABLE by construction:
 //
 //   - a re-fire inside `refire_grace` is, by the equality, also inside the replay
 //     window, so it was dropped at ingest and the state machine never saw it;
 //   - a re-fire the replay window let through was, by the same equality, already
-//     outside `refire_grace`, so it opened a new generation (T7) instead.
+//     outside `refire_grace`.
 //
 // The first live tester had to alter the alert set — changing the dedup key — to
 // exercise re-fire at all. The relationship is now enforced from the other end:
@@ -127,6 +127,13 @@ const (
 // configuration leaves a window at least this wide in which a re-fire is both
 // OBSERVABLE and INSIDE the grace. `TestTheReplayWindowIsStrictlyInsideRefireGrace`
 // pins the two constants together.
+//
+// ⚠️ WHAT AN UNREACHABLE BAND COSTS IS SMALLER SINCE ADR 0040, AND THE BOUND IS
+// KEPT ANYWAY. `refire_grace` no longer selects a transition — every re-fire
+// opens a new episode — so an empty band is a control with no effect rather than
+// an edge nobody could reach. The arithmetic stays because it is what stops the
+// two numbers being edited into contradiction, and because the setting's own
+// future is undecided.
 //
 // The transport window is the one that yielded, because it has a known lower
 // bound (a peer timeout and a retry budget, both properties of Alertmanager) while

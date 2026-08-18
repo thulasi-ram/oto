@@ -349,7 +349,10 @@ func unreapable(row domain.Case, now time.Time, grace time.Duration) string {
 		// The loudest case: overwriting a `resolved` with `expired` replaces a
 		// fact somebody upstream stated with one oto inferred, and leaves the
 		// append-only timeline permanently disagreeing with the projection.
-		return "case is already " + row.State().String()
+		// AlertState: "already resolved" and "already expired" are different refusals
+		// and the sentence above is about the difference between them. "already
+		// closed" would collapse exactly the distinction being protected.
+		return "case is already " + row.AlertState().String()
 	case row.SourceEndsAt().IsZero():
 		return "no upstream end time"
 	case !now.After(row.SourceEndsAt().Add(grace)):

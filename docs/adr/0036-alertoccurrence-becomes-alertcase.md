@@ -1,6 +1,9 @@
 # 0036 — AlertOccurrence becomes AlertCase, and `case` is argued against FR-1 by name
 
-**Status:** Accepted · 2026-08-18
+**Status:** Accepted · 2026-08-18 · **narrowed in part by
+[0040](0040-a-case-is-open-or-closed-and-never-reopened.md)**, which keeps this entity exactly as this
+ADR defines it — one contiguous firing episode, `(alert_id, seq)` — and narrows its `state` column to
+`open | closed`. Read 0040 before adding anything to `alert_cases.state`.
 **Relates to:** [0003](0003-alert-occurrence-event-separation.md) (the three entities — this renames the
 middle one and changes nothing about it), [0013](0013-alert-first-scope-boundary.md) (the boundary this
 ADR argues against by name), [0024](0024-retention-defaults-and-cold-storage.md) (why the episode row
@@ -211,47 +214,63 @@ which is what makes the word safe here and would not make it safe on any object 
 
 ---
 
-## Amendment, 2026-08-18 — the UI spends `Case` on the correlation, not on the episode
+## Amendment, 2026-08-18 — the Cases destination lists Cases, and an AlertGroup is not a correlation
 
-**Status:** Accepted, by the owner, over this ADR's own objection. Recorded because an
-unwritten contradiction is worse than a written one.
+**Status:** Accepted. It **supersedes an earlier amendment of the same date** which recorded that the
+UI had spent `Case` on "the correlation" and that §2.5 of the anti-caseload clause was therefore
+void. That amendment was wrong on its facts, and a wrong amendment left standing is worse than none:
+it retired a clause nothing had actually broken and it taught the word `correlation` to mean a thing
+oto has never built.
 
-§3 above draws the Case/correlation line at *how many alert identities are spanned*: one for a
-Case, many for a correlation. The operator-facing UI now **disregards that line**. The nav's first
-destination is **Cases**, and what it lists is `alert_groups` — the correlation. `AlertCase`, the
-per-alert firing episode this ADR renamed, is not what the word points at on screen.
+**Nothing in §3 is amended.** The Case/correlation line stands exactly as drawn: a Case spans one
+alert identity, a correlation spans many, and an incident is a human response effort and is
+permanently out (FR-1). **Nothing in §2 is void either** — all six points of the anti-caseload
+clause, the copy commitment included, are in force.
 
-So `case` now names two objects:
+### The three facts the earlier amendment got wrong
+
+1. **The nav's Cases destination lists CASES.** `GET /api/v1/cases` is the org-wide list of
+   `alert_cases` rows — one contiguous firing episode of one alert, `(alert_id, seq)` — and it is
+   where a human acknowledges. `POST /api/v1/cases/{id}/ack` is addressed by that episode's id, which
+   is the only id an acknowledgement has ever had a subject in: `ack_state`, `acked_by`, `acked_at`
+   and `ack_note` are columns of `alert_cases` and of no other table (migration 00049). There is no
+   second object wearing the word.
+2. **`alert_groups` is a NOTIFICATION GROUPING, not a correlation.** It is Alertmanager's grouping
+   concept, now derived by oto from the alert's own labels — `(org, cluster, alertname,
+   namespace-or-∅)` (ADR 0038) — and its whole job is that it **owns exactly one Slack thread**. It
+   is plumbing: it decides which facts share a message, and it makes no claim that its members are
+   one problem. A correlation *does* make that claim, from a stated algorithm, and is DEFERRED-POST-V1
+   (`SPEC.md` §I.1). Calling the group one promoted a delivery mechanism into an inference oto does
+   not perform.
+3. **The word is therefore not overloaded, and §2.5 was never breached.** §2.5 forbids caseload
+   vocabulary — "queue", "my cases", "open cases assigned to", "resolve case", a case count rendered
+   as a workload. A destination named **Cases** that lists firing episodes and offers **acknowledge**
+   is the entity's own name on the entity's own list; it is none of those things. The clause bans the
+   gravity, not the noun.
+
+### What the surfaces are called, then
 
 | where | what `Case` means | the object |
 |---|---|---|
 | Go, SQL, the API contract | one contiguous firing episode of one Alert | `alert_cases` |
-| the UI's nav, list and detail | one generation of a correlation | `alert_groups` |
+| the UI's Cases nav, list and detail | the same | `alert_cases` |
+| the UI's group surfaces and every Slack card | one generation of the notification grouping | `alert_groups` |
 
-### What this costs, stated plainly
+An AlertGroup is called a **group** on every surface, and a Slack card's deep link goes to
+`/groups/<id>` — the card is *about* the group, because the group is what owns the thread. Minting
+`/cases/<id>` from an `alert_groups` id, as the superseded amendment's change did, addressed one
+table's screen with another table's key.
 
-- **§2.5 of the anti-caseload clause is void.** It forbade caseload UI copy; the primary
-  destination is now called Cases. The remaining five points stand and are still enforced
-  (`test/scope/forbidden_columns_test.go`), so the *schema* commitments this ADR made are intact —
-  it is only the copy commitment that fell.
-- **§3's line no longer survives contact with a screen.** An engineer reading `alert_cases` and an
-  operator reading "Cases" are looking at different objects, and nothing in the product says so.
-- The FR-1 argument in §1 is **unaffected**: it turns on the row being a fact about a signal rather
-  than a unit of human work, and that is true of `alert_groups` as it is of `alert_cases`. Neither
-  gains a human-writable `state`, an assignee or a create endpoint. The word got looser; it did not
-  cross FR-1.
+### What is genuinely still true, and is a smaller thing
 
-### The mitigation that is actually in the code
-
-The UI must never show both objects under the same word on one screen. Where a surface shows the
-per-alert episode — the alert detail's history, the timeline, `GET /alerts/{id}/cases` — the UI says
-**firing episode**, never "Case". That is the whole of the defence, and it is a convention, not a
-gate: no test enforces it.
+Two neighbouring nouns share a stem: an `alert_cases` row is a Case, and `case_id` appears on
+`alert_events`, on notifications and in dedupe keys. Nothing else in the product is called a Case.
+The remaining care is only that a surface showing one alert's HISTORY — the alert detail's episode
+list, `GET /alerts/{id}/cases` — reads naturally, and **firing episode** is the phrase for that
+because it is the entity's definition rather than a second name for it.
 
 ### What would retire this amendment
 
-Renaming the domain type so the two stop colliding — `alert_cases` back to an episode-flavoured
-noun, leaving `Case` to the correlation alone. That is a second rename of the size of the first
-(~230 identifiers, a table, 27 constraints, the persisted-string canonicalisation) and was not
-undertaken here. If the collision starts costing review time, that is the fix, and this section is
-the argument for paying for it.
+Nothing outstanding. It exists to correct the record; if `correlation` is ever built, §3's table is
+the place that decision lands, and it will be a new object with a stated algorithm rather than a
+rename of `alert_groups`.

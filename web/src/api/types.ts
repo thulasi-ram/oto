@@ -89,6 +89,14 @@ export type ActiveSnooze = S["ActiveSnoozeDTO"];
 export type SnoozeHistoryEntry = S["SnoozeHistoryDTO"];
 export type SnoozeEndReason = S["SnoozeEndReason"];
 export type Case = S["CaseDTO"];
+/**
+ * One row of the org-wide case list.
+ *
+ * `alert` is REQUIRED and never null: an episode carries `alert_id` and nothing
+ * else about the identity, so a row without the reference could not be rendered
+ * without a request per row. The server batch-loads the whole page.
+ */
+export type CaseListItem = S["CaseListItemDTO"];
 export type CaseDetail = S["CaseDetailDTO"];
 export type AlertEvent = S["AlertEventDTO"];
 export type Enrichment = S["EnrichmentDTO"];
@@ -248,6 +256,16 @@ export type ResyncData = S["ResyncData"];
 export type AlertListQuery = NonNullable<operations["listAlerts"]["parameters"]["query"]>;
 /** Every filter `listAlerts` takes, plus the required `group_by` axis. */
 export type AlertRollupQuery = NonNullable<operations["listAlertRollups"]["parameters"]["query"]>;
+/**
+ * The org-wide case list's query string (§E.3b).
+ *
+ * It is NOT `AlertListQuery` with `ack` put back: there is no label selector, no
+ * free-text `q`, no `flapping` and no `snoozed` here — those are questions about
+ * the identity and are asked on the alert list. `open` is the one that matters
+ * for the plan: send `open=true` for the live queue rather than relying on
+ * `state=firing,suppressed` to mean the same thing.
+ */
+export type CaseListQuery = NonNullable<operations["listCases"]["parameters"]["query"]>;
 export type RollupAxis = AlertRollupQuery["group_by"];
 export type RuleSnapshotQuery = NonNullable<
   operations["listRuleSnapshots"]["parameters"]["query"]

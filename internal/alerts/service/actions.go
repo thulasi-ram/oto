@@ -35,16 +35,26 @@ const MaxCommentBytes = domain.MaxAckNoteBytes
 // exact lie §B.2 exists to prevent, and it would kill the system-of-record claim
 // that is the entire product.
 
-// Acknowledge records that a human has seen the Alert's current episode (T9).
+// Acknowledge records that a human has seen ONE FIRING EPISODE (T9).
 //
-// Acknowledgement is ORTHOGONAL to state: an acked alert is still firing, still
+// ⭐⭐ IT IS ADDRESSED BY CASE ID, AND THAT IS THE WHOLE POINT OF THE VERB. An
+// acknowledgement is a receipt for one contiguous firing of one alert; it is
+// written on `alert_cases`, it is cleared when the next episode opens (T10,
+// `reason: new_case`), and the Alert carries no ack column for it to land on
+// (§B.1, 00049). Taking an alert id and looking up "whatever episode happens to
+// be open right now" made the SUBJECT of the receipt a race: an operator reading
+// a case that resolved a second ago, pressing Acknowledge, and signing for the
+// episode that replaced it.
+//
+// Acknowledgement is ORTHOGONAL to state: an acked case is still firing, still
 // whatever severity it was, and every surface keeps rendering it that way.
-// Acknowledging an Alert with no open episode is a precondition failure — the
-// request is well-formed, there is simply nothing running to acknowledge.
+// Acknowledging an episode that has already ended is a PRECONDITION failure
+// (`case_terminal`) — the request is well-formed, the entity is simply in the
+// wrong state — and an id that names no case in this tenant is a 404.
 func (s *Service) Acknowledge(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID, actor domain.Actor, note string,
 ) (domain.Case, error) {
-	return s.setAck(ctx, scope, alertID, actor, note, true, domain.UnackReasonManual)
+	return s.setAck(ctx, scope, caseID, actor, note, true, domain.UnackReasonManual)
 }
 
 // Unacknowledge drops an acknowledgement a human placed (T10, reason `manual`).
@@ -54,13 +64,21 @@ func (s *Service) Acknowledge(
 // cleared by the transition — it goes onto the timeline, in the
 // `case.unacknowledged` event payload.
 func (s *Service) Unacknowledge(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID, actor domain.Actor, note string,
 ) (domain.Case, error) {
-	return s.setAck(ctx, scope, alertID, actor, note, false, domain.UnackReasonManual)
+	return s.setAck(ctx, scope, caseID, actor, note, false, domain.UnackReasonManual)
 }
 
+// setAck is the body of both verbs.
+//
+// ⭐ THE CASE IS READ FIRST AND THE ALERT IS REACHED THROUGH IT. The episode is
+// the subject; the alert is read only because the projection written at the end
+// of this transaction (`state`, `current_case_id`) is a fact about the identity
+// and has to be re-stated from a row that was read under the same lock. Reading
+// the case by id also means the tenancy check happens once, on the row that is
+// about to be written, rather than on a parent that could own a different one.
 func (s *Service) setAck(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor,
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID, actor domain.Actor,
 	note string, ack bool, reason string,
 ) (domain.Case, error) {
 	if actor.IsZero() || !actor.Kind().IsHuman() {
@@ -70,17 +88,25 @@ func (s *Service) setAck(
 
 	var out domain.Case
 	err := s.tx.InTx(ctx, func(ctx context.Context) error {
-		alert, err := s.alerts.GetByID(ctx, scope, alertID)
+		ac, err := s.cases.GetByID(ctx, scope, caseID)
 		if err != nil {
 			return err
 		}
-		ac, ok, err := s.cases.GetOpenByAlert(ctx, scope, alertID)
+		alert, err := s.alerts.GetByID(ctx, scope, ac.AlertID())
 		if err != nil {
 			return err
 		}
-		if !ok {
-			return errs.Precondition("no_open_case",
-				"this alert has no open case to acknowledge")
+		// ⛔ AN ENDED EPISODE REFUSES BOTH VERBS, AND THE GUARD IS HERE BECAUSE
+		// THE DOMAIN ONLY CARRIES HALF OF IT. `Case.Acknowledge` refuses a
+		// terminal state on its own; `Case.Unacknowledge` deliberately does not,
+		// because T10's AUTOMATIC withdrawal has to run on the episode that is
+		// closing (lifecycle.go). A human withdrawal is the other caller, and
+		// letting it act on a finished episode would re-state
+		// `alerts.current_case_id` — which the projection below writes
+		// unconditionally — back onto a case the alert has already moved past.
+		if !ac.IsOpen() {
+			return errs.Precondition("case_terminal",
+				"this episode has ended; its acknowledgement is now a record of what happened")
 		}
 
 		now := s.Now()
@@ -535,6 +561,137 @@ func (s *Service) Unsnooze(
 		return domain.Snooze{}, err
 	}
 	return out, nil
+}
+
+// UnsnoozeOutcome is what a bulk wake concluded about ONE alert.
+type UnsnoozeOutcome struct {
+	AlertID uuid.UUID
+	// Woken is true when this alert had an active snooze and now does not.
+	Woken bool
+	// Code is the stable errs code of the refusal, and empty when Woken.
+	//
+	// ⭐ IT IS THE CODE AND NOT A BOOLEAN, for the reason grouping's
+	// FanOutResult.SkippedCodes gives: "nothing happened" has more than one honest
+	// explanation, and a surface that has to tell a person which one it was cannot
+	// get it from a count. `not_snoozed` means somebody already woke this alert;
+	// `alert_not_found` means no such alert in this org.
+	Code string
+}
+
+// UnsnoozeManyResult is the account of a bulk wake.
+//
+// ⛔ IT IS AN ACCOUNT AND NOT A COUNT, and for the same reason FanOutResult is:
+// a partial result is the NORMAL one here. An operator waking a page of quiet
+// alerts routinely finds some of them already awake, and a bare "3" cannot tell
+// them which two were left and why.
+type UnsnoozeManyResult struct {
+	// Outcomes carries one entry per DISTINCT requested alert, in request order.
+	Outcomes []UnsnoozeOutcome
+}
+
+// Woken is how many alerts this call actually put back on the air.
+func (r UnsnoozeManyResult) Woken() int {
+	n := 0
+	for _, o := range r.Outcomes {
+		if o.Woken {
+			n++
+		}
+	}
+	return n
+}
+
+// Skipped is how many refused, for any reason.
+func (r UnsnoozeManyResult) Skipped() int { return len(r.Outcomes) - r.Woken() }
+
+// UnsnoozeMany serves `POST /api/v1/alerts/unsnooze`: end the active snooze on
+// each alert the CALLER NAMED.
+//
+// ⛔⛔ IT TAKES A LIST AND IT WILL NEVER TAKE A FILTER. A filter-scoped bulk wake
+// is evaluated on the server against rows the caller never saw: one press would
+// resume thousands of alerts whose extent the person pressing it cannot see, and
+// every one of them would start notifying channels nobody agreed to wake. The
+// caller must name what it is waking. That is a bound the server can check, and a
+// record a person can read back afterwards.
+//
+// ⛔ THERE IS NO SnoozeMany BESIDE IT AND THERE MUST NOT BE. This is the UNDO of a
+// gesture somebody made deliberately, one alert at a time. Going quiet in bulk is
+// the blindfold §B.8.3 refuses on the group verb — a mute over alerts nobody has
+// looked at — and the undo carries no such risk: its failure mode is oto talking
+// more, which is the direction §B.6 wants a mistake to fall.
+//
+// ⭐ IT IS A FAN-OUT OF THE PRIMITIVE, exactly as the group verbs are: each id
+// goes through `Unsnooze` verbatim, so the row, the `alert.unsnoozed` event, the
+// projection and the resume notification are the SAME ones the single-alert route
+// writes. That is what makes "consistent with the single endpoint" a property of
+// the code rather than a promise in a comment — there is only one implementation.
+//
+// ⛔ IT ADDS NOTHING TO THE REPOSITORY, AND THE ABSENCE IS THE DESIGN. The group
+// fan-out needed `CurrentMemberAlerts` because it had to DISCOVER its subjects;
+// this one is handed them, so there is no candidate read to add and no batch
+// UPDATE to write. One write transaction per alert is what §E.1.1's verbs are, and
+// a single statement over a hundred rows would have to skip the domain, the event
+// and the notification to be faster than the thing it replaced.
+//
+// ⛔ THE LIST'S LENGTH IS BOUNDED AT THE EDGE AND NOT HERE, like every other
+// list-valued input in this API: `api.MaxUnsnoozeAlertIDs` is a `validate` tag on
+// the request DTO and a `maxItems` in the contract, which is where a caller can be
+// told which field was too long.
+//
+// ⚠️ THE ACCOUNT SURVIVES THE ERROR. A hard failure partway returns the partial
+// result ALONGSIDE the error rather than a zero value: the alerts already woken
+// are committed and are not coming back, and a result that forgot them would be
+// the only record of them lost. A caller that retries reaches the same end state —
+// the alerts that woke report `not_snoozed` on the second pass — which is why this
+// verb needs no idempotency key to be safe to repeat.
+func (s *Service) UnsnoozeMany(
+	ctx context.Context, scope db.TenantScope, alertIDs []uuid.UUID,
+	actor domain.Actor, note string,
+) (UnsnoozeManyResult, error) {
+	if actor.IsZero() || !actor.Kind().IsHuman() {
+		return UnsnoozeManyResult{}, errs.Validation("actor_required",
+			"an unsnooze requires a human actor")
+	}
+
+	res := UnsnoozeManyResult{Outcomes: make([]UnsnoozeOutcome, 0, len(alertIDs))}
+	// The request DTO already refuses a repeated id, so this never fires in
+	// production. It stays because the verb is about the SIGNAL and must be applied
+	// once per signal whatever the caller sent — the same argument grouping's
+	// fanOut makes about its own candidate read. Applying it twice would report one
+	// alert as both `woken` and `not_snoozed`, which is an account that does not add
+	// up.
+	seen := make(map[uuid.UUID]struct{}, len(alertIDs))
+
+	for _, alertID := range alertIDs {
+		if _, dup := seen[alertID]; dup {
+			continue
+		}
+		seen[alertID] = struct{}{}
+
+		if _, err := s.Unsnooze(ctx, scope, alertID, actor, note); err != nil {
+			if errs.IsKind(err, errs.KindPrecondition) || errs.IsKind(err, errs.KindNotFound) {
+				// ⭐ A REFUSAL IS RECORDED, NOT RAISED. An alert that was not snoozed
+				// is SKIPPED: refusing the other ninety-nine because one had already
+				// woken makes the button unusable in exactly the situation it exists
+				// for, which is the rule the group unsnooze already follows.
+				//
+				// ⛔ `alert_not_found` IS A SKIP FOR THE SAME REASON IT IS A 404 ON THE
+				// SINGLE ROUTE. Every read is scoped by db.TenantScope, so another
+				// org's id is not refused — it simply is not there. Answering
+				// differently for "absent" and "somebody else's" would be an existence
+				// oracle, and one that a hundred ids per request could be walked
+				// through quickly.
+				code := errs.CodeOf(err)
+				if code == "" {
+					code = "refused"
+				}
+				res.Outcomes = append(res.Outcomes, UnsnoozeOutcome{AlertID: alertID, Code: code})
+				continue
+			}
+			return res, err
+		}
+		res.Outcomes = append(res.Outcomes, UnsnoozeOutcome{AlertID: alertID, Woken: true})
+	}
+	return res, nil
 }
 
 // endSnooze closes one snooze row and returns the `alert.unsnoozed` event.

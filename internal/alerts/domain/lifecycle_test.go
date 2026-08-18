@@ -17,7 +17,6 @@ var (
 	alertID     = uuid.MustParse("018f3a4b-0000-7000-8000-000000000102")
 	groupIDFix  = uuid.MustParse("018f3a4b-0000-7000-8000-000000000103")
 	eventIDFix  = uuid.MustParse("018f3a4b-0000-7000-8000-000000000104")
-	prevOccID   = uuid.MustParse("018f3a4b-0000-7000-8000-000000000105")
 	snapshotFix = uuid.MustParse("018f3a4b-0000-7000-8000-000000000106")
 
 	t0 = time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
@@ -32,6 +31,13 @@ func allTriggers() []Trigger {
 	return []Trigger{TriggerObserveFiring, TriggerObserveSuppressed, TriggerObserveResolved, TriggerReap}
 }
 
+// caseIn builds a Case that an ALERT in `state` would have.
+//
+// ⭐ IT TAKES THE FOUR-WAY STATE AND STORES THE TWO-WAY ONE, which is ADR 0040's
+// derivation exercised on every call: the Case row holds `open` or `closed`, and
+// `suppression_reason` / `resolve_reason` carry the rest. `AlertState()` reads
+// the four-way word back out, and every assertion below that names one is
+// therefore a round-trip through both halves.
 func caseIn(t *testing.T, state State, mut ...func(*CaseParams)) Case {
 	t.Helper()
 	p := CaseParams{
@@ -40,7 +46,7 @@ func caseIn(t *testing.T, state State, mut ...func(*CaseParams)) Case {
 		AlertID:        alertID,
 		GroupID:        groupIDFix,
 		Seq:            1,
-		State:          state,
+		State:          state.CaseState(),
 		StartedAt:      t0,
 		LastObservedAt: t0,
 		SourceStartsAt: t0,
@@ -291,11 +297,13 @@ func TestApply_IllegalEdgeIsPrecondition(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			o := caseIn(t, tc.state, func(p *CaseParams) {
 				if tc.state == StateNone {
-					p.State = StateFiring // NewCase requires a real state
+					p.State = CaseOpen // NewCase requires a real state
 				}
 			})
 			if tc.state == StateNone {
-				o.state = StateNone
+				// The zero Case IS "no episode": AlertState reads StateNone off a
+				// zero CaseState, which is the state T1's row comes from.
+				o.state = CaseState{}
 			}
 			_, err := Apply(o, TransitionCommand{
 				Trigger: tc.trigger,
@@ -366,7 +374,7 @@ func actorOfKind(t *testing.T, k ActorKind) Actor {
 
 func TestApply_T1IsNotAnEdgeOnAnExistingCase(t *testing.T) {
 	o := caseIn(t, StateFiring)
-	o.state = StateNone
+	o.state = CaseState{} // the zero Case: no episode at all, which AlertState reads as StateNone
 
 	_, err := Apply(o, TransitionCommand{
 		Trigger: TriggerObserveFiring,
@@ -758,26 +766,37 @@ func TestApply_T6_ReaperGuard(t *testing.T) {
 	}
 }
 
-// --------------------------------------------------------------------- T7 vs T8
+// ------------------------------------------------------------------------- T7
 
-func TestApply_T7vsT8_RefireGrace(t *testing.T) {
+// TestApply_EveryRefireOpensANewEpisodeWhateverTheClockSays is what replaced
+// TestApply_T7vsT8_RefireGrace, and the replacement IS the assertion.
+//
+// ⭐⭐ THE CLOCK USED TO DECIDE THIS AND NO LONGER APPEARS. A re-fire inside
+// `refire_grace` took T8 — the closed episode's `ended_at` was cleared, it ran
+// again, and any acknowledgement taken on it carried across the gap in the
+// firing. ADR 0040 reversed that: a Case is strictly terminal, so every re-fire
+// takes T7 and opens the next `seq`, unacknowledged. The table below therefore
+// walks the same instants the old one did — one second after the close, at what
+// used to be the boundary, and an hour later — and demands ONE answer.
+//
+// ⛔ AND T7 LEAVES THE CLOSED EPISODE EXACTLY AS IT FOUND IT. That was already
+// true and is now the only behaviour, which is why `res.Case` is compared whole:
+// a future edit that let this branch touch the terminal row would be reviving an
+// episode by another name.
+func TestApply_EveryRefireOpensANewEpisodeWhateverTheClockSays(t *testing.T) {
 	endedAt := t0.Add(time.Minute)
 
 	tests := []struct {
-		name    string
-		from    State
-		grace   time.Duration
-		refire  time.Time
-		wantID  TransitionID
-		wantNew bool
+		name   string
+		from   State
+		refire time.Time
 	}{
-		{name: "inside the default grace reopens", from: StateResolved, refire: endedAt.Add(5 * time.Minute), wantID: TransitionT8},
-		{name: "exactly at the grace boundary reopens", from: StateResolved, refire: endedAt.Add(DefaultRefireGrace), wantID: TransitionT8},
-		{name: "one nanosecond past the boundary opens a new episode", from: StateResolved, refire: endedAt.Add(DefaultRefireGrace + time.Nanosecond), wantID: TransitionT7, wantNew: true},
-		{name: "expired reopens too", from: StateExpired, refire: endedAt.Add(time.Minute), wantID: TransitionT8},
-		{name: "expired past the grace opens a new episode", from: StateExpired, refire: endedAt.Add(time.Hour), wantID: TransitionT7, wantNew: true},
-		{name: "a configured grace widens the window", from: StateResolved, grace: 2 * time.Hour, refire: endedAt.Add(time.Hour), wantID: TransitionT8},
-		{name: "a configured grace narrows it", from: StateResolved, grace: time.Minute, refire: endedAt.Add(2 * time.Minute), wantID: TransitionT7, wantNew: true},
+		{name: "one second after the close", from: StateResolved, refire: endedAt.Add(time.Second)},
+		{name: "five minutes after, once inside the grace", from: StateResolved, refire: endedAt.Add(5 * time.Minute)},
+		{name: "at what used to be the grace boundary", from: StateResolved, refire: endedAt.Add(20 * time.Minute)},
+		{name: "an hour after, once outside it", from: StateResolved, refire: endedAt.Add(time.Hour)},
+		{name: "an expired episode, immediately", from: StateExpired, refire: endedAt.Add(time.Minute)},
+		{name: "an expired episode, much later", from: StateExpired, refire: endedAt.Add(time.Hour)},
 	}
 
 	for _, tc := range tests {
@@ -785,37 +804,53 @@ func TestApply_T7vsT8_RefireGrace(t *testing.T) {
 			o := caseIn(t, tc.from, func(p *CaseParams) { p.EndedAt = endedAt })
 
 			res, err := Apply(o, TransitionCommand{
-				Trigger:     TriggerObserveFiring,
-				Actor:       actor(t, ActorIngest),
-				At:          at(t, tc.refire, tc.refire),
-				EventID:     eventIDFix,
-				RefireGrace: tc.grace,
+				Trigger: TriggerObserveFiring,
+				Actor:   actor(t, ActorIngest),
+				At:      at(t, tc.refire, tc.refire),
+				EventID: eventIDFix,
 			})
 			require.NoError(t, err)
 
-			assert.Equal(t, tc.wantID, res.ID)
+			assert.Equal(t, TransitionT7, res.ID)
 			assert.Equal(t, StateFiring, res.To)
-			assert.Equal(t, tc.wantNew, res.OpensNewCase)
+			assert.True(t, res.OpensNewCase)
 
-			if tc.wantNew {
-				// T7 leaves the terminal case UNTOUCHED: it opens a new
-				// episode, it does not revive an old one.
-				assert.Equal(t, o, res.Case)
-				assert.Equal(t, tc.from, res.Case.State())
-				assert.Equal(t, endedAt, res.Case.EndedAt())
-				assert.Empty(t, res.Events, "the `case.opened` event comes from OpenNewCase")
-				return
+			assert.Equal(t, o, res.Case, "T7 does not touch the episode it succeeds")
+			assert.Equal(t, CaseClosed, res.Case.State())
+			assert.Equal(t, tc.from, res.Case.AlertState())
+			assert.Equal(t, endedAt, res.Case.EndedAt())
+			assert.Empty(t, res.Events, "the `case.opened` event comes from OpenNewCase")
+		})
+	}
+}
+
+// TestApply_ACloseIsTerminalAndNothingReopensIt is the negative half: there is no
+// longer any command that puts a closed episode back into an open one.
+func TestApply_ACloseIsTerminalAndNothingReopensIt(t *testing.T) {
+	for _, from := range []State{StateResolved, StateExpired} {
+		t.Run(from.String(), func(t *testing.T) {
+			o := caseIn(t, from, func(p *CaseParams) { p.EndedAt = t0.Add(time.Minute) })
+
+			for _, trigger := range []Trigger{
+				TriggerObserveFiring, TriggerObserveSuppressed,
+				TriggerObserveResolved, TriggerReap,
+			} {
+				res, err := Apply(o, TransitionCommand{
+					Trigger:       trigger,
+					Actor:         actor(t, ActorIngest),
+					At:            at(t, t0.Add(time.Hour), t0.Add(time.Hour)),
+					EventID:       eventIDFix,
+					SourceHealthy: true,
+				})
+				if err != nil {
+					continue // the table has no edge at all, which is stronger still
+				}
+				assert.True(t, res.OpensNewCase,
+					"%s out of %s must open a NEW episode, never revive this one", trigger, from)
+				assert.Equal(t, CaseClosed, res.Case.State())
+				assert.False(t, res.Case.EndedAt().IsZero(),
+					"nothing may clear ended_at on a closed episode")
 			}
-
-			assert.Equal(t, StateFiring, res.Case.State())
-			assert.True(t, res.Case.EndedAt().IsZero(), "a reopen CLEARS ended_at")
-			assert.True(t, res.Case.ResolveReason().IsZero())
-			assert.Equal(t, 1, res.Case.ReopenCount())
-			assert.Equal(t, caseID, res.Case.ID(), "T8 reuses the SAME case and its Slack thread")
-
-			require.Len(t, res.Events, 1)
-			assert.Equal(t, EventCaseReopened, res.Events[0].Type())
-			assert.Equal(t, "case:"+caseID.String()+":reopened:1", res.Events[0].DedupeKey())
 		})
 	}
 }
@@ -863,14 +898,14 @@ func TestOpenNewCase(t *testing.T) {
 	o, events, err := OpenNewCase(p)
 	require.NoError(t, err)
 
-	assert.Equal(t, StateFiring, o.State())
+	assert.Equal(t, CaseOpen, o.State())
+	assert.Equal(t, StateFiring, o.AlertState())
 	assert.Equal(t, AckStateUnacked, o.AckState(), "a new case always starts unacked (T10)")
 	assert.Equal(t, t0, o.StartedAt(), "started_at is OTO's clock")
 	assert.Equal(t, t0, o.LastObservedAt())
 	assert.Equal(t, t0.Add(-time.Minute), o.SourceStartsAt(),
 		"with no upstream startsAt, the upstream CLAIM is used")
 	assert.True(t, o.IsOpen())
-	assert.Equal(t, uuid.Nil, o.ReopenOf())
 	assert.Equal(t, 1, o.StateVersion())
 
 	require.Len(t, events, 1)
@@ -879,16 +914,19 @@ func TestOpenNewCase(t *testing.T) {
 	assert.Equal(t, "case:"+caseID.String()+":opened", events[0].DedupeKey())
 }
 
-func TestOpenNewCase_T7CarriesReopenOf(t *testing.T) {
+// TestOpenNewCase_SeqIsWhatNamesT7 — `reopen_of` used to say which episode a new
+// one succeeded, and `seq` said the same thing one column over. ADR 0040 kept the
+// one that was already unique, gapless and indexed.
+func TestOpenNewCase_SeqIsWhatNamesT7(t *testing.T) {
 	o, events, err := OpenNewCase(OpenCaseParams{
 		ID: caseID, OrgID: orgA, AlertID: alertID, Seq: 2,
 		Actor: actor(t, ActorIngest), At: at(t, t0, t0), EventID: eventIDFix,
-		ReopenOf: prevOccID,
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, prevOccID, o.ReopenOf())
 	assert.Equal(t, 2, o.Seq())
+	assert.Equal(t, AckStateUnacked, o.AckState(),
+		"the episode this one succeeds may have been acked; this one is not")
 	require.Len(t, events, 1)
 	assert.Equal(t, EventCaseOpened, events[0].Type(), "T7 still appends `case.opened`")
 	assert.Equal(t, "Case opened", events[0].Summary())
@@ -912,7 +950,6 @@ func TestOpenNewCase_Rejects(t *testing.T) {
 		{name: "a human may not open", mut: func(p *OpenCaseParams) { p.Actor = humanActor(t, uuid.New().String(), "Ram") }, kind: errs.KindInternal, code: "wrong_actor"},
 		{name: "the notifier may not open", mut: func(p *OpenCaseParams) { p.Actor = actor(t, ActorNotifier) }, kind: errs.KindInternal, code: "wrong_actor"},
 		{name: "seq below 1", mut: func(p *OpenCaseParams) { p.Seq = 0 }, kind: errs.KindValidation, code: "min"},
-		{name: "cannot reopen itself", mut: func(p *OpenCaseParams) { p.ReopenOf = caseID }, kind: errs.KindValidation, code: "field_order"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -943,8 +980,15 @@ func TestAcknowledge_AnAckedAlertIsStillFiring(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			assert.Equal(t, from, next.State(), "⭐ acknowledging does not move the state")
-			assert.Equal(t, from, o.State(), "and the receiver is untouched")
+			// ⭐ ADR 0041: the loop's `from` is the MACHINE'S phase, which still folds
+			// suppression in; `AlertState` no longer does, so it is asserted against
+			// `firing` for both cases — which is the ADR's point, since an acked
+			// silenced alert is firing and every counter must say so.
+			assert.Equal(t, from, next.lifecyclePhase(), "⭐ acknowledging does not move the state")
+			assert.Equal(t, from, o.lifecyclePhase(), "and the receiver is untouched")
+			assert.Equal(t, StateFiring, next.AlertState(),
+				"and the stored state is `firing` whether or not a silence is in force")
+			assert.Equal(t, CaseOpen, next.State(), "and the episode is still running")
 			assert.Equal(t, AckStateAcked, next.AckState())
 			assert.Equal(t, ackAt, next.AckedAt())
 			assert.Equal(t, userID, next.AckedBy())
@@ -1082,7 +1126,7 @@ func TestUnacknowledge(t *testing.T) {
 		assert.Equal(t, uuid.Nil, next.AckedBy())
 		assert.Empty(t, next.AckedByLabel())
 		assert.Empty(t, next.AckNote(), "the ack note describes the ack being removed")
-		assert.Equal(t, StateFiring, next.State(), "un-acking does not move the state either")
+		assert.Equal(t, StateFiring, next.AlertState(), "un-acking does not move the state either")
 
 		require.Len(t, events, 1)
 		assert.Equal(t, EventCaseUnacknowledged, events[0].Type())
@@ -1195,10 +1239,13 @@ func TestApply_NeverLeavesTheClosedStateSet(t *testing.T) {
 				if res.OpensNewCase {
 					// T7 leaves the terminal case alone; `To` describes the
 					// NEW episode the caller must open.
-					assert.Equal(t, from, res.Case.State())
+					// ADR 0041: the table's states are the MACHINE'S phases, so the
+					// comparison is against `lifecyclePhase`. `AlertState` is the
+					// three-value column reading and is asserted elsewhere.
+					assert.Equal(t, from, res.Case.lifecyclePhase())
 					continue
 				}
-				assert.Equal(t, res.To, res.Case.State())
+				assert.Equal(t, res.To, res.Case.lifecyclePhase())
 			}
 		}
 	}
@@ -1207,7 +1254,7 @@ func TestApply_NeverLeavesTheClosedStateSet(t *testing.T) {
 func TestDefaultSummariesAreWithinTheEventBound(t *testing.T) {
 	for _, id := range []TransitionID{
 		TransitionT1, TransitionT2, TransitionT3, TransitionT4,
-		TransitionT5, TransitionT6, TransitionT7, TransitionT8,
+		TransitionT5, TransitionT6, TransitionT7,
 		TransitionT9, TransitionT10,
 	} {
 		s := defaultSummary(id, StateFiring, StateResolved)
@@ -1262,43 +1309,45 @@ func TestMergePayload(t *testing.T) {
 }
 
 func TestLifecycleDefaults(t *testing.T) {
-	// These two are the lifecycle machine's FALLBACK copies, used only when no
-	// SettingsReader is wired; `identity/domain` owns the real numbers and
-	// `identity/domain/defaults_derivation_test.go` pins the mirrors equal. So the
-	// value below is not a preference — it is whatever the derivation produced.
+	// ⭐ ONE NUMBER LEFT, AND THE OTHER'S DEPARTURE IS THE POINT. This used to pin
+	// `DefaultRefireGrace` too — the window inside which a re-fire took T8 and
+	// reopened the closed episode. ADR 0040 retired T8, so the machine has no
+	// grace to consult and no fallback copy of one; `refire_grace_s` survives as an
+	// `identity` setting because `group_close_delay_s` and the ingest replay window
+	// are derived against it, and `identity/domain` owns that number outright now.
 	//
-	// 20m, not the 10m this test used to transcribe: `refire_grace` is
-	// `for + group_interval` for the MODAL real rule, 15m + 5m (ADR 0026). The
-	// clock starts at the case's `ended_at`, which T5 takes from the
-	// UPSTREAM `EndsAt`, so a re-fire has to pay the rule's whole `for:` dwell
-	// again INSIDE the window and Alertmanager then batches on top. At 10m the T8
-	// reopen was unreachable for 76% of a 155-rule corpus: every re-fire took T7
-	// instead, opening a new episode, a new generation and a new Slack root card.
-	assert.Equal(t, 20*time.Minute, DefaultRefireGrace)
-	// `resolve_grace` was NOT part of that derivation and did not move. It answers
-	// a different question — how long past `source_ends_at` the reaper waits
-	// before a case may expire (§B.4) — and shares no arithmetic with the
-	// re-fire window.
+	// `resolve_grace` was never part of that arithmetic. It answers a different
+	// question — how long past `source_ends_at` the reaper waits before a case may
+	// expire (§B.4) — and is still the machine's fallback when no SettingsReader is
+	// wired.
 	assert.Equal(t, 5*time.Minute, DefaultResolveGrace)
 }
 
+// TestTransitionIDs — ⛔ THE NUMBERING HAS A HOLE IN IT, AND THE HOLE IS LOAD-
+// BEARING. T8 was the re-fire-inside-the-grace reopen and ADR 0040 retired it;
+// the ids either side keep their names because they are the SPEC §B.3 row labels
+// every comment, event summary and ADR in the tree refers to, and renumbering
+// them to close the gap would silently redirect a decade of prose. So this asserts
+// each id spells itself, that they are unique, and that T8 is not among them.
 func TestTransitionIDs(t *testing.T) {
+	want := []string{"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T9", "T10"}
 	ids := []TransitionID{
 		TransitionT1, TransitionT2, TransitionT3, TransitionT4, TransitionT5,
-		TransitionT6, TransitionT7, TransitionT8, TransitionT9, TransitionT10,
+		TransitionT6, TransitionT7, TransitionT9, TransitionT10,
 	}
+	require.Len(t, ids, len(want))
+
 	seen := map[string]struct{}{}
 	for i, id := range ids {
-		assert.Equal(t, "T"+itoa(i+1), id.String())
+		assert.Equal(t, want[i], id.String())
 		_, dup := seen[id.String()]
 		assert.False(t, dup)
 		seen[id.String()] = struct{}{}
 	}
-}
+	assert.NotContains(t, seen, "T8", "T8 is retired, not renumbered")
 
-func itoa(i int) string {
-	if i < 10 {
-		return string(rune('0' + i))
+	for _, r := range transitionTable {
+		assert.NotEqual(t, "T8", r.id.String(),
+			"no row of the table may reintroduce the reopen edge")
 	}
-	return string(rune('0'+i/10)) + string(rune('0'+i%10))
 }

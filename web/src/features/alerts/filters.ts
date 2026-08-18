@@ -108,16 +108,16 @@ export interface AlertFilters {
    * ⛔ THERE IS NO `ack` FILTER, AND ITS ABSENCE IS THE POINT.
    *
    * `?ack=` filtered `alerts.ack_state`, a column that no longer exists. An
-   * acknowledgement is a receipt for **one firing episode**: it stops being true
-   * when that episode ends, so a filter over it answered "was some earlier
-   * firing of this alert acknowledged?" while looking like it answered "has
-   * anyone seen this?". The list of unacknowledged things is the surface people
-   * work from, and its trustworthiness is the whole value of ack.
+   * acknowledgement is a receipt for **one case** — one contiguous firing: it
+   * stops being true when that case ends, so a filter over it answered "was some
+   * earlier firing of this alert acknowledged?" while looking like it answered
+   * "has anyone seen this?". The list of unacknowledged things is the surface
+   * people work from, and its trustworthiness is the whole value of ack.
    *
-   * The ack facet lives on the case surface, where its subject still exists —
-   * the group list's `?ack=`, which reads each member's own episode, and the
-   * episode a row already expands via `include=current_case`. Sending
-   * `ack=` to `GET /alerts` is now `400 unknown_parameter`.
+   * The ack facet lives where its subject does: `GET /api/v1/cases?ack=`, which
+   * is what `/cases` is built on, and the case a row here already expands via
+   * `include=current_case`. Sending `ack=` to `GET /alerts` is now
+   * `400 unknown_parameter`.
    */
   readonly flapping: boolean | null;
   /**

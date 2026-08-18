@@ -167,8 +167,12 @@ func TestTheMemberListHoldsOnlyLiveEpisodes(t *testing.T) {
 		t.Errorf("rollup total = %d, want 6 — the rollup counts the generation's whole "+
 			"membership, not its live members", counts.Total)
 	}
-	if counts.Firing != 2 || counts.Suppressed != 1 || counts.Resolved != 2 || counts.Expired != 1 {
-		t.Errorf("rollup firing/suppressed/resolved/expired = %d/%d/%d/%d, want 2/1/2/1",
+	// ⭐ FIRING IS 3, NOT 2, AND THAT IS ADR 0041. Two audible firing members plus
+	// the silenced one, which is firing too — `suppressed` is now a SUBSET of
+	// `firing` and answers who is not being told, rather than removing a member
+	// from the count of what is on fire. The old 2 was the under-report.
+	if counts.Firing != 3 || counts.Suppressed != 1 || counts.Resolved != 2 || counts.Expired != 1 {
+		t.Errorf("rollup firing/suppressed/resolved/expired = %d/%d/%d/%d, want 3/1/2/1",
 			counts.Firing, counts.Suppressed, counts.Resolved, counts.Expired)
 	}
 	if severity != "critical" {
@@ -249,15 +253,24 @@ func TestTheReplayCanShrink(t *testing.T) {
 	}
 }
 
-// seedEpisode writes one `alert_cases` row directly, satisfying the §D.4
-// CHECKs that pair `state` with `ended_at`, `resolve_reason` and
-// `suppression_reason`.
+// seedEpisode writes one `alert_cases` row directly, satisfying the §D.4 CHECKs
+// that pair `state` with `ended_at`, `resolve_reason` and `suppression_reason`.
 //
 // It writes the row rather than driving the state machine on purpose: these tests
 // are about what the MEMBERSHIP READS return for a given set of episodes, and a
 // test that had to reach a state through the lifecycle could not seed the one
 // arrangement that matters most here — two episodes of one alert inside one
 // generation.
+//
+// ⭐⭐ IT TAKES THE FOUR-WAY §B.2 WORD AND WRITES ADR 0040's TWO-WAY ONE, which is
+// the derivation exercised on every call rather than described. `alert_cases.state`
+// holds `open` or `closed` since migration 00054; what tells `firing` from
+// `suppressed` is the ALERT, and what tells `resolved` from `expired` is
+// `resolve_reason`. So this writes all three columns, and `alerts.state` with them
+// whenever the episode is open — an open episode IS its alert's current one
+// (case_one_open_idx), so a fixture that left `alerts.state` behind would be
+// seeding a database the lifecycle cannot produce and the rollup would read a
+// firing member as suppressed, or worse, as neither.
 func seedEpisode(
 	t *testing.T, h *harness.H, a harness.Alert, groupID uuid.UUID,
 	seq int, state string, startedAt time.Time, endedAt *time.Time,
@@ -265,10 +278,13 @@ func seedEpisode(
 	t.Helper()
 
 	var resolveReason, suppressionReason *string
+	caseState := "open"
 	switch state {
 	case "resolved":
+		caseState = "closed"
 		resolveReason = ptr("upstream")
 	case "expired":
+		caseState = "closed"
 		resolveReason = ptr("timeout")
 	case "suppressed":
 		suppressionReason = ptr("silence")
@@ -283,8 +299,23 @@ func seedEpisode(
 	          (id, org_id, alert_id, group_id, seq, state, suppression_reason, resolve_reason,
 	           started_at, ended_at, last_observed_at, source_starts_at)
 	        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $9)`,
-		caseID, a.OrgID, a.ID, groupID, seq, state, suppressionReason, resolveReason,
+		caseID, a.OrgID, a.ID, groupID, seq, caseState, suppressionReason, resolveReason,
 		startedAt, endedAt, lastObserved)
+	if caseState == "open" {
+		// ⭐ ADR 0041: `alerts.state` admits `firing | resolved | expired` only, and
+		// suppression is the axis beside it. A silenced member is seeded as FIRING
+		// with a reason, which is exactly what the projection writes and what the
+		// member roll-up has to count in both buckets.
+		alertState := state
+		var alertSuppression *string
+		if state == "suppressed" {
+			alertState = "firing"
+			alertSuppression = ptr("silence")
+		}
+		h.Exec(`UPDATE alerts SET state = $2, suppression_reason = $4, current_case_id = $3
+		         WHERE id = $1`,
+			a.ID, alertState, caseID, alertSuppression)
+	}
 	return caseID
 }
 

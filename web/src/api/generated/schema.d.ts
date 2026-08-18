@@ -172,6 +172,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alerts/unsnooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Wake several named alerts at once
+         * @description End the active snooze on **each alert named in the body**, so the Quiet tab can resume a
+         *     selection in one gesture instead of one request per row.
+         *
+         *     ### It takes a list of ids, and it will never take a filter
+         *
+         *     The body carries an explicit `alert_ids` array. There is deliberately no filter-scoped form of
+         *     this operation — no `?severity=`, no `?cluster=`, no "everything currently quiet" — because a
+         *     filter is evaluated on the server against rows the caller never saw. A filter-scoped wake would
+         *     let one press resume thousands of alerts whose extent the person pressing it cannot see, and
+         *     the notifications that follow land in channels nobody agreed to wake. **The caller must name
+         *     what it is waking**, which is a bound the server can check and a person can read back.
+         *
+         *     `alert_ids` is capped at **100**, the same ceiling `GET /api/v1/rule-snapshots/batch` puts on the
+         *     ids it will resolve in one call: one page of the UI's list. A caller paging at this contract's
+         *     200 ceiling makes two calls, which is still constant in the size of the page. Over the cap is a
+         *     `422` naming `alert_ids`, exactly like every other bounded list in this contract.
+         *
+         *     ### The answer is an account, not a count
+         *
+         *     Every id in the request appears exactly once in `results`, in the order it was given:
+         *
+         *     - `outcome: woken` — the alert was snoozed and now is not. The `alert_snoozes` row is closed
+         *       with `ended_reason: manual`, an `alert.unsnoozed` event is appended, and the channel is told
+         *       notifications have resumed — identically to `POST /api/v1/alerts/{id}/unsnooze`.
+         *     - `outcome: skipped`, `reason: not_snoozed` — the alert was already awake. **A skip is a normal
+         *       outcome, not an error.** Refusing the other ninety-nine because one had already woken would
+         *       make the button unusable in exactly the situation it exists for, which is the rule
+         *       `POST /api/v1/alert-groups/{id}/unsnooze` already follows for its members.
+         *     - `outcome: skipped`, `reason: alert_not_found` — no alert with that id exists **in this org**. An id
+         *       belonging to another tenant is reported identically to an id belonging to nobody, because
+         *       telling the two apart is an existence oracle: it would confirm a competitor's row is real.
+         *
+         *     ### Why partial success is a `200` and not a `207`
+         *
+         *     A response is `200` whether every id woke, some did, or none did. The request is what succeeded:
+         *     it was authorised, bounded, and every id named in it was reached and concluded on. `207` would
+         *     say something went wrong, and nothing did — a skip is an outcome this operation is *for*. There
+         *     is no `412` either: the single-alert unsnooze answers `412 not_snoozed` because it addresses one
+         *     entity and has nothing else to report, whereas here there is always an account to return.
+         *
+         *     `Idempotency-Key` is accepted and never required. Waking is a compare-and-set — a second call
+         *     finds each alert already awake and reports `not_snoozed` — so a retry finishes the job without
+         *     acting twice, which is the same reason the single-alert and group unsnooze take no key either.
+         */
+        post: operations["unsnoozeAlerts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts/{id}": {
         parameters: {
             query?: never;
@@ -301,59 +363,6 @@ export interface paths {
         get: operations["listAlertNotifications"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alerts/{id}/ack": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Acknowledge an alert's current case
-         * @description Acknowledge the currently open case. **An acked alert is still firing** — acknowledgement
-         *     is an orthogonal axis that says "a human has seen this", not "this is over".
-         *
-         *     This is the same service method the Slack acknowledge button calls, so acking from chat and
-         *     acking from the API produce byte-identical state. It appends an `case.acknowledged` event
-         *     with the actor, and triggers an in-place update of the chat card.
-         *
-         *     Acknowledgement identity **is** stored, because it is operationally necessary. It is never
-         *     aggregated into a per-person metric.
-         *
-         *     Acking a case that has already ended is a `412`, not a `409`: the request is valid, the
-         *     entity is simply in the wrong state.
-         */
-        post: operations["ackAlert"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/alerts/{id}/unack": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Withdraw an acknowledgement
-         * @description Return the current case to `unacked`, appending an `case.unacknowledged` event with
-         *     `reason: manual` — distinguishing a deliberate withdrawal from the automatic unack that happens
-         *     when a new case opens.
-         */
-        post: operations["unackAlert"];
         delete?: never;
         options?: never;
         head?: never;
@@ -544,6 +553,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List firing episodes across the whole organisation
+         * @description **What is firing that somebody needs to acknowledge.**
+         *
+         *     A Case is ONE contiguous firing episode of ONE alert, `(alert_id, seq)`. It is what a human
+         *     acknowledges, and this is the only list in the product that can be filtered by acknowledgement
+         *     — `alerts` carries no ack column, because a receipt belongs to the firing it was given for and
+         *     the alert identity outlives that firing. `?state=open&ack=unacked` is the queue.
+         *
+         *     **Filter semantics** are the alert list's: comma-separated values within one parameter are
+         *     OR-ed, distinct parameters are AND-ed, and **unknown query parameters are rejected** with
+         *     `400 unknown_parameter` rather than silently ignored.
+         *
+         *     **A case's `state` is `open` or `closed`, and it is the only liveness axis here.** The four
+         *     words `firing | suppressed | resolved | expired` describe the ALERT, and every alert-shaped
+         *     object in this contract carries them. What an episode adds is `resolve_reason` — `upstream`
+         *     for a resolution the source asserted, `timeout` for one oto never heard — and
+         *     `suppression_reason`, which names the silence that muted that firing. A client wanting the
+         *     four-word reading composes it from those fields exactly as the server does.
+         *
+         *     There used to be a separate `open` boolean here. While `state` held four values the two were
+         *     genuinely different questions; with two values they are one, and `open` is gone.
+         *
+         *     **Every row carries its alert**, batch-loaded for the whole page in one further query. An
+         *     episode has no `alertname` and no `severity` of its own — those describe the identity, not the
+         *     firing — so a row without the reference could not be rendered without a request per row.
+         *
+         *     **Ordering is fixed at `-started_at`** (newest episode first) with the case id as tiebreak, and
+         *     there is no `sort` parameter: a keyset cursor is only sound over an indexed total order, and
+         *     this list has exactly one.
+         *
+         *     **What this endpoint deliberately does not offer:** the label selector, free-text `q`,
+         *     `flapping` and `snoozed`. The first two are answered by GIN indexes on the ALERT and reaching
+         *     them once per case row turns a keyset page into a scan of the identity table; the last two are
+         *     properties of the identity that say nothing about which of its episodes you are looking at.
+         *     Use `GET /api/v1/alerts` for those, and `GET /api/v1/alerts/{id}/cases` to open one alert's
+         *     history.
+         */
+        get: operations["listCases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cases/{id}": {
         parameters: {
             query?: never;
@@ -606,6 +669,76 @@ export interface paths {
         get: operations["getCaseRule"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cases/{id}/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Acknowledge a firing episode
+         * @description **`{id}` is a CASE id.** An acknowledgement is a receipt for ONE contiguous firing episode: it
+         *     is stored on `alert_cases`, and it is cleared automatically when the next episode of the same
+         *     alert opens (T10, `reason: new_case`). The alert-addressed spelling this replaces had to
+         *     resolve "whatever episode happens to be open right now", which made the subject of the receipt
+         *     a race with the state machine — an operator reading an episode that resolved a second ago
+         *     could sign for the one that replaced it.
+         *
+         *     **An acked case is still firing.** Acknowledgement is an orthogonal axis that says "a human has
+         *     seen this", never "this is over".
+         *
+         *     This is the same service method the Slack acknowledge button reaches, through the group
+         *     fan-out, so acking from chat and acking from the API produce byte-identical state. It appends a
+         *     `case.acknowledged` event with the actor, and triggers an in-place update of the chat card.
+         *
+         *     Acknowledgement identity **is** stored, because it is operationally necessary. It is never
+         *     aggregated into a per-person metric.
+         *
+         *     Acking a case that has already ended is a `412`, not a `409`: the request is valid, the entity
+         *     is simply in the wrong state. An id naming no case in this tenant is a `404`, indistinguishable
+         *     from one that never existed.
+         *
+         *     **To acknowledge a whole Slack thread's worth of alerts, use
+         *     `POST /api/v1/alert-groups/{id}/ack`**, which is a fan-out that resolves each member's open
+         *     case and acks each of those. It is not a group-level ack: there is no group ack column and
+         *     there will not be one.
+         */
+        post: operations["ackCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cases/{id}/unack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Withdraw an acknowledgement
+         * @description Return this episode to `unacked`, appending a `case.unacknowledged` event with
+         *     `reason: manual` — distinguishing a deliberate withdrawal from the automatic unack that happens
+         *     when a new case opens.
+         *
+         *     `{id}` is a case id, for the reason argued on `ackCase`. An episode that has already ended
+         *     refuses the withdrawal with a `412`: its acknowledgement is a record of what happened at the
+         *     time, and there is nobody left to hand the alert back to.
+         */
+        post: operations["unackCase"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2296,6 +2429,24 @@ export interface components {
          */
         State: "firing" | "suppressed" | "resolved" | "expired";
         /**
+         * @description What ONE firing episode says about itself, and the whole of it: it is running, or it has
+         *     ended. `alert_cases.state` holds these two values and no others.
+         *
+         *     - `open` — the episode is live. `ended_at` is null, guaranteed by the `case_terminal_ended`
+         *       CHECK.
+         *     - `closed` *(terminal, and terminal means terminal)* — the episode ended. `resolve_reason`
+         *       says whether upstream resolved it (`upstream`) or oto stopped hearing about it (`timeout`),
+         *       and a closed case is never reopened: a re-fire opens the NEXT episode at `seq + 1`,
+         *       unacknowledged.
+         *
+         *     **It is not a narrower `State`.** `firing` and `suppressed` are not values missing from this
+         *     enum; they are facts about the ALERT — a silence mutes a label set, not one episode of it — and
+         *     they live on every alert-shaped object in this contract.
+         * @example open
+         * @enum {string}
+         */
+        CaseState: "open" | "closed";
+        /**
          * @description What humans have done. Orthogonal to `state`: an acked alert is still firing. Reset to `unacked`
          *     automatically when a new case opens.
          * @example unacked
@@ -2888,7 +3039,7 @@ export interface components {
              * @example 3
              */
             seq: number;
-            state: components["schemas"]["State"];
+            state: components["schemas"]["CaseState"];
             suppression_reason?: components["schemas"]["SuppressionReason"];
             /**
              * @description The upstream ids responsible for suppression, as reported by the Alertmanager v2 API. Empty
@@ -2910,7 +3061,7 @@ export interface components {
             /** @example Known deploy, rolling back */
             ack_note?: string | null;
             started_at: components["schemas"]["Timestamp"];
-            /** @description Non-null **if and only if** the state is terminal. */
+            /** @description Non-null **if and only if** the state is `closed`. */
             ended_at?: components["schemas"]["Timestamp"] | null;
             last_observed_at: components["schemas"]["Timestamp"];
             source_starts_at: components["schemas"]["Timestamp"];
@@ -2926,15 +3077,6 @@ export interface components {
              */
             duration_seconds?: number | null;
             resolve_reason?: components["schemas"]["ResolveReason"];
-            /**
-             * Format: int32
-             * @description How many times this same episode was reopened by a re-fire inside `refire_grace`
-             *     (default 20 minutes). A re-fire *after* the grace period opens a new case instead.
-             * @example 1
-             */
-            reopen_count: number;
-            /** @description The previous case, when this one opened as a re-fire after a close. */
-            reopen_of?: components["schemas"]["Uuid"] | null;
             /** @description The rule definition as it was **at this episode's fire time**. */
             rule_snapshot_id?: components["schemas"]["Uuid"] | null;
             /**
@@ -2959,6 +3101,19 @@ export interface components {
             rule?: components["schemas"]["RuleSnapshotDTO"] | null;
             enrichments: components["schemas"]["EnrichmentDTO"][];
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
+        };
+        /**
+         * @description One row of `GET /api/v1/cases`: a firing episode, plus the identity it belongs to.
+         *
+         *     **`alert` is required and can never be null.** A Case carries `alert_id` and nothing else about
+         *     the identity — `alertname`, `severity`, `cluster_key` and `namespace` describe the ALERT rather
+         *     than the episode, and an episode that copied them would keep asserting them after a relabel.
+         *     The server batch-loads the identities for the whole page in one further query, so a client can
+         *     render the list without a request per row, and the query proves the alert is in the caller's
+         *     organisation before the case is returned at all.
+         */
+        CaseListItemDTO: components["schemas"]["CaseDTO"] & {
+            alert: components["schemas"]["AlertRefDTO"];
         };
         /**
          * @description A compact Alert reference, embedded where a full `AlertDTO` would be wasteful. It carries no
@@ -3151,6 +3306,58 @@ export interface components {
              */
             remaining_seconds: number;
         };
+        /** @description One alert's outcome in a bulk wake. */
+        UnsnoozeOutcomeDTO: {
+            alert_id: components["schemas"]["Uuid"];
+            /**
+             * @description What happened to this one alert. `woken` means an active snooze was closed with
+             *     `ended_reason: manual`; `skipped` means nothing was written and `reason` says why.
+             * @example woken
+             * @enum {string}
+             */
+            outcome: "woken" | "skipped";
+            /**
+             * @description Why this alert was skipped — the stable error code the single-alert unsnooze would have
+             *     refused with, and `null` when the alert woke.
+             *
+             *     **"Nothing happened" has more than one honest explanation**, and a caller that has to tell a
+             *     person which one it was cannot get that from a count. Two codes are produced today:
+             *     `not_snoozed` (the alert was already awake) and `alert_not_found` (no such alert in this org —
+             *     which is also the answer for another tenant's id, because distinguishing them would confirm
+             *     that another tenant's row exists). Treat the set as open: it is the refusal's own code, the
+             *     same way `alert-groups` fan-outs key their skips.
+             * @example not_snoozed
+             */
+            reason?: string | null;
+        };
+        /**
+         * @description The account a bulk wake returns. It is an account rather than a count because a partial result
+         *     is the normal one: an operator waking a page of quiet alerts will routinely find some of them
+         *     already awake, and "3 of 5" is not something a bare number can explain.
+         */
+        UnsnoozeAlertsDTO: {
+            /**
+             * @description How many ids the request named. Always equal to `results.length`.
+             * @example 2
+             */
+            requested: number;
+            /**
+             * @description How many of them had an active snooze and now do not.
+             * @example 1
+             */
+            woken: number;
+            /**
+             * @description How many were left alone, for any of the reasons in `results[].reason`. `woken + skipped`
+             *     equals `requested`: every named id is accounted for, in both directions.
+             * @example 1
+             */
+            skipped: number;
+            /**
+             * @description One entry per id in the request, in the order the request gave them, so a surface can report
+             *     per row rather than per request.
+             */
+            results: components["schemas"]["UnsnoozeOutcomeDTO"][];
+        };
         /**
          * @description **Give exactly one of `until` and `duration_seconds`.** Both is a `422` and neither is a `422`:
          *     there is no indefinite snooze and therefore no default window. The bounds — minimum 5 minutes,
@@ -3177,6 +3384,32 @@ export interface components {
         /** @description The body of an unsnooze. Empty is valid; the whole body may be omitted. */
         UnsnoozeRequest: {
             /** @description Optional note recorded with the wake-up. */
+            note?: string | null;
+        };
+        /**
+         * @description The body of a bulk wake. `alert_ids` is required and must name at least one alert: there is no
+         *     spelling of this request that means "everything".
+         */
+        UnsnoozeAlertsRequest: {
+            /**
+             * @description The alerts to wake, named explicitly. **There is no filter form of this field and there will
+             *     not be one:** a filter is evaluated against rows the caller never saw, and a wake that
+             *     reaches further than the operator can see sends notifications nobody agreed to.
+             *
+             *     The cap is 100 — one page of the UI's list, the same ceiling `batchGetRuleSnapshots` puts on the
+             *     ids it will resolve in one call. Over it is a `422` naming this field. Duplicates are a
+             *     `422` too, unlike the snapshot resolver's: this is a WRITE, and a repeated id is a caller
+             *     that has lost track of what it is asking for rather than a page that has not changed.
+             * @example [
+             *       "0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b77",
+             *       "0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b78"
+             *     ]
+             */
+            alert_ids: components["schemas"]["Uuid"][];
+            /**
+             * @description Optional note, recorded with every wake-up this request performs — the fan-out is of the
+             *     primitive, note and all.
+             */
             note?: string | null;
         };
         /**
@@ -4923,7 +5156,13 @@ export interface components {
         OrgSettingsDTO: {
             /**
              * Format: int32
-             * @description A re-fire inside this window reopens the existing case instead of opening a new one.
+             * @description The window a re-fire is considered "the same problem coming back" in.
+             *
+             *     **It no longer decides whether a case is reopened, because a case is never reopened.** A
+             *     re-fire always opens a new episode at the next `seq`, unacknowledged. The value is retained
+             *     because `group_close_delay_s` is pinned against it and because the ingest replay window is
+             *     derived from it, and because removing a settings key is a contract change of its own; what
+             *     it should become is an open question.
              *
              *     **The default is 1200 and it is derived from real rules (ADR 0026): `for` + `group_interval`
              *     for the modal rule in the wild.** The clock starts at the case's `ended_at`, which is
@@ -4936,7 +5175,7 @@ export interface components {
              *     of 600 was unreachable for 76% of those rules.
              *
              *     **Keep `group_close_delay_s` at or above this value.** A closed generation freezes its Slack
-             *     thread, so a shorter close delay reopens the case and posts a new root card anyway.
+             *     thread, so a shorter close delay posts a new root card for the re-fire anyway.
              *
              *     **The floor is 600, and it is derived rather than chosen: it is twice oto's ingest replay
              *     window.** A replayed webhook batch — an HA Alertmanager sibling, a retry after a 5xx — is
@@ -5862,6 +6101,10 @@ export interface components {
             page: components["schemas"]["PageInfo"];
             meta: components["schemas"]["Meta"];
         };
+        UnsnoozeAlertsResponse: {
+            data: components["schemas"]["UnsnoozeAlertsDTO"];
+            meta: components["schemas"]["Meta"];
+        };
         SnoozeHistoryResponse: {
             data: components["schemas"]["SnoozeHistoryDTO"][];
             meta: components["schemas"]["Meta"];
@@ -5873,6 +6116,11 @@ export interface components {
         };
         CaseListResponse: {
             data: components["schemas"]["CaseDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        CaseListItemListResponse: {
+            data: components["schemas"]["CaseListItemDTO"][];
             page: components["schemas"]["PageInfo"];
             meta: components["schemas"]["Meta"];
         };
@@ -6580,7 +6828,7 @@ export interface components {
          *
          *     ### The second carve-out: endpoints that are idempotent by state machine
          *
-         *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+         *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
          *     a key, because the state after N calls equals the state after one. They are therefore **not**
          *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
          *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -6591,7 +6839,7 @@ export interface components {
          *
          *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
          *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-         *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+         *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
          *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
          *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
          */
@@ -7008,6 +7256,97 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    unsnoozeAlerts: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnsnoozeAlertsRequest"];
+            };
+        };
+        responses: {
+            /** @description The per-alert account. `requested` is `results.length`, and `woken + skipped` equals it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnsnoozeAlertsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     getAlert: {
         parameters: {
             query?: never;
@@ -7226,200 +7565,6 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
-    ackAlert: {
-        parameters: {
-            query?: never;
-            header?: {
-                /**
-                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
-                 *     body within the retention window returns the original result rather than acting twice; replaying
-                 *     it with a *different* body is a `409`.
-                 *
-                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
-                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
-                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
-                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
-                 *     forgotten and re-sending it acts again.
-                 *
-                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
-                 *     the operationId**, so one member's key never refuses another's request and one key can be used
-                 *     once per endpoint.
-                 *
-                 *     ### The carve-out: endpoints whose response carries a secret
-                 *
-                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
-                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
-                 *     the original result" is impossible to honour honestly here: the original result of a create or a
-                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
-                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
-                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
-                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
-                 *     response that may never have arrived.
-                 *
-                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
-                 *     what it created, and the secret cannot be produced again. A caller that never received it
-                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
-                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
-                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
-                 *     send no key at all.
-                 *
-                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
-                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
-                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
-                 *
-                 *     The problem body names an `id`, and only when the first call created something. **It never
-                 *     contains a secret, and never a token prefix.**
-                 *
-                 *     ### The second carve-out: endpoints that are idempotent by state machine
-                 *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
-                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
-                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
-                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
-                 *     `delivery_not_dead` — rather than a replay of the original response.
-                 *
-                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
-                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
-                 *
-                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
-                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
-                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
-                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
-                 */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
-            };
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["AckRequest"];
-            };
-        };
-        responses: {
-            /** @description The updated case. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CaseResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            412: components["responses"]["PreconditionFailed"];
-            415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
-    unackAlert: {
-        parameters: {
-            query?: never;
-            header?: {
-                /**
-                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
-                 *     body within the retention window returns the original result rather than acting twice; replaying
-                 *     it with a *different* body is a `409`.
-                 *
-                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
-                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
-                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
-                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
-                 *     forgotten and re-sending it acts again.
-                 *
-                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
-                 *     the operationId**, so one member's key never refuses another's request and one key can be used
-                 *     once per endpoint.
-                 *
-                 *     ### The carve-out: endpoints whose response carries a secret
-                 *
-                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
-                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
-                 *     the original result" is impossible to honour honestly here: the original result of a create or a
-                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
-                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
-                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
-                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
-                 *     response that may never have arrived.
-                 *
-                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
-                 *     what it created, and the secret cannot be produced again. A caller that never received it
-                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
-                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
-                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
-                 *     send no key at all.
-                 *
-                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
-                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
-                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
-                 *
-                 *     The problem body names an `id`, and only when the first call created something. **It never
-                 *     contains a secret, and never a token prefix.**
-                 *
-                 *     ### The second carve-out: endpoints that are idempotent by state machine
-                 *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
-                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
-                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
-                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
-                 *     `delivery_not_dead` — rather than a replay of the original response.
-                 *
-                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
-                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
-                 *
-                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
-                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
-                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
-                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
-                 */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
-            };
-            path: {
-                /** @description Resource identifier (UUIDv7). */
-                id: components["parameters"]["IdParam"];
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["UnackRequest"];
-            };
-        };
-        responses: {
-            /** @description The updated case. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CaseResponse"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            412: components["responses"]["PreconditionFailed"];
-            415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["UnprocessableContent"];
-            429: components["responses"]["RateLimited"];
-            500: components["responses"]["InternalError"];
-            503: components["responses"]["ServiceUnavailable"];
-        };
-    };
     commentOnAlert: {
         parameters: {
             query?: never;
@@ -7466,7 +7611,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -7477,7 +7622,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -7563,7 +7708,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -7574,7 +7719,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -7672,7 +7817,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -7683,7 +7828,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -7781,6 +7926,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActiveSnoozeListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listCases: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Comma-separated EPISODE states — `open`, `closed`, or both. This is `alert_cases.state`
+                 *     and it is the whole of what an episode says about itself. Naming both values is the same
+                 *     as omitting the parameter.
+                 */
+                state?: components["schemas"]["CaseState"][];
+                /**
+                 * @description Comma-separated acknowledgement states. **`unacked` is the queue people work from** and is
+                 *     what this endpoint exists to answer; it is served by `case_ack_idx (org_id, ack_state,
+                 *     started_at DESC, id DESC) WHERE ended_at IS NULL`, so pair it with `state=open`.
+                 */
+                ack?: components["schemas"]["AckState"][];
+                /**
+                 * @description Comma-separated AlertGroup ids. An AlertGroup is one generation of oto's NOTIFICATION
+                 *     GROUPING — the object that owns one Slack thread — and this filter answers "which episodes
+                 *     is that thread about". It is not a correlation and not an incident.
+                 */
+                group_id?: string[];
+                /**
+                 * @description Comma-separated severity values, matched against the alert's promoted `severity` label. Not
+                 *     a closed enum — operators choose their own vocabulary.
+                 */
+                severity?: string[];
+                /** @description Comma-separated cluster keys. Cluster participates in alert identity, so this is an identity filter, not a tag filter. */
+                cluster?: components["schemas"]["ClusterKey"][];
+                /** @description Comma-separated namespaces, matched against the alert's promoted `namespace` label. */
+                namespace?: string[];
+                /** @description Comma-separated alert names, matched exactly against the alert's promoted `alertname` label. */
+                alertname?: string[];
+                /**
+                 * @description Restrict to alerts oto manufactured for a **delivery drill**, or exclude them.
+                 *
+                 *     **Omitting it EXCLUDES them, and that is not the same kind of default as `snoozed`.** A
+                 *     snoozed alert is a real thing happening in a real cluster: it is not dropped from the product,
+                 *     it is moved to a tab that names it and counts it. A synthetic alert is a rehearsal: nothing
+                 *     fired anywhere, and letting one into a default list would put oto's own plumbing into the
+                 *     customer's history and into every number derived from it.
+                 *
+                 *     `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
+                 */
+                synthetic?: components["parameters"]["SyntheticParam"];
+                /**
+                 * @description Lower bound on `started_at` — the same column this list is ordered and paged by, so it
+                 *     narrows the very scan the cursor walks. Page backwards through the sorted list to reach an
+                 *     upper bound.
+                 */
+                since?: components["schemas"]["Timestamp"];
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of firing episodes, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseListItemListResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -7893,6 +8121,200 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    ackCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AckRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated case. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    unackCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UnackRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated case. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
@@ -8120,7 +8542,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -8131,7 +8553,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -8217,7 +8639,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -8228,7 +8650,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -8314,7 +8736,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -8325,7 +8747,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -8412,7 +8834,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -8423,7 +8845,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -8509,7 +8931,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -8520,7 +8942,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -8768,7 +9190,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -8779,7 +9201,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -8890,7 +9312,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -8901,7 +9323,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -8971,7 +9393,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -8982,7 +9404,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -9102,7 +9524,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -9113,7 +9535,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -9192,7 +9614,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -9203,7 +9625,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -9432,7 +9854,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -9443,7 +9865,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -9524,7 +9946,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -9535,7 +9957,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -9681,7 +10103,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -9692,7 +10114,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -9804,7 +10226,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -9815,7 +10237,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -9886,7 +10308,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -9897,7 +10319,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -9983,7 +10405,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -9994,7 +10416,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -10113,7 +10535,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -10124,7 +10546,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -10206,7 +10628,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -10217,7 +10639,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -10299,7 +10721,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -10310,7 +10732,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -10379,7 +10801,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -10390,7 +10812,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -10648,7 +11070,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -10659,7 +11081,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -11154,7 +11576,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -11165,7 +11587,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -11395,7 +11817,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -11406,7 +11828,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */
@@ -11486,7 +11908,7 @@ export interface operations {
                  *
                  *     ### The second carve-out: endpoints that are idempotent by state machine
                  *
-                 *     `ackAlert`, `unackAlert`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
                  *     a key, because the state after N calls equals the state after one. They are therefore **not**
                  *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
                  *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
@@ -11497,7 +11919,7 @@ export interface operations {
                  *
                  *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
                  *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
-                 *     would have to be re-derived from current state — and `unackAlert` legitimately round-trips
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
                  *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
                  *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
                  */

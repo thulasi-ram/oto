@@ -98,6 +98,16 @@ func (k GroupKey) IsZero() bool { return k.s == "" }
 // incremented: an increment that misses one transition is wrong forever, while a
 // recomputation is wrong until the next one.
 type Counts struct {
+	// ⭐⭐ `Suppressed` IS A SUBSET OF `Firing` SINCE ADR 0041, NOT A SIBLING.
+	// Suppression became an axis rather than a state, so a member that is firing
+	// while somebody has silenced it is counted in BOTH: it is firing, and nobody
+	// is being told. `Firing + Resolved + Expired` is the membership;
+	// `Suppressed` answers the second question about the live part of it.
+	//
+	// The old spelling made `Firing` under-report by exactly the silenced members
+	// — so a card read "12 alerts, 3 firing" during precisely the window an
+	// operator had silenced something, which is when somebody is most likely to
+	// be looking at it.
 	Firing     int
 	Suppressed int
 	Resolved   int
@@ -119,9 +129,14 @@ func (c Counts) Validate() error {
 	return nil
 }
 
-// Live is how many members are still firing or suppressed. A generation with a
-// live member cannot close.
-func (c Counts) Live() int { return c.Firing + c.Suppressed }
+// Live is how many members are still firing. A generation with a live member
+// cannot close.
+//
+// ⛔ IT IS NO LONGER `Firing + Suppressed`, AND THE OLD SUM WOULD NOW DOUBLE-COUNT.
+// Since ADR 0041 a silenced member is counted in `Firing` as well, because it is
+// firing; adding `Suppressed` again would report more live members than the
+// generation has and hold a generation open on members that do not exist.
+func (c Counts) Live() int { return c.Firing }
 
 // Equal reports whether two rollups are identical. It decides whether a
 // membership change was MATERIAL, and therefore whether `state_version` moves —

@@ -19,6 +19,7 @@ import {
   type QueryParams,
   type RequestOptions,
 } from "./client";
+import type { components } from "./generated/schema";
 import type {
   ActiveSnooze,
   Alert,
@@ -55,6 +56,9 @@ import type {
   Notification,
   NotificationListQuery,
   Case,
+  CaseDetail,
+  CaseListItem,
+  CaseListQuery,
   OrgSettingsView,
   Policy,
   PolicyPreview,
@@ -262,25 +266,92 @@ export function listAlertNotifications(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Alert actions                                                              */
+/* Cases                                                                      */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Acknowledge the current case.
+ * The org-wide case list — what is firing that somebody needs to acknowledge.
  *
- * SCOPE-BOUNDARY: this is a **receipt on a signal** — "a human has seen this".
- * It is not ownership, not an assignment, and an acked alert is still firing.
+ * A Case is ONE contiguous firing episode of ONE alert. This is the only list
+ * that can be filtered by acknowledgement: `alerts` carries no ack column,
+ * because a receipt belongs to the firing it was given for and the identity
+ * outlives that firing.
+ *
+ * ⭐ SEND `open: true` FOR THE LIVE QUEUE. `state: ["firing","suppressed"]`
+ * selects the same rows on paper — the schema's own CHECK proves it — but only
+ * `open` reaches the partial indexes, because Postgres matches a partial index
+ * against a query's predicates and never against the table's constraints.
+ *
+ * Every row carries its `alert`, batch-loaded server-side, so the list renders
+ * without a request per row.
  */
-export function ackAlert(id: Uuid, note: string | undefined, key: string): Promise<Case> {
-  const body = note !== undefined && note !== "" ? { note } : {};
-  return postItem<Case>(`${V1}/alerts/${id}/ack`, body, { idempotencyKey: key });
+export function listCases(
+  query: CaseListQuery,
+  c: Ctx = {},
+): Promise<ListEnvelope<CaseListItem>> {
+  return getList<CaseListItem>(`${V1}/cases`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
 }
 
-/** Withdraw a receipt. Recorded with `reason: manual`. */
-export function unackAlert(id: Uuid, note: string | undefined, key: string): Promise<Case> {
-  const body = note !== undefined && note !== "" ? { note } : {};
-  return postItem<Case>(`${V1}/alerts/${id}/unack`, body, { idempotencyKey: key });
+/**
+ * One firing episode, expanded with the identity it belongs to, the AlertGroup
+ * generation it was notified under, the rule as it was at fire time, its
+ * enrichment results and its delivery roll-up.
+ */
+export function getCase(id: Uuid, c: Ctx = {}): Promise<CaseDetail> {
+  return getItem<CaseDetail>(`${V1}/cases/${id}`, ctx(c));
 }
+
+/**
+ * The timeline of ONE episode, rather than of the identity that owns it.
+ *
+ * This is the difference between "what happened during this firing" and "what
+ * has this alert ever done" — the alert's own timeline
+ * (`getAlertTimeline`) spans every episode it has had, which is the wrong
+ * window when the question is about the one on screen.
+ */
+export function getCaseTimeline(
+  id: Uuid,
+  query: TimelineQuery,
+  c: Ctx = {},
+): Promise<ListEnvelope<AlertEvent>> {
+  return getList<AlertEvent>(`${V1}/cases/${id}/events`, {
+    ...ctx(c),
+    query: query as QueryParams,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Case actions                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Acknowledge one firing episode. **`id` is a CASE id, not an alert id.**
+ *
+ * A receipt is a fact about one contiguous firing: it is stored on the case and
+ * is cleared automatically when the next episode of the same alert opens. The
+ * alert-addressed spelling this replaces had to resolve "whatever is open right
+ * now" server-side, which made the subject of the receipt a race.
+ *
+ * SCOPE-BOUNDARY: this is a **receipt on a signal** — "a human has seen this".
+ * It is not ownership, not an assignment, and an acked case is still firing.
+ */
+export function ackCase(id: Uuid, note: string | undefined, key: string): Promise<Case> {
+  const body = note !== undefined && note !== "" ? { note } : {};
+  return postItem<Case>(`${V1}/cases/${id}/ack`, body, { idempotencyKey: key });
+}
+
+/** Withdraw a receipt from one episode. Recorded with `reason: manual`. */
+export function unackCase(id: Uuid, note: string | undefined, key: string): Promise<Case> {
+  const body = note !== undefined && note !== "" ? { note } : {};
+  return postItem<Case>(`${V1}/cases/${id}/unack`, body, { idempotencyKey: key });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Alert actions                                                              */
+/* -------------------------------------------------------------------------- */
 
 /** Append an immutable `comment.added` event to the timeline. */
 export function commentOnAlert(id: Uuid, body: string, key: string): Promise<AlertEvent> {
@@ -310,6 +381,43 @@ export function unsnoozeAlert(
 ): Promise<AlertDetail> {
   const body = note !== undefined && note !== "" ? { note } : {};
   return postItem<AlertDetail>(`${V1}/alerts/${id}/unsnooze`, body, { idempotencyKey: key });
+}
+
+/**
+ * The account of a bulk wake: one entry per requested id, in request order.
+ *
+ * ⛔ ALIASED HERE RATHER THAN IN `types.ts` because it is read at exactly one call
+ * site — the function below — and an ergonomic alias exists for shapes the UI
+ * passes around, not for a return value it destructures immediately.
+ */
+type UnsnoozeAlertsAccount = components["schemas"]["UnsnoozeAlertsDTO"];
+
+/**
+ * Wake several alerts at once, so the **Quiet** tab can resume a selection in one
+ * gesture (§B.8).
+ *
+ * ⛔⛔ IT NAMES THE ALERTS AND THERE IS NO FILTER FORM. A filter is evaluated on the
+ * server against rows the caller never saw: one press would resume thousands of
+ * alerts whose extent the person pressing it cannot see, and every one of them
+ * starts notifying channels nobody agreed to wake. Send the ids that were actually
+ * on screen — at most 100, which is one page of the list.
+ *
+ * ⭐ THE ANSWER IS AN ACCOUNT AND PARTIAL SUCCESS IS A `200`. An alert that was
+ * already awake is `outcome: "skipped"` with `reason: "not_snoozed"`, and an id this
+ * org does not own is `skipped` / `"alert_not_found"` — neither is an error, so do
+ * not treat a non-empty `skipped` as a failed request. Read `results` to say what
+ * happened per row; a bare count cannot explain "3 of 5".
+ *
+ * There is deliberately no bulk SNOOZE counterpart: only the undo is offered.
+ */
+export function unsnoozeAlerts(
+  alertIds: readonly Uuid[],
+  note: string | undefined,
+  key: string,
+): Promise<UnsnoozeAlertsAccount> {
+  const body =
+    note !== undefined && note !== "" ? { alert_ids: alertIds, note } : { alert_ids: alertIds };
+  return postItem<UnsnoozeAlertsAccount>(`${V1}/alerts/unsnooze`, body, { idempotencyKey: key });
 }
 
 /**
@@ -388,13 +496,14 @@ export function ackAlertGroup(id: Uuid, note: string | undefined, key: string): 
 }
 
 /**
- * Withdraw the receipt from every open member. Recorded with `reason: manual`.
+ * Withdraw the receipt from every member's open case. Recorded with
+ * `reason: manual`.
  *
- * ⛔ IT EXISTS BECAUSE `ackAlertGroup` DOES. Acknowledging a case is the widest
- * gesture in the product, and for a while it was also the only one-way one: the
- * case-scoped ack had no counterpart on the API at all, so an operator who
- * acknowledged a storm of forty could only take it back by opening each member
- * alert and withdrawing its receipt individually.
+ * ⛔ IT EXISTS BECAUSE `ackAlertGroup` DOES. Fanning an acknowledgement out
+ * across a group is the widest gesture in the product, and for a while it was
+ * also the only one-way one: it had no counterpart on the API at all, so an
+ * operator who acknowledged a storm of forty could only take it back by opening
+ * each member's case and withdrawing its receipt individually.
  *
  * A member that carries no receipt is skipped, not refused — the mirror of the
  * ack's tolerance for a member somebody already acked.
@@ -417,11 +526,18 @@ export function commentOnAlertGroup(id: Uuid, body: string, key: string): Promis
 }
 
 /**
- * Snooze every **currently-joined** member. A fan-out of the per-alert
- * primitive, not a new one.
+ * Snooze every member alert. A fan-out of the per-alert primitive, not a new one.
  *
- * Alerts that join after the request are not snoozed: a group-level mute that
- * covered future members would silence alerts nobody has ever seen.
+ * ⛔ NO UI CALLS THIS, AND THAT IS DELIBERATE. A snooze holds oto's
+ * notifications for an ALERT, and an alert outlives every group it is ever
+ * batched into — so a control on a group screen would read as "quieten this
+ * batch" while in fact writing a hold on every identity in it, still in force
+ * long after the batch closed. The endpoint is here because the contract has it;
+ * the screens offer snooze on the alert and on the case, where the subject is
+ * named.
+ *
+ * Alerts notified under the group after the request are not snoozed: a
+ * group-level mute that covered them would silence alerts nobody has ever seen.
  */
 export function snoozeAlertGroup(
   id: Uuid,
@@ -431,7 +547,7 @@ export function snoozeAlertGroup(
   return postItem<GroupDetail>(`${V1}/alert-groups/${id}/snooze`, body, { idempotencyKey: key });
 }
 
-/** Wake every currently-joined member. Members already awake are skipped, not refused. */
+/** Wake every member alert. Members already awake are skipped, not refused. */
 export function unsnoozeAlertGroup(
   id: Uuid,
   note: string | undefined,

@@ -200,17 +200,45 @@ SELECT a.id, a.alert_key, a.source_fingerprint, a.alertname,
          ON z.alert_id = a.id AND z.org_id = a.org_id AND z.ended_at IS NULL
  WHERE a.org_id = $1 AND a.id = $2`
 
+// caseStateSQL is `Case.AlertState` written in SQL: the four §B.2 words a card
+// renders, recomposed from the two columns that still carry them.
+//
+// ⭐ THE CARD'S VOCABULARY DID NOT CHANGE WHEN THE COLUMN DID. `alert_cases.state`
+// is `open | closed` since migration 00054, but a Slack card and the frozen
+// `oto.notification.v1` webhook both say `firing` / `suppressed` / `resolved` /
+// `expired` about an episode, and both must go on saying it. So the reading is
+// derived at the edge of the read rather than stored: the ALERT answers the open
+// half (an open case IS its alert's current one, by case_one_open_idx) and
+// `resolve_reason` answers the closed half, which is the column that always
+// carried resolved-apart-from-expired.
+//
+// ⛔ IT IS A JOIN TO `alerts` AND NOT A READ OF `o.suppression_reason`, for the
+// reason `grouping/repository.memberRollupSQL` states at length: nothing CHECKS
+// that column against a state any more, and a card is the last place to trust an
+// unenforced invariant.
+// ⭐ THE `suppressed` ARM IS FIRST AND IT READS THE ALERT'S AXIS, NOT ITS STATE
+// (ADR 0041). `alerts.state` no longer holds `suppressed` — it holds `firing`
+// while a silence is in force, so that every COUNT of firing alerts includes the
+// silenced ones. This expression is a DISPLAY reading for one card, which is the
+// one place the four-value word is still what a human wants, so it recomposes it
+// from the two axes rather than from a column that stopped carrying it.
+const caseStateSQL = `CASE WHEN o.state = 'open' AND a.suppression_reason IS NOT NULL THEN 'suppressed'
+                           WHEN o.state = 'open' THEN a.state
+                           WHEN o.resolve_reason = 'timeout' THEN 'expired'
+                           ELSE 'resolved' END`
+
 const caseByIDSQL = `
-SELECT id, alert_id, seq, state, coalesce(suppression_reason,''),
-       coalesce(resolve_reason,''), started_at, ended_at, reopen_count,
-       ack_state, coalesce(acked_by_label,''), acked_at, coalesce(ack_note,''),
-       rule_snapshot_id
-  FROM alert_cases
- WHERE org_id = $1 AND id = $2`
+SELECT o.id, o.alert_id, o.seq, ` + caseStateSQL + `, coalesce(o.suppression_reason,''),
+       coalesce(o.resolve_reason,''), o.started_at, o.ended_at,
+       o.ack_state, coalesce(o.acked_by_label,''), o.acked_at, coalesce(o.ack_note,''),
+       o.rule_snapshot_id
+  FROM alert_cases o
+  JOIN alerts a ON a.id = o.alert_id AND a.org_id = o.org_id
+ WHERE o.org_id = $1 AND o.id = $2`
 
 const currentCaseSQL = `
-SELECT o.id, o.alert_id, o.seq, o.state, coalesce(o.suppression_reason,''),
-       coalesce(o.resolve_reason,''), o.started_at, o.ended_at, o.reopen_count,
+SELECT o.id, o.alert_id, o.seq, ` + caseStateSQL + `, coalesce(o.suppression_reason,''),
+       coalesce(o.resolve_reason,''), o.started_at, o.ended_at,
        o.ack_state, coalesce(o.acked_by_label,''), o.acked_at, coalesce(o.ack_note,''),
        o.rule_snapshot_id
   FROM alerts a
@@ -662,7 +690,7 @@ func (r *SnapshotRepository) readCase(
 
 	err := row.Scan(
 		&ac.ID, &alertID, &ac.Seq, &ac.State, &ac.SuppressionReason,
-		&ac.ResolveReason, &ac.StartedAt, &ac.EndedAt, &ac.ReopenCount,
+		&ac.ResolveReason, &ac.StartedAt, &ac.EndedAt,
 		&ac.AckState, &ac.AckedByLabel, &ac.AckedAt, &ac.AckNote, &ruleSnap,
 	)
 	switch {

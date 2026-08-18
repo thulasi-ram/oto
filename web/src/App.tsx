@@ -40,6 +40,8 @@ const AlertsRoute = lazy(() => import("~/routes/alerts"));
 const AlertDetailRoute = lazy(() => import("~/routes/alert-detail"));
 const CasesRoute = lazy(() => import("~/routes/cases"));
 const CaseDetailRoute = lazy(() => import("~/routes/case-detail"));
+const GroupsRoute = lazy(() => import("~/routes/groups"));
+const GroupDetailRoute = lazy(() => import("~/routes/group-detail"));
 const NotificationsRoute = lazy(() => import("~/routes/notifications"));
 const SettingsRoute = lazy(() => import("~/routes/settings"));
 const LoginRoute = lazy(() => import("~/routes/login"));
@@ -102,24 +104,23 @@ const Authenticated: Component<{ readonly children?: JSX.Element }> = (props) =>
 );
 
 /**
- * `/groups/:id` and `/cases/:id/<anything>` → `/cases/:id`, carrying the id across.
+ * `/groups/:id/<anything>` → `/groups/:id`, carrying the id across.
+ *
+ * ⛔ THE WILDCARD IS NOT TIDINESS, IT IS A DELIVERED LINK. A Slack card's
+ * Timeline button is `links.group + "/timeline"`
+ * (`internal/notification/service/view.go`), so every card oto has ever posted
+ * carries `/groups/<id>/timeline` — a path a leaf route answers with the `*`
+ * sentence rather than with the screen. The group's timeline *is* on the group
+ * screen, so the sub-path lands there.
  *
  * A component rather than `<Navigate href={fn}>` because the target depends on a
  * route param, and it replaces the history entry rather than pushing one: an
  * operator who arrives from a Slack card and hits Back should land back in Slack,
  * not on a URL that only ever bounces them forward again.
- *
- * ⛔ IT SERVES THE SUB-PATH OF THE *CURRENT* NAME TOO, and that is not tidiness.
- * A card's Timeline button is `links.group + "/timeline"`
- * (`internal/notification/service/view.go`), so the day the base path became
- * `/cases/` the deep link became `/cases/<id>/timeline` — a path with no route,
- * which is the `*` sentence rather than the case. The case screen *is* where that
- * timeline is, so the sub-path lands on it, exactly as `/groups/<id>/timeline`
- * always did.
  */
-const RedirectToCase: Component = () => {
+const RedirectToGroup: Component = () => {
   const params = useParams<{ readonly id: string }>();
-  return <Navigate href={`/cases/${params.id}`} />;
+  return <Navigate href={`/groups/${params.id}`} />;
 };
 
 const NotFound: Component = () => (
@@ -151,26 +152,28 @@ export const routes = (): JSX.Element => (
         matches `/` and nothing else, while the layout below carries children and
         is therefore matched partially — it contributes no branch of its own and
         only ever prefixes the six paths inside it. */}
-    <Route path="/" component={() => <Navigate href="/alerts" />} />
+    <Route path="/" component={() => <Navigate href="/cases" />} />
     <Route path="/" component={Authenticated}>
       <Route path="/alerts" component={AlertsRoute} />
       <Route path="/alerts/:id" component={AlertDetailRoute} />
+      {/* The primary list: one row per firing episode, which is the unit a human
+          acknowledges. `/cases/:id` is one of those episodes. */}
       <Route path="/cases" component={CasesRoute} />
       <Route path="/cases/:id" component={CaseDetailRoute} />
-      {/* The card's Timeline button is `links.group + "/timeline"`, so a deep link
-          one segment past the case has to land ON the case rather than on the
-          not-found sentence. See `RedirectToCase`. */}
-      <Route path="/cases/:id/*" component={RedirectToCase} />
-      {/* ⛔ `/groups` IS NOT DEAD AND MUST NOT BE DELETED. `view.go` mints
-          `baseURL + "/cases/"` today, but it minted `"/groups/"` into every Slack
-          card and webhook payload oto had sent up to that change, so the links in a
-          year of chat history — and every operator bookmark — resolve here.
-          Renaming the screen is a vocabulary decision; breaking an already-delivered
-          link is a data-loss one. `RedirectToCase` forwards the id so a card links
-          to the case it was about, not a list. */}
-      <Route path="/groups" component={() => <Navigate href="/cases" />} />
-      <Route path="/groups/:id/*" component={RedirectToCase} />
-      <Route path="/groups/:id" component={RedirectToCase} />
+      {/* ⛔ `/groups` IS A REAL DESTINATION AND MUST NOT BE A REDIRECT. An
+          AlertGroup is Alertmanager's notification grouping — the object that
+          owns one Slack thread — and it is NOT a case: a case is one firing of
+          ONE alert. Every card and webhook payload oto has ever sent carries
+          `/groups/<id>`, and `view.go` still mints exactly that, so this is where
+          a year of chat history points. It is deliberately absent from the rail
+          (see `AppShell.tsx`): reachable from a card or from a case, never a
+          place the product offers to take you. */}
+      <Route path="/groups" component={GroupsRoute} />
+      <Route path="/groups/:id" component={GroupDetailRoute} />
+      {/* The card's Timeline button is `links.group + "/timeline"`, so a deep
+          link one segment past a group has to land ON the group rather than on
+          the not-found sentence. See `RedirectToGroup`. */}
+      <Route path="/groups/:id/*" component={RedirectToGroup} />
       {/* Routing rules and the record of what they did (ADR 0034). `/settings`
           still answers `/settings/policies` and redirects it here, so links
           minted while policies lived there keep resolving.

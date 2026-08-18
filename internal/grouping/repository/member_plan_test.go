@@ -134,7 +134,7 @@ func TestTheCurrentMemberReadRidesTheIndexAndNeverSorts(t *testing.T) {
 			       ($2::uuid[])[a + 1],
 			       $3,
 			       s,
-			       CASE WHEN s = $4 THEN 'firing' ELSE 'resolved' END,
+			       CASE WHEN s = $4 THEN 'open' ELSE 'closed' END,
 			       CASE WHEN s = $4 THEN NULL ELSE 'upstream' END,
 			       $5::timestamptz + ((a * $4 + s) * interval '1 second'),
 			       CASE WHEN s = $4 THEN NULL

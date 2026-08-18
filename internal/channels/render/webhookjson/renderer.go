@@ -181,9 +181,10 @@ func mapCase(o domain.CaseView) *Case {
 		ResolveReason:     o.ResolveReason,
 		StartedAt:         o.StartedAt.UTC(),
 		DurationSeconds:   o.Duration.Seconds(),
-		ReopenCount:       o.ReopenCount,
-		AckedByLabel:      o.AckedByLabel,
-		AckNote:           o.AckNote,
+		ReopenCount:       0, // frozen v1 key, see envelope.go
+
+		AckedByLabel: o.AckedByLabel,
+		AckNote:      o.AckNote,
 	}
 	if o.EndedAt != nil {
 		t := o.EndedAt.UTC()

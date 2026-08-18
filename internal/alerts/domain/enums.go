@@ -9,11 +9,20 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// State is what the world is doing to one AlertCase (SPEC §B.1, §B.2).
+// State is what the world is doing to an ALERT (SPEC §B.1, §B.2).
 //
 // It is owned by ingestion and the reconciler, and it is orthogonal to AckState:
 // an acknowledged alert is still firing. The four values are a closed set and the
-// same literal set the DDL CHECK accepts.
+// same literal set `alerts_state_ck` accepts.
+//
+// ⭐⭐ IT IS THE ALERT'S STATE AND NOT THE CASE'S (ADR 0040). An AlertCase is one
+// ephemeral firing episode and the only thing it can say about itself is whether
+// it is still running — that is CaseState, `open | closed`, and it is what
+// `alert_cases.state` holds. The four values here are recoverable FROM a Case
+// (see Case.AlertState) but they are not stored on one, because three of the four
+// say something only the identity can mean: `suppressed` is a silence against a
+// label set, and `resolved`/`expired` is a claim about WHY an episode ended that
+// `resolve_reason` was always the record of.
 //
 // The single most important distinction in oto lives here: `resolved` means an
 // explicit upstream `status="resolved"` observation arrived, while `expired`
@@ -57,12 +66,79 @@ func (s State) String() string { return s.s }
 // IsZero reports whether this is StateNone.
 func (s State) IsZero() bool { return s.s == "" }
 
-// IsTerminal reports whether the case has ended. A terminal case can
-// only be left by a re-fire (T7 or T8).
+// IsTerminal reports whether the alert's state is one an episode ends in. A
+// closed episode is never left at all since ADR 0040: a re-fire (T7) opens the
+// NEXT one, unacknowledged, and this Case stays exactly as it closed.
 func (s State) IsTerminal() bool { return s == StateResolved || s == StateExpired }
 
-// IsOpen reports whether the case is still live.
+// IsOpen reports whether an alert in this state has a running episode.
 func (s State) IsOpen() bool { return s == StateFiring || s == StateSuppressed }
+
+// CaseState projects an alert state onto the two values a Case may hold. It is
+// the WRITE half of ADR 0040's derivation; Case.AlertState is the read half.
+//
+// StateNone maps to the zero CaseState: an alert with no episode has no episode
+// state either, and the zero value is what NewCase refuses.
+func (s State) CaseState() CaseState {
+	switch {
+	case s.IsOpen():
+		return CaseOpen
+	case s.IsTerminal():
+		return CaseClosed
+	default:
+		return CaseState{}
+	}
+}
+
+// CaseState is the whole of what an AlertCase says about itself: it is running,
+// or it has ended. It is `alert_cases.state` and `case_state_ck` accepts these
+// two literals and no others (migration 00054).
+//
+// ⭐⭐ IT IS STRICTLY TERMINAL. `open -> closed`, once, and never back: a re-fire
+// opens the NEXT episode at `seq + 1`, unacknowledged, rather than reviving this
+// one (ADR 0040). That is why there is no `Reopen` anywhere on Case and why
+// `case.reopened` is a retired event type rather than a live one.
+//
+// ⛔ IT IS NOT A NARROWER `State`, IT IS A DIFFERENT SUBJECT. `firing` and
+// `suppressed` are not values this type is missing; they are values about the
+// ALERT that the episode never had standing to assert. What the episode does
+// carry — WHICH silence muted it, and WHY it ended — stays in
+// `suppression_reason` and `resolve_reason`, which is exactly what makes
+// Case.AlertState total.
+type CaseState struct{ s string }
+
+// The closed CaseState set.
+var (
+	// CaseOpen means the firing episode is still running: `ended_at IS NULL`,
+	// tied to this value by `case_terminal_ended`.
+	CaseOpen = CaseState{"open"}
+	// CaseClosed means the episode has ended and carries a `resolve_reason`
+	// saying whether upstream resolved it or oto stopped hearing about it.
+	CaseClosed = CaseState{"closed"}
+)
+
+// NewCaseState parses a persisted case state.
+func NewCaseState(s string) (CaseState, error) {
+	switch s {
+	case CaseOpen.s, CaseClosed.s:
+		return CaseState{s: s}, nil
+	default:
+		return CaseState{}, errs.Newf(errs.KindValidation, "enum",
+			"case state must be one of: open, closed (got %q)", s)
+	}
+}
+
+// String renders the case state.
+func (c CaseState) String() string { return c.s }
+
+// IsZero reports whether no case state is set.
+func (c CaseState) IsZero() bool { return c.s == "" }
+
+// IsOpen reports whether the episode is still running.
+func (c CaseState) IsOpen() bool { return c == CaseOpen }
+
+// IsClosed reports whether the episode has ended.
+func (c CaseState) IsClosed() bool { return c == CaseClosed }
 
 // AckState is what humans have done about an AlertCase (SPEC §B.1).
 // It is orthogonal to State: an acked alert is still firing.

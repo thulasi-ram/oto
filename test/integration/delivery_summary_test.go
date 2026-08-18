@@ -259,7 +259,7 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 
 	exec(`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state,
 	         started_at, last_observed_at, source_starts_at)
-	      VALUES ($1,$2,$3,$4,1,'firing',$5,$5,$5)`,
+	      VALUES ($1,$2,$3,$4,1,'open',$5,$5,$5)`,
 		out.caseID, orgID, out.alertID, out.groupID, now)
 
 	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`,

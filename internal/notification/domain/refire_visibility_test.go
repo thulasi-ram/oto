@@ -9,22 +9,31 @@ import (
 // ⛔⛔ THIS FILE PINS A KNOWN CONTRADICTION, NOT A DESIRED BEHAVIOUR.
 //
 // ADR 0020 grants exactly two Reasons an irreversible `reply_broadcast`, and
-// `refired` is one of them, on this reasoning: a re-fire INSIDE `refire_grace`
-// reopens the existing case, so it produces an update and a thread reply and
-// NO new root message — *"the thread said resolved and people stopped following
-// it"*. Its quiet form is invisible, which is the only property that earns a
-// channel post.
+// `refired` is one of them, on this reasoning: a re-fire lands in the AlertGroup
+// generation that is already open, so it produces a root UPDATE and a thread reply
+// and NO new root message — *"the thread said resolved and people stopped
+// following it"*. Its quiet form is invisible, which is the only property that
+// earns a channel post.
+//
+// ⚠️ THE REASONING SURVIVED ADR 0040 AND THE WORDING DID NOT. This paragraph used
+// to open "a re-fire INSIDE `refire_grace` reopens the existing case". T8 is
+// retired: a closed case is strictly terminal and a re-fire ALWAYS opens a new one
+// at the next `seq`, with no window deciding anything. That changed which ROW is
+// written, not which message is sent — the root card belongs to the AlertGroup and
+// is updated in place while the generation is open — so everything below still
+// holds. It holds for MORE re-fires than it used to, because there is no longer a
+// window that some of them fall outside of.
 //
 // §H.6's verbosity table then drops the `refired` reply entirely at
 // `firing_and_resolved` and `firing_only`, and `refired` is NOT in
 // `ungatedReplies`. So on a channel set quieter than the default `status_changes`,
-// a re-fire inside the grace is **completely silent** — the one case ADR 0020 said
-// must never be.
+// a re-fire is **completely silent** — the one case ADR 0020 said must never be.
 //
-// ADR 0026 found this while deriving `refire_grace` (it is the reason the derived
+// ADR 0026 found this while deriving `refire_grace`, back when the length of the
+// grace decided how many re-fires fell into the hole — it is why the derived
 // default is the SMALLEST value that reaches the modal rule rather than the
-// largest that covers every rule — the longer the grace, the more re-fires fall
-// into this hole) and deliberately did NOT fix it: resolving it means deciding
+// largest that covers every rule. Since ADR 0040 all of them do. It deliberately
+// did NOT fix it: resolving it means deciding
 // whether `firing_only` may delete a transition ADR 0020 called unmissable, which
 // is a product decision about what a documented verbosity level MEANS, not a
 // tuning one. It touches SPEC §H.6, ADR 0020, the OpenAPI schema and the renderer.
@@ -33,22 +42,22 @@ import (
 // will fail, which is the point: the defect is visible in the test suite rather
 // than discovered during an incident.
 
-// The half that is correct: at the shipped default verbosity, a re-fire inside the
-// grace both survives the gate and warrants a broadcast.
+// The half that is correct: at the shipped default verbosity, a re-fire both
+// survives the gate and warrants a broadcast.
 func TestARefireIsBroadcastAtTheDefaultVerbosity(t *testing.T) {
 	t.Parallel()
 
 	// The schema default, and what `Normalise` falls back to.
 	v := domain.VerbosityStatusChanges
 	if !v.AllowsReply(domain.ReasonRefired) {
-		t.Fatalf("verbosity %q drops the `refired` reply. It is the one re-fire case that "+
-			"produces no new root message, so dropping it makes a genuine re-fire silent at "+
+		t.Fatalf("verbosity %q drops the `refired` reply. A re-fire produces no new root "+
+			"message, so dropping it makes a genuine re-fire silent at "+
 			"oto's OWN DEFAULT — a missed page out of the box", v)
 	}
 	if !domain.DefaultBroadcastPolicy().Warrants(domain.ReasonRefired) {
 		t.Fatal("`refired` no longer warrants a broadcast; ADR 0020 puts it in the set of two " +
-			"because its quiet form is invisible, and ADR 0026's refire_grace derivation leans " +
-			"on that being true")
+			"because its quiet form is invisible, and nothing since has made a re-fire " +
+			"announce itself any louder")
 	}
 }
 

@@ -292,6 +292,46 @@ func (rt *Router) listCaseEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// listCases is `GET /api/v1/cases` — the ORG-WIDE episode list, and the surface
+// an operator actually opens: "what is firing that I need to acknowledge".
+//
+// ⛔ IT IS NOT `GET /alerts` WITH `?ack=`. That list pages IDENTITIES, and
+// `alerts` has carried no ack column since 00049 — a receipt belongs to the
+// firing it was given for, so an ack filter over that table asked whether a
+// closed episode had been acknowledged. The facet lives here, where its subject
+// still exists, and `?state=open&ack=unacked` is the shape case_ack_idx serves.
+//
+// ⭐ EVERY ROW CARRIES ITS ALERT, AND IT COSTS ONE QUERY FOR THE WHOLE PAGE. An
+// episode has no `alertname` and no `severity` of its own; the service batch-loads
+// the identities beside the page, exactly as it batch-loads snoozes for the alert
+// list, so the list is readable without a request per row.
+func (rt *Router) listCases(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, err := scopeOf(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	req, err := parseListCases(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	res, err := rt.svc.ListCases(r.Context(), scope, req.Service)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	out := make([]CaseListItemDTO, 0, len(res.Cases))
+	for _, c := range res.Cases {
+		out = append(out, caseListItemDTO(c, res.Alerts[c.AlertID()], started))
+	}
+	httpx.List(w, r, out, pageOf(res.Cursor, req.Query.Limit), started)
+}
+
 func (rt *Router) getCase(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -415,14 +455,21 @@ func (rt *Router) listAlertNotifications(w http.ResponseWriter, r *http.Request)
 	httpx.List(w, r, out, pageOf(res.Cursor, limit), started)
 }
 
-// ackAlert is `POST /api/v1/alerts/{id}/ack`.
+// ackCase is `POST /api/v1/cases/{id}/ack`.
 //
-// This is the same service method the Slack acknowledge button calls, so acking
-// from chat and acking from the API produce byte-identical state. Acking an
-// case that has already ended is a 412 and not a 409: the request is valid,
-// the entity is simply in the wrong state — which the service says by returning a
-// precondition error, translated here by the shared problem writer.
-func (rt *Router) ackAlert(w http.ResponseWriter, r *http.Request) {
+// ⭐ `{id}` IS A CASE ID. A receipt is a fact about ONE contiguous firing
+// episode — it lives on `alert_cases` and is cleared when the next episode opens
+// — so the route names the episode rather than the identity that is having it.
+// The alert-addressed spelling had to resolve "whatever is open right now",
+// which made the subject of the receipt a race with the state machine.
+//
+// This is the same service method the Slack acknowledge button reaches (through
+// the group fan-out), so acking from chat and acking from the API produce
+// byte-identical state. Acking a case that has already ended is a 412 and not a
+// 409: the request is valid, the entity is simply in the wrong state — which the
+// service says by returning a precondition error, translated here by the shared
+// problem writer.
+func (rt *Router) ackCase(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
 	scope, actor, id, err := rt.action(r)
@@ -444,10 +491,11 @@ func (rt *Router) ackAlert(w http.ResponseWriter, r *http.Request) {
 	httpx.Data(w, r, http.StatusOK, caseDTO(ac, started), started)
 }
 
-// unackAlert is `POST /api/v1/alerts/{id}/unack`: a DELIBERATE withdrawal,
+// unackCase is `POST /api/v1/cases/{id}/unack`: a DELIBERATE withdrawal,
 // recorded with `reason: manual` to distinguish it from the automatic unack that
-// happens when a new case opens.
-func (rt *Router) unackAlert(w http.ResponseWriter, r *http.Request) {
+// happens when a new case opens. `{id}` is a case id, for the reason argued on
+// ackCase.
+func (rt *Router) unackCase(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
 	scope, actor, id, err := rt.action(r)
@@ -602,6 +650,76 @@ func (rt *Router) unsnoozeAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rt.writeAlertDetail(w, r, scope, id, started)
+}
+
+// unsnoozeAlerts is `POST /api/v1/alerts/unsnooze` — wake several NAMED alerts
+// at once, so the Quiet tab can resume a selection in one gesture.
+//
+// ⛔⛔ THE SUBJECTS ARE IN THE BODY AND WILL NEVER BE A FILTER. See
+// UnsnoozeAlertsRequest for the argument; the short form is that a filter is
+// evaluated against rows the caller never saw, and this verb makes oto TALK.
+//
+// ⭐⭐ PARTIAL SUCCESS IS A `200`, AND THE STATUS IS THE DECISION WORTH STATING.
+// Every id named is reached and concluded on, and the answer is a per-alert
+// account: an alert that was not snoozed is SKIPPED, never an error, because
+// refusing the other ninety-nine over one that had already woken makes the button
+// unusable in exactly the situation it exists for. That is the rule
+// `POST /alert-groups/{id}/unsnooze` already follows for its members.
+//
+//   - It is not a `207`. Multi-Status would say something went wrong, and nothing
+//     did — a skip is an outcome this endpoint exists to report. It would also be
+//     the only status in this contract carrying a success envelope that is neither
+//     a 2xx-with-`{data,meta}` nor a `Problem`, which every generated client and
+//     every gate in test/contract is built around.
+//   - It is not a `412` when NOTHING woke. The single-alert route answers
+//     `412 not_snoozed` because it addresses ONE entity and has nothing else to
+//     say; here there is always an account, and "all five were already awake" is a
+//     complete, correct answer to the question that was asked.
+//   - It is not a `404` for an id this org does not own. That id is reported as
+//     `skipped`/`alert_not_found`, identically to an id belonging to nobody — the same
+//     answer the single route gives, and for the same reason: any other treatment
+//     is an existence oracle, and this endpoint would let it be walked a hundred
+//     ids at a time.
+//
+// ⛔ A HARD FAILURE PARTWAY IS STILL A PROBLEM DOCUMENT, as it is on the group
+// fan-out. The service hands the partial account back beside the error so nothing
+// is lost at the seam, but the caller is told the request failed — and a retry
+// converges, because the alerts that already woke answer `not_snoozed` on the
+// second pass. That is also why this verb claims no `Idempotency-Key`: like ack,
+// unack and the other two unsnoozes, it is idempotent by state machine, and the
+// state after N calls equals the state after one.
+func (rt *Router) unsnoozeAlerts(w http.ResponseWriter, r *http.Request) {
+	started := rt.now()
+
+	scope, err := scopeOf(r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	actor, err := actorOf(r.Context())
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	if err := httpx.NewParams(r).Err(); err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	// ⛔ Bind AND NOT optionalBody. `alert_ids` is required, so an absent body is a
+	// caller that has not said what to wake — which is precisely the "everything"
+	// reading this endpoint refuses to have.
+	body, err := httpx.Bind[UnsnoozeAlertsRequest](w, r)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+
+	res, err := rt.svc.UnsnoozeMany(r.Context(), scope, body.AlertIDs, actor, body.Note)
+	if err != nil {
+		httpx.WriteProblem(w, r, err)
+		return
+	}
+	httpx.Data(w, r, http.StatusOK, unsnoozeAlertsDTO(res), started)
 }
 
 // listAlertSnoozes is `GET /api/v1/alerts/{id}/snoozes` — the §B.8.6 history.

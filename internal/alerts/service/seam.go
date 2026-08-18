@@ -117,18 +117,24 @@ func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope,
 	//
 	// ⛔ BUT PROVED IS NOT THE SAME AS PERMITTED. A RETIRED type parses — it must,
 	// because rows already carry it and the timeline has to read them back — and it
-	// still may not be appended. `group.member_joined` and `group.member_left` are
-	// the two, and the reasoning is on `domain.retiredEventTypes`. It is `Internal`
-	// rather than `Validation` on purpose: no request can ask for this, so reaching
-	// it means code asked for it.
+	// still may not be appended. There are three: `group.member_joined`,
+	// `group.member_left` and `case.reopened`, and the reasoning is on
+	// `domain.retiredEventTypes`. It is `Internal` rather than `Validation` on
+	// purpose: no request can ask for this, so reaching it means code asked for it.
 	//
-	// ⚠️ WHAT THIS REFUSAL COVERS, EXACTLY. Both retired values are `group.*` and
-	// grouping is a different module, so every caller that could ever emit one
-	// arrives HERE — which is what makes a check at this one point sufficient for
-	// them. It is not a guarantee about the table in general: see the two other
-	// write paths named on this method. Extending it to `appendEvents` would close
-	// the in-module half, and `notification`'s INSERT would still be outside it.
-	// `test/arch`'s event-type gate is what covers the table as a whole.
+	// ⚠️ WHAT THIS REFUSAL COVERS, EXACTLY. The two `group.*` values are emitted
+	// from a different module, so every caller that could ever emit one arrives
+	// HERE — which is what makes a check at this one point sufficient for them. It
+	// is not a guarantee about the table in general: see the two other write paths
+	// named on this method.
+	//
+	// ⭐ AND `case.reopened` IS WHY `appendEvents` NOW CHECKS TOO (ADR 0040). It was
+	// minted by THIS module's transition table, so it reached `alert_events` by the
+	// in-module road and never came past this line — the comment here used to say
+	// extending the check to `appendEvents` "would close the in-module half", and
+	// `alerts/service.refuseRetired` is that extension. `notification`'s INSERT is
+	// still outside both, and `test/arch`'s event-type gate is what covers the
+	// table as a whole.
 	if in.Type.Retired() {
 		return errs.Newf(errs.KindInternal, "event_type_retired",
 			"%q is a retired alert_events.type and may be read but never appended", in.Type)
@@ -184,15 +190,23 @@ func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope,
 // acks every OPEN member episode. Ack is a RECEIPT — "a human has seen this" —
 // and acking a group is still one receipt per signal, never a claim of ownership
 // over a set of them (§E.1.1).
+//
+// ⭐ IT TAKES A CASE ID, NOT AN ALERT ID, AND THE FAN-OUT ALREADY HAD ONE. The
+// candidate read behind a group verb is `CurrentMemberAlerts`, which selects
+// `(alert_id, id)` out of `alert_cases` — the episode is what makes an alert a
+// member of a generation, so the id was being read, discarded, and looked up
+// again from the alert one layer down. Handing it straight through removes the
+// second read and, with it, the window in which the episode that made the alert
+// a member and the episode that receives the receipt could be different rows.
 func (s *Service) AcknowledgeAs(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID,
 	actorKind, actorID, actorLabel, note string,
 ) error {
 	actor, err := humanActor(actorKind, actorID, actorLabel)
 	if err != nil {
 		return err
 	}
-	_, err = s.Acknowledge(ctx, scope, alertID, actor, note)
+	_, err = s.Acknowledge(ctx, scope, caseID, actor, note)
 	return err
 }
 
@@ -209,15 +223,17 @@ func (s *Service) AcknowledgeAs(
 // acknowledgement being removed and is cleared by the transition; the withdrawal's
 // own explanation lands in the `case.unacknowledged` event payload, on each
 // member's timeline. See Unacknowledge.
+//
+// It is addressed by CASE id, for the reason given on AcknowledgeAs.
 func (s *Service) UnacknowledgeAs(
-	ctx context.Context, scope db.TenantScope, alertID uuid.UUID,
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID,
 	actorKind, actorID, actorLabel, note string,
 ) error {
 	actor, err := humanActor(actorKind, actorID, actorLabel)
 	if err != nil {
 		return err
 	}
-	_, err = s.Unacknowledge(ctx, scope, alertID, actor, note)
+	_, err = s.Unacknowledge(ctx, scope, caseID, actor, note)
 	return err
 }
 

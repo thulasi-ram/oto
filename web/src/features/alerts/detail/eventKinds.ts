@@ -88,7 +88,7 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     category: "lifecycle",
     tone: LIFECYCLE_FIRING,
     shape: "ring",
-    note: "A re-fire inside the grace window reopens the same episode rather than starting a new one.",
+    note: "A re-fire inside the grace window reopens the same case rather than starting a new one.",
   },
   "case.suppressed": {
     label: "Suppressed upstream",
@@ -131,31 +131,44 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     shape: "ring",
   },
 
-  "group.opened": { label: "Case opened", category: "group", tone: NEUTRAL, shape: "square" },
-  "group.closed": { label: "Case closed", category: "group", tone: NEUTRAL, shape: "square" },
-  // ⛔ RETIRED, AND KEPT ANYWAY. Nothing has written either of these since
-  // membership became a property of the case rather than an event (migration
-  // 00051) — `group.member_left` never had a production writer at all. They stay
+  // ⛔ THESE ARE THE AlertGroup'S EVENTS, AND THE LABELS SAY SO. A group is
+  // Alertmanager's notification batch — the object that owns one chat thread —
+  // and it is not a case: a Case is ONE alert's firing episode, whose own events
+  // are the `case.*` kinds above. Labelling a group event "Case opened" put two
+  // different objects behind one word on the one surface where an operator reads
+  // both in the same column.
+  "group.opened": { label: "Alert group opened", category: "group", tone: NEUTRAL, shape: "square" },
+  "group.closed": { label: "Alert group closed", category: "group", tone: NEUTRAL, shape: "square" },
+  // ⛔ RETIRED, AND KEPT ANYWAY. NOTHING JOINS A GROUP ANY MORE: migration 00051
+  // deleted `alert_group_members`, `joined_at` and `left_at` outright, and
+  // membership is now derived from `alert_cases.group_id` with `ended_at IS
+  // NULL`. Nothing has written either of these since — `group.member_left` never
+  // had a production writer at all. They stay
   // in this map because `alert_events` is retained thirteen months and old
   // timelines still carry `group.member_joined`; a kind missing from here renders
   // as nothing, which is the one outcome a timeline may not have. Delete them when
   // the last partition holding them is dropped.
   "group.member_joined": {
-    label: "Joined a case",
+    label: "Added to an alert group",
     category: "group",
     tone: NEUTRAL,
     shape: "dot",
   },
-  "group.member_left": { label: "Left a case", category: "group", tone: NEUTRAL, shape: "dot" },
+  "group.member_left": {
+    label: "Removed from an alert group",
+    category: "group",
+    tone: NEUTRAL,
+    shape: "dot",
+  },
   "group.storm_started": {
-    label: "Case entered storm mode",
+    label: "Alert group entered storm mode",
     category: "group",
     tone: NEUTRAL_STRONG,
     shape: "bar",
-    note: "More alerts joined at once than the storm threshold. One message with a count is posted instead of one per alert.",
+    note: "More alerts arrived in one group at once than the storm threshold. One message with a count is posted instead of one per alert.",
   },
   "group.storm_ended": {
-    label: "Case left storm mode",
+    label: "Alert group left storm mode",
     category: "group",
     tone: NEUTRAL,
     shape: "bar",
@@ -180,7 +193,7 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     category: "rule",
     tone: NEUTRAL,
     shape: "diamond",
-    note: "oto could not reach the rule's origin, so this firing episode has no snapshot.",
+    note: "oto could not reach the rule's origin, so this case has no snapshot.",
   },
 
   "enrichment.completed": {
@@ -312,7 +325,7 @@ export const CATEGORY_LABEL: Record<EventCategory, string> = {
   rule: "Rule",
   enrichment: "Enrichment",
   notification: "Notifications",
-  group: "Case",
+  group: "Alert group",
   source: "Source",
 };
 

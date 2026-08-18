@@ -138,8 +138,11 @@ func (r *driftRig) alert(t *testing.T, instance string) harness.Alert {
 func (r *driftRig) open(t *testing.T, a harness.Alert, seq int) uuid.UUID {
 	t.Helper()
 
+	// ⭐ `closed` PLUS A `resolve_reason`, NOT `resolved` (ADR 0040). `state` says
+	// only that the episode ended; `case_resolve_ck` demands it say why, and
+	// `upstream` is what the four-way reading spells `resolved`.
 	r.h.Exec(`UPDATE alert_cases
-	             SET state = 'resolved', ended_at = $2, resolve_reason = 'upstream'
+	             SET state = 'closed', ended_at = $2, resolve_reason = 'upstream'
 	           WHERE alert_id = $1 AND ended_at IS NULL`, a.ID, r.h.Now())
 
 	caseID := id.New()
@@ -147,7 +150,7 @@ func (r *driftRig) open(t *testing.T, a harness.Alert, seq int) uuid.UUID {
 	r.h.Exec(`INSERT INTO alert_cases
 	            (id, org_id, alert_id, group_id, seq, state, started_at, last_observed_at,
 	             source_starts_at, source_updated_at)
-	          VALUES ($1, $2, $3, $4, $5, 'firing', $6, $6, $6, $6)`,
+	          VALUES ($1, $2, $3, $4, $5, 'open', $6, $6, $6, $6)`,
 		caseID, a.OrgID, a.ID, r.group.ID, seq, now)
 	r.h.Exec(`UPDATE alerts SET current_case_id = $1, total_cases = $2, last_seen_at = $3
 	           WHERE id = $4`, caseID, seq, now, a.ID)

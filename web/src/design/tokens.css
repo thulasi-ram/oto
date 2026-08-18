@@ -165,11 +165,15 @@
 
    Comfortable was 36 px and compact 28 px. U6 has been amended: the density
    these screens were drawn at is tighter than an operator working a 3am storm
-   can use, and a row that fits its content exactly leaves no room for the
-   persistent per-row actions the alert row is meant to carry (§0.4 — visible
-   or in an explicit menu, never revealed by hover alone). Liberal means SPACE —
-   the type ladder in §M.8 is unchanged, and hierarchy still comes from weight
-   and colour rather than size. */
+   can use, and a row that fits its content exactly leaves no room for the two
+   lines the alert row carries — the alertname, with its namespace/service and
+   summary demoted beneath it. (This paragraph used to justify the height with
+   the alert list's persistent per-row ack and snooze buttons. Those are gone:
+   both act on a Case — one firing episode — and a row in that list is an Alert
+   identity, so they live on `/cases` and `/cases/:id` instead. The height still
+   earns itself on the second line.) Liberal means SPACE — the type ladder in
+   §M.8 is unchanged, and hierarchy still comes from weight and colour rather
+   than size. */
 :root {
   --oto-row-h: 48px;
 }

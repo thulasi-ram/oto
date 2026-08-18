@@ -28,14 +28,6 @@ import (
 // `platform/tuning`, which every module may import and which may import none.
 // The derivation for each is stated there.
 const (
-	// DefaultRefireGrace decides T7 from T8: a re-fire inside this window reopens
-	// the existing AlertCase, a re-fire after it opens a new one. The number
-	// is derived rather than chosen — `for + group_interval` for the modal real
-	// rule, 15m + 5m — because the clock starts at the case's `ended_at`,
-	// which T5 below takes from the UPSTREAM `EndsAt`, so the re-fire has to pay
-	// the rule's whole `for:` dwell again before oto can observe it at all. See
-	// ADR 0026 and docs/setup/tuning.md.
-	DefaultRefireGrace = tuning.DefaultRefireGrace
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
 	// before a case may expire.
 	DefaultResolveGrace = tuning.DefaultResolveGrace
@@ -104,10 +96,10 @@ var (
 	TransitionT5 = TransitionID{"T5"}
 	// TransitionT6 expires a case oto has stopped hearing about.
 	TransitionT6 = TransitionID{"T6"}
-	// TransitionT7 opens a NEW case after a re-fire beyond refire_grace.
+	// TransitionT7 opens a NEW case after a re-fire. It is the ONLY road out of a
+	// closed episode (ADR 0040): T8, which used to reopen the same one inside
+	// refire_grace, is retired and a closed Case is now strictly terminal.
 	TransitionT7 = TransitionID{"T7"}
-	// TransitionT8 reopens the SAME case after a re-fire inside refire_grace.
-	TransitionT8 = TransitionID{"T8"}
 	// TransitionT9 acknowledges a case.
 	TransitionT9 = TransitionID{"T9"}
 	// TransitionT10 drops an acknowledgement.
@@ -117,23 +109,12 @@ var (
 // String renders the transition id.
 func (t TransitionID) String() string { return t.s }
 
-// refirePolicy distinguishes the two rows that share (terminal → firing, observe
-// firing): T8 inside refire_grace and T7 beyond it.
-type refirePolicy int
-
-const (
-	refireNotApplicable refirePolicy = iota
-	refireWithinGrace
-	refireAfterGrace
-)
-
 // transitionRule is one row of SPEC §B.3.
 type transitionRule struct {
 	from    State
 	to      State
 	trigger Trigger
 	id      TransitionID
-	refire  refirePolicy
 	// actors is the closed set of actors permitted to drive this edge. An actor
 	// outside it is a programming error, not a caller error (§L.4 invariant 2).
 	actors []ActorKind
@@ -214,24 +195,21 @@ var transitionTable = []transitionRule{
 		id: TransitionT6, actors: []ActorKind{ActorReaper},
 		event: EventCaseExpired,
 	},
+	// ⭐⭐ ONE ROW PER TERMINAL STATE, NOT TWO, AND THAT IS ADR 0040's REVERSAL.
+	// There used to be a T8 beside each of these, taken when the re-fire landed
+	// inside `refire_grace`: it CLEARED `ended_at` on the closed episode and let
+	// it run again, carrying its acknowledgement across a gap in the firing. A
+	// Case is strictly terminal now. Every re-fire opens the next `seq`, UNACKED
+	// — see Decision.DropsAck — because an acknowledgement is a receipt for one
+	// firing and the second firing is not the one that was signed for.
 	{
 		from: StateResolved, to: StateFiring, trigger: TriggerObserveFiring,
-		id: TransitionT8, refire: refireWithinGrace, actors: []ActorKind{ActorIngest},
-		event: EventCaseReopened,
-	},
-	{
-		from: StateExpired, to: StateFiring, trigger: TriggerObserveFiring,
-		id: TransitionT8, refire: refireWithinGrace, actors: []ActorKind{ActorIngest},
-		event: EventCaseReopened,
-	},
-	{
-		from: StateResolved, to: StateFiring, trigger: TriggerObserveFiring,
-		id: TransitionT7, refire: refireAfterGrace, actors: []ActorKind{ActorIngest},
+		id: TransitionT7, actors: []ActorKind{ActorIngest},
 		opensNewCase: true,
 	},
 	{
 		from: StateExpired, to: StateFiring, trigger: TriggerObserveFiring,
-		id: TransitionT7, refire: refireAfterGrace, actors: []ActorKind{ActorIngest},
+		id: TransitionT7, actors: []ActorKind{ActorIngest},
 		opensNewCase: true,
 	},
 }
@@ -285,9 +263,18 @@ type TransitionCommand struct {
 
 	// SuppressionReason is REQUIRED by T3 and forbidden on every other edge.
 	SuppressionReason SuppressionReason
-
-	// RefireGrace decides T8 from T7 (§B.5). Zero means DefaultRefireGrace.
-	RefireGrace time.Duration
+	// SuppressedBy is WHICH upstream objects are doing the suppressing, as
+	// Alertmanager named them on the observation that caused the edge. It is read
+	// on T3 and ignored everywhere else, because every other edge CLEARS the
+	// witnesses.
+	//
+	// ⭐ IT TRAVELS THROUGH THE MACHINE RATHER THAN AROUND IT (ADR 0041). The
+	// witnesses used to reach `alert_cases.suppressed_by` from the service, off
+	// the observation, while the Case the machine returned carried none — so the
+	// in-memory episode disagreed with its own row, and the ALERT projection,
+	// which is built from that episode, wrote an empty witness set onto a signal
+	// the database knew was silenced.
+	SuppressedBy SuppressedBy
 
 	// SourceEndsAt is Alertmanager's `endsAt` for this observation, zero when no
 	// end time is known.
@@ -340,9 +327,10 @@ type TransitionResult struct {
 	// step. `PreconditionFor(r.Before)` is the guard, and it cannot name a row
 	// other than the one the decision was made from.
 	Before Case
-	// OpensNewCase marks T7. The caller must open a new case with
-	// seq+1 and ReopenOf set to Case.ID(), which appends its own
-	// `case.opened` event.
+	// OpensNewCase marks T7. The caller must open a new case at seq+1, which
+	// appends its own `case.opened` event; `Case` above is the CLOSED episode,
+	// untouched, and the new one succeeds it by being the next `seq` rather than
+	// by naming it in a column (ADR 0040).
 	OpensNewCase bool
 	// Events are the AlertEvents to append, in order. At most one edge appends
 	// more than nothing, so this is empty or a single event.
@@ -393,7 +381,11 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 			"%s may not drive %s (%s -> %s)", cmd.Actor.Kind(), rule.id, rule.from, rule.to)
 	}
 
-	from := o.state
+	// ⭐ THE MACHINE'S PHASE, NOT THE ALERT'S STATE (ADR 0041). `lifecyclePhase`
+	// still folds suppression in, because T3, T4 and the suppressed arms of T5 and
+	// T6 are edges of THIS table and nothing else routes them. `AlertState` — what
+	// `alerts.state` holds — no longer does.
+	from := o.lifecyclePhase()
 	next := o
 	// extra carries the keys the machine itself puts on the event payload:
 	// `detected_by` on T4, and the §B.3.2 clamp record on T5 and T6. A caller's
@@ -415,8 +407,9 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 			return TransitionResult{}, errs.New(errs.KindValidation, "required",
 				"suppression_reason is required to suppress a case")
 		}
-		next.state = StateSuppressed
+		next.state = CaseOpen
 		next.suppressionReason = cmd.SuppressionReason
+		next.suppressedBy = cmd.SuppressedBy
 		// ⭐ A suppression is a COUNTED fact. suppress_count is reopen_count's twin
 		// for the suppressed path, and it is what gives T3 and T4 §C.8 dedupe keys
 		// that neither collapse two real suppressions nor split one across two
@@ -429,8 +422,9 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 		// `detected_by` records WHICH of the two witnesses saw suppression end.
 		// The reconciler saw status.state == "active"; ingest saw a webhook
 		// arrive, which is positive proof of non-suppression (§B.3.1).
-		next.state = StateFiring
+		next.state = CaseOpen
 		next.suppressionReason = SuppressionReason{}
+		next.suppressedBy = SuppressedBy{}
 		next.lastObservedAt = cmd.At.RecordedAt()
 		next.observe(cmd)
 		extra["detected_by"] = detectedBy(cmd.Actor.Kind())
@@ -439,9 +433,10 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 		// T5 sets ended_at from the UPSTREAM claim. A skewed upstream clock could
 		// place it before started_at, which case_order_ck forbids, so it is
 		// clamped: skew is measured, never a reason to lose the resolution (C12).
-		next.state = StateResolved
+		next.state = CaseClosed
 		next.resolveReason = ResolveUpstream
 		next.suppressionReason = SuppressionReason{}
+		next.suppressedBy = SuppressedBy{}
 		next.endedAt, clampDelta = clampEnd(cmd.At.OccurredAt(), o.startedAt)
 		next.lastObservedAt = cmd.At.RecordedAt()
 		next.observe(cmd)
@@ -460,9 +455,10 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 			return TransitionResult{}, errs.New(errs.KindPrecondition, "resolve_grace_not_elapsed",
 				"resolve_grace has not elapsed since source_ends_at")
 		}
-		next.state = StateExpired
+		next.state = CaseClosed
 		next.resolveReason = ResolveTimeout
 		next.suppressionReason = SuppressionReason{}
+		next.suppressedBy = SuppressedBy{}
 		next.endedAt, clampDelta = clampEnd(cmd.At.RecordedAt(), o.startedAt)
 		recordClamp(extra, cmd.At.RecordedAt(), clampDelta)
 
@@ -482,19 +478,6 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 			OpensNewCase: true,
 		}, nil
 
-	case TransitionT8:
-		// §B.3.2 names T8 alongside T5 and T6, but a reopen CLEARS ended_at rather
-		// than setting it, so there is nothing to clamp here: the invariant
-		// case_order_ck guards (ended_at >= started_at) is vacuously true while
-		// ended_at is NULL. The clamp reappears when this case next ends.
-		next.state = StateFiring
-		next.resolveReason = ResolveReason{}
-		next.suppressionReason = SuppressionReason{}
-		next.endedAt = time.Time{}
-		next.reopenCount = o.reopenCount + 1
-		next.lastObservedAt = cmd.At.RecordedAt()
-		next.observe(cmd)
-
 	default:
 		return TransitionResult{}, errs.Newf(errs.KindInternal, "unhandled_transition",
 			"transition %s has no implementation", rule.id)
@@ -505,7 +488,7 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 	}
 
 	res := TransitionResult{
-		ID: rule.id, From: from, To: next.state, Case: next, Before: o,
+		ID: rule.id, From: from, To: next.lifecyclePhase(), Case: next, Before: o,
 		DetectedBy: detectedBy(cmd.Actor.Kind()),
 		Clamped:    clampDelta > 0,
 		ClampSkew:  clampDelta,
@@ -531,7 +514,7 @@ func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 		Type:      eventType,
 		At:        cmd.At,
 		Actor:     cmd.Actor,
-		Summary:   summaryOr(cmd.Summary, defaultSummary(rule.id, from, next.state)),
+		Summary:   summaryOr(cmd.Summary, defaultSummary(rule.id, from, next.lifecyclePhase())),
 		Payload:   mergePayload(cmd.Payload, extra),
 		DedupeKey: dedupeKeyFor(rule.id, next),
 	})
@@ -559,16 +542,18 @@ type Decision struct {
 	// OpensEpisode is true for exactly the rows that do not move the case
 	// they were decided against — T1, where there is none, and T7, where the
 	// terminal one is left exactly as it is (§B.5). The caller opens the new
-	// episode with Seq and ReopenOf; every other row is applied with Apply.
+	// episode with Seq; every other row is applied with Apply.
 	OpensEpisode bool
 	// Seq is the sequence number the new episode takes.
 	Seq int
-	// ReopenOf is the episode the new one succeeds, and is uuid.Nil for T1.
-	ReopenOf uuid.UUID
 	// DropsAck is T10 by the `new_case` road: the episode being succeeded
 	// was ACKED, and an acknowledgement does not survive into a new one. The
 	// caller records that on the NEW episode and leaves the old one exactly as it
 	// is — see autoUnackEvent.
+	//
+	// ⭐ SINCE ADR 0040 IT IS THE ONLY ROAD OUT OF A CLOSED EPISODE. T8 used to
+	// carry the ack across a re-fire inside `refire_grace`; it is retired, so
+	// every re-fire lands here and no acknowledgement ever survives one.
 	DropsAck bool
 }
 
@@ -582,8 +567,8 @@ type Decision struct {
 // seq 0 and a nil id, so the arithmetic below yields exactly the first episode's
 // parameters without a branch.
 //
-// ⛔ IT READS ONLY THE ROUTING FIELDS of cmd — Trigger, At and RefireGrace, which
-// are what selectRule matches on. The rest of a TransitionCommand is what an edge
+// ⛔ IT READS ONLY THE ROUTING FIELDS of cmd — Trigger and At, which are what
+// selectRule matches on. The rest of a TransitionCommand is what an edge
 // is APPLIED with, and a caller may finish assembling it after this returns;
 // Apply is what validates it.
 //
@@ -599,55 +584,43 @@ func Decide(current Case, cmd TransitionCommand) (Decision, error) {
 	if err != nil {
 		return Decision{}, err
 	}
-	d := Decision{ID: rule.id, From: current.state}
+	d := Decision{ID: rule.id, From: current.lifecyclePhase()}
 	if !rule.opensNewCase {
 		return d, nil
 	}
 	d.OpensEpisode = true
 	d.Seq = current.seq + 1
-	d.ReopenOf = current.id
 	d.DropsAck = current.ackState.IsAcked()
 	return d, nil
 }
 
-// selectRule finds the one §B.3 row that matches the case and the command,
-// resolving T7 against T8 by the re-fire grace.
+// selectRule finds the one §B.3 row that matches the case and the command.
+//
+// ⭐ IT MATCHES ON lifecyclePhase, NOT ON THE CASE'S OWN STATE, and that is ADR
+// 0040 read the right way round: the table's `from`/`to` columns have always been
+// the four §B.2 values. The Case is what the edge is APPLIED to, and it carries
+// enough to answer which of the four it was in, so the table did not have to
+// change shape when `alert_cases.state` narrowed.
+//
+// ⛔ IT IS NOT AlertState, SINCE ADR 0041, AND SWAPPING THEM BREAKS FOUR EDGES.
+// `AlertState` stopped folding suppression in, because it is what
+// `alerts.state` stores and `suppressed` there hid firing alerts from every
+// aggregate. The MACHINE still needs the four phases: match on AlertState and T3
+// becomes firing → firing, T4 has no `from` to leave, and a Case can never record
+// that it was muted at all.
+//
+// Since T8 was retired there is at most one row per (from, trigger) pair, so
+// there is nothing left to disambiguate and no grace window to measure.
 func selectRule(o Case, cmd TransitionCommand) (transitionRule, error) {
-	want := refireNotApplicable
-	if o.state.IsTerminal() && cmd.Trigger == TriggerObserveFiring {
-		if withinRefireGrace(o, cmd) {
-			want = refireWithinGrace
-		} else {
-			want = refireAfterGrace
-		}
-	}
-
+	from := o.lifecyclePhase()
 	for _, r := range transitionTable {
-		if r.from != o.state || r.trigger != cmd.Trigger {
-			continue
-		}
-		if r.refire != want {
+		if r.from != from || r.trigger != cmd.Trigger {
 			continue
 		}
 		return r, nil
 	}
 	return transitionRule{}, errs.Newf(errs.KindPrecondition, "illegal_transition",
-		"no transition from %q under trigger %q", o.state, cmd.Trigger)
-}
-
-// withinRefireGrace decides T8 from T7: a re-fire whose observation lands within
-// refire_grace of the case ending REOPENS that case and reuses its
-// Slack thread; a later one opens a new episode and a new AlertGroup generation
-// (§B.5).
-func withinRefireGrace(o Case, cmd TransitionCommand) bool {
-	if o.endedAt.IsZero() {
-		return false
-	}
-	grace := cmd.RefireGrace
-	if grace <= 0 {
-		grace = DefaultRefireGrace
-	}
-	return !cmd.At.RecordedAt().After(o.endedAt.Add(grace))
+		"no transition from %q under trigger %q", from, cmd.Trigger)
 }
 
 func resolveGrace(cmd TransitionCommand) time.Duration {
@@ -778,8 +751,6 @@ func defaultSummary(id TransitionID, from, to State) string {
 		return "Case resolved upstream"
 	case TransitionT6:
 		return "Case expired: oto stopped hearing about it"
-	case TransitionT8:
-		return "Case reopened"
 	default:
 		return "Case moved from " + from.String() + " to " + to.String()
 	}
@@ -802,8 +773,6 @@ func dedupeKeyFor(id TransitionID, o Case) string {
 		return "case:" + o.id.String() + ":resolved"
 	case TransitionT6:
 		return "case:" + o.id.String() + ":expired"
-	case TransitionT8:
-		return "case:" + o.id.String() + ":reopened:" + strconv.Itoa(o.reopenCount)
 	default:
 		return ""
 	}
@@ -845,10 +814,6 @@ type OpenCaseParams struct {
 	SourceEndsAt    time.Time
 	SourceUpdatedAt time.Time
 
-	// ReopenOf is the previous, terminal case when this open follows a T7
-	// re-fire. It is uuid.Nil for T1.
-	ReopenOf uuid.UUID
-
 	Value        *float64
 	ObservedSkew time.Duration
 
@@ -889,13 +854,12 @@ func OpenNewCase(p OpenCaseParams) (Case, []Event, error) {
 		AlertID:         p.AlertID,
 		GroupID:         p.GroupID,
 		Seq:             p.Seq,
-		State:           StateFiring,
+		State:           CaseOpen,
 		StartedAt:       p.At.RecordedAt(),
 		LastObservedAt:  p.At.RecordedAt(),
 		SourceStartsAt:  starts,
 		SourceEndsAt:    p.SourceEndsAt,
 		SourceUpdatedAt: p.SourceUpdatedAt,
-		ReopenOf:        p.ReopenOf,
 		AckState:        AckStateUnacked,
 		Value:           p.Value,
 		ObservedSkew:    p.ObservedSkew,
@@ -904,8 +868,13 @@ func OpenNewCase(p OpenCaseParams) (Case, []Event, error) {
 		return Case{}, nil, err
 	}
 
+	// ⭐ `seq` IS WHAT NAMES THE ROW, NOW THAT `reopen_of` IS GONE. It is 1-based
+	// and gapless (case_seq_uniq, case_seq_ck), so the first episode of an Alert
+	// is T1 by construction and every one above it followed a close — which is
+	// exactly what T7 means since ADR 0040 made a re-fire the only way out of a
+	// terminal Case.
 	id := TransitionT1
-	if p.ReopenOf != uuid.Nil {
+	if p.Seq > 1 {
 		id = TransitionT7
 	}
 	ev, err := NewEvent(EventParams{
@@ -972,7 +941,7 @@ func (o Case) Acknowledge(cmd AckCommand) (Case, []Event, error) {
 		return Case{}, nil, errs.New(errs.KindValidation, "required",
 			"an acknowledgement carries both occurred_at and recorded_at")
 	}
-	if o.state.IsTerminal() {
+	if o.state.IsClosed() {
 		return Case{}, nil, errs.Newf(errs.KindPrecondition, "case_terminal",
 			"a %s case cannot be acknowledged", o.state)
 	}

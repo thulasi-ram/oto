@@ -112,9 +112,13 @@ describe("frames become invalidations", () => {
     // exists for; the log absorbs the rate at the cache entry instead
     // (`notificationActivityQuery`), not by being told about less.
     { kind: "alert.upserted", expects: [["alerts"], ["notifications"]] },
-    { kind: "case.upserted", expects: [["alerts"], ["groups"]] },
+    // ⛔ `["cases"]` FIRST, AND ITS ABSENCE WOULD BE INVISIBLE. `/cases` is the
+    // primary list and is keyed under its own prefix — a case opening, being
+    // acknowledged or ending is exactly what moves a row in and out of it, and an
+    // `["alerts"]` invalidation does not reach it.
+    { kind: "case.upserted", expects: [["cases"], ["alerts"], ["groups"]] },
     { kind: "group.upserted", expects: [["groups"]] },
-    { kind: "event.appended", expects: [["alerts"], ["groups"], ["notifications"]] },
+    { kind: "event.appended", expects: [["cases"], ["alerts"], ["groups"], ["notifications"]] },
     // `["alerts"]` because a delivery is read as part of an alert
     // (`qk.alerts.notifications`); `["notifications"]` because a delivery moving
     // is what changes an intent's status. The `["deliveries"]` prefix this used

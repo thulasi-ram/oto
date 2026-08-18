@@ -106,8 +106,8 @@ func smokeView() *domain.NotificationView {
 				URL: "https://am.example.com/#/silences/new?filter=%7Balertname%3D%22OtoSmokeTest%22%2C+cluster%3D%22smoke-test%22%7D"},
 		},
 		Links: domain.Links{
-			Group:      "http://localhost:8080/cases/019fe297-d84f-7599-b5b2-1f231749104a",
-			Timeline:   "http://localhost:8080/cases/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
+			Group:      "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a",
+			Timeline:   "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
 			Runbook:    "https://example.com/runbooks/OtoSmokeTest",
 			Prometheus: "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1",
 			Alertmanager: "https://am.example.com/#/alerts?filter=" +
@@ -347,7 +347,6 @@ func TestABroadcastTopLevelTextCarriesSeverityAndDuration(t *testing.T) {
 	v.Reason = "refired"
 	v.Case.Duration = 3*time.Minute + 12*time.Second
 	v.Case.Seq = 4
-	v.Case.ReopenCount = 2
 
 	msg := renderView(t, v, domain.ModeBroadcastReply)
 	text := topLevelText(t, msg.Payload)
@@ -389,7 +388,6 @@ func TestGoldenBroadcastRefired(t *testing.T) {
 	v.Reason = "refired"
 	v.Case.Duration = 3*time.Minute + 12*time.Second
 	v.Case.Seq = 4
-	v.Case.ReopenCount = 2
 	v.Previous = &domain.PreviousState{State: "resolved"}
 	msg := renderView(t, v, domain.ModeBroadcastReply)
 	golden(t, "broadcast_refired.golden.json", msg.Payload)

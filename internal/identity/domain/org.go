@@ -95,8 +95,16 @@ func (o Org) Shadowed() SettingsPatch {
 // The values are stored as seconds in JSONB and are typed as durations here, so
 // that no caller has to remember which unit a particular key was written in.
 type Settings struct {
-	// RefireGrace decides T8 from T7: a re-fire inside the window reopens the
-	// existing case, one after it opens a new episode (§B.5).
+	// RefireGrace is the window a re-fire is treated as "the same problem coming
+	// back" in.
+	//
+	// ⚠️ IT NO LONGER DECIDES A TRANSITION (ADR 0040). It used to pick T8 over T7 —
+	// a re-fire inside the window reopened the closed episode and kept its
+	// acknowledgement — and a Case is strictly terminal now, so every re-fire opens
+	// the next `seq` unacked. The setting is retained because `GroupCloseDelay` is
+	// pinned at or above it and `MinRefireGraceSeconds` derives the ingest replay
+	// floor from it; whether it should be renamed or removed is undecided, and
+	// removing a settings key is a contract change of its own.
 	RefireGrace time.Duration
 	// ResolveGrace is how long past `source_ends_at` the reaper waits before an
 	// case may expire (§B.4).
@@ -206,8 +214,8 @@ type Settings struct {
 // docs/setup/tuning.md, and RECOMPUTED by `defaults_derivation_test.go` so a
 // default cannot drift away from the arithmetic that produced it.
 const (
-	// DefaultRefireGrace decides T7 from T8: a re-fire inside this window reopens
-	// the existing case, a re-fire after it opens a new episode (§B.5).
+	// DefaultRefireGrace is the default width of that window. Since ADR 0040 no
+	// transition consults it; see the field comment on Settings.RefireGrace.
 	DefaultRefireGrace = tuning.DefaultRefireGrace
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
 	// before a case may expire (§B.4).

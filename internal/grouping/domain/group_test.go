@@ -207,10 +207,19 @@ func TestCountsValidate(t *testing.T) {
 func TestCountsLive(t *testing.T) {
 	t.Parallel()
 
-	// Live is firing + suppressed only. A resolved or expired member is not a
-	// reason to hold a generation open.
+	// Live is `Firing`, and ONLY `Firing`, since ADR 0041. A resolved or expired
+	// member is not a reason to hold a generation open.
 	assert.Equal(t, 0, domain.Counts{Resolved: 9, Expired: 9, Total: 18}.Live())
-	assert.Equal(t, 3, domain.Counts{Firing: 1, Suppressed: 2, Resolved: 5, Total: 8}.Live())
+
+	// ⭐ `Suppressed` IS A SUBSET OF `Firing` AND MUST NOT BE ADDED TWICE. Three
+	// members, two of them silenced: `Firing` already counts all three, because a
+	// silenced alert is still firing. The old `Firing + Suppressed` would report
+	// five live members out of three and hold the generation open on two that do
+	// not exist.
+	assert.Equal(t, 3, domain.Counts{Firing: 3, Suppressed: 2, Resolved: 5, Total: 8}.Live())
+
+	// And a generation whose live members are ALL silenced is still live.
+	assert.Equal(t, 2, domain.Counts{Firing: 2, Suppressed: 2, Total: 2}.Live())
 }
 
 func TestCountsEqualDecidesMateriality(t *testing.T) {
@@ -536,9 +545,13 @@ func TestCanCloseAt(t *testing.T) {
 			now:    baseTime.Add(time.Hour),
 		},
 		{
-			name:   "a suppressed member blocks the close",
-			mutate: func(p *domain.GroupParams) { p.Counts = domain.Counts{Suppressed: 1, Total: 1} },
-			now:    baseTime.Add(time.Hour),
+			// ADR 0041: a silenced member is counted in BOTH, because it is firing
+			// and nobody is being told. A silence never closes a generation.
+			name: "a suppressed member blocks the close",
+			mutate: func(p *domain.GroupParams) {
+				p.Counts = domain.Counts{Firing: 1, Suppressed: 1, Total: 1}
+			},
+			now: baseTime.Add(time.Hour),
 		},
 		{
 			name: "an already-closed generation cannot close again",
@@ -768,7 +781,8 @@ func TestClose(t *testing.T) {
 		t.Parallel()
 		for _, c := range []domain.Counts{
 			{Firing: 1, Total: 1},
-			{Suppressed: 1, Total: 1},
+			// ADR 0041: silenced members are counted in `Firing` too.
+			{Firing: 1, Suppressed: 1, Total: 1},
 		} {
 			g := mustGroup(t, func(p *domain.GroupParams) { p.Counts = c })
 			_, err := g.Close(baseTime.Add(time.Hour))

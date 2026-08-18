@@ -292,16 +292,6 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 		{
-			method: http.MethodPost, tmpl: "/api/v1/alerts/{id}/ack", url: "/api/v1/alerts/{{alert}}/ack",
-			body: map[string]any{"note": "seen, rolling back"}, header: idempotency("ack"),
-			want: http.StatusOK,
-		},
-		{
-			method: http.MethodPost, tmpl: "/api/v1/alerts/{id}/unack", url: "/api/v1/alerts/{{alert}}/unack",
-			body: map[string]any{"note": "still open"}, header: idempotency("unack"),
-			want: http.StatusOK,
-		},
-		{
 			method: http.MethodPost, tmpl: "/api/v1/alerts/{id}/comments", url: "/api/v1/alerts/{{alert}}/comments",
 			body: map[string]any{"body": "tracking upstream"}, header: idempotency("comment"),
 			want: http.StatusCreated,
@@ -327,8 +317,75 @@ func plan() []probe {
 			body: map[string]any{"note": "back on"},
 			want: http.StatusOK,
 		},
+		// The BULK wake. It runs AFTER the single one deliberately: the fixture
+		// alert is awake by now, so the account this drives is the SKIP path —
+		// `not_snoozed` for an alert nobody snoozed and `alert_not_found` for the
+		// stranger's id — and both are still a `200`, which is the shape most worth
+		// validating. Waking the alert here instead would leave the probe above
+		// asserting a `412`.
+		{
+			method: http.MethodPost, tmpl: "/api/v1/alerts/unsnooze",
+			body: map[string]any{
+				"alert_ids": []any{"{{alert}}", "{{stranger}}"},
+				"note":      "wake the selection",
+			},
+			want: http.StatusOK,
+			why:  "a bulk wake where nothing woke is an account, not a refusal",
+		},
 
 		/* --------------------------------------------------------- cases */
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases", want: http.StatusOK,
+			why: "the ORG-WIDE case list, unfiltered: the shape a client lands on",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases",
+			url:  "/api/v1/cases?state=open&ack=unacked&limit=50",
+			want: http.StatusOK,
+			why: "the query the endpoint exists for. Since ADR 0040 collapsed `?open=` into " +
+				"`?state=`, THIS is the parameter that has to reach case_ack_idx — a partial " +
+				"index is matched against the query's own predicates and never against " +
+				"case_terminal_ended, so `ListCases` emits the axis as the liveness literal " +
+				"and only a real Parse proves the spliced statement still binds",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases",
+			url:  "/api/v1/cases?ack=unacked,acked&state=closed&severity=critical&cluster=staging&since=2020-01-01T00:00:00Z",
+			want: http.StatusOK,
+			why: "the MULTI-VALUE ack arm, the CLOSED half of the state axis and the " +
+				"alert-side EXISTS. The single-value arm above is spelled " +
+				"`ack_state = ($2)[1]` and this one `= ANY($2)`; only a real Parse against a " +
+				"real Postgres proves both bind $2 and both plan — and 00054 RENUMBERED this " +
+				"statement, so a stale `$3` here would be a Parse failure rather than a diff",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases",
+			url:  "/api/v1/cases?state=open,closed",
+			want: http.StatusOK,
+			why: "naming BOTH values of a two-value enum must be no constraint at all. " +
+				"`ListCases` only splices a predicate for a single value; an edit that " +
+				"emitted one per value would ask for `ended_at IS NULL AND IS NOT NULL` and " +
+				"answer an empty page, which looks exactly like a quiet estate",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases", url: "/api/v1/cases?ack=maybe",
+			want: http.StatusUnprocessableEntity,
+			why:  "an ack state outside the closed enum is a 422, and its violations[] is what highlights the control",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases", url: "/api/v1/cases?state=firing",
+			want: http.StatusUnprocessableEntity,
+			why: "`firing` is the ALERT's word. It was a legal value of this parameter one " +
+				"migration ago, so the 422 is what proves the collapse reached validation and " +
+				"not only the SQL",
+		},
+		{
+			method: http.MethodGet, tmpl: "/api/v1/cases", url: "/api/v1/cases?open=true",
+			want: http.StatusBadRequest,
+			why: "the removed parameter. Unknown query parameters are REFUSED rather than " +
+				"ignored (400 unknown_parameter), so a client still sending `open=true` is " +
+				"told plainly instead of silently receiving closed episodes in its live queue",
+		},
 		{
 			method: http.MethodGet, tmpl: "/api/v1/cases/{id}", url: "/api/v1/cases/{{case}}",
 			want: http.StatusOK,
@@ -345,6 +402,21 @@ func plan() []probe {
 			method: http.MethodGet, tmpl: "/api/v1/cases/{id}/rule", url: "/api/v1/cases/{{case}}/rule",
 			want: http.StatusNotFound,
 			why:  "no rule snapshot was ever captured for this episode, which is the ordinary answer for an alert that arrived without one",
+		},
+		// ⭐ ORDER MATTERS: ack runs before unack so the episode has a receipt to
+		// take back, and both run before the GROUP ack below so the fan-out finds
+		// its member unacked. `{id}` is a CASE id on both: a receipt is a fact
+		// about one firing episode, and the alert-addressed spelling had to resolve
+		// "whatever is open right now" to find its subject.
+		{
+			method: http.MethodPost, tmpl: "/api/v1/cases/{id}/ack", url: "/api/v1/cases/{{case}}/ack",
+			body: map[string]any{"note": "seen, rolling back"}, header: idempotency("ack"),
+			want: http.StatusOK,
+		},
+		{
+			method: http.MethodPost, tmpl: "/api/v1/cases/{id}/unack", url: "/api/v1/cases/{{case}}/unack",
+			body: map[string]any{"note": "still open"}, header: idempotency("unack"),
+			want: http.StatusOK,
 		},
 
 		/* -------------------------------------------------------- alert groups */

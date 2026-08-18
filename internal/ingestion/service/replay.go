@@ -37,11 +37,13 @@ const (
 	// LimbClosed is the alert's latest case being TERMINAL — resolved or
 	// expired — while this batch carries `firing` for it.
 	//
-	// ⭐ THIS IS THE T7/T8 DOUBLE-WRITE, and it is the limb the first attempt at
-	// this feature missed. `selectRule` sees a firing observation on a terminal
-	// case and takes `refireAfterGrace`, which MINTS A NEW CASE ID —
-	// so the `alert_event_keys` dedupe, which is keyed to the case, is a
-	// guaranteed MISS. The result is a new episode, a new `case.opened` and
+	// ⭐ THIS IS THE T7 DOUBLE-OPEN, and it is the limb the first attempt at this
+	// feature missed. `selectRule` sees a firing observation on a terminal case and
+	// takes T7, which MINTS A NEW CASE ID — so the `alert_event_keys` dedupe, which
+	// is keyed to the case, is a guaranteed MISS. Since ADR 0040 retired T8 this is
+	// the ONLY road out of a terminal case, which makes the limb strictly more
+	// reachable than it was: there is no grace window that used to steer a fast
+	// replay onto the reopen edge instead. The result is a new episode, a new `case.opened` and
 	// a fresh `notify.evaluate`: somebody is paged for an incident that closed two
 	// days ago.
 	//

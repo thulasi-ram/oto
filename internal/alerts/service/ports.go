@@ -45,6 +45,11 @@ type AlertRepository interface {
 	UpsertBatch(ctx context.Context, s db.TenantScope, in []domain.AlertUpsert) ([]domain.AlertUpsertResult, error)
 	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Alert, error)
 	GetByAlertKey(ctx context.Context, s db.TenantScope, alertKey string) (domain.Alert, error)
+	// GetByIDs batch-loads the identities behind one page of CASES. It is what
+	// keeps `GET /api/v1/cases` at two queries rather than one per row: the
+	// episode carries no `alertname` or `severity` of its own, and a list that
+	// cannot name the alert is not a list anybody can triage from.
+	GetByIDs(ctx context.Context, s db.TenantScope, ids []uuid.UUID) (map[uuid.UUID]domain.Alert, error)
 	List(ctx context.Context, s db.TenantScope, f domain.AlertFilter, p db.Keyset) ([]domain.Alert, db.Cursor, error)
 	SetProjection(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p domain.AlertProjection) error
 	// SetProjectionBatch is SetProjection for a whole observe batch in ONE
@@ -78,6 +83,12 @@ type CaseRepository interface {
 	// the CURRENT episode and ListByAlert pages by started_at.
 	PreviousWithRuleSnapshot(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (domain.Case, bool, error)
 	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) ([]domain.Case, db.Cursor, error)
+	// ListCases is the ORG-WIDE episode list (§E.3b) — the operator's "what is
+	// firing that I need to acknowledge". It is a different question from
+	// ListByAlert, which is one identity's history, and from the ALERT list,
+	// which pages identities and structurally cannot carry an ack facet because
+	// `alerts` has no ack column (00049).
+	ListCases(ctx context.Context, s db.TenantScope, f domain.CaseFilter, p db.Keyset) ([]domain.Case, db.Cursor, error)
 	Observe(ctx context.Context, s db.TenantScope, id uuid.UUID, o domain.Observation) error
 	Transition(ctx context.Context, s db.TenantScope, id uuid.UUID, t domain.Transition) error
 	// SetAck asserts `expectVersion` — the case's state_version as read —

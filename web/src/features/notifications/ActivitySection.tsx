@@ -324,8 +324,11 @@ const ActivityRow: Component<{ readonly notification: Notification }> = (props) 
         <Show
           when={n().alert_id}
           fallback={
-            <span class="text-ink-subtle" title="A fact about the whole case rather than about one alert.">
-              about the case
+            <span
+              class="text-ink-subtle"
+              title="A fact about the whole notification group rather than about one alert."
+            >
+              about the group
             </span>
           }
         >
@@ -335,12 +338,29 @@ const ActivityRow: Component<{ readonly notification: Notification }> = (props) 
             </A>
           )}
         </Show>
+        {/* ⛔ THE SUBJECT LINK IS THE GROUP AND IT GOES TO `/groups`. `group_id`
+            is an AlertGroup id — Alertmanager's notification grouping, which owns
+            the chat thread this intent was about — and pointing it at `/cases`
+            handed a group id to the screen that renders one alert's firing
+            episode. When the row also carries the case the intent was formed
+            about, that link is offered beside it, because a Case is the thing a
+            person acts on. */}
         <A
-          href={`/cases/${n().group_id}`}
+          href={`/groups/${n().group_id}`}
           class="text-ink-muted underline decoration-line underline-offset-2"
         >
-          case {shortId(n().group_id)}
+          group {shortId(n().group_id)}
         </A>
+        <Show when={n().case_id}>
+          {(id) => (
+            <A
+              href={`/cases/${id()}`}
+              class="text-ink-muted underline decoration-line underline-offset-2"
+            >
+              case {shortId(id())}
+            </A>
+          )}
+        </Show>
       </div>
 
       <Show when={n().suppressed_reason}>

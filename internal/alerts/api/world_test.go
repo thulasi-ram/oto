@@ -15,7 +15,7 @@ import (
 	"github.com/thulasiram/oto/test/contract/apitest"
 )
 
-// The harness for the eighteen operations this package serves.
+// The harness for the nineteen operations this package serves.
 //
 // # What these tests protect
 //
@@ -39,7 +39,7 @@ import (
 //
 // ⛔ THIS FILE IS THE HARNESS, NOT DEAD CODE. Its consumers live in
 // alerts_contract_test.go; deleting it because a linter cannot see through a
-// test-only constructor deletes the only evidence eighteen operations have.
+// test-only constructor deletes the only evidence nineteen operations have.
 
 /* -------------------------------------------------------------------------- */
 /* The fake service port                                                      */
@@ -65,6 +65,7 @@ type fakeAlertsService struct {
 	list          service.ListResult
 	rollups       service.RollupResult
 	cases         service.CaseResult
+	caseList      service.CaseListResult
 	alertCase     domain.Case
 	timelineRes   service.TimelineResult
 	enrichments   []service.EnrichmentSummary
@@ -88,20 +89,23 @@ type fakeAlertsService struct {
 	failVerb error
 
 	// What the handlers actually asked for.
-	lastScope       db.TenantScope
-	lastActor       domain.Actor
-	lastSnoozeUntil time.Time
-	lastCommentBody string
-	lastIdempotency service.Idempotency
-	lastAckNote     string
-	lastListQuery   service.ListQuery
-	lastRollupQuery service.RollupQuery
-	lastWindow      db.TimeWindow
-	lastKeyset      db.Keyset
-	lastLabelName   string
-	lastLabelPrefix string
-	lastLimit       int
-	calls           map[string]int
+	lastScope         db.TenantScope
+	lastActor         domain.Actor
+	lastSnoozeUntil   time.Time
+	lastCommentBody   string
+	lastIdempotency   service.Idempotency
+	lastAckNote       string
+	lastListQuery     service.ListQuery
+	lastRollupQuery   service.RollupQuery
+	lastCaseListQuery service.CaseListQuery
+	lastWindow        db.TimeWindow
+	lastKeyset        db.Keyset
+	lastLabelName     string
+	lastLabelPrefix   string
+	lastUnsnoozeIDs   []uuid.UUID
+	lastUnsnoozeNote  string
+	lastLimit         int
+	calls             map[string]int
 }
 
 func (f *fakeAlertsService) note(name string, s db.TenantScope) {
@@ -260,6 +264,14 @@ func (f *fakeAlertsService) DeliveryRollupForCase(
 	return f.delivery, nil
 }
 
+func (f *fakeAlertsService) ListCases(
+	_ context.Context, s db.TenantScope, q service.CaseListQuery,
+) (service.CaseListResult, error) {
+	f.note("ListCases", s)
+	f.lastCaseListQuery = q
+	return f.caseList, nil
+}
+
 func (f *fakeAlertsService) LabelNames(
 	_ context.Context, s db.TenantScope, prefix string, limit int,
 ) ([]domain.LabelCount, error) {
@@ -277,11 +289,11 @@ func (f *fakeAlertsService) LabelValues(
 }
 
 func (f *fakeAlertsService) Acknowledge(
-	_ context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
+	_ context.Context, s db.TenantScope, caseID uuid.UUID, actor domain.Actor, note string,
 ) (domain.Case, error) {
 	f.note("Acknowledge", s)
 	f.lastActor, f.lastAckNote = actor, note
-	if err := f.ownsAlert(alertID); err != nil {
+	if err := f.ownsCase(caseID); err != nil {
 		return domain.Case{}, err
 	}
 	if f.failVerb != nil {
@@ -291,11 +303,11 @@ func (f *fakeAlertsService) Acknowledge(
 }
 
 func (f *fakeAlertsService) Unacknowledge(
-	_ context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
+	_ context.Context, s db.TenantScope, caseID uuid.UUID, actor domain.Actor, note string,
 ) (domain.Case, error) {
 	f.note("Unacknowledge", s)
 	f.lastActor, f.lastAckNote = actor, note
-	if err := f.ownsAlert(alertID); err != nil {
+	if err := f.ownsCase(caseID); err != nil {
 		return domain.Case{}, err
 	}
 	if f.failVerb != nil {
@@ -345,6 +357,33 @@ func (f *fakeAlertsService) Unsnooze(
 	return f.snoozeRow, nil
 }
 
+// UnsnoozeMany is the fake's copy of the BULK wake's classification rule: a
+// stranger's id and an alert in the wrong state are both SKIPPED with the code the
+// real service would have refused with, and neither fails the request. The real
+// rule lives in service.UnsnoozeMany; this restates it so the handler can be
+// driven without a database, exactly as `ownsAlert` restates tenant scoping.
+func (f *fakeAlertsService) UnsnoozeMany(
+	_ context.Context, s db.TenantScope, alertIDs []uuid.UUID, actor domain.Actor, note string,
+) (service.UnsnoozeManyResult, error) {
+	f.note("UnsnoozeMany", s)
+	f.lastActor, f.lastUnsnoozeIDs, f.lastUnsnoozeNote = actor, alertIDs, note
+
+	res := service.UnsnoozeManyResult{Outcomes: make([]service.UnsnoozeOutcome, 0, len(alertIDs))}
+	for _, id := range alertIDs {
+		switch {
+		case f.ownsAlert(id) != nil:
+			res.Outcomes = append(res.Outcomes,
+				service.UnsnoozeOutcome{AlertID: id, Code: "alert_not_found"})
+		case f.failVerb != nil:
+			res.Outcomes = append(res.Outcomes,
+				service.UnsnoozeOutcome{AlertID: id, Code: errs.CodeOf(f.failVerb)})
+		default:
+			res.Outcomes = append(res.Outcomes, service.UnsnoozeOutcome{AlertID: id, Woken: true})
+		}
+	}
+	return res, nil
+}
+
 func (f *fakeAlertsService) SnoozeHistory(
 	_ context.Context, s db.TenantScope, alertID uuid.UUID, limit int,
 ) ([]domain.Snooze, error) {
@@ -379,7 +418,6 @@ var (
 	fxAlertID     = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b77")
 	fxClusterID   = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b78")
 	fxCase        = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b79")
-	fxPrevOccID   = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b7a")
 	fxEndedOccID  = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b7b")
 	fxSuppOccID   = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b7c")
 	fxGroupID     = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b7d")
@@ -476,8 +514,9 @@ func fxAlert(t *testing.T, id uuid.UUID, alertname string, now time.Time) domain
 	return a
 }
 
-// fxOpenCase is the episode currently running: acked, re-fired once, with
-// a sample value and a measured clock skew.
+// fxOpenCase is the episode currently running: open, acked, at `seq` 3 — so it
+// is the third episode of this alert and two ended before it — with a sample
+// value and a measured clock skew.
 func fxOpenCase(t *testing.T, now time.Time) domain.Case {
 	t.Helper()
 
@@ -488,13 +527,11 @@ func fxOpenCase(t *testing.T, now time.Time) domain.Case {
 		AlertID:         fxAlertID,
 		GroupID:         fxGroupID,
 		Seq:             3,
-		State:           domain.StateFiring,
+		State:           domain.CaseOpen,
 		StartedAt:       now.Add(-2 * time.Hour),
 		LastObservedAt:  now.Add(-1 * time.Minute),
 		SourceStartsAt:  now.Add(-2*time.Hour - time.Minute),
 		SourceUpdatedAt: now.Add(-1 * time.Minute),
-		ReopenCount:     1,
-		ReopenOf:        fxPrevOccID,
 		StateVersion:    4,
 		AckState:        domain.AckStateAcked,
 		AckedBy:         apitest.UserID,
@@ -522,7 +559,7 @@ func fxEndedCase(t *testing.T, now time.Time) domain.Case {
 		AlertID:        fxAlertID,
 		GroupID:        fxGroupID,
 		Seq:            2,
-		State:          domain.StateResolved,
+		State:          domain.CaseClosed,
 		StartedAt:      now.Add(-30 * time.Hour),
 		EndedAt:        now.Add(-28 * time.Hour),
 		LastObservedAt: now.Add(-28 * time.Hour),
@@ -544,12 +581,16 @@ func fxSuppressedCase(t *testing.T, now time.Time) domain.Case {
 	t.Helper()
 
 	o, err := domain.NewCase(domain.CaseParams{
-		ID:                fxSuppOccID,
-		OrgID:             apitest.OrgID,
-		AlertID:           fxAlertID,
-		GroupID:           fxGroupID,
-		Seq:               1,
-		State:             domain.StateSuppressed,
+		ID:      fxSuppOccID,
+		OrgID:   apitest.OrgID,
+		AlertID: fxAlertID,
+		GroupID: fxGroupID,
+		Seq:     1,
+		// ⭐ SUPPRESSED IS NOT A STORED STATE (ADR 0040): it is an OPEN episode with a
+		// suppression reason, and `AlertState` is what reads the pair back as
+		// `suppressed`. The fixture has to be built the way the column is written or
+		// it would prove the mapper against a row the database cannot hold.
+		State:             domain.CaseOpen,
 		SuppressionReason: domain.SuppressionSilence,
 		SuppressedBy: domain.SuppressedBy{
 			SilencedBy: []string{"1c9e5c9a-6e9d-4b1e-9e1a-2d5f3a7b9c11"},
@@ -733,6 +774,14 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 		},
 		cases: service.CaseResult{
 			Cases:  []domain.Case{open, ended, suppressed},
+			Cursor: cursor,
+		},
+		// The ORG-WIDE list carries the same three episodes plus the identity
+		// each belongs to, because that is what the row shape is: an episode has
+		// no `alertname` and no `severity` of its own.
+		caseList: service.CaseListResult{
+			Cases:  []domain.Case{open, ended, suppressed},
+			Alerts: map[uuid.UUID]domain.Alert{alert.ID(): alert},
 			Cursor: cursor,
 		},
 		alertCase: open,

@@ -228,8 +228,13 @@ func (r *StatsRepository) AlertQuality(
 const overviewSQL = `
 WITH a AS (
   SELECT
-    COUNT(*) FILTER (WHERE al.state = 'firing')       AS firing,
-    COUNT(*) FILTER (WHERE al.state = 'suppressed')   AS suppressed,
+    -- ADR 0041: firing counts a silenced firing alert, because it IS firing.
+    -- suppressed is a SUBSET of it and answers the other axis -- how many of the
+    -- live ones is Alertmanager not delivering. Before the axis existed this
+    -- overview under-reported firing by exactly the silenced set, which is the
+    -- set an operator has most recently touched.
+    COUNT(*) FILTER (WHERE al.state = 'firing')                AS firing,
+    COUNT(*) FILTER (WHERE al.suppression_reason IS NOT NULL)  AS suppressed,
     COUNT(*) FILTER (WHERE al.state = 'resolved')     AS resolved,
     COUNT(*) FILTER (WHERE al.state = 'expired')      AS expired,
     COUNT(*) FILTER (WHERE o.ack_state = 'acked')     AS acked,

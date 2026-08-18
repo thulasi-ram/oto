@@ -128,12 +128,20 @@ type TimelineReader interface {
 // group surface offered `ack` with no counterpart, so the only route back was
 // opening each member alert and withdrawing its receipt one at a time.
 type MemberActions interface {
-	AcknowledgeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, note string) error
+	// ⭐ ACK AND UNACK TAKE A CASE ID; COMMENT AND THE TWO SNOOZE VERBS TAKE AN
+	// ALERT ID, AND THE SPLIT IS THE SUBJECT OF EACH FACT RATHER THAN AN
+	// INCONSISTENCY. `ack_state`, `acked_by`, `acked_at` and `ack_note` are columns
+	// of `alert_cases` (00049): a receipt is for ONE firing episode and is cleared
+	// when the next one opens. A snooze is a row in `alert_snoozes` keyed by
+	// `alert_id` (00048) and outlives every episode of that alert, and a comment is
+	// an annotation on the alert's timeline. `CurrentMemberAlerts` returns both ids
+	// for each member, so neither verb has to look the other one up.
+	AcknowledgeAs(ctx context.Context, s db.TenantScope, caseID uuid.UUID, actorKind, actorID, actorLabel, note string) error
 	// UnacknowledgeAs is AcknowledgeAs read backwards, and the note lands in a
 	// different place: an ack note is a property of the acknowledgement and is
 	// stored on the case, while a withdrawal's note has nothing left to hang on and
 	// goes onto the timeline in the `case.unacknowledged` payload.
-	UnacknowledgeAs(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actorKind, actorID, actorLabel, note string) error
+	UnacknowledgeAs(ctx context.Context, s db.TenantScope, caseID uuid.UUID, actorKind, actorID, actorLabel, note string) error
 	// CommentAs returns the APPENDED EVENT, not just an error. The group comment
 	// endpoint answers `201` with the event it wrote, and reading it back off the
 	// timeline afterwards — which is what the handler used to do — is a second

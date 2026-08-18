@@ -1,5 +1,5 @@
 /**
- * oto's quiet button (§B.8), shared by one alert and the case-wide fan-out.
+ * oto's quiet button (§B.8), shared by every surface that offers it.
  *
  * The vocabulary is governed by SCOPE-BOUNDARY and §B.8, and none of it is
  * decoration:
@@ -180,29 +180,29 @@ function toLocalInputValue(at: Date): string {
 /* -------------------------------------------------------------------------- */
 
 /**
- * ⛔ `"case"` HERE IS THE **CORRELATION** — what the UI calls a Case and the API
- * still calls an alert group. It is NOT `AlertCase`, the per-alert firing episode
- * (`internal/alerts/domain/case.go`). The two words collide in the codebase by an
- * accepted decision; on screen they never do, because the episode is only ever
- * called an *episode*.
+ * ⛔ A SNOOZE IS ALWAYS ABOUT ONE **ALERT**, AND THAT IS WHY THIS DIALOG HAS NO
+ * SUBJECT PROP. The endpoint is `POST /alerts/{id}/snooze`, the subject is the
+ * IDENTITY, and the identity outlives every firing episode it has: a snooze
+ * taken from a case screen is still a hold on the alert, and it goes on holding
+ * after that case has resolved. It used to take a second subject that fanned out
+ * across a notification group's members, which invited exactly the misreading
+ * the endpoint cannot support — one gesture reading as "quiet this batch" while
+ * writing a hold on every identity in it.
+ *
+ * The screen that opens this is responsible for saying WHOSE alert; the sentence
+ * below is responsible for saying what a snooze is and is not.
  */
-export type SnoozeSubject = "alert" | "case";
-
 export interface SnoozeDialogProps {
   readonly open: boolean;
   readonly onClose: () => void;
-  readonly subject: SnoozeSubject;
   /** Runs the real mutation. One idempotency key per gesture, minted here. */
   readonly onSubmit: (body: SnoozeRequest, key: string) => Promise<unknown>;
   /** Invalidate whatever the caller needs invalidated. */
   readonly onSuccess: () => void;
 }
 
-const SUBJECT_DESCRIPTION: Record<SnoozeSubject, string> = {
-  alert:
-    "Stops oto's own notifications for this alert until a fixed time. It is not a silence: nothing changes in your cluster, the alert keeps firing, and it stays visible here at full severity.",
-  case: "Stops oto's own notifications for every alert currently in this case, until a fixed time. Alerts that join later are not snoozed — a snooze is never predictive.",
-};
+const DESCRIPTION =
+  "Stops oto's own notifications for this alert until a fixed time. It is not a silence: nothing changes in your cluster, the alert keeps firing, and it stays visible here at full severity. The hold is on the alert itself, so it outlasts whichever firing you took it from.";
 
 export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
   const [mode, setMode] = createSignal<"duration" | "until">("duration");
@@ -266,10 +266,8 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
     >
       <ModalContent>
         <ModalHeader>
-          <ModalTitle>
-            {props.subject === "case" ? "Snooze every current member" : "Snooze notifications"}
-          </ModalTitle>
-          <ModalDescription>{SUBJECT_DESCRIPTION[props.subject]}</ModalDescription>
+          <ModalTitle>Snooze notifications</ModalTitle>
+          <ModalDescription>{DESCRIPTION}</ModalDescription>
         </ModalHeader>
 
         <div class="flex flex-col gap-md text-item leading-relaxed text-ink">
@@ -281,9 +279,8 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
 
           <Show when={mutation.error instanceof ApiError && mutation.error.status === 412}>
             <ErrorBanner>
-              {props.subject === "case"
-                ? "There is nothing here to snooze — this case has no currently-joined member. A snooze is never predictive, so there is nothing for it to attach to."
-                : "This alert is in the wrong state for a snooze. The request itself was fine; the entity moved while the dialog was open."}
+              This alert is in the wrong state for a snooze. The request itself was fine; the
+              entity moved while the dialog was open.
             </ErrorBanner>
           </Show>
 
@@ -395,9 +392,7 @@ export const SnoozeDialog: Component<SnoozeDialogProps> = (props) => {
           </TextField>
 
           <p class="text-meta leading-snug text-ink-subtle">
-            {props.subject === "case"
-              ? "Every member stays firing, stays whatever severity it was, and stays in the default alert list. A member that cannot be snoozed is skipped rather than failing the request."
-              : "A snoozed alert is still firing and is still rendered as firing."}{" "}
+            A snoozed alert is still firing and is still rendered as firing.{" "}
             Snoozing suppresses every notification reason for it — including a rule change — except the
             messages announcing the snooze starting and ending, so it can never go quiet silently. Every
             snooze is attributed and stays in the history afterwards.

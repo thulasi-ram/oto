@@ -226,29 +226,17 @@ const ConfirmModalBand: Component = () => {
 
 const SnoozeBand: Component = () => {
   const [openAlert, setOpenAlert] = createSignal(false);
-  const [openGroup, setOpenGroup] = createSignal(false);
   return (
     <Band
       title="SnoozeDialog"
-      note="The shipping dialog, in both its subjects. Submitting resolves locally against nothing — no request leaves the browser."
+      note="The shipping dialog. A snooze is always a hold on ONE alert — there is no second subject. Submitting resolves locally against nothing — no request leaves the browser."
     >
       <Button variant="secondary" size="sm" onClick={() => setOpenAlert(true)}>
         Snooze an alert
       </Button>
-      <Button variant="secondary" size="sm" onClick={() => setOpenGroup(true)}>
-        Snooze a case
-      </Button>
       <SnoozeDialog
         open={openAlert()}
         onClose={() => setOpenAlert(false)}
-        subject="alert"
-        onSubmit={() => Promise.resolve(null)}
-        onSuccess={() => undefined}
-      />
-      <SnoozeDialog
-        open={openGroup()}
-        onClose={() => setOpenGroup(false)}
-        subject="case"
         onSubmit={() => Promise.resolve(null)}
         onSuccess={() => undefined}
       />

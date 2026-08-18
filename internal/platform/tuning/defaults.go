@@ -56,8 +56,16 @@ import "time"
 // The §D.1 lifecycle and damping defaults.
 const (
 	// DefaultRefireGrace is `for + group_interval` for the MODAL real rule:
-	// 15m + 5m = 20m. It is the smallest value at which oto's re-fire reopen path
-	// (T8) is reachable for the commonest rule shape in the wild.
+	// 15m + 5m = 20m — the earliest instant oto can observe a re-fire of the
+	// commonest rule shape in the wild.
+	//
+	// ⚠️ IT NO LONGER DECIDES A TRANSITION (ADR 0040). It was the smallest value at
+	// which the T8 reopen path was reachable; T8 is retired and every re-fire opens
+	// a new episode. The number is retained because `group_close_delay` is pinned
+	// at or above it — that pin is what still decides whether a re-fire lands in
+	// the existing Slack thread or gets a new root card — and because the ingest
+	// replay floor is derived from it. The arithmetic below is unchanged and still
+	// binding; what it now buys is thread continuity rather than an edge.
 	//
 	// ⛔ IT WAS 600s AND 600s IS UNREACHABLE FOR 76% OF REAL RULES. The clock
 	// starts at the case's `ended_at`, which T5 takes from the UPSTREAM

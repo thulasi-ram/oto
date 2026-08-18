@@ -72,13 +72,16 @@ func TestTransitionKind_IsNotAState(t *testing.T) {
 	// a fifth state nobody meant to add."
 	kinds := []TransitionKind{
 		TransitionObserve, TransitionSuppress, TransitionUnsuppress,
-		TransitionResolve, TransitionExpire, TransitionReopen,
+		TransitionResolve, TransitionExpire,
 	}
 	for _, k := range kinds {
 		_, err := NewState(string(k))
 		assert.Error(t, err, "%q must not parse as a State", k)
+		_, err = NewCaseState(string(k))
+		assert.Error(t, err, "%q must not parse as a CaseState either", k)
 	}
-	assert.Len(t, kinds, 6)
+	// Five, not six: TransitionReopen went with T8 (ADR 0040).
+	assert.Len(t, kinds, 5)
 }
 
 // ----------------------------------------------------------- the compare-and-set
@@ -161,8 +164,12 @@ func TestAlertRollup_RollupState(t *testing.T) {
 		r    AlertRollup
 		want State
 	}{
-		{name: "any firing wins", r: AlertRollup{Firing: 1, Suppressed: 9, Resolved: 9, Expired: 9}, want: StateFiring},
-		{name: "suppressed beats both terminals", r: AlertRollup{Suppressed: 1, Resolved: 9, Expired: 9}, want: StateSuppressed},
+		// ⭐ ADR 0041: `Suppressed` IS A SUBSET OF `Firing`, so the liveliest-member
+		// test is `Firing > Suppressed` — "at least one live member is audible" —
+		// rather than the `Suppressed > 0` it replaced, which is now unreachable.
+		{name: "an audible live member wins", r: AlertRollup{Firing: 10, Suppressed: 9, Resolved: 9, Expired: 9}, want: StateFiring},
+		{name: "every live member silenced reads suppressed", r: AlertRollup{Firing: 9, Suppressed: 9, Resolved: 9, Expired: 9}, want: StateSuppressed},
+		{name: "one silenced member beats both terminals", r: AlertRollup{Firing: 1, Suppressed: 1, Resolved: 9, Expired: 9}, want: StateSuppressed},
 		{name: "⭐ expired outranks resolved", r: AlertRollup{Resolved: 99, Expired: 1}, want: StateExpired},
 		{name: "all resolved", r: AlertRollup{Resolved: 3}, want: StateResolved},
 		{name: "the unreachable empty bucket falls back conservatively", r: AlertRollup{}, want: StateResolved},

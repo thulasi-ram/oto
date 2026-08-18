@@ -67,12 +67,19 @@ func DefaultBroadcastPolicy() BroadcastPolicy { return BroadcastPolicy{Resolved:
 //     In-thread it reaches only the already-engaged, which
 //     is precisely the wrong audience. This is the case
 //     `reply_broadcast` was put in oto for.
-//   - `refired`           — a re-fire INSIDE `refire_grace` reopens the existing
-//     case: an update plus a thread reply, no new root.
-//     The thread said "resolved" and people stopped following
-//     it. A re-fire AFTER the grace window opens a new
-//     generation and a new root message, which is already
-//     loud (§B.5) and is not in this set.
+//   - `refired`           — ⛔ RETAINED FOR HISTORY; NOTHING PRODUCES IT. It was
+//     T8's reason, and ADR 0040 retired T8: every re-fire
+//     now opens a new episode. It stays in this set because
+//     `notifications.reason` is a persisted enum and a
+//     stored `refired` row must still render and still be
+//     replayable, and because the reasoning below is what a
+//     future re-fire-into-an-open-generation reason would
+//     inherit — a re-fire that lands in a generation still
+//     open is an update plus a thread reply and no new root,
+//     and the thread said "resolved" so people stopped
+//     following it. A re-fire that finds the generation
+//     closed gets a new root message, which is already loud
+//     (§B.5) and is not in this set.
 //
 // ⛔ `storm` WAS REMOVED FROM THIS SET AND MUST NOT COME BACK. A storm means MANY
 // alerts; a per-thread broadcast of "oto has gone quiet" therefore produces

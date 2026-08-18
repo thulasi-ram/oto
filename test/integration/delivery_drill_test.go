@@ -83,7 +83,7 @@ VALUES ($1, $2, $3, $4, $5, $6, 'warning', 'oto', 'oto', 'prod-eu', $7::jsonb, '
 		if _, err := e.pool.Exec(e.ctx, `
 INSERT INTO alert_cases (id, org_id, alert_id, seq, state, started_at, last_observed_at,
                                source_starts_at, ack_state)
-VALUES ($1, $2, $3, 1, 'firing', $4, $4, $4, 'unacked')`,
+VALUES ($1, $2, $3, 1, 'open', $4, $4, $4, 'unacked')`,
 			uuid.New(), orgID, a, f.day); err != nil {
 			t.Fatalf("seed case: %v", err)
 		}

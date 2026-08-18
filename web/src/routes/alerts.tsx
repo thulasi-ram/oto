@@ -31,15 +31,21 @@ import {
   untrack,
 } from "solid-js";
 import { useNavigate, useSearchParams } from "@solidjs/router";
-import { useQuery } from "@tanstack/solid-query";
+import { useQuery, useQueryClient } from "@tanstack/solid-query";
 
-import { batchGetRuleSnapshots, listAlertRollups, listAlerts } from "~/api/endpoints";
+import { ApiError } from "~/api/client";
+import {
+  batchGetRuleSnapshots,
+  listAlertRollups,
+  listAlerts,
+  unsnoozeAlert,
+} from "~/api/endpoints";
 import { qk } from "~/api/keys";
 import { useSession } from "~/api/session";
 import type { Alert, AlertRollup, RollupAxis, RuleSnapshot } from "~/api/types";
 import { Button } from "~/components/ui/Button";
 import { EmptyState, ErrorState, PageEmptyState, TableSkeleton } from "~/components/ui/states";
-import { count as fmtCount } from "~/lib/format";
+import { count as fmtCount, idempotencyKey } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { AlertTable } from "~/features/alerts/AlertTable";
 import { AlertTabs, summariseQuiet, type QuietSummary } from "~/features/alerts/AlertTabs";
@@ -81,12 +87,17 @@ const BUCKET_PAGE_SIZE = 100;
  */
 const QUIET_BADGE_LIMIT = 200;
 
-/** One shared empty set, so "nothing is held" is stable by reference. */
+/**
+ * One shared empty set, so "nothing is held" is stable by reference. Both id sets
+ * on this screen — the deferred inserts and the resumes in flight — reset to this
+ * one rather than to a fresh `new Set()`, which would make every reset a change.
+ */
 const NOTHING_HELD: ReadonlySet<string> = new Set<string>();
 
 export default function AlertsRoute() {
   const navigate = useNavigate();
   const session = useSession();
+  const client = useQueryClient();
   // Subscribing to the router's params is what makes back/forward work; the
   // filters are derived from the URL and never held in parallel.
   const [searchParams] = useSearchParams();
@@ -208,20 +219,70 @@ export default function AlertsRoute() {
   });
 
   const setTab = (tab: AlertTab): void => {
-    setWentQuiet(null);
     setFilters(withTab(filters(), tab));
   };
 
+  /* ---- ending a quiet period, from the Quiet tab and nowhere else --------- */
+
   /**
-   * The alert the operator has just snoozed, if any — so the screen can say
-   * where its row went.
+   * ⭐⭐ THE ONE GESTURE THIS LIST OFFERS, AND THE TAB IS WHAT MAKES IT HONEST.
    *
-   * ⛔ A DISAPPEARING ROW IS NOT A RESULT. Snoozing from the main tab removes the
-   * row from the list it was snoozed on, which is correct and is also exactly
-   * what a failed request looks like from the operator's chair. The sentence
-   * below is what makes the two distinguishable, and it carries the way back.
+   * Every other verb was taken off these rows because a row here is an **Alert**
+   * — an identity that outlives its firings — while acknowledging is a receipt on
+   * one firing and snoozing is a dialog about one alert. `Resume` is neither: it
+   * is the undo of a snooze, its subject IS the identity, and on the Quiet tab
+   * every row is by construction an alert oto is currently holding. So the button
+   * can name what it will do to the thing under the cursor, and the set it is
+   * acting out of is the list on screen rather than a filter evaluated somewhere
+   * the operator cannot see (which is the reason §B.8's bulk wake takes ids).
+   *
+   * ⭐ IT SPEAKS IN LISTS FROM THE FIRST DAY. One row's button calls it with one
+   * id; when the multi-select column lands, the same handler answers a selection,
+   * and the only change is that a length above one goes to `unsnoozeAlerts`
+   * (`POST /alerts/unsnooze`, which answers with a per-id account). No call site
+   * moves, because none of them ever passed a bare string.
    */
-  const [wentQuiet, setWentQuiet] = createSignal<string | null>(null);
+  const [resuming, setResuming] = createSignal<ReadonlySet<string>>(NOTHING_HELD);
+  const [resumeFailure, setResumeFailure] = createSignal<string | null>(null);
+
+  const settled = (ids: readonly string[]): void => {
+    setResuming((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      return next.size === 0 ? NOTHING_HELD : next;
+    });
+  };
+
+  /**
+   * A refusal has to be *said*: this control has no dialog to land in, and
+   * silence after a press is the one thing oto is never allowed to do about a
+   * failure. `412` is the interesting one — the alert woke on its own between the
+   * paint and the press — and it is not an error the operator caused.
+   */
+  const resumeMessage = (error: unknown): string => {
+    if (error instanceof ApiError && error.status === 412) {
+      return "That alert was already awake, so there was nothing to resume.";
+    }
+    return (error as Error | null)?.message ?? "oto could not resume that alert.";
+  };
+
+  const onResume = (alertIds: readonly string[]): void => {
+    if (alertIds.length === 0) return;
+    setResumeFailure(null);
+    setResuming((current) => new Set([...current, ...alertIds]));
+    // One idempotency key per request, minted at the gesture: the server's
+    // idempotency promise only holds if the client stops re-minting on a retry.
+    void Promise.allSettled(
+      alertIds.map((id) => unsnoozeAlert(id, undefined, idempotencyKey())),
+    ).then((results) => {
+      settled(alertIds);
+      const refused = results.find((r) => r.status === "rejected");
+      if (refused?.status === "rejected") setResumeFailure(resumeMessage(refused.reason));
+      // A woken alert leaves this tab and joins the other one, and the badge on
+      // both is counted from the same prefix.
+      void client.invalidateQueries({ queryKey: qk.alerts.all() });
+    });
+  };
 
   /* ---- inserts do not move the list under the operator (§0.5) ------------ */
 
@@ -566,24 +627,30 @@ export default function AlertsRoute() {
           </Button>
         </Show>
 
-        {/* ⭐ WHERE THE ROW WENT. It is spoken inside the strip's existing polite
-            region rather than as a toast, for the reason `AppShell` records: a
-            message about what just happened to the screen must not be able to
-            expire before it is read. It clears on the next tab change, and the
-            button is the way back rather than a second copy of the tab. */}
-        <Show when={wentQuiet()}>
-          {(name) => (
-            <span class="flex items-center gap-2 text-body text-ink-muted">
-              <span>
-                oto is now quiet about <span class="text-ink">{name()}</span>. It is still firing —
-                its row moved to Quiet.
-              </span>
-              <Button variant="secondary" size="sm" onClick={() => setTab("quiet")}>
-                Show me
-              </Button>
+        {/* The Quiet tab's `Resume` is the one control on this screen that writes
+            anything, and it has no dialog to fail inside — so its refusal lands
+            here, in the strip, as an `alert` rather than as nothing at all. */}
+        <Show when={resumeFailure()}>
+          {(message) => (
+            <span role="alert" class="text-body leading-snug text-ink">
+              {message()}
             </span>
           )}
         </Show>
+
+        {/* ⛔ THERE IS NO "WHERE THE ROW WENT" SENTENCE HERE ANY MORE, AND ITS
+            REMOVAL IS THE POINT. It existed because snoozing from this list made
+            the snoozed row leave the list — a disappearance the operator had
+            caused and had to be told about. This list offers no Snooze and no
+            Acknowledge: acting on a firing is the **Case** surface's job
+            (`/cases`, `/cases/:id`), because the subject of both is one firing
+            episode and a row here is an Alert identity. Nothing the operator can
+            do on this screen removes a row from it, so there is no
+            self-inflicted disappearance left to explain — and a sentence about a
+            gesture that cannot be made here would be an unreachable branch. Rows
+            that leave for the world's own reasons (an SSE resolve, a snooze
+            expiring) are the tab's business, and the Quiet tab and its badge say
+            that on their own; neither ever read this signal. */}
       </header>
 
       <Switch>
@@ -722,7 +789,13 @@ export default function AlertsRoute() {
             rules={rulesById()}
             rulesPending={rules.isFetching}
             onFilterLabel={onFilterLabel}
-            onSnoozed={(a) => setWentQuiet(a.alertname)}
+            // ⛔ HANDED OVER ON THE QUIET TAB AND NOWHERE ELSE. `AlertTable` draws
+            // the `Resume` column only when it has both this and `quiet`, and the
+            // main tab's rows are not knowably snoozed at all — `AlertDTO` carries
+            // no `snooze`, so the only thing that makes the answer certain is the
+            // query that fetched them.
+            onResume={isQuietTab(filters()) ? onResume : undefined}
+            resuming={resuming()}
             footer={
               <Footer
                 hasMore={hasMore()}

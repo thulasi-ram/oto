@@ -10,6 +10,7 @@
 import type {
   Alert,
   AlertDetail,
+  AlertRef,
   ApiToken,
   Channel,
   Cluster,
@@ -17,6 +18,8 @@ import type {
   GroupDetail,
   Notification,
   Case,
+  CaseDetail,
+  CaseListItem,
   OrgSettingsView,
   Policy,
   RuleSnapshot,
@@ -35,15 +38,51 @@ export function alertCase(patch: Partial<Case> = {}): Case {
     id: "0f8fad5b-d9cb-469f-a165-70867728950e",
     alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
     seq: 3,
-    state: "firing",
+    state: "open",
     ack_state: "unacked",
     started_at: T0,
     last_observed_at: T0,
     source_starts_at: T0,
-    reopen_count: 0,
     observed_skew_ms: 0,
     ...patch,
   };
+}
+
+/**
+ * The reference an org-wide case row carries.
+ *
+ * ⛔ IT IS NOT OPTIONAL ON `CaseListItemDTO`, AND THE FIXTURE MIRRORS THAT. A
+ * case holds `alert_id` and nothing else about the identity — `alertname`,
+ * `severity`, `namespace` and `cluster_key` describe the ALERT — so a row
+ * without the reference could not be rendered without a request per row.
+ */
+export function alertRef(patch: Partial<AlertRef> = {}): AlertRef {
+  return {
+    id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
+    alert_key: "b3f1c2d4e5a60718",
+    alertname: "HighErrorRate",
+    severity: "critical",
+    namespace: "payments",
+    cluster_key: "prod-eu",
+    state: "firing",
+    ...patch,
+  };
+}
+
+/** One row of `GET /api/v1/cases`: a firing episode plus its identity. */
+export function caseListItem(patch: Partial<CaseListItem> = {}): CaseListItem {
+  return { ...alertCase(), alert: alertRef(), ...patch } as CaseListItem;
+}
+
+/** One expanded case, as `GET /api/v1/cases/{id}` serves it. */
+export function caseDetail(patch: Partial<CaseDetail> = {}): CaseDetail {
+  return {
+    ...alertCase(),
+    alert: alertRef(),
+    enrichments: [],
+    delivery_summary: { total: 0, sent: 0, failed: 0, pending: 0, suppressed: 0 },
+    ...patch,
+  } as CaseDetail;
 }
 
 export function ruleSnapshot(patch: Partial<RuleSnapshot> = {}): RuleSnapshot {

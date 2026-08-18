@@ -156,8 +156,20 @@ func (r *DrillRepository) readCase(
 		ruleName *string
 	)
 	err := r.db(ctx).QueryRow(ctx, `
-SELECT o.id, o.seq, o.state, o.rule_snapshot_id, rs.rule_name
+SELECT o.id, o.seq,
+       -- ADR 0040: recomposed from the alert and resolve_reason, because
+       -- alert_cases.state is open | closed. A drill asserts the episode it
+       -- manufactured is FIRING, so the word matters and the column no longer
+       -- spells it.
+       -- ADR 0041: and the suppression axis is recomposed too, so a drill run
+       -- while a silence is in force still reads the word a human expects.
+       CASE WHEN o.state = 'open' AND a.suppression_reason IS NOT NULL THEN 'suppressed'
+            WHEN o.state = 'open' THEN a.state
+            WHEN o.resolve_reason = 'timeout' THEN 'expired'
+            ELSE 'resolved' END,
+       o.rule_snapshot_id, rs.rule_name
   FROM alert_cases o
+  JOIN alerts a ON a.id = o.alert_id AND a.org_id = o.org_id
   LEFT JOIN rule_snapshots rs ON rs.id = o.rule_snapshot_id AND rs.org_id = o.org_id
  WHERE o.org_id = $1 AND o.alert_id = $2
  ORDER BY o.seq DESC

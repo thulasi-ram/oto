@@ -227,15 +227,51 @@ func (r *MemberRepository) DistinctJoinsSince(
 	return int(n), timeOrZero(last), nil
 }
 
+// memberRollupSQL is the group card's breakdown — "12 alerts, 3 firing, 9
+// resolved" — and since ADR 0040 it DERIVES the four §B.2 words rather than
+// reading them off a column.
+//
+// ⭐⭐ THE BREAKDOWN NO LONGER COMES FROM THE CASE, AND IT COMES FROM THE JOIN
+// THAT WAS ALREADY HERE. `alert_cases.state` is `open | closed` (migration
+// 00054), so `firing` apart from `suppressed` is a question only the ALERT can
+// answer — and `alerts` has been joined on this statement since it was written,
+// for `max(a.severity)`. The derivation therefore adds no table, no index and no
+// row: it reads one more column off a row the plan already fetched by primary
+// key. The four counters are the same four numbers, computed from:
+//
+//	o.state = 'open'   -> a.state, which is `firing` or `suppressed`
+//	o.state = 'closed' -> o.resolve_reason, `upstream` or `timeout`
+//
+// ⛔ `a.state` IS ONLY SAFE ON THE OPEN HALF, AND THE PREDICATE IS NOT
+// DECORATION. `alerts.state` is a projection of the alert's CURRENT episode, and
+// one generation can hold SEVERAL episodes of one alert — so counting `a.state`
+// over closed rows would report a re-fired alert's old, ended episodes as firing.
+// An OPEN episode cannot have that problem: case_one_open_idx is UNIQUE
+// (alert_id) WHERE ended_at IS NULL, so an open case IS its alert's current one
+// and `a.state` IS its state.
+//
+// ⛔ AND IT DOES NOT ASK `o.suppression_reason` INSTEAD, THOUGH IT COULD. That
+// column is still on the Case and still says which silence muted this firing, but
+// it is the EPISODE'S RECORD; the live axis is the Alert's, which is where ADR
+// 0041 put it and where `alerts_suppress_ck` binds it to `state = 'firing'`.
+// Reading the episode's copy would be asking the wrong row a question the
+// projection already answers, on a join the plan has already made.
+//
+// ⭐⭐ `firing` COUNTS THE SILENCED ONES, AND `suppressed` IS A SUBSET OF IT
+// (ADR 0041). Before it, `a.state = 'firing'` excluded every alert somebody had
+// silenced, so a group card reading "12 alerts, 3 firing" under-reported during
+// exactly the window an operator had silenced something. The two counters no
+// longer partition the generation, deliberately: a silenced alert IS firing, and
+// `suppressed` answers the separate question of who is not being told.
 const memberRollupSQL = `
 SELECT
-    count(*) FILTER (WHERE o.state = 'firing')                       AS firing,
-    count(*) FILTER (WHERE o.state = 'suppressed')                   AS suppressed,
-    count(*) FILTER (WHERE o.state = 'resolved')                     AS resolved,
-    count(*) FILTER (WHERE o.state = 'expired')                      AS expired,
-    count(*)                                                         AS total,
-    count(*) FILTER (WHERE o.ack_state = 'acked')                    AS acked,
-    max(a.severity)                                                  AS severity
+    count(*) FILTER (WHERE o.state = 'open'   AND a.state = 'firing')            AS firing,
+    count(*) FILTER (WHERE o.state = 'open'   AND a.suppression_reason IS NOT NULL) AS suppressed,
+    count(*) FILTER (WHERE o.state = 'closed' AND o.resolve_reason = 'upstream') AS resolved,
+    count(*) FILTER (WHERE o.state = 'closed' AND o.resolve_reason = 'timeout')  AS expired,
+    count(*)                                                                     AS total,
+    count(*) FILTER (WHERE o.ack_state = 'acked')                                AS acked,
+    max(a.severity)                                                              AS severity
   FROM alert_cases o
   JOIN alerts a ON a.id = o.alert_id
  WHERE o.org_id = $1 AND o.group_id = $2`
@@ -246,8 +282,8 @@ SELECT
 // and there is no `ended_at IS NULL` clause missing here. A card reading "12
 // alerts, 3 firing, 9 resolved" is what the counts are FOR; restricting the
 // aggregate to live members would make `resolved` and `expired` permanently zero
-// and shrink `total` to the firing count. The breakdown is the answer, and
-// `state` is what breaks it down.
+// and shrink `total` to the firing count. The breakdown is the answer; since ADR
+// 0040 it is derived rather than read, and the SQL above carries the argument.
 //
 // (Before 00051 this aggregate carried `m.left_at IS NULL`, which matched every
 // row because nothing ever wrote `left_at`. It was computing this by accident. It

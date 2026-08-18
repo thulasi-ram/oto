@@ -652,7 +652,7 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 
 		exec(`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state,
 		         started_at, last_observed_at, source_starts_at)
-		      VALUES ($1,$2,$3,$4,1,'firing',$5,$5,$5)`, caseID, orgID, alertID, groupID, now)
+		      VALUES ($1,$2,$3,$4,1,'open',$5,$5,$5)`, caseID, orgID, alertID, groupID, now)
 
 		exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`, alertID, caseID)
 		// The episode's own `group_id` above IS the membership since 00051; there is

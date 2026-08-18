@@ -172,7 +172,7 @@ Everything below crosses, brushes, or props open the line. Ruled `KEEP` / `CUT` 
 
 | Element | Ruling | Detail |
 |---|---|---|
-| `ackAlert`, `unackAlert`, `ackAlertGroup` (openapi); `POST /alerts/{id}/ack`, `/unack`, `/alert-groups/{id}/ack`; T9/T10 | **KEEP** | Ack is a receipt on a case, not a claim on a person. The orthogonal `ack_state` axis (B.1) and the openapi copy *"an acked alert is still firing… says 'a human has seen this', not 'this is over'"* are already exactly right. **Guard to add:** ack MUST NOT be presented in UI copy or docs as "take ownership", "I'm on it", or "assign to me". |
+| `ackCase`, `unackCase`, `ackAlertGroup` (openapi); `POST /cases/{id}/ack`, `/unack`, `/alert-groups/{id}/ack`; T9/T10 | **KEEP** | Ack is a receipt on a case, not a claim on a person. The orthogonal `ack_state` axis (B.1) and the openapi copy *"an acked alert is still firing… says 'a human has seen this', not 'this is over'"* are already exactly right. **Guard to add:** ack MUST NOT be presented in UI copy or docs as "take ownership", "I'm on it", or "assign to me". |
 | `alert_cases.acked_by`, `acked_by_label`, `acked_at`, `ack_note` | **KEEP** | Attribution as metadata on a signal row. |
 | `commentOnAlert`, `commentOnAlertGroup`, `comment.added`, T14 | **KEEP** | Immutable events on a signal timeline; the openapi already forbids edit and delete. **Guards to add:** (a) no `@mention` semantics that select a human recipient; (b) no comment threading or replies-to-comments — that is a conversation, and conversations are OUT; (c) the mirror is one-way oto→Slack (already implied by C9; state it). |
 | `alert_events.actor_kind = 'user'`, `actor_id`, `actor_label` | **KEEP** | The literal encoding of *actor, never subject*. This is the schema-level proof that FR-1 holds. |
@@ -337,7 +337,7 @@ consumer of incident state.*
 | **H-5** | **`getAlertRuleHistory` / `getCaseRule`** — the rule `expr` and `for` **as they were at fire time**, plus version history | **This is oto's unique contribution to someone else's incident workflow.** No incident management platform has it, and it is the single most valuable artefact at postmortem time. Lead the integration story with this, not with "we also have a timeline". |
 | **H-6** | **SSE with durable resume** — `streamEvents`, `Last-Event-ID`, 24h replay window | A downstream tails oto without polling and without losing events across its own restarts. |
 | **H-7** | **Stable deep links** | Every alert, case and group has a permanent URL an incident record can cite. |
-| **H-8** | **Exactly one inbound human verb: acknowledge** | `ackAlert` with a PAT is how an incident tool tells oto *"a human has this"*. oto accepts the **receipt**; it does not manage the responder. `commentOnAlert` is the second and last inbound verb, and it is an annotation, not a state change. |
+| **H-8** | **Exactly one inbound human verb: acknowledge** | `ackCase` with a PAT is how an incident tool tells oto *"a human has this"*. oto accepts the **receipt**; it does not manage the responder. `commentOnAlert` is the second and last inbound verb, and it is an annotation, not a state change. |
 
 ### What oto must NOT try to own
 

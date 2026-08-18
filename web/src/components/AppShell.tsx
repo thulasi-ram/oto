@@ -57,7 +57,7 @@ import {
 } from "solid-js";
 
 import { describeConnection, useLive } from "~/api/live";
-import { createSidebarSlot, SidebarSlotProvider } from "~/components/SidebarSlot";
+import { createSidebarSlot, SidebarSlotProvider, SubNavLink } from "~/components/SidebarSlot";
 import { Countdown } from "~/components/Time";
 import { Button } from "~/components/ui/Button";
 import { ShellBanner, SnoozeBanner, SourceReachBanner } from "~/components/ui/ShellBanner";
@@ -185,15 +185,48 @@ interface NavItem {
   readonly prefix: string;
 }
 
-const NAV: readonly NavItem[] = [
-  // ⭐ CASES COME FIRST, AND THE ORDER IS THE ARGUMENT. A case is the unit an
-  // operator responds to — forty pods crash-looping is one thing happening — so
-  // the rail opens on the correlation and offers the raw alert stream second.
-  // Leading with Alerts taught the eye that the individual firing was the
-  // primary object and the correlation an optional summary of it, which is
-  // backwards: nobody acknowledges forty rows one at a time.
-  { href: "/cases", label: "Cases", prefix: "/cases" },
-  { href: "/alerts", label: "Alerts", prefix: "/alerts" },
+/**
+ * A heading over destinations, and **not a destination itself**.
+ *
+ * ⛔ IT IS DELIBERATELY NOT A LINK. "Alerts" the section and "Alerts" the screen
+ * are two different things with one word, and the moment the heading is
+ * clickable an operator has two rows that both claim to be the alert list —
+ * which is the shape ADR 0034 already refused for `/notifications`, arrived at
+ * from the other side. A heading that goes nowhere can never claim
+ * `aria-current`, so the one-answer-to-"where am I" rule holds structurally
+ * rather than by a condition somebody has to keep true.
+ */
+interface NavSection {
+  readonly label: string;
+  readonly children: readonly NavItem[];
+}
+
+type NavEntry = NavItem | NavSection;
+
+const isSection = (entry: NavEntry): entry is NavSection => "children" in entry;
+
+const NAV: readonly NavEntry[] = [
+  {
+    // ⭐ ONE SECTION, TWO OBJECTS, AND CASES COME FIRST. An Alert is an identity
+    // — the label set, which outlives every one of its firings. A Case is one
+    // firing episode of one Alert, and it is what a human acknowledges, so the
+    // section opens on the thing there is something to *do* about and offers the
+    // identities second. Leading with Alerts taught the eye that the identity
+    // was the operational object, which is backwards: nobody acknowledges a
+    // label set.
+    label: "Alerts",
+    children: [
+      { href: "/cases", label: "Cases", prefix: "/cases" },
+      { href: "/alerts", label: "Alerts", prefix: "/alerts" },
+    ],
+  },
+  // ⛔ AlertGroups ARE NOT IN THIS RAIL, AND THAT IS THE DECISION RATHER THAN AN
+  // OVERSIGHT. An AlertGroup is Alertmanager's notification grouping — the thing
+  // that owns one Slack thread — so it is plumbing an operator arrives at from a
+  // chat card or from a case, never a place they set out for. `/groups` is a
+  // real screen and every link into it still resolves; it simply is not somewhere
+  // the product offers to take you.
+  //
   // ADR 0034. The BARE path, not `/notifications/policies` — the route redirects
   // to its first section, and an href the location never exactly equals is what
   // stops `<A>` from stamping its own `aria-current="page"` on a row whose child
@@ -203,8 +236,14 @@ const NAV: readonly NavItem[] = [
 ];
 
 /**
- * The four places the product has, and — indented beneath whichever one you are
- * in — the sections that place contributed.
+ * The places the product has — some of them grouped under a heading — and,
+ * indented beneath whichever one you are in, the sections that place contributed.
+ *
+ * ⭐ THE RAIL NESTS TWICE OVER, AND BOTH NESTINGS ARE THE SAME IDEA. `NAV` may
+ * carry a heading with destinations under it (Alerts → Cases, Alerts), and a
+ * destination may carry the sections its screen contributed. Both are drawn with
+ * `SubNavLink`, the component the screens already use, so "indented under" means
+ * exactly one thing however it arose.
  *
  * ⭐ THE SECTIONS ARE INSIDE THIS NAV, NOT IN A ZONE UNDER IT. They used to sit
  * in a block of their own at the bottom of the rail behind a hairline, which
@@ -246,32 +285,94 @@ const Nav = (props: {
   /** Active AND the screen handed us sections to draw under it. */
   const expanded = (prefix: string): boolean => active(prefix) && props.panel() !== null;
 
+  /**
+   * One destination, at whichever depth it sits.
+   *
+   * A top-level entry keeps the row this rail has always drawn; one inside a
+   * section reuses `SubNavLink`, which is the very component the screens'
+   * own section lists use. That is the point: the rail is one list at two
+   * depths, and a nested destination must not be a third way of drawing a row.
+   */
+  const Destination = (p: { readonly item: NavItem; readonly nested: boolean }): JSX.Element => (
+    <>
+      <Show
+        when={p.nested}
+        fallback={
+          <A
+            href={p.item.href}
+            aria-current={
+              active(p.item.prefix) && !expanded(p.item.prefix) ? "page" : undefined
+            }
+            class={cn(
+              "flex h-9 shrink-0 items-center border-l-2 px-md text-item",
+              "transition-colors duration-100",
+              active(p.item.prefix)
+                ? expanded(p.item.prefix)
+                  ? "border-transparent font-medium text-ink"
+                  : "border-accent bg-raised font-medium text-ink"
+                : "border-transparent text-ink-muted hover:bg-raised hover:text-ink",
+            )}
+          >
+            {p.item.label}
+          </A>
+        }
+      >
+        <SubNavLink
+          href={p.item.href}
+          current={active(p.item.prefix) && !expanded(p.item.prefix)}
+        >
+          {p.item.label}
+        </SubNavLink>
+      </Show>
+
+      {/* Only the matching destination renders them, so the list appears
+          exactly once however many entries `NAV` grows.
+
+          A destination that is itself nested pushes its screen's sections one
+          further step in, so three depths stay three depths: without the extra
+          indent a section contributed by `/cases` would sit at exactly the
+          indent of `/cases` itself and read as its sibling. */}
+      <Show when={expanded(p.item.prefix) && props.panel()}>
+        {(panel) => (
+          <div class={cn("flex flex-col gap-2xs", p.nested && "pl-md")}>{panel()()}</div>
+        )}
+      </Show>
+    </>
+  );
+
   return (
     <nav aria-label="Primary" class="flex shrink-0 flex-col gap-2xs pb-sm">
       <For each={NAV}>
-        {(item) => (
-          <>
-            <A
-              href={item.href}
-              aria-current={active(item.prefix) && !expanded(item.prefix) ? "page" : undefined}
-              class={cn(
-                "flex h-9 shrink-0 items-center border-l-2 px-md text-item",
-                "transition-colors duration-100",
-                active(item.prefix)
-                  ? expanded(item.prefix)
-                    ? "border-transparent font-medium text-ink"
-                    : "border-accent bg-raised font-medium text-ink"
-                  : "border-transparent text-ink-muted hover:bg-raised hover:text-ink",
-              )}
-            >
-              {item.label}
-            </A>
-            {/* Only the matching destination renders them, so the list appears
-                exactly once however many entries `NAV` grows. */}
-            <Show when={expanded(item.prefix) && props.panel()}>
-              {(panel) => <div class="flex flex-col gap-2xs">{panel()()}</div>}
-            </Show>
-          </>
+        {(entry) => (
+          <Show
+            when={isSection(entry) ? entry : null}
+            fallback={<Destination item={entry as NavItem} nested={false} />}
+          >
+            {(section) => (
+              <>
+                {/* The heading keeps the parent row's geometry — same height,
+                    same 2px rail drawn transparent at rest, same gutter — so the
+                    list does not step sideways where a section begins. What it
+                    does not keep is the interaction: it is a `<div>`, so there is
+                    nothing to click and nothing that could claim to be the
+                    current page. It reads as where you are the way an expanded
+                    parent always has, by weight against its muted siblings. */}
+                <div
+                  class={cn(
+                    "flex h-9 shrink-0 select-none items-center border-l-2 border-transparent px-md text-item",
+                    section().children.some((c) => active(c.prefix))
+                      ? "font-medium text-ink"
+                      : "text-ink-muted",
+                  )}
+                >
+                  {section().label}
+                </div>
+                <For each={section().children}>
+                  {(child) => <Destination item={child} nested />}
+                </For>
+              </>
+            )}
+          </Show>
         )}
       </For>
     </nav>

@@ -99,7 +99,7 @@ func (s Status) Resumable() bool { return s == StatusPending || s == StatusParti
 // is still there.
 //
 // ⛔ `processed` IS NOT HERE. A processed batch already reached the product, so
-// replaying it buys nothing and risks the T7/T8 double-write for free.
+// replaying it buys nothing and risks the T7 double-open for free.
 //
 // It is the same pair Troubled returns, and that is not a coincidence to be
 // deduplicated away: the failed-batch feed lists the batches whose alerts are

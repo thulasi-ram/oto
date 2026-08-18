@@ -279,9 +279,6 @@ type GroupVersionReader interface {
 // §D.1). Every value is a duration or a count the SPEC names; nothing here
 // changes what a transition MEANS, only when it fires.
 type Settings struct {
-	// RefireGrace decides T8 from T7: a re-fire inside the window reopens the
-	// existing case, one after it opens a new episode (§B.5).
-	RefireGrace time.Duration
 	// ResolveGrace is how long past `source_ends_at` the reaper waits before an
 	// case may expire (§B.4).
 	ResolveGrace time.Duration
@@ -295,7 +292,6 @@ type Settings struct {
 // DefaultSettings are the §D.1 defaults, used when no SettingsReader is wired.
 func DefaultSettings() Settings {
 	return Settings{
-		RefireGrace:  domain.DefaultRefireGrace,
 		ResolveGrace: domain.DefaultResolveGrace,
 		// ⛔ THESE TWO WERE BARE LITERALS — `5` and `2 * time.Hour` — under a ⚠️
 		// comment saying they mirror `identity/domain`. They did not even name a
@@ -318,9 +314,6 @@ func DefaultSettings() Settings {
 // observation.
 func (s Settings) normalise() Settings {
 	d := DefaultSettings()
-	if s.RefireGrace <= 0 {
-		s.RefireGrace = d.RefireGrace
-	}
 	if s.ResolveGrace <= 0 {
 		s.ResolveGrace = d.ResolveGrace
 	}

@@ -135,7 +135,10 @@ function world(opts: { readonly snoozes?: readonly ActiveSnooze[] } = {}): World
     "GET /api/v1/labels": unpaged([]),
     "GET /api/v1/alerts": list([]),
 
-    // `/cases`.
+    // `/cases` — the primary list, one row per firing episode.
+    "GET /api/v1/cases": list([]),
+
+    // `/groups` — Alertmanager's notification grouping, reached from a card.
     "GET /api/v1/alert-groups": list([]),
 
     // `/notifications/policies`.
@@ -213,10 +216,14 @@ async function navigate(
   await flush();
 }
 
-/* `#alert-q` is the alert list's search box and `#case-q` is the case list's:
-   one id each, present only while that screen is the outlet. */
+/* One id per screen, present only while that screen is the outlet: `#alert-q`
+   is the alert list's search box, `#case-status` the case list's status strip,
+   `#group-q` the group list's search box. The case list has no search box to
+   point at — `q` is one of the four filters `GET /api/v1/cases` refuses with a
+   400, because a free-text search over a case is a question about the ALERT. */
 const ALERTS = "alert-q";
-const CASES = "case-q";
+const CASES = "case-status";
+const GROUPS = "group-q";
 
 /* The door's email field: present only while `/login` is the whole page. */
 const LOGIN = "login-email";
@@ -259,9 +266,9 @@ describe("the shell is a layout route, not five wrappers", () => {
 
     // Still a live connection rather than a surviving corpse: a frame pushed down
     // connection #1 must still reach the cache on the screen the nav arrived at.
-    const before = w.http.to("/api/v1/alert-groups").length;
+    const before = w.http.to("/api/v1/cases").length;
     w.push(1, sse(frame(1, "case.upserted", { id: "a-case" })));
-    await until(() => expect(w.http.to("/api/v1/alert-groups").length).toBeGreaterThan(before));
+    await until(() => expect(w.http.to("/api/v1/cases").length).toBeGreaterThan(before));
     expect(w.opened()).toBe(1);
   });
 
@@ -293,12 +300,18 @@ describe("the shell is a layout route, not five wrappers", () => {
     const w = world();
     const history = mount("/");
 
-    await until(() => expect(document.getElementById(ALERTS)).not.toBeNull());
+    await until(() => expect(document.getElementById(CASES)).not.toBeNull());
     await flush();
 
+    // ⭐ THE ROOT LANDS ON CASES, NOT ALERTS. A case is the ephemeral state an
+    // operator answers — the thing they acknowledge — so it is both the first
+    // rail entry and what an unqualified URL means. Landing on the alert
+    // identities instead taught the eye that the identity was the primary
+    // object and the firing an attribute of it, which is backwards.
+    //
     // The redirect happened, and it replaced the location rather than layering
     // a second entry the Back button would fall into.
-    expect(history.get()).toBe("/alerts");
+    expect(history.get()).toBe("/cases");
 
     // ⛔ THE ASSERTION, AND THE REASON `/` IS A LEAF OUTSIDE THE LAYOUT. If the
     // redirect lived inside `Authenticated`, landing on `/` would mount the
@@ -310,50 +323,64 @@ describe("the shell is a layout route, not five wrappers", () => {
   });
 
   /**
-   * ⛔ `/groups` IS A DELIVERED LINK, NOT A LEGACY PATH SOMEBODY FORGOT TO DELETE.
-   * `internal/notification/service/view.go` mints `baseURL + "/cases/" + id` now,
-   * but it minted `"/groups/" + id` into every Slack card and webhook payload oto
-   * sent before that, so a year of chat history points here. Renaming the screen to
-   * `/cases` is a vocabulary decision; letting those links 404 would be a data-loss
-   * one, and the difference is entirely these two routes.
+   * ⛔ `/groups` IS A REAL SCREEN, NOT A REDIRECT TO `/cases`, AND THE TWO ARE NOT
+   * THE SAME OBJECT. An AlertGroup is Alertmanager's notification grouping — one
+   * batch, one chat thread — while a Case is ONE alert's firing episode and is
+   * what a human acknowledges. `internal/notification/service/view.go` mints
+   * `baseURL + "/groups/" + id` into every Slack card and webhook payload oto has
+   * ever sent, so this path is where a year of chat history points; bouncing it to
+   * the case queue would land an operator on a list, from a card that was about
+   * one specific batch.
    */
-  it("still answers the /groups links already sitting in Slack, and carries the id across", async () => {
+  it("answers /groups with the group screen rather than bouncing it to /cases", async () => {
     const w = world();
     const history = mount("/groups");
 
-    await until(() => expect(document.getElementById(CASES)).not.toBeNull());
-    // Replaced, not pushed: an operator arriving from a Slack card and pressing
-    // Back should land back in Slack, not on a URL that bounces them forward.
-    expect(history.get()).toBe("/cases");
-
-    const id = "0f1e2d3c-4b5a-4697-8899-aabbccddeeff";
-    // ⛔ THE ID SURVIVES. A redirect that dropped it would land the operator on
-    // the case LIST — a screen that looks like it worked, from a card that was
-    // about one specific case.
-    history.set({ value: `/groups/${id}` });
-    await until(() => expect(history.get()).toBe(`/cases/${id}`));
+    await until(() => expect(document.getElementById(GROUPS)).not.toBeNull());
+    // Still where the operator asked to be — no redirect, and no case list.
+    expect(history.get()).toBe("/groups");
+    expect(document.getElementById(CASES)).toBeNull();
+    expect(w.http.to("/api/v1/alert-groups").length).toBeGreaterThan(0);
 
     expect(w.opened()).toBe(1);
   });
 
   /**
    * ⛔ THE CARD'S SECOND BUTTON IS A SUB-PATH, AND IT HAS ALWAYS BEEN ONE.
-   * `view.go` builds Timeline as `links.group + "/timeline"`, so the moment the
-   * base became `/cases/` the deep link became `/cases/<id>/timeline` — and
-   * `/cases/:id` is a leaf, so without its own wildcard that link resolves to the
-   * not-found sentence. A Slack button that lands on "That page does not exist" is
-   * the same defect as one that 404s, arrived at from the other direction.
+   * `view.go` builds Timeline as `links.group + "/timeline"`, so every card oto
+   * has posted carries `/groups/<id>/timeline` — and `/groups/:id` is a leaf, so
+   * without its own wildcard that link resolves to the not-found sentence. A Slack
+   * button that lands on "That page does not exist" is the same defect as one that
+   * 404s, arrived at from the other direction.
    */
-  it("lands a deep link one segment past a case on the case itself", async () => {
+  it("lands a deep link one segment past a group on the group itself", async () => {
     const w = world();
     const id = "0f1e2d3c-4b5a-4697-8899-aabbccddeeff";
-    const history = mount(`/cases/${id}/timeline`);
+    const history = mount(`/groups/${id}/timeline`);
 
-    await until(() => expect(history.get()).toBe(`/cases/${id}`));
+    await until(() => expect(history.get()).toBe(`/groups/${id}`));
     // The not-found sentence is what this route exists to keep off the screen.
     expect(document.body.textContent ?? "").not.toContain("That page does not exist.");
 
     expect(w.opened()).toBe(1);
+  });
+
+  /**
+   * ⛔ AND `/groups` IS NOT IN THE RAIL. It is plumbing an operator arrives at
+   * from a Slack card or from a case, never a destination the product offers —
+   * so a screen that is perfectly reachable must still be absent from the four
+   * rows that answer "where can I go".
+   */
+  it("offers no way to navigate to a group from the rail", async () => {
+    world();
+    mount("/alerts");
+
+    await until(() => expect(document.getElementById(ALERTS)).not.toBeNull());
+    expect(screen.queryByRole("link", { name: "Groups" })).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: "Alert groups" }),
+      "grouping is plumbing; the rail must not offer it as a destination",
+    ).toBeNull();
   });
 
   it("takes the shell and the stream down on the way out to /login", async () => {

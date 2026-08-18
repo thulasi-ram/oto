@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 52 {
-		t.Fatalf("latest migration is %d, want 52 — this test pins the number so that a "+
+	if latest != 55 {
+		t.Fatalf("latest migration is %d, want 55 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1203,7 +1203,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if _, err := env.pool.Exec(env.ctx,
 		`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state, resolve_reason,
 		                          started_at, ended_at, last_observed_at, source_starts_at)
-		 VALUES ($1, $2, $3, $4, 1, 'resolved', 'upstream', $5, $6, $6, $5)`,
+		 VALUES ($1, $2, $3, $4, 1, 'closed', 'upstream', $5, $6, $6, $5)`,
 		endedCase, episodeScope.OrgID(), episodeAlert, derivedGroup,
 		episodeAt, episodeAt.Add(time.Hour)); err != nil {
 		t.Fatalf("seed the ended episode: %v", err)
@@ -1212,7 +1212,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state, started_at,
 		                          last_observed_at, source_starts_at, ack_state, acked_at,
 		                          acked_by_label)
-		 VALUES ($1, $2, $3, $4, 2, 'firing', $5, $5, $5, 'acked', $5, 'the rollback suite')`,
+		 VALUES ($1, $2, $3, $4, 2, 'open', $5, $5, $5, 'acked', $5, 'the rollback suite')`,
 		liveCase, episodeScope.OrgID(), episodeAlert, derivedGroup,
 		episodeAt.Add(2*time.Hour)); err != nil {
 		t.Fatalf("seed the live acked episode: %v", err)
@@ -1322,18 +1322,26 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// `notif_case_idx`. A post-rename name below reads 0 rows or "" for a reason
 	// that has nothing to do with the migration being asserted, and passes.
 	const (
-		wantTables      = 1
-		wantColumns     = 7
-		wantConstraints = 27
-		wantIndexes     = 10
+		wantTables  = 1
+		wantColumns = 7
+		wantIndexes = 10
+		// ⭐ TWO CONSTRAINT TOTALS, AND THE GAP BETWEEN THEM IS 00054. The list in
+		// `episodeNames` is the FULL pre-00054 set of 27; three of them —
+		// `case_reopen_ck`, `case_reopenof_ck` and `case_resolve_map_ck` — are
+		// dropped at the top of the stack and restored by 00054's Down, which runs
+		// before the post-`down(52)` reading below. So the same list is counted
+		// twice against two different totals, and a Down that forgot one of the
+		// three shows up HERE as a number rather than as a puzzle.
+		wantConstraintsAtTop = 24
+		wantConstraints      = 27
 	)
 	if tbl, col, con, idx := episodeVocabulary(caseNames); tbl != wantTables ||
-		col != wantColumns || con != wantConstraints || idx != wantIndexes {
+		col != wantColumns || con != wantConstraintsAtTop || idx != wantIndexes {
 		t.Fatalf("the `case` vocabulary at the top of the stack is %d/%d tables, %d/%d columns, "+
 			"%d/%d constraints, %d/%d indexes — 00052's Up IS the rename and nothing else, so a "+
 			"short reading here means every name asserted below is being asserted against a "+
 			"schema that never finished renaming",
-			tbl, wantTables, col, wantColumns, con, wantConstraints, idx, wantIndexes)
+			tbl, wantTables, col, wantColumns, con, wantConstraintsAtTop, idx, wantIndexes)
 	}
 	if tbl, col, con, idx := episodeVocabulary(preRenameNames); tbl+col+con+idx != 0 {
 		t.Fatalf("%d table, %d column, %d constraint and %d index name(s) from the pre-00052 "+
@@ -1362,6 +1370,251 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		t.Fatalf("%d of the four `case`-spelled rows are visible at the top of the stack, want 4 "+
 			"— the assertion after 00052's Down is that this figure reaches zero, and a figure "+
 			"that was never four reaches zero without the Down doing anything at all", n)
+	}
+	// ⭐⭐ 00055 MADE SUPPRESSION AN AXIS: `alerts.state` narrowed to
+	// `firing | resolved | expired`, two columns arrived beside it, and
+	// `alerts_open_idx` stopped spelling liveness as a disjunction.
+	//
+	// ⛔ THE DEFINITIONS ARE WHAT IS READ, NEVER THE NAMES — the same rule the
+	// 00054 block below states, and it bites harder here. `alerts_state_ck` and
+	// `alerts_open_idx` both EXIST ON BOTH SIDES and say different things on each,
+	// so a Down that dropped and forgot to re-add either would leave a release
+	// that cannot write `state = 'suppressed'` — the only value it knows for a
+	// silenced alert — and an index whose partial predicate excludes exactly the
+	// rows the landing page asks for.
+	//
+	// ⭐ THE THREE NEW CONSTRAINTS ARE ABSENT BELOW THIS MIGRATION, which makes
+	// them the strongest readings in the block: they cannot be satisfied by a
+	// stale object, only by the Down having genuinely dropped them.
+	alertColumnType := func(column string) string {
+		t.Helper()
+		var typ string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT coalesce(max(data_type), '') FROM information_schema.columns
+			  WHERE table_name = 'alerts' AND column_name = $1`, column).Scan(&typ); err != nil {
+			t.Fatalf("introspect alerts.%s: %v", column, err)
+		}
+		return typ
+	}
+
+	alertState := constraintDef("alerts_state_ck", "alerts")
+	if strings.Contains(alertState, "'suppressed'") {
+		t.Fatalf("alerts_state_ck still admits 'suppressed' at the top of the stack: %s — "+
+			"00055's whole subject is that value domain, and the Down assertion below cannot "+
+			"mean anything if the Up never happened", alertState)
+	}
+	for _, want := range []string{"'firing'", "'resolved'", "'expired'"} {
+		if !strings.Contains(alertState, want) {
+			t.Fatalf("alerts_state_ck does not admit %s: %s", want, alertState)
+		}
+	}
+	if def := constraintDef("alerts_suppress_ck", "alerts"); !strings.Contains(def, "'firing'") {
+		t.Fatalf("alerts_suppress_ck does not bind the axis to the firing state: %s — it is "+
+			"what keeps a silence witness off a resolved alert, so oto cannot go on saying "+
+			"\"silenced by <id>\" about a signal that has ended", def)
+	}
+	if def := constraintDef("alerts_supreason_ck", "alerts"); !strings.Contains(def, "'inhibition'") {
+		t.Fatalf("alerts_supreason_ck does not mirror Alertmanager's four reasons: %s", def)
+	}
+	if def := constraintDef("alerts_suppby_ck", "alerts"); !strings.Contains(def, "jsonb_typeof") {
+		t.Fatalf("alerts_suppby_ck is not the JSON-object check: %s", def)
+	}
+	openIdx := indexDef("alerts_open_idx")
+	if !strings.Contains(openIdx, "(state = 'firing'::text)") {
+		t.Fatalf("alerts_open_idx does not state liveness as a single equality: %s — the "+
+			"disjunction it replaced is 00007's workaround for `suppressed` occupying the "+
+			"slot `firing` needed, and removing it is the observable point of 00055", openIdx)
+	}
+	if strings.Contains(openIdx, "'suppressed'") {
+		t.Fatalf("alerts_open_idx still names 'suppressed': %s", openIdx)
+	}
+	for _, col := range []struct{ name, typ string }{
+		{"suppression_reason", "text"},
+		{"suppressed_by", "jsonb"},
+	} {
+		if typ := alertColumnType(col.name); typ != col.typ {
+			t.Fatalf("alerts.%s is %q at the top of the stack, want %q — 00055 adds it, and "+
+				"the Down assertion below is about it going away", col.name, typ, col.typ)
+		}
+	}
+
+	down(55)
+
+	alertState = constraintDef("alerts_state_ck", "alerts")
+	for _, want := range []string{"'firing'", "'suppressed'", "'resolved'", "'expired'"} {
+		if !strings.Contains(alertState, want) {
+			t.Fatalf("alerts_state_ck did not come back as the four-value domain after 00055's "+
+				"Down (missing %s): %s — the constraint KEEPS ITS NAME across this migration, "+
+				"so a Down that dropped it and forgot to re-add the old predicate leaves the "+
+				"release this rolls back to unable to record a silenced alert at all",
+				want, alertState)
+		}
+	}
+	for _, name := range []string{"alerts_suppress_ck", "alerts_supreason_ck", "alerts_suppby_ck"} {
+		if def := constraintDef(name, "alerts"); def != "" {
+			t.Fatalf("%s survived 00055's Down: %s — it constrains a column that no longer "+
+				"exists on this side, so the next Up would fail to create it", name, def)
+		}
+	}
+	openIdx = indexDef("alerts_open_idx")
+	if !strings.Contains(openIdx, "'suppressed'") {
+		t.Fatalf("alerts_open_idx did not get its disjunction back after 00055's Down: %s — "+
+			"the index keeps its name, so a rollback that restored the name and not the "+
+			"predicate hides every silenced alert from the release's landing page", openIdx)
+	}
+	for _, col := range []string{"suppression_reason", "suppressed_by"} {
+		if typ := alertColumnType(col); typ != "" {
+			t.Fatalf("alerts.%s is still present (%s) after 00055's Down", col, typ)
+		}
+	}
+
+	// ⭐⭐ 00054 NARROWED `alert_cases.state` TO `open | closed` AND DROPPED THE TWO
+	// RE-FIRE COLUMNS, so its Down has to restore a VALUE DOMAIN, three CHECKs and
+	// two columns — and every one of those is invisible to a name check.
+	//
+	// ⛔ THE DEFINITIONS ARE WHAT IS READ, NEVER THE NAMES. Four of the five
+	// constraints keep their names across this migration: `case_state_ck`,
+	// `case_terminal_ended`, `case_resolve_ck` and `case_suppress_ck` all exist on
+	// both sides and say completely different things on each. A Down that dropped
+	// them and forgot to re-add the OLD predicates would leave a database that
+	// accepts `state = 'open'` on a release that has never heard the word — and a
+	// name-counting assertion would pass while it did.
+	//
+	// ⭐ `case_resolve_map_ck` IS THE ONE THAT IS ABSENT ON THIS SIDE, which makes
+	// it the strongest reading in the block: it cannot be satisfied by a stale
+	// object, only by the Down having genuinely re-created it.
+	caseStateDDL := func() (state, terminal, resolve, resolveMap, suppress string) {
+		t.Helper()
+		return constraintDef("case_state_ck", "alert_cases"),
+			constraintDef("case_terminal_ended", "alert_cases"),
+			constraintDef("case_resolve_ck", "alert_cases"),
+			constraintDef("case_resolve_map_ck", "alert_cases"),
+			constraintDef("case_suppress_ck", "alert_cases")
+	}
+	caseColumnType := func(column string) string {
+		t.Helper()
+		var typ string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT coalesce(max(data_type), '') FROM information_schema.columns
+			  WHERE table_name = 'alert_cases' AND column_name = $1`, column).Scan(&typ); err != nil {
+			t.Fatalf("introspect alert_cases.%s: %v", column, err)
+		}
+		return typ
+	}
+
+	state, terminal, resolve, resolveMap, suppress := caseStateDDL()
+	if !strings.Contains(state, "'open'") || !strings.Contains(state, "'closed'") ||
+		strings.Contains(state, "'firing'") {
+		t.Fatalf("case_state_ck does not admit open|closed at the top of the stack: %s — "+
+			"00054's whole subject is that value domain, and the Down assertion below cannot "+
+			"mean anything if the Up never happened", state)
+	}
+	if !strings.Contains(terminal, "'closed'") {
+		t.Fatalf("case_terminal_ended is not stated in the narrowed vocabulary: %s", terminal)
+	}
+	if !strings.Contains(resolve, "'closed'") {
+		t.Fatalf("case_resolve_ck is not stated in the narrowed vocabulary: %s — since 00054 "+
+			"resolve_reason is the SOLE record of resolved-versus-expired, so this constraint "+
+			"is what stops a closed episode saying nothing at all about how it ended", resolve)
+	}
+	if resolveMap != "" {
+		t.Fatalf("case_resolve_map_ck still exists at the top of the stack: %s — it locked "+
+			"`state` to `resolve_reason`, and there is no longer a state side to lock", resolveMap)
+	}
+	if strings.Contains(suppress, "'suppressed'") {
+		t.Fatalf("case_suppress_ck still names the `suppressed` state: %s — the state does not "+
+			"exist on this side of 00054", suppress)
+	}
+	for _, col := range []string{"reopen_count", "reopen_of"} {
+		if typ := caseColumnType(col); typ != "" {
+			t.Fatalf("alert_cases.%s is still present (%s) at the top of the stack — 00054 "+
+				"drops it, and the Down assertion below is about it coming back", col, typ)
+		}
+	}
+
+	down(54)
+
+	state, terminal, resolve, resolveMap, suppress = caseStateDDL()
+	if !strings.Contains(state, "'firing'") || !strings.Contains(state, "'suppressed'") ||
+		!strings.Contains(state, "'resolved'") || !strings.Contains(state, "'expired'") {
+		t.Fatalf("case_state_ck did not come back as the four-value domain after 00054's Down: "+
+			"%s — the constraint KEEPS ITS NAME across this migration, so a Down that dropped "+
+			"it and forgot to re-add the old predicate leaves the release this rolls back to "+
+			"unable to write a single episode", state)
+	}
+	if strings.Contains(state, "'open'") {
+		t.Fatalf("case_state_ck still admits 'open' after its Down: %s — the rollback restored "+
+			"the name and not the domain", state)
+	}
+	if !strings.Contains(terminal, "'resolved'") || !strings.Contains(terminal, "'expired'") {
+		t.Fatalf("case_terminal_ended was not restored to the four-value vocabulary: %s — the "+
+			"release below 00054 writes `state = 'resolved'` with an `ended_at`, and this "+
+			"predicate is what would refuse it", terminal)
+	}
+	if !strings.Contains(resolve, "'resolved'") || !strings.Contains(resolve, "'expired'") {
+		t.Fatalf("case_resolve_ck was not restored to the four-value vocabulary: %s", resolve)
+	}
+	if resolveMap == "" {
+		t.Fatalf("case_resolve_map_ck did not come back from 00054's Down — it is the " +
+			"constraint that stops oto claiming `resolved` when it means `expired`, and it is " +
+			"absent on the other side, so nothing but the Down can have created it")
+	}
+	if !strings.Contains(resolveMap, "'upstream'") || !strings.Contains(resolveMap, "'timeout'") {
+		t.Fatalf("case_resolve_map_ck came back without the pairing it exists for: %s", resolveMap)
+	}
+	if !strings.Contains(suppress, "'suppressed'") {
+		t.Fatalf("case_suppress_ck was not restored to the biconditional on the `suppressed` "+
+			"state: %s — it also keeps its name across 00054", suppress)
+	}
+	for _, col := range []struct{ name, typ string }{
+		{"reopen_count", "integer"},
+		{"reopen_of", "uuid"},
+	} {
+		if typ := caseColumnType(col.name); typ != col.typ {
+			t.Fatalf("alert_cases.%s came back as %q, want %q — 00054's Down ADDs the column "+
+				"and rebuilds reopen_of from `seq - 1`, which is the half that can fail",
+				col.name, typ, col.typ)
+		}
+	}
+	if def := constraintDef("case_reopenof_ck", "alert_cases"); def == "" {
+		t.Fatalf("case_reopenof_ck did not come back — a column restored without the CHECK " +
+			"that stopped it pointing at its own row is a column the release below cannot trust")
+	}
+
+	// ⭐ 00053 WIDENED TWO INDEXES BY THE KEYSET TIEBREAK, IN PLACE. Both keep
+	// their names, so the only thing that proves the Down ran is the DEFINITION:
+	// a name coming back says nothing, and an index that kept `id` after the
+	// rollback is the release-before serving `GET /api/v1/cases` with a sort key
+	// it does not know it has.
+	for _, idx := range []struct{ name, widened string }{
+		{"case_ack_idx", "id DESC"},
+		{"case_started_idx", "id)"},
+	} {
+		if def := indexDef(idx.name); !strings.Contains(def, idx.widened) {
+			t.Fatalf("%s is not widened at the top of the stack: %s — 00053's whole subject is "+
+				"that column, and a Down assertion below it cannot mean anything if the Up "+
+				"never happened", idx.name, def)
+		}
+	}
+	down(53)
+	for _, idx := range []struct{ name, widened string }{
+		{"case_ack_idx", "id DESC"},
+		{"case_started_idx", "id)"},
+	} {
+		def := indexDef(idx.name)
+		if def == "" {
+			t.Fatalf("%s did not come back from 00053's Down — it DROPs and re-CREATEs under "+
+				"the same name, so a Down that half-ran leaves the queue behind "+
+				"`escalation.check` with no index at all", idx.name)
+		}
+		if strings.Contains(def, idx.widened) {
+			t.Fatalf("%s still carries the 00053 tiebreak after its Down: %s — the rollback "+
+				"restored the name and not the shape", idx.name, def)
+		}
+	}
+	if def := indexDef("case_ack_idx"); !strings.Contains(def, "ended_at IS NULL") {
+		t.Fatalf("case_ack_idx came back without its partial predicate: %s — unpartialled it "+
+			"spans every episode ever opened instead of the live set", def)
 	}
 	down(52)
 	if tbl, col, con, idx := episodeVocabulary(preRenameNames); tbl != wantTables ||

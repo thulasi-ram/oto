@@ -279,6 +279,83 @@ type CaseResult struct {
 	Cursor db.Cursor
 }
 
+// CaseListQuery is the compiled form of `GET /api/v1/cases` (§E.3b).
+type CaseListQuery struct {
+	Filter domain.CaseFilter
+	Page   db.Keyset
+}
+
+// CaseListResult is one page of the ORG-WIDE case list, plus the identities its
+// rows belong to.
+type CaseListResult struct {
+	Cases []domain.Case
+	// Alerts is the identity behind each row, keyed by alert id.
+	//
+	// ⭐ IT IS A MAP BESIDE THE PAGE AND NOT A FIELD ON THE CASE, for the same
+	// reason ListResult.Snoozes is: `alertname`, `severity`, `cluster_key` and
+	// `namespace` are columns of `alerts` and describe the IDENTITY. An episode
+	// that carried a copy would be asserting them for as long as the row lives,
+	// and a severity relabelled last week would still be rendered on every
+	// episode from before the change. The list needs them to be readable, so
+	// they are batch-loaded — ONE query for the whole page — rather than folded
+	// into the entity.
+	//
+	// An entry is always present for every row: the repository's `EXISTS` proved
+	// the alert is in the caller's org before the case was returned.
+	Alerts map[uuid.UUID]domain.Alert
+	Cursor db.Cursor
+}
+
+// ListCases serves `GET /api/v1/cases` — the ORG-WIDE episode list.
+//
+// ⭐⭐ THIS IS THE ACK SURFACE, AND IT IS WHY IT IS NOT A MODE OF `GET /alerts`.
+// The alert list pages IDENTITIES, and since 00049 `alerts` carries no ack
+// column at all: a receipt belongs to the firing it was given for, so
+// `?ack=acked` over that table asked whether a closed episode had been
+// acknowledged and was removed rather than fixed. "What is firing that nobody
+// has looked at" is a question about `alert_cases`, and this is where it is
+// asked — `?state=open&ack=unacked`, which is the one shape case_ack_idx exists
+// to serve. (It was `?open=true` until ADR 0040 collapsed the two axes into one;
+// the repository still emits the liveness LITERAL, because that is the only
+// spelling a partial index can be matched against.)
+//
+// The cursor is bound to the filter it was minted under; a cursor presented
+// against a DIFFERENT filter is rejected rather than quietly producing a wrong
+// page (§E.1), exactly as on the alert list.
+func (s *Service) ListCases(
+	ctx context.Context, scope db.TenantScope, q CaseListQuery,
+) (CaseListResult, error) {
+	if !q.Page.Cursor.IsZero() && q.Page.Cursor.Hash != q.Filter.FilterHash {
+		return CaseListResult{}, errs.Malformed("cursor_filter_mismatch",
+			"this cursor was minted against a different set of filters")
+	}
+
+	rows, cur, err := s.cases.ListCases(ctx, scope, q.Filter, q.Page)
+	if err != nil {
+		return CaseListResult{}, err
+	}
+	if len(rows) == 0 {
+		return CaseListResult{Alerts: map[uuid.UUID]domain.Alert{}, Cursor: cur}, nil
+	}
+
+	// One query for the page, never one per row. The ids are de-duplicated
+	// first: an alert with two episodes on one page is one identity to read.
+	ids := make([]uuid.UUID, 0, len(rows))
+	seen := make(map[uuid.UUID]struct{}, len(rows))
+	for _, c := range rows {
+		if _, dup := seen[c.AlertID()]; dup {
+			continue
+		}
+		seen[c.AlertID()] = struct{}{}
+		ids = append(ids, c.AlertID())
+	}
+	alerts, err := s.alerts.GetByIDs(ctx, scope, ids)
+	if err != nil {
+		return CaseListResult{}, err
+	}
+	return CaseListResult{Cases: rows, Alerts: alerts, Cursor: cur}, nil
+}
+
 // Cases serves `GET /api/v1/alerts/{id}/cases` — the episode
 // history, newest first.
 func (s *Service) Cases(

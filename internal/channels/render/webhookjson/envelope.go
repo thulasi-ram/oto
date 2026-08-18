@@ -119,10 +119,16 @@ type Case struct {
 	StartedAt         time.Time  `json:"started_at"`
 	EndedAt           *time.Time `json:"ended_at,omitempty"`
 	DurationSeconds   float64    `json:"duration_seconds"`
-	ReopenCount       int        `json:"reopen_count"`
-	AckedByLabel      string     `json:"acked_by_label,omitempty"`
-	AckedAt           *time.Time `json:"acked_at,omitempty"`
-	AckNote           string     `json:"ack_note,omitempty"`
+	// ⛔ FROZEN AT ZERO, NOT REMOVED. ADR 0040 made a Case strictly terminal, so
+	// nothing can ever count a reopen again — but this envelope is frozen at
+	// oto.notification.v1 (§H.10, SCOPE-BOUNDARY H-2) and DELETING a key is as
+	// breaking as renaming one. It goes at oto.notification.v2, with dual-emit,
+	// under its own ticket — the same argument that keeps the `occurrence` key
+	// above spelled the way it is.
+	ReopenCount  int        `json:"reopen_count"`
+	AckedByLabel string     `json:"acked_by_label,omitempty"`
+	AckedAt      *time.Time `json:"acked_at,omitempty"`
+	AckNote      string     `json:"ack_note,omitempty"`
 }
 
 // Rule is what the alerting rule said when the case fired.

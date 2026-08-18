@@ -149,12 +149,12 @@ func syntheticLinks(base string) domain.Links {
 	if base == "" {
 		return domain.Links{}
 	}
-	// `/cases/`, the same path `notification/service.links` mints for a real card:
-	// a test card whose links pointed at a shape the product no longer builds would
-	// be testing the redirect rather than the destination.
+	// `/groups/`, the same path `notification/service.links` mints for a real card:
+	// a test card whose links pointed somewhere a real card never does would be
+	// testing a shape the product does not build.
 	return domain.Links{
-		Group:    base + "/cases/00000000-0000-7000-8000-000000000002",
+		Group:    base + "/groups/00000000-0000-7000-8000-000000000002",
 		Alert:    base + "/alerts/00000000-0000-7000-8000-000000000001",
-		Timeline: base + "/cases/00000000-0000-7000-8000-000000000002/timeline",
+		Timeline: base + "/groups/00000000-0000-7000-8000-000000000002/timeline",
 	}
 }

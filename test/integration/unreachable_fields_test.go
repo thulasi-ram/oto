@@ -88,7 +88,8 @@ func TestSuppressedByNamesTheSilence(t *testing.T) {
 
 	// ---- 2. A firing episode names nobody, whatever the row says ----------
 	//
-	// ⛔ The seed deliberately leaves stale witnesses on a `firing` row — which
+	// ⛔ The seed deliberately leaves stale witnesses on an OPEN, unsuppressed row
+	// — which
 	// is what every row written before the persistence path learned to clear
 	// them looks like. Reporting them would make oto say "silenced by <id>"
 	// about an alert that is demonstrably firing, which is a worse failure than
@@ -99,8 +100,18 @@ func TestSuppressedByNamesTheSilence(t *testing.T) {
 	env.do(t, http.MethodGet, "/api/v1/cases/"+seed.firingCase.String(),
 		seed.token, nil, http.StatusOK, &firing)
 
-	if firing.Data.State != "firing" {
-		t.Fatalf("state = %q, want firing", firing.Data.State)
+	// ⭐ `open` AND NO `suppression_reason` IS WHAT "firing" MEANS ON THE WIRE NOW
+	// (ADR 0040). The DTO's `state` is the EPISODE's, `open | closed`; the pair of
+	// fields below is the four-word reading, and it is exactly the pair the
+	// `SuppressedBy` gate consults. Asserting both is what keeps this a test about
+	// the witnesses rather than about the enum that carries them.
+	if firing.Data.State != "open" {
+		t.Fatalf("state = %q, want open", firing.Data.State)
+	}
+	if firing.Data.SuppressionReason != nil {
+		t.Fatalf("suppression_reason = %v on the row that stands in for a firing episode; "+
+			"with one set it would READ as suppressed and the gate below would be asserting "+
+			"the opposite of what this test is for", firing.Data.SuppressionReason)
 	}
 	if firing.Data.SuppressedBy != nil {
 		t.Fatalf("a firing case reports suppressed_by = %+v; witnesses are meaningful "+
@@ -114,11 +125,16 @@ func TestUnackAndUnsnoozeNotesReachTheTimeline(t *testing.T) {
 	env := newEnv(t)
 	seed := seedSuppressed(t, env)
 	alert := "/api/v1/alerts/" + seed.alertID.String()
+	// ⭐ ACK IS ADDRESSED BY CASE, NOT BY ALERT. A receipt is a fact about ONE
+	// ephemeral firing episode, so the route says so; the alert is reached
+	// through the case rather than the other way round. `firingCase` is
+	// `alertID`'s open episode, which is what a human would be acknowledging.
+	firingCase := "/api/v1/cases/" + seed.firingCase.String()
 
 	// ---- 1. ack, then unack WITH a note ----------------------------------
-	env.do(t, http.MethodPost, alert+"/ack", seed.token,
+	env.do(t, http.MethodPost, firingCase+"/ack", seed.token,
 		map[string]any{"note": "looking at it"}, http.StatusOK, nil)
-	env.do(t, http.MethodPost, alert+"/unack", seed.token,
+	env.do(t, http.MethodPost, firingCase+"/unack", seed.token,
 		map[string]any{"note": "un-acking, it is back"}, http.StatusOK, nil)
 
 	unacked := findEvent(t, env, seed, "case.unacknowledged")
@@ -251,11 +267,15 @@ func seedSuppressed(t *testing.T, e *env) suppressedSeed {
 	         'critical','prod','{"alertname":"HighErrorRate"}'::jsonb,'firing',$4,$4,$4,1)`,
 		out.alertID, orgID, clusterID, now)
 
+	// ⭐ ADR 0041: a silenced alert is `state = 'firing'` PLUS the suppression axis.
+	// `suppressed` is not a value this column can hold any more — it occupied the
+	// slot `firing` needed — so the silence is seeded where it now lives.
 	exec(`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
-	         severity, cluster_key, labels, state,
+	         severity, cluster_key, labels, state, suppression_reason, suppressed_by,
 	         first_seen_at, last_seen_at, last_state_change_at, total_cases)
 	      VALUES ($1,$2,$3,'ak_abcdefghijklmnopqrstuv0123','a1b2c3d4e5f60789','DiskFilling',
-	         'warning','prod','{"alertname":"DiskFilling"}'::jsonb,'suppressed',$4,$4,$4,1)`,
+	         'warning','prod','{"alertname":"DiskFilling"}'::jsonb,'firing','silence',
+	         '{"silencedBy":["sil-1"],"inhibitedBy":[],"mutedBy":[]}'::jsonb,$4,$4,$4,1)`,
 		silencedAlert, orgID, clusterID, now)
 
 	// ⛔ STALE WITNESSES ON A FIRING ROW. This is what every case written
@@ -263,13 +283,13 @@ func seedSuppressed(t *testing.T, e *env) suppressedSeed {
 	// the read path must refuse to report them.
 	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state, suppressed_by,
 	         started_at, last_observed_at, source_starts_at)
-	      VALUES ($1,$2,$3,1,'firing','{"silencedBy":["stale-sil"],"inhibitedBy":[],"mutedBy":[]}'::jsonb,
+	      VALUES ($1,$2,$3,1,'open','{"silencedBy":["stale-sil"],"inhibitedBy":[],"mutedBy":[]}'::jsonb,
 	         $4,$4,$4)`,
 		out.firingCase, orgID, out.alertID, now)
 
 	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state, suppression_reason,
 	         suppressed_by, suppress_count, started_at, last_observed_at, source_starts_at)
-	      VALUES ($1,$2,$3,1,'suppressed','silence',
+	      VALUES ($1,$2,$3,1,'open','silence',
 	         '{"silencedBy":["b3d1f0aa-sil"],"inhibitedBy":["f00dcafe"],"mutedBy":[]}'::jsonb,
 	         1,$4,$4,$4)`,
 		out.suppressedCase, orgID, silencedAlert, now)

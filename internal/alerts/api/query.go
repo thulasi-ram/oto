@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/thulasiram/oto/internal/alerts/api/filter"
 	"github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/alerts/service"
@@ -40,6 +42,19 @@ var listRollupsParams = []string{
 	"state", "severity", "cluster", "namespace", "alertname", "source_fingerprint",
 	"label[", "matcher",
 	"flapping", "snoozed", "synthetic", "since", "q",
+	"limit", "cursor",
+}
+
+// listCasesParams is the allow-list for `GET /api/v1/cases`.
+//
+// ⛔ It is NOT listAlertsParams. `label[`, `matcher`, `q`, `flapping` and
+// `snoozed` are absent on purpose and a caller sending one gets
+// `400 unknown_parameter` rather than a silently unfiltered page — see
+// ListCasesQuery for why each of them belongs on the alert list instead.
+var listCasesParams = []string{
+	"state", "ack", "group_id",
+	"severity", "cluster", "namespace", "alertname",
+	"synthetic", "since",
 	"limit", "cursor",
 }
 
@@ -145,6 +160,138 @@ func parseListAlerts(r *http.Request) (alertsListRequest, error) {
 			Page:   httpx.Keyset(q.Limit, cursor),
 		},
 	}, nil
+}
+
+// casesListRequest is one parsed, validated `listCases` call.
+type casesListRequest struct {
+	Query   ListCasesQuery
+	Service service.CaseListQuery
+}
+
+// parseListCases compiles `GET /api/v1/cases` (§E.3b).
+//
+// The cursor is bound to the filter it was minted under by the same hash
+// mechanism the alert list uses (§E.1): every dimension that changes the RESULT
+// SET contributes, and `limit` and `cursor` deliberately do not.
+func parseListCases(r *http.Request) (casesListRequest, error) {
+	p := httpx.NewParams(r, listCasesParams...)
+	if err := p.Err(); err != nil {
+		return casesListRequest{}, err
+	}
+
+	q := ListCasesQuery{
+		State:     p.CSV("state"),
+		Ack:       p.CSV("ack"),
+		GroupID:   p.CSV("group_id"),
+		Severity:  p.CSV("severity"),
+		Cluster:   p.CSV("cluster"),
+		Namespace: p.CSV("namespace"),
+		AlertName: p.CSV("alertname"),
+		Synthetic: p.Bool("synthetic"),
+		Limit:     p.Limit(),
+		Cursor:    p.Cursor(),
+	}
+	if p.Has("since") {
+		since := p.Time("since")
+		q.Since = &since
+	}
+	if err := p.Err(); err != nil {
+		return casesListRequest{}, err
+	}
+	if _, err := httpx.BindEmpty(q); err != nil {
+		return casesListRequest{}, err
+	}
+
+	f, err := caseFilter(q)
+	if err != nil {
+		return casesListRequest{}, err
+	}
+	f.FilterHash = caseFilterHash(q)
+
+	cursor, err := httpx.DecodeCursor(q.Cursor, f.FilterHash)
+	if err != nil {
+		return casesListRequest{}, err
+	}
+
+	return casesListRequest{
+		Query: q,
+		Service: service.CaseListQuery{
+			Filter: f,
+			Page:   httpx.Keyset(q.Limit, cursor),
+		},
+	}, nil
+}
+
+// caseFilter compiles the validated query onto the domain filter.
+//
+// The two enums go through their kernel constructors rather than being copied as
+// strings: `validate` has already proved the spelling, and the constructors are
+// what make a value that reaches SQL one the closed set contains.
+func caseFilter(q ListCasesQuery) (domain.CaseFilter, error) {
+	states := make([]domain.CaseState, 0, len(q.State))
+	for _, s := range q.State {
+		st, err := domain.NewCaseState(s)
+		if err != nil {
+			return domain.CaseFilter{}, err
+		}
+		states = append(states, st)
+	}
+	acks := make([]domain.AckState, 0, len(q.Ack))
+	for _, a := range q.Ack {
+		as, err := domain.NewAckState(a)
+		if err != nil {
+			return domain.CaseFilter{}, err
+		}
+		acks = append(acks, as)
+	}
+	groups := make([]uuid.UUID, 0, len(q.GroupID))
+	for _, g := range q.GroupID {
+		id, err := uuid.Parse(g)
+		if err != nil {
+			return domain.CaseFilter{}, errs.Validation("validation_failed",
+				"1 field failed validation.", errs.Violation{
+					Field: "group_id", Code: "uuid", Message: "must be a uuid",
+				})
+		}
+		groups = append(groups, id)
+	}
+
+	return domain.CaseFilter{
+		States:      states,
+		AckStates:   acks,
+		GroupIDs:    groups,
+		Severities:  q.Severity,
+		Namespaces:  q.Namespace,
+		ClusterKeys: q.Cluster,
+		AlertNames:  q.AlertName,
+		Synthetic:   q.Synthetic,
+		Since:       q.Since,
+	}, nil
+}
+
+// caseFilterHash binds a case-list cursor to the filter it was minted under.
+//
+// ⛔ A dimension missing from here is a cursor that survives a filter change it
+// should not have survived, and a page served from the middle of a list that no
+// longer exists. Every field of ListCasesQuery except `limit` and `cursor`
+// appears below, in the order the struct declares them.
+func caseFilterHash(q ListCasesQuery) string {
+	parts := []string{
+		"state=" + joinSorted(q.State),
+		"ack=" + joinSorted(q.Ack),
+		"group_id=" + joinSorted(q.GroupID),
+		"severity=" + joinSorted(q.Severity),
+		"cluster=" + joinSorted(q.Cluster),
+		"namespace=" + joinSorted(q.Namespace),
+		"alertname=" + joinSorted(q.AlertName),
+	}
+	if q.Synthetic != nil {
+		parts = append(parts, "synthetic="+strconv.FormatBool(*q.Synthetic))
+	}
+	if q.Since != nil {
+		parts = append(parts, "since="+q.Since.UTC().Format(time.RFC3339Nano))
+	}
+	return httpx.FilterHash(parts...)
 }
 
 // labelSelector merges the two spellings of the ADR 0017 label selector.

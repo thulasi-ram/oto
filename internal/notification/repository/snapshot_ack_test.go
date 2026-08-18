@@ -63,19 +63,22 @@ func newAckWorld(t *testing.T) ackWorld {
 	// is about, and nobody has looked at it.
 	w.carried = seedAlert(t, h, fx, "AckCarriedForward")
 	closed := seedCase(t, h, fx, w.carried, 1, occSeed{
-		state: "resolved", startedAt: now.Add(-2 * time.Hour), endedAt: ptr(now.Add(-time.Hour)),
+		state: "closed", startedAt: now.Add(-2 * time.Hour), endedAt: ptr(now.Add(-time.Hour)),
 		ackState: "acked", ackedAt: ptr(now.Add(-90 * time.Minute)), ackedByLabel: ptr("Priya R."),
 	})
 	_ = closed
-	reopened := seedCase(t, h, fx, w.carried, 2, occSeed{
-		state: "firing", startedAt: now.Add(-30 * time.Minute), ackState: "unacked",
+	// The successor at `seq` 2. A re-fire always opens a new episode, unacked
+	// (ADR 0040 retired the road that carried an ack across one), which is exactly
+	// the shape this file is about: the card must read THIS row's receipt.
+	successor := seedCase(t, h, fx, w.carried, 2, occSeed{
+		state: "open", startedAt: now.Add(-30 * time.Minute), ackState: "unacked",
 	})
-	_ = reopened
+	_ = successor
 
 	// ---- the alert acked on THIS episode ------------------------------------
 	w.fresh = seedAlert(t, h, fx, "AckedOnThisEpisode")
 	live := seedCase(t, h, fx, w.fresh, 1, occSeed{
-		state: "firing", startedAt: now.Add(-40 * time.Minute), ackState: "acked",
+		state: "open", startedAt: now.Add(-40 * time.Minute), ackState: "acked",
 		ackedAt: ptr(now.Add(-10 * time.Minute)), ackedByLabel: ptr("Ada L."),
 	})
 	_ = live
@@ -196,6 +199,9 @@ func TestNothingInTheSnapshotPathNamesAnAckColumnOnAlerts(t *testing.T) {
 // occSeed is one episode, written directly because these tests are about which
 // row a read reaches, not about how an episode comes to exist.
 type occSeed struct {
+	// state is `alert_cases.state` verbatim, so it is `open` or `closed` and
+	// nothing else (ADR 0040). The four §B.2 names describe the ALERT; an episode
+	// that ended says WHY in `resolve_reason`, which `seedCase` derives below.
 	state        string
 	startedAt    time.Time
 	endedAt      *time.Time

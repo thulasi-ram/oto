@@ -181,6 +181,9 @@ func (s *Service) appendEvents(ctx context.Context, scope db.TenantScope, evs []
 	if len(evs) == 0 {
 		return 0, nil
 	}
+	if err := refuseRetired(evs); err != nil {
+		return 0, err
+	}
 	n, err := s.events.AppendBatch(ctx, scope, evs)
 	if err != nil {
 		return 0, err
@@ -193,6 +196,30 @@ func (s *Service) appendEvents(ctx context.Context, scope db.TenantScope, evs []
 	return n, nil
 }
 
+// refuseRetired is this module's half of the retirement guarantee, and it exists
+// because `seam.go`'s is deliberately narrower than `alert_events`.
+//
+// ⭐⭐ THE SEAM COULD NOT COVER `case.reopened`. `AppendTimelineEvent` refuses a
+// retired type for every caller OUTSIDE `alerts`, which was the whole population
+// for `group.member_joined` and `group.member_left`. `case.reopened` was minted
+// by this module's own transition table and reached the column through the two
+// functions above, which never touch the seam — so ADR 0040 retiring it needed a
+// refusal HERE or the retirement would have been a comment.
+//
+// ⛔ IT IS `KindInternal` AND NOT `KindValidation`, for the reason seam.go gives:
+// no request can ask for a retired type, so reaching this is code asking for it.
+// The transition rows that built one are gone, which is what should make this
+// unreachable; this is what makes "should" into "cannot".
+func refuseRetired(evs []domain.Event) error {
+	for _, e := range evs {
+		if e.Type().Retired() {
+			return errs.Newf(errs.KindInternal, "event_type_retired",
+				"%q is a retired alert_events.type and may be read but never appended", e.Type())
+		}
+	}
+	return nil
+}
+
 // appendEventsBatched is appendEvents for the observe path: the timeline write
 // is the same one round trip, but the matching UI frames are QUEUED on the
 // accumulator for the batch's single flush instead of being published one by
@@ -201,6 +228,9 @@ func (s *Service) appendEvents(ctx context.Context, scope db.TenantScope, evs []
 func (s *Service) appendEventsBatched(ctx context.Context, scope db.TenantScope, acc *observeAccum) (int, error) {
 	if len(acc.events) == 0 {
 		return 0, nil
+	}
+	if err := refuseRetired(acc.events); err != nil {
+		return 0, err
 	}
 	n, err := s.events.AppendBatch(ctx, scope, acc.events)
 	if err != nil {
@@ -257,6 +287,11 @@ func (s *Service) publishCase(ctx context.Context, scope db.TenantScope, o domai
 
 // caseFramePayload is the §E.4 envelope of one episode change, shared by
 // the per-item publish and the batched observe path.
+//
+// ⭐ `state` HERE IS THE CASE'S OWN, `open | closed` (ADR 0040), and the alert
+// frame published beside it in the same flush carries the four §B.2 words. That
+// is the split on purpose: this frame says an EPISODE moved, and the only thing
+// an episode can say about itself is whether it is still running.
 func caseFramePayload(o domain.Case) map[string]any {
 	return map[string]any{
 		"alert_id": o.AlertID(),
@@ -473,8 +508,6 @@ func reasonFor(id domain.TransitionID) string {
 		return reasonSomeResolved
 	case domain.TransitionT6:
 		return reasonExpired
-	case domain.TransitionT8:
-		return reasonRefired
 	default:
 		// T2 changes nothing anybody needs to be told about. A repeat
 		// observation is not news.

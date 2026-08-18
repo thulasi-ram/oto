@@ -79,8 +79,14 @@ WITH bounds AS (
          a.alertname,
          count(*)                                              AS cases,
          count(*) FILTER (WHERE o.ack_state = 'acked')         AS acked_cases,
-         count(*) FILTER (WHERE o.state = 'resolved')          AS auto_resolved,
-         count(*) FILTER (WHERE o.state = 'expired')           AS expired,
+         -- ADR 0040: alert_cases.state is open | closed, and resolved-apart-from-
+         -- expired moved to resolve_reason, which was always the column that
+         -- carried it. case_resolve_ck makes it present exactly on a closed
+         -- episode, so these two counters need no liveness predicate of their own
+         -- and no join to alerts: an open episode has a NULL reason and falls out
+         -- of both, exactly as it fell out of both state literals.
+         count(*) FILTER (WHERE o.resolve_reason = 'upstream')  AS auto_resolved,
+         count(*) FILTER (WHERE o.resolve_reason = 'timeout')   AS expired,
          COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM
              (COALESCE(o.ended_at, b.as_of) - o.started_at))))::bigint, 0)
                                                                AS total_firing_seconds

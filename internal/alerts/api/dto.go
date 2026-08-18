@@ -114,6 +114,17 @@ type RuleSnapshotRef struct {
 }
 
 // CaseDTO renders `CaseDTO`: one contiguous firing episode.
+//
+// ⭐ `state` IS `open | closed` AND NOTHING ELSE (ADR 0040). The four §B.2 words
+// describe the ALERT and are on every alert-shaped DTO; what this episode adds is
+// `resolve_reason` — `upstream` for a resolution upstream asserted, `timeout` for
+// one oto never heard — and `suppression_reason`, which names the silence that
+// muted THIS firing. A client that wants the four-way reading composes it from
+// those three fields exactly as the server does.
+//
+// ⛔ THERE IS NO `reopen_count` AND NO `reopen_of`. A Case is strictly terminal:
+// a re-fire opens the next `seq`, unacknowledged, and the episode it succeeded is
+// the row at `seq - 1`.
 type CaseDTO struct {
 	ID                uuid.UUID        `json:"id"`
 	AlertID           uuid.UUID        `json:"alert_id"`
@@ -133,8 +144,6 @@ type CaseDTO struct {
 	SourceEndsAt      *time.Time       `json:"source_ends_at"`
 	DurationSeconds   *float64         `json:"duration_seconds"`
 	ResolveReason     *string          `json:"resolve_reason"`
-	ReopenCount       int32            `json:"reopen_count"`
-	ReopenOf          *uuid.UUID       `json:"reopen_of"`
 	RuleSnapshotID    *uuid.UUID       `json:"rule_snapshot_id"`
 	Value             *float64         `json:"value"`
 	ObservedSkewMS    int64            `json:"observed_skew_ms"`
@@ -159,6 +168,24 @@ type CaseDetailDTO struct {
 	// DeliverySummary is a value type for the same reason as on AlertDetailDTO:
 	// an optional field that nothing emitted is a contract that lies quietly.
 	DeliverySummary DeliverySummaryDTO `json:"delivery_summary"`
+}
+
+// CaseListItemDTO renders `CaseListItemDTO`: one row of `GET /api/v1/cases`.
+//
+// ⭐⭐ THE ALERT REFERENCE IS THE WHOLE REASON THIS TYPE EXISTS, AND IT IS A VALUE
+// AND NOT A POINTER. A bare `CaseDTO` carries `alert_id` and no `alertname`, no
+// `severity` and no `cluster_key` — those are columns of `alerts`, because they
+// describe the IDENTITY rather than the episode — so a client rendering the org
+// list from it would have to fetch one alert per row. The service batch-loads the
+// whole page in ONE further query and the mapper indexes it here.
+//
+// It is not optional and it cannot be absent: the repository's `EXISTS` proved
+// the alert is in the caller's org before the case was returned at all, so a
+// nullable field would be declaring a state the query cannot produce — the same
+// argument `DeliverySummaryDTO` is a value type on the two detail DTOs for.
+type CaseListItemDTO struct {
+	CaseDTO
+	Alert AlertRefDTO `json:"alert"`
 }
 
 // AlertRefDTO renders `AlertRefDTO`: a compact Alert reference.
@@ -357,15 +384,16 @@ type AlertRollupDTO struct {
 
 // ------------------------------------------------------------------ requests
 
-// AckRequest is the body of `POST /alerts/{id}/ack`.
+// AckRequest is the body of `POST /cases/{id}/ack` and of the group fan-out that
+// shares it.
 //
-// An acked alert is STILL FIRING. Acknowledgement is an orthogonal axis that says
+// An acked case is STILL FIRING. Acknowledgement is an orthogonal axis that says
 // "a human has seen this", never "this is over".
 type AckRequest struct {
 	Note string `json:"note" validate:"omitempty,max=2000"`
 }
 
-// UnackRequest is the body of `POST /alerts/{id}/unack`.
+// UnackRequest is the body of `POST /cases/{id}/unack`.
 type UnackRequest struct {
 	Note string `json:"note" validate:"omitempty,max=2000"`
 }
@@ -400,6 +428,82 @@ type SnoozeRequest struct {
 // change.
 type UnsnoozeRequest struct {
 	Note string `json:"note" validate:"omitempty,max=2000"`
+}
+
+// MaxUnsnoozeAlertIDs bounds `POST /alerts/unsnooze`.
+//
+// ⭐ WHY THERE IS A CEILING AT ALL. Every id in the body becomes one write
+// transaction — a read of the alert, a read of its active snooze, a compare-and-set
+// on the row, an event insert and an enqueued notification — applied in series
+// inside ONE HTTP request. An unbounded list is an unbounded request, and a wake
+// that outlives its deadline is retried from the beginning of the list.
+//
+// ⭐ WHY 100. It is the same ceiling `batchGetRuleSnapshots` puts on the ids it will
+// resolve in one call, and for the same stated reason: 100 is one page of the UI's
+// alert list, so "wake everything I can see" is exactly one call, and a caller
+// paging at the contract's 200 ceiling makes two — still constant in the size of
+// the page. It is deliberately far below grouping's FanOutLimit of 500: that
+// ceiling exists to TRUNCATE a membership nobody enumerated, where this one exists
+// to bound a list somebody typed.
+//
+// ⛔ IT IS SPELLED TWICE, HERE AND IN THE `validate` TAG BELOW, because a struct
+// tag cannot reference a constant. The third spelling is `maxItems: 100` in
+// api/openapi/openapi.yaml, which gate G1 holds to this file.
+const MaxUnsnoozeAlertIDs = 100
+
+// UnsnoozeAlertsRequest is the body of `POST /alerts/unsnooze` — the bulk wake.
+//
+// ⛔⛔ IT NAMES ITS SUBJECTS AND IT WILL NEVER TAKE A FILTER. There is no
+// `severity=`, no `cluster=`, no "everything currently quiet" spelling of this
+// request, and that is a decision rather than an omission. A filter is evaluated
+// on the server against rows the caller never saw: one press would resume
+// thousands of alerts whose extent the person pressing it cannot see, and the
+// notifications that follow land in channels nobody agreed to wake. An explicit
+// list is a bound the server can check and a person can read back afterwards.
+//
+// ⛔ THERE IS NO BULK SNOOZE BESIDE IT. This is the UNDO of a gesture somebody
+// already made deliberately, one alert at a time; going quiet in bulk is the
+// blindfold §B.8.3 argues against on the group verb.
+type UnsnoozeAlertsRequest struct {
+	// AlertIDs is required and must name at least one alert: there is no spelling
+	// of this request that means "everything". Duplicates are refused — this is a
+	// write, and a repeated id is a caller that has lost track of what it is asking
+	// for.
+	AlertIDs []uuid.UUID `json:"alert_ids" validate:"required,min=1,max=100,unique"`
+	// Note is recorded with EVERY wake-up this request performs. The fan-out is of
+	// the primitive, note and all, exactly as the group unsnooze does it.
+	Note string `json:"note" validate:"omitempty,max=2000"`
+}
+
+// UnsnoozeOutcomeDTO renders `UnsnoozeOutcomeDTO`: what happened to ONE alert.
+type UnsnoozeOutcomeDTO struct {
+	AlertID uuid.UUID `json:"alert_id"`
+	// Outcome is `woken` or `skipped`. It is two values and not three because a
+	// skip's explanation belongs in Reason: a caller that wants the count reads
+	// Outcome, a caller that has to tell a person what happened reads both.
+	Outcome string `json:"outcome"`
+	// Reason is the stable errs code of the refusal, and nil when the alert woke.
+	//
+	// ⭐ "NOTHING HAPPENED" HAS MORE THAN ONE HONEST EXPLANATION. `not_snoozed`
+	// means the alert was already awake; `alert_not_found` means no such alert in this
+	// org — which is also what another tenant's id gets, because telling the two
+	// apart would confirm that the other tenant's row is real.
+	Reason *string `json:"reason"`
+}
+
+// UnsnoozeAlertsDTO renders `UnsnoozeAlertsDTO`: the account of a bulk wake.
+//
+// ⭐ IT IS AN ACCOUNT AND NOT A COUNT, for the reason FanOutResult gives: a
+// partial result is the NORMAL one — an operator waking a page of quiet alerts
+// will routinely find some already awake — and "3 of 5" is not something a bare
+// number can explain to the person who pressed the button.
+type UnsnoozeAlertsDTO struct {
+	Requested int `json:"requested"`
+	Woken     int `json:"woken"`
+	Skipped   int `json:"skipped"`
+	// Results carries one entry per requested id, in the order the request gave
+	// them, so a surface can report per row rather than per request.
+	Results []UnsnoozeOutcomeDTO `json:"results"`
 }
 
 // ------------------------------------------------------------- query objects
@@ -478,6 +582,53 @@ type ListRollupsQuery struct {
 	Q                 string     `json:"q"          validate:"omitempty,max=200"`
 	Limit             int        `json:"limit"      validate:"min=1,max=200"`
 	Cursor            string     `json:"cursor"     validate:"omitempty,cursor"`
+}
+
+// ListCasesQuery is the validated form of the `listCases` query string.
+//
+// ⭐⭐ IT IS NOT `ListAlertsQuery` WITH `ack` PUT BACK. Every dimension here is
+// either a column of `alert_cases` — `state`, `ack`, `group_id` — or one
+// of the four IDENTITY facets an operator narrows by before they narrow by
+// anything else. What it deliberately does NOT take is the label selector, the
+// free-text search, `flapping` and `snoozed`: the first two are answered by GIN
+// indexes on `alerts` and reaching them per case row turns a keyset page into a
+// scan of the identity table, and the last two are properties of the identity
+// that say nothing about which of its episodes you are looking at. The alert
+// list is where those questions are asked.
+type ListCasesQuery struct {
+	// State is the EPISODE's own state: `open`, `closed`, or both. It is the ONE
+	// liveness axis this query has.
+	//
+	// ⭐⭐ IT ABSORBED THE `open` BOOLEAN (ADR 0040). While the column held four
+	// values the two were genuinely different questions and only `open` produced a
+	// predicate the planner could match a partial index against; with two values
+	// they are the same axis, so the boolean is gone and `repository.ListCases`
+	// emits THIS one as the liveness literal `case_terminal_ended` proves it equal
+	// to. Naming both values is the same as naming neither.
+	State []string `json:"state"     validate:"omitempty,max=2,unique,dive,oneof=open closed"`
+	// Ack is the facet the endpoint exists for: `?ack=unacked` is the queue people
+	// work from. It is served here and nowhere else — `alerts` has carried no ack
+	// column since 00049, because a receipt belongs to the firing it was given
+	// for and the identity outlives the firing.
+	Ack       []string `json:"ack"       validate:"omitempty,max=2,unique,dive,oneof=unacked acked"`
+	GroupID   []string `json:"group_id"  validate:"omitempty,max=32,unique,dive,uuid"`
+	Severity  []string `json:"severity"  validate:"omitempty,max=16,unique,dive,max=4096"`
+	Cluster   []string `json:"cluster"   validate:"omitempty,max=32,unique,dive,clusterkey"`
+	Namespace []string `json:"namespace" validate:"omitempty,max=64,unique,dive,max=4096"`
+	AlertName []string `json:"alertname" validate:"omitempty,max=64,unique,dive,max=1024"`
+	// Synthetic mirrors the alert list: absent means EXCLUDE, because an episode
+	// of an alert oto manufactured for a delivery drill is not the customer's
+	// history.
+	Synthetic *bool `json:"synthetic"`
+	// Since is a lower bound on `started_at` — the column the keyset is over, so
+	// it narrows the very scan the cursor walks.
+	Since  *time.Time `json:"since"`
+	Limit  int        `json:"limit"     validate:"min=1,max=200"`
+	Cursor string     `json:"cursor"    validate:"omitempty,cursor"`
+	// ⛔ THERE IS NO `sort`. The order is `-started_at` and there is no second
+	// key to choose between: a keyset cursor is only sound over an indexed total
+	// order, and offering an enum with one legal value would be a parameter that
+	// cannot change the answer — the same defect `since_seq` was removed for.
 }
 
 // TimelineQuery is the validated form of the event-list query string shared by

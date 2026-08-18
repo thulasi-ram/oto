@@ -19,7 +19,7 @@ func validCaseParams() CaseParams {
 		AlertID:        alertID,
 		GroupID:        groupIDFix,
 		Seq:            1,
-		State:          StateFiring,
+		State:          CaseOpen,
 		StartedAt:      t0,
 		LastObservedAt: t0,
 		SourceStartsAt: t0,
@@ -39,14 +39,12 @@ func TestNewCase_RequiredFields(t *testing.T) {
 		{name: "no alert", mut: func(p *CaseParams) { p.AlertID = uuid.Nil }, kind: errs.KindValidation, code: "required"},
 		{name: "seq zero", mut: func(p *CaseParams) { p.Seq = 0 }, kind: errs.KindValidation, code: "min"},
 		{name: "seq negative", mut: func(p *CaseParams) { p.Seq = -1 }, kind: errs.KindValidation, code: "min"},
-		{name: "negative reopen count", mut: func(p *CaseParams) { p.ReopenCount = -1 }, kind: errs.KindValidation, code: "min"},
 		{name: "negative suppress count", mut: func(p *CaseParams) { p.SuppressCount = -1 }, kind: errs.KindValidation, code: "min"},
 		{name: "negative state version", mut: func(p *CaseParams) { p.StateVersion = -1 }, kind: errs.KindValidation, code: "min"},
-		{name: "no state", mut: func(p *CaseParams) { p.State = State{} }, kind: errs.KindValidation, code: "required"},
+		{name: "no state", mut: func(p *CaseParams) { p.State = CaseState{} }, kind: errs.KindValidation, code: "required"},
 		{name: "no started_at", mut: func(p *CaseParams) { p.StartedAt = time.Time{} }, kind: errs.KindValidation, code: "required"},
 		{name: "no last_observed_at", mut: func(p *CaseParams) { p.LastObservedAt = time.Time{} }, kind: errs.KindValidation, code: "required"},
 		{name: "no source_starts_at", mut: func(p *CaseParams) { p.SourceStartsAt = time.Time{} }, kind: errs.KindValidation, code: "required"},
-		{name: "reopens itself", mut: func(p *CaseParams) { p.ReopenOf = p.ID }, kind: errs.KindValidation, code: "field_order"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,33 +63,43 @@ func TestNewCase_RequiredFields(t *testing.T) {
 		assert.Equal(t, alertID, o.AlertID())
 		assert.Equal(t, groupIDFix, o.GroupID())
 		assert.Equal(t, 1, o.Seq())
-		assert.Equal(t, StateFiring, o.State())
+		assert.Equal(t, CaseOpen, o.State())
+		assert.Equal(t, StateFiring, o.AlertState(),
+			"an open episode with no suppression reason reads back as a firing alert")
 		assert.Equal(t, AckStateUnacked, o.AckState())
 		assert.True(t, o.IsOpen())
 	})
 }
 
-// TestNewCase_TerminalStateAndReasonAreBoundOneToOne is what stops oto ever
-// claiming "resolved" when it means "expired".
-func TestNewCase_TerminalStateAndReasonAreBoundOneToOne(t *testing.T) {
+// TestNewCase_AClosedCaseAlwaysSaysWhyItClosed is what stops oto ever claiming
+// "resolved" when it means "expired".
+//
+// ⭐⭐ THE GUARANTEE MOVED, IT DID NOT WEAKEN (ADR 0040). It used to be a MAP:
+// `state='resolved'` was locked to `resolve_reason='upstream'` and
+// `state='expired'` to `'timeout'`, two columns spelling one fact and a CHECK
+// keeping them in step. `alert_cases.state` says only `closed` now, so there is
+// no second spelling to disagree with — and `resolve_reason` becomes REQUIRED on
+// every closed episode, which is what makes `AlertState()` able to answer at all.
+// A closed case that said nothing about why would be the exact failure the old
+// map existed to prevent, so the cases below prove it cannot be built.
+func TestNewCase_AClosedCaseAlwaysSaysWhyItClosed(t *testing.T) {
 	ended := t0.Add(time.Minute)
 
 	tests := []struct {
 		name    string
-		state   State
+		state   CaseState
 		ended   time.Time
 		reason  ResolveReason
+		want    State
 		wantErr string
 	}{
-		{name: "resolved + upstream", state: StateResolved, ended: ended, reason: ResolveUpstream},
-		{name: "expired + timeout", state: StateExpired, ended: ended, reason: ResolveTimeout},
+		{name: "closed + upstream reads as resolved", state: CaseClosed, ended: ended, reason: ResolveUpstream, want: StateResolved},
+		{name: "closed + timeout reads as expired", state: CaseClosed, ended: ended, reason: ResolveTimeout, want: StateExpired},
 
-		{name: "⛔ resolved + timeout", state: StateResolved, ended: ended, reason: ResolveTimeout, wantErr: "case_resolve_map"},
-		{name: "⛔ expired + upstream", state: StateExpired, ended: ended, reason: ResolveUpstream, wantErr: "case_resolve_map"},
-		{name: "resolved without a reason", state: StateResolved, ended: ended, wantErr: "case_resolve_reason"},
-		{name: "firing with a reason", state: StateFiring, reason: ResolveUpstream, wantErr: "case_resolve_reason"},
-		{name: "resolved without ended_at", state: StateResolved, reason: ResolveUpstream, wantErr: "case_terminal_ended"},
-		{name: "firing with an ended_at", state: StateFiring, ended: ended, wantErr: "case_terminal_ended"},
+		{name: "⛔ closed without a reason", state: CaseClosed, ended: ended, wantErr: "case_resolve_reason"},
+		{name: "⛔ open with a reason", state: CaseOpen, reason: ResolveUpstream, wantErr: "case_resolve_reason"},
+		{name: "⛔ closed without ended_at", state: CaseClosed, reason: ResolveUpstream, wantErr: "case_terminal_ended"},
+		{name: "⛔ open with an ended_at", state: CaseOpen, ended: ended, wantErr: "case_terminal_ended"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +113,8 @@ func TestNewCase_TerminalStateAndReasonAreBoundOneToOne(t *testing.T) {
 				require.NoError(t, err)
 				assert.False(t, o.IsOpen())
 				assert.Equal(t, tc.reason, o.ResolveReason())
+				assert.Equal(t, tc.want, o.AlertState(),
+					"resolve_reason is the SOLE record of resolved-versus-expired now")
 				return
 			}
 			var e *errs.Error
@@ -116,28 +126,50 @@ func TestNewCase_TerminalStateAndReasonAreBoundOneToOne(t *testing.T) {
 	}
 }
 
-func TestNewCase_SuppressionReasonExistsOnlyWhileSuppressed(t *testing.T) {
+// TestNewCase_SuppressionReasonExistsOnlyWhileTheEpisodeIsOpen is the surviving
+// half of the old biconditional, and the reading that replaced the other half.
+//
+// ⭐ `suppressed` IS NOT A STATE ANY MORE, IT IS A READING. An open episode with a
+// suppression reason IS a suppressed alert — that is the definition `AlertState`
+// applies — so "open implies a reason" was never true and "suppressed implies a
+// reason" became a tautology. What can still be false, and is still checked, is a
+// reason left behind on an episode that has ENDED: that would make oto keep
+// saying "silenced by <id>" about a firing that is over.
+//
+// ⚠️ The DDL says the same thing and no more: `case_suppress_ck` is
+// `suppression_reason IS NULL OR state = 'open'` since migration 00054.
+func TestNewCase_SuppressionReasonExistsOnlyWhileTheEpisodeIsOpen(t *testing.T) {
+	ended := t0.Add(time.Minute)
+
 	tests := []struct {
 		name    string
-		state   State
+		state   CaseState
 		reason  SuppressionReason
+		want    State
 		wantErr bool
 	}{
-		{name: "suppressed with a reason", state: StateSuppressed, reason: SuppressionSilence},
-		{name: "firing without one", state: StateFiring},
-		{name: "suppressed without a reason", state: StateSuppressed, wantErr: true},
-		{name: "firing with a reason", state: StateFiring, reason: SuppressionSilence, wantErr: true},
+		// ⭐ ADR 0041: AlertState reads `firing` WITH OR WITHOUT a reason, because
+		// suppression is an axis and not a state. `SuppressionReason()` is where the
+		// silence is read from, and the two are asserted independently below.
+		{name: "open with a reason still reads as firing", state: CaseOpen, reason: SuppressionSilence, want: StateFiring},
+		{name: "open without one reads as firing", state: CaseOpen, want: StateFiring},
+		{name: "⛔ closed with a reason", state: CaseClosed, reason: SuppressionSilence, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p := validCaseParams()
 			p.State = tc.state
 			p.SuppressionReason = tc.reason
+			if tc.state.IsClosed() {
+				p.EndedAt = ended
+				p.ResolveReason = ResolveUpstream
+			}
 
 			o, err := NewCase(p)
 			if !tc.wantErr {
 				require.NoError(t, err)
 				assert.Equal(t, tc.reason, o.SuppressionReason())
+				assert.Equal(t, tc.want, o.AlertState())
 				return
 			}
 			requireKind(t, err, errs.KindInternal, "case_suppression")
@@ -154,7 +186,7 @@ func TestNewCase_TimeOrdering(t *testing.T) {
 		{
 			name: "ended_at before started_at",
 			mut: func(p *CaseParams) {
-				p.State = StateResolved
+				p.State = CaseClosed
 				p.ResolveReason = ResolveUpstream
 				p.EndedAt = t0.Add(-time.Second)
 			},
@@ -260,7 +292,7 @@ func TestNewCase_Defaults(t *testing.T) {
 func TestNewCase_NormalisesToUTC(t *testing.T) {
 	ist := time.FixedZone("IST", 5*3600+1800)
 	p := validCaseParams()
-	p.State = StateResolved
+	p.State = CaseClosed
 	p.ResolveReason = ResolveUpstream
 	p.StartedAt = t0.In(ist)
 	p.LastObservedAt = t0.In(ist)

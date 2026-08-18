@@ -66,7 +66,7 @@ export const SUPPRESSED_REASON: Record<NonNullable<NotificationSuppressedReason>
   snoozed:
     "a person asked oto to hold its notifications for this alert until a fixed time — the alert itself kept firing",
   throttled: "the per-subject throttle was already spent",
-  storm: "the case was in storm mode — one message with a count was posted instead",
+  storm: "the alert group was in storm mode — one message with a count was posted instead",
   flapping: "this alert is damped as flapping, so updates are digested rather than sent one by one",
   verbosity: "the channel's verbosity setting does not carry this kind of update",
   channel_disabled: "every matching channel is disabled",

@@ -20,7 +20,7 @@
           "block_id": "oto_title_19267386c7",
           "text": {
             "type": "mrkdwn",
-            "text": ":white_check_mark: *<http://localhost:8080/cases/019fe297-d84f-7599-b5b2-1f231749104a|OtoSmokeTest>*  ·  `smoke-test`\n_AUTOMATED TEST from oto — please ignore. This is oto's end-to-end smoke test against a synthetic alert; no real service is affected._"
+            "text": ":white_check_mark: *<http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a|OtoSmokeTest>*  ·  `smoke-test`\n_AUTOMATED TEST from oto — please ignore. This is oto's end-to-end smoke test against a synthetic alert; no real service is affected._"
           }
         },
         {
@@ -119,7 +119,7 @@
                     "text": ":blue_book: Show timeline",
                     "emoji": true
                   },
-                  "url": "http://localhost:8080/cases/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
+                  "url": "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
                 },
                 {
                   "text": {
@@ -143,7 +143,7 @@
                     "text": ":scroll: Rule history",
                     "emoji": true
                   },
-                  "url": "http://localhost:8080/cases/019fe297-d84f-7599-b5b2-1f231749104a"
+                  "url": "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a"
                 },
                 {
                   "text": {

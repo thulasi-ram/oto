@@ -300,6 +300,14 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "notifications.all": { by: "live" },
   "notifications.list": { by: "live" },
 
+  // The firing episodes. `case.upserted` is the frame that opens, acknowledges
+  // and closes one; `event.appended` is what puts a row on an episode's own
+  // timeline. Both invalidate `["cases"]` in `api/live.tsx`.
+  "cases.all": { by: "live" },
+  "cases.list": { by: "live" },
+  "cases.detail": { by: "live" },
+  "cases.timeline": { by: "live" },
+
   "groups.all": { by: "live" },
   "groups.list": { by: "live" },
   "groups.detail": { by: "live" },

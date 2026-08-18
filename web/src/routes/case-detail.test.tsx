@@ -1,27 +1,32 @@
 /**
- * The two controls that moved onto the case, and what the screen says when the
- * server says no.
+ * The screen an operator acts on, and the one subject its control has.
  *
- * ⛔ THE ROLLBACK TESTS ARE THE POINT OF THIS FILE, and the stakes went UP when
- * these controls moved here from the alert detail. A UI that shows an ack as
- * written when the server refused it is the same lie as a chat message that says
- * "delivered" when nothing was delivered — and this ack is a fan-out, so the lie
- * is now told about every member of the case at once. So every refusal below is
- * checked twice: that the failure is *shown*, and that the screen has not moved
- * on as if it had succeeded.
+ * ⛔ THE ACK IS CASE-ADDRESSED AND THE PATH IS ASSERTED. `POST
+ * /api/v1/cases/{id}/ack`, never `/alerts/{id}/ack`. The alert-addressed
+ * spelling had to resolve "whatever is open right now" server-side, which made
+ * the subject of the receipt a race: the firing the operator looked at and the
+ * firing the receipt landed on could differ.
  *
- * ⛔ THE ENDPOINTS ARE CASE-SCOPED AND THE PATHS ARE ASSERTED. `POST
- * /api/v1/alert-groups/{id}/ack|snooze|unsnooze`, never the per-alert ones. A
- * screen that acknowledged the case by walking its members and calling
- * `/alerts/{id}/ack` forty times would look identical on screen and be a
- * different thing entirely: forty receipts with forty idempotency keys, some of
- * which land and some of which do not.
+ * ⛔ AND IT IS ONE CONTROL WITH TWO WORDS. `ack_state` has two values, so a
+ * separate Acknowledge and Withdraw left one of the two dead on every paint. The
+ * toggle reads what the case IS and does the other thing — which is why the tests
+ * below assert the WORD as much as the request.
+ *
+ * ⛔ SNOOZE IS NOT ON THIS SCREEN AT ALL, AND THE LAST DESCRIBE GUARDS THAT. A
+ * snooze holds oto's notifications for the IDENTITY: it outlives this case and
+ * covers whatever fires next under the same labels, so it is taken from the
+ * alert's own screen (`/alerts/:id`) and ended from the Quiet tab. A control here
+ * would put an alert-scoped decision behind a case-shaped heading.
+ *
+ * ⛔ AND THE ROLLBACK TESTS ARE WHY THE FILE IS LONG. A UI that shows an ack as
+ * written when the server refused it is the same lie as a chat message that
+ * says "delivered" when nothing was delivered.
  */
 import { fireEvent, screen, within } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 
 import CaseDetailRoute from "./case-detail";
-import { groupDetail } from "~/test/fixtures";
+import { alertRef, caseDetail } from "~/test/fixtures";
 import {
   item,
   list,
@@ -32,31 +37,29 @@ import {
   type FetchStub,
 } from "~/test/harness";
 
-const ID = "0f1e2d3c-4b5a-4697-8899-aabbccddeeff";
-const PATH = `/api/v1/alert-groups/${ID}`;
+const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const ALERT_ID = "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae";
+const PATH = `/api/v1/cases/${ID}`;
 
-/** Render the case screen the way the router renders it, params and all. */
 function mount(patch = {}): FetchStub {
   const net = stubFetch({
-    [`GET ${PATH}`]: () => ({ json: item(groupDetail(patch)) }),
-    [`GET ${PATH}/alerts`]: () => ({ json: list([]) }),
-    [`GET ${PATH}/timeline`]: () => ({ json: list([]) }),
+    [`GET ${PATH}`]: () => ({ json: item(caseDetail({ id: ID, ...patch })) }),
+    [`GET ${PATH}/events`]: () => ({ json: list([]) }),
   });
 
   renderScreen(() => <CaseDetailRoute />, { path: `/cases/${ID}`, routePath: "/cases/:id" });
   return net;
 }
 
-/** Buttons on the header bar rather than inside whichever dialog is open. */
 function barButtons(name: string | RegExp): readonly HTMLElement[] {
   return screen
     .queryAllByRole("button", { name })
     .filter((el) => el.closest('[role="dialog"]') === null);
 }
 
-function barButton(name: string): HTMLElement {
+function barButton(name: string | RegExp): HTMLElement {
   const found = barButtons(name);
-  expect(found, `the header has no \`${name}\` button`).toHaveLength(1);
+  expect(found, `the header has no \`${String(name)}\` button`).toHaveLength(1);
   return found[0]!;
 }
 
@@ -66,21 +69,21 @@ function openDialog(): ReturnType<typeof within> {
   return within(dialog as HTMLElement);
 }
 
-async function ackButton(): Promise<HTMLElement> {
-  await until(() => expect(barButtons("Acknowledge every current member")).toHaveLength(1));
-  return barButton("Acknowledge every current member");
+async function ready(name: string | RegExp): Promise<HTMLElement> {
+  await until(() => expect(barButtons(name)).toHaveLength(1));
+  return barButton(name);
 }
 
 /* -------------------------------------------------------------------------- */
-/* Acknowledging the case                                                     */
+/* Acknowledging this firing                                                  */
 /* -------------------------------------------------------------------------- */
 
-describe("acknowledging every current member", () => {
-  it("posts once to the case's own ack, with one idempotency key and the trimmed note", async () => {
+describe("acknowledging the case", () => {
+  it("posts to the CASE's own ack, with one idempotency key and the trimmed note", async () => {
     const net = mount();
-    net.on(`POST ${PATH}/ack`, () => ({ json: item(groupDetail({ acked_count: 3 })) }));
+    net.on(`POST ${PATH}/ack`, () => ({ json: item(caseDetail({ ack_state: "acked" })) }));
 
-    fireEvent.click(await ackButton());
+    fireEvent.click(await ready("Acknowledge"));
     fireEvent.input(openDialog().getByLabelText("Note (optional)"), {
       target: { value: "  known deploy, rolling back  " },
     });
@@ -88,201 +91,104 @@ describe("acknowledging every current member", () => {
 
     await until(() => expect(net.to("/ack")).toHaveLength(1));
     const posts = net.to("/ack");
-    // ⛔ THE CASE'S ENDPOINT, not a walk over the members.
+    // ⛔ THE CASE'S ENDPOINT. The alert-addressed one would have made the subject
+    // of the receipt "whatever is open now", resolved server-side, which is a race.
     expect(posts[0]?.path).toBe(`${PATH}/ack`);
-    // Trimmed, because a note is prose and trailing spaces are not part of it.
     expect(posts[0]?.body).toEqual({ note: "known deploy, rolling back" });
     expect(posts[0]?.headers["Idempotency-Key"]).toBeTruthy();
-    // Nothing per-alert went out alongside it.
     expect(net.calls.filter((c) => c.path.startsWith("/api/v1/alerts/"))).toHaveLength(0);
   });
 
-  it("sends no note at all rather than an empty one", async () => {
-    const net = mount();
-    net.on(`POST ${PATH}/ack`, () => ({ json: item(groupDetail()) }));
-
-    fireEvent.click(await ackButton());
-    fireEvent.click(openDialog().getByRole("button", { name: "Acknowledge" }));
-
-    await until(() => expect(net.to("/ack")).toHaveLength(1));
-    // `{}`, never `{note: ""}`: the contract has no "cleared" note and a blank
-    // line on the timeline is forever.
-    expect(net.to("/ack")[0]?.body).toEqual({});
+  it("says a receipt does not change the signal, at the moment of committing", async () => {
+    mount();
+    fireEvent.click(await ready("Acknowledge"));
+    expect(openDialog().getByText(/it stays firing until the upstream says otherwise/i)).toBeTruthy();
   });
 
   it("⛔ keeps the dialog open and writes nothing when the server refuses", async () => {
     const net = mount();
     net.on(`POST ${PATH}/ack`, () => problem(500, "internal"));
 
-    fireEvent.click(await ackButton());
+    fireEvent.click(await ready("Acknowledge"));
     fireEvent.click(openDialog().getByRole("button", { name: "Acknowledge" }));
     await until(() => expect(net.to("/ack")).toHaveLength(1));
 
-    // The refusal is visible, and the screen did not close the dialog as if the
-    // receipt existed.
     await until(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
-    // And the case was never refetched as if something had changed.
     expect(net.calls.filter((c) => c.method === "GET" && c.path === PATH)).toHaveLength(1);
   });
 
-  it("puts a 412 in words rather than leaving a bare status on screen", async () => {
-    const net = mount();
-    net.on(`POST ${PATH}/ack`, () => problem(412, "precondition_failed"));
-
-    fireEvent.click(await ackButton());
-    fireEvent.click(openDialog().getByRole("button", { name: "Acknowledge" }));
-
-    await until(() =>
-      expect(openDialog().getByText(/no currently-joined member whose episode is still open/))
-        .toBeTruthy(),
-    );
-  });
-
-  it("says at the moment of committing that later members are not covered", async () => {
-    mount();
-    fireEvent.click(await ackButton());
-
-    // ⭐ THE LIMIT IS STATED WHERE THE DECISION IS MADE. An operator who believes
-    // a case-wide ack covers what joins next has silenced their own future
-    // signal, and finding that out afterwards is finding it out too late.
-    expect(openDialog().getByText(/members that join later are NOT acknowledged/i)).toBeTruthy();
+  it("refuses to offer the receipt on a case that has already ended", async () => {
+    mount({ ended_at: "2026-08-09T09:30:00.000Z", state: "resolved" });
+    await until(() => expect(barButtons("Acknowledge")).toHaveLength(1));
+    // Acking an ended case is a 412 by contract; saying so first is kinder than
+    // sending a request whose only possible answer is a refusal.
+    expect(barButton("Acknowledge")).toBeDisabled();
   });
 });
 
 /* -------------------------------------------------------------------------- */
-/* Taking the acknowledgement back                                            */
+/* Taking it back                                                             */
 /* -------------------------------------------------------------------------- */
 
-/**
- * ⛔ THE WAY BACK IS PART OF THE CONTROL, NOT AN EXTRA.
- *
- * When acknowledging moved onto this screen it arrived without its withdrawal:
- * `POST /alert-groups/{id}/ack` existed and `.../unack` did not, so the widest
- * gesture in the product — one press writing a receipt on every member — was also
- * the only irreversible one, and the route back was opening each member alert in
- * turn. These tests are the fence around that: the control is here, it posts to the
- * CASE's own unack, and a refusal is shown in the withdrawal's own words rather than
- * the acknowledgement's.
- */
 describe("withdrawing the acknowledgement", () => {
-  async function withdrawButton(): Promise<HTMLElement> {
-    await until(() => expect(barButtons("Withdraw acknowledgement")).toHaveLength(1));
-    return barButton("Withdraw acknowledgement");
-  }
+  it("posts to the case's own unack and names the verb that was refused", async () => {
+    const net = mount({ ack_state: "acked" });
+    net.on(`POST ${PATH}/unack`, () => problem(412, "no_open_case"));
 
-  it("posts to the case's own unack, with one idempotency key and the trimmed note", async () => {
-    const net = mount();
-    net.on(`POST ${PATH}/unack`, () => ({ json: item(groupDetail({ acked_count: 0 })) }));
-
-    fireEvent.click(await withdrawButton());
-    fireEvent.input(openDialog().getByLabelText("Note (optional)"), {
-      target: { value: "  un-acking, it's back  " },
-    });
+    fireEvent.click(await ready("Withdraw acknowledgement"));
     fireEvent.click(openDialog().getByRole("button", { name: "Withdraw" }));
 
     await until(() => expect(net.to("/unack")).toHaveLength(1));
-    const posts = net.to("/unack");
-    // ⛔ THE CASE'S ENDPOINT, not a walk over the members.
-    expect(posts[0]?.path).toBe(`${PATH}/unack`);
-    expect(posts[0]?.body).toEqual({ note: "un-acking, it's back" });
-    expect(posts[0]?.headers["Idempotency-Key"]).toBeTruthy();
+    expect(net.to("/unack")[0]?.path).toBe(`${PATH}/unack`);
+    // ⛔ "Nothing here to acknowledge" said of a withdrawal tells the operator
+    // the opposite of what happened; `no_open_case` is the refusal both
+    // directions share, so the sentence comes from the mode.
+    await until(() => expect(openDialog().getByText(/no receipt left to withdraw/i)).toBeTruthy());
+  });
+
+  it("⛔ is the SAME control, so an unacked case offers no withdrawal at all", async () => {
+    // One control with two words: a `Withdraw` sitting permanently beside an
+    // `Acknowledge` meant one of the two was dead on every paint, and a dead
+    // control is one an operator has to read to discard. The way back is not
+    // hidden — it IS this button, the moment there is a receipt to take back.
+    mount({ ack_state: "unacked" });
+    await ready("Acknowledge");
+    expect(barButtons("Withdraw acknowledgement")).toHaveLength(0);
+  });
+
+  it("⛔ and an acked case offers no second Acknowledge", async () => {
+    mount({ ack_state: "acked" });
+    await ready("Withdraw acknowledgement");
+    expect(barButtons("Acknowledge")).toHaveLength(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The snooze, which is not this screen's to offer                            */
+/* -------------------------------------------------------------------------- */
+
+describe("holding the alert's notifications", () => {
+  it("⛔ is offered nowhere on this screen, and posts nothing to the alert", async () => {
+    const net = mount();
+    await ready("Acknowledge");
+
+    // A snooze outlives this case and covers whatever fires next under the same
+    // labels, so its subject is the identity — offered from the alert's own
+    // screen, ended from the Quiet tab of the alert list. Here it would be an
+    // alert-scoped decision behind a case-shaped heading.
+    expect(barButtons(/^Snooze/)).toHaveLength(0);
+    expect(barButtons(/^Resume/)).toHaveLength(0);
     expect(net.calls.filter((c) => c.path.startsWith("/api/v1/alerts/"))).toHaveLength(0);
   });
 
-  it("is offered whatever the acknowledged count says", async () => {
-    // `acked_count` is a roll-up over episodes and a partially-acked case is the
-    // normal shape of one, so a control hidden below some threshold would be hidden
-    // from exactly the operator who needs it.
-    mount({ acked_count: 0 });
-    await withdrawButton();
-  });
-
-  it("⛔ keeps the dialog open and writes nothing when the server refuses", async () => {
-    const net = mount();
-    net.on(`POST ${PATH}/unack`, () => problem(500, "internal"));
-
-    fireEvent.click(await withdrawButton());
-    fireEvent.click(openDialog().getByRole("button", { name: "Withdraw" }));
-    await until(() => expect(net.to("/unack")).toHaveLength(1));
-
-    await until(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
-    expect(net.calls.filter((c) => c.method === "GET" && c.path === PATH)).toHaveLength(1);
-  });
-
-  it("names the verb that was refused, not the opposite one", async () => {
-    const net = mount();
-    net.on(`POST ${PATH}/unack`, () => problem(412, "no_open_case"));
-
-    fireEvent.click(await withdrawButton());
-    fireEvent.click(openDialog().getByRole("button", { name: "Withdraw" }));
-
-    // ⛔ "Nothing here to acknowledge" said of a withdrawal tells the operator the
-    // opposite of what happened, and `no_open_case` is the refusal both directions
-    // share — so the sentence has to come from the mode, not from the status.
-    await until(() => expect(openDialog().getByText(/nothing here to withdraw/i)).toBeTruthy());
-  });
-});
-
-/* -------------------------------------------------------------------------- */
-/* Snoozing and resuming the case                                             */
-/* -------------------------------------------------------------------------- */
-
-describe("holding the case's notifications", () => {
-  it("posts the snooze to the case's own endpoint, with an idempotency key", async () => {
-    const net = mount();
-    net.on(`POST ${PATH}/snooze`, () => ({ json: item(groupDetail()) }));
-
-    await until(() => expect(barButtons("Snooze every current member")).toHaveLength(1));
-    fireEvent.click(barButton("Snooze every current member"));
-
-    // The dialog opens on a preset, so committing needs no further input.
-    fireEvent.click(openDialog().getByRole("button", { name: /^Hold notifications until/ }));
-
-    await until(() => expect(net.to("/snooze")).toHaveLength(1));
-    const posts = net.to("/snooze");
-    expect(posts[0]?.path).toBe(`${PATH}/snooze`);
-    expect(posts[0]?.headers["Idempotency-Key"]).toBeTruthy();
-    // Exactly one of the two forms, never both — there is no default window
-    // because there is no indefinite snooze.
-    expect(posts[0]?.body).toEqual({ duration_seconds: 3600 });
-  });
-
-  it("names the case, not a group, in the snooze dialog", async () => {
+  it("⭐ still points at the identity, so the hold is one hop away", async () => {
     mount();
-    await until(() => expect(barButtons("Snooze every current member")).toHaveLength(1));
-    fireEvent.click(barButton("Snooze every current member"));
-
-    expect(openDialog().getByText(/every alert currently in this case/)).toBeTruthy();
-  });
-
-  it("⛔ puts a refused resume in words, in a live region, and keeps offering it", async () => {
-    const net = mount();
-    net.on(`POST ${PATH}/unsnooze`, () => problem(412, "precondition_failed"));
-
-    await until(() => expect(barButtons("Resume notifications")).toHaveLength(1));
-    fireEvent.click(barButton("Resume notifications"));
-
-    // This refusal has no dialog to appear inside — it lands in the header under
-    // a button that still reads "Resume notifications", so a person who pressed
-    // it and heard nothing would press it again.
-    await until(() =>
-      expect(screen.getByText(/Nothing here was snoozed, so there was nothing to resume/))
-        .toBeTruthy(),
-    );
-    expect(net.to("/unsnooze")).toHaveLength(1);
-    expect(barButtons("Resume notifications")).toHaveLength(1);
-  });
-
-  it("never invents a message for a failure it has no sentence for", async () => {
-    const net = mount();
-    net.on(`POST ${PATH}/unsnooze`, () => problem(503, "unavailable", { detail: "upstream" }));
-
-    await until(() => expect(barButtons("Resume notifications")).toHaveLength(1));
-    fireEvent.click(barButton("Resume notifications"));
-
-    // The server's own `detail`, verbatim — not a status code, not a guess, and
-    // above all not silence.
-    await until(() => expect(screen.getByText("upstream")).toBeTruthy());
+    await ready("Acknowledge");
+    // Removing the control must not strand the operator: the panel naming the
+    // alert links out to the screen that does offer it.
+    expect(
+      screen.getByRole("link", { name: /Every firing of this alert/ }).getAttribute("href"),
+    ).toBe(`/alerts/${ALERT_ID}`);
   });
 });
 
@@ -291,16 +197,27 @@ describe("holding the case's notifications", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("the word on screen", () => {
-  it("⛔ never calls the correlation a group where a person can read it", async () => {
-    mount();
-    await ackButton();
+  it("⛔ never calls this firing a group, and never calls its group a case", async () => {
+    mount({
+      alert: alertRef(),
+      group: {
+        id: "0f1e2d3c-4b5a-4697-8899-aabbccddeeff",
+        group_key: "alertname=HighErrorRate",
+        generation: 1,
+        title: "HighErrorRate in payments",
+        state: "open",
+      },
+    });
+    await ready("Acknowledge");
 
-    // `AlertCase` (the per-alert firing episode) and this object share a word in
-    // the code by an accepted decision. The rule that keeps that survivable is
-    // that neither foreign word reaches the screen: this object is a Case here,
-    // and the episode is only ever an *episode*.
     const text = document.body.textContent ?? "";
-    expect(text).toContain("Case timeline");
-    expect(text).not.toMatch(/\bgroup\b/i);
+    // A Case is one firing of one alert — the thing that is acknowledged.
+    expect(text).toContain("One firing of one alert");
+    // An AlertGroup is Alertmanager's batching, and the panel says so rather
+    // than letting a link called "group" read as this case's parent.
+    expect(text).toContain("Alertmanager batched this firing");
+    expect(text).not.toMatch(/currently-joined/i);
+    expect(text).not.toMatch(/\bincident\b/i);
+    expect(text).not.toMatch(/\bcorrelat/i);
   });
 });

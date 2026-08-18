@@ -450,7 +450,10 @@ func (s *Service) noTransition(
 	trigger domain.Trigger, out ObserveOutcome, acc *observeAccum,
 ) {
 	s.log.DebugContext(ctx, "alerts: observation makes no legal transition",
-		"alert_key", alert.Key().String(), "state", current.State().String(),
+		// AlertState, because the question this line answers is which of the four
+		// §B.2 states had no edge under this trigger; `open`/`closed` would not
+		// name the row of the table that was looked for.
+		"alert_key", alert.Key().String(), "state", current.AlertState().String(),
 		"trigger", trigger.String())
 	acc.outcomes = append(acc.outcomes, out)
 }
@@ -458,16 +461,17 @@ func (s *Service) noTransition(
 // applyOpen opens the episode a Decision asked for, AND IS THE ONLY PLACE THAT
 // DOES.
 //
-// T1 (the Alert's first episode) and T7 (a re-fire beyond refire_grace) differ in
-// exactly two values — the sequence number and the episode being succeeded — and
-// `Decide` has already computed both from the table. Everything else about them
-// is identical, which is why they are one function and not two branches.
+// T1 (the Alert's first episode) and T7 (a re-fire) differ in exactly one value
+// — the sequence number — and `Decide` has already computed it from the table.
+// Everything else about them is identical, which is why they are one function and
+// not two branches, and since ADR 0040 retired T8 those two rows are the whole
+// population of "an episode begins".
 func (s *Service) applyOpen(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
 	at domain.ObservationTime, actor domain.Actor, opt ObserveOptions, d domain.Decision,
 	out *ObserveOutcome, acc *observeAccum,
 ) (domain.Case, error) {
-	opened, evs, err := s.openEpisode(ctx, scope, alert, o, at, actor, opt, d.Seq, d.ReopenOf)
+	opened, evs, err := s.openEpisode(ctx, scope, alert, o, at, actor, opt, d.Seq)
 	if err != nil {
 		return domain.Case{}, err
 	}
@@ -482,7 +486,12 @@ func (s *Service) applyOpen(
 	// StateNone is the honest answer: there was no episode. The two branches this
 	// replaced disagreed about exactly this, and the one that reported "" for a
 	// re-fire was describing a first sighting that had not happened.
-	out.From, out.To = d.From.String(), opened.State().String()
+	//
+	// ⛔ IT IS `AlertState`, NOT `State`. `ObserveOutcome.From`/`To` are the §B.2
+	// words on every other assignment, and since ADR 0040 `Case.State()` answers
+	// `open`/`closed` — so reading it here would report a re-fire as
+	// "resolved -> open", which is a sentence in two vocabularies at once.
+	out.From, out.To = d.From.String(), opened.AlertState().String()
 
 	// T10: an acknowledgement does NOT survive into a new episode. The previous
 	// case keeps its ack in the record — rewriting a terminal episode's
@@ -555,7 +564,7 @@ func (s *Service) applyEdge(
 // `case.opened` event. A new episode ALWAYS starts unacked (T10).
 func (s *Service) openEpisode(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
-	at domain.ObservationTime, actor domain.Actor, opt ObserveOptions, seq int, reopenOf uuid.UUID,
+	at domain.ObservationTime, actor domain.Actor, opt ObserveOptions, seq int,
 ) (domain.Case, []domain.Event, error) {
 	caseID := id.New()
 
@@ -573,7 +582,6 @@ func (s *Service) openEpisode(
 		SourceStartsAt:  o.SourceStartsAt,
 		SourceEndsAt:    o.SourceEndsAt,
 		SourceUpdatedAt: o.SourceUpdatedAt,
-		ReopenOf:        reopenOf,
 		Value:           o.Value,
 		ObservedSkew:    time.Duration(o.SkewMS) * time.Millisecond,
 		EventID:         id.New(),
@@ -591,7 +599,6 @@ func (s *Service) openEpisode(
 		SourceStartsAt:  draft.SourceStartsAt(),
 		SourceEndsAt:    nilTime(draft.SourceEndsAt()),
 		SourceUpdatedAt: nilTime(draft.SourceUpdatedAt()),
-		ReopenOf:        nilID(draft.ReopenOf()),
 		Value:           draft.Value(),
 		SkewMS:          o.SkewMS,
 	})
@@ -666,10 +673,11 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 	// every API consumer and the UI read to answer "which silence is muting
 	// this?" was permanently empty.
 	//
-	// The gate is the RESULTING STATE and not the edge id, because
-	// case_suppress_ck ties `suppression_reason` to `state = 'suppressed'` and the
-	// domain re-proves the same invariant: the witnesses are meaningful in
-	// exactly the states the reason is, and in no others.
+	// The gate is the RESULTING STATE and not the edge id, because the witnesses
+	// are meaningful in exactly the states the reason is and in no others. Since
+	// ADR 0040 `suppressed` is a DERIVED reading — an open episode carrying a
+	// suppression reason — so the gate asks `AlertState`, which is the one place
+	// that reading is defined.
 	//
 	// ⛔ All THREE witnesses are carried. `silencedBy`, `inhibitedBy` and
 	// `mutedBy` come off the same Alertmanager `status` object, and keeping only
@@ -680,13 +688,10 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 	// writing it onto the case would claim Alertmanager is suppressing
 	// something it has never heard of (§B.8.2).
 	sb := domain.SuppressedBy{}
-	if o.State() == domain.StateSuppressed {
+	if !o.SuppressionReason().IsZero() {
 		sb = witnesses
 	}
 	t.SuppressedBy = &sb
-	if n := o.ReopenCount(); n > 0 {
-		t.ReopenCount = &n
-	}
 	if n := o.SuppressCount(); n > 0 {
 		t.SuppressCount = &n
 	}
@@ -730,7 +735,21 @@ func projectionFor(
 		currentCase = ptr(ac.ID())
 	}
 	return domain.AlertProjection{
-		State:             ac.State(),
+		// ⭐ THE ALERT'S STATE, DERIVED FROM THE EPISODE. `alerts.state` is the
+		// three-value §B.2 enum since ADR 0041 and `alert_cases.state` is
+		// `open | closed`, so this is the one place the projection crosses ADR
+		// 0040's line — and AlertState is total, so the crossing loses nothing.
+		State: ac.AlertState(),
+		// ⭐ AND THE AXIS TRAVELS BESIDE IT, NEVER INSIDE IT (ADR 0041). These two
+		// are read off the SAME case as `State`, in the same statement, so the
+		// Alert can never claim a suppression its current episode is not carrying
+		// — which is the disagreement that made `alerts.state = 'suppressed'`
+		// authoritative over the case that produced it.
+		//
+		// `SuppressedBy()` self-gates on the reason, so a witness left on a row by
+		// anything else never reaches the projection.
+		SuppressionReason: ac.SuppressionReason(),
+		SuppressedBy:      ac.SuppressedBy(),
 		CurrentCaseID:     currentCase,
 		LastSeenAt:        at.RecordedAt(),
 		LastStateChangeAt: lastChange,
@@ -828,7 +847,6 @@ func routingCommand(
 		Trigger:      trigger,
 		Actor:        actor,
 		At:           at,
-		RefireGrace:  cfg.RefireGrace,
 		ResolveGrace: cfg.ResolveGrace,
 	}
 }
@@ -852,6 +870,7 @@ func (s *Service) edgeCommand(
 			return domain.TransitionCommand{}, err
 		}
 		cmd.SuppressionReason = reason
+		cmd.SuppressedBy = o.SuppressedBy
 		cmd.Payload = map[string]any{
 			"silenced_by":  o.SuppressedBy.SilencedBy,
 			"inhibited_by": o.SuppressedBy.InhibitedBy,
@@ -988,8 +1007,6 @@ func kindOf(t domain.TransitionID) domain.TransitionKind {
 		return domain.TransitionResolve
 	case domain.TransitionT6:
 		return domain.TransitionExpire
-	case domain.TransitionT8:
-		return domain.TransitionReopen
 	default:
 		return domain.TransitionObserve
 	}

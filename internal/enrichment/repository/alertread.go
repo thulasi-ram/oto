@@ -156,7 +156,19 @@ WITH subject AS (
 candidates AS (
   SELECT o.id           AS case_id,
          o.alert_id     AS alert_id,
-         o.state        AS state,
+         -- ADR 0040: alert_cases.state is open | closed, so the four-word reading
+         -- an enrichment renders is recomposed here. The join to alerts is already
+         -- on this statement for alertname and severity, and an OPEN episode is
+         -- always its alert's current one (case_one_open_idx), so a.state IS this
+         -- episode's state; a closed one says which kind of ending it had in
+         -- resolve_reason, the column that always carried that.
+         -- ADR 0041: 'suppressed' is an axis, not a state, so the display
+         -- reading recomposes it from a.suppression_reason. a.state now says
+         -- 'firing' throughout a silence, which is what every COUNT needed.
+         CASE WHEN o.state = 'open' AND a.suppression_reason IS NOT NULL THEN 'suppressed'
+              WHEN o.state = 'open' THEN a.state
+              WHEN o.resolve_reason = 'timeout' THEN 'expired'
+              ELSE 'resolved' END              AS state,
          o.started_at   AS started_at,
          a.alert_key    AS alert_key,
          a.alertname    AS alertname,

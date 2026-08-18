@@ -137,12 +137,32 @@ func (f *fixture) caseIDOf(key domain.AlertKey) uuid.UUID {
 	return caseID
 }
 
-// stateOf reads one case's state letter straight from the row.
-func (f *fixture) stateOf(caseID uuid.UUID) string {
+// alertStateOf reads the §B.2 state of the ALERT as one case last observed it,
+// straight from the row.
+//
+// ⭐ IT DERIVES RATHER THAN READS, AND THAT IS ADR 0040. `alert_cases.state` holds
+// `open | closed` and nothing else now; which of the four §B.2 values the episode
+// stands for is that column together with `suppression_reason` (WHICH silence
+// muted it) and `resolve_reason` (WHY it ended). What these tests are about is
+// unchanged — the reaper must leave a held case FIRING and must stamp an expired
+// one EXPIRED — and the expired half is now two columns rather than one, so a
+// reaper that closed an episode without saying why would be caught here as well.
+//
+// ⛔ THE DERIVATION IS SPELLED OUT IN SQL rather than delegated to
+// `domain.Case.AlertState`. These assertions are about what the sweep WROTE to the
+// row; reading it back through the very code that computes the reading would let a
+// wrong pair of columns agree with itself.
+func (f *fixture) alertStateOf(caseID uuid.UUID) string {
 	f.t.Helper()
 	var state string
 	if err := f.pool.QueryRow(f.t.Context(),
-		`SELECT state FROM alert_cases WHERE org_id = $1 AND id = $2`,
+		`SELECT CASE
+		          WHEN state = 'open' AND suppression_reason IS NOT NULL THEN 'suppressed'
+		          WHEN state = 'open'                                    THEN 'firing'
+		          WHEN resolve_reason = 'timeout'                        THEN 'expired'
+		          ELSE 'resolved'
+		        END
+		   FROM alert_cases WHERE org_id = $1 AND id = $2`,
 		f.orgID, caseID).Scan(&state); err != nil {
 		f.t.Fatalf("read case state: %v", err)
 	}
@@ -182,8 +202,8 @@ func TestReapAsksForHealthOncePerTickNotPerCase(t *testing.T) {
 	require.Equal(t, []uuid.UUID{srcID}, health.asked[0],
 		"two candidates over one source must ask about that one source, deduped")
 
-	assert.Equal(t, domain.StateExpired.String(), f.stateOf(occ1.ID()))
-	assert.Equal(t, domain.StateExpired.String(), f.stateOf(occ2.ID()))
+	assert.Equal(t, domain.StateExpired.String(), f.alertStateOf(occ1.ID()))
+	assert.Equal(t, domain.StateExpired.String(), f.alertStateOf(occ2.ID()))
 }
 
 // TestReapHoldsWhatTheBatchCannotVouchFor is §B.4 over the batch result: a
@@ -214,8 +234,8 @@ func TestReapHoldsWhatTheBatchCannotVouchFor(t *testing.T) {
 	assert.Equal(t, []uuid.UUID{srcUnknown}, res.HeldSources,
 		"the held source is named, so one source.unreachable banner can be raised for it")
 
-	assert.Equal(t, domain.StateExpired.String(), f.stateOf(occ1.ID()))
-	assert.Equal(t, domain.StateFiring.String(), f.stateOf(occ2.ID()),
+	assert.Equal(t, domain.StateExpired.String(), f.alertStateOf(occ1.ID()))
+	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ2.ID()),
 		"the held case must be left exactly as it was")
 }
 
@@ -246,8 +266,8 @@ func TestReapHoldsEveryCandidateWhenTheHealthLookupFails(t *testing.T) {
 	assert.Equal(t, 2, res.Held)
 	assert.ElementsMatch(t, []uuid.UUID{srcA, srcB}, res.HeldSources)
 
-	assert.Equal(t, domain.StateFiring.String(), f.stateOf(occ1.ID()))
-	assert.Equal(t, domain.StateFiring.String(), f.stateOf(occ2.ID()))
+	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ1.ID()))
+	assert.Equal(t, domain.StateFiring.String(), f.alertStateOf(occ2.ID()))
 }
 
 // ---------------------------------------------------------------- flap scoring

@@ -45,17 +45,36 @@ func (r *ReminderRepository) db(ctx context.Context) db.Querier { return db.From
 // `alert_cases.group_id`, which since migration 00051 IS the membership —
 // there is no join table and no `left_at IS NULL` to carry.
 //
-// ⭐ AND THE LIVENESS CLAUSE IS ALREADY HERE. `o.state = 'firing'` is stricter
-// than "still a member": `case_terminal_ended` makes membership `ended_at IS NULL`,
-// which is `state IN ('firing','suppressed')`, and a suppressed episode is not one
-// a reminder should be minted for. Nothing was lost when the join table went.
+// ⭐ AND THE LIVENESS CLAUSE IS ALREADY HERE, IN TWO PARTS SINCE ADR 0040.
+// `o.state = 'open'` is membership — `case_terminal_ended` makes it identical to
+// `ended_at IS NULL` — and `a.state = 'firing'` is the STRICTER half: a suppressed
+// episode is still a live member and is not one a reminder should be minted for.
+//
+// ⛔ THE SECOND HALF HAS TO COME FROM THE ALERT NOW, AND THE JOIN IS A PRIMARY-KEY
+// PROBE. `alert_cases.state` is `open | closed` (migration 00054), so `firing`
+// apart from `suppressed` is a fact about the label set rather than the episode.
+// The join is safe on exactly the rows this asks about: an OPEN case is its
+// alert's current one (case_one_open_idx is UNIQUE (alert_id) WHERE ended_at IS
+// NULL), so `a.state` IS this episode's state, and `o.state = 'open'` is what
+// keeps every closed episode of a re-fired alert out of the answer.
 const unackedGroupsSQL = `
 SELECT g.id, g.state_version, g.group_labels, min(o.started_at) AS unacked_since
   FROM alert_groups g
   JOIN alert_cases o ON o.group_id = g.id AND o.org_id = g.org_id
+  JOIN alerts a      ON a.id = o.alert_id AND a.org_id = o.org_id
  WHERE g.org_id = $1
    AND g.closed_at IS NULL
-   AND o.state = 'firing'
+   AND o.state = 'open'
+   AND a.state = 'firing'
+   -- THE SILENCED ONES ARE STILL EXCLUDED, AND THIS IS NOW SAID OUT LOUD.
+   -- Before ADR 0041, a.state = 'firing' excluded them as a SIDE EFFECT of
+   -- 'suppressed' occupying the same column; the reminder's intent was always
+   -- "nag about what somebody is still being paged for", and an operator who has
+   -- silenced an alert has already answered the reminder. Every other reader of
+   -- this column wanted the opposite and got the same accident, which is why the
+   -- axis exists -- so the one place that genuinely means "firing and audible"
+   -- has to write it down.
+   AND a.suppression_reason IS NULL
    AND o.ack_state = 'unacked'
    AND NOT EXISTS (
          SELECT 1 FROM notifications n

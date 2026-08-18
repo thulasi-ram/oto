@@ -1,70 +1,52 @@
 /**
- * `/cases/:id` — one case.
+ * `/cases/:id` — one firing episode of one alert.
  *
  * ⭐ THIS IS THE SCREEN AN OPERATOR ACTS ON, and the controls in its header are
- * why. Acknowledging and snoozing used to live on the alert detail, one
- * signal at a time; they are here now, wired to the case-scoped endpoints
- * (`POST /api/v1/alert-groups/{id}/ack|unack|snooze|unsnooze`), because a case is
- * the unit a human responds to. Forty pods crash-looping is one thing happening, and
- * a receipt written on one of the forty is a receipt everybody else misreads.
+ * why. A **Case** is one contiguous firing of one Alert, and it is the only
+ * thing in oto a human can have *seen*: a receipt written here is a fact about
+ * this firing, it clears itself when the next one opens, and it can never quietly
+ * come to be about a different firing than the one that was looked at.
  *
- * ⛔ EVERY CONTROL HERE HAS ITS WAY BACK, and that is a rule rather than a
- * coincidence. When these moved off the alert detail the ack arrived without one:
- * `unack` was case-scoped nowhere, so the widest gesture in the product was also its
- * only irreversible one and the route back was forty alert pages.
+ * ⛔ ACK IS THE ONLY VERB ON THIS SCREEN, AND SNOOZE IS DELIBERATELY NOT HERE.
  *
- * ⛔ "CASE" HERE IS THE CORRELATION — one generation of one Alertmanager
- * notification group, derived from `(source, receiver, groupLabels)` and owning
- * exactly one chat thread. It is NOT `AlertCase` (`internal/alerts/domain/case.go`),
- * which is one ALERT'S FIRING EPISODE. The API and the database still say "group"
- * for this object and "case" for the episode; the collision is accepted, and it is
- * kept off the screen by never calling an episode a case in any string a person
- * reads. Where this screen touches the episode — the members list's ack note — it
- * says *episode*.
+ *   - **Acknowledge** is case-scoped (`POST /api/v1/cases/{id}/ack`). It ends
+ *     with this episode, which is exactly why it is written here.
+ *   - **Snooze** is ALERT-scoped: it holds oto's notifications for the IDENTITY
+ *     until a fixed time, so it outlives this case and applies to whatever fires
+ *     next under the same labels. A hold that outlives the thing you took it from
+ *     must be taken where its subject is on screen — the alert (`/alerts/:id`,
+ *     where the bar offers it) — and ended from the **Quiet** tab, which is the
+ *     list of what oto is currently not saying. Offering it from a case put an
+ *     alert-scoped decision behind a case-shaped heading, and the panel below
+ *     links out to the identity for exactly that reason.
  *
- * The same timeline component the alert detail uses, because a case's history is
- * the same kind of thing: an ordered stream of immutable, attributed events.
- * Reusing it means the two screens can never drift in how they present a clock
- * skew or an unknown event type.
+ * ⛔ THE ONE CONTROL HERE HAS ITS WAY BACK, and that is a rule rather than a
+ * coincidence. A gesture that writes a record and cannot unwrite it leaves the
+ * operator with nothing to do but be wrong in public — so the receipt is a
+ * TOGGLE: one control, reading `Acknowledge` while this firing carries none and
+ * the withdrawal's own words once it does.
  *
- * "Who was told" is the interesting extra. A case is the thing oto actually
- * notifies about — the intents are keyed on it — so whether its fan-out landed is
- * a fact about THIS screen and nowhere else.
- *
- * That panel used to be "Where this is being narrated", listing chat threads from
- * `GroupDetailDTO.threads`. That field was in the contract, was rendered here, and
- * was emitted by no server code at all: there was no ChannelThreadDTO in oto's Go
- * tree, so the panel was permanently in its empty state and a case being actively
- * discussed in Slack looked identical to one nobody had been told about.
- * `delivery_summary` answers the question the panel was reaching for, from data
- * the module can actually see.
+ * The same timeline component the alert detail uses, reading this episode's own
+ * events (`GET /cases/{id}/events`) rather than the identity's whole history:
+ * "what happened during this firing" is a different question from "what has this
+ * rule ever done", and this screen only ever asks the first.
  */
 import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { A, useParams } from "@solidjs/router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/solid-query";
+import { useQuery, useQueryClient } from "@tanstack/solid-query";
 
-import {
-  ackAlertGroup,
-  getAlertGroup,
-  getAlertGroupTimeline,
-  listAlertGroupAlerts,
-  snoozeAlertGroup,
-  unackAlertGroup,
-  unsnoozeAlertGroup,
-} from "~/api/endpoints";
+import { ackCase, getCase, getCaseTimeline, unackCase } from "~/api/endpoints";
 import { qk } from "~/api/keys";
-import type { AlertEvent, DeliverySummary, SnoozeRequest, TimelineQuery } from "~/api/types";
+import type { AlertEvent, TimelineQuery } from "~/api/types";
 import { AckDialog } from "~/features/alerts/AckDialog";
-import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
-import { RelativeTime } from "~/components/Time";
-import { SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
+import { Elapsed, RelativeTime } from "~/components/Time";
+import { AckChip, CaseStateChip, SeverityMark, StateChip } from "~/components/StateChip";
 import { Button } from "~/components/ui/Button";
 import { Chip, DataRow, PageHeading, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
-import { ApiError } from "~/api/client";
-import { EmptyState, ErrorBanner, ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
-import { cn } from "~/lib/cn";
-import { count as fmtCount, idempotencyKey } from "~/lib/format";
+import { ErrorState, LoadingLine, Skeleton } from "~/components/ui/states";
+import { absoluteTime } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
+import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
 import { Timeline } from "~/features/alerts/detail/Timeline";
 import { typesForCategories, type EventCategory } from "~/features/alerts/detail/eventKinds";
 
@@ -72,15 +54,9 @@ export default function CaseDetailRoute() {
   const params = useParams<{ id: string }>();
   const client = useQueryClient();
 
-  const group = useQuery(() => ({
-    queryKey: qk.groups.detail(params.id),
-    queryFn: ({ signal }: { signal: AbortSignal }) => getAlertGroup(params.id, { signal }),
-  }));
-
-  const members = useQuery(() => ({
-    queryKey: qk.groups.alerts(params.id),
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      listAlertGroupAlerts(params.id, { limit: 100 }, { signal }),
+  const detail = useQuery(() => ({
+    queryKey: qk.cases.detail(params.id),
+    queryFn: ({ signal }: { signal: AbortSignal }) => getCase(params.id, { signal }),
   }));
 
   const [categories, setCategories] = createSignal<readonly EventCategory[]>([]);
@@ -88,9 +64,7 @@ export default function CaseDetailRoute() {
 
   // Any change of direction or event-kind filter invalidates every cursor
   // minted under the old one (§E.3), so both are the fingerprint — see
-  // `createKeysetFeed` for why the reset must be a pure-phase derivation. The
-  // annotation cuts the type-inference loop the closure creates: the feed
-  // reads the query's envelope, and the query's key carries the feed's cursor.
+  // `createKeysetFeed` for why the reset must be a pure-phase derivation.
   const feed: KeysetFeed<AlertEvent> = createKeysetFeed({
     envelope: () => timeline.data,
     isPlaceholder: () => timeline.isPlaceholderData,
@@ -106,389 +80,369 @@ export default function CaseDetailRoute() {
   });
 
   const timeline = useQuery(() => ({
-    queryKey: qk.groups.timeline(params.id, timelineQuery()),
+    queryKey: qk.cases.timeline(params.id, timelineQuery()),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      getAlertGroupTimeline(params.id, timelineQuery(), { signal }),
+      getCaseTimeline(params.id, timelineQuery(), { signal }),
     placeholderData: keepPrevious,
   }));
 
   /**
-   * Both mutations touch both lists: a case-wide ack changes every member's
-   * receipt, so the alert list is as stale as the case list afterwards.
+   * A receipt changes this case and the queue it is listed in — and the alert
+   * lists too, because a row there renders its current episode's ack state.
+   * Invalidating both is cheap, and a stale queue after an ack is exactly the row
+   * an operator would act on twice.
    */
   const invalidate = (): void => {
-    void client.invalidateQueries({ queryKey: qk.groups.all() });
+    void client.invalidateQueries({ queryKey: qk.cases.all() });
     void client.invalidateQueries({ queryKey: qk.alerts.all() });
   };
 
-  /**
-   * Acking a case is a **fan-out of the per-alert primitive**, not a new one: one
-   * receipt per currently-joined member. Alerts that join later are not
-   * acknowledged, because a receipt is never predictive — and the copy says so.
-   *
-   * ⛔ IT GOES THROUGH A DIALOG, AND THE DIALOG IS THE POINT. This is the widest
-   * gesture in the product: one click writes a receipt on every member, and
-   * everybody else then reads "a human has seen this" about all of them. It used
-   * to fire straight from the button with no note field and no confirmation,
-   * which meant the operator could not say *why* — and the note is what whoever
-   * reads the timeline next actually needs. `AckDialog` is shared with the alert
-   * surface for the same reason `SnoozeDialog` is: one copy of the sentence
-   * explaining that a receipt does not change the signal.
-   */
   const [ackOpen, setAckOpen] = createSignal(false);
-
-  /**
-   * ⛔ THE WAY BACK, AND IT IS NOT OPTIONAL. When acknowledging moved onto this
-   * screen it arrived without its withdrawal: the case-scoped ack was reachable and
-   * `POST /alert-groups/{id}/unack` did not exist, so the widest gesture in the
-   * product was also the only irreversible one — an operator who acknowledged forty
-   * alerts could only undo it by visiting forty alert pages. A control that writes a
-   * record on forty signals must be able to unwrite it from the same place.
-   *
-   * It goes through the SAME dialog, in withdrawing mode, because the note matters
-   * more here than it does on the way in: "un-acking, it's back" is the sentence
-   * whoever reads the timeline next actually needs, and it lands on each member's
-   * timeline rather than on the case, which has nowhere left to keep it.
-   */
-  const [withdrawOpen, setWithdrawOpen] = createSignal(false);
-
-  /**
-   * Snoozing a case is the same fan-out: one quiet period per currently-joined
-   * member. Alerts that join later are not snoozed, because a case-level mute
-   * covering future members would silence alerts nobody has ever seen.
-   */
-  const [snoozeOpen, setSnoozeOpen] = createSignal(false);
-
-  const unsnooze = useMutation(() => ({
-    mutationFn: () => unsnoozeAlertGroup(params.id, undefined, idempotencyKey()),
-    onSuccess: invalidate,
-  }));
 
   return (
     <Switch>
-      <Match when={group.isPending}>
+      <Match when={detail.isPending}>
         <div class="space-y-3 p-4">
           <Skeleton class="h-6 w-96" />
           <Skeleton class="h-64 w-full" />
         </div>
       </Match>
-      <Match when={group.isError}>
-        <ErrorState error={group.error} onRetry={() => void group.refetch()} />
+      <Match when={detail.isError}>
+        <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />
       </Match>
-      <Match when={group.data}>
-        {(g) => (
-          <div class="flex min-h-0 flex-1 flex-col">
-            <header class="shrink-0 border-b border-line bg-surface px-4 pb-2 pt-3">
-              <div class="flex flex-wrap items-start gap-3">
-                <div class="min-w-0 flex-1">
-                  <div class="flex flex-wrap items-center gap-2">
-                    {/* The rule rather than the swipe (§M.9): this heading
-                        shares a wrap row with four chips, and a background pass
-                        under a title with a severity mark beside it is one
-                        texture too many. An underline is the quieter of the two
-                        shapes and it is what that row can carry. */}
-                    <PageHeading brush="rule">{g().title}</PageHeading>
-                    <SeverityMark severity={g().severity} withLabel />
-                    <Show when={g().storm_mode}>
-                      <StormChip />
-                    </Show>
-                    <Chip title="A generation owns exactly one chat thread.">
-                      generation {g().generation}
-                    </Chip>
-                    <Chip>{g().state}</Chip>
-                  </div>
+      <Match when={detail.data}>
+        {(c) => {
+          /** The episode's own state is authoritative; `ended_at` only agrees. */
+          const open = (): boolean => c().state === "open";
+          /** Whether this firing already carries a receipt — the toggle's side. */
+          const acked = (): boolean => c().ack_state === "acked";
+          return (
+            <div class="flex min-h-0 flex-1 flex-col">
+              <header class="shrink-0 border-b border-line bg-surface px-4 pb-2 pt-3">
+                <div class="flex flex-wrap items-start gap-3">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                      {/* The rule rather than the swipe (§M.9): this heading
+                          shares a wrap row with several chips, and a background
+                          pass under a title with a severity mark beside it is
+                          one texture too many. */}
+                      <PageHeading brush="rule">
+                        {c().alert?.alertname ?? "This firing"}
+                      </PageHeading>
+                      <SeverityMark severity={c().alert?.severity} withLabel />
+                      {/* ⛔ THE HEADING'S CHIP IS THE EPISODE'S, NOT THE ALERT'S.
+                          This screen's subject is one firing, and one firing is
+                          either running or ended — `firing` and `suppressed` are
+                          facts about the identity and are stated where the
+                          identity is, in "The alert" panel's `state now`. A
+                          four-colour alert badge up here would have been the
+                          screen claiming a case can be suppressed. */}
+                      <CaseStateChip state={c().state} resolveReason={c().resolve_reason} />
+                      <AckChip ackState={c().ack_state} />
+                      <Chip title="Which firing of this alert this is, counted since oto first saw the identity. A re-fire opens the next one rather than reopening this one.">
+                        firing #{c().seq}
+                      </Chip>
+                    </div>
 
-                  <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-ink-muted">
-                    <span class="tabular-nums">{fmtCount(g().total_count)} members</span>
-                    <span>{g().firing_count} firing</span>
-                    <span>{g().acked_count} acknowledged</span>
-                    {/* `cluster_key` is a first-class field on the group. It used
-                        to be dug out of `group_labels["cluster"]`, which was only
-                        ever a guess: Alertmanager's group labels are whatever the
-                        route grouped on, and `cluster` need not be among them. */}
-                    <span>
-                      <span class="text-ink-subtle">cluster</span>{" "}
-                      <span class="font-mono">{g().cluster_key}</span>
-                    </span>
-                    <Show when={g().receiver !== ""}>
-                      <span>
-                        <span class="text-ink-subtle">receiver</span>{" "}
-                        <span class="font-mono">{g().receiver}</span>
+                    <p class="mt-1 text-meta text-ink-subtle">
+                      One firing of one alert. It is what an acknowledgement is written on, it ends
+                      when the alert resolves or oto stops hearing about it, and it never comes back
+                      — the next fire is the next episode.
+                    </p>
+
+                    <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-ink-muted">
+                      <span title="How long the signal has been firing. oto times the signal, never anyone's response.">
+                        <span class="text-ink-subtle">firing for</span>{" "}
+                        <Elapsed from={c().started_at} to={c().ended_at ?? null} />
                       </span>
-                    </Show>
-                    <span>
-                      <span class="text-ink-subtle">last activity</span>{" "}
-                      <RelativeTime value={g().last_activity_at} label="Last activity" /> ago
-                    </span>
-                  </div>
-
-                  <Show when={g().last_notification_reason}>
-                    {(reason) => (
-                      <p class="mt-1 text-meta text-ink-subtle">
-                        Alertmanager last said: <span class="font-mono">{reason()}</span>
-                      </p>
-                    )}
-                  </Show>
-                </div>
-
-                <div class="flex shrink-0 flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => setAckOpen(true)}
-                    title="Records a receipt on every member that has already joined. Members that join later are not included — a receipt is never predictive."
-                  >
-                    Acknowledge every current member
-                  </Button>
-                  {/* ⛔ ALWAYS OFFERED, NEVER CONDITIONAL ON THE COUNT. `acked_count`
-                      is a roll-up over episodes and a partially-acked case is the
-                      normal shape of one, so hiding this below some threshold would
-                      hide the way back from exactly the operator who needs it. When
-                      there is nothing to withdraw the server says so — the same
-                      contract the ack has. */}
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setWithdrawOpen(true)}
-                    title="Removes the receipt from every member whose episode is still open. A member that carries no receipt is skipped rather than failing the request."
-                  >
-                    Withdraw acknowledgement
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setSnoozeOpen(true)}
-                    title="Holds oto's own notifications for every member that has already joined. They keep firing, keep their severity, and stay in the alert list."
-                  >
-                    Snooze every current member
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    busy={unsnooze.isPending}
-                    onClick={() => unsnooze.mutate()}
-                    title="Ends the quiet period on every currently-joined member. A member that is already awake is skipped rather than failing the request."
-                  >
-                    Resume notifications
-                  </Button>
-                </div>
-              </div>
-
-              <Show when={unsnooze.error !== null}>
-                <ErrorBanner class="mt-2">
-                  {unsnooze.error instanceof ApiError && unsnooze.error.status === 412
-                    ? "Nothing here was snoozed, so there was nothing to resume."
-                    : ((unsnooze.error as Error | null)?.message ?? "")}
-                </ErrorBanner>
-              </Show>
-
-              {/* Three dialogs, all shared with the alert surface, all wired to
-                  the case-scoped endpoints. None runs its own request: the
-                  screen supplies `onSubmit`, the dialog mints the one
-                  idempotency key per gesture. */}
-              <AckDialog
-                open={ackOpen()}
-                onClose={() => setAckOpen(false)}
-                subject="case"
-                onSubmit={(note: string | undefined, key: string) =>
-                  ackAlertGroup(params.id, note, key)
-                }
-                onSuccess={invalidate}
-              />
-              {/* The same dialog, `withdrawing`, which is what gates it on the
-                  contract's `UnackRequest` rather than `AckRequest`. Two endpoints
-                  are two generated schemas even while they carry the same field. */}
-              <AckDialog
-                open={withdrawOpen()}
-                onClose={() => setWithdrawOpen(false)}
-                subject="case"
-                withdrawing
-                onSubmit={(note: string | undefined, key: string) =>
-                  unackAlertGroup(params.id, note, key)
-                }
-                onSuccess={invalidate}
-              />
-              <SnoozeDialog
-                open={snoozeOpen()}
-                onClose={() => setSnoozeOpen(false)}
-                subject="case"
-                onSubmit={(body: SnoozeRequest, key: string) =>
-                  snoozeAlertGroup(params.id, body, key)
-                }
-                onSuccess={invalidate}
-              />
-            </header>
-
-            <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-auto p-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] xl:overflow-hidden">
-              <Panel class="flex min-h-0 flex-col xl:overflow-hidden">
-                <PanelHeader>
-                  <PanelTitle>Case timeline</PanelTitle>
-                </PanelHeader>
-                <Switch>
-                  <Match when={timeline.isPending && feed.rows().length === 0}>
-                    <LoadingLine />
-                  </Match>
-                  <Match when={timeline.isError}>
-                    <ErrorState error={timeline.error} onRetry={() => void timeline.refetch()} />
-                  </Match>
-                  <Match when={true}>
-                    <Timeline
-                      events={feed.rows()}
-                      categories={categories()}
-                      onCategoriesChange={setCategories}
-                      order={order()}
-                      onOrderChange={setOrder}
-                      hasMore={feed.hasMore()}
-                      loading={timeline.isFetching}
-                      onLoadMore={feed.loadMore}
-                    />
-                  </Match>
-                </Switch>
-              </Panel>
-
-              <div class="flex min-h-0 flex-col gap-4 xl:overflow-auto">
-                {/* Members */}
-                <Panel>
-                  <PanelHeader>
-                    <PanelTitle>Members</PanelTitle>
-                    <span class="text-meta text-ink-subtle">
-                      {members.data?.data.length ?? 0} loaded
-                    </span>
-                  </PanelHeader>
-                  <Switch>
-                    <Match when={members.isPending}>
-                      <LoadingLine />
-                    </Match>
-                    <Match when={(members.data?.data.length ?? 0) === 0}>
-                      <EmptyState title="No members." />
-                    </Match>
-                    <Match when={true}>
-                      <ul>
-                        <For each={members.data?.data ?? []}>
-                          {(alert) => (
-                            <li class="border-b border-line last:border-b-0">
-                              <A
-                                href={`/alerts/${alert.id}`}
-                                class="flex items-center gap-2 px-3 py-1.5 hover:bg-raised"
-                              >
-                                <span
-                                  aria-hidden="true"
-                                  class={cn(
-                                    "h-4 w-[3px] shrink-0 rounded-full",
-                                    STATE_BAR[alert.state],
-                                  )}
-                                />
-                                <SeverityMark severity={alert.severity} />
-                                <span class="min-w-0 flex-1 truncate text-body text-ink">
-                                  {alert.alertname}
-                                </span>
-                                <StateChip state={alert.state} size="sm" />
-                                {/* ⛔ NO ACK CHIP HERE. An ack belongs to one
-                                    firing episode and this row is an Alert, which
-                                    outlives its episodes. The count above is
-                                    episode-scoped — it counts acknowledged firing
-                                    episodes — and the alert page one click away
-                                    shows the episode's receipt. */}
-                              </A>
-                            </li>
-                          )}
-                        </For>
-                      </ul>
-                    </Match>
-                  </Switch>
-                </Panel>
-
-                {/* Who was told */}
-                <Panel>
-                  <PanelHeader>
-                    <PanelTitle>Who was told</PanelTitle>
-                  </PanelHeader>
-                  <DeliveryRollup summary={g().delivery_summary} />
-                </Panel>
-
-                {/* The labels the case is keyed on.
-
-                    ⛔ THE SUBTITLE IS NOT DECORATION. Calling these "Case labels"
-                    with nothing beside it would say oto chose them, and oto
-                    chooses nothing here: `group_by` in alertmanager.yml decides
-                    what a case is, and oto mirrors the decision. The panel has to
-                    keep saying whose labels these are now that the title no
-                    longer does. */}
-                <Panel>
-                  <PanelHeader>
-                    <PanelTitle>Case labels</PanelTitle>
-                    <span class="text-meta text-ink-subtle">Alertmanager grouped on these</span>
-                  </PanelHeader>
-                  <div class="p-3">
-                    <dl class="space-y-0.5">
-                      <For each={Object.entries(g().group_labels)}>
-                        {([k, val]) => (
-                          <DataRow term={k}>
-                            <span class="break-all font-mono text-body">{val}</span>
-                          </DataRow>
+                      <span title={absoluteTime(c().started_at)}>
+                        <span class="text-ink-subtle">started</span>{" "}
+                        <RelativeTime value={c().started_at} label="Started" /> ago
+                      </span>
+                      <Show when={c().ended_at}>
+                        {(at) => (
+                          <span title={absoluteTime(at())}>
+                            <span class="text-ink-subtle">ended</span>{" "}
+                            <RelativeTime value={at()} label="Ended" /> ago
+                          </span>
                         )}
-                      </For>
-                    </dl>
-                    <Show when={g().source_group_key}>
-                      {(key) => (
-                        <p
-                          class="mt-2 break-all border-t border-line pt-2 font-mono text-micro text-ink-subtle"
-                          title="Alertmanager's own groupKey. Stored verbatim for observability only — it embeds the route path and changes on every config reload, so oto never parses it."
-                        >
-                          {key()}
+                      </Show>
+                      <Show when={c().alert}>
+                        {(a) => (
+                          <>
+                            <span>
+                              <span class="text-ink-subtle">cluster</span>{" "}
+                              <span class="font-mono">{a().cluster_key}</span>
+                            </span>
+                            <Show when={a().namespace}>
+                              {(ns) => (
+                                <span>
+                                  <span class="text-ink-subtle">namespace</span>{" "}
+                                  <span class="font-mono">{ns()}</span>
+                                </span>
+                              )}
+                            </Show>
+                          </>
+                        )}
+                      </Show>
+                    </div>
+
+                    <Show when={c().ack_note}>
+                      {(note) => (
+                        <p class="mt-1.5 border-l-2 border-line-strong pl-2 text-body leading-snug text-ink-muted">
+                          {note()}
                         </p>
                       )}
                     </Show>
                   </div>
+
+                  <div class="flex shrink-0 flex-wrap items-center gap-2">
+                    {/* ⭐ ONE CONTROL, NOT TWO, AND THE SINGLE CONTROL IS THE
+                        HONEST SHAPE OF THE FACT. `ack_state` has two values, and
+                        a pair of buttons meant one of them was always dead: an
+                        `Acknowledge` greyed out beside an enabled `Withdraw`
+                        asked the operator to read two controls to learn one
+                        thing. This reads what the case IS and does the other
+                        thing — the same way a play button becomes pause.
+
+                        ⛔ AND IT STAYS OFFERED WHILE THE CASE IS OPEN, NEVER
+                        GATED ON THE ACK STATE BEYOND CHOOSING ITS WORD. The
+                        state on screen is as old as the last frame; if the case
+                        moved underneath it, the server refuses in the dialog, in
+                        the refused verb's own words. */}
+                    <Button
+                      variant={acked() ? "secondary" : "default"}
+                      size="sm"
+                      disabled={!open()}
+                      onClick={() => setAckOpen(true)}
+                      title={
+                        !open()
+                          ? "This case has already ended, so there is no receipt to write or take back."
+                          : acked()
+                            ? "Removes the receipt from this firing, recorded as a deliberate withdrawal."
+                            : "Record that a human has seen this firing. It stays firing, at the same severity."
+                      }
+                    >
+                      {acked() ? "Withdraw acknowledgement" : "Acknowledge"}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* One dialog, shared with the rest of the product, and the mode
+                    it opens in is the same read the button's word came from —
+                    `withdrawing` is what gates it on the contract's
+                    `UnackRequest` rather than `AckRequest`. It runs no request of
+                    its own: the screen supplies `onSubmit`, the dialog mints the
+                    one idempotency key per gesture. */}
+                <AckDialog
+                  open={ackOpen()}
+                  onClose={() => setAckOpen(false)}
+                  subject="case"
+                  withdrawing={acked()}
+                  onSubmit={(note: string | undefined, key: string) =>
+                    acked() ? unackCase(params.id, note, key) : ackCase(params.id, note, key)
+                  }
+                  onSuccess={invalidate}
+                />
+              </header>
+
+              <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-auto p-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] xl:overflow-hidden">
+                <Panel class="flex min-h-0 flex-col xl:overflow-hidden">
+                  <PanelHeader>
+                    <PanelTitle>What happened during this firing</PanelTitle>
+                  </PanelHeader>
+                  <Switch>
+                    <Match when={timeline.isPending && feed.rows().length === 0}>
+                      <LoadingLine />
+                    </Match>
+                    <Match when={timeline.isError}>
+                      <ErrorState error={timeline.error} onRetry={() => void timeline.refetch()} />
+                    </Match>
+                    <Match when={true}>
+                      <Timeline
+                        events={feed.rows()}
+                        categories={categories()}
+                        onCategoriesChange={setCategories}
+                        order={order()}
+                        onOrderChange={setOrder}
+                        hasMore={feed.hasMore()}
+                        loading={timeline.isFetching}
+                        onLoadMore={feed.loadMore}
+                      />
+                    </Match>
+                  </Switch>
                 </Panel>
+
+                <div class="flex min-h-0 flex-col gap-4 xl:overflow-auto">
+                  {/* The identity. Everything on this row describes the ALERT
+                      and not the episode — which is exactly why it is a panel of
+                      its own with a link out of it. */}
+                  <Panel>
+                    <PanelHeader>
+                      <PanelTitle>The alert</PanelTitle>
+                      <span class="text-meta text-ink-subtle">the identity, not this firing</span>
+                    </PanelHeader>
+                    <Show
+                      when={c().alert}
+                      fallback={
+                        <p class="px-3 py-2 text-body text-ink-muted">
+                          oto could not read the identity behind this firing.
+                        </p>
+                      }
+                    >
+                      {(a) => (
+                        <div class="p-3">
+                          <dl class="space-y-0.5">
+                            <DataRow term="alertname">
+                              <span class="break-all font-mono text-body">{a().alertname}</span>
+                            </DataRow>
+                            <DataRow term="cluster">
+                              <span class="break-all font-mono text-body">{a().cluster_key}</span>
+                            </DataRow>
+                            <Show when={a().namespace}>
+                              {(ns) => (
+                                <DataRow term="namespace">
+                                  <span class="break-all font-mono text-body">{ns()}</span>
+                                </DataRow>
+                              )}
+                            </Show>
+                            <DataRow term="state now">
+                              <StateChip state={a().state} size="sm" />
+                            </DataRow>
+                          </dl>
+                          <A
+                            href={`/alerts/${a().id}`}
+                            class="mt-2 inline-block text-body text-ink underline underline-offset-2 hover:text-ink-muted"
+                          >
+                            Every firing of this alert ↗
+                          </A>
+                        </div>
+                      )}
+                    </Show>
+                  </Panel>
+
+                  {/* The notification group, if this firing was notified under
+                      one.
+
+                      ⛔ THE PANEL SAYS WHAT AN AlertGroup IS, BECAUSE NOTHING
+                      ELSE ON THIS SCREEN DOES. It is Alertmanager's batching —
+                      the object that owns one chat thread — and it is neither a
+                      correlation nor a bigger case. Without the sentence, a link
+                      called "group" beside a case reads as the case's parent. */}
+                  <Show when={c().group}>
+                    {(g) => (
+                      <Panel>
+                        <PanelHeader>
+                          <PanelTitle>Notified in</PanelTitle>
+                          <span class="text-meta text-ink-subtle">Alertmanager's batching</span>
+                        </PanelHeader>
+                        <div class="p-3">
+                          <p class="text-body leading-snug text-ink-muted">
+                            Alertmanager batched this firing with others into one notification, which
+                            owns one chat thread. It grouped them; oto mirrors the decision.
+                          </p>
+                          <A
+                            href={`/groups/${g().id}`}
+                            class="mt-2 inline-block text-body text-ink underline underline-offset-2 hover:text-ink-muted"
+                          >
+                            {g().title} · generation {g().generation} ↗
+                          </A>
+                        </div>
+                      </Panel>
+                    )}
+                  </Show>
+
+                  {/* The rule as it was AT THIS FIRING'S START — not as it is
+                      now. That is the whole value of a snapshot: an episode from
+                      six weeks ago still reports the threshold that was actually
+                      in force then. */}
+                  <Show when={c().rule}>
+                    {(rule) => (
+                      <Panel>
+                        <PanelHeader>
+                          <PanelTitle>The rule, as it was here</PanelTitle>
+                          <span class="text-meta text-ink-subtle">captured at fire time</span>
+                        </PanelHeader>
+                        <div class="p-3">
+                          <pre class="overflow-x-auto whitespace-pre-wrap break-all rounded-control bg-sunken p-2 font-mono text-meta text-ink">
+                            {rule().expr}
+                          </pre>
+                          <dl class="mt-2 space-y-0.5">
+                            <DataRow term="rule">
+                              <span class="break-all font-mono text-body">{rule().rule_name}</span>
+                            </DataRow>
+                            <Show when={rule().for_seconds > 0}>
+                              <DataRow term="for">
+                                <span class="font-mono text-body">{rule().for_seconds}s</span>
+                              </DataRow>
+                            </Show>
+                          </dl>
+                        </div>
+                      </Panel>
+                    )}
+                  </Show>
+
+                  <EnrichmentPanel enrichments={c().enrichments} loading={false} error={null} />
+
+                  {/* Who was told about this firing. */}
+                  <Panel>
+                    <PanelHeader>
+                      <PanelTitle>Who was told</PanelTitle>
+                    </PanelHeader>
+                    <div class="px-3 py-2">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <Chip>{c().delivery_summary.sent} sent</Chip>
+                        <Chip>{c().delivery_summary.pending} pending</Chip>
+                        <Chip>{c().delivery_summary.skipped} skipped</Chip>
+                        <Chip>{c().delivery_summary.failed} failed</Chip>
+                        <Chip>{c().delivery_summary.dead} gave up</Chip>
+                      </div>
+                      <Show when={c().delivery_summary.total === 0}>
+                        <p class="mt-2 text-body leading-snug text-ink-muted">
+                          No notification was even attempted for this firing. That usually means no
+                          policy matched it — which is worth knowing, because it is
+                          indistinguishable from silence.
+                        </p>
+                      </Show>
+                    </div>
+                  </Panel>
+
+                  {/* The upstream objects doing the suppressing, when there are
+                      any: `suppression_reason` says a silence is muting this,
+                      and this says WHICH one — the half an operator can act on. */}
+                  <Show when={c().suppression_reason}>
+                    {(reason) => (
+                      <Panel>
+                        <PanelHeader>
+                          <PanelTitle>Suppressed upstream</PanelTitle>
+                        </PanelHeader>
+                        <div class="p-3">
+                          <p class="text-body leading-snug text-ink-muted">
+                            Alertmanager is suppressing this firing:{" "}
+                            <span class="font-mono">{reason()}</span>. It is still firing — the
+                            suppression is about who gets told, not about the signal.
+                          </p>
+                          <For
+                            each={[
+                              ...(c().suppressed_by?.silenced_by ?? []),
+                              ...(c().suppressed_by?.inhibited_by ?? []),
+                              ...(c().suppressed_by?.muted_by ?? []),
+                            ]}
+                          >
+                            {(id) => (
+                              <p class="mt-1 break-all font-mono text-meta text-ink-subtle">{id}</p>
+                            )}
+                          </For>
+                        </div>
+                      </Panel>
+                    )}
+                  </Show>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        }}
       </Match>
     </Switch>
   );
 }
-
-/**
- * The generation's fan-out, in one line.
- *
- * An all-zero roll-up is an ANSWER — "nobody was told" — and is stated as a
- * sentence rather than five zeros, because a row of zeros reads as "no data
- * yet" and this screen's whole job is to distinguish the two.
- */
-const DeliveryRollup = (props: { readonly summary: DeliverySummary }) => {
-  const s = (): DeliverySummary => props.summary;
-  return (
-    <div class="px-3 py-2">
-      <div class="flex flex-wrap items-center gap-1.5">
-        <Chip>{s().sent} sent</Chip>
-        <Chip>{s().pending} pending</Chip>
-        <Chip>{s().skipped} skipped</Chip>
-        <Chip>{s().failed} failed</Chip>
-        <Chip>{s().dead} gave up</Chip>
-        <Show when={s().last_sent_at}>
-          {(at) => (
-            <span class="ml-auto text-meta text-ink-subtle">
-              last sent <RelativeTime value={at()} label="Last sent" /> ago
-            </span>
-          )}
-        </Show>
-      </div>
-
-      <Show when={s().dead > 0}>
-        <p class="mt-2 rounded-control border border-line-strong border-l-[3px] border-l-ink bg-sunken px-2 py-1.5 text-body font-medium leading-snug text-ink">
-          {s().dead} {s().dead === 1 ? "delivery" : "deliveries"} gave up permanently. Nobody was
-          told through {s().dead === 1 ? "that channel" : "those channels"}.
-          {s().last_error_class ? ` Last error class: ${s().last_error_class}.` : ""}
-        </p>
-      </Show>
-
-      <Show when={s().total === 0}>
-        <p class="mt-2 text-body leading-snug text-ink-muted">
-          No notification was even attempted for this generation. That usually means no policy
-          matched it — which is worth knowing, because it is indistinguishable from silence.
-        </p>
-      </Show>
-    </div>
-  );
-};

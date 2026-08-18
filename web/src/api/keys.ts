@@ -29,6 +29,7 @@
 import type {
   AlertListQuery,
   AlertRollupQuery,
+  CaseListQuery,
   FailedBatchListQuery,
   GroupListQuery,
   NotificationListQuery,
@@ -92,6 +93,25 @@ export const qk = {
      * needs but never what any of them says.
      */
     batch: (ids: readonly string[]) => ["rules", "batch", [...ids].sort().join(",")] as const,
+  },
+  /**
+   * The firing episodes — a root of its own, and not a segment under
+   * `["alerts"]`.
+   *
+   * ⛔ THE SEPARATION IS THE POINT. `alerts.cases(id)` is one alert's own
+   * history and belongs under that alert; this is the ORG-WIDE list of open
+   * episodes, filtered by acknowledgement, and it is what the primary screen
+   * reads. Filing it under `["alerts"]` would have been reachable — every alert
+   * frame invalidates that prefix — and would also have meant an alert list
+   * refetch dragging the queue with it and vice versa. It gets its own prefix
+   * and `api/live.tsx` invalidates it from the frames that can actually move an
+   * episode: `case.upserted` and `event.appended`.
+   */
+  cases: {
+    all: () => ["cases"] as const,
+    list: (query: CaseListQuery) => ["cases", "list", query] as const,
+    detail: (id: string) => ["cases", "detail", id] as const,
+    timeline: (id: string, query: TimelineQuery) => ["cases", "timeline", id, query] as const,
   },
   groups: {
     all: () => ["groups"] as const,

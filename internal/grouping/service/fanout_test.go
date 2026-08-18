@@ -110,8 +110,13 @@ func (w *fanOutWorld) grouping(t *testing.T, actions MemberActions) *Service {
 }
 
 // seedMembers joins n firing alerts to the generation, oldest join first, and
-// returns their alert ids in that order — which is the order the fan-out reads
+// returns their CASE ids in that order — which is the order the fan-out reads
 // them in, and therefore the order a ceiling cuts.
+//
+// ⭐ IT IS THE CASE ID AND NOT THE ALERT ID, because that is what the ack verb is
+// addressed by: a receipt is a fact about ONE firing episode. The episode is also
+// what makes the alert a member (00051), so the two are one-to-one here — but
+// asserting on the alert id would be asserting about the wrong subject.
 func (w *fanOutWorld) seedMembers(t *testing.T, n int) []uuid.UUID {
 	t.Helper()
 
@@ -133,7 +138,7 @@ func (w *fanOutWorld) seedMembers(t *testing.T, n int) []uuid.UUID {
 		w.h.Exec(`UPDATE alert_cases
 		             SET started_at = $2, last_observed_at = $2, source_starts_at = $2
 		           WHERE id = $1`, ac.ID, startedAt)
-		out = append(out, alert.ID)
+		out = append(out, ac.ID)
 	}
 	return out
 }
@@ -211,12 +216,13 @@ func discardLogger() *slog.Logger {
 // It is deliberately NOT the real one for the ceiling test: the question there
 // is how many times the fan-out calls a member verb, and answering it with real
 // transactions would measure Postgres instead.
+// `acked` holds CASE ids: ack and unack are addressed by the episode.
 type recordingActions struct{ acked []uuid.UUID }
 
 func (a *recordingActions) AcknowledgeAs(
-	_ context.Context, _ db.TenantScope, alertID uuid.UUID, _, _, _, _ string,
+	_ context.Context, _ db.TenantScope, caseID uuid.UUID, _, _, _, _ string,
 ) error {
-	a.acked = append(a.acked, alertID)
+	a.acked = append(a.acked, caseID)
 	return nil
 }
 
@@ -224,9 +230,9 @@ func (a *recordingActions) AcknowledgeAs(
 // measure is a property of the fan-out and not of the verb, so the withdrawal is
 // counted the same way the receipt is.
 func (a *recordingActions) UnacknowledgeAs(
-	_ context.Context, _ db.TenantScope, alertID uuid.UUID, _, _, _, _ string,
+	_ context.Context, _ db.TenantScope, caseID uuid.UUID, _, _, _, _ string,
 ) error {
-	a.acked = append(a.acked, alertID)
+	a.acked = append(a.acked, caseID)
 	return nil
 }
 
@@ -259,21 +265,21 @@ type failingActions struct {
 }
 
 func (a *failingActions) AcknowledgeAs(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
 	actorKind, actorID, actorLabel, note string,
 ) error {
 	a.calls++
 	if a.calls > a.after {
 		return errs.Internal("member_action_failed", errors.New("the connection went away"))
 	}
-	return a.inner.AcknowledgeAs(ctx, s, alertID, actorKind, actorID, actorLabel, note)
+	return a.inner.AcknowledgeAs(ctx, s, caseID, actorKind, actorID, actorLabel, note)
 }
 
 func (a *failingActions) UnacknowledgeAs(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID,
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
 	actorKind, actorID, actorLabel, note string,
 ) error {
-	return a.inner.UnacknowledgeAs(ctx, s, alertID, actorKind, actorID, actorLabel, note)
+	return a.inner.UnacknowledgeAs(ctx, s, caseID, actorKind, actorID, actorLabel, note)
 }
 
 func (a *failingActions) CommentAs(

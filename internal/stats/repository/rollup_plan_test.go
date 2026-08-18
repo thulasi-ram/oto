@@ -87,9 +87,15 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 
 	// Two months of history at one episode every four minutes. Every episode is
 	// CLOSED — `case_one_open_idx` permits one open episode per alert, and closed
-	// is what the rollup counts anyway (`state = 'resolved'`, `state =
-	// 'expired'`), so an open-episode seed would be seeding rows the CTE's own
-	// FILTERs discard.
+	// is what the rollup counts anyway (`resolve_reason = 'upstream'`,
+	// `resolve_reason = 'timeout'`), so an open-episode seed would be seeding rows
+	// the CTE's own FILTERs discard.
+	//
+	// ⭐ `state` IS `closed` AND THE VERDICT IS `resolve_reason` (ADR 0040). The
+	// column used to hold `resolved` and the FILTERs used to read it; since the
+	// narrowing, `closed` says only THAT the episode ended and `resolve_reason` says
+	// why. A seed still writing `resolved` here would not be counted differently —
+	// it would be refused outright by `case_state_ck`.
 	const rows = 20000
 	base := harness.Epoch
 	h.Exec(`
@@ -101,7 +107,7 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 		       ($2::uuid[])[(i % $4) + 1],
 		       ($3::uuid[])[(i % $4) + 1],
 		       i,
-		       'resolved',
+		       'closed',
 		       'upstream',
 		       $5::timestamptz + (i * interval '4 minutes'),
 		       $5::timestamptz + (i * interval '4 minutes') + interval '9 minutes',

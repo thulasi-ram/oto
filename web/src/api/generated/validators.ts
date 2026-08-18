@@ -86,6 +86,8 @@ export const CursorSchema = v.pipe(
 
 export const StateSchema = v.picklist(["firing", "suppressed", "resolved", "expired"]);
 
+export const CaseStateSchema = v.picklist(["open", "closed"]);
+
 export const AckStateSchema = v.picklist(["unacked", "acked"]);
 
 export const SuppressionReasonSchema = v.nullable(v.picklist(["silence", "inhibition", "mute_time_interval", "active_time_interval"]));
@@ -252,7 +254,7 @@ export const CaseDTOSchema = v.looseObject({
     v.integer(),
     v.minValue(1),
   ),
-  "state": StateSchema,
+  "state": CaseStateSchema,
   "suppression_reason": v.exactOptional(SuppressionReasonSchema),
   "suppressed_by": v.exactOptional(v.looseObject({
     "silenced_by": v.exactOptional(v.pipe(
@@ -297,12 +299,6 @@ export const CaseDTOSchema = v.looseObject({
     v.minValue(0),
   ))),
   "resolve_reason": v.exactOptional(ResolveReasonSchema),
-  "reopen_count": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-  ),
-  "reopen_of": v.exactOptional(v.nullable(UuidSchema)),
   "rule_snapshot_id": v.exactOptional(v.nullable(UuidSchema)),
   "value": v.exactOptional(v.nullable(v.number())),
   "observed_skew_ms": v.pipe(
@@ -588,6 +584,13 @@ export const CaseDetailDTOSchema = v.intersect([
   }),
 ]);
 
+export const CaseListItemDTOSchema = v.intersect([
+  CaseDTOSchema,
+  v.looseObject({
+    "alert": AlertRefDTOSchema,
+  }),
+]);
+
 export const AlertEventDTOSchema = v.looseObject({
   "id": UuidSchema,
   "alert_id": v.exactOptional(v.nullable(UuidSchema)),
@@ -640,6 +643,38 @@ export const ActiveSnoozeDTOSchema = v.intersect([
   }),
 ]);
 
+export const UnsnoozeOutcomeDTOSchema = v.looseObject({
+  "alert_id": UuidSchema,
+  "outcome": v.picklist(["woken", "skipped"]),
+  "reason": v.exactOptional(v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(64),
+  ))),
+});
+
+export const UnsnoozeAlertsDTOSchema = v.looseObject({
+  "requested": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(100),
+  ),
+  "woken": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "skipped": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+  ),
+  "results": v.pipe(
+    v.array(UnsnoozeOutcomeDTOSchema),
+    v.maxLength(100),
+  ),
+});
+
 export const SnoozeRequestSchema = v.strictObject({
   "until": v.exactOptional(v.nullable(TimestampSchema)),
   "duration_seconds": v.exactOptional(v.nullable(v.pipe(
@@ -655,6 +690,19 @@ export const SnoozeRequestSchema = v.strictObject({
 });
 
 export const UnsnoozeRequestSchema = v.strictObject({
+  "note": v.exactOptional(v.nullable(v.pipe(
+    v.string(),
+    v.maxLength(2000),
+  ))),
+});
+
+export const UnsnoozeAlertsRequestSchema = v.strictObject({
+  "alert_ids": v.pipe(
+    v.array(UuidSchema),
+    v.minLength(1),
+    v.maxLength(100),
+    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
+  ),
   "note": v.exactOptional(v.nullable(v.pipe(
     v.string(),
     v.maxLength(2000),
@@ -2649,6 +2697,11 @@ export const AlertRollupListResponseSchema = v.looseObject({
   "meta": MetaSchema,
 });
 
+export const UnsnoozeAlertsResponseSchema = v.looseObject({
+  "data": UnsnoozeAlertsDTOSchema,
+  "meta": MetaSchema,
+});
+
 export const SnoozeHistoryResponseSchema = v.looseObject({
   "data": v.pipe(
     v.array(SnoozeHistoryDTOSchema),
@@ -2665,6 +2718,12 @@ export const ActiveSnoozeListResponseSchema = v.looseObject({
 
 export const CaseListResponseSchema = v.looseObject({
   "data": v.array(CaseDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const CaseListItemListResponseSchema = v.looseObject({
+  "data": v.array(CaseListItemDTOSchema),
   "page": PageInfoSchema,
   "meta": MetaSchema,
 });

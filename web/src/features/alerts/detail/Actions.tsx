@@ -1,21 +1,31 @@
 /**
  * The things a person can do to one alert.
  *
- * ⛔ ACKNOWLEDGING AND SNOOZING ARE NOT HERE ANY MORE. THEY LIVE ON THE CASE
- * (`routes/case-detail.tsx`), and moving them was the point rather than a side
- * effect. A case is the unit a human actually responds to — forty pods
- * crash-looping is one thing happening, not forty — so a receipt and a decision
- * to go quiet are decisions about the case. Offering them per alert invited an
- * operator to acknowledge forty rows one at a time and to leave the
- * thirty-ninth un-acked, which reads to everyone else as "nobody has looked at
- * this yet". Both controls are wired to the group-scoped endpoints there
- * (`POST /api/v1/alert-groups/{id}/ack|snooze|unsnooze`), which fan out one
- * receipt or one quiet period per currently-joined member.
+ * ⛔ ACKNOWLEDGING IS NOT HERE, AND ITS ABSENCE IS THE DECISION. A receipt
+ * belongs to ONE FIRING — a Case — not to the identity, because an identity
+ * outlives its firings and "seen" would go on being true about a firing nobody
+ * has looked at. So it is written on the case, and ONLY there: from `/cases` and
+ * from `/cases/:id`, both addressed by case id (`POST /api/v1/cases/{id}/ack`).
+ * The alert list offers it nowhere — a row there is an identity too. The cases
+ * this alert has had are listed on this very screen, each one a link to where
+ * its receipt is written.
+ *
+ * ⭐ SNOOZING **IS** HERE, AND FOR THE MIRROR-IMAGE REASON. A snooze holds oto's
+ * own notifications for the IDENTITY until a fixed time: it does not end when the
+ * firing you took it from ends, and it covers whatever fires next under the same
+ * labels. Its subject is therefore an Alert, and this is the one screen whose
+ * whole heading is an Alert. It used to be offered from `/cases/:id` instead,
+ * which put a decision that outlives a case behind a case-shaped title — the
+ * scope was right and the address was a guess about which one you meant.
+ *
+ * ⛔ ENDING A SNOOZE IS NOT HERE, AND THAT ASYMMETRY IS DELIBERATE. `Resume` lives
+ * on the **Quiet** tab of `/alerts` — the list of what oto is currently not
+ * saying — because waking something is only safe when you can see the whole set
+ * you are waking it out of. A resume button here would let an alert leave that
+ * list from a screen that never showed it was on it.
  *
  * Comment stays. A comment is a note about *this signal* — what this one alert
- * was doing, what its labels said — and it is the one thing here that does not
- * generalise to the case: fanning one sentence out across forty members would
- * write forty copies of a remark that was true of one of them.
+ * was doing, what its labels said.
  *
  * The vocabulary that remains is governed by SCOPE-BOUNDARY and is not
  * negotiable: there is no on-call, no incident, no escalation-as-a-human-process,
@@ -33,10 +43,11 @@ import * as v from "valibot";
 
 import { maxLengthOf, minLengthOf } from "~/api/bounds";
 import { violationsByField } from "~/api/client";
-import { commentOnAlert } from "~/api/endpoints";
+import { commentOnAlert, snoozeAlert } from "~/api/endpoints";
 import { CommentRequestSchema } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
-import type { AlertDetail } from "~/api/types";
+import type { AlertDetail, SnoozeRequest } from "~/api/types";
+import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 import { Button } from "~/components/ui/Button";
 import {
   Modal,
@@ -100,24 +111,57 @@ export interface AlertActionsProps {
 }
 
 export const AlertActions: Component<AlertActionsProps> = (props) => {
+  const client = useQueryClient();
   const [commentOpen, setCommentOpen] = createSignal(false);
+  const [snoozeOpen, setSnoozeOpen] = createSignal(false);
+
+  /** Snooze is a third orthogonal axis, so this is read beside state, not from it. */
+  const snoozed = (): boolean => (props.alert.snooze ?? null) !== null;
+
+  const invalidate = (): void => {
+    void client.invalidateQueries({ queryKey: qk.alerts.all() });
+  };
 
   return (
     /*
-     * ⛔ PERSISTENT, NEVER HOVER-REVEALED (§0.4). The control below is on screen
+     * ⛔ PERSISTENT, NEVER HOVER-REVEALED (§0.4). Every control below is on screen
      * from first paint whether or not a pointer is anywhere near it. A bar that
      * materialises under the cursor, on a screen whose contents change under
-     * SSE, is a misclick generator at 3am.
+     * SSE, is a misclick generator at 3am — and the thing it would misclick is a
+     * decision to make oto go quiet.
      *
-     * The column survives the loss of its siblings on purpose: the alert detail
-     * gains controls again the moment something belongs to one signal rather
-     * than to the case above it, and a `flex-col` that already reflows nothing
-     * is what stops the next one arriving as a layout change.
+     * The column, rather than a single wrapping row, is what keeps the buttons
+     * stable as well as visible: anything that appears underneath them appears
+     * *underneath* them, and nothing moves sideways.
      */
     <div class="flex flex-col items-end gap-sm">
       <div class="flex flex-wrap items-center justify-end gap-sm">
         <Button variant="secondary" onClick={() => setCommentOpen(true)}>
           Comment
+        </Button>
+
+        {/* ⛔ EVERYTHING PAST THIS RULE TAKES SOMETHING AWAY, so it is put out of
+            the cursor's way on purpose: snoozing makes oto stop saying anything
+            about this alert. It may not sit flush against the button people reach
+            for by reflex, and the gap plus the hairline are the whole mechanism —
+            it opens a dialog, so it is never one click from done. */}
+        <span aria-hidden="true" class="mx-xs h-6 w-px shrink-0 bg-line" />
+
+        {/* ⛔ THE BUTTON NAMES THE ALERT BECAUSE THE ALERT IS ITS SUBJECT, and
+            §B.8.6 forbids a no-op: snoozing something already quiet is not
+            refused by the contract — the incumbent hold is closed and replaced —
+            so the control stays live and the title says which of the two it is
+            about to do. */}
+        <Button
+          variant="destructive"
+          onClick={() => setSnoozeOpen(true)}
+          title={
+            snoozed()
+              ? "This alert is already quiet. Snoozing again replaces the running hold with a new window; ending one early is on the Quiet tab of the alert list."
+              : "Stop oto's own notifications for this alert until a fixed time. It keeps firing, keeps its severity, and stays visible."
+          }
+        >
+          Snooze
         </Button>
       </div>
 
@@ -125,6 +169,12 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         alert={props.alert}
         open={commentOpen()}
         onClose={() => setCommentOpen(false)}
+      />
+      <SnoozeDialog
+        open={snoozeOpen()}
+        onClose={() => setSnoozeOpen(false)}
+        onSubmit={(body: SnoozeRequest, key: string) => snoozeAlert(props.alert.id, body, key)}
+        onSuccess={invalidate}
       />
     </div>
   );

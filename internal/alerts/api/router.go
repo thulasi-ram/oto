@@ -29,6 +29,9 @@ type AlertService interface {
 	Get(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (service.AlertDetail, error)
 	GetByKey(ctx context.Context, s db.TenantScope, alertKey string) (service.AlertDetail, error)
 	Cases(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) (service.CaseResult, error)
+	// ListCases is the ORG-WIDE episode list behind `GET /api/v1/cases` — a
+	// different question from `Cases` above, which is one identity's history.
+	ListCases(ctx context.Context, s db.TenantScope, q service.CaseListQuery) (service.CaseListResult, error)
 	GetCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (domain.Case, error)
 	AlertTimeline(ctx context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
 	CaseTimeline(ctx context.Context, s db.TenantScope, caseID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
@@ -43,8 +46,14 @@ type AlertService interface {
 	DeliveryRollupForCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (service.DeliveryRollup, error)
 	LabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]domain.LabelCount, error)
 	LabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]domain.LabelCount, error)
-	Acknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Case, error)
-	Unacknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Case, error)
+	// ⭐ ACK AND UNACK ARE ADDRESSED BY CASE ID. An acknowledgement is a receipt
+	// for ONE firing episode, so the route that writes it says so:
+	// `POST /api/v1/cases/{id}/ack`. Snooze, three methods down, is deliberately
+	// NOT the same shape — it is Alert-scoped by a separate decision (§B.8,
+	// `alert_snoozes.alert_id`, migration 00048) and keeps its alert-addressed
+	// route.
+	Acknowledge(ctx context.Context, s db.TenantScope, caseID uuid.UUID, actor domain.Actor, note string) (domain.Case, error)
+	Unacknowledge(ctx context.Context, s db.TenantScope, caseID uuid.UUID, actor domain.Actor, note string) (domain.Case, error)
 	// ⭐ COMMENT AND SNOOZE CARRY THE CALLER'S `Idempotency-Key` INTENT AND ACK AND
 	// UNACK DO NOT, and that asymmetry is the ruling rather than an oversight. Ack
 	// and unack are idempotent by state machine — the state after N calls equals
@@ -60,6 +69,16 @@ type AlertService interface {
 	// no Close and no Dismiss on this interface, and there never will be.
 	Snooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, until time.Time, note string, idem service.Idempotency) (domain.Snooze, bool, error)
 	Unsnooze(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Snooze, error)
+	// UnsnoozeMany is the BULK wake behind `POST /api/v1/alerts/unsnooze`, and it
+	// takes an EXPLICIT LIST rather than a filter: a filter-scoped bulk action would
+	// resume thousands of alerts whose extent the caller cannot see, so the caller
+	// must name what it is waking. It is the third member of the unsnooze family
+	// beside the line above and `POST /alert-groups/{id}/unsnooze`, and it is a
+	// fan-out of the SAME primitive — an alert that was not snoozed is SKIPPED and
+	// reported, never allowed to fail the request.
+	//
+	// ⛔ THERE IS NO BULK SNOOZE ON THIS INTERFACE. Only the undo is offered.
+	UnsnoozeMany(ctx context.Context, s db.TenantScope, alertIDs []uuid.UUID, actor domain.Actor, note string) (service.UnsnoozeManyResult, error)
 	SnoozeHistory(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Snooze, error)
 	// ActiveSnoozes is the ORG-WIDE §B.8.6 view: everything oto is currently
 	// quiet about, soonest wake-up first. It is what the persistent banner is
@@ -93,6 +112,14 @@ func (rt *Router) Register(r chi.Router) {
 		// roll-up is a VIEW over this list and is deliberately a sibling of it
 		// rather than a mode of it: the bucket shape is not the alert shape.
 		r.Get("/rollups", rt.listAlertRollups)
+		// ⛔ REGISTERED BEFORE /{id} FOR THE REASON /rollups IS, and it is a
+		// SIBLING of `/{id}/unsnooze` rather than a mode of it: the subject is a
+		// LIST of alerts the caller names in the body, so there is no id in the
+		// path to address it with. It takes no filter, and never will — see
+		// UnsnoozeAlertsRequest.
+		//
+		// ⛔ THERE IS NO `POST /alerts/snooze` BESIDE IT. Only the undo is bulk.
+		r.Post("/unsnooze", rt.unsnoozeAlerts)
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/", rt.getAlert)
 			r.Get("/cases", rt.listAlertCases)
@@ -100,8 +127,11 @@ func (rt *Router) Register(r chi.Router) {
 			r.Get("/enrichments", rt.listAlertEnrichments)
 			r.Get("/notifications", rt.listAlertNotifications)
 			r.Get("/snoozes", rt.listAlertSnoozes)
-			r.Post("/ack", rt.ackAlert)
-			r.Post("/unack", rt.unackAlert)
+			// ⛔ THERE IS NO `/ack` HERE ANY MORE. A receipt is written on ONE
+			// firing episode and is addressed by that episode's id — see
+			// `/cases/{id}/ack` below. Snooze stays, because a snooze is a fact
+			// about oto's notifications for the IDENTITY and outlives every one of
+			// its episodes (§B.8, `alert_snoozes.alert_id`, migration 00048).
 			r.Post("/comments", rt.commentOnAlert)
 			r.Post("/snooze", rt.snoozeAlert)
 			r.Post("/unsnooze", rt.unsnoozeAlert)
@@ -114,9 +144,27 @@ func (rt *Router) Register(r chi.Router) {
 	// `last_seen_at`.
 	r.Get("/snoozes", rt.listSnoozes)
 
+	// The ORG-WIDE case list (§E.3b) — "what is firing that I need to
+	// acknowledge". It is registered flat rather than as a `/cases` subrouter
+	// because `rules/api` mounts `/cases/{id}/rule` on this same parent, and a
+	// chi subrouter at `/cases` would take that prefix away from it.
+	//
+	// ⛔ It is a sibling of `/alerts` and NOT a mode of it, for the same reason
+	// `/alerts/rollups` is: the row shape is a CASE, the keyset is over
+	// `started_at`, and the ack facet only exists on this side.
+	r.Get("/cases", rt.listCases)
+
 	r.Route("/cases/{id}", func(r chi.Router) {
 		r.Get("/", rt.getCase)
 		r.Get("/events", rt.listCaseEvents)
+		// ⭐ THE TWO HUMAN VERBS THAT ARE FACTS ABOUT AN EPISODE. `ack_state`,
+		// `acked_by`, `acked_at` and `ack_note` are columns of `alert_cases` and
+		// of nothing else (00049), so the route that writes them is addressed by
+		// the case. `POST /alert-groups/{id}/ack` survives beside this one and is
+		// not a duplicate: it is a FAN-OUT that resolves each member's open case
+		// and acks each of those.
+		r.Post("/ack", rt.ackCase)
+		r.Post("/unack", rt.unackCase)
 	})
 
 	r.Get("/labels", rt.listLabelNames)

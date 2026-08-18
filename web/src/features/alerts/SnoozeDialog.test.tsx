@@ -50,7 +50,6 @@ function mount(): {
     <SnoozeDialog
       open
       onClose={onClose}
-      subject="alert"
       onSubmit={(body: SnoozeRequest, key: string) => snoozeAlert(ID, body, key)}
       onSuccess={onSuccess}
     />

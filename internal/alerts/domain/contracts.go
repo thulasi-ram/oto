@@ -216,8 +216,26 @@ type AlertUpsertResult struct {
 // `alerts` in the SAME TRANSACTION as the case transition that caused it.
 // Current state is a projection; alert_events is the truth.
 type AlertProjection struct {
-	State         State
-	CurrentCaseID *uuid.UUID
+	State State
+	// SuppressionReason and SuppressedBy are the SUPPRESSION AXIS (ADR 0041), and
+	// they are projected for the same reason `State` is: they are a fact about
+	// the SIGNAL — is Alertmanager delivering it right now — read by every
+	// aggregate, and re-deriving them would mean joining the current case on
+	// every count.
+	//
+	// ⭐ THEY ARE INDEPENDENT OF `State`, WHICH IS THE POINT OF THE ADR. A firing,
+	// silenced alert projects `State: firing` AND a reason; nothing here may
+	// collapse the two, because collapsing them is the defect that made
+	// `state = 'firing'` under-count by exactly the alerts somebody had silenced.
+	//
+	// ⛔ A NON-FIRING PROJECTION MUST CARRY NEITHER. `alerts_suppress_ck` refuses
+	// a reason on a resolved or expired row, and it refuses it because a witness
+	// left on a terminal alert makes oto go on saying "silenced by <id>" about a
+	// signal that has ended. The Case's transitions clear both on T5 and T6, so
+	// the zero values arrive here on their own.
+	SuppressionReason SuppressionReason
+	SuppressedBy      SuppressedBy
+	CurrentCaseID     *uuid.UUID
 	// ⛔ ACK IS NOT PROJECTED EITHER. An ack is a receipt for ONE episode, so it
 	// stays on the episode: a transition that carried it onto `alerts` was
 	// writing a claim that outlives its own subject. Read it from the Case.
@@ -309,9 +327,73 @@ type AlertFilter struct {
 
 // ----------------------------------------------------------------- cases
 
+// CaseFilter is the compiled, validated form of the `GET /api/v1/cases` query
+// string (§E.3b). A nil or empty slice means "no constraint on this dimension".
+//
+// ⭐⭐ IT IS NOT AlertFilter WITH AN ACK FIELD, AND THE DIFFERENCE IS WHICH TABLE
+// EACH DIMENSION LIVES ON. `States`, `AckStates` and `Open` are columns of
+// `alert_cases` and are the reason this endpoint exists. `Severities`,
+// `Namespaces`, `ClusterKeys` and `AlertNames` are columns of `alerts` — the
+// episode does not carry them, because they are properties of the IDENTITY and
+// an episode that copied them would be asserting them for all time. The
+// repository puts the second group to `alerts` through a correlated `EXISTS`
+// rather than a join; see `alerts/repository.ListCases` for why.
+//
+// ⛔ THERE IS NO LABEL SELECTOR AND NO FREE-TEXT SEARCH HERE. Both are answered
+// by `alerts_labels_gin` and `alerts_text_idx`, which are indexes on the ALERT;
+// reaching them through a subquery on every case row turns a keyset page into a
+// scan of the identity table. The alert list is where those two questions are
+// asked, and `GET /alerts/{id}/cases` is how the answer is opened.
+type CaseFilter struct {
+	// States constrains `alert_cases.state`: `open`, `closed`, or neither for
+	// both. It is the EPISODE's own state and it is the ONLY liveness axis this
+	// filter has (ADR 0040).
+	//
+	// ⭐⭐ IT ABSORBED THE `open` BOOLEAN, WHICH WAS THE SAME AXIS SPELLED TWICE.
+	// While `state` held four values the two were genuinely different questions —
+	// `open` asked about liveness and `state` narrowed within it — and only `open`
+	// was a predicate the planner could match a partial index against. With two
+	// values there is nothing left to narrow: `state=open` IS `ended_at IS NULL`.
+	//
+	// ⚠️ AND THE PLANNER STILL CANNOT SEE IT. A partial index is matched against
+	// the query's own restriction clauses and NEVER against the table's CHECKs, so
+	// `state = 'open'` on its own reaches no index that is partial on `ended_at IS
+	// NULL` — measured, not assumed. `alerts/repository.ListCases` therefore emits
+	// this axis AS the liveness literal `case_terminal_ended` proves it equal to.
+	States []CaseState
+	// AckStates is the facet the whole endpoint is for: `unacked` is the queue
+	// people work from. It is served by case_ack_idx (org_id, ack_state,
+	// started_at DESC, id DESC) WHERE ended_at IS NULL, which is why it pairs with
+	// `States` above.
+	AckStates []AckState
+	// GroupIDs restricts to one or more AlertGroup generations — the notification
+	// grouping an episode joined, never a correlation and never an incident.
+	GroupIDs []uuid.UUID
+	// The four ALERT-side facets. They are answered through `alerts` and ride
+	// alerts_sev_idx / alerts_ns_idx / alerts_name_idx from the inside of the
+	// EXISTS, which is a primary-key probe per candidate row.
+	Severities  []string // RAW label values (§L.4.2)
+	Namespaces  []string
+	ClusterKeys []string
+	AlertNames  []string
+	// Synthetic mirrors AlertFilter.Synthetic and nil means EXCLUDE, for exactly
+	// the same reason: an episode of an alert oto manufactured for a delivery
+	// drill is not part of the customer's history.
+	Synthetic *bool
+	// Since is a lower bound on `started_at` — the same column the keyset is
+	// expressed in, so it narrows the very scan the cursor walks.
+	Since *time.Time
+	// FilterHash must equal Cursor.Hash or the cursor is rejected (§E.1).
+	FilterHash string
+}
+
 // OpenCase is the repository input for T1 and T7 — opening a new firing
 // episode. The domain-side factory that produces it and its `case.opened`
 // event is OpenNewCase.
+//
+// ⛔ THERE IS NO `ReopenOf`. `seq` is 1-based and gapless, so the episode this
+// one succeeds is the row at `seq - 1` and a column repeating that was a second
+// spelling of the same edge. ADR 0040 dropped it with `reopen_count`.
 type OpenCase struct {
 	ID              uuid.UUID
 	AlertID         uuid.UUID
@@ -321,7 +403,6 @@ type OpenCase struct {
 	SourceStartsAt  time.Time
 	SourceEndsAt    *time.Time
 	SourceUpdatedAt *time.Time
-	ReopenOf        *uuid.UUID
 	Value           *float64
 	SkewMS          int64
 }
@@ -343,8 +424,6 @@ const (
 	TransitionResolve TransitionKind = "resolve"
 	// TransitionExpire is T6: the reaper, and only while the source is healthy.
 	TransitionExpire TransitionKind = "expire"
-	// TransitionReopen is T8: a re-fire inside refire_grace.
-	TransitionReopen TransitionKind = "reopen"
 )
 
 // Transition is the persisted effect of one edge. It is produced by the domain
@@ -352,8 +431,11 @@ const (
 // — assembling one by hand is how a case acquires a state no §B.3 row
 // permits.
 type Transition struct {
-	Kind              TransitionKind
-	ToState           State
+	Kind TransitionKind
+	// ToState is the CASE's post-image state, `open` or `closed` — the value that
+	// is written to `alert_cases.state`. The §B.2 name of the edge is Kind, and
+	// the ALERT's post-image state is projected separately (ADR 0040).
+	ToState           CaseState
 	SuppressionReason *string
 	SuppressedBy      *SuppressedBy
 	ResolveReason     *string
@@ -363,7 +445,6 @@ type Transition struct {
 	LastObservedAt  time.Time
 	SourceEndsAt    *time.Time
 	SourceUpdatedAt *time.Time
-	ReopenCount     *int
 	// SuppressCount is the post-image `suppress_count`. T3 increments it; every
 	// other edge leaves it alone, and nil means "do not write this column".
 	SuppressCount *int
@@ -402,7 +483,8 @@ type Transition struct {
 // state change.
 //
 // ⭐ IT IS ONE FIELD, AND THAT IS THE POINT. This began as a four-column
-// pre-image — state, ended_at, source_ends_at, reopen_count — because the schema
+// pre-image — state, ended_at, source_ends_at and a re-fire counter that no
+// longer exists — because the schema
 // offered nothing better. `alert_cases.state_version` (migration 00023) now
 // does, and collapsing onto it is stronger rather than merely cheaper: a
 // multi-column pre-image can be PARTIALLY specified, so a future call site could
@@ -518,8 +600,18 @@ type AlertRollup struct {
 	Key string
 	// Total is every Alert in the bucket.
 	Total int
-	// The four §B.2 states, never merged. `resolved` and `expired` are different
-	// facts and collapsing them would hide the more interesting of the two.
+	// The §B.2 states, never merged. `resolved` and `expired` are different facts
+	// and collapsing them would hide the more interesting of the two.
+	//
+	// ⭐⭐ `Suppressed` IS A SUBSET OF `Firing`, NOT A SIBLING OF IT (ADR 0041).
+	// These four stopped partitioning the bucket when suppression became an axis:
+	// a silenced alert is counted in BOTH, because it is firing and nobody is
+	// being told. `Firing + Resolved + Expired` is the total; `Suppressed`
+	// answers "and how many of those live ones is nobody hearing about?".
+	//
+	// It is spelled this way round because the alternative — a disjoint
+	// `firing-and-not-silenced` counter — is the exact under-report ADR 0041
+	// removed, and putting it back under a different name would put it back.
 	Firing     int
 	Suppressed int
 	Resolved   int
@@ -557,9 +649,16 @@ type AlertRollup struct {
 // answer is unreachable and the fallback is the most conservative reading.
 func (r AlertRollup) RollupState() State {
 	switch {
-	case r.Firing > 0:
+	// ⭐ `Suppressed` IS A SUBSET OF `Firing` SINCE ADR 0041, so the test is a
+	// COMPARISON and not a presence check. Suppression is an axis: every silenced
+	// alert is also counted as firing, because it IS firing. A bucket reads
+	// `suppressed` only when nobody is being told about ANY of its live members —
+	// which is exactly what it used to mean when the two counters were disjoint,
+	// and the reason this is a comparison rather than the `r.Suppressed > 0` it
+	// replaced. That spelling would now be unreachable.
+	case r.Firing > r.Suppressed:
 		return StateFiring
-	case r.Suppressed > 0:
+	case r.Firing > 0:
 		return StateSuppressed
 	case r.Expired > 0:
 		return StateExpired

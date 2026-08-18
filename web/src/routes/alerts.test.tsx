@@ -22,10 +22,11 @@ import AlertsRoute from "./alerts";
 import { SessionProvider } from "~/api/session";
 import type { AlertRollup } from "~/api/types";
 import { count as fmtCount } from "~/lib/format";
-import { alert } from "~/test/fixtures";
+import { alert, alertCase } from "~/test/fixtures";
 import {
   item,
   list,
+  problem,
   renderScreen,
   stubFetch,
   unpaged,
@@ -319,5 +320,161 @@ describe("the Quiet tab", () => {
     const http = mount("/alerts");
     await until(() => expect(quietBadgeCalls(http).length).toBeGreaterThan(0));
     expect(screen.getByRole("tab", { name: /Quiet/ })).toBeTruthy();
+  });
+});
+
+/**
+ * ⛔ THE ALERTS LIST ACTS ON NOTHING, AND THESE ASSERTIONS ARE THE INVERSE OF THE
+ * ONES THEY REPLACE.
+ *
+ * The row used to carry an Acknowledge and a Snooze in a fixed trailing anchor.
+ * Both are gone, and their absence is the design rather than a regression: a row
+ * in this list is an **Alert** — the identity of a label set, which outlives
+ * every one of its firings — while acknowledging is a receipt on ONE firing
+ * episode, a **Case**. Acting on a firing is the Case surface's job (`/cases`
+ * for the queue, `/cases/:id` for one episode, and `/cases/:id` alone for the
+ * alert-scoped snooze). A control whose subject is not on screen is a control
+ * aimed at a guess, and at 3am the guess is which firing you just signed for.
+ *
+ * These are worth a test and the deleted ones were not, because "the button is
+ * here" is re-asserted by every screenshot while "the button is deliberately
+ * NOT here" is exactly the kind of decision a later change re-adds by accident.
+ */
+describe("acting on a firing is not this screen's job", () => {
+  /** A row in the one state that used to draw an ENABLED Acknowledge. */
+  function mountFiringWithOpenCase(): FetchStub {
+    const http = stubFetch({
+      "GET /api/v1/me": ME,
+      "GET /api/v1/clusters": list([]),
+      "GET /api/v1/labels": unpaged([]),
+      "GET /api/v1/alerts": list([alert({ current_case: alertCase() })]),
+      "GET /api/v1/alerts/rollups": list([bucket()]),
+    });
+    renderScreen(
+      () => (
+        <SessionProvider>
+          <AlertsRoute />
+        </SessionProvider>
+      ),
+      { path: "/alerts" },
+    );
+    return http;
+  }
+
+  it("offers no Acknowledge on a row, not even a disabled one", async () => {
+    mountFiringWithOpenCase();
+    // Wait for the row itself, so "no button" cannot pass by nothing having
+    // rendered yet — the failure mode every absence assertion has.
+    await until(() => expect(screen.getAllByText("HighErrorRate").length).toBeGreaterThan(0));
+
+    // A DISABLED button still has the role, so this would have caught the old
+    // anchor whether the case was ackable or not.
+    expect(screen.queryByRole("button", { name: /^Acknowledge/ })).toBeNull();
+  });
+
+  it("offers no Snooze on a row, so no row can vanish because of a gesture made here", async () => {
+    mountFiringWithOpenCase();
+    await until(() => expect(screen.getAllByText("HighErrorRate").length).toBeGreaterThan(0));
+
+    expect(screen.queryByRole("button", { name: /^Snooze/ })).toBeNull();
+
+    // ⛔ AND THEREFORE NO "WHERE THE ROW WENT" SENTENCE. That affordance existed
+    // because snoozing from the main tab removed the row the operator had just
+    // acted on, which is indistinguishable from a failed request. With no snooze
+    // control here, nothing the operator does on this screen can remove a row
+    // from it, so the explanation has nothing left to explain.
+    expect(document.body.textContent).not.toMatch(/oto is now quiet about/);
+  });
+
+  it("offers no Resume on the main tab, where no row is knowably snoozed", async () => {
+    // `AlertDTO` carries no `snooze`, so on this tab the answer to "is this alert
+    // being held back?" is genuinely unknown — and a wake button over an unknown
+    // is a button aimed at a guess. The column is absent, not disabled.
+    mountFiringWithOpenCase();
+    await until(() => expect(screen.getAllByText("HighErrorRate").length).toBeGreaterThan(0));
+
+    expect(screen.queryByRole("button", { name: /^Resume/ })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Resume" })).toBeNull();
+  });
+
+  it("leaves the row a way through to where the firing IS acted on", async () => {
+    // Removing the buttons must not leave the row inert. It stays a link to the
+    // alert's own screen, which lists that alert's cases — each one a link to
+    // `/cases/:id`, where the receipt is written and the snooze is offered. One
+    // hop longer than a row button, and every step of it names its subject.
+    mountFiringWithOpenCase();
+    await until(() => expect(screen.getAllByText("HighErrorRate").length).toBeGreaterThan(0));
+
+    const row = screen.getByRole("link", { name: /HighErrorRate/ });
+    expect(row.getAttribute("href")).toBe(`/alerts/${alert().id}`);
+  });
+});
+
+/**
+ * ⭐ THE ONE GESTURE THE QUIET TAB DOES OFFER, AND WHY IT IS NOT A CONTRADICTION.
+ *
+ * Every verb was taken off these rows because a row is an **Alert** and both ack
+ * and snooze address something narrower or noisier. `Resume` is the exception that
+ * proves the rule rather than breaking it: it is the undo of a snooze, its subject
+ * IS the identity, and on this tab every row is by construction an alert oto is
+ * holding its tongue about — so the button names what it will do to the thing
+ * under the cursor, and the set it acts out of is the list on screen.
+ */
+describe("resuming from the Quiet tab", () => {
+  function mountQuiet(): FetchStub {
+    const http = stubFetch({
+      "GET /api/v1/me": ME,
+      "GET /api/v1/clusters": list([]),
+      "GET /api/v1/labels": unpaged([]),
+      "GET /api/v1/alerts": list([alert({ current_case: alertCase() })]),
+      "GET /api/v1/alerts/rollups": list([bucket()]),
+    });
+    renderScreen(
+      () => (
+        <SessionProvider>
+          <AlertsRoute />
+        </SessionProvider>
+      ),
+      { path: "/alerts?tab=quiet" },
+    );
+    return http;
+  }
+
+  const RESUME = new RegExp(`^Resume notifications for ${alert().alertname}$`);
+
+  it("names the alert it will wake, and posts to that alert's own unsnooze", async () => {
+    const http = mountQuiet();
+    http.on(`POST /api/v1/alerts/${alert().id}/unsnooze`, () => ({ json: item(alert()) }));
+
+    await until(() => expect(screen.getByRole("button", { name: RESUME })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: RESUME }));
+
+    await until(() => expect(http.to("/unsnooze")).toHaveLength(1));
+    const posts = http.to("/unsnooze");
+    expect(posts[0]?.path).toBe(`/api/v1/alerts/${alert().id}/unsnooze`);
+    // One key per gesture: the server's idempotency promise only holds if the
+    // client stops re-minting on a retry.
+    expect(posts[0]?.headers["Idempotency-Key"]).toBeTruthy();
+  });
+
+  it("⛔ says a refusal out loud, because there is no dialog for it to land in", async () => {
+    const http = mountQuiet();
+    http.on(`POST /api/v1/alerts/${alert().id}/unsnooze`, () => problem(412, "not_snoozed"));
+
+    await until(() => expect(screen.getByRole("button", { name: RESUME })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: RESUME }));
+
+    // A press that produces silence is a press an operator makes again.
+    await until(() =>
+      expect(screen.getByText(/already awake, so there was nothing to resume/)).toBeTruthy(),
+    );
+  });
+
+  it("⛔ still offers neither Acknowledge nor Snooze, tab or no tab", async () => {
+    mountQuiet();
+    await until(() => expect(screen.getByRole("button", { name: RESUME })).toBeTruthy());
+
+    expect(screen.queryByRole("button", { name: /^Acknowledge/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Snooze/ })).toBeNull();
   });
 });

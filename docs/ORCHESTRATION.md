@@ -236,6 +236,23 @@ Recorded here so they can be reversed cheaply. Full reasoning in the ADRs.
    entirely at `firing_only` / `firing_and_resolved`. On those channels a
    re-fire inside the grace is silent. Recorded as an open defect in ADR 0026 —
    changing what `firing_only` means is a product decision, not a tuning one.
+   **That defect was overtaken rather than fixed: ADR 0040 retired T8, so nothing
+   produces `refired` at all and there is no reply for verbosity to drop.** The
+   product question it named — how loud a re-fire should be on a quiet channel —
+   is still open, and is now entirely a question about `group_close_delay`.
+9. **A Case is `open` or `closed`, and it is never reopened (ADR 0040)** — and
+   this one **reverses shipped behaviour** rather than tuning it, so read §6 of
+   that ADR before touching it. `alert_cases.state` held all four §B.2 words;
+   three of them were facts about the Alert or restatements of a neighbouring
+   column, so the column is now `open | closed` and the four-way reading is
+   derived (migration 00054, lossless in both directions). With it went
+   transition **T8**: a re-fire used to reopen the closed episode when it landed
+   inside `refire_grace`, carrying its acknowledgement across a gap in the
+   firing. Every re-fire is now T7 — the next `seq`, unacknowledged — because an
+   acknowledgement is a receipt for one firing and the second firing is not the
+   one that was signed for. `reopen_count`/`reopen_of` are dropped,
+   `case.reopened` is retired on 00051's terms, and `refire_grace` survives as an
+   inert setting whose future is deliberately undecided.
 
 ## Questions genuinely needing the owner
 
