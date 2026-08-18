@@ -2,11 +2,9 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/thulasiram/oto/internal/notification/domain"
 	"github.com/thulasiram/oto/internal/platform/db"
@@ -194,45 +192,20 @@ func (r *ChannelRepository) SetHealth(
 	return mapErr(err, "channel_not_found", "update channel health")
 }
 
-const claimStormNoticeSQL = `
-UPDATE channels
-   SET storm_notice_at = $3
- WHERE org_id = $1 AND id = $2
-   AND (storm_notice_at IS NULL OR storm_notice_at <= $4)
-RETURNING id`
-
-// ClaimStormNotice takes the channel-level storm-notice latch (ADR 0020).
+// ⛔ `claimStormNoticeSQL` AND `ClaimStormNotice` WERE HERE AND ARE DELETED. They
+// were the ONE conditional UPDATE behind the channel-level storm-notice latch
+// (`channels.storm_notice_at`, ADR 0020): the return value reported whether THIS
+// caller got to tell the channel that oto had started withholding individual
+// notifications, and zero rows WAS the answer — the loser's predicate no longer held,
+// which is the same claim idiom §G.5 uses for a delivery. It existed because storm
+// mode was per GROUP while the audience is per CHANNEL, so without it every group
+// collapsing in a burst posted its own "going quiet" message into the same channel:
+// the flood the damper existed to prevent, produced by the damper's own announcement.
 //
-// ⭐ THE RETURN VALUE IS THE WHOLE MECHANISM. It reports whether THIS caller is
-// the one that gets to tell the channel that oto has started withholding
-// individual notifications. Storm mode is per GROUP and a channel carries many
-// groups, so without this every group collapsing in a burst would post its own
-// "going quiet" message into the same channel — the flood the damper exists to
-// prevent, produced by the damper's own announcement.
-//
-// The claim is ONE conditional UPDATE, so concurrent dispatchers cannot both win:
-// the row lock serialises them and the loser's predicate no longer holds. Zero
-// rows IS the answer, in the same idiom as the delivery claim in §G.5 — it is not
-// an error and the caller must not retry it.
-//
-// `notBefore` is `now - window`; the caller passes the org's storm cooldown,
-// because that is the setting that already defines the minimum distance between a
-// storm starting and the same storm ending.
-func (r *ChannelRepository) ClaimStormNotice(
-	ctx context.Context, s db.TenantScope, id uuid.UUID, now, notBefore time.Time,
-) (bool, error) {
-	var claimed uuid.UUID
-	err := r.db(ctx).QueryRow(ctx, claimStormNoticeSQL, s.OrgID(), id, now, notBefore).Scan(&claimed)
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, pgx.ErrNoRows):
-		// Another group's storm already told this channel, inside the window.
-		return false, nil
-	default:
-		return false, mapErr(err, "channel_not_found", "claim storm notice")
-	}
-}
+// ⭐ NOTHING REPLACES IT, BECAUSE NOTHING WITHHOLDS. Storm damping is removed
+// entirely; a product that does not decide to be quiet has no quiet to announce and
+// nothing to ration. `channels.storm_notice_at` REMAINS in the schema, never written
+// and never read — dropping a column is the deferred, breaking half of this removal.
 
 const getCredentialSQL = `
 SELECT id, kind, sealed, key_version

@@ -46,14 +46,6 @@ func TestBoundsAreEnforcedServerSide(t *testing.T) {
 			field: "refire_grace_s",
 		},
 		{
-			// A threshold of 1 puts every group into permanent storm mode and
-			// suppresses every per-alert reply forever: silence wearing a
-			// damper's name.
-			name:  "storm threshold of one",
-			patch: domain.SettingsPatch{StormThreshold: intp(1)},
-			field: "storm_threshold",
-		},
-		{
 			// Below 3 a single rolling deploy is mislabelled as flapping.
 			name:  "flap threshold of two",
 			patch: domain.SettingsPatch{FlapThreshold: intp(2)},
@@ -124,9 +116,6 @@ func TestInRangeWritesAreAccepted(t *testing.T) {
 		FlapThreshold:       intp(5),
 		FlapWindowS:         intp(10800),
 		FlapDigestIntervalS: intp(900),
-		StormThreshold:      intp(25),
-		StormWindowS:        intp(60),
-		StormCooldownS:      intp(600),
 	}
 	if err := worked.Validate(); err != nil {
 		t.Fatalf("the tuning guide's own worked example was refused: %v", err)
@@ -165,11 +154,12 @@ func TestOriginDistinguishesAnOverrideFromTheDefault(t *testing.T) {
 	}
 
 	// A key nobody touched, alongside one that was.
-	if got := same.Origin(domain.KeyStormThreshold); got != domain.OriginDefault {
-		t.Fatalf("storm_threshold origin %q, want default", got)
+	if got := same.Origin(domain.KeyFlapThreshold); got != domain.OriginDefault {
+		t.Fatalf("flap_threshold origin %q, want default", got)
 	}
-	if v, origin, _ := same.EffectiveInt(domain.KeyStormThreshold); v != 25 || origin != domain.OriginDefault {
-		t.Fatalf("storm_threshold effective (%d, %q), want (25, default)", v, origin)
+	if v, origin, _ := same.EffectiveInt(domain.KeyFlapThreshold); v != domain.DefaultFlapThreshold ||
+		origin != domain.OriginDefault {
+		t.Fatalf("flap_threshold effective (%d, %q), want (%d, default)", v, origin, domain.DefaultFlapThreshold)
 	}
 }
 
@@ -202,14 +192,14 @@ func TestClearReturnsAKeyToTheDefault(t *testing.T) {
 func TestMergeLeavesOmittedKeysAlone(t *testing.T) {
 	t.Parallel()
 
-	stored := domain.SettingsPatch{RefireGraceS: intp(900), StormThreshold: intp(40)}
-	merged := stored.Merge(domain.SettingsPatch{StormThreshold: intp(50)})
+	stored := domain.SettingsPatch{RefireGraceS: intp(900), FlapThreshold: intp(4)}
+	merged := stored.Merge(domain.SettingsPatch{FlapThreshold: intp(6)})
 
 	if merged.RefireGraceS == nil || *merged.RefireGraceS != 900 {
 		t.Fatalf("an omitted key was reverted: refire_grace_s = %v", merged.RefireGraceS)
 	}
-	if merged.StormThreshold == nil || *merged.StormThreshold != 50 {
-		t.Fatalf("the written key did not take: storm_threshold = %v", merged.StormThreshold)
+	if merged.FlapThreshold == nil || *merged.FlapThreshold != 6 {
+		t.Fatalf("the written key did not take: flap_threshold = %v", merged.FlapThreshold)
 	}
 }
 
@@ -222,17 +212,17 @@ func TestOutOfRangeStoredValuesAreClampedNotRejected(t *testing.T) {
 	t.Parallel()
 
 	legacy := domain.SettingsPatch{
-		RefireGraceS:   intp(0),       // would be a Slack thread per transition
-		StormThreshold: intp(1),       // would be permanent storm mode
-		FlapWindowS:    intp(9999999), // beyond a day
+		RefireGraceS:  intp(0),       // would be a Slack thread per transition
+		FlapThreshold: intp(1),       // below the floor: one deploy reads as flapping
+		FlapWindowS:   intp(9999999), // beyond a day
 	}
 	s := legacy.Settings()
 
 	if s.RefireGrace < 60*time.Second {
 		t.Fatalf("refire_grace clamped to %v, want at least the floor", s.RefireGrace)
 	}
-	if s.StormThreshold < 2 {
-		t.Fatalf("storm_threshold clamped to %d, want at least 2", s.StormThreshold)
+	if s.FlapThreshold < 3 {
+		t.Fatalf("flap_threshold clamped to %d, want at least the floor", s.FlapThreshold)
 	}
 	if s.FlapWindow > 86400*time.Second {
 		t.Fatalf("flap_window clamped to %v, want at most the ceiling", s.FlapWindow)

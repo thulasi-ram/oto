@@ -130,6 +130,13 @@ func TestAppendTimelineEventRefusesARetiredType(t *testing.T) {
 		// retirement was free here. It is NOT free on the in-module path, which is
 		// what the next test is for.
 		domain.EventCaseReopened,
+		// ⛔ `group.storm_started` AND `group.storm_ended` WERE LISTED HERE AND ARE
+		// NOT RETIRED ANY MORE — THEY ARE GONE. Migration 00060 narrows `ev_type_ck`
+		// to refuse the spellings and `alerts/domain` no longer declares the
+		// constants, so there is no `EventType` value left to hand this seam and
+		// nothing for it to refuse. A deleted value is refused one layer earlier,
+		// by `NewEventType`, and `TestNewEventTypeRefusesTheDeletedDampers` is where
+		// that is asserted.
 	} {
 		t.Run(typ.String(), func(t *testing.T) {
 			svc, events := newSeamService(t)
@@ -180,6 +187,16 @@ func TestAppendTimelineEventStillAcceptsLiveTypes(t *testing.T) {
 	// implied by `case.opened`, `group.member_left` by the episode ending. If the
 	// guard could not tell these from the retired pair it would have taken the
 	// replacements with it.
+	//
+	// ⚠️ THE THIRD ENTRY WAS `group.storm_started` AND IT IS NOW `group.closed`.
+	// The storm type was chosen as a not-retired control precisely because it was
+	// the group-scoped event nothing had retired; it was retired and is now DELETED
+	// (migration 00060), so leaving it here would first have made this control
+	// assert the opposite of what it claims — which the `tc.typ.Retired()` check
+	// below would have caught, loudly — and would now simply not compile. The right
+	// fix was a genuinely live type rather than a deleted assertion. `group.closed`
+	// is the sibling of `group.opened`: minted by `grouping/service`, carried
+	// through this same seam, group-scoped, and very much alive.
 	for _, tc := range []struct {
 		typ domain.EventType
 		req TimelineEventRequest
@@ -188,7 +205,7 @@ func TestAppendTimelineEventStillAcceptsLiveTypes(t *testing.T) {
 		{domain.EventCaseOpened, TimelineEventRequest{
 			AlertID: uuid.New(), CaseID: uuid.New(), Summary: "case opened",
 		}},
-		{domain.EventGroupStormStarted, TimelineEventRequest{GroupID: uuid.New(), Summary: "storm started"}},
+		{domain.EventGroupClosed, TimelineEventRequest{GroupID: uuid.New(), Summary: "generation closed"}},
 	} {
 		t.Run(tc.typ.String(), func(t *testing.T) {
 			svc, events := newSeamService(t)

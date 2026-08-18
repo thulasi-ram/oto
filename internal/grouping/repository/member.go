@@ -192,40 +192,17 @@ func (r *MemberRepository) GroupsForAlert(
 	return collectMembers(rows)
 }
 
-const distinctJoinsSQL = `
-SELECT count(DISTINCT alert_id), max(started_at)
-  FROM alert_cases
- WHERE org_id = $1 AND group_id = $2 AND started_at >= $3`
-
-// DistinctJoinsSince counts how many DISTINCT alerts joined a generation inside
-// the storm window, and when the most recent join was.
+// ⛔⛔ `distinctJoinsSQL` AND `DistinctJoinsSince` WERE HERE AND ARE DELETED. They
+// counted the DISTINCT alerts that joined a generation inside the storm window and the
+// instant of the most recent join — the two numbers §B.6's storm evaluation needed, and
+// its only caller.
 //
-// ⭐ It counts DISTINCT ALERTS, not episodes. One flapping alert re-firing forty
-// times is a FLAP, damped per-alert by flap_score; forty different alerts arriving
-// at once is a STORM, damped per-group by storm collapse. Counting episodes would
-// collapse a group because one alert was noisy, hiding the thirty-nine quiet ones
-// behind it.
-//
-// ⭐ AN EPISODE JOINS WHEN IT OPENS, so `started_at >= $3` is the same window the
-// old `joined_at >= $3` named — read off the row that DEFINES the join rather
-// than off a second row recording that it happened. §B.6 is unchanged by 00051.
-//
-// NOTE (planner): case_group_idx (org_id, group_id, started_at DESC) carries the
-// two equalities and puts the window on the leading edge of what remains.
-func (r *MemberRepository) DistinctJoinsSince(
-	ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time,
-) (int, time.Time, error) {
-	if err := db.RequireScope(s); err != nil {
-		return 0, time.Time{}, err
-	}
-	var n int64
-	var last *time.Time
-	err := r.db(ctx).QueryRow(ctx, distinctJoinsSQL, s.OrgID(), groupID, since.UTC()).Scan(&n, &last)
-	if err != nil {
-		return 0, time.Time{}, mapErr(err, "count group joins")
-	}
-	return int(n), timeOrZero(last), nil
-}
+// ⭐ THE ONE IDEA IN IT WORTH REMEMBERING is why it counted DISTINCT ALERTS and not
+// episodes: one flapping alert re-firing forty times is a FLAP, while forty different
+// alerts arriving at once is a STORM, and counting episodes would have collapsed a
+// group because ONE alert was noisy, hiding the thirty-nine quiet ones behind it. Storm
+// collapse is removed (`grouping/domain/lifecycle.go`), so there is nothing left to
+// count; the distinction survives in the flap/storm vocabulary itself.
 
 // memberRollupSQL is the group card's breakdown — "12 alerts, 3 firing, 9
 // resolved" — and since ADR 0040 it DERIVES the four §B.2 words rather than

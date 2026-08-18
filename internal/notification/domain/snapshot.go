@@ -73,11 +73,17 @@ type GroupFacts struct {
 	TotalCount      int
 	AckedCount      int
 
-	StormMode  bool
-	StormSince *time.Time
-	// StormCount is how many alerts joined this generation. It is what the storm
-	// card counts, and storm mode is a VISIBLE state, never a silent suppression.
-	StormCount int
+	// ⛔⛔ `StormMode`, `StormSince` AND `StormCount` WERE HERE AND ARE DELETED WITH
+	// THE COLUMNS THEY MIRRORED (migration 00059). `alert_groups.storm_mode` and
+	// `storm_since` were LIVE STATE about a generation — "this one is collapsed
+	// right now" — and nothing evaluates a storm any more, so no writer could ever
+	// set them again. That is different from `ReasonStorm` and `SuppressedStorm`,
+	// which are RETIRED rather than deleted: those describe a delivery that already
+	// happened and a stored row still has to render.
+	//
+	// ⚠️ `channels/domain.GroupView.StormMode` and `NotificationView.StormCount` are
+	// what this used to feed, and they still exist because the Slack renderer still
+	// draws a stored `storm` notification. Nothing in production writes them now.
 
 	// NotificationReason is `alert_groups.last_notification_reason` — the wire
 	// value Alertmanager put on the most recent batch for this generation (§H.6).

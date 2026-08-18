@@ -121,10 +121,13 @@ type AlertCounts struct {
 }
 
 // GroupCounts is the group half of the dashboard roll-up.
+//
+// ⛔ `Storm` WAS A THIRD COUNT AND IS GONE WITH `alert_groups.storm_mode`
+// (migration 00059). A dashboard tile reading "0 groups in storm mode" on every
+// install forever is not a metric, it is furniture.
 type GroupCounts struct {
 	Open   int
 	Closed int
-	Storm  int
 }
 
 // DeliveryCounts is the delivery-health half.

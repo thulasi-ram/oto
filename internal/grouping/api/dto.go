@@ -55,8 +55,6 @@ type GroupDTO struct {
 	// STATE; a snoozed generation is still firing and is still listed.
 	SnoozedCount           int32      `json:"snoozed_count"`
 	SnoozedUntil           *time.Time `json:"snoozed_until"`
-	StormMode              bool       `json:"storm_mode"`
-	StormSince             *time.Time `json:"storm_since"`
 	LastNotificationReason *string    `json:"last_notification_reason"`
 	FirstSeenAt            time.Time  `json:"first_seen_at"`
 	LastActivityAt         time.Time  `json:"last_activity_at"`
@@ -264,7 +262,6 @@ type ListGroupsQuery struct {
 	Cluster  []string   `json:"cluster"  validate:"omitempty,max=32,unique,dive,clusterkey"`
 	SourceID string     `json:"source_id" validate:"omitempty,uuid"`
 	Receiver string     `json:"receiver" validate:"omitempty,max=4096"`
-	Storm    *bool      `json:"storm"`
 	Ack      string     `json:"ack"      validate:"omitempty,oneof=unacked acked"`
 	Since    *time.Time `json:"since"`
 	Q        string     `json:"q"        validate:"omitempty,max=200"`
@@ -275,10 +272,10 @@ type ListGroupsQuery struct {
 
 // TimelineQuery is the validated form of the `getAlertGroupTimeline` query.
 type TimelineQuery struct {
-	// The bound is the size of the closed `AlertEventType` enum — 36, including
-	// `alert.snoozed` and `alert.unsnoozed` — so that a caller can always ask for
-	// every type it is allowed to see.
-	Type   []string   `json:"type"      validate:"omitempty,max=36,unique"`
+	// The bound is the size of the closed `AlertEventType` enum — 32, after
+	// migration 00060 deleted the four damper types — so that a caller can always
+	// ask for every type it is allowed to see.
+	Type   []string   `json:"type"      validate:"omitempty,max=32,unique"`
 	Since  *time.Time `json:"since"`
 	Until  *time.Time `json:"until"`
 	Order  string     `json:"order"     validate:"omitempty,oneof=asc desc"`

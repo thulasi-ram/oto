@@ -42,9 +42,6 @@ const (
 	KeyFlapThreshold       SettingKey = "flap_threshold"
 	KeyFlapWindow          SettingKey = "flap_window_s"
 	KeyFlapDigestInterval  SettingKey = "flap_digest_interval_s"
-	KeyStormThreshold      SettingKey = "storm_threshold"
-	KeyStormWindow         SettingKey = "storm_window_s"
-	KeyStormCooldown       SettingKey = "storm_cooldown_s"
 	KeyRawRetention        SettingKey = "raw_retention_days"
 	KeyEventRetention      SettingKey = "event_retention_months"
 	KeyUnackedReminder     SettingKey = "unacked_reminder_after_s"
@@ -118,8 +115,9 @@ func (b Bound) Clamp(v int) int {
 // new episode whatever the clock says — so what an empty band costs today is
 // smaller than it was: a control with no effect rather than a reopen nobody could
 // reach. The arithmetic is kept intact because the floor is what stops the two
-// numbers being edited into contradiction, and because `refire_grace`'s own
-// future is undecided.
+// numbers being edited into contradiction, and because ADR 0040 §6 keeps
+// `refire_grace` under this name, in `orgs.settings`, with these bounds: rename,
+// re-home and removal are all refused.
 //
 // ⛔ It is not imported from `ingestion` — a settings vocabulary must not depend
 // on the ingest path — so the two numbers are tied by a test that imports both
@@ -195,14 +193,23 @@ var settingBounds = map[SettingKey]Bound{
 	KeyFlapDigestInterval: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: a digest more often than once a minute is not a digest"},
 
-	// A storm threshold of 1 collapses every group on its second member: permanent
-	// storm mode, which is silence wearing a damper's name.
-	KeyStormThreshold: {Min: 2, Max: 10000,
-		Why: "distinct alerts, 2..10000: a threshold of 1 puts every group in permanent storm mode and suppresses every per-alert reply forever"},
-	KeyStormWindow: {Min: 10, Max: 3600,
-		Why: "seconds, 10..3600: must exceed group_wait or a burst Alertmanager is still batching does not look like a burst; longer than an hour is not a burst at all"},
-	KeyStormCooldown: {Min: 60, Max: 86400,
-		Why: "seconds, 60..86400: below a minute storm mode flickers on and off across consecutive Alertmanager batches"},
+	// ⛔⛔ `storm_threshold`, `storm_window_s` AND `storm_cooldown_s` WERE HERE AND
+	// ARE DELETED. They were kept, INERT and bounded, for exactly one reason: this
+	// table is what `declarative.go` validates against, `NewDeclarative` REFUSES AT
+	// BOOT on a key it does not know (SPEC §H.13), and two of the three were
+	// documented Helm values — so an operator who had tuned storm would have
+	// CrashLooped on the next `helm upgrade`. That was the whole of the deferral,
+	// and it is spent: no oto database and no Helm release exists outside a
+	// development laptop, `git tag` is empty, and `release.yml` publishes only on a
+	// `v*.*.*` tag with no `latest`. There is no values file in the world carrying
+	// one of these keys.
+	//
+	// ⭐ AND THE BOOT REFUSAL IS THE RIGHT FAILURE, NOT A REGRESSION. A values file
+	// that still says `tuning.storm_threshold: 40` now fails at
+	// `NewDeclarative` with `unknown_key`, naming the config key that stated it and
+	// listing every key that IS one. That is louder and more useful than the
+	// alternative this table was protecting — a knob an operator can still set, that
+	// still clamps, that still reports an origin, and that decides nothing.
 
 	// ⛔ RETENTION IS THE ONLY SETTING PAIR HERE WHOSE WRONG VALUE IS
 	// UNRECOVERABLE. Every other knob above changes when something fires; these two
@@ -211,11 +218,13 @@ var settingBounds = map[SettingKey]Bound{
 	// is stored — an operator lowering a number needs to know what stops being
 	// answerable. ADR 0024 is the full ledger.
 	//
-	// The 30-day shipped default is DERIVED: it is the `alert_event_keys`
-	// idempotency horizon, past which a stored batch can no longer be replayed
-	// without duplicating the timeline (§C.8, §D.4, SPEC acceptance criterion 36).
+	// The 30-day shipped default is CHOSEN, not derived. It was documented as the
+	// `alert_event_keys` idempotency horizon until `oto replay` moved its gate from
+	// age to supersession (`ingestion/service.supersededBy` takes no age argument),
+	// and nothing derives it now: it is the depth of the two raw feeds and the window
+	// a replay can be attempted in at all (ADR 0024, Amendment 4).
 	KeyRawRetention: {Min: 1, Max: 365,
-		Why: "days, 1..365: raw payloads age out by dropping whole daily partitions. The shipped 30 is the alert_event_keys idempotency horizon — a batch older than that cannot be replayed after a parser fix without appending the timeline twice. Below it you lose the ability to reproduce an ingestion bug from the bytes that caused it; nothing an alert page shows depends on this"},
+		Why: "days, 1..365: raw payloads age out by dropping whole daily partitions. The shipped 30 is chosen, not derived — a replay is refused because the alerts a batch would touch have moved on since it arrived, never because the batch is old — so this window is the depth of the rejections and failed-batch feeds, which take no date range, and the window in which a stored batch can be replayed at all. Below it you lose the ability to reproduce an ingestion bug from the bytes that caused it; nothing an alert page shows depends on this"},
 	// 13 months is a CEILING, not a preference: ADR 0014 puts one org's pessimistic
 	// ceiling at 10M events/month and names 50–100M rows as where Postgres-only
 	// hurts, so 13 months is the longest default that stays inside it.
@@ -276,9 +285,6 @@ type SettingsPatch struct {
 	FlapThreshold       *int
 	FlapWindowS         *int
 	FlapDigestIntervalS *int
-	StormThreshold      *int
-	StormWindowS        *int
-	StormCooldownS      *int
 	RawRetentionDays    *int
 	EventRetentionMonth *int
 	// UnackedReminderAfterS is the org DEFAULT a notification policy inherits when
@@ -326,12 +332,6 @@ func (p *SettingsPatch) intPtr(k SettingKey) **int {
 		return &p.FlapWindowS
 	case KeyFlapDigestInterval:
 		return &p.FlapDigestIntervalS
-	case KeyStormThreshold:
-		return &p.StormThreshold
-	case KeyStormWindow:
-		return &p.StormWindowS
-	case KeyStormCooldown:
-		return &p.StormCooldownS
 	case KeyRawRetention:
 		return &p.RawRetentionDays
 	case KeyEventRetention:
@@ -586,9 +586,6 @@ func (p SettingsPatch) Settings() Settings {
 	s.FlapThreshold = pick(KeyFlapThreshold, d.FlapThreshold)
 	s.FlapWindow = time.Duration(pick(KeyFlapWindow, int(d.FlapWindow/time.Second))) * time.Second
 	s.FlapDigestInterval = time.Duration(pick(KeyFlapDigestInterval, int(d.FlapDigestInterval/time.Second))) * time.Second
-	s.StormThreshold = pick(KeyStormThreshold, d.StormThreshold)
-	s.StormWindow = time.Duration(pick(KeyStormWindow, int(d.StormWindow/time.Second))) * time.Second
-	s.StormCooldown = time.Duration(pick(KeyStormCooldown, int(d.StormCooldown/time.Second))) * time.Second
 	s.RawRetention = time.Duration(pick(KeyRawRetention, int(d.RawRetention/(24*time.Hour)))) * 24 * time.Hour
 	// §D.1 stores a month count and oto reads a month as 30 days, uniformly.
 	s.EventRetention = time.Duration(pick(KeyEventRetention, int(d.EventRetention/(30*24*time.Hour)))) * 30 * 24 * time.Hour
@@ -660,12 +657,6 @@ func (p SettingsPatch) EffectiveInt(k SettingKey) (int, Origin, bool) {
 		v = int(s.FlapWindow / time.Second)
 	case KeyFlapDigestInterval:
 		v = int(s.FlapDigestInterval / time.Second)
-	case KeyStormThreshold:
-		v = s.StormThreshold
-	case KeyStormWindow:
-		v = int(s.StormWindow / time.Second)
-	case KeyStormCooldown:
-		v = int(s.StormCooldown / time.Second)
 	case KeyRawRetention:
 		v = int(s.RawRetention / (24 * time.Hour))
 	case KeyEventRetention:

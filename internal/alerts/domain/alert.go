@@ -110,8 +110,16 @@ type AlertParams struct {
 	LastSeenAt        time.Time
 	LastStateChangeAt time.Time
 	TotalCases        int
-	// FlapScore is an EWMA of state transitions per hour. It is a derived signal,
-	// NEVER a state (§B.1).
+	// FlapScore was an EWMA of state transitions per hour — a derived signal, NEVER
+	// a state (§B.1).
+	//
+	// ⛔ RETIRED IN PLACE. Nothing recomputes it: the case retention window W damps a
+	// flap at CASE FORMATION (migration 00057), which left the score counting
+	// lifecycle events a damped flap does not append, so it read false exactly when
+	// the alert was flapping (ADR 0041, Amendment 1). Both fields are still POPULATED
+	// FROM THE ROW, because `alerts.flap_score` and `alerts.is_flapping` keep their
+	// last value and every read still works. A row carrying a value is history, not a
+	// live judgement.
 	FlapScore  float32
 	IsFlapping bool
 	// Synthetic is true for an Alert oto manufactured for a delivery drill. It
@@ -292,12 +300,14 @@ func (a Alert) LastStateChangeAt() time.Time { return a.lastStateChangeAt }
 // TotalCases is how many firing episodes this Alert has had.
 func (a Alert) TotalCases() int { return a.totalCases }
 
-// FlapScore is an EWMA of state transitions per hour — a derived signal, never a
-// state.
+// FlapScore is the last EWMA of state transitions per hour the retired flap
+// detector wrote — a derived signal, never a state, and no longer recomputed. See
+// AlertParams.FlapScore.
 func (a Alert) FlapScore() float32 { return a.flapScore }
 
-// IsFlapping reports whether the Alert is above flap_threshold. Flapping is a
-// VISIBLE UI state; damping is never silent (§B.6).
+// IsFlapping reports the last flap verdict stored on the row. It was never silent
+// suppression and it is no longer a live detection: W damps a flap at case
+// formation instead (§B.6, ADR 0041 Amendment 1).
 func (a Alert) IsFlapping() bool { return a.isFlapping }
 
 // Synthetic reports whether oto manufactured this Alert for a delivery drill.

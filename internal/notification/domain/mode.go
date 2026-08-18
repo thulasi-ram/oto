@@ -12,8 +12,11 @@ type Mode string
 
 // The delivery modes.
 const (
-	// ModePostRoot posts a new root message. It happens once per AlertGroup
-	// generation and is the ONLY genuinely at-risk operation on recovery (§G.5).
+	// ModePostRoot posts a new root message. It happens once per THREAD, and a
+	// thread is keyed by its SUBJECT — `channel_threads.subject_kind`, which since
+	// migration 00056 can be an alert, a case or a group and which v1 always
+	// spells as the AlertGroup generation. It is the ONLY genuinely at-risk
+	// operation on recovery (§G.5).
 	ModePostRoot Mode = "post_root"
 	// ModeUpdateRoot amends the root in place. This is the PRIMARY mechanism.
 	ModeUpdateRoot Mode = "update_root"
@@ -128,28 +131,59 @@ type PlanInput struct {
 	// Capabilities is the destination's negotiated bitmask. Negotiation happens
 	// HERE, centrally, and never inside a provider (§H.10).
 	Capabilities Capability
-	// ThreadExists reports that a live ChannelThread already binds this group
-	// generation to this channel.
+	// ThreadExists reports that a live ChannelThread already binds this
+	// notification's THREAD SUBJECT — the AlertGroup generation, whatever
+	// `Reason.Subject()` says the fact is about — to this channel.
 	ThreadExists bool
-	// StormMode collapses a group to one root card: in storm mode every per-alert
-	// reply is suppressed and only the storm announcement itself survives (§B.6).
-	StormMode bool
-	// Flapping switches the group to update-only, with the digest reply owned by
-	// the flap damper rather than by each transition (§B.6).
+	// ⛔ `StormMode` WAS HERE AND IS DELETED, AND UNLIKE `Flapping` BELOW IT DID NOT
+	// EVEN SURVIVE AS A FIELD. It collapsed a generation to one root card and dropped
+	// every per-alert reply; the caller no longer has an answer to give, because
+	// nothing evaluates a storm any more. Where `Flapping` was kept because
+	// `alerts.is_flapping` is a STORED verdict a card still reports, storm's damper
+	// had no other layer to move to — the object that should own a storm is an
+	// incident, and incidents do not exist yet. There is nothing here to keep, and
+	// since migration 00059 there is no `alert_groups.storm_mode` either.
+	//
+	// Flapping is RETIRED AND READ BY NOTHING HERE. It is `alerts.is_flapping`, and
+	// it used to switch the group to update-only with a coalesced digest reply owned
+	// by the flap damper.
+	//
+	// ⭐⭐ THE FLAP DAMPER MOVED OUT OF THE NOTIFICATION LAYER, and that is the whole
+	// of migration 00057. Damping at DELIVERY makes a withheld notification
+	// indistinguishable from a signal that never fired — the one thing an alerting
+	// product cannot afford (§B.6) — and it was only ever needed because a flapping
+	// alert produced one CASE per flap. The case retention window W removes the
+	// cause: a re-fire inside W lands in the still-open case, so there is one case,
+	// one root card and one thread reply, and there is no per-transition noise left
+	// for a digest to coalesce.
+	//
+	// ⛔ THE FIELD SURVIVES ON PURPOSE AND MUST NOT ACQUIRE A NEW MEANING.
+	// `notification/service.notify` still sets it from the snapshot
+	// (`service/notify.go:113`), `PlanFor` ignores it, and a caller reading a plan
+	// gets the same modes whether it is true or false. Giving it a second job would
+	// put a damper back at the layer that cannot account for its own silence.
+	//
+	// ⛔ AND IT IS NO LONGER A LIVE FACT. `alerts.is_flapping` and `alerts.flap_score`
+	// are RETIRED IN PLACE (SPEC §B.6.2, ADR 0041 Amendment 1): the `flap.score` job
+	// and `AlertRepository.SetFlap` — the only statement in the tree that ever wrote
+	// either column — are deleted, so both columns keep the last value they were
+	// given and nothing recomputes them. They stay READABLE, and the readers are
+	// real: `?flapping=`, the alert rollup's `flapping` counter, the `alert.history`
+	// enrichment, this snapshot and the Slack card's `Flapping` field. What a reader
+	// gets is a MEASUREMENT TAKEN AT A TIME, not a current judgement — the detector
+	// was retired because the case retention window W (00057) made it report `false`
+	// exactly when an alert was flapping hardest, and a detector that lies is worse
+	// than no detector. So the words this field can support are "the last stored
+	// verdict", never "is flapping now".
 	Flapping bool
 	// Broadcast is the org's policy over which transitions surface in the channel
 	// (ADR 0020). The zero value is the approved default set.
 	Broadcast BroadcastPolicy
-	// ChannelNoticeClaimed reports that THIS destination won the channel-level
-	// storm-notice latch for this evaluation (`channels.storm_notice_at`).
-	//
-	// ⛔ IT IS AN ANSWER, NOT A QUESTION. The caller has already taken the latch
-	// against the database before building this input; PlanFor neither asks for
-	// nor could ask for it, because the whole point of the latch is that exactly
-	// one caller wins it. False is the ordinary case and means "this channel has
-	// already been told a storm is on" — the reply still lands on the group's
-	// thread, quietly.
-	ChannelNoticeClaimed bool
+	// ⛔ `ChannelNoticeClaimed` WAS HERE AND IS DELETED WITH THE LATCH IT REPORTED
+	// (`channels.storm_notice_at`). It said "this destination won the once-per-channel
+	// right to announce that oto had started withholding" — a field that exists only
+	// because oto withheld. `channels.storm_notice_at` is dropped by migration 00059;
+	// there is no latch left to claim.
 }
 
 // Plan is the decision: which modes this fact produces on this destination, and
@@ -171,7 +205,21 @@ type Plan struct {
 	// NOTIFICATION — the root update still carries the same facts (§H.10).
 	ReplyDropped bool
 	// ReplyDropReason is a short, stable label for why: "verbosity",
-	// "thread_updates", "no_threading", "storm", "flapping".
+	// "thread_updates", "no_threading", "fresh_root".
+	//
+	// ⛔ NEITHER `flapping` NOR `storm` IS ONE OF THEM ANY MORE, and neither may come
+	// back. The flap damper moved from delivery to case formation (migration 00057);
+	// storm damping was deleted outright, because the object that should own a storm
+	// is an incident and incidents do not exist yet. Neither is DECODABLE any more
+	// either: migrations 00059 and 00060 narrow `notifications_suppmap_ck` and
+	// `notifications_reason_ck` with no backfill, so the values are deleted rather
+	// than retired — unlike `case.reopened`, which `alerts/domain.retiredEventTypes`
+	// still keeps readable because `ev_type_ck` still admits it.
+	//
+	// ⭐ WHAT IS LEFT IS NOT OTO'S OPINION. Every label above is a fact about the
+	// DESTINATION — a human's volume setting, a channel switch, a missing capability
+	// — or "the root card is being posted fresh and already says this". None of them
+	// is oto judging a firing not worth mentioning.
 	ReplyDropReason string
 	// BroadcastDamped reports that this transition WARRANTED a broadcast and got a
 	// quiet reply instead. It is not an error and not a suppression: the fact is
@@ -179,7 +227,11 @@ type Plan struct {
 	// invisible by construction, and "oto decided not to shout" is exactly the
 	// kind of decision §B.6 refuses to take silently.
 	BroadcastDamped bool
-	// BroadcastDampReason is why: "storm", "flapping" or "no_capability".
+	// BroadcastDampReason is why. It is now exactly ONE value, "no_capability": the
+	// destination cannot surface a reply in-channel, which is the world's constraint
+	// and not a decision. `storm` and `flapping` were the other two and both are
+	// gone with the dampers they named — a damped broadcast for either meant oto had
+	// chosen to be quieter about a real transition.
 	BroadcastDampReason string
 }
 
@@ -219,8 +271,17 @@ func (p Plan) PrimaryMode() Mode {
 //  2. the root mode is chosen, then degraded if the destination cannot amend —
 //     a channel with no edit-in-place gets a fresh standalone message rather
 //     than nothing at all;
-//  3. the reply is chosen, then gated by storm, flapping, thread_updates,
-//     verbosity and threading capability, in that order.
+//  3. the reply is chosen, then gated by thread_updates, verbosity and threading
+//     capability, in that order.
+//
+// ⛔ TWO GATES USED TO STAND AHEAD OF THOSE THREE AND BOTH ARE DELETED. `flapping`
+// went with migration 00057 — the flap damper is the case retention window now, not
+// a withheld reply — and `storm` went with storm damping itself. Every gate that
+// remains is a fact about the DESTINATION: what a human set, what a channel switch
+// says, what the provider can do. NOT ONE OF THEM IS OTO'S JUDGEMENT ABOUT THE
+// SIGNAL, and that is the property to preserve when the next gate is proposed here:
+// a gate oto decides for itself makes a withheld notification indistinguishable
+// from a signal that never fired (§B.6).
 //
 // Nothing here reads a provider type. A destination is described entirely by its
 // capability bits and its two channel-level switches, which is what keeps this
@@ -236,26 +297,25 @@ func PlanFor(in PlanInput) Plan {
 	// broadcast, it degrades to a plain reply, and where it cannot thread
 	// either, to a root update — loud enough to still be a reminder.
 	//
-	// ⛔ THE DAMPERS STILL BIND HERE, and they did not used to. This branch
-	// returned an UNCONDITIONAL broadcast, which meant a storm across two hundred
-	// unacknowledged alerts produced two hundred `chat.postMessage` calls into one
-	// channel — oto shouting, once per alert, about the fact that it had started
-	// being quiet. ADR 0020 constraint 3 permits exactly ONE broadcast in storm
-	// mode, the storm announcement itself. So the reminder is DAMPED, not dropped:
-	// it degrades to a quiet thread reply and the reminder still lands.
+	// ⛔ NO DAMPER BINDS HERE ANY MORE, AND THE HISTORY IS WORTH KEEPING. This branch
+	// once returned an UNCONDITIONAL broadcast; a storm across two hundred
+	// unacknowledged alerts then produced two hundred `chat.postMessage` calls into
+	// one channel, so a storm gate was added and the reminder degraded to a quiet
+	// thread reply. Both the flood and the gate are gone: nothing evaluates a storm,
+	// and the retention window keeps one case per flapping alert, so the volume the
+	// gate existed for is removed at its source rather than at delivery. The only
+	// thing that still quietens a reminder is a destination that CANNOT broadcast.
 	if in.Reason == ReasonUnackedReminder {
-		damp := dampReason(in)
 		mode := ModeThreadReply
+		damp := ""
 		switch {
 		case !in.Capabilities.Has(CapThreading):
 			// Nothing to reply to. A root update is the loudest thing left.
 			return Plan{Modes: []Mode{ModeUpdateRoot}}
-		case damp == "":
-			if in.Capabilities.Has(CapBroadcast) {
-				mode = ModeBroadcastReply
-			} else {
-				damp = "no_capability"
-			}
+		case in.Capabilities.Has(CapBroadcast):
+			mode = ModeBroadcastReply
+		default:
+			damp = "no_capability"
 		}
 		p := Plan{Modes: []Mode{mode}}
 		if mode != ModeBroadcastReply && damp != "" {
@@ -295,16 +355,31 @@ func PlanFor(in PlanInput) Plan {
 		// the reply would have restated.
 		return drop("fresh_root")
 
-	case in.StormMode && in.Reason != ReasonStorm:
-		// Storm mode posts ONE root with a count and a link and suppresses every
-		// per-alert reply. The storm announcement itself is the exception, or the
-		// collapse would be invisible.
-		return drop("storm")
+	// ⛔ THE STORM GATE WAS HERE AND IS DELETED. It read
+	// `in.StormMode && in.Reason != ReasonStorm` and dropped the reply, because a
+	// generation over the storm threshold was supposed to collapse to ONE root card
+	// with a count and a link. The collapse was oto deciding that many real firings
+	// were not worth mentioning individually, and the `storm` announcement it let
+	// through was oto describing its own silence rather than the signal. A storm is
+	// many DIFFERENT alerts arriving together; the object that owns that is an
+	// INCIDENT (`correlation`, DEFERRED-POST-V1), and until that object exists there
+	// is nowhere honest to put the fact — so the detection is removed, not moved.
+	//
+	// ⛔ DO NOT REINSTATE IT HERE WHEN INCIDENTS ARRIVE. The notification layer
+	// cannot account for its own silence, which is the whole defect: a storm
+	// notification belongs ON the incident.
 
-	case in.Flapping && in.Reason != ReasonRuleChanged:
-		// A flapping alert switches to update-only; the coalesced digest is the
-		// flap damper's job, not this transition's.
-		return drop("flapping")
+	// ⛔ THE FLAPPING GATE WAS HERE AND IS DELETED (migration 00057). It read
+	// `in.Flapping && in.Reason != ReasonRuleChanged` and dropped the reply, because
+	// a flapping alert was supposed to get one coalesced digest instead of a reply
+	// per transition. The transitions it was coalescing no longer happen: the case
+	// retention window keeps ONE case open across a flap, so a flap now produces one
+	// root card and one reply on its own. A gate here would drop that ONE reply and
+	// leave the flap invisible in the thread — a damper firing after the thing it
+	// damps has already been removed.
+	//
+	// ⛔ DO NOT REINSTATE IT WITHOUT DELETING W FIRST. Two dampers over one fact is
+	// how oto arrives at silence it cannot account for, which is what §B.6 forbids.
 
 	case !in.ThreadUpdates:
 		// The destination asked for update-in-place only.
@@ -326,21 +401,20 @@ func PlanFor(in PlanInput) Plan {
 	// never overrides a destination's volume setting; a channel that has opted out
 	// of thread replies does not receive louder ones.
 	//
-	// Two ways to earn a broadcast, and they are not the same shape:
-	//
-	//  1. `Warrants` — the TRANSITION is one an on-call engineer would be angry to
-	//     have missed. Two Reasons qualify and neither is per-alert noise.
-	//  2. `WarrantsChannelNotice` — the fact is about the CHANNEL, not the thread,
-	//     and the caller has already won the once-per-channel latch for it. This
-	//     is `storm`, and it is the only broadcast permitted while a storm is on.
+	// ⛔ THERE IS ONE WAY TO EARN A BROADCAST AND THERE USED TO BE TWO. `Warrants`
+	// asks whether the TRANSITION is one an on-call engineer would be angry to have
+	// missed; two Reasons qualify and neither is per-alert noise. The second road was
+	// `WarrantsChannelNotice` — a fact about the CHANNEL rather than the thread,
+	// behind a once-per-channel latch — and it existed for exactly one Reason,
+	// `storm`, whose content was "oto has started withholding individual
+	// notifications". A product that does not withhold has nothing to announce, so
+	// the road and its latch are deleted with the damper.
 	mode := ModeThreadReply
-	wantsBroadcast := in.Broadcast.Warrants(in.Reason) ||
-		(WarrantsChannelNotice(in.Reason) && in.ChannelNoticeClaimed)
+	wantsBroadcast := in.Broadcast.Warrants(in.Reason)
 	switch {
 	case !wantsBroadcast:
-		// `storm` on a channel that has already been told: the group's own thread
-		// still records that this generation went quiet. That is not a damped
-		// broadcast — nothing was withheld, the channel simply already knows.
+		// The reply stays on the thread, which is where a fact about the response
+		// belongs. Nothing was withheld.
 	case in.Capabilities.Has(CapBroadcast):
 		mode = ModeBroadcastReply
 	default:
@@ -355,21 +429,15 @@ func PlanFor(in PlanInput) Plan {
 	return p
 }
 
-// dampReason names the damper in force, or "" when none is.
+// ⛔ `dampReason` WAS HERE AND IS DELETED, BECAUSE THERE ARE NO DAMPERS LEFT TO
+// NAME. It existed so the reminder branch — which runs BEFORE the ordinary gates,
+// since `thread_updates` may not silence a reminder — asked the same question those
+// gates asked, in the same order. It had two arms, `storm` and `flapping`, ordered
+// on §B.8.2's reasoning that a storm is the louder fact about oto's own behaviour.
+// `flapping` went with migration 00057, `storm` went with storm damping, and a
+// zero-arm switch is not a function.
 //
-// It exists so the reminder branch — which runs BEFORE the ordinary gates,
-// because `thread_updates` may not silence a reminder — asks the same question
-// those gates ask, in the same order. Storm outranks flapping for the same reason
-// §B.8.2 orders the suppressors: a storm is the louder fact about oto's own
-// behaviour, and it is the one an operator needs to see named.
-func dampReason(in PlanInput) string {
-	switch {
-	case in.StormMode && in.Reason != ReasonStorm:
-		return "storm"
-	case in.Flapping && in.Reason != ReasonRuleChanged:
-		// A flapping alert produces a digest, and a digest does not broadcast.
-		return "flapping"
-	default:
-		return ""
-	}
-}
+// ⛔ A REPLACEMENT WOULD BE THE DEFECT COMING BACK. If a future gate ever needs to
+// exist in both places, it must be a fact about the DESTINATION — a capability, a
+// switch, a human's setting. The moment oto is the one deciding, a suppressed
+// notification stops being distinguishable from a signal that never fired (§B.6).

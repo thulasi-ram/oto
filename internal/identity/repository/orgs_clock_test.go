@@ -104,13 +104,13 @@ func TestOrgSettingsSurvivesAPodBehindTheOneThatBootstrapped(t *testing.T) {
 	lagging := clock.NewFake(h.Now().Add(-2 * time.Second))
 	repo := repository.NewOrgRepository(h.Pool, lagging)
 
-	got, err := repo.UpdateSettings(h.Ctx, org.Scope, domain.SettingsPatch{StormThreshold: intPtr(40)})
+	got, err := repo.UpdateSettings(h.Ctx, org.Scope, domain.SettingsPatch{FlapThreshold: intPtr(40)})
 	require.NoError(t, err,
 		"a pod whose clock lags the row's creator must not 500 on orgs_time_ck")
 
 	require.Equal(t, h.Now(), got.UpdatedAt.UTC(),
 		"updated_at is monotonic: the lagging write may not drag the row backwards")
-	require.Equal(t, 40, *got.Overrides.StormThreshold,
+	require.Equal(t, 40, *got.Overrides.FlapThreshold,
 		"the lagging clock did not cost the org its setting")
 }
 

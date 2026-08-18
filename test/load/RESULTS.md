@@ -1,15 +1,29 @@
-# Storm load results
+# Burst load results
 
 These are the numbers from `test/load`, the package that pushes a real
-Alertmanager storm through the real router, the real Postgres, the real River
+Alertmanager burst through the real router, the real Postgres, the real River
 workers and a conforming fake Slack.
+
+> ⛔ **EVERY NUMBER BELOW WAS MEASURED BEFORE ADR 0042 AND IS NOT REPRODUCIBLE.**
+> Storm damping is removed. The four columns and rows that name it — *storm
+> notices in channel*, `storm` notifications, *groups in storm mode*, *channels
+> carrying a `storm_notice_at` latch* — describe a feature that no longer exists,
+> and the code that produced them is gone: `alert_groups.storm_mode`,
+> `alert_groups.storm_since` and `channels.storm_notice_at` are dropped columns
+> and `storm` is not an admissible `notifications.reason`. They are **left in
+> place as the historical record of a real run**, because transcribing invented
+> numbers over a measurement is worse than dating it. The tests were renamed
+> `TestStorm*` → `TestBurst*` and repointed; the next run replaces this file, and
+> the structural numbers it exists for — Slack calls per alert, rollups per group,
+> nothing lost, nothing wedged — were never bought by damping and should land in
+> the same place.
 
 > ⛔ **NOTHING IN THIS FILE IS A CONTRACT.** Every duration here is a property of
 > the machine it was taken on, not of oto. The hard assertions live in
-> `assertStormInvariants` and **not one of them reads a clock**. This file exists
+> `assertBurstInvariants` and **not one of them reads a clock**. This file exists
 > so that a *structural* regression — a rollup that went back to being
-> O(alerts), a storm notice that started shouting twice, a delivery that went
-> missing — shows up as a diff in a review rather than as a feeling in an
+> O(alerts), a reply that started broadcasting into the channel, a delivery that
+> went missing — shows up as a diff in a review rather than as a feeling in an
 > incident.
 
 ## How to reproduce
@@ -25,7 +39,7 @@ rather than fixed.
 DOCKER_HOST="unix://$HOME/.colima/default/docker.sock" \
 TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock \
 OTO_LOAD_RESULTS=/tmp/oto-load.json \
-  go test -tags load ./test/load/ -run TestStorm -v -timeout 45m
+  go test -tags load ./test/load/ -run TestBurst -v -timeout 45m
 ```
 
 `OTO_LOAD_RESULTS` is optional; without it the numbers are only logged.
@@ -278,13 +292,16 @@ information the run produced.
   O(groups); it did not, and was not meant to, make enrichment or notification
   evaluation per-batch. On the 2-CPU VM this is what dominates drain time — 2 200
   alerts took 91 s to settle almost entirely in these two kinds. If ingest
-  latency is ever reported as good while storms still feel slow, this is where to
+  latency is ever reported as good while bursts still feel slow, this is where to
   look first.
 - **Drain time scales with alert count, not with Slack traffic.** 23 s for 500,
   91 s for 2 200. Slack calls stayed at 4 and 8.
-- **`update_root` dominates every case** (2 / 6 / 54 / 50). Storm collapse plus
-  amend-in-place is what keeps the Slack call count flat; each new wave edits the
-  existing card rather than posting.
+- **`update_root` dominates every case** (2 / 6 / 54 / 50). Amend-in-place is what
+  keeps the Slack call count flat; each new wave edits the existing card rather
+  than posting. ⭐ This was previously credited to "storm collapse plus
+  amend-in-place". It was never storm collapse: a notification is minted per
+  triggering change per group, so the count follows batch arrivals and not alert
+  volume, which is why ADR 0042 removed damping without moving these numbers.
 - **`notification_deliveries.mode` is the mode decided at fan-out, and the
   dispatcher re-derives it at claim time without writing it back.** A row saying
   `post_root` can legitimately have been sent with `chat.update` because the root
@@ -295,7 +312,7 @@ information the run produced.
 
 ## What is asserted (and never varies)
 
-From `assertStormInvariants` — **not one of these reads a clock**:
+From `assertBurstInvariants` — **not one of these reads a clock**:
 
 1. **Nothing silently lost.** No batch permanently refused; every offered alert
    accepted; `alerts` rows + recorded per-alert rejections = alerts pushed; no
@@ -305,10 +322,10 @@ From `assertStormInvariants` — **not one of these reads a clock**:
 3. **One group per §C.4 identity**, and every alert a member of one.
 4. **The O(groups) property**, twice over: an absolute bound on `group.upserted`
    per group, and a ratio (< 20 % of member count once a group exceeds 200).
-5. **Exactly one storm notice per channel** — every storming group records a
-   `storm` notification on its own thread, but at most one surfaces in-channel,
-   and the sustained case requires exactly one plus exactly one `storm_notice_at`
-   latch.
+5. **Nothing broadcast out of a thread, at any volume** — `slack_broadcast_replies`
+   must be **0**. This replaced "exactly one storm notice per channel" at ADR 0042
+   and is strictly stronger: the storm notice was the only thing a burst ever
+   surfaced in-channel, and with damping gone there is nothing to announce.
 6. **No delivery lost or duplicated** — accepted Slack writes compared directly
    against `sent` rows, in both directions; no dead-lettered deliveries; nothing
    left `pending`/`sending`; and the conforming fake refused nothing.

@@ -40,7 +40,6 @@ func TestAPayloadWithNoTenantHalfIsTheFanOutTick(t *testing.T) {
 	}{
 		{"case.reap", `{"v":1}`, decodeInto[CaseReapArgs]},
 		{"group.close", `{"v":1}`, decodeInto[GroupCloseArgs]},
-		{"flap.score", `{}`, decodeInto[FlapScoreArgs]},
 		{"retention.prune", `{"v":1}`, decodeInto[RetentionPruneArgs]},
 		{"stats.rollup", `{"v":1,"day":"2026-08-07"}`, decodeInto[StatsRollupArgs]},
 		{"source.reconcile", `{"v":1}`, decodeInto[SourceReconcileArgs]},

@@ -33,7 +33,10 @@ type GroupRepository interface {
 	// column already existed for §C.7's idempotency key; using it as the
 	// optimistic lock as well keeps one answer to "has this generation changed".
 	SetRollup(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error
-	SetStorm(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error
+	// ⛔ `SetStorm` WAS THE SECOND OF THE THREE AND IS DELETED. It wrote the
+	// `storm_mode`/`storm_since` pair under the same compare-and-set; storm damping is
+	// removed, so nothing decides storm mode and nothing writes it. The columns remain
+	// (see domain.Group.StormMode) and are read-only from here on.
 	Close(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error
 	Touch(ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time) error
 	SetNotificationReason(ctx context.Context, s db.TenantScope, groupID uuid.UUID, reason string) error
@@ -76,7 +79,9 @@ type MemberRepository interface {
 	// loop, and that is a filter the database was asked to skip.
 	MembersAt(ctx context.Context, s db.TenantScope, groupID uuid.UUID, at time.Time) ([]domain.Member, error)
 	GroupsForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, limit int) ([]domain.Member, error)
-	DistinctJoinsSince(ctx context.Context, s db.TenantScope, groupID uuid.UUID, since time.Time) (int, time.Time, error)
+	// ⛔ `DistinctJoinsSince` WAS HERE AND IS DELETED. It counted the DISTINCT alerts
+	// that joined a generation inside a window and returned the last join instant —
+	// the two numbers the storm evaluation needed and the only caller it had.
 	Rollup(ctx context.Context, s db.TenantScope, groupID uuid.UUID) (domain.Counts, string, error)
 	// SnoozeRollup is the §B.8.6 result of the group snooze fan-out, for a whole
 	// page of generations at once. It is derived at read time rather than stored,
@@ -166,8 +171,18 @@ type StreamAppender interface {
 // StreamGroupUpserted is the `ui_events.kind` this module publishes.
 const StreamGroupUpserted = "group.upserted"
 
-// SettingsReader reads one org's storm and close tuning from `orgs.settings`
+// SettingsReader reads one org's generation-lifecycle tuning from `orgs.settings`
 // (§D.1). Implemented by `identity/service`.
+//
+// ⛔ THE METHOD WAS `Storm` AND RETURNED FOUR NUMBERS. Three were the `storm_*` knobs
+// and storm damping is removed, so `group_close_delay_s` is all that is left and the
+// port is named for what it actually reads. The three keys REMAIN on `orgs.settings`
+// and decide nothing; see domain/lifecycle.go for why deleting a settings key is a
+// contract change of its own.
 type SettingsReader interface {
-	Storm(ctx context.Context, s db.TenantScope) (domain.StormPolicy, error)
+	// ⚠️ IT IS `GroupLifecycle` AND NOT `Lifecycle` BECAUSE ONE ADAPTER SERVES BOTH
+	// PORTS. `internal/app.orgSettings` already answers `alerts/service.Lifecycle`
+	// from the same `orgs.settings` row, and two same-named methods returning
+	// different types cannot live on one receiver.
+	GroupLifecycle(ctx context.Context, s db.TenantScope) (domain.LifecyclePolicy, error)
 }

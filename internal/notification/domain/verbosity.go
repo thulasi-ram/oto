@@ -52,18 +52,21 @@ var replySets = map[Verbosity]map[Reason]bool{
 		ReasonUnsuppressed: true, ReasonExpired: true, ReasonRefired: true,
 		ReasonNewAlerts: true, ReasonAllResolved: true, ReasonRuleChanged: true,
 		ReasonComment: true, ReasonSnoozed: true, ReasonUnsnoozed: true,
-		ReasonUnackedReminder: true, ReasonStorm: true,
+		ReasonUnackedReminder: true,
 	},
 	VerbosityFiringAndResolved: {
 		ReasonNewAlerts: true, ReasonAllResolved: true, ReasonExpired: true,
 		ReasonRuleChanged: true, ReasonSnoozed: true, ReasonUnsnoozed: true,
-		ReasonUnackedReminder: true, ReasonStorm: true,
+		ReasonUnackedReminder: true,
 	},
 	VerbosityFiringOnly: {
-		// `storm` is present even at the quietest setting: a channel that asked
-		// for less has not asked to be lied to about oto withholding things.
+		// ⛔ `storm` WAS IN ALL FOUR SETS AND IS GONE FROM THE VOCABULARY (reason.go,
+		// migration 00060). It survived the quietest setting on the argument that a
+		// channel which asked for less has not asked to be lied to about oto
+		// withholding things — and oto withholds nothing now, so there is no such
+		// fact and no Reason naming one.
 		ReasonNewAlerts: true, ReasonRuleChanged: true, ReasonSnoozed: true,
-		ReasonUnsnoozed: true, ReasonUnackedReminder: true, ReasonStorm: true,
+		ReasonUnsnoozed: true, ReasonUnackedReminder: true,
 	},
 }
 

@@ -39,8 +39,9 @@ import (
 func TestMain(m *testing.M) { harness.Main(m) }
 
 // conversation is the Slack channel id every load case delivers into. It is ONE
-// conversation on purpose: "exactly one storm notice per channel" is only a
-// falsifiable claim when many storming groups share a channel.
+// conversation on purpose: "a burst of thousands of alerts adds nothing to the
+// channel beyond one root card per group" is only a falsifiable claim when many
+// busy groups share a channel.
 const conversation = "C000000LOAD"
 
 // botToken must have the `xoxb-` shape or the conformance fake answers
@@ -117,8 +118,8 @@ func newEnv(t *testing.T, tweak func(*config.Config)) *env {
 		// ⛔ THE REAL CLOCK, not the harness FakeClock. Every partition on this
 		// schema is cut around `now()` and every rate bucket, retry delay and River
 		// snooze is a real duration; a clock pinned at the harness Epoch would route
-		// `ingest_batches` into a partition that does not exist and would freeze the
-		// storm window at zero. A load case measures wall time by definition.
+		// `ingest_batches` into a partition that does not exist and would freeze
+		// every grace window at zero. A load case measures wall time by definition.
 		Clock: clock.New(),
 		// This process WORKS jobs. Without it the ingest path would answer 202 and
 		// nothing would ever be delivered, which is the one shape a load case may
@@ -199,7 +200,7 @@ func (t *slackRedirect) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // ------------------------------------------------------------------- seeding
 
-// seed writes the FK graph one storm needs: a tenant, a cluster, a push-enabled
+// seed writes the FK graph one burst needs: a tenant, a cluster, a push-enabled
 // source with a live ingest token, a Slack destination with a really-sealed bot
 // token, and one policy that routes every §H.6 Reason to it.
 //
@@ -215,14 +216,13 @@ func (e *env) seed(encodedKey string) {
 	e.exec(`INSERT INTO orgs (id, slug, name, settings, created_at, updated_at)
 	        VALUES ($1, $2, 'Load', $3::jsonb, $4, $4)`,
 		e.orgID, "load-"+uuid.NewString()[:8],
-		// ⭐ `storm_cooldown_s` IS PINNED, and it is pinned because it is the window
-		// of the once-per-channel storm-notice latch (ADR 0020). Left at the 10 m
-		// default a sustained case that ran past ten minutes could legitimately earn
-		// a SECOND notice, and "exactly one" would become "one, unless the run was
-		// slow" — an invariant that depends on the machine is not an invariant.
-		// Thirty minutes is comfortably longer than any case here and is inside the
-		// 60..86400 bound.
-		`{"storm_cooldown_s":1800}`, now)
+		// ⭐ NO SETTINGS OVERRIDE. This used to pin `storm_cooldown_s` at 1800 so the
+		// once-per-channel storm-notice latch could not re-arm mid-run. ADR 0042
+		// deleted the key along with the latch, and no remaining tuning key changes
+		// what these cases assert: nothing here resolves, expires or flaps, so the
+		// grace windows are never consulted and the shipped defaults are the honest
+		// configuration to measure against.
+		`{}`, now)
 
 	clusterID := id.New()
 	e.exec(`INSERT INTO clusters (id, org_id, cluster_key, display_name, created_at, updated_at)
@@ -282,7 +282,7 @@ func (e *env) seed(encodedKey string) {
 		e.channelID, e.orgID, "load-alerts", []byte(e.slack.Config(conversation)),
 		credID, caps, now)
 
-	// One policy, no matchers, every Reason. A storm case must not be able to lose
+	// One policy, no matchers, every Reason. A load case must not be able to lose
 	// a delivery to a routing decision it did not intend to make.
 	reasons := make([]string, 0, len(notifdomain.AllReasons()))
 	for _, r := range notifdomain.AllReasons() {
@@ -343,7 +343,7 @@ type batchSpec struct {
 	// Wave distinguishes successive batches for one group, so each carries alerts
 	// oto has never seen. Repeating an alert set would recompute the SAME §C.5
 	// dedup key and be answered 202-duplicate inside the five-minute replay
-	// window, which measures the dedup table rather than the storm path.
+	// window, which measures the dedup table rather than the ingest path.
 	Wave int
 	// Alerts is how many alerts this batch carries.
 	Alerts int
@@ -367,7 +367,7 @@ func (s batchSpec) body() []byte {
 			},
 			Annotations: map[string]string{
 				"summary":     "error rate is high on " + instance,
-				"description": "the load case is pushing a storm through the real path",
+				"description": "the load case is pushing a burst through the real path",
 			},
 			StartsAt:     now,
 			GeneratorURL: "http://prometheus.load.test/graph",

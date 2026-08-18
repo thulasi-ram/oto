@@ -99,14 +99,21 @@ type Detail struct {
 	// past members are reachable through History, because membership is history
 	// and not a boolean.
 	Members []domain.Member
-	// StormActive mirrors Group.StormMode and is repeated here because the UI
-	// renders it as a badge next to the counts, and a damper the user cannot see
-	// is the silent suppression §B.6 forbids.
-	StormActive bool
+	// ⛔ `StormActive` WAS HERE AND IS DELETED. It mirrored `Group.StormMode` so the UI
+	// could render a badge next to the counts, on the rule that a damper the user
+	// cannot see is the silent suppression §B.6 forbids. There is no damper: storm
+	// collapse is removed (`grouping/domain/lifecycle.go`). It was also never READ — the
+	// group DTO takes `storm_mode` straight off `Group`, which is why
+	// `tools/lintreach/baseline.txt` carried it as known debt; removing it pays that
+	// line rather than exempting it.
+	//
 	// Snooze is the §B.8.6 quiet roll-up: how many currently-joined members oto
-	// is holding its tongue about, and when the last of them wakes. Snooze is the
-	// MANUAL sibling of storm collapse and flap damping, and it is subject to the
-	// same rule — a damper the user cannot see is not one oto ships.
+	// is holding its tongue about, and when the last of them wakes.
+	//
+	// ⭐ IT IS NOW OTO'S ONLY VOLUME CONTROL OVER A GROUP, and unlike the two dampers
+	// that used to flank it, it is a DELIBERATE HUMAN ACT — which is exactly why it
+	// survives them. A human asking for quiet is an answer an operator can act on; oto
+	// deciding a firing was not worth mentioning is not.
 	Snooze domain.SnoozeRollup
 }
 
@@ -114,7 +121,7 @@ type Detail struct {
 //
 // ⭐ THE PREVIEW IS ONE PAGE, AND FOUR ENDPOINTS PAY FOR IT. Ack, snooze and
 // unsnooze all render their reply through this method, so a group action during
-// a storm used to re-read the whole membership — five thousand rows fetched,
+// a burst used to re-read the whole membership — five thousand rows fetched,
 // copied, sorted and 4 980 of them thrown away — every time a human pressed a
 // button, which is exactly when they are pressing them. It now takes the first
 // domain.MemberPreviewLimit rows of the same keyset read that
@@ -142,10 +149,9 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, groupID uuid.UU
 		return Detail{}, err
 	}
 	return Detail{
-		Group:       g,
-		Members:     members,
-		StormActive: g.StormMode(),
-		Snooze:      snoozes[groupID],
+		Group:   g,
+		Members: members,
+		Snooze:  snoozes[groupID],
 	}, nil
 }
 

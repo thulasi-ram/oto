@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -134,7 +133,7 @@ func (rt *Router) now() time.Time { return rt.clk.Now().UTC() }
 // listGroupParams is the allow-list for `GET /api/v1/alert-groups`. Anything
 // outside it is `400 unknown_parameter`.
 var listGroupParams = []string{
-	"state", "severity", "cluster", "source_id", "receiver", "storm", "ack",
+	"state", "severity", "cluster", "source_id", "receiver", "ack",
 	"since", "q", "sort", "limit", "cursor",
 }
 
@@ -165,7 +164,6 @@ func parseListGroups(r *http.Request) (groupsListRequest, error) {
 		Cluster:  p.CSV("cluster"),
 		SourceID: p.String("source_id", ""),
 		Receiver: p.String("receiver", ""),
-		Storm:    p.Bool("storm"),
 		Ack:      p.String("ack", ""),
 		Q:        p.String("q", ""),
 		Sort:     p.String("sort", domain.SortLastActivityDesc),
@@ -188,7 +186,6 @@ func parseListGroups(r *http.Request) (groupsListRequest, error) {
 		Severities:  q.Severity,
 		ClusterKeys: q.Cluster,
 		Receiver:    q.Receiver,
-		Storm:       q.Storm,
 		Since:       q.Since,
 		Query:       q.Q,
 	}
@@ -247,9 +244,6 @@ func groupFilterHash(q ListGroupsQuery) string {
 		"ack=" + q.Ack,
 		"q=" + q.Q,
 		"sort=" + q.Sort,
-	}
-	if q.Storm != nil {
-		parts = append(parts, "storm="+strconv.FormatBool(*q.Storm))
 	}
 	if q.Since != nil {
 		parts = append(parts, "since="+q.Since.UTC().Format(time.RFC3339Nano))

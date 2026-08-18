@@ -249,8 +249,7 @@ WITH a AS (
 ), g AS (
   SELECT
     COUNT(*) FILTER (WHERE state = 'open')   AS open,
-    COUNT(*) FILTER (WHERE state = 'closed') AS closed,
-    COUNT(*) FILTER (WHERE storm_mode)       AS storm
+    COUNT(*) FILTER (WHERE state = 'closed') AS closed
   FROM alert_groups
  WHERE org_id = $1 AND NOT synthetic
    AND last_activity_at >= $3 AND last_activity_at <= $4
@@ -288,7 +287,7 @@ WITH a AS (
  WHERE org_id = $1 AND deleted_at IS NULL
 )
 SELECT a.firing, a.suppressed, a.resolved, a.expired, a.acked, a.unacked, a.flapping,
-       g.open, g.closed, g.storm,
+       g.open, g.closed,
        d.sent, d.failed, d.dead, d.skipped, d.pending, d.ambiguous,
        s.healthy, s.degraded, s.unreachable, s.unknown, s.max_skew, s.divergence,
        c.healthy, c.degraded, c.auth_failed, c.config_invalid
@@ -310,7 +309,7 @@ func (r *StatsRepository) Overview(
 	err := r.db(ctx).QueryRow(ctx, overviewSQL, s.OrgID(), clusterArg, since, until).Scan(
 		&o.Alerts.Firing, &o.Alerts.Suppressed, &o.Alerts.Resolved, &o.Alerts.Expired,
 		&o.Alerts.Acked, &o.Alerts.Unacked, &o.Alerts.Flapping,
-		&o.Groups.Open, &o.Groups.Closed, &o.Groups.Storm,
+		&o.Groups.Open, &o.Groups.Closed,
 		&o.Deliveries.Sent, &o.Deliveries.Failed, &o.Deliveries.Dead,
 		&o.Deliveries.Skipped, &o.Deliveries.Pending, &o.Deliveries.Ambiguous,
 		&o.Sources.Healthy, &o.Sources.Degraded, &o.Sources.Unreachable, &o.Sources.Unknown,

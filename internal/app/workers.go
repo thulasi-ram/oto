@@ -95,7 +95,6 @@ func (c *Container) handlers() jobs.Handlers {
 		// cannot take this shape.
 		CaseReap:         c.reapCases,
 		GroupClose:       c.closeGroups,
-		FlapScore:        c.scoreFlaps,
 		PartitionsManage: c.managePartitions,
 		RetentionPrune:   c.pruneRetention,
 		CacheExpire:      c.expireCache,
@@ -239,6 +238,30 @@ func (c *Container) reapCases(ctx context.Context, job *jobs.Job[jobs.CaseReapAr
 // reapOneTenant is `case.reap` for exactly one org — the whole of a job
 // execution and the whole of its two-minute budget.
 func (c *Container) reapOneTenant(ctx context.Context, scope db.TenantScope) error {
+	// ⭐ THE DELAYED CLOSE RUNS FIRST, AND IT RIDES THIS TICK RATHER THAN A JOB KIND
+	// OF ITS OWN (migration 00057). It closes episodes whose upstream resolve has
+	// been held for the whole case retention window W — one case across a flap
+	// instead of one case per flap. It shares `case.reap`'s sixty-second cadence
+	// because it is the same question asked about the same table ("which open
+	// episodes should end now?"), and a second job kind would double the fan-out
+	// cost of a feature whose default is off.
+	//
+	// It is a no-op on every deployment that has set no W: the scan rides a partial
+	// index that is empty until a row carries a pending close.
+	closes, err := c.Alerts.CloseDue(ctx, scope, sweepLimit)
+	if err != nil {
+		return err
+	}
+	if closes.Closed > 0 || closes.Superseded > 0 {
+		c.Logger.InfoContext(ctx, "case.close_due",
+			slog.String("org_id", scope.OrgID().String()),
+			slog.Int("considered", closes.Considered),
+			slog.Int("closed", closes.Closed),
+			// Superseded counts flaps that landed in the still-open case, which is
+			// the feature working rather than a race lost.
+			slog.Int("superseded", closes.Superseded))
+	}
+
 	res, err := c.Alerts.Reap(ctx, scope, sweepLimit)
 	if err != nil {
 		return err
@@ -285,28 +308,13 @@ func (c *Container) closeGroups(ctx context.Context, job *jobs.Job[jobs.GroupClo
 		})
 }
 
-// scoreFlaps is `flap.score` (§B.6).
-//
-// Flapping is a VISIBLE state, never silent suppression: this marks alerts, it
-// does not mute them.
-func (c *Container) scoreFlaps(ctx context.Context, job *jobs.Job[jobs.FlapScoreArgs]) error {
-	return c.perTenantSweep(ctx, jobs.KindFlapScore, job.Args.TenantFanOut,
-		func(f jobs.TenantFanOut) db.JobArgs { return jobs.FlapScoreArgs{TenantFanOut: f} },
-		func(ctx context.Context, scope db.TenantScope) error {
-			res, err := c.Alerts.ScoreFlaps(ctx, scope, sweepLimit)
-			if err != nil {
-				return err
-			}
-			if res.FlappingStarted > 0 || res.FlappingEnded > 0 {
-				c.Logger.InfoContext(ctx, "flap.score",
-					slog.String("org_id", scope.OrgID().String()),
-					slog.Int("scored", res.Scored),
-					slog.Int("started", res.FlappingStarted),
-					slog.Int("ended", res.FlappingEnded))
-			}
-			return nil
-		})
-}
+// ⛔ THERE IS NO `scoreFlaps` HANDLER ANY MORE, BECAUSE THERE IS NO `flap.score`
+// JOB. It recomputed `alerts.flap_score` / `alerts.is_flapping` every five minutes
+// per tenant. The case retention window W (migration 00057) damps a flap at CASE
+// FORMATION, which left the score counting lifecycle events a damped flap no longer
+// appends — false exactly when the alert was flapping. The two columns are retired
+// IN PLACE and still readable; see `alerts/service/sweep.go` and ADR 0041,
+// Amendment 1.
 
 // managePartitionsSQL is the §D.11 maintenance entry point, which the schema
 // publishes as a function precisely so that nothing creates a partition by hand.

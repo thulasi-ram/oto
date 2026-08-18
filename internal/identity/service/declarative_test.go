@@ -69,11 +69,11 @@ func TestDeclarativeConfigBeatsAnOrgOverride(t *testing.T) {
 		t.Fatalf("config key %q: a badge with no key to go and edit is a wall", got)
 	}
 	// An untouched key is unaffected in both directions.
-	if got := org.Origin(domain.KeyStormThreshold); got != domain.OriginDefault {
+	if got := org.Origin(domain.KeyFlapThreshold); got != domain.OriginDefault {
 		t.Fatalf("an unmanaged, unwritten key reports %q, want default", got)
 	}
-	if org.Settings.StormThreshold != domain.DefaultStormThreshold {
-		t.Fatalf("an unmanaged key drifted: storm_threshold = %d", org.Settings.StormThreshold)
+	if org.Settings.FlapThreshold != domain.DefaultFlapThreshold {
+		t.Fatalf("an unmanaged key drifted: flap_threshold = %d", org.Settings.FlapThreshold)
 	}
 }
 
@@ -184,12 +184,12 @@ func TestAnUnmanagedKeyIsStillWritable(t *testing.T) {
 	})
 
 	org, err := svc.UpdateOrgSettings(context.Background(), scope,
-		domain.SettingsPatch{StormThreshold: intp(40)}, nil)
+		domain.SettingsPatch{FlapThreshold: intp(40)}, nil)
 	if err != nil {
 		t.Fatalf("a write to an unmanaged key was refused: %v", err)
 	}
-	if org.Settings.StormThreshold != 40 {
-		t.Fatalf("storm_threshold = %d, want 40", org.Settings.StormThreshold)
+	if org.Settings.FlapThreshold != 40 {
+		t.Fatalf("flap_threshold = %d, want 40", org.Settings.FlapThreshold)
 	}
 	// And the managed key is still forced in the returned org.
 	if org.Settings.RefireGrace != 600*time.Second {
@@ -210,9 +210,6 @@ func TestAllKeysCanBeSetDeclaratively(t *testing.T) {
 		domain.KeyFlapThreshold:                     5,
 		domain.KeyFlapWindow:                        1800,
 		domain.KeyFlapDigestInterval:                900,
-		domain.KeyStormThreshold:                    25,
-		domain.KeyStormWindow:                       60,
-		domain.KeyStormCooldown:                     600,
 		domain.KeyRawRetention:                      14,
 		domain.KeyEventRetention:                    13,
 		domain.KeyUnackedReminder:                   900,

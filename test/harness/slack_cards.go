@@ -80,14 +80,33 @@ type SlackCard struct {
 // SlackCards is the whole corpus, in the order a human should review it: the
 // card is posted, replied to, amended, broadcast, and finally closed.
 //
-// ⛔ THERE IS NO "SNOOZED" CARD, AND ITS ABSENCE IS THE ANSWER TO A QUESTION.
-// oto has snoozes (the `alert_snoozes` row, the expiry sweep in
-// `internal/app/workers.go`) but the Slack renderer has no `snoozed` Reason and
-// no `snoozed` CardState. What reaches a channel when a signal is quietened is
-// the SUPPRESSED card — `CardSuppressed`, "Silenced", `#dddddd` — which is
-// Alertmanager's silence, a different fact with a different cause. The
-// `root_silenced` capture below is that card. If a `snoozed` card is ever
-// wanted, it does not exist yet and no golden can pretend otherwise.
+// ⛔ THERE IS NO "SNOOZED" CARD HERE, AND THE REASON IS NOT THE ONE THIS COMMENT
+// USED TO GIVE.
+//
+// It said a snooze reaches a channel as the SUPPRESSED card — `CardSuppressed`,
+// "Silenced", `#dddddd` — and that `root_silenced` below is therefore the capture
+// of it. That is wrong, and it is wrong in the direction that hides a defect.
+// `SuppressedSnoozed` belongs to oto's OWN notification-suppression vocabulary and
+// is explicitly "NOT Alertmanager's `alert_cases.suppression_reason`"
+// (`internal/notification/domain/suppression.go`), so a snooze never moves a case
+// into `suppressed` and `CardSuppressed` never fires for one. `root_silenced` is
+// an Alertmanager silence and nothing else.
+//
+// What actually reaches a channel is a `snoozed` Reason — one of the only two a
+// snooze may not suppress, because "a snooze that cannot announce its own
+// beginning and end is the silent suppression §B.6 forbids" — carried by
+// `PlanFor`'s default treatment as `update_root` plus a thread reply, into a
+// renderer that has no branch for it. The result is a FIRING-coloured card with no
+// stated reason and a thread line reading ":information_source: *…* — :fire:
+// Firing", at the moment oto has agreed to stop talking.
+//
+// The captures for that live in the renderer's own goldens —
+// `internal/channels/render/slack/testdata/root_snoozed.golden.json` and
+// `reply_snoozed.golden.json` — and not here, because
+// `TestEachCardStateCarriesItsOwnColourForAHumanToVerify` permits two captures per
+// colour and the firing colour already has both (the root and the reminder). When
+// the snooze gets a state of its own it earns a slot here; until then the defect is
+// frozen where the colour budget does not apply.
 func SlackCards() []SlackCard {
 	return []SlackCard{
 		{
@@ -139,16 +158,17 @@ func SlackCards() []SlackCard {
 			View:    silencedView(),
 			Options: cardOptions(chdomain.ModeUpdateRoot),
 		},
-		{
-			Name: "storm_notice",
-			What: "The once-per-channel storm notice (ADR 0020 Amendment 1). It broadcasts, " +
-				"and it is the only broadcast permitted while damping is on.",
-			Mode:    chdomain.ModeBroadcastReply,
-			View:    stormNoticeView(),
-			Options: cardOptions(chdomain.ModeBroadcastReply),
-		},
 	}
 }
+
+// ⛔ THERE WAS AN EIGHTH CARD, `storm_notice`, AND IT IS DELETED (ADR 0042). It
+// rendered the once-per-channel announcement that oto had started withholding
+// per-alert replies. Storm damping is removed, so there is nothing to announce
+// and no `storm` reason to render: the card, `stormNoticeView` and the two
+// checked-in captures `test/fixtures/slack/storm_notice.{message,blockkit}.json`
+// went with it. `broadcast_unacked_reminder` is now the corpus's ONLY broadcast,
+// which is the truth §H.6 states — the unacked reminder is the one transition
+// that always leaves the thread.
 
 func cardOptions(mode chdomain.Mode) chdomain.RenderOptions {
 	return chdomain.RenderOptions{
@@ -324,8 +344,8 @@ func resolvedCardView() *chdomain.NotificationView {
 	// ⭐ THE CORPUS CAN HOST IT — it is the colour budget, not the colour rule,
 	// that is tight. `TestEachCardStateCarriesItsOwnColourForAHumanToVerify`
 	// refuses more than TWO captures per colour, and firing (root + reminder) and
-	// acknowledged (reply + update) are both full; resolved, silenced and storm
-	// each hold one, so a resolved-coloured eighth capture fits. Adding it means
+	// acknowledged (reply + update) are both full; resolved and silenced each hold
+	// one, so a resolved-coloured seventh capture fits. Adding it means
 	// regenerating the checked-in captures — `go test ./test/harness -run Corpus
 	// -update-slack-goldens` — which is why it is not in this change and is named
 	// here instead. Until it lands, the property is asserted in the renderer's own
@@ -372,22 +392,6 @@ func silencedView() *chdomain.NotificationView {
 	})
 	v.Notifications = 2
 	v.RenderedAt = cardUpstreamStart.Add(10*time.Minute + time.Second)
-	return v
-}
-
-// stormNoticeView is the once-per-channel damping announcement. ⛔ Storm mode is
-// a VISIBLE state, never silent suppression: the notice is how a channel learns
-// that oto has deliberately stopped talking.
-func stormNoticeView() *chdomain.NotificationView {
-	v := baseView()
-	v.Reason = "storm"
-	v.Group.StormMode = true
-	v.Group.FiringCount = 214
-	v.Group.TotalCount = 214
-	v.Group.LastActivityAt = cardUpstreamStart.Add(6 * time.Minute)
-	v.StormCount = 214
-	v.Notifications = 3
-	v.RenderedAt = cardUpstreamStart.Add(6 * time.Minute)
 	return v
 }
 

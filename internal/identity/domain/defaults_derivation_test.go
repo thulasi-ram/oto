@@ -418,18 +418,12 @@ func TestEveryMirroredDefaultAgreesWithIdentity(t *testing.T) {
 		t.Errorf("grouping/domain.DefaultGroupCloseDelay = %s, identity/domain says %s",
 			grouping.DefaultGroupCloseDelay, identity.DefaultGroupCloseDelay)
 	}
-	if grouping.DefaultStormThreshold != identity.DefaultStormThreshold {
-		t.Errorf("grouping/domain.DefaultStormThreshold = %d, identity/domain says %d",
-			grouping.DefaultStormThreshold, identity.DefaultStormThreshold)
-	}
-	if grouping.DefaultStormWindow != identity.DefaultStormWindow {
-		t.Errorf("grouping/domain.DefaultStormWindow = %s, identity/domain says %s",
-			grouping.DefaultStormWindow, identity.DefaultStormWindow)
-	}
-	if grouping.DefaultStormCooldown != identity.DefaultStormCooldown {
-		t.Errorf("grouping/domain.DefaultStormCooldown = %s, identity/domain says %s",
-			grouping.DefaultStormCooldown, identity.DefaultStormCooldown)
-	}
+	// ⛔ THE THREE STORM MIRRORS WERE HERE AND BOTH SIDES ARE NOW GONE. `grouping/domain`
+	// stopped declaring `DefaultStormThreshold`, `DefaultStormWindow` and
+	// `DefaultStormCooldown` when storm damping was removed; `identity/domain` and
+	// `platform/tuning` dropped theirs with the three settings keys (migration 00059),
+	// because a shipped default for a key nothing admits is a number no install can
+	// ever hold.
 
 	svc := lifecycle.DefaultSettings()
 	if svc.ResolveGrace != identity.DefaultResolveGrace {
@@ -473,9 +467,6 @@ var sharedTuningDefaults = map[string]bool{
 	"DefaultGroupCloseDelay": true,
 	"DefaultFlapThreshold":   true,
 	"DefaultFlapWindow":      true,
-	"DefaultStormThreshold":  true,
-	"DefaultStormWindow":     true,
-	"DefaultStormCooldown":   true,
 	"DefaultRawRetention":    true,
 	"DefaultEventRetention":  true,
 }

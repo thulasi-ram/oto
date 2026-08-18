@@ -309,7 +309,7 @@ func TestOverview_IsTheWholeDashboardAndNothingPersonal(t *testing.T) {
 
 	o = Overview{
 		Alerts:     AlertCounts{Firing: 2, Suppressed: 1, Resolved: 8, Expired: 3, Acked: 1, Unacked: 2, Flapping: 1},
-		Groups:     GroupCounts{Open: 1, Closed: 4, Storm: 0},
+		Groups:     GroupCounts{Open: 1, Closed: 4},
 		Deliveries: DeliveryCounts{Sent: 10, Failed: 1, Dead: 1},
 		Sources:    SourceCounts{Healthy: 1, MaxClockSkewMS: 1200},
 		Channels:   ChannelCounts{Healthy: 2},

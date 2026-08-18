@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,7 +42,8 @@ type Deps struct {
 }
 
 // Service owns durable AlertGroups: their §C.4 identity, their generations, their
-// membership, their rollups and their storm damping.
+// membership and their rollups. ⛔ It no longer damps anything: storm collapse was
+// this module's one damper and it is removed (domain/lifecycle.go).
 //
 // ⛔ An AlertGroup here is ONE GENERATION of ONE Alertmanager notification group,
 // and it OWNS EXACTLY ONE Slack thread. It is never a UI grouping — that is a
@@ -117,15 +117,21 @@ var errFanOutSettled = errors.New("the caller's idempotency key was already clai
 // Now is the service's clock reading, in UTC.
 func (s *Service) Now() time.Time { return s.clock.Now().UTC() }
 
-func (s *Service) policy(ctx context.Context, scope db.TenantScope) domain.StormPolicy {
+// policy reads the org's generation-lifecycle tuning, degrading to §D.1's default on
+// any failure: a settings lookup must never be able to stop a group being recomputed.
+//
+// ⛔ IT WAS `domain.StormPolicy` AND IT CARRIED FOUR NUMBERS. Three of them were the
+// storm knobs; storm damping is removed, so `group_close_delay_s` is the whole policy
+// now. The three `storm_*` keys REMAIN readable on `orgs.settings` and decide nothing.
+func (s *Service) policy(ctx context.Context, scope db.TenantScope) domain.LifecyclePolicy {
 	if s.settings == nil {
-		return domain.DefaultStormPolicy()
+		return domain.DefaultLifecyclePolicy()
 	}
-	p, err := s.settings.Storm(ctx, scope)
+	p, err := s.settings.GroupLifecycle(ctx, scope)
 	if err != nil {
-		s.log.WarnContext(ctx, "grouping: falling back to default storm policy",
+		s.log.WarnContext(ctx, "grouping: falling back to the default lifecycle policy",
 			"org_id", scope.OrgID(), "error", err)
-		return domain.DefaultStormPolicy()
+		return domain.DefaultLifecyclePolicy()
 	}
 	return p.Normalise()
 }
@@ -317,9 +323,8 @@ func (s *Service) Resolve(
 // Recompute re-derives EVERYTHING about a generation that is a projection of its
 // members, and it is the only entry point that does.
 //
-// It re-rolls the counts, the state and the severity, and it evaluates the §B.6
-// storm window. It is called ONCE PER GROUP PER BATCH by the ingest orchestrator,
-// and again by nothing else.
+// It re-rolls the counts, the state and the severity. It is called ONCE PER GROUP PER
+// BATCH by the ingest orchestrator, and again by nothing else.
 //
 // ⭐ ONCE PER BATCH, NOT ONCE PER MEMBER. A rollup is a PURE PROJECTION of the
 // members (see `recompute`), so a 500-alert Alertmanager batch that recomputed per
@@ -329,30 +334,25 @@ func (s *Service) Resolve(
 // Alertmanager's ~5-minute retry budget (ADR 0007, `ingestion/api/shed.go`) is the
 // only thing between a slow ingest and an alert that is lost silently.
 //
-// ⭐ THE STORM EVALUATION BELONGS HERE AND NOWHERE ELSE. It counts DISTINCT ALERTS
-// THAT JOINED INSIDE A WINDOW (§B.6) — it has never counted its own invocations —
-// so one evaluation over the settled membership reaches the same verdict 500
-// per-member evaluations would have. What it does not do is announce that verdict
-// 500 times: one transition, one `group.storm_started`, one `notify.evaluate` job,
-// and therefore exactly one storm notice per channel behind the
-// `channels.storm_notice_at` latch.
-//
-// ⚠️ A BATCH THAT ONLY RESOLVED THINGS NOW EVALUATES THE STORM TOO, where the old
-// `JoinMany`/`Recompute` split evaluated it only when something joined. It cannot
-// START a storm — that needs joins in the window, which a resolve-only batch does
-// not add — but it can END one whose cooldown has elapsed, on the batch that
-// proves the flood is over rather than on the next one to arrive. §B.6 says the
-// damper must be visible; ending it late is the same fault as hiding it.
+// ⛔ THE §B.6 STORM EVALUATION USED TO RUN HERE, once per batch, and it is deleted.
+// It counted DISTINCT ALERTS THAT JOINED INSIDE A WINDOW and, above the threshold,
+// moved the generation into `storm_mode`, appended `group.storm_started` and enqueued
+// a `notify.evaluate` carrying reason `storm` — which the notification layer turned
+// into ONE root card, no per-alert replies, and a once-per-channel notice that oto had
+// started withholding. All of it is gone: the collapse was oto deciding that many real
+// firings were not worth mentioning individually, and the thirty-nine replies it
+// dropped left no trace an operator could read. See the tombstone at the top of
+// `domain/lifecycle.go`. Nothing sets `alert_groups.storm_mode`, so it reads false.
 func (s *Service) Recompute(
 	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, at time.Time,
 ) (domain.Group, error) {
 	if at.IsZero() {
 		at = s.Now()
 	}
-	// One policy read for the batch: the tuning cannot change inside it, and
-	// re-reading `orgs.settings` per member was the same 500× waste in miniature.
-	policy := s.policy(ctx, scope)
-
+	// ⛔ THE PER-BATCH POLICY READ WENT WITH THE STORM EVALUATION. It existed so the
+	// tuning could not change inside one batch and so `orgs.settings` was not re-read
+	// per member — the same 500× waste in miniature. The rollup reads no org setting
+	// at all, so there is nothing left to read here; `CloseIdle` still reads its own.
 	var out domain.Group
 	err := s.tx.InTx(ctx, func(ctx context.Context) error {
 		g, material, err := s.recompute(ctx, scope, groupID, at)
@@ -361,13 +361,7 @@ func (s *Service) Recompute(
 		}
 		out = g
 
-		stormed, err := s.evaluateStorm(ctx, scope, g, at, policy)
-		if err != nil {
-			return err
-		}
-		out = stormed.group
-
-		if material || stormed.started || stormed.ended {
+		if material {
 			return s.publish(ctx, scope, out)
 		}
 		return nil
@@ -428,82 +422,32 @@ func (s *Service) recompute(
 // rather than spinning a worker.
 const groupMaxAttempts = 3
 
-// ------------------------------------------------------------------- storm
-
-type stormOutcome struct {
-	group   domain.Group
-	started bool
-	ended   bool
-}
-
-// evaluateStorm applies §B.6 storm collapse.
+// ⛔⛔ `stormOutcome` AND `evaluateStorm` WERE HERE AND ARE DELETED, along with the
+// `SetStorm` write, the `DistinctJoinsSince` count, the `group.storm_started` /
+// `group.storm_ended` timeline rows and the `notify.evaluate` job carrying reason
+// `storm`.
 //
-// ⭐ Storm mode is a VISIBLE UI STATE, never silent suppression. Entering it does
-// not hide a single alert: every case still opens, closes and appears in the
-// list and on the timeline. What collapses is oto's OWN chatter — one root message
-// with a count and a link instead of N thread replies — and the fact that oto went
-// quiet is itself posted, recorded and shown.
-func (s *Service) evaluateStorm(
-	ctx context.Context, scope db.TenantScope, g domain.Group, at time.Time, p domain.StormPolicy,
-) (stormOutcome, error) {
-	joins, lastJoin, err := s.members.DistinctJoinsSince(ctx, scope, g.ID(), at.Add(-p.Window))
-	if err != nil {
-		return stormOutcome{}, err
-	}
-	decision := domain.EvaluateStorm(g, joins, lastJoin, at, p)
-	next, changed := domain.ApplyStorm(g, decision)
-	if !changed {
-		return stormOutcome{group: g}, nil
-	}
-	// The storm verdict was derived from `g`, so `g`'s version is what it is
-	// entitled to overwrite. A lost compare-and-set means the membership moved
-	// while the window was being counted; the next `Recompute` re-evaluates
-	// against the newer generation rather than announcing a damping transition
-	// for counts that no longer exist. (It said "the caller's next Join" until
-	// 00051 made membership derived and deleted `Join` — see the tombstone above.)
-	if err := s.groups.SetStorm(ctx, scope, next, g.StateVersion()); err != nil {
-		return stormOutcome{}, err
-	}
-
-	typ := kernel.EventGroupStormEnded
-	summary := "Storm mode ended: per-alert replies resume"
-	reason := notifyReasonStorm
-	if decision.Action == domain.StormStart {
-		typ = kernel.EventGroupStormStarted
-		summary = "Storm mode: collapsing this group to one message"
-	}
-	if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
-		Type:    typ,
-		GroupID: next.ID(),
-		Summary: summary,
-		Payload: map[string]any{
-			"distinct_alerts": decision.DistinctJoins,
-			"threshold":       decision.Threshold,
-			"window_s":        int64(decision.Window.Seconds()),
-			"state_version":   next.StateVersion(),
-		},
-		// `.String()` because the §C.8 key is a `TEXT` column, and the type is now
-		// a value object rather than the raw string it used to concatenate. The key
-		// bytes are unchanged, which matters: a different key would unclaim every
-		// storm transition already recorded.
-		DedupeKey:  "group:" + next.ID().String() + ":storm:" + typ.String() + ":" + strconv.Itoa(next.StateVersion()),
-		OccurredAt: at,
-	}); err != nil {
-		return stormOutcome{}, err
-	}
-
-	// The channel is TOLD it is going quiet. A damper that does not announce
-	// itself is the silent suppression §B.6 forbids.
-	if err := s.enqueueNotify(ctx, next, reason); err != nil {
-		return stormOutcome{}, err
-	}
-
-	return stormOutcome{
-		group:   next,
-		started: decision.Action == domain.StormStart,
-		ended:   decision.Action == domain.StormEnd,
-	}, nil
-}
+// ⭐ WHAT IT DID. It counted distinct alerts that joined inside `storm_window`, and
+// above `storm_threshold` it flipped `alert_groups.storm_mode`, appended a timeline
+// event echoing the policy IN FORCE (so a reader saw the numbers that applied, not the
+// ones configured later), and announced the transition — because a damper that does
+// not announce itself is exactly the silent suppression §B.6 forbids. It ended after
+// `storm_cooldown` without a new member, and it ran on resolve-only batches too so a
+// storm ended on the batch that proved the flood was over.
+//
+// ⭐⭐ AND WHY EVERY LINE OF THAT WAS THE WRONG SHAPE. The announcement made the
+// GROUP's collapse visible; it did not make the thirty-nine withheld replies visible,
+// and those are what an operator would have read. So a suppressed notification stayed
+// indistinguishable from a signal that never fired. The deeper fault is that a storm
+// is many DIFFERENT alerts arriving together and the object that owns that is an
+// INCIDENT (`correlation`, DEFERRED-POST-V1): with no such object, the detector had
+// nowhere to put its verdict and put it in the notification layer, which is how it
+// became a damper at all. `domain/lifecycle.go` carries the full tombstone.
+//
+// ⛔ `alert_groups.storm_mode` AND `storm_since` STAY, INERT. Nothing sets them and
+// `Close` still clears them on a generation that predates the removal. Dropping the
+// columns, `groups_storm_ck` and the three `storm_*` settings keys is the deferred,
+// breaking half of this change.
 
 // ------------------------------------------------------------------- close
 
@@ -602,13 +546,18 @@ func (s *Service) publish(ctx context.Context, scope db.TenantScope, g domain.Gr
 		return nil
 	}
 	payload, err := json.Marshal(map[string]any{
-		"group_id":      g.ID(),
-		"state":         g.State().String(),
-		"generation":    g.Generation(),
-		"firing":        g.Counts().Firing,
-		"total":         g.Counts().Total,
-		"acked":         g.Counts().Acked,
-		"storm_mode":    g.StormMode(),
+		"group_id":   g.ID(),
+		"state":      g.State().String(),
+		"generation": g.Generation(),
+		"firing":     g.Counts().Firing,
+		"total":      g.Counts().Total,
+		"acked":      g.Counts().Acked,
+		// ⛔ `storm_mode` WAS THE NEXT KEY AND IT IS GONE (migration 00059). It rode
+		// the frame as a permanent `false` after storm damping was removed, on the
+		// argument that `group.upserted` is a published contract (SPEC §J). The
+		// column it mirrored no longer exists, and a published field that can only
+		// ever say one thing is not a contract, it is a decoy: a reader wiring a UI
+		// against it would be filtering on an axis oto does not have.
 		"state_version": g.StateVersion(),
 	})
 	if err != nil {
@@ -617,8 +566,10 @@ func (s *Service) publish(ctx context.Context, scope db.TenantScope, g domain.Gr
 	return s.stream.Append(ctx, scope, StreamGroupUpserted, g.ID(), payload)
 }
 
-// notifyReasonStorm is the §H.6 Reason for a storm-mode transition.
-const notifyReasonStorm = "storm"
+// ⛔ `notifyReasonStorm` WAS HERE AND IS DELETED. It was the §H.6 Reason a storm-mode
+// transition enqueued, and `notification/domain.ReasonStorm` is deleted too:
+// migration 00060 narrows `notifications_reason_ck` to the eighteen that remain, so
+// the value is not decodable either. Nothing in this module may name it again.
 
 // enqueueNotify queues policy evaluation IN THE CALLER'S TRANSACTION — the
 // transactional outbox of ADR 0001.

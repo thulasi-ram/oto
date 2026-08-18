@@ -48,7 +48,6 @@ type Envelope struct {
 	Actions     []Action              `json:"actions,omitempty"`
 	Links       map[string]string     `json:"links,omitempty"`
 	Previous    map[string]string     `json:"previous,omitempty"`
-	StormCount  int                   `json:"storm_count,omitempty"`
 	Summary     string                `json:"summary"`
 }
 
@@ -75,7 +74,6 @@ type Group struct {
 	ExpiredCount    int               `json:"expired_count"`
 	TotalCount      int               `json:"total_count"`
 	AckedCount      int               `json:"acked_count"`
-	StormMode       bool              `json:"storm_mode"`
 	FirstSeenAt     time.Time         `json:"first_seen_at"`
 	LastActivityAt  time.Time         `json:"last_activity_at"`
 	ClusterKey      string            `json:"cluster_key,omitempty"`

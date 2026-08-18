@@ -83,13 +83,13 @@ func (s *Service) Me(ctx context.Context, scope db.TenantScope, p authn.Principa
 // GetOrg returns the caller's org.
 //
 // ⭐ THIS IS THE HOT PATH FOR EVERY TUNING KNOB. `internal/app`'s `orgSettings`
-// adapter calls it once per lifecycle evaluation and once per storm evaluation,
+// adapter calls it once per lifecycle evaluation and once per group-close sweep,
 // and it goes STRAIGHT TO POSTGRES: there is no memo, no TTL and no process-local
 // copy anywhere between here and the row. That is what makes a settings change
 // take effect on the very next evaluation, in every pod, with no restart and no
 // invalidation message — and it is a property worth defending. If a cache is ever
 // added here it MUST carry a bounded TTL, because the failure it would introduce
-// is the one nobody notices: an operator raises `storm_threshold` during an
+// is the one nobody notices: an operator raises `resolve_grace_s` during an
 // incident, watches nothing change, and has no way to tell whether the setting is
 // wrong or merely stale.
 //

@@ -68,9 +68,6 @@ type OrgSettingsDTO struct {
 	FlapThreshold       int `json:"flap_threshold"`
 	FlapWindowS         int `json:"flap_window_s"`
 	FlapDigestIntervalS int `json:"flap_digest_interval_s"`
-	StormThreshold      int `json:"storm_threshold"`
-	StormWindowS        int `json:"storm_window_s"`
-	StormCooldownS      int `json:"storm_cooldown_s"`
 	RawRetentionDays    int `json:"raw_retention_days"`
 	EventRetentionMonth int `json:"event_retention_months"`
 

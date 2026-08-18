@@ -271,13 +271,23 @@ type DeliverySummaryDTO struct {
 
 // NotificationDTO renders `NotificationDTO` for `listAlertNotifications`.
 //
-// `policy_id` and `updated_at` are NULLABLE and are null when the read model has
-// nothing to report — never substituted from a neighbouring field.
+// `group_id`, `policy_id` and `updated_at` are NULLABLE and are null when the read
+// model has nothing to report — never substituted from a neighbouring field.
+//
+// ⛔ `group_id` IS A POINTER BECAUSE THE SCHEMA IS NULLABLE, AND THE SCHEMA IS
+// NULLABLE BECAUSE `notifications.group_id` LOST ITS NOT NULL IN MIGRATION 00058:
+// a digest is a window over a namespace, spans many generations and has no single
+// thread (`notifications_target_ck`). This endpoint only ever lists group-scoped
+// intents, so it always has an id to send — but a value type here would serialise
+// the ZERO UUID for anything that does not, and an id that resolves to nothing is
+// the same class of lie as silence that looks like "no alert". Both Go structs
+// behind the one `NotificationDTO` schema are shaped like the schema, or the
+// schema describes only one of them.
 type NotificationDTO struct {
 	ID               uuid.UUID           `json:"id"`
 	SubjectKind      string              `json:"subject_kind"`
 	SubjectID        uuid.UUID           `json:"subject_id"`
-	GroupID          uuid.UUID           `json:"group_id"`
+	GroupID          *uuid.UUID          `json:"group_id"`
 	AlertID          *uuid.UUID          `json:"alert_id"`
 	CaseID           *uuid.UUID          `json:"case_id"`
 	PolicyID         *uuid.UUID          `json:"policy_id"`
@@ -382,7 +392,69 @@ type AlertRollupDTO struct {
 	LastSeenAt     time.Time        `json:"last_seen_at"`
 }
 
+// CasePolicyDTO renders `CasePolicyDTO`: one row of `case_policy_config` — the
+// CASE RETENTION WINDOW W for one (namespace, alertname) pair.
+//
+// ⭐⭐ W MOVES *WHEN* A CASE CLOSES AND NOTHING ELSE. A case whose alert has
+// resolved stays open for W and closes only once the alert has stayed resolved for
+// W, so a re-fire inside W lands in the still-open episode instead of opening the
+// next one. Six flaps become ONE case, one notification and one thread reply — the
+// noise never exists, instead of existing and being withheld at delivery.
+//
+// ⛔ IT IS A DELAYED CLOSE AND NEVER A REOPEN (ADR 0040). Nothing on this DTO can
+// resurrect a closed episode, and no field here will ever be able to.
+type CasePolicyDTO struct {
+	ID uuid.UUID `json:"id"`
+	// Namespace is the ADR 0038 axis. The EMPTY STRING is the absent-namespace
+	// partition and not a missing value: Prometheus treats an absent and an empty
+	// namespace as equivalent, so they are one partition and this is how it is
+	// spelled.
+	Namespace string `json:"namespace"`
+	Alertname string `json:"alertname"`
+	// RetentionWindowSeconds is W. Zero means the case closes on the resolve, which
+	// is what oto did before this table existed, and is what an absent row means too.
+	RetentionWindowSeconds int32 `json:"retention_window_seconds"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // ------------------------------------------------------------------ requests
+
+// CreateCasePolicyRequest is the body of `POST /case-policies`.
+//
+// ⭐ `namespace` IS OPTIONAL AND `alertname` IS NOT, which is the table's own
+// asymmetry: every Alert has an alertname (§C.2) and every group key hashes it, so
+// a row without one would be an org-wide default this table deliberately does not
+// offer. An omitted `namespace` is the absent-namespace partition — the one every
+// alert that carries no `namespace` label falls into.
+//
+// The two together are the row's identity under `case_policy_axes_uniq`: a second
+// create for the same pair is a `409`, and the way to change a window is a PATCH.
+type CreateCasePolicyRequest struct {
+	// Namespace is trimmed to the partition it will be stored in. There is no
+	// `min`: "" is a legal, meaningful value.
+	Namespace string `json:"namespace,omitempty" validate:"omitempty,max=1024"`
+	Alertname string `json:"alertname"           validate:"required,notblank,min=1,max=1024"`
+	// RetentionWindowSeconds mirrors `case_policy_window_ck`: 0 to 86400. Zero is
+	// legal and is not a no-op request — it records "no window here, on purpose",
+	// which an absent row cannot distinguish from "nobody has decided".
+	RetentionWindowSeconds int32 `json:"retention_window_seconds" validate:"min=0,max=86400"`
+}
+
+// UpdateCasePolicyRequest is the body of `PATCH /case-policies/{id}`.
+//
+// ⛔ IT CARRIES NO `namespace` AND NO `alertname`, AND MUST NEVER GAIN EITHER.
+// The pair is the row's identity; moving a window from one pair to another is
+// deleting one rule and writing a second, and a PATCH that could do it silently
+// would let an operator believe a window applies to an alertname it no longer
+// names. A field that cannot be sent cannot be sent by accident.
+type UpdateCasePolicyRequest struct {
+	RetentionWindowSeconds *int32 `json:"retention_window_seconds,omitempty" validate:"omitempty,min=0,max=86400"`
+}
+
+// IsEmpty reports whether the request asks for nothing.
+func (r UpdateCasePolicyRequest) IsEmpty() bool { return r.RetentionWindowSeconds == nil }
 
 // AckRequest is the body of `POST /cases/{id}/ack` and of the group fan-out that
 // shares it.
@@ -638,7 +710,7 @@ type TimelineQuery struct {
 	// "give me everything" is always expressible. It must never fall below that
 	// enum: a ceiling under it refuses a caller for naming a type the server is
 	// already writing.
-	Type   []string   `json:"type"      validate:"omitempty,max=36,unique"`
+	Type   []string   `json:"type"      validate:"omitempty,max=32,unique"`
 	Since  *time.Time `json:"since"`
 	Until  *time.Time `json:"until"`
 	Order  string     `json:"order"     validate:"omitempty,oneof=asc desc"`

@@ -349,16 +349,9 @@ func TestNewGroupRejections(t *testing.T) {
 			},
 			code: "field_order",
 		},
-		{
-			name:   "storm_mode without storm_since",
-			mutate: func(p *domain.GroupParams) { p.StormMode = true },
-			code:   "field_order",
-		},
-		{
-			name:   "storm_since without storm_mode",
-			mutate: func(p *domain.GroupParams) { p.StormSince = baseTime },
-			code:   "field_order",
-		},
+		// ⛔ TWO CASES WERE HERE AND ARE DELETED WITH `groups_storm_ck`: "storm_mode
+		// without storm_since" and its mirror. The constraint paired two columns that
+		// migration 00059 dropped, so there is no half-set state left to refuse.
 	}
 
 	for _, tc := range cases {
@@ -401,13 +394,6 @@ func TestNewGroupAcceptances(t *testing.T) {
 			},
 		},
 		{
-			name: "a storming generation",
-			mutate: func(p *domain.GroupParams) {
-				p.StormMode = true
-				p.StormSince = baseTime
-			},
-		},
-		{
 			name:   "a reconciler-sourced group has no receiver",
 			mutate: func(p *domain.GroupParams) { p.Receiver = "" },
 		},
@@ -440,16 +426,12 @@ func TestNewGroupTrimsTitleAndNormalisesToUTC(t *testing.T) {
 	p.Title = "  KubePodCrashLooping  "
 	p.FirstSeenAt = baseTime.In(tokyo)
 	p.LastActivityAt = baseTime.Add(time.Minute).In(tokyo)
-	p.StormMode = true
-	p.StormSince = baseTime.In(tokyo)
-
 	g, err := domain.NewGroup(p)
 	require.NoError(t, err)
 
 	assert.Equal(t, "KubePodCrashLooping", g.Title())
 	assert.Equal(t, time.UTC, g.FirstSeenAt().Location())
 	assert.Equal(t, time.UTC, g.LastActivityAt().Location())
-	assert.Equal(t, time.UTC, g.StormSince().Location())
 	assert.True(t, g.FirstSeenAt().Equal(baseTime))
 
 	// An unset instant stays unset rather than becoming the UTC epoch.
@@ -498,8 +480,6 @@ func TestGroupAccessorsRoundTripTheConstructor(t *testing.T) {
 	assert.Equal(t, p.Severity, g.Severity())
 	assert.Equal(t, p.StateVersion, g.StateVersion())
 	assert.Equal(t, p.Counts, g.Counts())
-	assert.False(t, g.StormMode())
-	assert.True(t, g.StormSince().IsZero())
 	assert.Equal(t, p.LastNotificationReason, g.LastNotificationReason())
 	assert.True(t, g.IsOpen())
 }
@@ -753,18 +733,9 @@ func TestClose(t *testing.T) {
 		assert.Equal(t, 5, next.StateVersion())
 	})
 
-	t.Run("storm mode does not survive the close", func(t *testing.T) {
-		t.Parallel()
-		g := mustGroup(t, func(p *domain.GroupParams) {
-			p.Counts = domain.Counts{Resolved: 2, Total: 2}
-			p.StormMode = true
-			p.StormSince = baseTime
-		})
-		next, err := g.Close(baseTime.Add(time.Minute))
-		require.NoError(t, err)
-		assert.False(t, next.StormMode(), "a storm on a closed generation is a storm nobody can act on")
-		assert.True(t, next.StormSince().IsZero())
-	})
+	// ⛔ "storm mode does not survive the close" WAS HERE. It proved `Close` cleared
+	// the storm pair, because a storm on a closed generation is a storm nobody can
+	// act on. Migration 00059 dropped both columns, so there is nothing to clear.
 
 	t.Run("closed_at is clamped forward to first_seen_at", func(t *testing.T) {
 		t.Parallel()
@@ -817,9 +788,9 @@ func TestClose(t *testing.T) {
 		next, err := g.Close(baseTime.Add(time.Minute))
 		require.NoError(t, err)
 
-		// groups_closed_ck and groups_storm_ck, re-proved on the produced value.
+		// groups_closed_ck, re-proved on the produced value. `groups_storm_ck` was
+		// re-proved on the next line and is gone with its columns (migration 00059).
 		assert.Equal(t, next.State() == domain.StateClosed, !next.ClosedAt().IsZero())
-		assert.Equal(t, next.StormMode(), !next.StormSince().IsZero())
 		assert.False(t, next.LastActivityAt().Before(next.FirstSeenAt()))
 		assert.False(t, next.ClosedAt().Before(next.FirstSeenAt()))
 	})

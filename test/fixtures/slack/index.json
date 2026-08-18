@@ -66,19 +66,6 @@
       "wire_bytes": 3983
     },
     {
-      "attachment_color": "#7b1fa2",
-      "blocks": 1,
-      "exact_wire_payload": "storm_notice.message.json",
-      "fallback": ":zap: Storm damping on for: CheckoutErrorRateHigh on eu-west-1. Severity critical, team payments, storm damping on since 18:02 UTC.",
-      "mode": "broadcast_reply",
-      "name": "storm_notice",
-      "paste_into_builder": "storm_notice.blockkit.json",
-      "reason": "storm",
-      "rendered_hash": "53b2114bf1351fee400198e08c577bc1e25a69ca82950067987c39fd35d2508d",
-      "what": "The once-per-channel storm notice (ADR 0020 Amendment 1). It broadcasts, and it is the only broadcast permitted while damping is on.",
-      "wire_bytes": 786
-    },
-    {
       "attachment_color": "#daa038",
       "blocks": 1,
       "exact_wire_payload": "thread_reply_acked.message.json",

@@ -15,9 +15,14 @@ import (
 // > time T. It changes nothing in the cluster, nothing upstream, and nothing
 // > about the signal's state.
 //
-// Storm collapse (§B.6) and flap damping are oto's AUTOMATIC defences against
-// its own noise; snooze is the MANUAL one. Without it the only quiet button a
-// user has is muting the Slack channel — which also hides the real incident.
+// ⭐⭐ SNOOZE IS NOW THE ONLY ONE. Storm collapse and the flap digest were oto's
+// AUTOMATIC defences against its own noise (§B.6) and both are gone: the flap damper
+// moved to case formation (migration 00057) and storm damping was removed outright.
+// What survives is the MANUAL one, and that is the right survivor — a human asking for
+// quiet is an explanation an operator can act on, where "oto decided this firing was not
+// worth mentioning" makes a suppressed notification indistinguishable from a signal that
+// never fired. Without snooze the only quiet button a user has is muting the Slack
+// channel, which also hides the real incident.
 //
 // ⛔ THE THREE THINGS SNOOZE IS NOT, and each is a bug that has been written
 // before:
@@ -520,10 +525,6 @@ const (
 	SuppressorNoPolicy = "no_policy"
 	// SuppressorSnoozed — a human asked oto to be quiet (§B.8).
 	SuppressorSnoozed = "snoozed"
-	// SuppressorStorm — storm collapse is holding the group to one message.
-	SuppressorStorm = "storm"
-	// SuppressorFlapping — flap damping is in update-only mode.
-	SuppressorFlapping = "flapping"
 	// SuppressorThrottled — the per-subject rate cap.
 	SuppressorThrottled = "throttled"
 	// SuppressorVerbosity — the channel does not want this class of fact.
@@ -536,21 +537,30 @@ const (
 // SuppressorPrecedence is the FIXED order of SPEC §B.8.2: when several reasons
 // apply, the FIRST MATCH is the one recorded.
 //
-//	channel_disabled -> no_policy -> snoozed -> storm -> flapping
+//	channel_disabled -> no_policy -> snoozed
 //	                 -> throttled -> verbosity -> duplicate_render
 //
-// Snooze outranks the automatic dampers because it is a DELIBERATE HUMAN ACT and
+// Snooze outranked the automatic dampers because it is a DELIBERATE HUMAN ACT and
 // therefore the most actionable explanation: "you snoozed this" tells a user what
-// to do, where "flapping" only tells them what happened. It sits below
+// to do, where a damper only told them what happened. It sits below
 // channel_disabled and no_policy because those two mean the message had nowhere
 // to go at all, which is a truer account of why nothing was sent.
+//
+// ⛔ `storm` AND `flapping` HELD THE TWO RANKS BETWEEN `snoozed` AND `throttled`,
+// AND BOTH ARE DELETED. Storm damping is removed (ADR 0042) and flap damping moved
+// to case formation (migration 00057); migration 00059 narrowed
+// `notifications_suppmap_ck` to the six that remain and migration 00060 does the
+// same to `notifications_reason_ck`, neither rewriting a row. They were briefly
+// kept as retired ranks so a binary meeting an older row could still SORT it — the
+// maintainer has authorised the database reset that answers the 23514, so there is
+// no such row and no such binary. What is left is settled rather than argued: every
+// reason here is a human's request, an absent destination, a provider's rate limit
+// or "nothing changed", and not one is oto's own judgement about a signal.
 func SuppressorPrecedence() []string {
 	return []string{
 		SuppressorChannelDisabled,
 		SuppressorNoPolicy,
 		SuppressorSnoozed,
-		SuppressorStorm,
-		SuppressorFlapping,
 		SuppressorThrottled,
 		SuppressorVerbosity,
 		SuppressorDuplicateRender,

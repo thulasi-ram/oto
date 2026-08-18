@@ -78,7 +78,7 @@ const groupFactsSQL = `
 SELECT g.id, g.group_key, g.generation, coalesce(g.source_group_key,''), g.receiver,
        g.group_labels, g.title, g.state, coalesce(g.severity,''), g.state_version,
        g.firing_count, g.suppressed_count, g.resolved_count, g.expired_count,
-       g.total_count, g.acked_count, g.storm_mode, g.storm_since,
+       g.total_count, g.acked_count,
        coalesce(g.last_notification_reason,''),
        CASE WHEN s.kind = 'alertmanager' THEN coalesce(s.base_url,'') ELSE '' END,
        g.first_seen_at, g.last_activity_at, g.closed_at
@@ -302,7 +302,7 @@ SELECT type, occurred_at, coalesce(actor_label,'')
                 -- vocab:allow -- pre-ADR-0036 spellings of the same eight facts, still on disk for thirteen months (alerts/domain.legacySpellings, migration 00052). Dropping them here would empty the state trail of any generation that opened before the rename.
                 'occurrence.opened','occurrence.reopened','occurrence.suppressed','occurrence.unsuppressed',
                 'occurrence.resolved','occurrence.expired','occurrence.acknowledged','occurrence.unacknowledged',
-                'group.opened','group.closed','group.storm_started','group.storm_ended')
+                'group.opened','group.closed')
  ORDER BY recorded_at DESC, id DESC
  LIMIT $3`
 
@@ -406,11 +406,26 @@ SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
 // outage lasted. Suppressed intents are excluded: they are notifications oto
 // decided NOT to send, and counting them would report noise that never happened.
 //
-// `notif_subject_idx (org_id, subject_kind, subject_id, …)` serves it.
+// ⭐ IT KEYS ON `group_id`, THE DELIVERY TARGET, AND NOT ON THE SUBJECT. "How
+// loud was this thread" must count the acks, snoozes and comments that were
+// posted into it, and since migration 00056 those rows declare `case` or `alert`
+// as their subject. The old `subject_kind = 'alert_group' AND subject_id = $2`
+// predicate only looked total because every row said `alert_group`; the number a
+// user reads would now be smaller than what they watched arrive. `group_id` is
+// NOT NULL for every Reason and is the column the thread itself is keyed by, so
+// it is the complete key — and it stays correct when the next SubjectKind is
+// allocated in reason.go.
+//
+// ⚠️ NO INDEX SERVES THIS EXACTLY. It used to ride `notif_subject_idx (org_id,
+// subject_kind, subject_id, …)`; on `group_id` the planner falls back to
+// `notif_created_idx (org_id, created_at)` plus a filter. It is one count per
+// delivery snapshot, not the hot path, and adding an index is a migration this
+// change deliberately does not make: `notif_group_idx (org_id, group_id)` is the
+// one to add if it ever shows up in a plan.
 const groupNotificationsSQL = `
 SELECT count(*)
   FROM notifications
- WHERE org_id = $1 AND subject_kind = 'alert_group' AND subject_id = $2
+ WHERE org_id = $1 AND group_id = $2
    AND status <> 'suppressed'`
 
 const enrichmentsSQL = `
@@ -585,7 +600,7 @@ func (r *SnapshotRepository) readGroup(
 		&g.ID, &g.GroupKey, &g.Generation, &g.SourceGroupKey, &g.Receiver,
 		&labels, &g.Title, &g.State, &g.Severity, &g.StateVersion,
 		&g.FiringCount, &g.SuppressedCount, &g.ResolvedCount, &g.ExpiredCount,
-		&g.TotalCount, &g.AckedCount, &g.StormMode, &g.StormSince,
+		&g.TotalCount, &g.AckedCount,
 		&g.NotificationReason, &g.AlertmanagerURL,
 		&g.FirstSeenAt, &g.LastActivityAt, &g.ClosedAt,
 	)
@@ -593,11 +608,16 @@ func (r *SnapshotRepository) readGroup(
 		return mapErr(err, "group_not_found", "alert group")
 	}
 	g.GroupLabels = decodeStringMap(labels)
-	if g.StormMode {
-		// The storm card counts the alerts that joined this generation. Anything
-		// else would understate a collapse that is, by definition, about volume.
-		g.StormCount = g.TotalCount
-	}
+
+	// ⛔ `StormCount` WAS DERIVED HERE, FROM `g.storm_mode`, AND BOTH ARE GONE
+	// (migration 00059). The storm card counted the alerts that joined a collapsed
+	// generation. `alert_groups.storm_mode` and `storm_since` have left the table —
+	// they were LIVE STATE about a generation, and live state that no writer can set
+	// again is not history worth keeping. `group.storm_started` and
+	// `group.storm_ended` are also gone from `groupTrailSQL` above: the two event
+	// types are DELETED from `alerts/domain` and migration 00060 narrows
+	// `ev_type_ck` to refuse the spellings, so no row can hold either and the trail
+	// no longer asks for them.
 
 	// The upstream start is read separately and DEGRADES to zero rather than
 	// failing the snapshot: a card that renders "Started — unknown" is a small

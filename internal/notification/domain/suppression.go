@@ -2,7 +2,7 @@ package domain
 
 // SuppressedReason is why oto communicated nothing — the closed set of
 // `notifications.suppressed_reason` (notifications_suppmap_ck, as widened by
-// migration 00018).
+// migration 00018 and narrowed to SIX by migration 00059).
 //
 // This is OTO'S OWN notification-suppression vocabulary. It is NOT
 // Alertmanager's `alert_cases.suppression_reason`, which mirrors the four
@@ -26,10 +26,6 @@ const (
 	// SuppressedSnoozed: a human asked oto to be quiet about this signal until a
 	// fixed time (§B.8).
 	SuppressedSnoozed SuppressedReason = "snoozed"
-	// SuppressedStorm: the group collapsed under storm damping (§B.6).
-	SuppressedStorm SuppressedReason = "storm"
-	// SuppressedFlapping: the alert is flapping and replies are coalesced.
-	SuppressedFlapping SuppressedReason = "flapping"
 	// SuppressedThrottled: the policy's per-subject rate cap was reached.
 	SuppressedThrottled SuppressedReason = "throttled"
 	// SuppressedVerbosity: every destination's verbosity dropped this fact.
@@ -47,19 +43,36 @@ const (
 //	channel_disabled  there is nowhere to send; nothing else can even be asked
 //	no_policy         nothing routed it; still nowhere to send
 //	snoozed           a DELIBERATE HUMAN ACT, and therefore the most actionable
-//	                  explanation a reader can be given. It outranks every
+//	                  explanation a reader can be given. It outranked every
 //	                  automatic damper below it for that reason alone.
-//	storm             an automatic damper, group-scoped
-//	flapping          an automatic damper, alert-scoped
 //	throttled         a policy rate cap
 //	verbosity         a per-destination volume preference
 //	duplicate_render  nothing changed; the cheapest and least interesting answer
+//
+// ⭐⭐ TWO RANKS WERE DELETED FROM BETWEEN `snoozed` AND `throttled`, AND THE CHAIN
+// IS WORTH READING TWICE FOR WHAT IS LEFT. `storm` and `flapping` were the only
+// values that were ever OTO'S OWN OPINION about a signal — oto judging a real
+// firing not worth mentioning, which is the one suppression an operator cannot
+// distinguish from a signal that never fired. Every value that remains is either
+// the ABSENCE OF A DESTINATION (`channel_disabled`, `no_policy`), A HUMAN'S
+// EXPLICIT REQUEST (`snoozed`, `verbosity`), THE WORLD'S CONSTRAINT (`throttled`),
+// or NOTHING TO SAY (`duplicate_render`). Not one of them is a judgement, and
+// nothing may add one back.
+//
+// ⛔ THEY ARE DELETED RATHER THAN RETIRED, WHICH IS A CHANGE OF MIND THIS FILE
+// USED TO ARGUE THE OTHER WAY. The retirement bargain — keep the value declared so
+// a DECODER meeting an older row can render it — only buys something when such a
+// row can exist. Migration 00059 narrowed `notifications_suppmap_ck` to six and
+// migration 00060 narrows `notifications_reason_ck` the same way, and neither
+// performs an `UPDATE`: a database holding either value REFUSES the migration
+// outright. The maintainer has answered that with `just db-reset` on the only
+// database that exists, so there is no row left to decode and no binary left to
+// have written one. A value kept for a reader that cannot exist is not caution, it
+// is a vocabulary entry the next person has to rule out.
 var suppressorOrder = []SuppressedReason{
 	SuppressedChannelDisabled,
 	SuppressedNoPolicy,
 	SuppressedSnoozed,
-	SuppressedStorm,
-	SuppressedFlapping,
 	SuppressedThrottled,
 	SuppressedVerbosity,
 	SuppressedDuplicateRender,

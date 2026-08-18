@@ -39,10 +39,7 @@ type NotificationView struct {
 	// the receipt because "how loud was this?" is a question about oto's own
 	// behaviour that only oto can answer.
 	Notifications int
-	// StormCount is greater than zero when the group is in storm mode. Storm mode
-	// is a VISIBLE state, never silent suppression.
-	StormCount int
-	RenderedAt time.Time
+	RenderedAt    time.Time
 }
 
 // OrgRef identifies the tenant a notification belongs to.
@@ -64,7 +61,6 @@ type GroupView struct {
 	ExpiredCount    int
 	TotalCount      int
 	AckedCount      int
-	StormMode       bool
 	// StartedAt is when the SIGNAL started, taken from upstream's own `startsAt`.
 	// FirstSeenAt is when OTO first heard about it. They are different facts and
 	// the card must not present the second as the first: the gap is oto's latency

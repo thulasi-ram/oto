@@ -43,8 +43,6 @@ type groupRow struct {
 	totalCount      int32
 	ackedCount      int32
 
-	stormMode              bool
-	stormSince             *time.Time
 	lastNotificationReason *string
 
 	firstSeenAt    time.Time
@@ -56,7 +54,7 @@ var groupColumnList = []string{
 	"id", "org_id", "source_id", "cluster_id", "group_key", "generation", "source_group_key",
 	"receiver", "group_labels", "title", "state", "severity", "state_version", "firing_count",
 	"suppressed_count", "resolved_count", "expired_count", "total_count", "acked_count",
-	"storm_mode", "storm_since", "last_notification_reason", "first_seen_at", "last_activity_at",
+	"last_notification_reason", "first_seen_at", "last_activity_at",
 	"closed_at",
 }
 
@@ -89,7 +87,7 @@ func (r *groupRow) scanDest() []any {
 		&r.id, &r.orgID, &r.sourceID, &r.clusterID, &r.groupKey, &r.generation, &r.sourceGroupKey,
 		&r.receiver, &r.groupLabels, &r.title, &r.state, &r.severity, &r.stateVersion,
 		&r.firingCount, &r.suppressedCount, &r.resolvedCount, &r.expiredCount, &r.totalCount,
-		&r.ackedCount, &r.stormMode, &r.stormSince, &r.lastNotificationReason, &r.firstSeenAt,
+		&r.ackedCount, &r.lastNotificationReason, &r.firstSeenAt,
 		&r.lastActivityAt, &r.closedAt, &r.clusterKey,
 	}
 }
@@ -131,8 +129,6 @@ func (r *groupRow) toDomain() (domain.Group, error) {
 			Total:      int(r.totalCount),
 			Acked:      int(r.ackedCount),
 		},
-		StormMode:              r.stormMode,
-		StormSince:             timeOrZero(r.stormSince),
 		LastNotificationReason: strOrEmpty(r.lastNotificationReason),
 		FirstSeenAt:            r.firstSeenAt,
 		LastActivityAt:         r.lastActivityAt,
@@ -362,37 +358,18 @@ func (r *GroupRepository) SetRollup(
 	return nil
 }
 
-const setStormSQL = `
-UPDATE alert_groups SET
-    storm_mode    = $3,
-    storm_since   = $4,
-    state_version = $5,
-    updated_at    = now()
-WHERE org_id = $1 AND id = $2 AND state_version = $6`
-
-// SetStorm writes storm mode. The pair is all-or-nothing (groups_storm_ck) and
-// is written together, because storm collapse is a VISIBLE state and half of one
-// renders as neither.
+// ⛔⛔ `setStormSQL` AND `SetStorm` WERE HERE AND ARE DELETED. They wrote the
+// `storm_mode`/`storm_since` pair together — all-or-nothing, because
+// `groups_storm_ck` says so and half of a visible state renders as neither — under the
+// same `state_version` compare-and-set `SetRollup` uses, so a storm verdict derived
+// from a generation that had since moved could not announce a damping transition for
+// counts nobody had.
 //
-// It carries the same `state_version` compare-and-set as SetRollup: a storm
-// decision is derived from the group it read, and writing it over a generation
-// that has moved since would announce a damping transition for counts nobody has.
-func (r *GroupRepository) SetStorm(
-	ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int,
-) error {
-	if err := db.RequireScope(s); err != nil {
-		return err
-	}
-	tag, err := r.db(ctx).Exec(ctx, setStormSQL, s.OrgID(), g.ID(),
-		g.StormMode(), nilTime(g.StormSince()), g.StateVersion(), fromVersion)
-	if err != nil {
-		return mapErr(err, "write storm mode")
-	}
-	if tag.RowsAffected() == 0 {
-		return r.versionMiss(ctx, s, g.ID(), fromVersion, "write storm mode")
-	}
-	return nil
-}
+// ⭐ AND THE COLUMNS THEY WROTE ARE GONE TOO (migration 00059). `storm_mode`,
+// `storm_since` and `groups_storm_ck` have left `alert_groups`, so this table no
+// longer has two read-only columns that no writer could ever set again — it has
+// neither. `groupColumnList` no longer names them, `Close` no longer clears them,
+// and `?storm=` no longer filters on them.
 
 const closeGroupSQL = `
 UPDATE alert_groups SET
@@ -400,8 +377,6 @@ UPDATE alert_groups SET
     closed_at        = GREATEST(first_seen_at, $3),
     last_activity_at = GREATEST(first_seen_at, last_activity_at, $3),
     state_version    = $4,
-    storm_mode       = false,
-    storm_since      = NULL,
     updated_at       = now()
 WHERE org_id = $1 AND id = $2 AND state = 'open' AND state_version = $5`
 
@@ -556,9 +531,6 @@ func (r *GroupRepository) List(
 	}
 	if f.Receiver != "" {
 		add(fmt.Sprintf(" AND g.receiver = $%d", len(args)+1), f.Receiver)
-	}
-	if f.Storm != nil {
-		add(fmt.Sprintf(" AND g.storm_mode = $%d", len(args)+1), *f.Storm)
 	}
 	if f.FullyAcked != nil {
 		// "Fully acked" needs a member to be acked ABOUT: a generation with no

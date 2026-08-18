@@ -299,8 +299,6 @@ func tenantFanOutOf(args db.JobArgs) (jobs.TenantFanOut, bool) {
 		return a.TenantFanOut, true
 	case jobs.GroupCloseArgs:
 		return a.TenantFanOut, true
-	case jobs.FlapScoreArgs:
-		return a.TenantFanOut, true
 	case jobs.RetentionPruneArgs:
 		return a.TenantFanOut, true
 	case jobs.StatsRollupArgs:

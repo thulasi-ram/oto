@@ -207,9 +207,6 @@ type Group struct {
 	stateVersion int
 	counts       Counts
 
-	stormMode  bool
-	stormSince time.Time
-
 	lastNotificationReason string
 
 	firstSeenAt    time.Time
@@ -243,9 +240,6 @@ type GroupParams struct {
 	Severity     string
 	StateVersion int
 	Counts       Counts
-
-	StormMode  bool
-	StormSince time.Time
 
 	LastNotificationReason string
 
@@ -307,12 +301,11 @@ func NewGroup(p GroupParams) (Group, error) {
 		return Group{}, errs.New(errs.KindValidation, "field_order",
 			"closed_at must be >= first_seen_at")
 	}
-	// groups_storm_ck: storm_mode and storm_since are all-or-nothing. Storm
-	// collapse is a VISIBLE state and half of one would render as neither.
-	if p.StormMode != !p.StormSince.IsZero() {
-		return Group{}, errs.New(errs.KindValidation, "field_order",
-			"storm_since is set exactly when storm_mode is on")
-	}
+	// ⛔ `groups_storm_ck` WAS RE-PROVED HERE AND IS GONE WITH THE COLUMNS IT PAIRED
+	// (migration 00059). It said `storm_mode = (storm_since IS NOT NULL)`, because
+	// storm collapse was a VISIBLE state and half of one would render as neither.
+	// There is no half left to guard: nothing evaluates a storm, so neither column
+	// exists to be set.
 
 	labels := map[string]string{}
 	for k, v := range p.GroupLabels {
@@ -335,8 +328,6 @@ func NewGroup(p GroupParams) (Group, error) {
 		severity:               p.Severity,
 		stateVersion:           p.StateVersion,
 		counts:                 p.Counts,
-		stormMode:              p.StormMode,
-		stormSince:             utcOrZero(p.StormSince),
 		lastNotificationReason: p.LastNotificationReason,
 		firstSeenAt:            p.FirstSeenAt.UTC(),
 		lastActivityAt:         p.LastActivityAt.UTC(),
@@ -419,12 +410,24 @@ func (g Group) StateVersion() int { return g.stateVersion }
 // Counts is the membership rollup.
 func (g Group) Counts() Counts { return g.counts }
 
-// StormMode reports whether storm collapse is holding this generation to one
-// message. It is a VISIBLE state, never silent suppression (§B.6).
-func (g Group) StormMode() bool { return g.stormMode }
-
-// StormSince is when storm mode began, zero when it is off.
-func (g Group) StormSince() time.Time { return g.stormSince }
+// ⛔⛔ `StormMode` AND `StormSince` WERE HERE AND ARE DELETED WITH THEIR COLUMNS
+// (migration 00059). They reported `alert_groups.storm_mode` / `storm_since`, which
+// held a generation to one root card and dropped every per-alert reply. The
+// tombstone at the top of lifecycle.go says why the DETECTION was removed rather
+// than merely quietened — a storm's object is an incident, and incidents do not
+// exist yet.
+//
+// ⭐ THEY OUTLIVED THE BEHAVIOUR ONLY BECAUSE THE COLUMNS DID, and the columns are
+// gone now: storm mode was LIVE STATE about a generation, not evidence about a past
+// delivery, and live state no writer can ever set again is not history.
+//
+// ⛔ `notification/domain.ReasonStorm` briefly outlived them under the opposite
+// argument — that a stored row still has to render — and then went too. Migration
+// 00060 narrowed `notifications_reason_ck` and the `alert_events.type` CHECK, so no
+// row can spell a damper any more and there is nothing left for a decoder to meet.
+// The one surviving retire-not-delete set is `alerts/domain.retiredEventTypes`,
+// which holds the OLDER retirements (`group.member_*`, `case.reopened`) whose CHECKs
+// were never narrowed.
 
 // LastNotificationReason is the most recent Alertmanager notification_reason seen
 // for this group, feeding the §H.6 decision table.
@@ -497,10 +500,9 @@ func (g Group) Close(now time.Time) (Group, error) {
 	next.closedAt = maxTime(g.firstSeenAt, now.UTC())
 	next.lastActivityAt = maxTime(g.lastActivityAt, next.closedAt)
 	next.stateVersion = g.stateVersion + 1
-	// Storm mode is a fact about a LIVE generation. Carrying it onto a closed one
-	// would leave the UI showing a storm nobody can act on.
-	next.stormMode = false
-	next.stormSince = time.Time{}
+	// ⛔ THE STORM PAIR WAS CLEARED HERE. Storm mode was a fact about a LIVE
+	// generation and carrying it onto a closed one left the UI showing a storm nobody
+	// could act on. There is nothing left to clear (migration 00059).
 	return next, nil
 }
 
@@ -654,10 +656,11 @@ type GroupFilter struct {
 	ClusterKeys []string
 	SourceID    *uuid.UUID
 	Receiver    string
-	// Storm restricts to generations collapsed into storm mode, or excludes
-	// them. Storm collapse is a VISIBLE state, which is why it is filterable at
-	// all (§B.6).
-	Storm *bool
+	// ⛔ `Storm *bool` WAS HERE AND IS DELETED WITH THE COLUMN IT FILTERED ON
+	// (migration 00059). `?storm=true` selected generations collapsed into storm
+	// mode; there is no such generation and no such column, so the predicate could
+	// only ever have been `WHERE false` or `WHERE true`. A filter that partitions
+	// nothing is worse than no filter: it tells a reader the axis still exists.
 	// FullyAcked is true for "every member has a receipt", false for "at least
 	// one does not". Orthogonal to state: an acked group is still firing (§B.1).
 	FullyAcked *bool

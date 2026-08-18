@@ -679,7 +679,7 @@ func (h sourceHealth) HealthyFor(
 // ---------------------------------------------------------------- org settings
 
 // orgSettings serves the two SettingsReader ports — `alerts/service.Lifecycle`
-// and `grouping/service.Storm` — from `orgs.settings`, which `identity` owns.
+// and `grouping/service.GroupLifecycle` — from `orgs.settings`, which `identity` owns.
 //
 // A settings lookup MUST NEVER be able to stop an alert being recorded, so every
 // failure falls back to the §D.1 defaults rather than propagating.
@@ -696,6 +696,12 @@ func (o orgSettings) Lifecycle(ctx context.Context, s db.TenantScope) (alertsser
 		return alertsservice.DefaultSettings(), nil
 	}
 	cfg := org.Settings.Normalise()
+	// ⚠️ THE RESOLVE GRACE IS THE ONLY ONE OF THESE THREE THAT STILL DECIDES ANYTHING.
+	// `flap_threshold` and `flap_window_s` tuned the `flap.score` job, which is RETIRED
+	// (ADR 0041, Amendment 1): nothing in `alerts` reads either number. They are still
+	// carried because `orgs.settings` still declares the keys and their defaults are
+	// mirror-tested; when the keys go, this narrows the way `GroupLifecycle` below
+	// narrowed when storm damping went.
 	return alertsservice.Settings{
 		ResolveGrace:  cfg.ResolveGrace,
 		FlapThreshold: cfg.FlapThreshold,
@@ -703,21 +709,28 @@ func (o orgSettings) Lifecycle(ctx context.Context, s db.TenantScope) (alertsser
 	}, nil
 }
 
-func (o orgSettings) Storm(ctx context.Context, s db.TenantScope) (groupingdomain.StormPolicy, error) {
+// GroupLifecycle serves `grouping/service.SettingsReader`.
+//
+// ⛔ IT WAS `Storm` AND RETURNED FOUR NUMBERS: `storm_threshold`, `storm_window_s`,
+// `storm_cooldown_s` and `group_close_delay_s`. Storm damping is removed
+// (`grouping/domain/lifecycle.go`), so the close delay is the whole policy — and the
+// three `storm_*` keys are gone from `orgs.settings`, from the settings API and from
+// `identity/domain` altogether (migration 00059).
+//
+// The method is not called `Lifecycle` because `alerts/service.Lifecycle` above already
+// is, and one receiver cannot answer two ports with one name and two return types.
+func (o orgSettings) GroupLifecycle(
+	ctx context.Context, s db.TenantScope,
+) (groupingdomain.LifecyclePolicy, error) {
 	if o.svc == nil {
-		return groupingdomain.DefaultStormPolicy(), nil
+		return groupingdomain.DefaultLifecyclePolicy(), nil
 	}
 	org, err := o.svc.GetOrg(ctx, s)
 	if err != nil {
-		return groupingdomain.DefaultStormPolicy(), nil
+		return groupingdomain.DefaultLifecyclePolicy(), nil
 	}
 	cfg := org.Settings.Normalise()
-	return groupingdomain.StormPolicy{
-		Threshold:  cfg.StormThreshold,
-		Window:     cfg.StormWindow,
-		Cooldown:   cfg.StormCooldown,
-		CloseDelay: cfg.GroupCloseDelay,
-	}.Normalise(), nil
+	return groupingdomain.LifecyclePolicy{CloseDelay: cfg.GroupCloseDelay}.Normalise(), nil
 }
 
 // NotificationDefaults serves `notification/service.SettingsReader` from
@@ -735,8 +748,8 @@ func (o orgSettings) Storm(ctx context.Context, s db.TenantScope) (groupingdomai
 // invalidation message, and no window in which two pods disagree about how loud
 // oto should be. If a cache is ever added it MUST carry a bounded TTL: the
 // failure it would introduce is the silent one, where an operator raises
-// `storm_threshold` mid-incident, sees nothing change, and cannot tell a wrong
-// setting from a stale one.
+// `unacked_reminder_after_s` mid-incident, sees nothing change, and cannot tell a
+// wrong setting from a stale one.
 func (o orgSettings) NotificationDefaults(
 	ctx context.Context, s db.TenantScope,
 ) (notifservice.OrgDefaults, error) {
@@ -756,7 +769,6 @@ func (o orgSettings) NotificationDefaults(
 		Broadcast:            notifdomain.BroadcastPolicy{Resolved: cfg.BroadcastOnResolved},
 		Verbosity:            notifdomain.Verbosity(cfg.DefaultVerbosity),
 		UnackedReminderAfter: cfg.UnackedReminderAfter,
-		StormCooldown:        cfg.StormCooldown,
 		ReminderMention: notifdomain.MentionPolicy{
 			Mode:        cfg.UnackedReminderMention,
 			List:        cfg.UnackedReminderMentionList,
@@ -1082,8 +1094,9 @@ func (o alertObserver) resolveGroup(
 // the time this runs the membership is on disk — `alert_cases.group_id` is
 // the record, and migration 00051 removed the join table that used to duplicate
 // it. What is left is the derivation: the generation's counts, its state, its
-// severity and its §B.6 storm mode are all projections of its members, and
-// `grouping.Recompute` is where they are refreshed.
+// severity are all projections of its members, and `grouping.Recompute` is where
+// they are refreshed. (It re-evaluated §B.6 storm mode here too, until storm damping
+// was removed — see `grouping/domain/lifecycle.go`.)
 //
 // ⭐ ONE CALL FOR THE WHOLE PARTITION. `partitionByGroup` has already established
 // that every outcome here belongs to ONE generation, so recomputing per outcome

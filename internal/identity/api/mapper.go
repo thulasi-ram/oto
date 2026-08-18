@@ -30,9 +30,6 @@ func toOrgSettingsDTO(s domain.Settings) OrgSettingsDTO {
 		FlapThreshold:       s.FlapThreshold,
 		FlapWindowS:         int(s.FlapWindow / time.Second),
 		FlapDigestIntervalS: int(s.FlapDigestInterval / time.Second),
-		StormThreshold:      s.StormThreshold,
-		StormWindowS:        int(s.StormWindow / time.Second),
-		StormCooldownS:      int(s.StormCooldown / time.Second),
 		RawRetentionDays:    int(s.RawRetention / (24 * time.Hour)),
 		// §D.1 stores a month count and oto reads a month as 30 days, uniformly.
 		EventRetentionMonth: int(s.EventRetention / (30 * 24 * time.Hour)),

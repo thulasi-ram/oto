@@ -50,8 +50,6 @@ func groupDTO(g domain.Group, snooze domain.SnoozeRollup) GroupDTO {
 		AckedCount:      int32(c.Acked),
 		SnoozedCount:    int32(snooze.Count),
 		SnoozedUntil:    timePtr(snooze.Until),
-		StormMode:       g.StormMode(),
-		StormSince:      timePtr(g.StormSince()),
 		FirstSeenAt:     utc(g.FirstSeenAt()),
 		LastActivityAt:  utc(g.LastActivityAt()),
 		ClosedAt:        timePtr(g.ClosedAt()),

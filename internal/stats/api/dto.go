@@ -28,7 +28,6 @@ type AlertStateCountsDTO struct {
 type GroupCountsDTO struct {
 	Open   int32 `json:"open"`
 	Closed int32 `json:"closed"`
-	Storm  int32 `json:"storm"`
 }
 
 // DeliveryCountsDTO is the delivery-health half. A non-zero `dead` is a product
@@ -138,7 +137,6 @@ func overviewDTO(res service.OverviewResult) StatsOverviewDTO {
 		Groups: GroupCountsDTO{
 			Open:   int32(o.Groups.Open),
 			Closed: int32(o.Groups.Closed),
-			Storm:  int32(o.Groups.Storm),
 		},
 		Deliveries: DeliveryCountsDTO{
 			Sent:      int32(o.Deliveries.Sent),

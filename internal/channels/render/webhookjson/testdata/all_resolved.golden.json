@@ -26,7 +26,6 @@
     "expired_count": 0,
     "total_count": 2,
     "acked_count": 0,
-    "storm_mode": false,
     "first_seen_at": "2026-08-07T18:17:09Z",
     "last_activity_at": "2026-08-07T17:57:29Z"
   },

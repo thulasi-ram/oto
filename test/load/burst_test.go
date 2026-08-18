@@ -12,8 +12,8 @@ import (
 
 // ⭐⭐ THE TESTS THAT WOULD HAVE CAUGHT THE ORIGINAL DEFECT.
 //
-// `grouping/service` used to recompute the rollup and re-evaluate the storm ONCE
-// PER JOINED MEMBER. A 500-alert Alertmanager batch therefore performed 500 full
+// `grouping/service` used to recompute the rollup ONCE PER JOINED MEMBER. A
+// 500-alert Alertmanager batch therefore performed 500 full
 // aggregates over one group plus 500 compare-and-set writes to the SAME
 // `alert_groups` row, which the CAS then serialised — O(n) contention on one row,
 // arriving at exactly the moment a customer's cluster is on fire and Alertmanager's
@@ -25,10 +25,18 @@ import (
 // a real Postgres, through the real HTTP route, the real River workers and a Slack
 // double that enforces Slack's published contract. Under the old code
 // `rollup_publishes_per_group` here would read ~500 instead of ~3.
+//
+// ⛔ THESE WERE `TestStorm*` AND THEY ASSERTED STORM COLLAPSE. ADR 0042 removed
+// storm damping outright, so every claim of the form "oto withholds N replies
+// because a group is busy" is gone. What survived is what was never damping in
+// the first place, and it is the more valuable half: five hundred alerts share
+// one `group_key`, so they open ONE generation, ONE Slack thread and ONE root
+// card, and oto's chatter stays an order of magnitude below the alert count
+// because a notification is minted per triggering change rather than per alert.
 
 // ------------------------------------------------------------ the 500 batch
 
-// TestStormSingleBatchOf500Alerts is the case the issue names: at least five
+// TestBurstSingleBatchOf500Alerts is the case the issue names: at least five
 // hundred alerts in ONE Alertmanager notification.
 //
 // Five hundred is exactly B17's ChunkSize, so it is ONE processing transaction —
@@ -36,7 +44,7 @@ import (
 // hardest. The reason is the chunk size and NOT ChunkThreshold: chunking is
 // unconditional, and the threshold governs only whether the batch is marked
 // `partial` while the chunks run.
-func TestStormSingleBatchOf500Alerts(t *testing.T) {
+func TestBurstSingleBatchOf500Alerts(t *testing.T) {
 	const alerts = 500
 
 	e := newEnv(t, nil)
@@ -55,15 +63,13 @@ func TestStormSingleBatchOf500Alerts(t *testing.T) {
 	r.Note = "500 alerts in one Alertmanager notification, one group, one Slack thread."
 	r.publish(t)
 
-	assertStormInvariants(t, e, r, invariantSpec{
+	assertBurstInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: alerts,
 		Groups:         1,
-		// One `group.upserted` for the generation opening, one for the single
-		// material rollup this batch produces, one for the storm transition — plus
-		// slack for a periodic sweep that recomputes. The defect this bounds would
-		// read 500.
+		// One `group.upserted` for the generation opening and one for the single
+		// material rollup this batch produces — plus slack for a periodic sweep
+		// that recomputes. The defect this bounds would read 500.
 		MaxRollupsPerGroup: 8,
-		StormGroups:        1,
 	})
 
 	// ⛔ THE THING THE PRODUCT IS FOR. Five hundred alerts must not become five
@@ -72,15 +78,21 @@ func TestStormSingleBatchOf500Alerts(t *testing.T) {
 		t.Errorf("500 alerts opened %d Slack root messages, want 1 — this is the exact "+
 			"failure oto exists to prevent", r.SlackRoots)
 	}
+	// ⭐ AND IT IS NOT DAMPING THAT BUYS THIS. One batch arriving at one group is
+	// ONE triggering change, so it mints one notification and spends one or two
+	// Slack calls on it — the same small constant it would spend on four alerts.
+	// Storm collapse used to be credited with this bound; ADR 0042 removed storm
+	// collapse and the bound did not move.
 	if r.SlackCalls > 12 {
-		t.Errorf("500 alerts cost %d Slack calls (%v); storm collapse is supposed to make "+
-			"this a small constant", r.SlackCalls, r.SlackByMethod)
+		t.Errorf("500 alerts cost %d Slack calls (%v); one batch into one group is one "+
+			"triggering change and must cost a small constant, with no damping involved",
+			r.SlackCalls, r.SlackByMethod)
 	}
 }
 
 // ---------------------------------------------------------- B17 chunking
 
-// TestStormChunkedBatchExercisesB17 pushes a batch OVER `ChunkThreshold` (2000),
+// TestBurstChunkedBatchExercisesB17 pushes a batch OVER `ChunkThreshold` (2000),
 // so `applyChunks` splits it into `ChunkSize` (500) transactions and marks the
 // batch `partial` until the last one commits.
 //
@@ -88,7 +100,7 @@ func TestStormSingleBatchOf500Alerts(t *testing.T) {
 // from, and a batch that ends its life there is an accepted 202 whose alerts were
 // never applied. The invariant is that the batch reaches `processed` and that the
 // per-chunk rollup stays O(chunks) rather than becoming O(alerts) again.
-func TestStormChunkedBatchExercisesB17(t *testing.T) {
+func TestBurstChunkedBatchExercisesB17(t *testing.T) {
 	const alerts = 2200 // > domain.ChunkThreshold, so ceil(2200/500) = 5 chunks
 
 	e := newEnv(t, nil)
@@ -108,14 +120,13 @@ func TestStormChunkedBatchExercisesB17(t *testing.T) {
 		"transactions and a `partial` batch status on the way through."
 	r.publish(t)
 
-	assertStormInvariants(t, e, r, invariantSpec{
+	assertBurstInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: alerts,
 		Groups:         1,
 		// One per chunk is the CORRECT shape here: each chunk is its own
-		// transaction and its own `Recompute`. Five chunks, one opening, one storm,
-		// plus slack.
+		// transaction and its own `Recompute`. Five chunks, one opening, plus
+		// slack.
 		MaxRollupsPerGroup: 12,
-		StormGroups:        1,
 	})
 
 	if r.SlackRoots != 1 {
@@ -123,55 +134,58 @@ func TestStormChunkedBatchExercisesB17(t *testing.T) {
 	}
 }
 
-// --------------------------------------------------------- sustained storm
+// --------------------------------------------------------- sustained burst
 
 // The sustained shape. ⚠️ IT IS DELIBERATELY MODEST. The reference run was taken
 // on a 2-CPU / 4 GB colima VM under concurrent load, and a load case that cannot
 // finish on the machine a contributor actually has is a load case nobody runs.
 const (
 	sustainedGroups = 6
-	// ⭐ THE FIRST WAVE IS DELIBERATELY BELOW THE STORM THRESHOLD (25 distinct
-	// alerts, §D.1). It opens six generations, posts six root cards and settles —
-	// so that when wave two crosses the threshold, every group's root card has
-	// ALREADY LANDED and §H.6 answers the `storm` transition with a REPLY. That is
-	// the only arrangement in which the channel-level notice is a broadcast, and
-	// therefore the only arrangement in which "exactly one per channel" is a
-	// falsifiable claim rather than a race.
+	// ⭐ THE FIRST WAVE IS DELIBERATELY SMALL AND IS ALLOWED TO SETTLE. It opens
+	// six generations, posts six root cards and drains — so that every later wave
+	// arrives at a thread that ALREADY HAS A ROOT, and §H.6 answers `update_root`
+	// plus a reply rather than `post_root`. That is the amend-in-place path, and it
+	// is the one that has to hold under volume: it is what keeps thirty batch
+	// arrivals at six `chat.postMessage` calls with the rest `chat.update`.
+	//
+	// It used to be sized at 20 to sit below the 25-alert storm threshold. ADR 0042
+	// deleted the threshold; the wave stays small because a settled opening is what
+	// makes the burst measure amendment rather than creation.
 	sustainedOpeningAlerts = 20
-	sustainedStormWaves    = 5
+	sustainedBurstWaves    = 5
 	sustainedAlertsPerWave = 100
 	sustainedWaveGap       = 12 * time.Second
 )
 
-// TestStormSustainedAcrossSeveralMinutes pushes several thousand alerts through
+// TestBurstSustainedAcrossSeveralMinutes pushes several thousand alerts through
 // several groups over a few minutes.
 //
 // It is the case the single batch cannot cover:
 //
-//   - MANY GROUPS ON ONE CHANNEL, which is the only condition under which "exactly
-//     one storm notice per channel" is falsifiable. Six generations enter storm
-//     mode; the `channels.storm_notice_at` latch must let exactly one of them
-//     speak in the channel and keep the other five on their own threads.
+//   - MANY GROUPS ON ONE CHANNEL, which is the only condition under which "a burst
+//     adds nothing to the channel" is falsifiable. Six busy generations share one
+//     conversation; each must keep its own thread, and none of them may broadcast
+//     out of that thread at any volume.
 //   - REPEATED WAVES INTO A LIVE GENERATION, which is what puts hundreds of
 //     deliveries behind one per-thread ordering gate and what would expose a
 //     wedge.
 //   - SUSTAINED CONCURRENCY on the ingest pool, which is where the shedder lives.
-func TestStormSustainedAcrossSeveralMinutes(t *testing.T) {
-	waves := 1 + sustainedStormWaves
-	total := sustainedGroups * (sustainedOpeningAlerts + sustainedStormWaves*sustainedAlertsPerWave)
+func TestBurstSustainedAcrossSeveralMinutes(t *testing.T) {
+	waves := 1 + sustainedBurstWaves
+	total := sustainedGroups * (sustainedOpeningAlerts + sustainedBurstWaves*sustainedAlertsPerWave)
 
 	e := newEnv(t, nil)
 	d := newDriver(e)
 
 	names := make([]string, 0, sustainedGroups)
 	for g := 0; g < sustainedGroups; g++ {
-		names = append(names, fmt.Sprintf("SustainedStorm%02d", g))
+		names = append(names, fmt.Sprintf("SustainedBurst%02d", g))
 	}
 
 	push := time.Now()
 
 	// Wave 1: quiet. Six generations open, six root cards land, and the run waits
-	// for them — the storm below must arrive at threads that already have a root.
+	// for them — the burst below must arrive at threads that already have a root.
 	opening := make([]batchSpec, 0, sustainedGroups)
 	for _, name := range names {
 		opening = append(opening, batchSpec{
@@ -181,7 +195,7 @@ func TestStormSustainedAcrossSeveralMinutes(t *testing.T) {
 	d.wave(opening)
 	e.drain(5 * time.Minute)
 
-	// Waves 2..N: the storm.
+	// Waves 2..N: the burst.
 	for wave := 2; wave <= waves; wave++ {
 		specs := make([]batchSpec, 0, sustainedGroups)
 		for _, name := range names {
@@ -204,28 +218,24 @@ func TestStormSustainedAcrossSeveralMinutes(t *testing.T) {
 	r := e.measure("sustained", d, pushFor, drainFor)
 	r.Note = fmt.Sprintf(
 		"%d alerts into ONE Slack channel: %d groups, one quiet opening wave of %d that is "+
-			"allowed to settle, then %d storm waves of %d, %s apart.",
+			"allowed to settle, then %d burst waves of %d, %s apart.",
 		total, sustainedGroups, sustainedOpeningAlerts,
-		sustainedStormWaves, sustainedAlertsPerWave, sustainedWaveGap)
+		sustainedBurstWaves, sustainedAlertsPerWave, sustainedWaveGap)
 	r.publish(t)
 
-	assertStormInvariants(t, e, r, invariantSpec{
+	assertBurstInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: total,
 		Groups:         sustainedGroups,
-		// One opening, one storm transition, and one material rollup per wave —
-		// plus generous slack for the periodic sweeps that also recompute.
+		// One opening and one material rollup per wave — plus generous slack for
+		// the periodic sweeps that also recompute.
 		MaxRollupsPerGroup: 2*waves + 6,
-		StormGroups:        sustainedGroups,
-		// ⭐ THE CLAIM THIS WHOLE CASE IS SHAPED AROUND. Six generations enter storm
-		// mode with their root cards already posted, so six broadcasts are on the
-		// table and the latch must let exactly one through.
-		RequireChannelBroadcast: true,
 	})
 
 	// ⭐ ONE ROOT PER GROUP AND NOTHING PER ALERT. The shared assertions already
-	// bound the total chatter; what is specific here is that thirty batch arrivals
-	// still produced ONE conversation per incident rather than one per
-	// notification.
+	// bound the total chatter and require that nothing was broadcast; what is
+	// specific here is that thirty batch arrivals still produced ONE conversation
+	// per incident rather than one per notification — and that this holds with no
+	// damping anywhere in the path (ADR 0042).
 	if r.SlackRoots != sustainedGroups {
 		t.Errorf("%d Slack root messages for %d groups, want one each",
 			r.SlackRoots, sustainedGroups)
@@ -234,7 +244,7 @@ func TestStormSustainedAcrossSeveralMinutes(t *testing.T) {
 
 // ------------------------------------------------------------- the shedder
 
-// TestStormSheddingSays503NeverAnd429 forces the shedder to fire and proves the
+// TestBurstSheddingSays503NeverAnd429 forces the shedder to fire and proves the
 // two things about it that matter.
 //
 // ⭐ SHEDDING IS A FEATURE (C17, ADR 0007) — but only because it is a 503. A 429
@@ -251,7 +261,7 @@ func TestStormSustainedAcrossSeveralMinutes(t *testing.T) {
 // requests per second" — that is a property of the machine — but "when oto sheds
 // it answers 503 with a Retry-After, never a 4xx, and an Alertmanager-shaped
 // retry recovers every alert".
-func TestStormSheddingSays503NeverA429(t *testing.T) {
+func TestBurstSheddingSays503NeverA429(t *testing.T) {
 	const (
 		concurrent = 48
 		perBatch   = 40
@@ -304,14 +314,13 @@ func TestStormSheddingSays503NeverA429(t *testing.T) {
 			"at the upstream forever")
 	}
 
-	assertStormInvariants(t, e, r, invariantSpec{
+	assertBurstInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: total,
 		Groups:         1,
 		// 48 batches into one group. Each is its own `Recompute`, so the bound is
 		// per-batch and not per-alert: that is still O(batches x groups) and 1920
 		// alerts produce at most ~50 rollups rather than 1920.
 		MaxRollupsPerGroup: concurrent + 8,
-		StormGroups:        1,
 	})
 
 	// Whether the gate actually fired is a property of the machine, so it is

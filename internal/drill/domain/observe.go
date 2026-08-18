@@ -325,10 +325,14 @@ func suppressionDetail(reason string) string {
 		return "a policy matched, but every destination it routes to is disabled or deleted."
 	case "snoozed":
 		return "this alert is snoozed, so oto's own notifications are suppressed until the snooze expires."
-	case "storm":
-		return "storm collapse is engaged for this group, so individual notifications are suppressed."
-	case "flapping":
-		return "flap damping is engaged, so this notification was suppressed."
+	// ⛔ A `storm` AND A `flapping` ARM STOOD HERE AND BOTH ARE DELETED. They were
+	// written in the past tense, on the reasoning that `notifications.suppressed_reason`
+	// has no reaper and a drill replaying an old delivery could still read one — telling
+	// an operator a damper "is engaged" when the damper no longer exists would send them
+	// hunting for a setting that decides nothing. Migration 00059 narrowed
+	// `notifications_suppmap_ck` to six with no backfill and the database was reset, so
+	// there is no old delivery left to replay and no reason left to explain. The
+	// `default` below is the honest answer for anything this switch has never heard of.
 	case "throttled":
 		return "the throttle for this destination is engaged, so this notification was suppressed."
 	case "verbosity":

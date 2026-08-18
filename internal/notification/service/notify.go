@@ -55,7 +55,7 @@ type destination struct {
 // transitions surface in the channel (ADR 0020) and what verbosity a Channel that
 // names none falls back to. Both are read ONCE per evaluation, so every
 // destination in one fan-out is judged against the same policy — a fan-out where
-// two channels disagreed about whether a storm warrants a broadcast would be very
+// two channels disagreed about whether a resolve warrants a broadcast would be very
 // hard to explain to the person reading the channel.
 type OrgDefaults struct {
 	Broadcast domain.BroadcastPolicy
@@ -68,14 +68,14 @@ type OrgDefaults struct {
 	// ⛔ ONE STAGE, FOREVER (§G.9.1). A scalar, and a FALLBACK — never a second
 	// threshold and never a ladder.
 	UnackedReminderAfter time.Duration
-	// StormCooldown is the org's `storm_cooldown_s`, reused as the window of the
-	// once-per-channel storm-notice latch (ADR 0020). It is the right window
-	// because it is already the minimum distance between a storm starting and the
-	// same storm ending, so a storm's start and its own end each get through while
-	// every other group's storm inside it collapses into the first. Zero means
-	// "unusable", and the domain substitutes its own floor rather than removing the
-	// latch — no latch is the per-group flood.
-	StormCooldown time.Duration
+	// ⛔ `StormCooldown` WAS HERE AND IS DELETED WITH THE LATCH IT WINDOWED. It
+	// carried the org's `storm_cooldown_s` into the once-per-channel storm-notice
+	// latch, so that a storm's start and its own end each got through while every
+	// other group's storm inside the window collapsed into the first. There is no
+	// latch and no notice: nothing evaluates a storm. `storm_cooldown_s` is no longer
+	// an org setting either — migration 00059 removed all three `storm_*` keys along
+	// with `channels.storm_notice_at`.
+	//
 	// ReminderMention is who the ONE unacked reminder addresses (ADR 0020). The
 	// zero value is `none`, which is the shipped default and a deliberate one:
 	// Slack does not notify on @here/@channel from inside a thread, and the
@@ -94,7 +94,7 @@ type SettingsReader interface {
 
 // planInput is the §H.6 question for one destination.
 func planInput(
-	reason domain.Reason, c domain.Channel, def OrgDefaults, rootExists, storm, flapping bool,
+	reason domain.Reason, c domain.Channel, def OrgDefaults, rootExists, flapping bool,
 ) domain.PlanInput {
 	// The channel's own setting wins; the org default is only consulted when the
 	// channel names nothing. Verbosity is a per-destination volume dial, and an
@@ -110,7 +110,6 @@ func planInput(
 		ThreadUpdates: c.ThreadUpdates,
 		Capabilities:  c.Capabilities,
 		ThreadExists:  rootExists,
-		StormMode:     storm,
 		Flapping:      flapping,
 		Broadcast:     def.Broadcast,
 	}
@@ -143,10 +142,14 @@ type NotificationConfig struct {
 	Snapshots     SnapshotSource
 	Events        EventSink
 	Enqueuer      Enqueuer
-	// Channels is the destination store. This service reads no channel row of its
-	// own — routing resolves them — but it TAKES the once-per-channel storm-notice
-	// latch here, inside the evaluation transaction, so a rolled-back evaluation
-	// cannot consume a channel's one storm notice (ADR 0020).
+	// Channels is the destination store.
+	//
+	// ⛔ IT IS READ-ONLY NOW, AND IT DID NOT USED TO BE. `Evaluate` resolves its
+	// destinations through routing and touches no channel row; the ONE write this
+	// service ever made to `channels` was taking the once-per-channel storm-notice
+	// latch inside the evaluation transaction, and that latch is deleted with storm
+	// damping. What still needs the store is the DIGEST path, which lists a policy's
+	// channels directly because a digest is not routed by a group's labels.
 	Channels ChannelStore
 	// Settings reads the org's notification tuning. OPTIONAL: nil means every org
 	// runs oto's shipped defaults, which is the correct degraded answer — a
@@ -218,6 +221,14 @@ type Result struct {
 func (s *NotificationService) Evaluate(
 	ctx context.Context, scope db.TenantScope, in Intent,
 ) (Result, error) {
+	// ⛔ A `case in.Reason.Retired()` ARM STOOD HERE AND IS DELETED WITH THE ONE
+	// VALUE IT GUARDED. `storm` was the only retired Reason; it is now deleted from
+	// the vocabulary outright (reason.go) and migration 00060 narrows
+	// `notifications_reason_ck` to refuse it, so `Valid()` below is the whole
+	// answer — a retired-but-valid value no longer exists to be told apart from an
+	// unknown one. `alerts/service.refuseRetired` stays, because `alert_events.type`
+	// still has retirements (`group.member_*`, `case.reopened`) that this
+	// vocabulary no longer has.
 	switch {
 	case !in.Reason.Valid():
 		return Result{}, errs.Validation("unknown_reason", "unknown notification reason",
@@ -363,11 +374,13 @@ func (s *NotificationService) mint(
 		stateVersion = 1
 	}
 
+	kind, subjectID := subjectOf(in)
+
 	n := domain.Notification{
 		ID:           uuid.New(),
 		OrgID:        scope.OrgID(),
-		SubjectKind:  domain.SubjectAlertGroup,
-		SubjectID:    in.GroupID,
+		SubjectKind:  kind,
+		SubjectID:    subjectID,
 		GroupID:      in.GroupID,
 		AlertID:      in.AlertID,
 		CaseID:       in.CaseID,
@@ -380,6 +393,39 @@ func (s *NotificationService) mint(
 	n.IdempotencyKey = domain.IdempotencyKey(
 		scope.OrgID(), n.SubjectKind, n.SubjectID, n.Reason, n.StateVersion)
 	return n
+}
+
+// subjectOf resolves WHAT this fact is about — the (`subject_kind`, `subject_id`)
+// pair — from the Reason's own declaration (`domain.Reason.Subject`, the
+// allocation reason.go owns and migration 00056 widened the CHECK for).
+//
+// ⛔ IT IS NOT WHERE THE FACT IS DELIVERED. `GroupID` stays on the row for every
+// Reason and is NOT NULL for every Reason, and the thread is keyed by it — see the
+// pinned `threads.Ensure` call in fanOut. Fusing the two is what made an
+// acknowledgement unaddressable: the row recording a receipt against ONE FIRING
+// said it was about the group of forty.
+//
+// ⚠️ THE FALLBACK TO THE GROUP IS notifications_subject_ck SPEAKING, NOT A SHRUG.
+// That CHECK requires the typed column its kind names to be PRESENT:
+// `subject_kind = 'case'` beside a NULL `case_id` is a 23514, not a row. Only four
+// Reasons are forced to name an alert (notifications_focus_ck / `AlertScoped`) and
+// none is forced to name a case, so a per-alert or per-case Reason can legitimately
+// arrive without its id — `comment` on an alert with no open episode is the plain
+// example. Such an intent records the subject release N wrote, the group: coarser
+// than the truth, but insertable and honest about it, and far better than refusing
+// to notify at all because the id was optional at the door.
+func subjectOf(in Intent) (domain.SubjectKind, uuid.UUID) {
+	switch in.Reason.Subject() {
+	case domain.SubjectAlert:
+		if in.AlertID != nil {
+			return domain.SubjectAlert, *in.AlertID
+		}
+	case domain.SubjectCase:
+		if in.CaseID != nil {
+			return domain.SubjectCase, *in.CaseID
+		}
+	}
+	return domain.SubjectAlertGroup, in.GroupID
 }
 
 // suppressors evaluates the suppressors that do not depend on a destination.
@@ -419,8 +465,18 @@ func (s *NotificationService) suppressors(
 
 	if match.Routed() && match.Policy.Throttle.Enabled() {
 		t := match.Policy.Throttle
+		// ⭐ THE THROTTLE COUNTS BY DELIVERY TARGET, NOT BY SUBJECT. A policy cap is
+		// "how many things may oto say into this thread per window", so the numerator
+		// has to include every fact that lands there — the per-alert ones (suppressed,
+		// snoozed, comment) and the per-case ones (acked, expired, enriched) as much as
+		// the group ones. While `subject_kind` could only be `alert_group` (before
+		// migration 00056) a subject predicate happened to do that; the moment
+		// `subjectOf` started writing honest subjects it would have counted only the
+		// group-subject subset and quietly loosened every throttle in the fleet. If you
+		// are allocating a new SubjectKind in reason.go, this line needs no change —
+		// that is the point of keying it on `in.GroupID`.
 		count, err := s.notifications.CountRecent(ctx, scope,
-			domain.SubjectAlertGroup, in.GroupID, snap.TakenAt.Add(-t.Window))
+			in.GroupID, snap.TakenAt.Add(-t.Window))
 		if err != nil {
 			return sup, err
 		}
@@ -455,7 +511,6 @@ func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantSc
 		def.Verbosity = got.Verbosity
 	}
 	def.Broadcast = got.Broadcast
-	def.StormCooldown = got.StormCooldown
 	def.ReminderMention = got.ReminderMention
 	return def
 }
@@ -484,42 +539,33 @@ func (s *NotificationService) plan(
 		// destination get anything", which the first-notification view answers
 		// conservatively and identically for every destination. The row-level
 		// decision is taken in fanOut against the real thread.
-		in := planInput(reason, c, def, false, snap.Group.StormMode, flapping)
+		in := planInput(reason, c, def, false, flapping)
 
-		// ⭐ THE ONCE-PER-CHANNEL STORM NOTICE (ADR 0020). "oto has started
-		// withholding individual notifications" is a fact about the CHANNEL, and
-		// storm mode is decided per GROUP: without this latch, twenty generations
-		// collapsing inside one minute would post twenty "going quiet" messages
-		// into one channel — the flood the damper exists to prevent, produced by
-		// the damper's own announcement.
-		//
-		// The claim runs INSIDE the evaluation transaction, so an evaluation that
-		// rolls back cannot consume a channel's one notice, and it runs per
-		// DESTINATION, because two channels are two audiences and each is entitled
-		// to be told once.
-		if domain.WarrantsChannelNotice(reason) {
-			in.ChannelNoticeClaimed = s.claimStormNotice(ctx, scope, c.ID, def, snap.TakenAt)
-		}
+		// ⛔ THE ONCE-PER-CHANNEL STORM-NOTICE CLAIM WAS HERE AND IS DELETED. It took
+		// `channels.storm_notice_at` inside this transaction so that exactly one
+		// destination won the right to announce that oto had started withholding.
+		// Nothing withholds on storm any more, so there is nothing to announce and no
+		// latch to take — see broadcast.go for the whole tombstone.
 
 		p := domain.PlanFor(in)
 
 		if p.BroadcastDamped {
-			// ⭐ A DAMPED BROADCAST IS RECORDED, NEVER SILENT. ADR 0020 permits
-			// exactly one broadcast during a storm — the storm announcement — and
-			// this is the line where the other ninety-nine were turned down. The
-			// fact still lands on the thread, so this is not a suppression of the
-			// notification; it is oto accounting for its own quiet, which is what
-			// §B.6 requires of every damper it runs.
+			// ⭐ A DAMPED BROADCAST IS RECORDED, NEVER SILENT. The one remaining reason
+			// for it is `no_capability`: this destination cannot surface a reply
+			// in-channel, so the fact lands on the thread instead. That is the world's
+			// constraint rather than a decision of oto's, and it is still written down,
+			// because §B.6 requires every quiet to be accounted for.
 			s.log.DebugContext(ctx, "notification: broadcast damped",
 				"reason", string(reason), "channel_id", c.ID, "damped_by", p.BroadcastDampReason)
 		}
 
 		if p.ReplyDropped {
+			// ⛔ `storm` AND `flapping` USED TO BE ARMS HERE AND BOTH ARE GONE.
+			// `PlanFor` can no longer return either label, and `Suppressors.Add`
+			// refuses both values besides — a retired reason stays decodable and
+			// unwritable (see domain/suppression.go). Every arm that remains records a
+			// fact about the DESTINATION, never oto's opinion of the signal.
 			switch p.ReplyDropReason {
-			case "storm":
-				sup.Add(domain.SuppressedStorm)
-			case "flapping":
-				sup.Add(domain.SuppressedFlapping)
 			case "verbosity", "thread_updates", "no_threading", "fresh_root":
 				sup.Add(domain.SuppressedVerbosity)
 			}
@@ -539,27 +585,14 @@ func (s *NotificationService) plan(
 	return out, sup
 }
 
-// claimStormNotice takes the channel-level storm-notice latch, or reports that
-// this channel has already been told.
-//
-// ⛔ A FAILED CLAIM IS NOT A FAILED NOTIFICATION. The latch is bookkeeping for
-// oto's own volume; a database hiccup while taking it must not stop the storm
-// reply reaching the group's thread. So an error degrades to "not claimed" — the
-// QUIET direction, which is the safe one here: the alternative would be a channel
-// receiving one broadcast per storming group because a latch read failed.
-func (s *NotificationService) claimStormNotice(
-	ctx context.Context, scope db.TenantScope, channelID uuid.UUID,
-	def OrgDefaults, now time.Time,
-) bool {
-	window := domain.NormaliseStormNoticeWindow(def.StormCooldown)
-	claimed, err := s.channels.ClaimStormNotice(ctx, scope, channelID, now, now.Add(-window))
-	if err != nil {
-		s.log.WarnContext(ctx, "notification: could not take the storm-notice latch",
-			"channel_id", channelID, "error", err.Error())
-		return false
-	}
-	return claimed
-}
+// ⛔ `claimStormNotice` WAS HERE AND IS DELETED, and with it the ONLY WRITE this
+// service ever made to `channels`: routing resolves destinations, and the latch was
+// the one thing that made the evaluation path touch a channel row at all. It took
+// `channels.storm_notice_at` inside the evaluation transaction so a rolled-back
+// evaluation could not consume a channel's one storm notice, and degraded a failed
+// read to "not claimed" — the QUIET direction — so a database hiccup could not stop
+// a storm reply reaching a thread. Nothing withholds on storm, so there is nothing
+// to announce and no latch to ration.
 
 // record persists a suppressed intent.
 //
@@ -621,7 +654,8 @@ func (s *NotificationService) fanOut(
 			rootLanded bool
 		)
 		if needsThread(d.channel) {
-			th, err := s.threads.Ensure(ctx, scope, d.channel.ID, n.SubjectKind, n.SubjectID, now)
+			kind, subject := threadSubjectOf(n)
+			th, err := s.threads.Ensure(ctx, scope, d.channel.ID, kind, subject, now)
 			if err != nil {
 				return created, err
 			}
@@ -629,7 +663,7 @@ func (s *NotificationService) fanOut(
 			threadID, rootLanded = &id, th.RootLanded()
 		}
 
-		for _, mode := range s.modesFor(d, rootLanded) {
+		for _, mode := range s.modesFor(n, d, rootLanded) {
 			made, err := s.createDelivery(ctx, scope, n, d, threadID, mode, now)
 			if err != nil {
 				return created, err
@@ -642,6 +676,62 @@ func (s *NotificationService) fanOut(
 	return created, nil
 }
 
+// threadSubjectOf is WHICH CONVERSATION this fact belongs in, as distinct from what
+// the fact is about (`subjectOf`) and from where it is delivered (`GroupID`).
+//
+// ⛔ FOR EVERY SIGNAL FACT IT IS THE ALERTGROUP GENERATION, AND IT MUST STAY PINNED.
+// `fanOut` used to pass `n.SubjectKind, n.SubjectID` straight through, which was
+// correct only while every Notification claimed the group; since migration 00056 a
+// Notification says what it is ABOUT (`case` for an ack, `alert` for a snooze).
+// Handing that to `Ensure` would key a conversation per Case or per Alert under
+// `threads_subject_uniq (channel_id, subject_kind, subject_id)`, and forty alerts in
+// one group would shatter into forty separate Slack threads. A conversation is keyed
+// per GROUP; only the FACT varies.
+//
+// ⭐ A DIGEST IS THE ONE EXCEPTION, AND IT IS KEYED BY ITS POLICY, NOT BY ITS WINDOW.
+// A digest has no group to be pinned to (migration 00058 relaxed `group_id` for
+// exactly this row), and keying its thread by the WINDOW — which is what passing the
+// notification's own subject would do, since `subject_id` is the policy but
+// `state_version` is the window — is not what happens either: `subject_id` IS the
+// policy, so one conversation per policy per channel falls out, with one reply per
+// tick. That is the design the ticket asks for and it needs no change to
+// `threads_subject_uniq`: a fresh thread every ten minutes would be a channel full of
+// one-message threads, which is the noise a digest exists to replace.
+func threadSubjectOf(n domain.Notification) (domain.SubjectKind, uuid.UUID) {
+	if n.Digest() {
+		return domain.SubjectDigest, n.SubjectID
+	}
+	return domain.SubjectAlertGroup, n.GroupID
+}
+
+// digestModes is the whole of a digest's §H.6, and it is two lines because a digest
+// is not a transition.
+//
+// The mode table in `domain/mode.go` answers "does this CHANGE surface in this
+// channel, and as an amend or a reply, and may it be broadcast" — questions with no
+// meaning for a periodic summary. A digest has exactly one rule: OPEN THE
+// CONVERSATION ONCE, THEN REPLY TO IT ONCE PER WINDOW. Never `update_root`: amending
+// the root would overwrite last window's summary with this window's, which is the one
+// thing a digest must not do, because the whole point is a readable history of
+// windows. Never `broadcast_reply`: a digest is already the batched, quiet form, and
+// surfacing every window in-channel would undo that.
+//
+// A destination that can neither thread nor amend — the generic webhook — gets
+// `post_root` every time, which for it means a standalone post, and
+// `deliveries_thread_ck` permits the NULL thread.
+//
+// ⚠️ IT IS DELIBERATELY NOT IN `domain/mode.go`. Adding a digest arm to `PlanFor`
+// would mean giving the §H.6 table a Reason whose columns — verbosity,
+// thread_updates, thread-exists — are all inapplicable, and every one of those columns
+// would then need a documented "not for digests" answer. The rule is smaller than its
+// exception list, so it lives with the thing it describes.
+func digestModes(c domain.Channel, rootLanded bool) []domain.Mode {
+	if !needsThread(c) || !rootLanded {
+		return []domain.Mode{domain.ModePostRoot}
+	}
+	return []domain.Mode{domain.ModeThreadReply}
+}
+
 // modesFor re-applies the §H.6 table now that the thread is known.
 //
 // ⚠ THE ROOT COLUMN OF THAT TABLE TURNS ON WHETHER A ROOT CARD EXISTS, and
@@ -651,7 +741,14 @@ func (s *NotificationService) fanOut(
 // every one after it. The mode is still RE-DERIVED again at claim time, because a
 // root can land or be lost in between; what cannot be deferred is HOW MANY ROWS
 // the fact needs, and that is decided here.
-func (s *NotificationService) modesFor(d destination, rootLanded bool) []domain.Mode {
+func (s *NotificationService) modesFor(
+	n domain.Notification, d destination, rootLanded bool,
+) []domain.Mode {
+	// A digest is not a transition, so the table has nothing to say about it. See
+	// digestModes.
+	if n.Digest() {
+		return digestModes(d.channel, rootLanded)
+	}
 	in := d.input
 	in.ThreadExists = rootLanded
 	if p := domain.PlanFor(in); !p.Empty() {

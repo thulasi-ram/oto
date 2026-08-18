@@ -43,9 +43,6 @@ type settingsJSON struct {
 	FlapThreshold       *int `json:"flap_threshold,omitempty"`
 	FlapWindowS         *int `json:"flap_window_s,omitempty"`
 	FlapDigestIntervalS *int `json:"flap_digest_interval_s,omitempty"`
-	StormThreshold      *int `json:"storm_threshold,omitempty"`
-	StormWindowS        *int `json:"storm_window_s,omitempty"`
-	StormCooldownS      *int `json:"storm_cooldown_s,omitempty"`
 	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
 
@@ -76,9 +73,6 @@ func (s settingsJSON) toPatch() domain.SettingsPatch {
 		FlapThreshold:         s.FlapThreshold,
 		FlapWindowS:           s.FlapWindowS,
 		FlapDigestIntervalS:   s.FlapDigestIntervalS,
-		StormThreshold:        s.StormThreshold,
-		StormWindowS:          s.StormWindowS,
-		StormCooldownS:        s.StormCooldownS,
 		RawRetentionDays:      s.RawRetentionDays,
 		EventRetentionMonth:   s.EventRetentionMonth,
 		UnackedReminderAfterS: s.UnackedReminderAfterS,
@@ -100,9 +94,6 @@ func fromPatch(p domain.SettingsPatch) settingsJSON {
 		FlapThreshold:         p.FlapThreshold,
 		FlapWindowS:           p.FlapWindowS,
 		FlapDigestIntervalS:   p.FlapDigestIntervalS,
-		StormThreshold:        p.StormThreshold,
-		StormWindowS:          p.StormWindowS,
-		StormCooldownS:        p.StormCooldownS,
 		RawRetentionDays:      p.RawRetentionDays,
 		EventRetentionMonth:   p.EventRetentionMonth,
 		UnackedReminderAfterS: p.UnackedReminderAfterS,

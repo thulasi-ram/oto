@@ -246,17 +246,23 @@ func eventTypeMembersIn(s string, values map[string]bool) []string {
 	return out
 }
 
-// TestEventTypeIsSpelledOnce refuses a second Go spelling of any of the 44
-// strings `alert_events.type` may hold — the 36 on the contract plus the 8
+// TestEventTypeIsSpelledOnce refuses a second Go spelling of any of the 40
+// strings `alert_events.type` may hold — the 32 on the contract plus the 8
 // pre-rename spellings ADR 0036 left on disk.
+//
+// ⚠️ THE NUMBER FELL FROM 36 TO 32 BY DELETION, NOT BY RETIREMENT. Migration
+// 00060 narrows `ev_type_ck` to refuse `group.storm_started`, `group.storm_ended`,
+// `alert.flapping_started` and `alert.flapping_ended`, so those four leave both
+// counts. The three RETIRED types — `group.member_joined`, `group.member_left`,
+// `case.reopened` — are still admitted by the CHECK and still counted here.
 func TestEventTypeIsSpelledOnce(t *testing.T) {
-	if n := len(domain.AllEventTypes()); n != 36 {
-		t.Fatalf("AllEventTypes has %d distinct values, expected 36 — "+
+	if n := len(domain.AllEventTypes()); n != 32 {
+		t.Fatalf("AllEventTypes has %d distinct values, expected 32 — "+
 			"if the SPEC amended the enum, this number moves with it", n)
 	}
-	if n := len(eventTypeValues()); n != 44 {
-		t.Fatalf("AllPersistedEventTypes has %d distinct values, expected 44 — "+
-			"36 on the wire plus the 8 pre-ADR-0036 spellings. This number falls to 36 "+
+	if n := len(eventTypeValues()); n != 40 {
+		t.Fatalf("AllPersistedEventTypes has %d distinct values, expected 40 — "+
+			"32 on the wire plus the 8 pre-ADR-0036 spellings. This number falls to 32 "+
 			"when the last `alert_events` partition holding them is dropped, and not before", n)
 	}
 

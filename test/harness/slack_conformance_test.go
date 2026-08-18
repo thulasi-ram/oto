@@ -249,7 +249,7 @@ func TestOtoNeverThreadsOffAReplyEvenWhenHandedOne(t *testing.T) {
 		t.Fatal("the fixture is wrong: the first reply is not distinguishable from a root")
 	}
 	if _, err := channel.Deliver(ctx, chdomain.DeliverRequest{
-		Message: card(t, "storm_notice"), Mode: chdomain.ModeThreadReply, ReplyTo: &first.Ref,
+		Message: card(t, "thread_reply_acked"), Mode: chdomain.ModeThreadReply, ReplyTo: &first.Ref,
 	}); err != nil {
 		t.Fatalf("post a reply threaded off a reply's ref: %v", err)
 	}
@@ -290,12 +290,17 @@ func TestBroadcastIsOneParameterOnAThreadReplyAndIsSetNowhereElse(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("post the broadcasting reminder: %v", err)
 	}
+	// ⛔ THE SECOND BROADCAST WAS `storm_notice` AND ADR 0042 DELETED IT. The claim
+	// under test is about the PARAMETER, not about which card carries it: a
+	// broadcast must set `reply_broadcast` AND `thread_ts` on every message that
+	// uses the mode, and one card sent twice proves that as well as two cards did.
+	// The unacked reminder is now the only broadcast §H.6 admits.
 	if _, err := channel.Deliver(ctx, chdomain.DeliverRequest{
-		Message: card(t, "storm_notice"),
+		Message: card(t, "broadcast_unacked_reminder"),
 		Mode:    chdomain.ModeBroadcastReply,
 		ReplyTo: &root.Ref,
 	}); err != nil {
-		t.Fatalf("post the storm notice: %v", err)
+		t.Fatalf("post the second broadcasting reminder: %v", err)
 	}
 
 	posts := fake.CallsTo("chat.postMessage")

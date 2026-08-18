@@ -95,11 +95,11 @@ func TestTheWriteValidatesTheMergedState(t *testing.T) {
 
 	// A legal first write.
 	if _, err := svc.UpdateOrgSettings(ctx, scope,
-		domain.SettingsPatch{StormThreshold: intp(40)}, nil); err != nil {
+		domain.SettingsPatch{GroupCloseDelayS: intp(400)}, nil); err != nil {
 		t.Fatalf("a legal write failed: %v", err)
 	}
-	if store.org.Settings.StormThreshold != 40 {
-		t.Fatalf("storm_threshold = %d, want 40", store.org.Settings.StormThreshold)
+	if store.org.Settings.GroupCloseDelay != 400*time.Second {
+		t.Fatalf("group_close_delay_s = %v, want 400s", store.org.Settings.GroupCloseDelay)
 	}
 
 	// A second, partial write must not disturb the first.
@@ -107,8 +107,8 @@ func TestTheWriteValidatesTheMergedState(t *testing.T) {
 		domain.SettingsPatch{FlapThreshold: intp(7)}, nil); err != nil {
 		t.Fatalf("the second write failed: %v", err)
 	}
-	if store.org.Settings.StormThreshold != 40 {
-		t.Fatalf("the omitted key reverted: storm_threshold = %d", store.org.Settings.StormThreshold)
+	if store.org.Settings.GroupCloseDelay != 400*time.Second {
+		t.Fatalf("the omitted key reverted: group_close_delay_s = %v", store.org.Settings.GroupCloseDelay)
 	}
 	if store.org.Settings.FlapThreshold != 7 {
 		t.Fatalf("flap_threshold = %d, want 7", store.org.Settings.FlapThreshold)
@@ -134,7 +134,7 @@ func TestOriginSurvivesTheRoundTrip(t *testing.T) {
 	if org.Settings.RefireGrace != 900*time.Second {
 		t.Fatalf("effective %v, want 900s", org.Settings.RefireGrace)
 	}
-	if got := org.Overrides.Origin(domain.KeyStormThreshold); got != domain.OriginDefault {
+	if got := org.Overrides.Origin(domain.KeyFlapThreshold); got != domain.OriginDefault {
 		t.Fatalf("an untouched key reports %q, want default", got)
 	}
 
@@ -155,10 +155,10 @@ func TestOriginSurvivesTheRoundTrip(t *testing.T) {
 // only way it can be: by proving nothing memoises.
 //
 // ⭐ WHY THIS TEST EXISTS. The hot path (`internal/app`'s orgSettings adapter)
-// calls GetOrg once per lifecycle evaluation, once per storm evaluation and once
-// per notification evaluation. If a cache is ever slipped in front of it without
-// a bounded TTL, an operator who raises `storm_threshold` during an incident will
-// watch nothing change and have no way to tell a wrong setting from a stale one.
+// calls GetOrg once per lifecycle evaluation and once per notification evaluation.
+// If a cache is ever slipped in front of it without a bounded TTL, an operator who
+// raises `flap_threshold` during an incident will watch nothing change and have no
+// way to tell a wrong setting from a stale one.
 // This test fails the moment a read stops reaching the store.
 func TestSettingsAreReadLiveOnEveryLookup(t *testing.T) {
 	t.Parallel()
@@ -170,14 +170,14 @@ func TestSettingsAreReadLiveOnEveryLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first read: %v", err)
 	}
-	if first.Settings.StormThreshold != domain.DefaultStormThreshold {
-		t.Fatalf("storm_threshold = %d, want the default", first.Settings.StormThreshold)
+	if first.Settings.FlapThreshold != domain.DefaultFlapThreshold {
+		t.Fatalf("flap_threshold = %d, want the default", first.Settings.FlapThreshold)
 	}
 	readsAfterFirst := store.reads
 
 	// Somebody changes the setting — through the API, or in another pod.
 	if _, err := svc.UpdateOrgSettings(ctx, scope,
-		domain.SettingsPatch{StormThreshold: intp(60)}, nil); err != nil {
+		domain.SettingsPatch{FlapThreshold: intp(60)}, nil); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -185,9 +185,9 @@ func TestSettingsAreReadLiveOnEveryLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second read: %v", err)
 	}
-	if second.Settings.StormThreshold != 60 {
-		t.Fatalf("the change did not take effect on the next read: storm_threshold = %d",
-			second.Settings.StormThreshold)
+	if second.Settings.FlapThreshold != 60 {
+		t.Fatalf("the change did not take effect on the next read: flap_threshold = %d",
+			second.Settings.FlapThreshold)
 	}
 	if store.reads <= readsAfterFirst {
 		t.Fatal("a read was served without reaching the store — something is caching " +

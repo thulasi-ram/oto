@@ -30,7 +30,16 @@ var (
 // The closed vocabularies the query parser accepts, mirroring the contract.
 var (
 	notificationStatuses = []string{"pending", "dispatched", "partial", "delivered", "failed", "suppressed"}
-	suppressedReasons    = []string{"no_policy", "throttled", "storm", "flapping", "verbosity",
+	// ⛔ `storm` AND `flapping` ARE NOT HERE, AND THE ABSENCE IS THE POINT. Both
+	// dampers are removed, `notifications_suppmap_ck` no longer admits either
+	// (migration 00059), and a filter value the column can no longer hold is a
+	// query that always returns nothing — the worst possible answer to "why was I
+	// not told?", because it looks like a fact rather than a dead axis.
+	// ⚠️ `snoozed` IS STILL ABSENT AND THAT IS A PRE-EXISTING GAP, NOT THIS
+	// CHANGE. Migration 00018 added it to `notifications_suppmap_ck`, oto writes
+	// it, and this filter has never been able to select it. Closing that is a
+	// widening of the contract enum and belongs to whoever owns the audit filter.
+	suppressedReasons = []string{"no_policy", "throttled", "verbosity",
 		"channel_disabled", "duplicate_render"}
 	deliveryStatuses = []string{"pending", "sending", "sent", "failed", "dead", "skipped"}
 	errorClasses     = []string{"retryable", "rate_limited", "permanent", "config_invalid", "auth_expired"}

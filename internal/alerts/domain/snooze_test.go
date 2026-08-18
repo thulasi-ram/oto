@@ -502,8 +502,6 @@ func TestSuppressorPrecedence_IsTheFixedB82Order(t *testing.T) {
 		"channel_disabled",
 		"no_policy",
 		"snoozed",
-		"storm",
-		"flapping",
 		"throttled",
 		"verbosity",
 		"duplicate_render",
@@ -517,9 +515,8 @@ func TestSuppressorPrecedence_IsTheFixedB82Order(t *testing.T) {
 	}
 	assert.Less(t, order[SuppressorChannelDisabled], order[SuppressorSnoozed])
 	assert.Less(t, order[SuppressorNoPolicy], order[SuppressorSnoozed])
-	assert.Less(t, order[SuppressorSnoozed], order[SuppressorStorm])
-	assert.Less(t, order[SuppressorSnoozed], order[SuppressorFlapping])
 	assert.Less(t, order[SuppressorSnoozed], order[SuppressorThrottled])
+	assert.Less(t, order[SuppressorThrottled], order[SuppressorVerbosity])
 
 	// The returned slice is a fresh one; a caller cannot re-order the SPEC.
 	got := SuppressorPrecedence()
@@ -536,10 +533,15 @@ func TestFirstSuppressor(t *testing.T) {
 		{name: "nothing applies: deliver it", applies: nil},
 		{name: "empty map: deliver it", applies: map[string]bool{}},
 		{name: "all false: deliver it", applies: map[string]bool{SuppressorSnoozed: false}},
-		{name: "one applies", applies: map[string]bool{SuppressorFlapping: true}, want: SuppressorFlapping},
+		{name: "one applies", applies: map[string]bool{SuppressorThrottled: true}, want: SuppressorThrottled},
 		{
-			name:    "snooze beats the automatic dampers: it tells a user what to DO",
-			applies: map[string]bool{SuppressorSnoozed: true, SuppressorFlapping: true, SuppressorStorm: true},
+			// ⚠️ THE TWO AUTOMATIC DAMPERS THAT USED TO BE THE OTHER HALF OF THIS CASE
+			// ARE DELETED (migration 00060). Snooze still outranks what remains below
+			// it, and the claim it was making — a deliberate human act is the most
+			// actionable explanation a reader can be given — is now made against a
+			// policy rate cap and a per-destination volume preference.
+			name:    "snooze beats what is below it: it tells a user what to DO",
+			applies: map[string]bool{SuppressorSnoozed: true, SuppressorThrottled: true, SuppressorVerbosity: true},
 			want:    SuppressorSnoozed,
 		},
 		{

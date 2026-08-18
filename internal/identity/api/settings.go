@@ -78,9 +78,6 @@ type OrgSettingsPatchDTO struct {
 	FlapThreshold       *int `json:"flap_threshold,omitempty"`
 	FlapWindowS         *int `json:"flap_window_s,omitempty"`
 	FlapDigestIntervalS *int `json:"flap_digest_interval_s,omitempty"`
-	StormThreshold      *int `json:"storm_threshold,omitempty"`
-	StormWindowS        *int `json:"storm_window_s,omitempty"`
-	StormCooldownS      *int `json:"storm_cooldown_s,omitempty"`
 	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
 
@@ -104,9 +101,6 @@ func toOrgSettingsPatchDTO(p domain.SettingsPatch) OrgSettingsPatchDTO {
 		FlapThreshold:         p.FlapThreshold,
 		FlapWindowS:           p.FlapWindowS,
 		FlapDigestIntervalS:   p.FlapDigestIntervalS,
-		StormThreshold:        p.StormThreshold,
-		StormWindowS:          p.StormWindowS,
-		StormCooldownS:        p.StormCooldownS,
 		RawRetentionDays:      p.RawRetentionDays,
 		EventRetentionMonth:   p.EventRetentionMonth,
 		UnackedReminderAfterS: p.UnackedReminderAfterS,
@@ -149,9 +143,6 @@ type UpdateOrgSettingsRequest struct {
 	FlapThreshold       *int `json:"flap_threshold,omitempty"`
 	FlapWindowS         *int `json:"flap_window_s,omitempty"`
 	FlapDigestIntervalS *int `json:"flap_digest_interval_s,omitempty"`
-	StormThreshold      *int `json:"storm_threshold,omitempty"`
-	StormWindowS        *int `json:"storm_window_s,omitempty"`
-	StormCooldownS      *int `json:"storm_cooldown_s,omitempty"`
 	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
 
@@ -203,9 +194,6 @@ func (r UpdateOrgSettingsRequest) toDomain() (domain.SettingsPatch, []domain.Set
 		FlapThreshold:         r.FlapThreshold,
 		FlapWindowS:           r.FlapWindowS,
 		FlapDigestIntervalS:   r.FlapDigestIntervalS,
-		StormThreshold:        r.StormThreshold,
-		StormWindowS:          r.StormWindowS,
-		StormCooldownS:        r.StormCooldownS,
 		RawRetentionDays:      r.RawRetentionDays,
 		EventRetentionMonth:   r.EventRetentionMonth,
 		UnackedReminderAfterS: r.UnackedReminderAfterS,

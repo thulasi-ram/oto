@@ -2729,10 +2729,10 @@ func TestDeclarativeTuningOverTheWire(t *testing.T) {
 			"an afternoon on a number they can see in the database and never in force", got)
 	}
 	// A key the deployment does not manage is not shadowed and carries no config key.
-	if _, present := view.Data.Shadowed["storm_threshold"]; present {
+	if _, present := view.Data.Shadowed["flap_threshold"]; present {
 		t.Fatal("an unmanaged key was reported as shadowed")
 	}
-	if _, present := view.Data.ConfigKeys["storm_threshold"]; present {
+	if _, present := view.Data.ConfigKeys["flap_threshold"]; present {
 		t.Fatal("an unmanaged key was given a config key")
 	}
 
@@ -2751,20 +2751,20 @@ func TestDeclarativeTuningOverTheWire(t *testing.T) {
 
 	// A key the deployment does not manage is still writable, and the write does
 	// not drop the declarative overlay from the response.
-	status, raw = session.patch(t, map[string]any{"storm_threshold": 40})
+	status, raw = session.patch(t, map[string]any{"flap_threshold": 40})
 	if status != http.StatusOK {
 		t.Fatalf("PATCH on an unmanaged key → %d: %s", status, raw)
 	}
 	if err := json.Unmarshal(raw, &view); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got := view.Data.Settings["storm_threshold"]; got != float64(40) {
-		t.Fatalf("storm_threshold = %v after a legal write", got)
+	if got := view.Data.Settings["flap_threshold"]; got != float64(40) {
+		t.Fatalf("flap_threshold = %v after a legal write", got)
 	}
 	if got := view.Data.Settings["refire_grace_s"]; got != float64(600) {
 		t.Fatalf("the write dropped the declarative overlay: refire_grace_s = %v", got)
 	}
-	if got := view.Data.Origins["storm_threshold"]; got != "org" {
+	if got := view.Data.Origins["flap_threshold"]; got != "org" {
 		t.Fatalf("origin of a freshly written unmanaged key = %q, want org", got)
 	}
 }

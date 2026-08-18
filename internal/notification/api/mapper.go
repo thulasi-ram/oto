@@ -50,17 +50,47 @@ func policyDTO(p domain.Policy) PolicyDTO {
 		v := int32(p.UnackedReminderAfter / time.Second) //nolint:gosec // bounded by policies_reminder_ck
 		out.UnackedReminderAfterSeconds = &v
 	}
+	// The zero value means "no digest" in the domain and `null` on the wire; the
+	// seconds ⇄ Duration conversion happens here and nowhere else, as it does for
+	// the reminder above.
+	if p.Digest.Window > 0 {
+		v := int32(p.Digest.Window / time.Second) //nolint:gosec // bounded by policies_digest_window_ck
+		out.DigestWindowSeconds = &v
+	}
+	if p.Digest.Floor > 0 {
+		v := int32(p.Digest.Floor) //nolint:gosec // bounded by policies_digest_floor_ck
+		out.DigestFloor = &v
+	}
 	return out
+}
+
+// nilUUID turns the domain's zero UUID into a JSON `null`.
+//
+// ⛔ IT IS NOT A CONVENIENCE. The domain represents "no group" as the zero UUID
+// because eighteen of the nineteen Reasons always have one and a pointer on every
+// path would be a cost paid to describe the nineteenth. On the wire the zero UUID is
+// not an absence but an ID THAT RESOLVES TO NOTHING, which every client would follow.
+// This is the boundary where the two spellings meet.
+func nilUUID(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
 }
 
 // notificationDTO maps one intent onto the wire.
 func notificationDTO(n domain.Notification, summary *DeliverySummaryDTO) NotificationDTO {
 	updated := n.UpdatedAt.UTC()
 	out := NotificationDTO{
-		ID:              n.ID,
-		SubjectKind:     string(n.SubjectKind),
-		SubjectID:       n.SubjectID,
-		GroupID:         n.GroupID,
+		ID:          n.ID,
+		SubjectKind: string(n.SubjectKind),
+		SubjectID:   n.SubjectID,
+		// nil for a digest, whose subject is a window rather than an object. The
+		// domain keeps the zero UUID for it (eighteen of nineteen reasons always have
+		// a group, so a pointer everywhere would be a cost paid to describe one); the
+		// wire says `null`, because a zero UUID on the wire is an id that resolves to
+		// nothing.
+		GroupID:         nilUUID(n.GroupID),
 		AlertID:         n.AlertID,
 		CaseID:          n.CaseID,
 		Reason:          string(n.Reason),
@@ -204,6 +234,14 @@ func (r CreatePolicyRequest) toDraft() (domain.PolicyDraft, error) {
 		v := time.Duration(*r.UnackedReminderAfterSeconds) * time.Second
 		d.UnackedReminderAfter = &v
 	}
+	if r.DigestWindowSeconds != nil {
+		v := time.Duration(*r.DigestWindowSeconds) * time.Second
+		d.DigestWindow = &v
+	}
+	if r.DigestFloor != nil {
+		v := int(*r.DigestFloor)
+		d.DigestFloor = &v
+	}
 	return d, nil
 }
 
@@ -247,6 +285,22 @@ func (r UpdatePolicyRequest) toPatch() (domain.PolicyPatch, error) {
 			d = &v
 		}
 		p.UnackedReminderAfter = &d
+	}
+	if r.DigestWindowSeconds.Set {
+		var d *time.Duration
+		if r.DigestWindowSeconds.Value != nil {
+			v := time.Duration(*r.DigestWindowSeconds.Value) * time.Second
+			d = &v
+		}
+		p.DigestWindow = &d
+	}
+	if r.DigestFloor.Set {
+		var n *int
+		if r.DigestFloor.Value != nil {
+			v := int(*r.DigestFloor.Value)
+			n = &v
+		}
+		p.DigestFloor = &n
 	}
 	return p, nil
 }

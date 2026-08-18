@@ -54,6 +54,11 @@ type alertRow struct {
 // It is a slice because the list query is built with squirrel, which wants the
 // columns one by one, and a string because every other query is hand-written
 // SQL. Deriving one from the other is what keeps the scan order honest.
+//
+// ⭐ `flap_score` AND `is_flapping` ARE STILL HERE AND THAT IS DELIBERATE. They are
+// RETIRED IN PLACE: nothing writes them any more (see the tombstone where `SetFlap`
+// used to be), and every read keeps working so the value a row already carries stays
+// interpretable. Retired is not deleted.
 var alertColumnList = []string{
 	"id", "org_id", "cluster_id", "alert_key", "source_fingerprint", "alertname", "severity",
 	"namespace", "service", "cluster_key", "labels", "annotations", "generator_url", "state",
@@ -201,8 +206,8 @@ func (r *AlertRepository) db(ctx context.Context) db.Querier { return db.FromCon
 
 // ⭐ THE UPSERT IS ALSO THE ONLY WRITER OF THE LABEL PROJECTION, which is why it
 // grew a tail. `alerts.labels` is written here and nowhere else in this tree —
-// the two other UPDATEs on `alerts` touch flap_score and the
-// case projection — so 00045's `alert_labels` and `alert_label_names` are
+// the ONLY other UPDATE on `alerts` writes the case projection, now that the flap
+// pair is retired at the writer — so 00045's `alert_labels` and `alert_label_names` are
 // maintained in this statement, inside the same transaction, while
 // `Service.observe` holds the alert's row lock. A projection maintained anywhere
 // else is a projection that can be observed disagreeing with its source.
@@ -1205,33 +1210,39 @@ func (r *AlertRepository) SetProjectionBatch(
 	return nil
 }
 
-// SetFlap records a recomputed flap score. Flapping is a VISIBLE UI state, never
-// silent suppression (§B.6), which is why it is written to the row the list
-// renders from.
-func (r *AlertRepository) SetFlap(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID, score float32, flapping bool,
-) error {
-	if err := db.RequireScope(s); err != nil {
-		return err
-	}
-	if err := db.RequireID("alert_id", alertID); err != nil {
-		return err
-	}
-	if score < 0 {
-		return errs.Internal("alert_flap_invalid", errsMissing("flap_score must be >= 0"))
-	}
-	tag, err := r.db(ctx).Exec(ctx,
-		`UPDATE alerts SET flap_score = $3, is_flapping = $4, updated_at = now()
-		  WHERE org_id = $1 AND id = $2`,
-		s.OrgID(), alertID, score, flapping)
-	if err != nil {
-		return mapErr(err, "write flap score")
-	}
-	if tag.RowsAffected() == 0 {
-		return errs.NotFound("alert_not_found", "no such alert")
-	}
-	return nil
-}
+// ⛔⛔ THERE IS NO `SetFlap` ANY MORE, AND IT WAS THE ONLY STATEMENT IN THE TREE
+// THAT WROTE `alerts.flap_score` OR `alerts.is_flapping`. It ran
+// `UPDATE alerts SET flap_score = $3, is_flapping = $4` for the `flap.score` job,
+// and the job is gone with it.
+//
+// ⭐⭐ THE COLUMNS ARE RETIRED IN PLACE, WHICH IS NOT THE SAME AS DROPPED. They are
+// still SELECTed — `alertColumnList` above still names them, `?flapping=` still
+// filters on them, the rollup still counts them, the enrichment read and the
+// notification snapshot still carry them — so every row keeps the last value the
+// detector wrote and no history becomes unreadable. What changed is that no code
+// path can produce a NEW value, which is the same bargain `retiredEventTypes`
+// (`alerts/domain/event.go`) strikes for a value: readable, unwritable.
+//
+// The suppression reasons took the OTHER road and are worth the contrast: `storm`
+// and `flapping` were retired first and then DELETED outright by migration 00060,
+// because narrowing their CHECK meant no row could present one and decode-safety
+// bought nothing. These columns keep the opposite bargain because their CHECK was
+// never narrowed — `alerts_flap_ck` still stands and every stored verdict renders.
+//
+// ⛔ AND THE DETECTOR WAS NOT TUNED, IT WAS RETIRED, BECAUSE IT DID NOT GO DEAD —
+// IT WENT BLIND. The score was an EWMA over the lifecycle events
+// `stateChangeCountsSQL` counts, and the case retention window W (migration 00057)
+// damps a flap at CASE FORMATION: a re-fire inside W lands in the still-open Case,
+// so the resolve is held and no new case opens, and neither `case.opened` nor
+// `case.resolved` is appended. Six flaps that used to append twelve counted events
+// append about two, against a threshold of five over two hours, so `is_flapping`
+// read FALSE exactly when the alert was flapping hardest. A detector that lies is
+// worse than no detector. W is how oto handles flap noise now (ADR 0041,
+// Amendment 1).
+//
+// Nothing may reintroduce this method. The columns keep their last value until a
+// future migration restates their COMMENT — the text is in ADR 0041's amendment —
+// and they leave the schema, if ever, in a contraction of their own.
 
 // ⛔ THERE IS NO `SetSnoozedUntil` ANY MORE, AND NOTHING MAY REINTRODUCE IT. It
 // wrote a mirror of the active `alert_snoozes` row onto `alerts`, which made

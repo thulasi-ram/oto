@@ -122,12 +122,11 @@ type Settings struct {
 	// FlapDigestInterval is how often a flapping alert's card is refreshed.
 	FlapDigestInterval time.Duration
 
-	// StormThreshold is the distinct-join count that collapses a group's card.
-	StormThreshold int
-	// StormWindow is the window StormThreshold is counted over.
-	StormWindow time.Duration
-	// StormCooldown is how long a group stays collapsed after it stops storming.
-	StormCooldown time.Duration
+	// ⛔⛔ `StormThreshold`, `StormWindow` AND `StormCooldown` WERE HERE AND ARE
+	// DELETED WITH THEIR SettingKeys (see settings.go). They were inert — storm
+	// damping is removed, so no module read them to decide anything and the only
+	// thing that still touched them was the settings screen, which rendered three
+	// numbers that changed nothing.
 
 	// RawRetention is how long raw ingested payloads are kept. They age out by
 	// dropping whole partitions, never by deleting rows.
@@ -235,17 +234,14 @@ const (
 	DefaultFlapWindow = tuning.DefaultFlapWindow
 	// DefaultFlapDigestInterval is how often a flapping alert's digest is posted.
 	DefaultFlapDigestInterval = tuning.DefaultFlapDigestInterval
-	// DefaultStormThreshold is how many DISTINCT alerts must join one generation
-	// inside DefaultStormWindow before it collapses to a single message.
-	DefaultStormThreshold = tuning.DefaultStormThreshold
-	// DefaultStormWindow is the window those joins are counted over.
-	DefaultStormWindow = tuning.DefaultStormWindow
-	// DefaultStormCooldown is how long a generation must go WITHOUT a new member
-	// before storm mode ends.
-	DefaultStormCooldown = tuning.DefaultStormCooldown
-	// DefaultRawRetention is 30 DAYS and it is DERIVED, not chosen: it is the
-	// `alert_event_keys` idempotency horizon (SPEC §D.4), past which a replay
-	// appends the timeline a second time instead of reproducing it (ADR 0024).
+	// ⛔ `DefaultStormThreshold`, `DefaultStormWindow` AND `DefaultStormCooldown`
+	// WERE HERE. They mirrored `platform/tuning`, which no longer declares them: a
+	// default for a setting that does not exist is a number nothing can apply.
+	// DefaultRawRetention is 30 DAYS and it is CHOSEN, not derived: `oto replay`
+	// gates on supersession rather than on age, so nothing derives this number
+	// (ADR 0024, Amendment 4). It is the depth of the rejections and failed-batch
+	// feeds, which take no time window, and the window a replay can be attempted in
+	// at all; it costs 51 MB at 1 000 alert firings a day.
 	DefaultRawRetention = tuning.DefaultRawRetention
 	// DefaultEventRetention is 13 MONTHS, and the reason is a CEILING rather than
 	// a preference: it is the longest window that keeps one org inside ADR 0014's
@@ -269,7 +265,8 @@ const (
 
 // DefaultSettings is the tuning an org has until somebody changes it.
 //
-// oto DEFAULTS TO QUIET: grouping, flap damping and storm collapse are all on,
+// oto DEFAULTS TO QUIET: grouping is on, flap SCORING is on (its damper moved to case
+// formation), and storm collapse is gone entirely —
 // and every damping decision is a visible UI state rather than a silent drop
 // (CONTEXT.md §6).
 func DefaultSettings() Settings {
@@ -280,9 +277,6 @@ func DefaultSettings() Settings {
 		FlapThreshold:      DefaultFlapThreshold,
 		FlapWindow:         DefaultFlapWindow,
 		FlapDigestInterval: DefaultFlapDigestInterval,
-		StormThreshold:     DefaultStormThreshold,
-		StormWindow:        DefaultStormWindow,
-		StormCooldown:      DefaultStormCooldown,
 		RawRetention:       DefaultRawRetention,
 		EventRetention:     DefaultEventRetention,
 
@@ -320,15 +314,6 @@ func (s Settings) Normalise() Settings {
 	}
 	if s.FlapDigestInterval <= 0 {
 		s.FlapDigestInterval = d.FlapDigestInterval
-	}
-	if s.StormThreshold <= 0 {
-		s.StormThreshold = d.StormThreshold
-	}
-	if s.StormWindow <= 0 {
-		s.StormWindow = d.StormWindow
-	}
-	if s.StormCooldown <= 0 {
-		s.StormCooldown = d.StormCooldown
 	}
 	if s.RawRetention <= 0 {
 		s.RawRetention = d.RawRetention

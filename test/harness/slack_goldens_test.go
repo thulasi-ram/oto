@@ -199,16 +199,20 @@ func TestEachCardStateCarriesItsOwnColourForAHumanToVerify(t *testing.T) {
 		byColour[c.Colour] = append(byColour[c.Colour], c.Card.Name)
 	}
 
-	// firing, acked, silenced, resolved and storm are five different answers to
-	// "do I need to act?". The two firing-coloured cards (the root and the unacked
-	// reminder) are the same answer, which is why they share one.
+	// firing, acked, silenced and resolved are four different answers to "do I need
+	// to act?". The two firing-coloured cards (the root and the unacked reminder)
+	// are the same answer, which is why they share one.
+	//
+	// ⛔ IT WAS FIVE UNTIL ADR 0042. `storm_notice` carried §H.2's `#7b1fa2`, and
+	// that colour is deleted from the palette along with the state — no group can
+	// enter storm mode, so no card can be purple.
 	for colour, names := range byColour {
 		if len(names) > 2 {
 			t.Errorf("%d cards share the colour %s (%v); the colour has stopped "+
 				"distinguishing states", len(names), colour, names)
 		}
 	}
-	if len(byColour) < 5 {
+	if len(byColour) < 4 {
 		t.Errorf("the corpus only exercises %d colours; §H.2's state palette has more, "+
 			"and a colour nobody captured is a colour nobody can verify", len(byColour))
 	}

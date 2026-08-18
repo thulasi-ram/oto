@@ -74,17 +74,18 @@ type CaseSourceResolver interface {
 	SourceIDs(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]uuid.UUID, error)
 }
 
-// EventCounter counts lifecycle transitions per Alert in a window, for the
-// `flap.score` job (§B.6).
+// ⛔ THERE IS NO `EventCounter` PORT ANY MORE. It counted lifecycle transitions per
+// Alert inside `flap_window` for the `flap.score` job, and the job is retired: the
+// case retention window W (migration 00057) damps a flap at case formation, so a
+// damped episode appends neither of the two events the count lived on and the score
+// read false exactly when the alert was flapping (ADR 0041, Amendment 1). See the
+// tombstone in `sweep.go`.
 //
-// At most `limit` alerts come back, and when the cap binds the implementation
-// must choose the MOST-CHANGED alerts (ties broken on a stable key). The cap
-// lives on this side of the port so that which alerts get scored is a property
-// of the data — the caller iterates a map, and a cap applied over map iteration
-// order scored a random subset every tick.
-type EventCounter interface {
-	StateChangeCounts(ctx context.Context, s db.TenantScope, w db.TimeWindow, limit int) (map[uuid.UUID]int, error)
-}
+// ⚠️ `EventRepository.StateChangeCounts` and `stateChangeCountsSQL` DELIBERATELY
+// SURVIVE in `alerts/repository`: `test/arch/eventtype_test.go` registers that
+// statement as one of the three SQL sites that must spell both the canonical and the
+// pre-ADR-0036 form of a lifecycle type, and the query is a truthful read over
+// history. What it no longer has is a consumer.
 
 // SnoozeHistoryReader reads an Alert's snooze history. Membership of a snooze is
 // history, not a boolean (§B.8.6).
@@ -282,28 +283,34 @@ type Settings struct {
 	// ResolveGrace is how long past `source_ends_at` the reaper waits before an
 	// case may expire (§B.4).
 	ResolveGrace time.Duration
-	// FlapThreshold is the transition count above which an Alert is marked
-	// flapping. Flapping is a VISIBLE state, never silent suppression (§B.6).
+
+	// ⛔⛔ `FlapThreshold` AND `FlapWindow` CONFIGURE NOTHING IN THIS MODULE ANY MORE,
+	// AND THE RESOLVE GRACE IS THE WHOLE LIVE LIFECYCLE POLICY. They tuned the
+	// `flap.score` job, which is RETIRED: the case retention window W damps a flap at
+	// CASE FORMATION (migration 00057), which left the score counting lifecycle events
+	// a damped flap does not append — false exactly when the alert was flapping (ADR
+	// 0041, Amendment 1). `alerts.flap_score` / `alerts.is_flapping` keep their last
+	// value and stay readable, and nothing recomputes them, so no code in `alerts`
+	// reads either number.
+	//
+	// ⚠️ THEY SURVIVE AS THE MIRROR OF `orgs.settings`, NOT AS POLICY. The keys
+	// `flap_threshold` and `flap_window_s` are still declared in `identity/domain`, and
+	// `identity/domain/defaults_derivation_test.go` reads `DefaultSettings()` below to
+	// prove the two copies of the SHIPPED DEFAULT cannot drift. Deleting these two
+	// fields is the identity-side half of the retirement and has deliberately not been
+	// taken here; when those keys go, these go with them.
 	FlapThreshold int
-	// FlapWindow is the window FlapThreshold is counted over.
-	FlapWindow time.Duration
+	FlapWindow    time.Duration
 }
 
 // DefaultSettings are the §D.1 defaults, used when no SettingsReader is wired.
 func DefaultSettings() Settings {
 	return Settings{
 		ResolveGrace: domain.DefaultResolveGrace,
-		// ⛔ THESE TWO WERE BARE LITERALS — `5` and `2 * time.Hour` — under a ⚠️
-		// comment saying they mirror `identity/domain`. They did not even name a
-		// constant, so a reader grepping for the flap defaults found a number here
-		// with nothing tying it to the one that ships, and ADR 0026's window move
-		// (1800→7200) had to be made by hand in every copy. The window is 2h and not
-		// 30m because one observable fire→resolve→fire cycle costs
-		// `group_interval + max(group_interval, for)`, so at the 5m group_interval
-		// the ecosystem actually runs, a 30-minute window could hold at most 6
-		// transitions — and only 2 for the modal `for: 15m` rule — which made a
-		// threshold of 5 unreachable. The derivation lives with the constants in
-		// `platform/tuning`; this is now a reference to them, like the two above.
+		// ⚠️ RETIRED-BUT-MIRRORED (see the struct above): the shipped flap defaults,
+		// referenced rather than copied so ADR 0026's window move cannot be made in one
+		// place and missed in the other. Nothing in `alerts` reads them any more;
+		// `identity/domain/defaults_derivation_test.go` does, to prove the copies agree.
 		FlapThreshold: tuning.DefaultFlapThreshold,
 		FlapWindow:    tuning.DefaultFlapWindow,
 	}

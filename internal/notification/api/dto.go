@@ -59,6 +59,25 @@ type PolicyDTO struct {
 	// is an array, oto is an on-call product and FR-1 has been crossed.
 	UnackedReminderAfterSeconds *int32 `json:"unacked_reminder_after_seconds"`
 
+	// DigestWindowSeconds and DigestFloor are `digest_window_s` and
+	// `digest_floor` (migration 00058): summarise what matched me over a window,
+	// and stay silent unless at least Floor Cases OPENED inside it. `null` on
+	// either means the policy has no window and no floor, which is what every
+	// policy written before 00058 says.
+	//
+	// ⛔ THE WINDOW IS NOT A SCHEDULE OF WHEN OTO MAY SPEAK (SCOPE-BOUNDARY §4.8).
+	// It selects which FACTS a summary covers, is read by the digest tick and by
+	// nothing on the evaluation path, and carries no timezone — windows are aligned
+	// in UTC, because a per-policy timezone is the first half of quiet hours.
+	//
+	// ⚠️ THE DIVISOR RULE IS NOT EXPRESSIBLE HERE and is not duplicated here. The
+	// window must divide 86400 (`policies_digest_window_ck`), which neither a
+	// `validate` tag nor JSON Schema can state — `multipleOf` says the opposite —
+	// so `domain.DigestWindowAligned` is the ONE place it is written and
+	// `Policy.Validate` is what enforces it. Layer 1 carries the range only.
+	DigestWindowSeconds *int32 `json:"digest_window_seconds"`
+	DigestFloor         *int32 `json:"digest_floor"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -95,12 +114,21 @@ type DeliverySummaryDTO struct {
 // idempotency hash is deliberately not exposed: it is a write-path mechanism, not
 // a client-facing identifier.
 type NotificationDTO struct {
-	ID          uuid.UUID  `json:"id"`
-	SubjectKind string     `json:"subject_kind"`
-	SubjectID   uuid.UUID  `json:"subject_id"`
-	GroupID     uuid.UUID  `json:"group_id"`
-	AlertID     *uuid.UUID `json:"alert_id"`
-	CaseID      *uuid.UUID `json:"case_id"`
+	ID          uuid.UUID `json:"id"`
+	SubjectKind string    `json:"subject_kind"`
+	SubjectID   uuid.UUID `json:"subject_id"`
+	// GroupID is THE DELIVERY TARGET, and it is NULL for exactly one subject kind.
+	//
+	// ⚠️ IT BECAME A POINTER WITH MIGRATION 00058, AND THE ALTERNATIVE WAS A LIE ON
+	// THE WIRE. `notifications.group_id` is NULL for a digest — a fact about a window
+	// over a namespace, which spans many generations and has no single thread — so a
+	// value type here would serialise the ZERO UUID and every client would read a
+	// group id that resolves to nothing. oto's silence must never be
+	// indistinguishable from "no alert", and an id that names nothing is the same
+	// class of lie.
+	GroupID *uuid.UUID `json:"group_id"`
+	AlertID *uuid.UUID `json:"alert_id"`
+	CaseID  *uuid.UUID `json:"case_id"`
 
 	Reason       string     `json:"reason"`
 	PolicyID     *uuid.UUID `json:"policy_id"`
@@ -266,9 +294,14 @@ type CreatePolicyRequest struct {
 	// `oneof` tag, because migration 00018 narrowed it and a duplicated list here
 	// would be the second copy that drifts.
 	//
-	// `max` is 18, not 32: `unique` over an 18-value enum makes a 19th element
-	// unreachable, and since 00046 the column agrees — it refuses a duplicate too,
-	// so 32 stopped being a number any row could reach.
+	// `max` is the SIZE OF THE ENUM, not a request-size judgement: `unique` over a
+	// closed vocabulary makes an N+1'th element unreachable, and since 00046 the
+	// column agrees — it refuses a duplicate too, so 32 stopped being a number any
+	// row could reach. It moved from 18 to 19 when migration 00058 added `digest`
+	// and back to 18 when migration 00060 deleted `storm`, alongside
+	// `domain.MaxPolicyReasons` and `policies_reasons_ck`; the contract's
+	// `maxItems` is held to the same number by
+	// `test/contract/dto_schema_test.go`'s enum-ceiling gate.
 	Reasons []string `json:"reasons" validate:"required,min=1,max=18,unique"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID  `json:"channel_ids" validate:"required,min=1,max=16,unique"`
@@ -277,6 +310,17 @@ type CreatePolicyRequest struct {
 	// UnackedReminderAfterSeconds is the ONE unacked reminder stage, in seconds.
 	// See PolicyDTO: scalar, one stage, forever.
 	UnackedReminderAfterSeconds *int32 `json:"unacked_reminder_after_seconds,omitempty" validate:"omitempty,min=60,max=86400"`
+
+	// DigestWindowSeconds and DigestFloor ask for the periodic summary. Both are
+	// OPTIONAL, so every payload written before migration 00058 stays valid — the
+	// contract evolves additively (openapi.yaml §evolution).
+	//
+	// The tags carry the RANGE from `policies_digest_window_ck` and
+	// `policies_digest_floor_ck` and nothing else. The divisor rule, the pair rule
+	// (`policies_digest_pair_ck`) and the reason rule (`policies_digest_reason_ck`)
+	// are cross-field and live in `domain.Policy.Validate` — see PolicyDTO.
+	DigestWindowSeconds *int32 `json:"digest_window_seconds,omitempty" validate:"omitempty,min=300,max=86400"`
+	DigestFloor         *int32 `json:"digest_floor,omitempty"          validate:"omitempty,min=1,max=10000"`
 }
 
 // UpdatePolicyRequest is the partial update.
@@ -295,13 +339,22 @@ type UpdatePolicyRequest struct {
 	// distinction while leaving `httpx.Bind` the only door a body comes through.
 	Throttle                    NullableThrottle `json:"throttle,omitempty"`
 	UnackedReminderAfterSeconds NullableInt32    `json:"unacked_reminder_after_seconds,omitempty"`
+
+	// The digest is nullable for the same reason the throttle is: an explicit
+	// `null` TURNS THE SUMMARY OFF, which is a different request from omitting the
+	// field. The two halves are separately nullable because the columns are —
+	// clearing the floor while keeping the window is "send whenever the window was
+	// not empty", which is a real instruction and not the same as clearing both.
+	DigestWindowSeconds NullableInt32 `json:"digest_window_seconds,omitempty"`
+	DigestFloor         NullableInt32 `json:"digest_floor,omitempty"`
 }
 
 // IsEmpty reports whether the request asks for nothing.
 func (r UpdatePolicyRequest) IsEmpty() bool {
 	return r.Name == nil && r.Priority == nil && r.Enabled == nil &&
 		r.Matchers == nil && r.Reasons == nil && r.ChannelIDs == nil &&
-		!r.Throttle.Set && !r.UnackedReminderAfterSeconds.Set
+		!r.Throttle.Set && !r.UnackedReminderAfterSeconds.Set &&
+		!r.DigestWindowSeconds.Set && !r.DigestFloor.Set
 }
 
 // PolicyPreviewRequest describes the fact to dry-run.

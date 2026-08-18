@@ -63,9 +63,12 @@ func TestRecomputeIsOneOfEverythingPerGeneration(t *testing.T) {
 	if got := h.tx.calls; got != 1 {
 		t.Errorf("transactions = %d, want 1 for a one-group batch", got)
 	}
-	// One org settings read, not one per member.
-	if got := h.settings.reads; got != 1 {
-		t.Errorf("storm policy reads = %d, want 1", got)
+	// ⛔ ZERO ORG SETTINGS READS, WHERE IT USED TO BE "ONE PER BATCH, NOT ONE PER
+	// MEMBER". The one setting the rollup ever read was the storm policy, and storm
+	// damping is removed; `group_close_delay_s` is read by `CloseIdle` and by nothing
+	// here. A read reappearing on this path is a tuning lookup on the hot ingest loop.
+	if got := h.settings.reads; got != 0 {
+		t.Errorf("org settings reads = %d, want 0 — the rollup reads no org tuning", got)
 	}
 	// The UI is told once, so the SSE spine does not carry 500 frames describing
 	// the same generation.
@@ -103,23 +106,30 @@ func TestSettlingAGenerationAppendsNoMembershipEvents(t *testing.T) {
 	}
 
 	// ⛔ AND THE COUNTER IS NOT ZERO BY CONSTRUCTION. `h.events` counts what the
-	// service asked for, so "no membership events" means nothing unless the port
-	// is demonstrably the one the service appends through. The same harness, given
-	// a batch past the storm threshold, must record the storm fact.
-	storm := newJoinHarness(t)
-	storm.members.total = 500
-	storm.members.distinctJoins = 500
-	if _, err := storm.svc.Recompute(storm.ctx, storm.scope, storm.groupID, storm.at); err != nil {
-		t.Fatalf("Recompute (storm): %v", err)
+	// service asked for, so "no membership events" means nothing unless the port is
+	// demonstrably the one the service appends through.
+	//
+	// ⚠️ THE CONTROL USED TO BE THE STORM PATH ON THIS SAME HARNESS — 500 distinct
+	// joins, one `group.storm_started` — and storm damping is removed, so it is the
+	// CLOSE path instead. It goes through the identical `appendGroupEvent` seam, and
+	// settling a generation now appends nothing at all, which makes a wired-port proof
+	// mandatory rather than merely tidy.
+	control := newJoinHarness(t)
+	quiet := goneQuiet(t, control)
+	control.groups.group = quiet
+	control.groups.candidates = []domain.Group{quiet}
+	control.members.total = 0
+	if _, err := control.svc.CloseIdle(control.ctx, control.scope, 10); err != nil {
+		t.Fatalf("CloseIdle (control): %v", err)
 	}
-	if got := storm.events.byType[kernel.EventGroupStormStarted]; got != 1 {
-		t.Fatalf("the events port recorded %d group.storm_started — it is not wired to the "+
+	if got := control.events.byType[kernel.EventGroupClosed]; got != 1 {
+		t.Fatalf("the events port recorded %d group.closed — it is not wired to the "+
 			"service, so the absence asserted above is an artefact of the harness",
 			got)
 	}
-	for typ, n := range storm.events.byType {
+	for typ, n := range control.events.byType {
 		if typ.Retired() && n > 0 {
-			t.Errorf("%s events = %d on the storm path, want 0", typ, n)
+			t.Errorf("%s events = %d on the close path, want 0", typ, n)
 		}
 	}
 }
@@ -177,9 +187,11 @@ func TestTheSeamRefusesARetiredTypeThroughThisPort(t *testing.T) {
 	t.Run("a live group fact is accepted", func(t *testing.T) {
 		port := newRealTimelineWriter(t)
 		if err := port.AppendTimelineEvent(context.Background(), scope, alerts.TimelineEventRequest{
-			Type:    kernel.EventGroupStormStarted,
+			// ⚠️ THIS WAS `group.storm_started` UNTIL IT WAS RETIRED. `group.closed`
+			// is the live group fact this module still appends through the seam.
+			Type:    kernel.EventGroupClosed,
 			GroupID: uuid.New(),
-			Summary: "storm started",
+			Summary: "generation closed",
 		}); err != nil {
 			t.Fatalf("the real writer refused a live type: %v", err)
 		}
@@ -225,45 +237,20 @@ func (stubEventRepo) AppendBatch(
 
 func (inlineTx) InTx(ctx context.Context, fn func(ctx context.Context) error) error { return fn(ctx) }
 
-// Storm evaluation is a §B.6 VISIBLE state change, and it must stay exactly as
-// loud as it was: one evaluation, one transition, one timeline event, one
-// notification intent — no matter how many episodes arrived in the batch that
-// triggered it. The evaluation never counted its own invocations; it counts
-// DISTINCT ALERTS THAT JOINED IN A WINDOW, which is why settling once per batch
-// cannot change its verdict.
-func TestSettlingAnnouncesOneStormPerBatch(t *testing.T) {
-	t.Parallel()
-
-	const batch = 500
-
-	h := newJoinHarness(t)
-	h.members.total = batch
-	// Well past DefaultStormThreshold (25) — this batch IS the storm.
-	h.members.distinctJoins = batch
-
-	g, err := h.svc.Recompute(h.ctx, h.scope, h.groupID, h.at)
-	if err != nil {
-		t.Fatalf("Recompute: %v", err)
-	}
-
-	if !g.StormMode() {
-		t.Fatal("the returned generation is not in storm mode")
-	}
-	if got := h.members.distinctJoinQueries; got != 1 {
-		t.Errorf("storm evaluations = %d, want 1 per group per batch", got)
-	}
-	if got := h.groups.setStorms; got != 1 {
-		t.Errorf("SetStorm writes = %d, want 1", got)
-	}
-	if got := h.events.byType[kernel.EventGroupStormStarted]; got != 1 {
-		t.Errorf("group.storm_started events = %d, want exactly 1", got)
-	}
-	// One `notify.evaluate` job is what keeps the §H.6 latch on
-	// `channels.storm_notice_at` seeing one notice, not 500.
-	if got := h.enqueuer.enqueued; got != 1 {
-		t.Errorf("notify.evaluate jobs = %d, want exactly 1", got)
-	}
-}
+// ⛔⛔ `TestSettlingAnnouncesOneStormPerBatch` WAS HERE AND IS DELETED WITH THE
+// EVALUATION IT PINNED. It asserted that a 500-episode batch produced ONE storm
+// evaluation, ONE `SetStorm` write, ONE `group.storm_started` row and ONE
+// `notify.evaluate` job — the loudness budget behind ADR 0020's
+// `channels.storm_notice_at` latch, which existed so a channel was told once rather
+// than 500 times that oto had started withholding.
+//
+// ⭐ THE PROPERTY IT PROVED IS NOT LOST, IT IS UNNEEDED. "One of everything per
+// generation per batch" is still asserted above, over the rollup, which is the only
+// thing `Recompute` does now. What the deleted test additionally pinned was the
+// visibility of a damper, and the damper is gone: storm collapse held a generation to
+// one root card and dropped every per-alert reply, which made a withheld notification
+// indistinguishable from a signal that never fired. See the tombstone at the top of
+// `domain/lifecycle.go`.
 
 // ------------------------------------------------------------------ harness
 
@@ -316,18 +303,15 @@ func newJoinHarness(t *testing.T) *joinHarness {
 	}
 
 	h := &joinHarness{
-		ctx:     context.Background(),
-		scope:   scope,
-		at:      at,
-		groupID: g.ID(),
-		groups:  &fakeGroups{group: g},
-		// lastJoinAt is the batch's own instant: the storm window's most recent
-		// join is what `EvaluateStorm` measures the cooldown from, and a zero one
-		// would make every verdict here a statement about the epoch.
-		members:  &fakeMembers{lastJoinAt: at},
+		ctx:      context.Background(),
+		scope:    scope,
+		at:       at,
+		groupID:  g.ID(),
+		groups:   &fakeGroups{group: g},
+		members:  &fakeMembers{},
 		events:   &fakeEvents{byType: map[kernel.EventType]int{}},
 		stream:   &fakeStream{},
-		settings: &fakeSettings{policy: domain.DefaultStormPolicy()},
+		settings: &fakeSettings{policy: domain.DefaultLifecyclePolicy()},
 		enqueuer: &fakeEnqueuer{},
 		tx:       &fakeTx{},
 	}
@@ -363,7 +347,6 @@ type fakeGroups struct {
 	group      domain.Group
 	reads      int
 	setRollups int
-	setStorms  int
 	// candidates is what CloseCandidates hands back, and closes counts the
 	// generations actually closed. Both exist for closeidle_test.go: a sweep that
 	// is REFUSED must be distinguishable from a sweep that found nothing to do,
@@ -379,12 +362,6 @@ func (f *fakeGroups) GetByID(context.Context, db.TenantScope, uuid.UUID) (domain
 
 func (f *fakeGroups) SetRollup(_ context.Context, _ db.TenantScope, g domain.Group, _ int) error {
 	f.setRollups++
-	f.group = g
-	return nil
-}
-
-func (f *fakeGroups) SetStorm(_ context.Context, _ db.TenantScope, g domain.Group, _ int) error {
-	f.setStorms++
 	f.group = g
 	return nil
 }
@@ -437,11 +414,8 @@ type fakeMembers struct {
 	// `last_activity_at` — which silently makes a generation un-closable for
 	// another `group_close_delay`. closeidle_test.go needs a rollup that changes
 	// nothing in order to reach the close at all.
-	severity            string
-	rollups             int
-	distinctJoinQueries int
-	distinctJoins       int
-	lastJoinAt          time.Time
+	severity string
+	rollups  int
 }
 
 func (f *fakeMembers) Rollup(
@@ -453,17 +427,6 @@ func (f *fakeMembers) Rollup(
 		sev = "critical"
 	}
 	return domain.Counts{Firing: f.total, Total: f.total}, sev, nil
-}
-
-func (f *fakeMembers) DistinctJoinsSince(
-	context.Context, db.TenantScope, uuid.UUID, time.Time,
-) (int, time.Time, error) {
-	f.distinctJoinQueries++
-	n := f.distinctJoins
-	if n == 0 {
-		n = f.total
-	}
-	return n, f.lastJoinAt, nil
 }
 
 func (f *fakeMembers) MembersAt(
@@ -524,11 +487,13 @@ func (f *fakeStream) Append(context.Context, db.TenantScope, string, uuid.UUID, 
 }
 
 type fakeSettings struct {
-	policy domain.StormPolicy
+	policy domain.LifecyclePolicy
 	reads  int
 }
 
-func (f *fakeSettings) Storm(context.Context, db.TenantScope) (domain.StormPolicy, error) {
+func (f *fakeSettings) GroupLifecycle(
+	context.Context, db.TenantScope,
+) (domain.LifecyclePolicy, error) {
 	f.reads++
 	return f.policy, nil
 }

@@ -315,9 +315,9 @@ func previewWarnings(p service.Preview, reason domain.Reason) []string {
 
 	// The honest caveat. A preview that quietly ignored the time-dependent
 	// dampers would read as a guarantee, and it is not one.
-	out = append(out, "this dry run evaluates ROUTING only. Snooze, storm damping, flap damping and the "+
-		"per-subject throttle are properties of the moment a notification is minted and are not applied "+
-		"here, so a real send may additionally be suppressed by one of them — visibly, with a recorded reason")
+	out = append(out, "this dry run evaluates ROUTING only. Snooze and the per-subject throttle are "+
+		"properties of the moment a notification is minted and are not applied here, so a real send may "+
+		"additionally be suppressed by one of them — visibly, with a recorded reason")
 	return out
 }
 

@@ -258,7 +258,7 @@ func (e *env) drain(deadline time.Duration) {
 //
 // ⛔ NOTHING IN HERE IS A CONTRACT. Every duration depends on the machine, the
 // container runtime and whatever else is running; the assertions live in
-// assertStormInvariants and none of them reads a clock.
+// assertBurstInvariants and none of them reads a clock.
 type report struct {
 	Case string `json:"case"`
 	Note string `json:"note,omitempty"`
@@ -304,8 +304,8 @@ type report struct {
 
 	// ---- the O(groups) property ----------------------------------------
 	// RollupPublishes is `ui_events{kind=group.upserted}` per group: one per
-	// generation opened, one per MATERIAL rollup, one per storm transition. Under
-	// the defect this issue is adjacent to it was one PER ALERT.
+	// generation opened and one per MATERIAL rollup. Under the defect this issue
+	// is adjacent to it was one PER ALERT.
 	RollupPublishes    map[string]int `json:"rollup_publishes_per_group"`
 	MaxStateVersion    int            `json:"max_group_state_version"`
 	AlertsPerLargeGrp  int            `json:"alerts_in_largest_group"`
@@ -325,14 +325,12 @@ type report struct {
 	SlackRoots       int            `json:"slack_root_posts"`
 	SlackThreadPosts int            `json:"slack_thread_replies"`
 	SlackBroadcasts  int            `json:"slack_broadcast_replies"`
-	StormNotices     int            `json:"storm_notices_in_channel"`
 
 	// ---- the ordering gate ----------------------------------------------
-	Threads         int            `json:"threads"`
-	ThreadsAtHead   int            `json:"threads_with_head_at_end"`
-	ThreadStates    map[string]int `json:"thread_states"`
-	GapsRecovered   int            `json:"delivery_skipped_events"`
-	StormModeGroups int            `json:"groups_in_storm_mode"`
+	Threads       int            `json:"threads"`
+	ThreadsAtHead int            `json:"threads_with_head_at_end"`
+	ThreadStates  map[string]int `json:"thread_states"`
+	GapsRecovered int            `json:"delivery_skipped_events"`
 
 	// ---- jobs -----------------------------------------------------------
 	JobsByKind map[string]int `json:"jobs_by_kind"`
@@ -422,8 +420,6 @@ func (e *env) measure(name string, d *driver, push, drainFor time.Duration) *rep
 	r.ThreadStates = e.countBy(`SELECT state, count(*) FROM channel_threads WHERE org_id = $1 GROUP BY 1`)
 	r.GapsRecovered = e.queryInt(
 		`SELECT count(*) FROM alert_events WHERE org_id = $1 AND type = 'delivery.skipped'`, e.orgID)
-	r.StormModeGroups = e.queryInt(
-		`SELECT count(*) FROM alert_groups WHERE org_id = $1 AND storm_mode`, e.orgID)
 
 	r.JobsByKind = e.jobsByKind()
 	e.readSlack(r)
@@ -460,9 +456,6 @@ func (e *env) readSlack(r *report) {
 			r.SlackThreadPosts++
 		}
 	}
-	// The storm notice IS the broadcast reply: ADR 0020 permits exactly one
-	// broadcast while a storm is on and it is the storm announcement itself.
-	r.StormNotices = r.SlackBroadcasts
 }
 
 func (e *env) countBy(sql string) map[string]int {
@@ -582,26 +575,17 @@ type invariantSpec struct {
 	// Groups is how many distinct §C.4 generations should exist.
 	Groups int
 	// MaxRollupsPerGroup is the tight bound on `group.upserted` per group: one for
-	// the generation opening, one per MATERIAL rollup, one per storm transition,
-	// plus slack. Blowing it means the rollup went back to being O(alerts).
+	// the generation opening and one per MATERIAL rollup, plus slack. Blowing it
+	// means the rollup went back to being O(alerts).
 	MaxRollupsPerGroup int
-	// StormGroups is how many generations must have entered storm mode, and
-	// therefore how many `storm` notifications must exist — one per thread, so the
-	// record is complete on every group.
-	StormGroups int
-	// RequireChannelBroadcast demands that the channel-level notice actually
-	// surfaced in-channel, which is only reachable when the storm arrives at a
-	// group whose root card has ALREADY landed. See the note on the storm
-	// assertion for why the single-batch cases cannot require it.
-	RequireChannelBroadcast bool
 }
 
-// assertStormInvariants is the whole hard contract of this package.
+// assertBurstInvariants is the whole hard contract of this package.
 //
 // ⛔ NOT ONE OF THESE READS A CLOCK. Timings vary by machine and are recorded in
 // the report; what must never vary is that nothing was lost, nothing was said
 // twice, and nothing wedged.
-func assertStormInvariants(t *testing.T, e *env, r *report, want invariantSpec) {
+func assertBurstInvariants(t *testing.T, e *env, r *report, want invariantSpec) {
 	t.Helper()
 
 	// 1. NOTHING SILENTLY LOST. Every alert oto took responsibility for is either
@@ -657,9 +641,9 @@ func assertStormInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 	}
 
 	// 3. ⭐ THE O(groups) PROPERTY, END TO END. `Recompute` is called once per
-	//    affected group per batch, so one batch performs ONE rollup and ONE storm
-	//    evaluation per group rather than one per alert. Two statements, because one alone is weak: the ratio
-	//    catches the regression, the absolute bound catches drift.
+	//    affected group per batch, so one batch performs ONE rollup per group
+	//    rather than one per alert. Two statements, because one alone is weak: the
+	//    ratio catches the regression, the absolute bound catches drift.
 	for title, n := range r.RollupPublishes {
 		if n > want.MaxRollupsPerGroup {
 			t.Errorf("group %q published %d `group.upserted` events, bound is %d — "+
@@ -672,51 +656,24 @@ func assertStormInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 			"that is O(alerts), not O(groups)", r.AlertsPerLargeGrp, r.RollupsPerAlertPct)
 	}
 
-	// 4. ⭐ EXACTLY ONE STORM NOTICE PER CHANNEL (ADR 0020), IN TWO HALVES.
+	// 4. ⭐ A BURST ADDS NOTHING TO THE CHANNEL. Every fact a burst produces lands
+	//    on a thread — as a root card or as a reply under it — and NOTHING is
+	//    broadcast out of the thread into the channel.
 	//
-	//    Storm mode is decided per GROUP and a channel carries many groups, so
-	//    §B.6 has to reconcile two things that pull opposite ways: every group's
-	//    thread must RECORD that it went quiet, and the channel must be TOLD only
-	//    once. The two halves are asserted separately because they are two
-	//    different claims about two different surfaces.
-	//
-	//    ⚠️ THE IN-CHANNEL FORM IS NOT ALWAYS A BROADCAST, and discovering that is
-	//    one of the things this load case bought. When five hundred alerts arrive
-	//    in ONE batch, the storm transition and the group's first notification are
-	//    minted in the SAME ingest transaction, so the storm evaluation frequently
-	//    runs before any root card exists — §H.6 then answers `post_root` and drops
-	//    the reply as `fresh_root`, and the channel learns about the storm from the
-	//    root card itself, which already says "Storm — N alerts in this group".
-	//    That is correct and is not a broadcast. Requiring one unconditionally
-	//    would be asserting a race.
-	if want.StormGroups > 0 {
-		if r.StormModeGroups != want.StormGroups {
-			t.Errorf("%d generations are in storm mode, want %d", r.StormModeGroups, want.StormGroups)
-		}
-		if got := r.NotificationsByReason["storm"]; got != want.StormGroups {
-			t.Errorf("%d `storm` notifications recorded for %d storming generations — "+
-				"every group's own thread must record that oto went quiet (§B.6)",
-				got, want.StormGroups)
-		}
-		// ⛔ THE FLOOD GUARD, AND THE WHOLE POINT OF THE LATCH. However many groups
-		// storm, AT MOST ONE of them may shout in the channel.
-		if r.SlackBroadcasts > 1 {
-			t.Errorf("%d in-channel storm broadcasts across %d storming groups, want at most 1 — "+
-				"the once-per-channel latch on channels.storm_notice_at did not hold, and the "+
-				"damper is now producing the flood it exists to prevent",
-				r.SlackBroadcasts, want.StormGroups)
-		}
-		if want.RequireChannelBroadcast && r.SlackBroadcasts != 1 {
-			t.Errorf("%d in-channel storm broadcasts, want exactly 1: every group's root card "+
-				"had already landed, so the notice had nowhere to hide", r.SlackBroadcasts)
-		}
-		if want.RequireChannelBroadcast {
-			latched := e.queryInt(
-				`SELECT count(*) FROM channels WHERE org_id = $1 AND storm_notice_at IS NOT NULL`, e.orgID)
-			if latched != 1 {
-				t.Errorf("%d channels carry a storm_notice_at latch, want 1", latched)
-			}
-		}
+	//    ⛔ THIS ASSERTION REPLACED "EXACTLY ONE STORM NOTICE PER CHANNEL", AND IT
+	//    IS STRICTLY STRONGER. Storm damping used to answer a busy group by going
+	//    quiet and then announcing, once per channel, that it had gone quiet — a
+	//    latch on `channels.storm_notice_at` whose whole job was to bound the
+	//    announcement. ADR 0042 removed the damping, so there is nothing to
+	//    announce: the only broadcasts §H.6 still admits are the unacked reminder
+	//    and, when the org opts in, `all_resolved`. Neither is reachable here —
+	//    `unacked_reminder_after_s` is unset and nothing in these cases resolves —
+	//    so the correct count is ZERO, at any volume, and a non-zero count means
+	//    oto found a new way to shout in a channel during an outage.
+	if r.SlackBroadcasts != 0 {
+		t.Errorf("%d broadcast replies escaped into the channel; want 0 — no burst of any "+
+			"size may surface anything beyond the per-group root card (ADR 0042)",
+			r.SlackBroadcasts)
 	}
 
 	// 5. ⭐ NO DELIVERY LOST OR DUPLICATED. The two sides of the wire are compared
@@ -761,7 +718,7 @@ func assertStormInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 		t.Errorf("%d deliveries are still pending/sending after the drain", live)
 	}
 
-	// 6. ONE ROOT PER THREAD. A storm that opened five hundred Slack threads for
+	// 6. ONE ROOT PER THREAD. A burst that opened five hundred Slack threads for
 	//    one incident is the failure this product exists to prevent, and it would
 	//    show up here as roots > threads.
 	if r.SlackRoots != r.Threads {
@@ -772,8 +729,14 @@ func assertStormInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 	// 7. ⭐ OTO'S OWN CHATTER IS AN ORDER OF MAGNITUDE BELOW THE ALERT COUNT.
 	//    This is the product claim, stated as a ratio rather than as a budget so
 	//    that it does not depend on how many batches a machine happened to shed:
-	//    a receiver that posts per alert would sit at 100 %, and storm collapse
-	//    plus amend-in-place is supposed to put oto below 10 %.
+	//    a receiver that posts per alert would sit at 100 %.
+	//
+	//    ⭐ IT SURVIVED STORM DAMPING'S REMOVAL UNCHANGED, WHICH IS THE POINT. The
+	//    ratio was never bought by withholding anything. A notification is minted
+	//    per TRIGGERING CHANGE per group — one batch arriving at one group is one
+	//    fact, whether it carries four alerts or five hundred — and amend-in-place
+	//    then spends `chat.update` rather than `chat.postMessage` on it. Grouping
+	//    and idempotency are the whole mechanism; damping was never part of it.
 	if r.AlertsAccepted >= 200 && r.SlackCalls*10 > r.AlertsAccepted {
 		t.Errorf("%d Slack calls for %d accepted alerts (%v) — that is more than one message "+
 			"per ten alerts, which is the noise level oto exists to be below",

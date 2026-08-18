@@ -184,9 +184,11 @@ func (rt *Router) Mount(r chi.Router) {
 		g.Use(rt.auth.RequireSession)
 		g.Post("/auth/logout", rt.logout)
 		// ⚠️ WRITING THE TUNING IS SESSION-ONLY. These numbers decide how much
-		// oto says and how much it withholds; a leaked ingest-adjacent token must
-		// not be able to raise `storm_threshold` and make the tool go quiet. It
-		// joins the same privilege boundary as minting credentials.
+		// oto says; a leaked ingest-adjacent token must not be able to widen
+		// `default_verbosity` or lengthen `resolve_grace_s` and change what an
+		// operator hears. It joins the same privilege boundary as minting
+		// credentials. (The example used to be `storm_threshold`, back when oto
+		// still withheld notifications on its own judgement; it no longer does.)
 		g.Patch("/org/settings", rt.updateOrgSettings)
 		g.Get("/api-tokens", rt.listAPITokens)
 		g.Post("/api-tokens", rt.createAPIToken)

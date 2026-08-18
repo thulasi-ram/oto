@@ -201,7 +201,7 @@ func notificationDTO(n service.NotificationSummary) NotificationDTO {
 		ID:              n.ID,
 		SubjectKind:     "alert_group",
 		SubjectID:       n.GroupID,
-		GroupID:         n.GroupID,
+		GroupID:         idPtr(n.GroupID),
 		AlertID:         n.AlertID,
 		CaseID:          n.CaseID,
 		PolicyID:        n.PolicyID,
@@ -395,6 +395,43 @@ func rollupDTO(r domain.AlertRollup, by string) AlertRollupDTO {
 // so rather than letting the operator find out during an incident.
 var promotedLabels = map[string]bool{
 	"alertname": true, "severity": true, "namespace": true, "service": true, "cluster": true,
+}
+
+// casePolicyDTO maps one retention rule onto the wire.
+//
+// The seconds ⇄ Duration conversion happens here and nowhere else, and the wire
+// name is `retention_window_seconds` rather than the column's
+// `retention_window_s`: a DTO field name is what a client maps onto a control, and
+// the column spelling is one no client has ever been sent.
+func casePolicyDTO(p domain.CasePolicy) CasePolicyDTO {
+	return CasePolicyDTO{
+		ID:        p.ID,
+		Namespace: p.Namespace,
+		Alertname: p.Alertname,
+		//nolint:gosec // bounded by case_policy_window_ck
+		RetentionWindowSeconds: int32(p.RetentionWindow / time.Second),
+		CreatedAt:              utc(p.CreatedAt),
+		UpdatedAt:              utc(p.UpdatedAt),
+	}
+}
+
+// toCasePolicyDraft maps a create request onto the domain command.
+func (r CreateCasePolicyRequest) toCasePolicyDraft() domain.CasePolicyDraft {
+	return domain.CasePolicyDraft{
+		Namespace:       r.Namespace,
+		Alertname:       r.Alertname,
+		RetentionWindow: time.Duration(r.RetentionWindowSeconds) * time.Second,
+	}
+}
+
+// toCasePolicyPatch maps an update request onto the domain command.
+func (r UpdateCasePolicyRequest) toCasePolicyPatch() domain.CasePolicyPatch {
+	var p domain.CasePolicyPatch
+	if r.RetentionWindowSeconds != nil {
+		d := time.Duration(*r.RetentionWindowSeconds) * time.Second
+		p.RetentionWindow = &d
+	}
+	return p
 }
 
 func labelNameDTO(l domain.LabelCount) LabelNameDTO {

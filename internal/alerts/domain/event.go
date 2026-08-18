@@ -24,15 +24,16 @@ const (
 // `alert_event_keys` — the horizon SPEC §D.4 and the table's own comment have
 // always named, and which nothing enforced until `retention.prune` did.
 //
-// ⭐ IT IS THE PRIMARY NUMBER, NOT A DERIVED ONE, and the direction matters
-// because five places state the coupling the other way round.
-// `tuning.DefaultRawRetention` is 30 days BECAUSE THIS IS: SPEC acceptance
-// criterion 36 says replaying a stored `ingest_batch` after a parser fix must
-// reproduce the same state without duplicate Slack messages, and that replay is
-// idempotent only while the batch's event keys are still claimed here. A raw
-// payload kept past this horizon is a payload that can no longer be used for the
-// one thing it is kept for. Move this and `DefaultRawRetention` moves with it —
-// ADR 0024 says so in as many words.
+// ⭐ IT IS AN INDEPENDENT NUMBER, AND `tuning.DefaultRawRetention` IS ANOTHER ONE
+// THAT HAPPENS TO EQUAL IT. Neither derives the other: `oto replay` gates on
+// supersession rather than on age, so the raw window is a chosen 30 days
+// (ADR 0024, Amendment 4), while this horizon exists for the RECONCILER — it
+// re-applies transitions, and this table is the only thing that dedupes them, so
+// an operator who drops the install-wide raw window to a day must not thereby
+// unclaim the keys of cases that are still open. Move either number by deciding
+// about it, not as a consequence of the other;
+// `TestTheShippedKeyHorizonCoversTheShippedRawWindow` pins the one ordering that
+// must hold, which is that keys outlive the bytes they guard.
 //
 // ⛔ IT IS A FLOOR, AND THE SWEEP MAY ONLY WIDEN IT. `raw_retention_days` is a
 // per-org setting bounded 1..365, and `partitions.manage` already drops raw
@@ -58,10 +59,13 @@ var (
 	EventAlertCreated = EventType{"alert.created"}
 	// EventAlertMutated records a material change on a repeat observation.
 	EventAlertMutated = EventType{"alert.mutated"}
-	// EventAlertFlappingStarted records the Alert crossing flap_threshold.
-	EventAlertFlappingStarted = EventType{"alert.flapping_started"}
-	// EventAlertFlappingEnded records the Alert settling.
-	EventAlertFlappingEnded = EventType{"alert.flapping_ended"}
+	// ⛔ `EventAlertFlappingStarted` AND `EventAlertFlappingEnded` WERE HERE AND ARE
+	// DELETED (migration 00060). They recorded an Alert crossing `flap_threshold`,
+	// and the detector behind them did not go dead — it went BLIND: the case
+	// retention window W (migration 00057) damps a flap at CASE FORMATION, so a
+	// re-fire inside W lands in the still-open Case and the counted events fall
+	// below the threshold exactly when the alert is flapping hardest. A detector
+	// that lies is worse than no detector.
 
 	// EventCaseOpened records a new firing episode (T1, T7).
 	EventCaseOpened = EventType{"case.opened"}
@@ -104,10 +108,11 @@ var (
 	// nowhere, so this type was declared, validated, and absent from every
 	// timeline oto has ever rendered.
 	EventGroupMemberLeft = EventType{"group.member_left"}
-	// EventGroupStormStarted records a generation entering storm mode.
-	EventGroupStormStarted = EventType{"group.storm_started"}
-	// EventGroupStormEnded records storm mode ending after storm_cooldown.
-	EventGroupStormEnded = EventType{"group.storm_ended"}
+	// ⛔ `EventGroupStormStarted` AND `EventGroupStormEnded` WERE HERE AND ARE
+	// DELETED (migration 00060). Nothing evaluates a storm, so nothing can observe
+	// one starting or ending: storm damping is removed outright (ADR 0042) rather
+	// than quietened, because the thing that owns many different alerts is an
+	// INCIDENT and that object does not exist yet.
 
 	// EventRuleSnapshotCaptured records a RuleSnapshot being bound to a case.
 	EventRuleSnapshotCaptured = EventType{"rule.snapshot_captured"}
@@ -197,6 +202,31 @@ func init() {
 // `notification/repository`, INSERTs only its own `notification.*`/`delivery.*`
 // rows and can no more reach these values than it can invent one.
 //
+// ⛔⛔ FOUR MORE VALUES PASSED THROUGH THIS MAP AND ARE NOW DELETED RATHER THAN
+// RETIRED, WHICH IS THE ONE PLACE THIS FILE HAS CHANGED ITS MIND. `group.storm_started`
+// and `group.storm_ended` named a DAMPER OTO NO LONGER HAS (ADR 0042: a storm is many
+// DIFFERENT alerts arriving together, and the thing that owns many different alerts is
+// an INCIDENT — `correlation`, DEFERRED-POST-V1 — so the defence was built before its
+// object and put what it detected at delivery, where a withheld notification is
+// indistinguishable from a signal that never fired). `alert.flapping_started` and
+// `alert.flapping_ended` named a DETECTOR THAT WENT BLIND rather than dead: the case
+// retention window W (migration 00057) damps a flap at case formation, so the counted
+// events fall below `flap_threshold` exactly when the alert is flapping hardest.
+//
+// ⛔ THE BARGAIN ABOVE ONLY BUYS SOMETHING WHEN A ROW CAN EXIST. `ev_type_ck` was a
+// SHAPE and admitted anything, which is why the four could be kept as parseable
+// history; migration 00060 NARROWS it to refuse exactly these four spellings and
+// performs no `UPDATE`, so a database holding one refuses the migration with a 23514.
+// The maintainer has authorised the database reset that answers it. With no row left
+// to read back, a value kept for a reader that cannot exist is not caution — it is a
+// vocabulary entry the next person has to rule out, and `NewEventType` now refuses
+// the four exactly as the column does.
+//
+// ⚠️ THE THREE ABOVE ARE NOT LIKE THE FOUR. `group.member_*` and `case.reopened` are
+// still admitted by `ev_type_ck` and by every partition on disk, and 00060 does not
+// touch them: they belong to migrations 00051 and 00054 and to other decisions.
+// Retired means READ BUT NEVER WRITTEN and that is still exactly what they are.
+//
 // They leave this file when the last partition holding them is dropped, and not
 // before.
 var retiredEventTypes = map[string]struct{}{
@@ -221,7 +251,7 @@ func (t EventType) Retired() bool {
 // These eight name the SAME fact under a new word: `occurrence.opened` and
 // `case.opened` are one transition, T1, spelled twice. So they are canonicalised
 // on the way in and never leave the process: `AllEventTypes` — and therefore
-// `components.schemas.AlertEventType` — lists thirty-six values, all `case.*`, and
+// `components.schemas.AlertEventType` — lists thirty-two values, all `case.*`, and
 // a client is never asked to learn two names for one thing.
 //
 // ⛔ WHY THE ROWS WERE NOT REWRITTEN INSTEAD. `alert_events` is monthly-partitioned,
@@ -300,10 +330,12 @@ func AllPersistedEventTypes() []string {
 // AllEventTypes returns the closed enum in declaration order.
 //
 // ⛔ THE DDL IS NOT A SECOND COPY OF THIS LIST, AND MUST NOT BE MISTAKEN FOR
-// ONE. `ev_type_ck` is `CHECK (type ~ '^[a-z_]+\.[a-z_]+$')` — a SHAPE, not a
-// vocabulary. It admits any `<subject>.<fact>` string, so a value added here and
-// nowhere else reaches the database, the timeline and the wire without one
-// constraint objecting.
+// ONE. `ev_type_ck` is still a SHAPE — `type ~ '^[a-z_]+\.[a-z_]+$'` — and admits
+// any `<subject>.<fact>` string, so a value ADDED here and nowhere else reaches
+// the database, the timeline and the wire without one constraint objecting.
+// Migration 00060 adds a `NOT IN` clause naming the four deleted damper
+// spellings and nothing more: it can refuse a value that LEFT this list, and it
+// still cannot notice one that joined it.
 //
 // The one other enumeration of these values is `components.schemas.AlertEventType`
 // in `api/openapi/openapi.yaml`, which is what every generated client knows.
@@ -315,19 +347,20 @@ func AllPersistedEventTypes() []string {
 // somebody else's generated client refusing a value oto already writes.
 //
 // ⚠️ IT IS THE SET THAT MAY BE READ, WHICH IS LARGER THAN THE SET THAT MAY BE
-// WRITTEN. Two entries — `group.member_joined` and `group.member_left` — are
-// RETIRED: nothing appends them, and `AppendTimelineEvent` refuses them, but they
-// stay here because thirteen months of `alert_events` still contain them. See
-// `retiredEventTypes`.
+// WRITTEN. Three entries — `group.member_joined`, `group.member_left` and
+// `case.reopened` — are RETIRED: nothing appends them, and `AppendTimelineEvent`
+// refuses them, but they stay here because thirteen months of `alert_events` still
+// contain them. The four damper types are NOT among them: migration 00060 narrows
+// `ev_type_ck` to refuse their spellings outright, so they are deleted rather than
+// retired. See `retiredEventTypes` for why the two treatments differ.
 func AllEventTypes() []EventType {
 	return []EventType{
-		EventAlertCreated, EventAlertMutated, EventAlertFlappingStarted, EventAlertFlappingEnded,
+		EventAlertCreated, EventAlertMutated,
 		EventCaseOpened, EventCaseReopened, EventCaseSuppressed,
 		EventCaseUnsuppressed, EventCaseResolved, EventCaseExpired,
 		EventCaseAcknowledged, EventCaseUnacknowledged,
 		EventAlertSnoozed, EventAlertUnsnoozed,
 		EventGroupOpened, EventGroupClosed, EventGroupMemberJoined, EventGroupMemberLeft,
-		EventGroupStormStarted, EventGroupStormEnded,
 		EventRuleSnapshotCaptured, EventRuleDefinitionChanged, EventRuleLookupFailed,
 		EventEnrichmentCompleted, EventEnrichmentFailed,
 		EventNotificationCreated, EventNotificationSuppressed,

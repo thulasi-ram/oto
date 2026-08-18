@@ -96,9 +96,9 @@ var contractIdentityEpoch = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 // handler see BYTE-IDENTICAL input: a fixture validated in one shape and sent in
 // another proves nothing about either.
 const (
-	// contractSettingsPatchBody raises the storm threshold and hands the flap
+	// contractSettingsPatchBody raises the group close delay and hands the flap
 	// threshold back to oto's default.
-	contractSettingsPatchBody = `{"storm_threshold":60,"reset":["flap_threshold"]}`
+	contractSettingsPatchBody = `{"group_close_delay_s":600,"reset":["flap_threshold"]}`
 	// contractSettingsBadResetBody names a key that does not exist. It is a body
 	// the CONTRACT permits — `reset` is an array of bounded strings, with no enum —
 	// which is precisely why the server has to refuse it.
@@ -471,7 +471,7 @@ func (s *contractIdentityService) unguardedWrites() int {
 // empty on an org that never configured anything — so a fixture of defaults would
 // only prove that the empty case validates. This org:
 //
-//   - WROTE `refire_grace_s`, `storm_threshold`, `flap_threshold` and the whole
+//   - WROTE `refire_grace_s`, `group_close_delay_s`, `flap_threshold` and the whole
 //     mention surface, so `origins` reports `org` and the enums are populated;
 //   - runs under a DEPLOYMENT that forces `refire_grace_s` and
 //     `raw_retention_days`, so `origins` reports `config`, `config_keys` names the
@@ -489,7 +489,7 @@ func contractOrg(t *testing.T) (domain.Org, domain.Declarative) {
 	mentions := []string{"<@U7A2K9QLM>", "<!subteam^SA1B2C3D4>"}
 	org.Overrides = domain.SettingsPatch{
 		RefireGraceS:                      intPtrOf(1800),
-		StormThreshold:                    intPtrOf(40),
+		GroupCloseDelayS:                  intPtrOf(600),
 		FlapThreshold:                     intPtrOf(8),
 		UnackedReminderAfterS:             intPtrOf(900),
 		DefaultVerbosity:                  strPtrOf("all"),
@@ -812,8 +812,8 @@ func TestUpdateOrgSettingsStoresThePartialWriteAndReturnsTheNewView(t *testing.T
 	patched, cleared := f.svc.patched, f.svc.cleared
 	f.svc.mu.Unlock()
 
-	if patched.StormThreshold == nil || *patched.StormThreshold != 60 {
-		t.Fatalf("the service received storm_threshold %v, want 60", patched.StormThreshold)
+	if patched.GroupCloseDelayS == nil || *patched.GroupCloseDelayS != 600 {
+		t.Fatalf("the service received group_close_delay_s %v, want 600", patched.GroupCloseDelayS)
 	}
 	if patched.ResolveGraceS != nil {
 		t.Fatalf("an omitted key arrived as a write (%v); omission means leave it alone",
@@ -827,11 +827,11 @@ func TestUpdateOrgSettingsStoresThePartialWriteAndReturnsTheNewView(t *testing.T
 	settings := childObject(t, resp, data, "settings")
 	origins := childObject(t, resp, data, "origins")
 
-	if got := numberAt(t, settings, "storm_threshold"); got != 60 {
-		t.Fatalf("storm_threshold = %v after the write, want 60", got)
+	if got := numberAt(t, settings, "group_close_delay_s"); got != 600 {
+		t.Fatalf("group_close_delay_s = %v after the write, want 600", got)
 	}
-	if got, _ := origins["storm_threshold"].(string); got != "org" {
-		t.Fatalf("origins[storm_threshold] = %q after the org wrote it, want org", got)
+	if got, _ := origins["group_close_delay_s"].(string); got != "org" {
+		t.Fatalf("origins[group_close_delay_s] = %q after the org wrote it, want org", got)
 	}
 	// ⛔ The reset key is back to oto's default, in the value AND in the origin. An
 	// origin that still said `org` would be a screen that cannot tell an operator

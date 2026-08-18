@@ -85,6 +85,18 @@ func (v *ViewService) Build(
 	ctx context.Context, scope db.TenantScope, req ViewRequest,
 ) (*NotificationView, error) {
 	n := req.Notification
+
+	// ⛔ A DIGEST READS NOTHING, AND IT CANNOT. The snapshot is keyed by a group
+	// generation and a digest has none (migration 00058) — `Snapshot` with the nil
+	// UUID would come back `group_not_found`, the delivery would retry twelve times
+	// and dead-letter, and the operator would see a policy that silently never
+	// digested. There is also nothing for it to read: the window is CLOSED, so the
+	// count the digest asserts is frozen on the row (`DigestCount`), which is exactly
+	// why 00058 stores it instead of recomputing at claim time.
+	if n.Digest() {
+		return v.digest(n), nil
+	}
+
 	snap, err := v.snapshots.Snapshot(ctx, scope, domain.SnapshotQuery{
 		GroupID:   n.GroupID,
 		AlertID:   n.AlertID,
@@ -99,6 +111,44 @@ func (v *ViewService) Build(
 		return nil, err
 	}
 	return v.project(snap, req), nil
+}
+
+// digest projects a digest Notification, which needs no snapshot: everything it
+// asserts is on the row.
+//
+// ⚠️ THE HEADLINE GOES WHERE THE GROUP TITLE GOES, AND THAT IS A DELIBERATE PIECE OF
+// SCAFFOLDING. `internal/channels/render/slack` draws `*Group.Title* — <status>` in
+// its `default:` arm and derives `rendered_fallback` from the same field, so a view
+// with an empty title would produce an empty fallback and fail `deliveries_fb_ck`
+// with a 23514 — after the message had already gone to Slack, which is the worst
+// place in the module to fail. Putting the sentence there makes a digest render as a
+// plain, correct info card on a renderer that has never heard of one.
+//
+// ⭐ WHAT IS DELIBERATELY ABSENT IS AS IMPORTANT AS WHAT IS PRESENT.
+//
+//   - NO Actions. Every action on a card acts on a signal — acknowledge this case,
+//     snooze this alert, silence in Alertmanager. A digest is about a window; a button
+//     on it would have to pick one of the things it counted, which is a decision the
+//     digest deliberately did not make.
+//   - NO Links. Every deep link is `<base>/alerts/<id>` or `/groups/<id>`, and a
+//     digest names neither. A link to a filtered list is the right answer and it needs
+//     a filter vocabulary this view does not have; a wrong link is worse than none.
+//   - NO Org. `snap.Org` comes from the snapshot, and the digest does not take one.
+//     It costs the org name in the footer of a card whose destination already belongs
+//     to exactly one org.
+//
+// A renderer that learns to lay a digest out should read `DigestCount` and
+// `DigestWindowStart` off the notification. This is a floor, not a design; see
+// `DigestHeadline`.
+func (v *ViewService) digest(n domain.Notification) *NotificationView {
+	// The window LENGTH is a property of the policy, not of the notification, and this
+	// service reads no policy — so the headline names the window's start and its count
+	// and leaves the length to a renderer that has the policy in hand.
+	return &NotificationView{
+		Reason:     string(n.Reason),
+		Group:      GroupView{Title: DigestHeadline(n, "", 0), State: "open"},
+		RenderedAt: v.clk.Now().UTC(),
+	}
 }
 
 // project is the pure mapping, exported through Build. It performs no I/O, so
@@ -148,12 +198,11 @@ func (v *ViewService) project(snap domain.Snapshot, req ViewRequest) *Notificati
 		}
 	}
 
-	// StormMode is a VISIBLE state (§B.6). It is carried as a count rather than a
-	// flag because the number is the point: "214 alerts in 60s" tells an operator
-	// what happened, "storm" tells them a word.
-	if snap.Group.StormMode {
-		view.StormCount = snap.Group.StormCount
-	}
+	// ⛔ `view.StormCount` WAS SET HERE FROM `snap.Group.StormMode`. The snapshot no
+	// longer carries either (migration 00059 dropped `alert_groups.storm_mode` and
+	// `storm_since`), so nothing populates the field. The renderer still reads it,
+	// because a stored `storm` notification still has to draw; it will simply be
+	// zero on every view oto builds from now on.
 
 	// §H.4's strikethrough trick needs the state the card showed BEFORE this
 	// delivery, and the Reason is where that fact lives: a Reason is the name of a
@@ -210,8 +259,10 @@ var trailKinds = map[kernel.EventType]string{
 	kernel.EventCaseUnsuppressed:   "unsuppressed",
 	kernel.EventCaseResolved:       "resolved",
 	kernel.EventCaseExpired:        "expired",
-	kernel.EventGroupStormStarted:  "storm",
-	kernel.EventGroupStormEnded:    "storm_ended",
+	// ⛔ `group.storm_started` -> "storm" AND `group.storm_ended` -> "storm_ended"
+	// WERE HERE. Both event types are DELETED from `alerts/domain` (migration 00060
+	// narrows `ev_type_ck` to refuse the spellings), and `groupTrailSQL` no longer
+	// selects them — so a mapping for them would name a value that cannot exist.
 	// `group.opened` and `group.closed` are oto's OWN bookkeeping about a
 	// generation, not things that happened to the signal. They are deliberately
 	// absent: a trail that says "oto opened a group" answers a question nobody
@@ -290,7 +341,7 @@ func previousState(reason domain.Reason, snap domain.Snapshot) *PreviousState {
 	case domain.ReasonFired, domain.ReasonNewAlerts, domain.ReasonRepeat,
 		domain.ReasonSnoozed, domain.ReasonUnsnoozed, domain.ReasonEnriched,
 		domain.ReasonRuleChanged, domain.ReasonComment,
-		domain.ReasonUnackedReminder, domain.ReasonStorm:
+		domain.ReasonUnackedReminder:
 		return nil
 	default:
 		return nil
@@ -318,7 +369,6 @@ func (v *ViewService) group(snap domain.Snapshot) GroupView {
 		ExpiredCount:    g.ExpiredCount,
 		TotalCount:      g.TotalCount,
 		AckedCount:      g.AckedCount,
-		StormMode:       g.StormMode,
 		// StartedAt is upstream's `startsAt`; FirstSeenAt is oto's own sighting.
 		// Both travel, because "when did this begin" and "when did oto learn about
 		// it" are two questions and only one of them is the outage.

@@ -63,7 +63,6 @@ func (r *Renderer) Render(
 		Group:       mapGroup(v.Group),
 		Alerts:      mapAlerts(v.Alerts, o.MaxInstances),
 		Links:       mapLinks(v.Links),
-		StormCount:  v.StormCount,
 		Comment:     v.Comment,
 		Summary:     summarise(v),
 	}
@@ -152,7 +151,6 @@ func mapGroup(g domain.GroupView) Group {
 		ExpiredCount:    g.ExpiredCount,
 		TotalCount:      g.TotalCount,
 		AckedCount:      g.AckedCount,
-		StormMode:       g.StormMode,
 		FirstSeenAt:     g.FirstSeenAt.UTC(),
 		LastActivityAt:  g.LastActivityAt.UTC(),
 		ClusterKey:      g.ClusterKey,
@@ -285,8 +283,6 @@ func summarise(v *domain.NotificationView) string {
 // alert is not the alert resolving (CONTEXT.md §3).
 func stateWord(g domain.GroupView) string {
 	switch {
-	case g.StormMode:
-		return "storm"
 	case g.FiringCount > 0 && g.AckedCount < g.FiringCount:
 		return "firing"
 	case g.FiringCount > 0:

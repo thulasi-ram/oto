@@ -94,8 +94,6 @@ func fxGroup(t *testing.T) domain.Group {
 		Severity:               "critical",
 		StateVersion:           7,
 		Counts:                 domain.Counts{Firing: 3, Suppressed: 1, Resolved: 1, Total: 5, Acked: 2},
-		StormMode:              true,
-		StormSince:             fxNow.Add(-10 * time.Minute),
 		LastNotificationReason: "new alerts added",
 		FirstSeenAt:            fxNow.Add(-2 * time.Hour),
 		LastActivityAt:         fxNow.Add(-5 * time.Minute),
@@ -423,10 +421,9 @@ func newGroupRouter(t *testing.T) (*Router, *fakeGroupService) {
 	svc := &fakeGroupService{
 		owned: fxGroupID,
 		detail: gsvc.Detail{
-			Group:       group,
-			Members:     members,
-			StormActive: true,
-			Snooze:      domain.SnoozeRollup{Count: 1, Until: fxNow.Add(4 * time.Hour)},
+			Group:   group,
+			Members: members,
+			Snooze:  domain.SnoozeRollup{Count: 1, Until: fxNow.Add(4 * time.Hour)},
 		},
 		page:    []domain.Group{group},
 		snoozes: map[uuid.UUID]domain.SnoozeRollup{fxGroupID: {Count: 1, Until: fxNow.Add(4 * time.Hour)}},
