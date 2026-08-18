@@ -11410,7 +11410,7 @@ export interface operations {
                 /** @description Comma-separated reasons. */
                 reason?: components["schemas"]["NotificationReason"][];
                 /** @description Comma-separated suppression reasons. Implies `status=suppressed`. */
-                suppressed_reason?: ("no_policy" | "throttled" | "verbosity" | "channel_disabled" | "duplicate_render")[];
+                suppressed_reason?: ("channel_disabled" | "no_policy" | "snoozed" | "throttled" | "verbosity" | "duplicate_render")[];
                 group_id?: components["schemas"]["Uuid"];
                 alert_id?: components["schemas"]["Uuid"];
                 policy_id?: components["schemas"]["Uuid"];

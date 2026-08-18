@@ -30,21 +30,38 @@ var (
 // The closed vocabularies the query parser accepts, mirroring the contract.
 var (
 	notificationStatuses = []string{"pending", "dispatched", "partial", "delivered", "failed", "suppressed"}
-	// ⛔ `storm` AND `flapping` ARE NOT HERE, AND THE ABSENCE IS THE POINT. Both
-	// dampers are removed, `notifications_suppmap_ck` no longer admits either
-	// (migration 00059), and a filter value the column can no longer hold is a
-	// query that always returns nothing — the worst possible answer to "why was I
-	// not told?", because it looks like a fact rather than a dead axis.
-	// ⚠️ `snoozed` IS STILL ABSENT AND THAT IS A PRE-EXISTING GAP, NOT THIS
-	// CHANGE. Migration 00018 added it to `notifications_suppmap_ck`, oto writes
-	// it, and this filter has never been able to select it. Closing that is a
-	// widening of the contract enum and belongs to whoever owns the audit filter.
-	suppressedReasons = []string{"no_policy", "throttled", "verbosity",
-		"channel_disabled", "duplicate_render"}
-	deliveryStatuses = []string{"pending", "sending", "sent", "failed", "dead", "skipped"}
-	errorClasses     = []string{"retryable", "rate_limited", "permanent", "config_invalid", "auth_expired"}
-	deliveryModes    = []string{"post_root", "update_root", "thread_reply", "broadcast_reply"}
+	// ⛔ DERIVED FROM THE DOMAIN, NEVER RESTATED. This list was hand-written once
+	// and immediately drifted: it omitted `snoozed`, which the domain has always
+	// held, `notifications_suppmap_ck` has admitted since migration 00018, and oto
+	// writes. Because `EnumCSV` REFUSES an unlisted value rather than returning an
+	// empty page, `?suppressed_reason=snoozed` came back as a validation error
+	// telling the operator, in oto's own voice, that `snoozed` is not a suppression
+	// reason — and it is the one the precedence chain singles out as "a DELIBERATE
+	// HUMAN ACT, and therefore the most actionable explanation a reader can be
+	// given" (git-bug d40bc64).
+	//
+	// Deriving it means a seventh SuppressedReason cannot be added without this
+	// filter learning it on the same commit. `storm` and `flapping` stay absent for
+	// free and for the right reason: they are not in the domain set, so a filter
+	// value the column can no longer hold (migration 00059) cannot be offered here.
+	// That absence is now structural rather than a comment asking to be believed.
+	suppressedReasons = suppressedReasonFilter()
+	deliveryStatuses  = []string{"pending", "sending", "sent", "failed", "dead", "skipped"}
+	errorClasses      = []string{"retryable", "rate_limited", "permanent", "config_invalid", "auth_expired"}
+	deliveryModes     = []string{"post_root", "update_root", "thread_reply", "broadcast_reply"}
 )
+
+// suppressedReasonFilter spells the domain's closed SuppressedReason set as the
+// strings the query parser matches, in the §B.8.2 precedence order the domain
+// declares them in, so the filter's vocabulary and the domain's cannot diverge.
+func suppressedReasonFilter() []string {
+	order := domain.SuppressorOrder()
+	out := make([]string, 0, len(order))
+	for _, r := range order {
+		out = append(out, string(r))
+	}
+	return out
+}
 
 // listNotifications serves GET /api/v1/notifications.
 //

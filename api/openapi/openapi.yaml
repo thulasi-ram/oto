@@ -3794,11 +3794,11 @@ paths:
           description: Comma-separated suppression reasons. Implies `status=suppressed`.
           schema:
             type: array
-            maxItems: 5
+            maxItems: 6
             uniqueItems: true
             items:
               type: string
-              enum: [no_policy, throttled, verbosity, channel_disabled, duplicate_render]
+              enum: [channel_disabled, no_policy, snoozed, throttled, verbosity, duplicate_render]
           style: form
           explode: false
         - name: group_id

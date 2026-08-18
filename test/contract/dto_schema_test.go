@@ -1087,6 +1087,68 @@ func TestQueryParamsMatchContract(t *testing.T) {
 // judgement about request size and has no enum to be equal to. Asserting
 // anything about those numbers here would be inventing a rule, not enforcing
 // one.
+// TestTheSuppressedReasonFilterNamesEveryDomainReason is git-bug d40bc64.
+//
+// The Go filter is DERIVED from domain.SuppressorOrder(), so it can no longer
+// drift. The contract's enum is hand-written, so it still can — and this is the
+// coupling that failed: the domain has held `snoozed` since migration 00018 and
+// oto writes it, while the filter named five of six.
+//
+// ⛔ AND THE FAILURE MODE IS A REFUSAL, NOT AN EMPTY PAGE. `EnumCSV` records a
+// violation the moment a value is not in `allowed`, so the missing value came
+// back as "suppressed_reason must be one of: …" — oto telling an operator, in its
+// own voice, that `snoozed` is not a suppression reason. It is the one the
+// precedence chain calls "a DELIBERATE HUMAN ACT, and therefore the most
+// actionable explanation a reader can be given", which makes it the likeliest
+// thing anyone asks this endpoint for.
+//
+// Comparing as SETS, not slices: the contract may order its enum however reads
+// best. What may not differ is which values exist.
+func TestTheSuppressedReasonFilterNamesEveryDomainReason(t *testing.T) {
+	d := loadDoc(t)
+
+	op, ok := d.operations()["listNotifications"]
+	if !ok {
+		t.Fatal("listNotifications is not in the contract — this gate is asserting nothing")
+	}
+	schema, _ := op.queryParams(d)["suppressed_reason"]["schema"].(map[string]any)
+	if schema == nil {
+		t.Fatal("listNotifications declares no `suppressed_reason` query parameter, so the " +
+			"filter this gate exists to tie to the domain is gone")
+	}
+	fl := d.flatten(schema)
+	if fl.items == nil {
+		t.Fatal("`suppressed_reason` is not an array schema any more")
+	}
+
+	var got []string
+	for _, v := range d.flatten(fl.items).enum {
+		sv, ok := v.(string)
+		if !ok {
+			t.Fatalf("`suppressed_reason` enum holds a non-string %T (%v)", v, v)
+		}
+		got = append(got, sv)
+	}
+	var want []string
+	for _, r := range notificationdomain.SuppressorOrder() {
+		want = append(want, string(r))
+	}
+	if len(got) == 0 {
+		t.Fatal("`suppressed_reason` declares no enum at all")
+	}
+
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("the `suppressed_reason` filter and domain.SuppressedReason disagree:\n"+
+			"  contract: %v\n  domain:   %v\n"+
+			"A value the domain holds and the contract omits is not an empty page — "+
+			"EnumCSV refuses the request, so the operator is told the value is not a "+
+			"suppression reason. Add it to the enum (and move `maxItems` with it).",
+			got, want)
+	}
+}
+
 func TestEnumFilterCeilingsMatchTheirEnum(t *testing.T) {
 	d := loadDoc(t)
 	ops := d.operations()
