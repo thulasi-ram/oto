@@ -1,5 +1,5 @@
 {
-  "text": ":white_check_mark: All resolved: OtoSmokeTest on smoke-test. Severity critical, team observability, resolved after under a second.",
+  "text": ":white_check_mark: All resolved: OtoSmokeTest on smoke-test. Severity critical, team observability, resolved after 21m 10s.",
   "unfurl_links": false,
   "unfurl_media": false,
   "metadata": {
@@ -13,14 +13,14 @@
   "attachments": [
     {
       "color": "#2eb886",
-      "fallback": ":white_check_mark: All resolved: OtoSmokeTest on smoke-test. Severity critical, team observability, resolved after under a second.",
+      "fallback": ":white_check_mark: All resolved: OtoSmokeTest on smoke-test. Severity critical, team observability, resolved after 21m 10s.",
       "blocks": [
         {
           "type": "section",
           "block_id": "oto_reply_0da4e96a77",
           "text": {
             "type": "mrkdwn",
-            "text": ":white_check_mark: *All resolved* after under a second — 2 of 2 instances"
+            "text": ":white_check_mark: *All resolved* after 21m 10s — 2 of 2 instances"
           }
         }
       ]

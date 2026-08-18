@@ -617,27 +617,31 @@ func updatedWhileFiringView() *domain.NotificationView {
 // `chat.update` is silent (ADR 0020's whole premise), so for a thread participant
 // this sentence is the resolution.
 //
-// ⛔ AND IT SAYS "resolved after under a second" ABOUT A TWENTY-ONE-MINUTE
-// INCIDENT. That is not a fixture typo, it is A1 again in the reply path. A1 was
-// the first live run's "Firing for: under a second": the ROOT card was reading the
-// triggering alert's case clock for a sentence about the GROUP, and it was fixed
-// there (`durationValue`, and the test above it). `resolvedAfter` in reply.go still
-// prefers `Case.Duration` and only falls back to the group's own span when it is
-// zero — so this fixture, whose case is the smoke run's 300ms episode inside a
-// group the root card correctly calls `21m 10s`, reproduces the defect exactly.
-// The fallback is A2's shape as well: it measures from oto's FirstSeenAt rather
-// than upstream's StartedAt, and those were twenty-one minutes apart in the live
-// run.
+// ⭐ IT SAYS "resolved after 21m 10s", AND IT USED TO SAY "under a second".
+// git-bug e4fe2f1 is the §H.5 decision this comment used to be waiting for, and
+// the renderer was corrected rather than the fixture.
 //
-// Whether it BITES in production depends on whether the notification module fills
-// `Case.Duration` with the whole episode; `test/harness/slack_cards.go` assumes it
-// does and this fixture assumes it does not, which is itself the reason to write
-// it down. The number is what an operator reads the severity of an outage off, and
-// a resolve that understates the outage is the same class of wrong as A1.
+// The old number was A1 again in the reply path. A1 was the first live run's
+// "Firing for: under a second": the ROOT card reading the triggering alert's case
+// clock for a sentence about the GROUP, fixed there in `durationValue`.
+// `resolvedAfter` had inherited the same shape — it preferred `Case.Duration`, and
+// this fixture's case is the smoke run's 300ms episode sitting inside a group the
+// root card already, correctly, called `21m 10s`. The fixture was BUILT as that
+// trap (see `Duration: 300 * time.Millisecond` in resolvedView) and it kept
+// reproducing the defect until the renderer stopped consulting that clock.
 //
-// The fixture is left as it renders. Correcting the FIXTURE would hide the
-// question; correcting the RENDERER is a decision about which clock a group-scoped
-// sentence may read, and that belongs with whoever owns §H.5.
+// Its fallback was A2's shape as well — measuring from oto's FirstSeenAt rather
+// than upstream's StartedAt, twenty-one minutes apart in the live run — so BOTH
+// branches understated the outage, which is the direction that makes an incident
+// look smaller than it was in the line most likely to reach a postmortem.
+// `resolvedAfter` now spans the group's StartedAt to its last activity, falling
+// back to FirstSeenAt only where `GroupFacts.StartedAt()` does.
+//
+// The fixture is unchanged; only the rendered number moved, which is the proof the
+// change is real. `test/harness/slack_cards.go` assumed the notification module
+// fills `Case.Duration` with the whole episode and this fixture assumed it does
+// not — that disagreement no longer decides the sentence either way, because the
+// sentence no longer reads that field.
 func TestGoldenAllResolvedThreadReply(t *testing.T) {
 	t.Parallel()
 	msg := renderView(t, resolvedView(), domain.ModeThreadReply)
@@ -797,4 +801,63 @@ func itoa(n int64) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// TestAllResolvedMeasuresTheGenerationNotTheFocusedCase is git-bug e4fe2f1.
+//
+// "All resolved after <d> — N of M instances" is one sentence about one thing: the
+// GENERATION. It had three clocks available and was reading the two wrong ones.
+//
+// The group here is two members whose upstream starts are TWENTY MINUTES apart,
+// resolving thirty minutes after the earlier one. Three durations are therefore
+// visible in the same view, and only one of them answers the sentence:
+//
+//	30m     the generation, earlier member's upstream start -> last resolve  ✅
+//	1m 30s  the FOCUSED CASE's own episode — which member gets focused depends on
+//	        how the notification was raised, so this is a coin flip printed as a fact
+//	8m 50s  oto's FirstSeenAt -> last resolve, i.e. the outage MINUS oto's ingest
+//	        latency plus Alertmanager's group_wait (21m 10s in the first live run)
+//
+// Both wrong answers are SHORTER than the right one, which is the direction that
+// makes an incident look smaller than it was — in the line most likely to be
+// pasted into a postmortem as the outage duration of record. So the absences are
+// asserted explicitly, not just the presence: a future change that reintroduces
+// either clock has to fail here rather than merely produce a different number.
+func TestAllResolvedMeasuresTheGenerationNotTheFocusedCase(t *testing.T) {
+	t.Parallel()
+
+	v := resolvedView()
+	start := upstreamStart                             // the EARLIER member's upstream start
+	later := start.Add(20 * time.Minute)               // the second member, twenty minutes on
+	ended := start.Add(30 * time.Minute)               // the last member resolves here
+	seen := start.Add(21*time.Minute + 10*time.Second) // oto only hears about it here
+
+	v.Group.StartedAt = start
+	v.Group.FirstSeenAt = seen
+	v.Group.LastActivityAt = ended
+	v.Alerts[0].FirstSeenAt = seen
+	v.Alerts[1].FirstSeenAt = later
+
+	// The focused case is the SHORT, LATE one. That is the trap: it is a perfectly
+	// real episode, it is just not what the sentence is about.
+	v.Case.StartedAt = later
+	v.Case.Duration = 90 * time.Second
+	v.Case.EndedAt = &ended
+	v.RenderedAt = ended.Add(time.Second)
+
+	body := string(renderView(t, v, domain.ModeThreadReply).Payload)
+
+	if !strings.Contains(body, "after 30m") {
+		t.Errorf("the resolve sentence does not report the generation's 30m span.\n"+
+			"It must measure the earlier member's UPSTREAM start to the last resolve.\n%s", body)
+	}
+	if strings.Contains(body, "after 1m 30s") {
+		t.Error("the resolve sentence reports the FOCUSED CASE's 1m 30s episode as the " +
+			"duration of an outage its own next clause counts two instances of")
+	}
+	if strings.Contains(body, "after 8m 50s") {
+		t.Error("the resolve sentence measures from oto's FirstSeenAt, so it under-reports " +
+			"the outage by oto's ingest latency plus Alertmanager's group_wait — the exact " +
+			"substitution GroupView.StartedAt's doc comment forbids")
+	}
 }

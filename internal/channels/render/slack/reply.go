@@ -466,14 +466,39 @@ func suppressedUntil(v *domain.NotificationView) string {
 	return ""
 }
 
+// resolvedAfter measures THE GENERATION, because the sentence it feeds is about
+// the generation: "All resolved after <d> — N of M instances".
+//
+// ⛔ `v.Case.Duration` IS NOT CONSULTED, AND THAT IS THE POINT. It is one episode's
+// span. On a group of ten pods that failed over forty minutes, reporting whichever
+// case the view happened to focus — the first to resolve or the last, depending on
+// how the notification was raised — puts one member's duration in a sentence whose
+// own next clause counts ten instances. Contrast `unackedFor` below, which DOES
+// prefer the case: "how long has nobody acknowledged this" is a question about the
+// focused episode, and it starts when oto knew. Same shape, different question.
+//
+// ⛔ AND THE START IS `StartedAt`, NEVER `FirstSeenAt` DIRECTLY. FirstSeenAt is when
+// oto first heard about the signal; the gap to upstream's `startsAt` is oto's
+// latency plus Alertmanager's `group_wait`, measured at TWENTY-ONE MINUTES in the
+// first live run (view.go:64-70). On a duration sentence that gap is subtracted
+// straight off the outage. The fallback order here is exactly
+// `GroupFacts.StartedAt()`'s — upstream's start when there is one, oto's first
+// sighting only when there is none — so every renderer, the API and the UI keep
+// answering this question the same way.
+//
+// Both old branches were biased the SAME direction: one member's episode is shorter
+// than the generation's span, and FirstSeenAt is later than StartedAt. Low is the
+// direction that makes an incident look smaller than it was, in the line most
+// likely to be pasted into a postmortem.
 func resolvedAfter(v *domain.NotificationView) string {
-	if v.Case != nil && v.Case.Duration > 0 {
-		return humanDuration(v.Case.Duration)
+	start := v.Group.StartedAt
+	if start.IsZero() {
+		start = v.Group.FirstSeenAt
 	}
-	if !v.Group.FirstSeenAt.IsZero() && v.Group.LastActivityAt.After(v.Group.FirstSeenAt) {
-		return humanDuration(v.Group.LastActivityAt.Sub(v.Group.FirstSeenAt))
+	if start.IsZero() || !v.Group.LastActivityAt.After(start) {
+		return ""
 	}
-	return ""
+	return humanDuration(v.Group.LastActivityAt.Sub(start))
 }
 
 func unackedFor(v *domain.NotificationView) string {
