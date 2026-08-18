@@ -624,33 +624,26 @@ func suppressionReasonFor(st domain.AlertStatus) string {
 // The count is jobs enqueued by THIS execution: per-tenant jobs at the tenant
 // level, and the reconcile/silences pair per due source at the source level.
 //
-// ⛔⛔ WHAT BOUNDS THIS DEPLOYMENT IS THE RECONCILE QUEUE'S TWO WORKERS, NOT THIS
-// WALK, AND A READER SIZING AN INSTALL SHOULD GET THE NUMBERS HERE RATHER THAN
-// DISCOVER THEM. `reconcile` runs two workers (SPEC §G.3's queue table), so one
-// 30-second tick is 60 worker-seconds of drain. The tenant walk costs almost none
-// of it: 501 rows at roughly 3 ms is about 1.5 s, some 2.5% of the budget. What
-// spends it is the work the walk SCHEDULES — two jobs per due source per tenant,
-// each one a call to somebody else's Alertmanager over a network. Draining a tick
-// inside its own period needs
+// ⛔⛔ WHAT BOUNDS THIS DEPLOYMENT IS THE RECONCILE QUEUE'S WIDTH, NOT THIS WALK.
+// The arithmetic and the supported tenant count now live in SPEC §G.3.1, where an
+// operator sizing an install will find them, and `jobs.queue_reconcile` is the knob
+// that moves them. In one line: the walk costs about 3 ms a tenant and the passes
+// it SCHEDULES cost a network round trip each, so the tick drains only while
 //
-//	2·N·S·t + 0.003·N ≤ 60
+//	2·N·S·t + 0.003·N ≤ 30·W
 //
-// for N tenants, S due sources each and t seconds per upstream call. At one due
-// source per tenant and a one-second upstream that is N ≤ ~30 tenants; at the
-// client's own 10-second HTTP timeout (`factory.go`'s `Timeout`) it is N ≤ 3.
-// Roughly seventeen times tighter than the walk this method pages, and reached
-// long before `TenantFanOutLimit` is.
+// for N tenants, S due sources each, t seconds a pass and W workers. At the default
+// W=8 that is ~120 tenants at one due source and a one-second upstream; it was ~30
+// at W=2. Reached long before `TenantFanOutLimit` is, and the walk is ~2.5% of it.
 //
-// ⚠️ THAT CEILING IS NOT INTRODUCED HERE, AND ONE ACCIDENTAL BRAKE IS REMOVED. The
-// per-source cost was always the binding constraint; what has changed is that the
-// old loop was ALSO throttled by its own failure mode — the sixty-second execution
+// ⚠️ THAT CEILING IS NOT INTRODUCED HERE, AND ONE ACCIDENTAL BRAKE WAS REMOVED. The
+// per-source cost was always the binding constraint; what changed is that the old
+// loop was ALSO throttled by its own failure mode — the sixty-second execution
 // timeout killed the tenant walk part-way through, so at high tenant counts fewer
-// per-source jobs were ever enqueued, and the queue looked calmer because the
-// sweep was silently incomplete. Now the whole tenant list is reached, so the whole
-// per-source demand is real. Raising `MaxWorkers` for the `reconcile` queue is the
-// lever, and it is deliberately NOT pulled here: the value is a binding SPEC table
-// row and `FromPlatformConfig` exposes no knob for this queue, so it is a
-// deployment decision with a SPEC edit attached, not a detail of this conversion.
+// per-source jobs were ever enqueued, and the queue looked calmer because the sweep
+// was silently incomplete. Now the whole tenant list is reached, so the whole
+// per-source demand is real, and the queue is wide enough to be the stated ceiling
+// rather than an accidental one.
 func (r *Reconciler) FanOut(ctx context.Context, fo jobs.TenantFanOut) (int, error) {
 	if r.orgs == nil || r.enq == nil {
 		return 0, errs.New(errs.KindInternal, CodeReconcileUnwired,

@@ -26,6 +26,15 @@ import (
 // allows roughly one message per second per channel, so extra workers buy
 // contention and 429s rather than throughput. `maintenance` is one because its
 // jobs are DDL-adjacent and must not race themselves.
+//
+// ⛔ `reconcile`'s 8 IS A SUPPORTED TENANT COUNT, NOT A THROUGHPUT PREFERENCE, and
+// SPEC §G.3.1 publishes the arithmetic that produces it. Every other number here
+// trades latency for contention; this one decides whether `source.reconcile` keeps
+// up with its own 30-second schedule at all, because the fan-out offers a fresh
+// round of network-bound per-source passes every tick and a queue too narrow to
+// drain one tick never catches up. It was 2, which is ~30 tenants — below any
+// multi-tenant install — and is now 8, which is ~120. `jobs.queue_reconcile` moves
+// it further without a rebuild.
 func DefaultQueueWorkers() map[string]int {
 	return map[string]int{
 		QueueIngest:         16,
@@ -33,7 +42,7 @@ func DefaultQueueWorkers() map[string]int {
 		QueueNotify:         8,
 		QueueDeliverSlack:   4,
 		QueueDeliverWebhook: 8,
-		QueueReconcile:      2,
+		QueueReconcile:      8,
 		QueueLifecycle:      4,
 		QueueMaintenance:    1,
 	}
@@ -82,9 +91,16 @@ type Config struct {
 // FromPlatformConfig derives a jobs.Config from the process configuration.
 //
 // Per-queue concurrency starts from the SPEC §G.3 defaults and is then scaled by
-// the three coarse knobs config exposes, so an operator who halves
-// `jobs.queue_delivery` halves both delivery queues without having to know their
-// names. Anything finer is set on the returned Config directly.
+// the coarse knobs config exposes, so an operator who halves `jobs.queue_delivery`
+// halves both delivery queues without having to know their names. Anything finer is
+// set on the returned Config directly.
+//
+// ⚠️ `jobs.queue_reconcile` IS THE ONE KNOB THAT NAMES A SINGLE QUEUE, and it is
+// deliberately not folded into `queue_default`. The other knobs are coarse because
+// the queues under them are interchangeable in kind; `reconcile` is not — its
+// width is the supported tenant count of the whole deployment (SPEC §G.3.1), so
+// an operator widening it is answering a capacity question, not a latency one,
+// and must not have to widen `enrich`, `notify` and `lifecycle` to do it.
 func FromPlatformConfig(cfg config.JobsConfig) Config {
 	queues := DefaultQueueWorkers()
 	if cfg.QueueIngest > 0 {
@@ -98,6 +114,9 @@ func FromPlatformConfig(cfg config.JobsConfig) Config {
 	if cfg.QueueDelivery > 0 {
 		queues[QueueDeliverSlack] = cfg.QueueDelivery
 		queues[QueueDeliverWebhook] = cfg.QueueDelivery
+	}
+	if cfg.QueueReconcile > 0 {
+		queues[QueueReconcile] = cfg.QueueReconcile
 	}
 
 	return Config{

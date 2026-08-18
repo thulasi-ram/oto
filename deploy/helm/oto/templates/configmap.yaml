@@ -67,6 +67,7 @@ data:
   OTO_JOBS_QUEUE_INGEST: {{ int .Values.config.jobs.queue_ingest | quote }}
   OTO_JOBS_QUEUE_DEFAULT: {{ int .Values.config.jobs.queue_default | quote }}
   OTO_JOBS_QUEUE_DELIVERY: {{ int .Values.config.jobs.queue_delivery | quote }}
+  OTO_JOBS_QUEUE_RECONCILE: {{ int .Values.config.jobs.queue_reconcile | quote }}
   OTO_JOBS_FETCH_INTERVAL: {{ .Values.config.jobs.fetch_interval | quote }}
   OTO_JOBS_JOB_TIMEOUT: {{ .Values.config.jobs.job_timeout | quote }}
   OTO_JOBS_RESCUE_AFTER: {{ .Values.config.jobs.rescue_after | quote }}

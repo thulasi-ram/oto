@@ -165,9 +165,23 @@ type TelemetryConfig struct {
 type JobsConfig struct {
 	Enabled bool `koanf:"enabled"`
 	// QueueIngest and QueueDefault are the worker counts per queue.
-	QueueIngest   int           `koanf:"queue_ingest"   validate:"gte=0"`
-	QueueDefault  int           `koanf:"queue_default"  validate:"gte=0"`
-	QueueDelivery int           `koanf:"queue_delivery" validate:"gte=0"`
+	QueueIngest   int `koanf:"queue_ingest"   validate:"gte=0"`
+	QueueDefault  int `koanf:"queue_default"  validate:"gte=0"`
+	QueueDelivery int `koanf:"queue_delivery" validate:"gte=0"`
+
+	// QueueReconcile is the `reconcile` queue's worker count, and it gets a knob of
+	// its own rather than riding `queue_default` because it is the ONE queue whose
+	// width is a TENANT-COUNT CEILING rather than a throughput preference.
+	//
+	// The `reconcile` queue's per-source passes are network-bound calls to somebody
+	// else's Alertmanager, and the fan-out tick offers a fresh round of them every
+	// 30 s. Below the width SPEC §G.3.1's arithmetic requires for a given tenant
+	// count, `source.reconcile` does not merely run slower — it falls permanently
+	// behind its own schedule, and sources are discovered as due later and later.
+	// The number is published with its arithmetic in SPEC §G.3.1; this is the knob
+	// that lets an operator move it without a rebuild.
+	QueueReconcile int `koanf:"queue_reconcile" validate:"gte=0"`
+
 	FetchInterval time.Duration `koanf:"fetch_interval" validate:"gt=0"`
 	JobTimeout    time.Duration `koanf:"job_timeout"    validate:"gt=0"`
 	RescueAfter   time.Duration `koanf:"rescue_after"   validate:"gt=0"`
@@ -310,9 +324,14 @@ func Default() Config {
 			QueueIngest:   10,
 			QueueDefault:  5,
 			QueueDelivery: 5,
-			FetchInterval: time.Second,
-			JobTimeout:    time.Minute,
-			RescueAfter:   time.Hour,
+			// 8, not 5 and not 2: see SPEC §G.3.1's arithmetic. Eight workers is the
+			// width that carries ~120 tenants at one due source each, and it is the
+			// one queue whose default may not be lowered to match its neighbours
+			// without lowering the supported tenant count with it.
+			QueueReconcile: 8,
+			FetchInterval:  time.Second,
+			JobTimeout:     time.Minute,
+			RescueAfter:    time.Hour,
 		},
 		Ingest: IngestConfig{
 			RetryAfter:     10 * time.Second,
