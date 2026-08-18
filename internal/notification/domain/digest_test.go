@@ -467,3 +467,65 @@ func TestTheDigestReasonIsAboutAWindowRatherThanAnObject(t *testing.T) {
 			"`Subject() == SubjectDigest` before dereferencing GroupID would have to learn "+
 			"its name")
 }
+
+// TestAnExplicitZeroDigestFloorIsRefusedOnThePatchPath is git-bug 2270b48.
+//
+// The create path was never the hole: its DTO carries
+// `validate:"omitempty,min=1,max=10000"`, so anyone testing the obvious path sees
+// the right error and concludes the bound is enforced. The patch path had no tag,
+// and `Policy.Validate` could not close it either, because `Digest.Floor` spends
+// zero on "unset" -- so an explicit zero and an explicit null fold to the same
+// value and become indistinguishable one line before the check.
+//
+// They are NOT the same to the database: null writes SQL NULL, zero writes a
+// literal 0, and `policies_digest_floor_ck` refuses it as a 23514 -- a 500 with a
+// constraint name and no field path, which is the failure the whole validation
+// layer exists to prevent. So the case is asserted HERE, on the patch, where the
+// two are still distinct.
+func TestAnExplicitZeroDigestFloorIsRefusedOnThePatchPath(t *testing.T) {
+	t.Parallel()
+
+	floor := func(v int) **int { p := &v; return &p }
+	cleared := func() **int { var p *int; return &p }
+
+	t.Run("an explicit zero is refused, naming the field", func(t *testing.T) {
+		t.Parallel()
+
+		err := domain.PolicyPatch{DigestFloor: floor(0)}.ValidateExplicit()
+		require.Error(t, err, "digest_floor: 0 was accepted, and the database will not accept it")
+		_, ok := violation(err, "digest_floor", "range")
+		require.True(t, ok,
+			"refused without naming digest_floor/range, so the settings form has no "+
+				"control to point at -- which is the whole difference from a 23514: %v", err)
+	})
+
+	t.Run("a negative floor is refused", func(t *testing.T) {
+		t.Parallel()
+
+		err := domain.PolicyPatch{DigestFloor: floor(-1)}.ValidateExplicit()
+		require.Error(t, err, "a negative digest_floor was accepted")
+	})
+
+	// ⭐ THE OTHER HALF, AND THE REASON THIS IS NOT JUST A RANGE CHECK. Clearing the
+	// floor is a real instruction -- "send whenever the window was not empty" -- and
+	// it is spelled with the same JSON field. A fix that refused zero by refusing
+	// everything falsy would take this with it.
+	t.Run("an explicit null clears the floor and is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		require.NoError(t, domain.PolicyPatch{DigestFloor: cleared()}.ValidateExplicit())
+	})
+
+	t.Run("a floor inside the range is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		require.NoError(t, domain.PolicyPatch{DigestFloor: floor(domain.MinDigestFloor)}.ValidateExplicit())
+		require.NoError(t, domain.PolicyPatch{DigestFloor: floor(domain.MaxDigestFloor)}.ValidateExplicit())
+	})
+
+	t.Run("a patch that does not mention the floor is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		require.NoError(t, domain.PolicyPatch{}.ValidateExplicit())
+	})
+}

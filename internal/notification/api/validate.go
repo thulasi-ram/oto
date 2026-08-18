@@ -63,6 +63,12 @@ func materialise(scope db.TenantScope, d domain.PolicyDraft) domain.Policy {
 // knows which. Applying the patch to a copy of the stored policy and validating
 // THAT is the only check that answers the question the database will ask.
 func validateMerged(existing domain.Policy, p domain.PolicyPatch) error {
+	// Run FIRST, because the fold below is lossy: it collapses an explicit
+	// `digest_floor: 0` onto the same `Floor = 0` that means "unset", and the
+	// merged policy can no longer tell the two apart. See PolicyPatch.ValidateExplicit.
+	if err := p.ValidateExplicit(); err != nil {
+		return err
+	}
 	merged := existing
 	if p.Name != nil {
 		merged.Name = *p.Name

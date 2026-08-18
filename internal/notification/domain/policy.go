@@ -418,6 +418,38 @@ func (p Policy) Validate() error {
 	return nil
 }
 
+// ValidateExplicit catches what a PATCH can state but a MERGED policy can no
+// longer distinguish.
+//
+// ⛔ THE MERGED VIEW CANNOT SEE AN EXPLICIT ZERO FLOOR. `Digest.Floor` uses zero to
+// mean "no floor", so `{"digest_floor": 0}` and `{"digest_floor": null}` both fold
+// to `Floor = 0` and both look unset to Validate. The repository does NOT treat
+// them alike: a null writes SQL NULL, and an explicit zero writes a literal 0,
+// which `policies_digest_floor_ck` (NULL, or 1..10000) refuses as a 23514 -- a 500
+// carrying a constraint name, with no field path for the settings form to point at.
+// That is the exact failure validateDigest exists to prevent, so the check has to
+// happen where the distinction still exists: on the patch, before the fold.
+//
+// Only the LOWER bound needs restating. Any floor above zero survives the fold
+// intact and validateDigest sees it, so the ceiling is already covered there.
+func (p PolicyPatch) ValidateExplicit() error {
+	var v []errs.Violation
+	if p.DigestFloor != nil {
+		if f := *p.DigestFloor; f != nil && *f < MinDigestFloor {
+			v = append(v, errs.Violation{
+				// The JSON name, for the reason given on unacked_reminder_after_seconds.
+				Field: "digest_floor", Code: "range",
+				Message: "the digest floor is 1 to 10000, or unset — " +
+					"zero would ask for a digest of an empty window, which never sends",
+			})
+		}
+	}
+	if len(v) > 0 {
+		return errs.Validation("policy_invalid", "the notification policy is not valid", v...)
+	}
+	return nil
+}
+
 // validateDigest restates policies_digest_window_ck, policies_digest_floor_ck,
 // policies_digest_pair_ck and policies_digest_reason_ck in Go, so that a bad digest
 // comes back as a field-level violation the settings form can point at rather than
@@ -456,7 +488,13 @@ func (p Policy) validateDigest() []errs.Violation {
 	}
 
 	switch {
-	case p.Digest.Floor < 0 || p.Digest.Floor > MaxDigestFloor:
+	// Zero is UNSET here, not a floor -- the same shape as UnackedReminderAfter
+	// above. Stating the bound as MinDigestFloor rather than as a bare `< 0` is
+	// what makes this the admissible set `policies_digest_floor_ck` enforces
+	// (NULL, or 1..10000) instead of a wider one that happens to share its
+	// rejections for negatives.
+	case p.Digest.Floor != 0 &&
+		(p.Digest.Floor < MinDigestFloor || p.Digest.Floor > MaxDigestFloor):
 		v = append(v, errs.Violation{
 			Field: "digest_floor", Code: "range",
 			Message: "the digest floor is 1 to 10000, or unset",
