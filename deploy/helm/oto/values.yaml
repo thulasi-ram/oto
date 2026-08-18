@@ -462,10 +462,19 @@ config:
     # Whether this process WORKS jobs. It gates the worker pods; API pods run
     # `oto api` and never work jobs regardless of this value.
     enabled: true
-    # Per-process concurrency per queue.
-    queue_ingest: 10
-    queue_default: 5
-    queue_delivery: 5
+    # Per-process concurrency per queue. ZERO MEANS UNSET, NOT "NO WORKERS": the
+    # process falls through to jobs.DefaultQueueWorkers, which is the SPEC §G.3
+    # table and the place the reasoning for each width lives (ingest widest so a
+    # webhook batch never queues behind anything; deliver_slack narrowest because
+    # Slack allows ~1 message/second/channel and extra workers buy 429s).
+    #
+    # ⛔ THESE SHIPPED AS 10/5/5 AND THAT MADE THE PUBLISHED TABLE FICTION. Every
+    # chart install overrode six of eight queues, two of them against the very
+    # rationale that justifies them, and nothing logged the divergence. Set one
+    # here only to depart from the table deliberately, and expect to answer for it.
+    queue_ingest: 0
+    queue_default: 0
+    queue_delivery: 0
     # ⚠️ THIS ONE IS A SUPPORTED TENANT COUNT, not a latency preference. The
     # reconcile fan-out offers a fresh round of network-bound per-source passes
     # every 30 s, and a queue too narrow to drain one tick never catches up:
@@ -476,7 +485,8 @@ config:
     # Raising it past ~16 means raising db.max_conns with it: River's traffic and
     # every non-ingest worker share the general pool (max_conns minus the ingest
     # reservation, 15 at the defaults).
-    queue_reconcile: 8
+    # Left unset like its neighbours: the fall-through value IS 8. Set it to depart.
+    queue_reconcile: 0
     fetch_interval: 1s
     job_timeout: 1m
     # How long a job may sit `running` before the rescuer reclaims it — the

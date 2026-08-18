@@ -164,7 +164,11 @@ type TelemetryConfig struct {
 // JobsConfig configures the river job queues.
 type JobsConfig struct {
 	Enabled bool `koanf:"enabled"`
-	// QueueIngest and QueueDefault are the worker counts per queue.
+	// QueueIngest, QueueDefault and QueueDelivery are OVERRIDES, not defaults.
+	// ZERO MEANS UNSET, and unset falls through to `jobs.DefaultQueueWorkers` — the
+	// SPEC §G.3 table, which is where the reasoning for each width lives. Setting
+	// one here departs from the published number, so a deployment that sets them is
+	// answering for its own widths.
 	QueueIngest   int `koanf:"queue_ingest"   validate:"gte=0"`
 	QueueDefault  int `koanf:"queue_default"  validate:"gte=0"`
 	QueueDelivery int `koanf:"queue_delivery" validate:"gte=0"`
@@ -320,18 +324,30 @@ func Default() Config {
 			TraceSampleRate: 0.1,
 		},
 		Jobs: JobsConfig{
-			Enabled:       true,
-			QueueIngest:   10,
-			QueueDefault:  5,
-			QueueDelivery: 5,
-			// 8, not 5 and not 2: see SPEC §G.3.1's arithmetic. Eight workers is the
-			// width that carries ~120 tenants at one due source each, and it is the
-			// one queue whose default may not be lowered to match its neighbours
-			// without lowering the supported tenant count with it.
-			QueueReconcile: 8,
-			FetchInterval:  time.Second,
-			JobTimeout:     time.Minute,
-			RescueAfter:    time.Hour,
+			Enabled: true,
+			// ⛔ THE FOUR QUEUE WIDTHS ARE DELIBERATELY ABSENT, i.e. zero, AND ZERO
+			// MEANS "UNSET" RATHER THAN "NO WORKERS". `jobs.FromPlatformConfig`
+			// applies each field only when it is > 0, so leaving them unset is what
+			// lets `jobs.DefaultQueueWorkers` — the SPEC §G.3 table — be the default.
+			//
+			// They used to be set here (ingest 10, default 5, delivery 5), and that
+			// made the fall-through unreachable: SIX OF EIGHT queues ran a width the
+			// published table does not name, in every deployment that did not set the
+			// environment. Two of the six moved against the rationale that justifies
+			// them — `deliver_slack` widened 4 -> 5, when it is the narrowest ON
+			// PURPOSE because Slack allows roughly one message per second per channel
+			// and extra workers buy 429s — and `ingest` narrowed 16 -> 10, when it is
+			// the widest on purpose so a webhook batch never queues behind anything.
+			//
+			// ⭐ ONE TABLE DECIDES A DEFAULT QUEUE WIDTH, AND IT IS THE ONE THAT
+			// CARRIES THE REASONING. §G.3.1 publishes arithmetic and invites an
+			// operator to re-derive `W` for their own upstreams; that invitation is
+			// only honest if the `W` in the table is the `W` in the process. These
+			// fields remain OVERRIDES — set `jobs.queue_*` to depart from the table.
+			// `TestConfigDefaultsProduceTheSpecQueueWidths` holds the two together.
+			FetchInterval: time.Second,
+			JobTimeout:    time.Minute,
+			RescueAfter:   time.Hour,
 		},
 		Ingest: IngestConfig{
 			RetryAfter:     10 * time.Second,

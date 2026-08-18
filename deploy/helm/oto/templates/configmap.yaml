@@ -64,10 +64,23 @@ data:
   OTO_TELEMETRY_TRACE_SAMPLE_RATE: {{ .Values.config.telemetry.trace_sample_rate | quote }}
 
   OTO_JOBS_ENABLED: {{ .Values.config.jobs.enabled | quote }}
+  {{- /* A queue width is emitted ONLY when it is set. Zero means "use the SPEC
+        §G.3 default", and emitting OTO_JOBS_QUEUE_INGEST="0" would read to an
+        operator inspecting the ConfigMap as "no workers" rather than "unset". An
+        absent variable is the honest spelling, and it is what makes the widths
+        the process actually runs discoverable from one table. */ -}}
+  {{- if gt (int .Values.config.jobs.queue_ingest) 0 }}
   OTO_JOBS_QUEUE_INGEST: {{ int .Values.config.jobs.queue_ingest | quote }}
+  {{- end }}
+  {{- if gt (int .Values.config.jobs.queue_default) 0 }}
   OTO_JOBS_QUEUE_DEFAULT: {{ int .Values.config.jobs.queue_default | quote }}
+  {{- end }}
+  {{- if gt (int .Values.config.jobs.queue_delivery) 0 }}
   OTO_JOBS_QUEUE_DELIVERY: {{ int .Values.config.jobs.queue_delivery | quote }}
+  {{- end }}
+  {{- if gt (int .Values.config.jobs.queue_reconcile) 0 }}
   OTO_JOBS_QUEUE_RECONCILE: {{ int .Values.config.jobs.queue_reconcile | quote }}
+  {{- end }}
   OTO_JOBS_FETCH_INTERVAL: {{ .Values.config.jobs.fetch_interval | quote }}
   OTO_JOBS_JOB_TIMEOUT: {{ .Values.config.jobs.job_timeout | quote }}
   OTO_JOBS_RESCUE_AFTER: {{ .Values.config.jobs.rescue_after | quote }}
