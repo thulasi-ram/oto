@@ -141,16 +141,52 @@ func (r *EventRepository) Append(ctx context.Context, s db.TenantScope, e Event)
 	return mapErr(err, "event_not_found", "append a timeline event")
 }
 
+// ⛔⛔ `alert_events` IS THE PER-SIGNAL TIMELINE, AND A DIGEST IS NOT ON IT.
+// `ev_subject_ck` (00007) requires every event to name an alert, a case or a group:
+// "the append-only timeline: one immutable thing that happened at one instant" is a
+// timeline OF A SIGNAL, and every reader of it — the alert timeline, the case
+// timeline, the group timeline — asks by one of those three ids.
+//
+// A digest (migration 00058) has none of them. Its subject is a window over a
+// namespace, and the honest options were to widen `ev_subject_ck` so an event could
+// name nothing, or to leave the digest off this table. Widening it would mean every
+// timeline query in oto gains rows it cannot place, to record a fact no timeline was
+// asking for — so the digest stays off, and its record is its own `notifications` row
+// (idempotent, carrying the policy, the window and the count) plus its
+// `notification_deliveries`. Nothing is lost that anything reads.
+//
+// ⚠️ A ZERO UUID WOULD NOT HAVE BEEN "NO SUBJECT". It satisfies `ev_subject_ck`
+// while referencing nothing, so it would have written a timeline row addressed to a
+// group that does not exist — invisible to every reader and permanent. That is what
+// `subjectOfEvent` exists to prevent.
+
+// subjectOfEvent turns a Notification's ids into the three optional event subjects,
+// and reports whether there is any subject at all. False means this fact belongs on
+// no signal's timeline — see the block above.
+func subjectOfEvent(n domain.Notification) (*uuid.UUID, bool) {
+	if n.GroupID != uuid.Nil {
+		groupID := n.GroupID
+		return &groupID, true
+	}
+	// A groupless notification may still name an alert or a case: `notifications_
+	// target_ck` only exempts a digest, and `alert_id` / `case_id` are enough for
+	// `ev_subject_ck`.
+	return nil, n.AlertID != nil || n.CaseID != nil
+}
+
 // AppendNotificationCreated records that an intent was minted and fanned out.
 func (r *EventRepository) AppendNotificationCreated(
 	ctx context.Context, s db.TenantScope, n domain.Notification, destinations int, at time.Time,
 ) error {
-	groupID := n.GroupID
+	groupID, ok := subjectOfEvent(n)
+	if !ok {
+		return nil
+	}
 	return r.Append(ctx, s, Event{
 		Type:    kernel.EventNotificationCreated,
 		AlertID: n.AlertID,
 		CaseID:  n.CaseID,
-		GroupID: &groupID,
+		GroupID: groupID,
 		Summary: "oto notified " + strconv.Itoa(destinations) + " destination(s): " +
 			string(n.Reason),
 		Payload: map[string]any{
@@ -178,12 +214,15 @@ func (r *EventRepository) AppendNotificationSuppressed(
 	for _, a := range also {
 		others = append(others, string(a))
 	}
-	groupID := n.GroupID
+	groupID, ok := subjectOfEvent(n)
+	if !ok {
+		return nil
+	}
 	return r.Append(ctx, s, Event{
 		Type:    kernel.EventNotificationSuppressed,
 		AlertID: n.AlertID,
 		CaseID:  n.CaseID,
-		GroupID: &groupID,
+		GroupID: groupID,
 		Summary: "oto did not notify (" + string(n.SuppressedReason) + "): " +
 			string(n.Reason),
 		Payload: map[string]any{
@@ -235,10 +274,23 @@ func (r *EventRepository) AppendDeliveryOutcome(
 		return nil
 	}
 
+	// A DIGEST DELIVERY HAS NO SIGNAL TO NARRATE. `groupID` is the zero UUID for a
+	// digest (its `notifications.group_id` is NULL) and `alertID` is nil, so there is
+	// no subject `ev_subject_ck` would accept and no timeline a reader would find it
+	// on. The delivery's own row carries the status, the attempts and the error class,
+	// which is where the digest path looks. See the block above `subjectOfEvent`.
+	var group *uuid.UUID
+	if groupID != uuid.Nil {
+		g := groupID
+		group = &g
+	} else if alertID == nil {
+		return nil
+	}
+
 	return r.Append(ctx, s, Event{
 		Type:    kind,
 		AlertID: alertID,
-		GroupID: &groupID,
+		GroupID: group,
 		Summary: summary,
 		Payload: map[string]any{
 			"delivery_id": d.ID,

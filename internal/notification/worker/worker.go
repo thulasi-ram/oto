@@ -33,6 +33,7 @@ type Workers struct {
 	notifier  *service.NotificationService
 	dispatch  *service.DispatchService
 	reminders *service.ReminderService
+	digests   *service.DigestService
 	log       *slog.Logger
 }
 
@@ -42,18 +43,25 @@ type Config struct {
 	Notifier  *service.NotificationService
 	Dispatch  *service.DispatchService
 	Reminders *service.ReminderService
-	Logger    *slog.Logger
+	// Digests is the digest tick. REQUIRED, like the other three: a build where the
+	// schema admits a `digest_window_s` and nothing ever evaluates it is a settings
+	// field an operator can fill in and never hear from again, which is the specific
+	// failure mode CONTEXT.md §6 calls a number no reader reads.
+	Digests *service.DigestService
+	Logger  *slog.Logger
 }
 
 // New builds the workers.
 func New(cfg Config) (*Workers, error) {
-	if cfg.Scopes == nil || cfg.Notifier == nil || cfg.Dispatch == nil || cfg.Reminders == nil {
+	if cfg.Scopes == nil || cfg.Notifier == nil || cfg.Dispatch == nil ||
+		cfg.Reminders == nil || cfg.Digests == nil {
 		return nil, errs.New(errs.KindInternal, "notification_worker_deps",
-			"the notification workers need a scope resolver, the notification service, the dispatch service and the reminder service")
+			"the notification workers need a scope resolver, the notification service, the dispatch service, the reminder service and the digest service")
 	}
 	w := &Workers{
 		scopes: cfg.Scopes, notifier: cfg.Notifier,
-		dispatch: cfg.Dispatch, reminders: cfg.Reminders, log: cfg.Logger,
+		dispatch: cfg.Dispatch, reminders: cfg.Reminders, digests: cfg.Digests,
+		log: cfg.Logger,
 	}
 	if w.log == nil {
 		w.log = slog.Default()
@@ -80,6 +88,7 @@ func (w *Workers) Register(h *jobs.Handlers, orgs jobs.Tenants, enq db.Enqueuer)
 	h.NotifyEvaluate = w.NotifyEvaluate
 	h.DeliverDispatch = w.DeliverDispatch
 	h.NotifyUnackedReminder = w.NotifyUnackedReminder(orgs, enq)
+	h.NotifyDigest = w.NotifyDigest(orgs, enq)
 }
 
 // NotifyEvaluate is the `notify.evaluate` handler.
@@ -209,6 +218,62 @@ func (w *Workers) NotifyUnackedReminder(
 				}
 				if sent > 0 {
 					w.log.InfoContext(ctx, "notification: sent unacked reminders",
+						slog.String("org_id", scope.OrgID().String()), slog.Int("count", sent))
+				}
+				return nil
+			})
+	}
+}
+
+// NotifyDigest builds the `notify.digest` handler over the two shapes of
+// jobs.TenantFanOut, exactly like the reminder above: a payload naming no org is the
+// fan-out tick and only ENQUEUES — one job per live tenant, a continuation at the
+// ceiling — and a payload naming an org is ONE tenant's sweep with the kind's whole
+// execution timeout to itself.
+//
+// ⭐ THE TICK IS THE EVALUATOR, AND THE PAYLOAD CARRIES NO WINDOW. The window is
+// arithmetic on the clock (`notification/domain.Digest.WindowStart`, aligned to the
+// UTC day), so a job that named one would be a second, competing source of truth
+// about a boundary that must be identical in every pod. The payload stays a zero
+// value and the schedule stays declarative in `platform/jobs`; which windows are
+// still owed is answered from the digests themselves.
+//
+// A window is covered EXACTLY ONCE across a restart, and not because this handler
+// is careful: `(org_id, policy_id, digest_window_start)` is unique
+// (`notif_digest_uniq`) and is also the §C.7 key, so a duplicate tick collides and
+// the collision is read as "already covered".
+//
+// ⛔ IT MUST NEVER GAIN A TIME-OF-DAY PREDICATE (SCOPE-BOUNDARY §4.8). The window
+// selects which facts a summary covers. A handler that could decide oto should stay
+// silent until morning is quiet hours, and quiet hours need a timezone, an owner and
+// a rota.
+func (w *Workers) NotifyDigest(
+	orgs jobs.Tenants, enq db.Enqueuer,
+) jobs.Handler[jobs.NotifyDigestArgs] {
+	return func(ctx context.Context, job *jobs.Job[jobs.NotifyDigestArgs]) error {
+		if job.Args.IsFanOut() {
+			out, err := jobs.FanOutTenants(ctx, jobs.KindNotifyDigest, enq, orgs, w.log,
+				job.Args.After, func(f jobs.TenantFanOut) db.JobArgs {
+					return jobs.NotifyDigestArgs{TenantFanOut: f}
+				})
+			if err != nil {
+				return err
+			}
+			if out.Enqueued > 0 {
+				w.log.DebugContext(ctx, "notification: digest fan-out",
+					slog.Int("enqueued", out.Enqueued))
+			}
+			return nil
+		}
+
+		return jobs.ForTenant(ctx, jobs.KindNotifyDigest, orgs, job.Args.OrgID,
+			func(ctx context.Context, scope db.TenantScope) error {
+				sent, err := w.digests.SweepOrg(ctx, scope)
+				if err != nil {
+					return classify(err)
+				}
+				if sent > 0 {
+					w.log.InfoContext(ctx, "notification: sent digests",
 						slog.String("org_id", scope.OrgID().String()), slog.Int("count", sent))
 				}
 				return nil

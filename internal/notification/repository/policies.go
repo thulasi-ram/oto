@@ -37,9 +37,29 @@ type policyRow struct {
 	channelIDs        []uuid.UUID
 	throttle          []byte
 	reminderAfterSecs *int
+	digestWindowSecs  *int
+	digestFloor       *int
 	createdAt         time.Time
 	updatedAt         time.Time
 	deletedAt         *time.Time
+}
+
+// scanInto is the ONE argument list for `policyColumns`, and it exists because
+// there are now four queries in this file reading the same thirteen columns.
+//
+// ⚠️ THE DUPLICATION IT REPLACED WAS A LIVE HAZARD, not a style problem. Each
+// query spelled its own `Scan(&row.a, &row.b, …)` in the column order, so adding
+// `digest_window_s` and `digest_floor` meant editing the list in four places and a
+// miss would not fail to compile: pgx would scan an `INT` into a `*time.Time` and
+// return a runtime error on one code path only, most likely the one with no test.
+// One list next to the one column constant cannot drift.
+func (r *policyRow) scanInto() []any {
+	return []any{
+		&r.id, &r.orgID, &r.name, &r.priority, &r.enabled,
+		&r.matchers, &r.reasons, &r.channelIDs, &r.throttle,
+		&r.reminderAfterSecs, &r.digestWindowSecs, &r.digestFloor,
+		&r.createdAt, &r.updatedAt, &r.deletedAt,
+	}
 }
 
 func (r policyRow) toDomain() (domain.Policy, error) {
@@ -88,6 +108,16 @@ func (r policyRow) toDomain() (domain.Policy, error) {
 		p.UnackedReminderAfter = time.Duration(*r.reminderAfterSecs) * time.Second
 	}
 
+	// NULL means "no digest", which is the shipped default and the state of every
+	// row written before migration 00058. The zero Duration says the same thing in
+	// Go, so there is nothing to translate and nothing to default.
+	if r.digestWindowSecs != nil {
+		p.Digest.Window = time.Duration(*r.digestWindowSecs) * time.Second
+	}
+	if r.digestFloor != nil {
+		p.Digest.Floor = *r.digestFloor
+	}
+
 	return p, nil
 }
 
@@ -108,7 +138,8 @@ func (r *PolicyRepository) db(ctx context.Context) db.Querier { return db.FromCo
 
 const policyColumns = `
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
-  throttle, unacked_reminder_after_s, created_at, updated_at, deleted_at`
+  throttle, unacked_reminder_after_s, digest_window_s, digest_floor,
+  created_at, updated_at, deleted_at`
 
 const listLivePoliciesSQL = `
 SELECT` + policyColumns + `
@@ -133,11 +164,7 @@ func (r *PolicyRepository) ListLive(ctx context.Context, s db.TenantScope) ([]do
 	out := make([]domain.Policy, 0, 8)
 	for rows.Next() {
 		var row policyRow
-		if err := rows.Scan(
-			&row.id, &row.orgID, &row.name, &row.priority, &row.enabled,
-			&row.matchers, &row.reasons, &row.channelIDs, &row.throttle,
-			&row.reminderAfterSecs, &row.createdAt, &row.updatedAt, &row.deletedAt,
-		); err != nil {
+		if err := rows.Scan(row.scanInto()...); err != nil {
 			return nil, mapErr(err, "policy_not_found", "scan notification policy")
 		}
 		p, err := row.toDomain()
@@ -161,11 +188,7 @@ SELECT` + policyColumns + `
 // deleted policy that a historical notification still points at.
 func (r *PolicyRepository) Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Policy, error) {
 	var row policyRow
-	err := r.db(ctx).QueryRow(ctx, getPolicySQL, s.OrgID(), id).Scan(
-		&row.id, &row.orgID, &row.name, &row.priority, &row.enabled,
-		&row.matchers, &row.reasons, &row.channelIDs, &row.throttle,
-		&row.reminderAfterSecs, &row.createdAt, &row.updatedAt, &row.deletedAt,
-	)
+	err := r.db(ctx).QueryRow(ctx, getPolicySQL, s.OrgID(), id).Scan(row.scanInto()...)
 	if err != nil {
 		return domain.Policy{}, mapErr(err, "policy_not_found", "notification policy")
 	}
@@ -210,11 +233,7 @@ func (r *PolicyRepository) ListWithUnackedReminder(
 	out := make([]domain.Policy, 0, 4)
 	for rows.Next() {
 		var row policyRow
-		if err := rows.Scan(
-			&row.id, &row.orgID, &row.name, &row.priority, &row.enabled,
-			&row.matchers, &row.reasons, &row.channelIDs, &row.throttle,
-			&row.reminderAfterSecs, &row.createdAt, &row.updatedAt, &row.deletedAt,
-		); err != nil {
+		if err := rows.Scan(row.scanInto()...); err != nil {
 			return nil, mapErr(err, "policy_not_found", "scan reminder policy")
 		}
 		p, err := row.toDomain()
@@ -225,6 +244,65 @@ func (r *PolicyRepository) ListWithUnackedReminder(
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapErr(err, "policy_not_found", "read reminder policies")
+	}
+	return out, nil
+}
+
+// listDigestPoliciesSQL selects the live policies that carry a digest window.
+//
+// ⭐ THE WINDOW IS THE WHOLE PREDICATE, AND THE REASON IS NOT REPEATED HERE.
+// `policies_digest_reason_ck` (00058) already guarantees that a row with a window
+// lists `digest` in `reasons`, so filtering on the array as well would be a second
+// spelling of a constraint the database holds — and one that would silently return
+// nothing if the constraint were ever the thing that broke. `Policy.Digests()`
+// re-asks the coherent question in Go for the benefit of unstored PREVIEW
+// candidates, which no query can vouch for.
+//
+// It rides `policies_digest_idx (org_id, priority) WHERE digest_window_s IS NOT
+// NULL AND enabled AND deleted_at IS NULL`, which is partial precisely so the tick's
+// per-tenant read costs the size of the digest configuration and not the size of
+// the policy table — most installs will have no digest at all, and this query runs
+// once a minute per tenant forever.
+const listDigestPoliciesSQL = `
+SELECT` + policyColumns + `
+  FROM notification_policies
+ WHERE org_id = $1 AND enabled AND deleted_at IS NULL
+   AND digest_window_s IS NOT NULL
+ ORDER BY priority ASC, created_at ASC, id ASC`
+
+// ListWithDigest returns the live policies that ask for a periodic digest, in
+// evaluation order.
+//
+// ⛔ ORDER IS NOT DECORATION HERE EITHER, though it means something different than
+// it does for `ListLive`. Digest evaluation does NOT stop at the first match: every
+// digest policy is its own subscription with its own window and its own channels,
+// and two policies over the same namespace are two questions somebody asked, not a
+// conflict to resolve by priority. What the order buys is a STABLE tick: the same
+// set of policies is evaluated in the same sequence on every run, so a tick that
+// exhausts its budget truncates the same tail rather than a different one each time.
+func (r *PolicyRepository) ListWithDigest(
+	ctx context.Context, s db.TenantScope,
+) ([]domain.Policy, error) {
+	rows, err := r.db(ctx).Query(ctx, listDigestPoliciesSQL, s.OrgID())
+	if err != nil {
+		return nil, mapErr(err, "policy_not_found", "list digest policies")
+	}
+	defer rows.Close()
+
+	out := make([]domain.Policy, 0, 4)
+	for rows.Next() {
+		var row policyRow
+		if err := rows.Scan(row.scanInto()...); err != nil {
+			return nil, mapErr(err, "policy_not_found", "scan digest policy")
+		}
+		p, err := row.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "policy_not_found", "read digest policies")
 	}
 	return out, nil
 }

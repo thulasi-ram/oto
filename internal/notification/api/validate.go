@@ -43,6 +43,16 @@ func materialise(scope db.TenantScope, d domain.PolicyDraft) domain.Policy {
 	if d.UnackedReminderAfter != nil {
 		p.UnackedReminderAfter = *d.UnackedReminderAfter
 	}
+	// The digest's four rules — range, the divisor rule, the pair rule and the
+	// reason rule — are all `Policy.Validate`'s, so materialising the two halves is
+	// the whole of this layer's job. A hand-written range check here would be the
+	// second copy that drifts from `policies_digest_window_ck`.
+	if d.DigestWindow != nil {
+		p.Digest.Window = *d.DigestWindow
+	}
+	if d.DigestFloor != nil {
+		p.Digest.Floor = *d.DigestFloor
+	}
 	return p
 }
 
@@ -84,6 +94,25 @@ func validateMerged(existing domain.Policy, p domain.PolicyPatch) error {
 			merged.UnackedReminderAfter = *v
 		} else {
 			merged.UnackedReminderAfter = 0
+		}
+	}
+	// ⭐ THE DIGEST IS WHY MERGING RATHER THAN VALIDATING THE PATCH MATTERS MOST.
+	// `policies_digest_reason_ck` ties the window to the `digest` Reason and
+	// `policies_digest_pair_ck` ties the floor to the window, so `{"digest_floor":
+	// 5}` and `{"reasons": ["fired"]}` are each valid alone and each fatal against
+	// the wrong stored row. Only the merged policy knows which.
+	if p.DigestWindow != nil {
+		if v := *p.DigestWindow; v != nil {
+			merged.Digest.Window = *v
+		} else {
+			merged.Digest.Window = 0
+		}
+	}
+	if p.DigestFloor != nil {
+		if v := *p.DigestFloor; v != nil {
+			merged.Digest.Floor = *v
+		} else {
+			merged.Digest.Floor = 0
 		}
 	}
 	return merged.Validate()

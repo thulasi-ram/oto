@@ -239,6 +239,45 @@ func (NotifyUnackedReminderArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
 }
 
+// NotifyDigestArgs is the DIGEST TICK (migration 00058): at each window boundary,
+// count the Cases that opened inside the window for every policy carrying a
+// `digest_window_s`, and send one digest per policy per window if the count clears
+// the policy's floor. Periodic, 60 s, zero payload.
+//
+// Queue: lifecycle · Priority: normal · Retry: periodic (3) · Payload v1
+//
+// ⭐ IT TICKS EVERY MINUTE AND THE SHORTEST WINDOW IS FIVE, WHICH IS THE DESIGN
+// RATHER THAN A MISMATCH. The tick does not decide when a window ends — the window
+// boundary is arithmetic on the clock (`domain.Digest.WindowStart`), aligned to the
+// UTC day — so the interval only bounds how late a digest can be: at most one minute
+// after its window closed. A tick that finds nothing owed does one indexed read per
+// digest policy and stops, which is what makes a once-a-minute schedule affordable
+// for a five-minute window and a daily one alike.
+//
+// IDEMPOTENCY KEY: `(org_id, policy_id, digest_window_start)`, enforced twice —
+// as `notif_digest_uniq` and, through the §C.7 hash, as `notifications_idem_uniq`.
+// Job-level uniqueness is by kind, ARGS and period, and `TenantFanOut` makes that
+// per-tenant, so each org's tick gets its own once-a-minute slot and a tenant whose
+// policies are broken retries and dead-letters alone. A window is therefore covered
+// EXACTLY ONCE even if this job runs twice, in two pods, across a restart.
+//
+// ⛔ IT IS NOT A THROTTLE AND NOT A DAMPER (SCOPE-BOUNDARY §4.8). The window selects
+// which facts a summary covers; it never decides whether an ordinary notification is
+// delivered, and an alert-based or case-based policy gains no window at all. A job
+// that could withhold a firing would be quiet hours, and quiet hours are a rota.
+type NotifyDigestArgs struct {
+	Payload
+	TenantFanOut
+}
+
+// Kind implements db.JobArgs and river.JobArgs.
+func (NotifyDigestArgs) Kind() string { return KindNotifyDigest }
+
+// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
+func (NotifyDigestArgs) InsertOpts() river.InsertOpts {
+	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
+}
+
 // ------------------------------------------------------- channels (inbound)
 
 // SlackInteractionArgs carries ONE verified Slack block action off the HTTP
@@ -460,25 +499,12 @@ func (GroupCloseArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
 }
 
-// FlapScoreArgs recomputes flap scores (SPEC §B.6). Periodic, 300 s, zero payload.
-//
-// Queue: lifecycle · Priority: background · Retry: periodic (3) · Payload v1
-//
-// IDEMPOTENCY KEY: none needed — the score is a pure function of the event
-// history, written with SetFlap, so recomputation is convergent and a per-tenant
-// pass that runs twice writes the same score twice.
-type FlapScoreArgs struct {
-	Payload
-	TenantFanOut
-}
-
-// Kind implements db.JobArgs and river.JobArgs.
-func (FlapScoreArgs) Kind() string { return KindFlapScore }
-
-// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
-func (FlapScoreArgs) InsertOpts() river.InsertOpts {
-	return periodicOpts(QueueLifecycle, PriorityBackground, 5*time.Minute)
-}
+// ⛔ THERE IS NO `FlapScoreArgs` ANY MORE. `flap.score` recomputed
+// `alerts.flap_score` / `alerts.is_flapping`, and the detector is RETIRED: the case
+// retention window W (migration 00057) damps a flap at case formation, so a damped
+// episode appends neither of the two lifecycle events the score counted and
+// `is_flapping` read false exactly when the alert was flapping. The columns keep
+// their last value and stay readable (ADR 0041, Amendment 1).
 
 // ---------------------------------------------------------------- maintenance
 

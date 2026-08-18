@@ -32,6 +32,12 @@ func (p policyStore) ListWithUnackedReminder(
 	return nil, nil
 }
 
+// No digest. The fan-out under test here is the SIGNAL one, and a digest policy
+// would have this fake's single policy digesting on every tick as well.
+func (p policyStore) ListWithDigest(context.Context, db.TenantScope) ([]domain.Policy, error) {
+	return nil, nil
+}
+
 // TestEvaluateTwiceAllocatesOneSequence pins the fan-out's most expensive bug.
 //
 // `notify.evaluate` runs on an at-least-once queue and its re-runs are documented

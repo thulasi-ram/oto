@@ -138,8 +138,8 @@ type Handlers struct {
 
 	CaseReap              Handler[CaseReapArgs]
 	GroupClose            Handler[GroupCloseArgs]
-	FlapScore             Handler[FlapScoreArgs]
 	NotifyUnackedReminder Handler[NotifyUnackedReminderArgs]
+	NotifyDigest          Handler[NotifyDigestArgs]
 
 	PartitionsManage Handler[PartitionsManageArgs]
 	RetentionPrune   Handler[RetentionPruneArgs]
@@ -221,11 +221,15 @@ func RegisterAll(r *Registry, h Handlers) error {
 		},
 		func() error {
 			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
-				orStub(h.FlapScore, KindFlapScore))
+				orStub(h.NotifyUnackedReminder, KindNotifyUnackedReminder))
 		},
 		func() error {
+			// Two minutes, like every other per-tenant lifecycle sweep, and per TENANT
+			// for the same reason: the fan-out tick does a page read and one batch
+			// insert, and one tenant's pass is a bounded fold over at most
+			// MaxDigestBackfill windows per digest policy.
 			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
-				orStub(h.NotifyUnackedReminder, KindNotifyUnackedReminder))
+				orStub(h.NotifyDigest, KindNotifyDigest))
 		},
 		func() error {
 			return Register(r, Spec{Queue: QueueMaintenance, PayloadVersion: 1, Timeout: 10 * time.Minute},
@@ -265,8 +269,8 @@ func RegisterAll(r *Registry, h Handlers) error {
 // AND a nil org id, and both expansions happen in the handler.
 //
 // ⭐ THE PER-TENANT PERIODICS ARE STILL HERE, AND THE ZERO ARGS BELOW ARE WHY.
-// `case.reap`, `group.close`, `flap.score`, `notify.unacked_reminder`,
-// `retention.prune` and `stats.rollup` are all fanned out per tenant now
+// `case.reap`, `group.close`, `notify.unacked_reminder`,
+// `notify.digest`, `retention.prune` and `stats.rollup` are all fanned out per tenant now
 // (jobs.TenantFanOut), but their SCHEDULE still needs no list: an args struct
 // with a nil OrgID IS the fan-out tick, and expanding it into one job per
 // tenant happens in the handler, where
@@ -297,11 +301,17 @@ func AddDefaultPeriodic(r *Registry, clk clock.Clock) {
 	add(time.Minute, KindGroupClose, func() (river.JobArgs, *river.InsertOpts) {
 		return GroupCloseArgs{}, nil
 	})
-	add(5*time.Minute, KindFlapScore, func() (river.JobArgs, *river.InsertOpts) {
-		return FlapScoreArgs{}, nil
-	})
 	add(time.Minute, KindNotifyUnackedReminder, func() (river.JobArgs, *river.InsertOpts) {
 		return NotifyUnackedReminderArgs{}, nil
+	})
+	// The digest tick. Once a minute is not the window — the window is arithmetic on
+	// the clock, aligned to the UTC day (`notification/domain.Digest.WindowStart`) —
+	// so this only bounds how late a digest can be, at one minute. RunOnStart matters
+	// here for the same reason it matters for `partitions.manage`: a deploy that landed
+	// just after a boundary would otherwise owe a window it does not notice for a
+	// minute, and the owed window is capped by MaxDigestBackfill rather than lost.
+	add(time.Minute, KindNotifyDigest, func() (river.JobArgs, *river.InsertOpts) {
+		return NotifyDigestArgs{}, nil
 	})
 	add(time.Hour, KindPartitionsManage, func() (river.JobArgs, *river.InsertOpts) {
 		return PartitionsManageArgs{}, nil

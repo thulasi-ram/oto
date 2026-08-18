@@ -78,16 +78,22 @@ func TestThePolicyReasonsCheckRefusesABag(t *testing.T) {
 }
 
 // The ceiling and the set rule are one statement: with duplicates refused, a
-// list of 19 can only be the whole vocabulary plus a repeat, and the whole
-// vocabulary once has to remain legal or the constraint outlaws a policy an
-// operator is entitled to write.
+// list of one more than the vocabulary can only be the whole vocabulary plus a
+// repeat, and the whole vocabulary once has to remain legal or the constraint
+// outlaws a policy an operator is entitled to write.
+//
+// ⚠️ THE WHOLE-VOCABULARY POLICY BELOW CARRIES `digest` AND NO WINDOW, AND THAT MUST
+// STAY LEGAL. Migration 00058's `policies_digest_reason_ck` binds the two in ONE
+// direction only — a window implies the reason, never the reverse — precisely so that
+// this row is still insertable. A `digest` with no window is inert, exactly like
+// `refired`, which nothing has produced since ADR 0040.
 func TestThePolicyReasonsCheckBoundsTheColumnAtTheEnum(t *testing.T) {
 	t.Parallel()
 
 	fx := newFixture(t)
 
 	all := domain.AllReasons()
-	require.Len(t, all, 18, "the ceiling in the CHECK is the size of this vocabulary")
+	require.Len(t, all, 19, "the ceiling in the CHECK is the size of this vocabulary")
 
 	whole := make([]string, 0, len(all))
 	for _, r := range all {

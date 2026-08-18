@@ -32,6 +32,12 @@ const (
 	// MaxPolicyReasons is policies_reasons_ck, and it is 18 because `reasons` is a
 	// SET over the 18-value Reason enum.
 	//
+	// ⚠️ IT IS NOT A NUMBER TO BE CHOSEN. It is `len(AllReasons())`, asserted as such
+	// by `TestTheReasonCeilingIsTheSizeOfTheReasonEnum`. It moved from 18 to 19 when
+	// migration 00058 added `digest`, and back to 18 when migration 00060 deleted
+	// `storm` — the number follows the vocabulary in both directions. The DDL
+	// ceiling and the DTO `max` tag carry the same number for the same reason.
+	//
 	// It used to be 32 while the contract said 18, and that gap was not a wire
 	// bound differing from a storage bound on purpose: it was the room duplicates
 	// occupied. `uniqueItems: true` made a 19th element unreachable on the wire
@@ -235,6 +241,19 @@ type Policy struct {
 	// moment it is an array, oto is an on-call product and FR-1 has been crossed.
 	UnackedReminderAfter time.Duration
 
+	// Digest is `digest_window_s` and `digest_floor`: summarise what matched me over
+	// a window, and stay silent unless enough happened. The zero value means no
+	// digest, which is what every policy written before migration 00058 says and
+	// what every policy that does not ask for one continues to say.
+	//
+	// ⛔ IT IS NOT A SCHEDULE OF WHEN OTO MAY SPEAK (see digest.go's binding block
+	// and the one at the top of this file). The window selects which FACTS a summary
+	// covers; it is read by the digest tick and by nothing on the evaluation path.
+	// An alert-based or case-based policy gains no window: its facts fire
+	// immediately, every time, because their noise is a signal to fix the Prometheus
+	// rule and oto does not decide to be quiet about a firing.
+	Digest Digest
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt *time.Time
@@ -255,6 +274,18 @@ func (p Policy) Handles(r Reason) bool {
 
 // RemindsOnUnacked reports whether this policy asks for the one reminder stage.
 func (p Policy) RemindsOnUnacked() bool { return p.UnackedReminderAfter > 0 }
+
+// Digests reports whether this policy sends a periodic digest — a window AND the
+// Reason that routes it.
+//
+// ⚠️ BOTH HALVES, AND THE SECOND ONE IS NOT A FORMALITY. `policies_digest_reason_ck`
+// makes the window imply the Reason in the database, so a stored policy cannot
+// disagree; this method asks anyway, because a Policy value can also be a
+// PREVIEW candidate that was never stored, and a digest minted for a policy whose
+// `reasons` omit `digest` would be recorded and immediately suppressed as
+// `no_policy`, once per window, forever. `firstMatchingPolicy` in reminder.go
+// checks the same coherence for the same reason.
+func (p Policy) Digests() bool { return p.Digest.Enabled() && p.Handles(ReasonDigest) }
 
 // Matches reports whether every matcher holds against the group's labels.
 //
@@ -379,8 +410,64 @@ func (p Policy) Validate() error {
 		})
 	}
 
+	v = append(v, p.validateDigest()...)
+
 	if len(v) > 0 {
 		return errs.Validation("policy_invalid", "the notification policy is not valid", v...)
 	}
 	return nil
+}
+
+// validateDigest restates policies_digest_window_ck, policies_digest_floor_ck,
+// policies_digest_pair_ck and policies_digest_reason_ck in Go, so that a bad digest
+// comes back as a field-level violation the settings form can point at rather than
+// as a 23514 an operator has to decode (CONTEXT.md §5b).
+//
+// The field paths are the JSON names, never the column names: a violation path is
+// what a client maps onto a control, and `digest_window_s` is a spelling no client
+// has ever been sent.
+func (p Policy) validateDigest() []errs.Violation {
+	var v []errs.Violation
+
+	if p.Digest.Window != 0 {
+		switch {
+		case p.Digest.Window < MinDigestWindow || p.Digest.Window > MaxDigestWindow:
+			v = append(v, errs.Violation{
+				Field: "digest_window_seconds", Code: "range",
+				Message: "the digest window is 300 to 86400 seconds, or unset",
+			})
+		case !DigestWindowAligned(p.Digest.Window):
+			// The divisor rule, and the message says WHY rather than just refusing:
+			// "not a divisor of 86400" is meaningless without the reason, which is that
+			// every boundary has to be a wall-clock boundary in UTC.
+			v = append(v, errs.Violation{
+				Field: "digest_window_seconds", Code: "alignment",
+				Message: "the digest window must divide the day evenly (300, 600, 900, 1800, 3600, 7200, …) " +
+					"so that every window boundary is a wall-clock boundary in UTC",
+			})
+		}
+		if !p.Handles(ReasonDigest) {
+			v = append(v, errs.Violation{
+				Field: "reasons", Code: "required",
+				Message: "a policy with a digest window must also react to the `digest` reason, " +
+					"or its digests would be suppressed as no_policy once per window",
+			})
+		}
+	}
+
+	switch {
+	case p.Digest.Floor < 0 || p.Digest.Floor > MaxDigestFloor:
+		v = append(v, errs.Violation{
+			Field: "digest_floor", Code: "range",
+			Message: "the digest floor is 1 to 10000, or unset",
+		})
+	case p.Digest.Floor > 0 && p.Digest.Window == 0:
+		v = append(v, errs.Violation{
+			Field: "digest_floor", Code: "incomplete",
+			Message: "a digest floor needs a digest window: a threshold over an unbounded span " +
+				"is not something anything can evaluate",
+		})
+	}
+
+	return v
 }

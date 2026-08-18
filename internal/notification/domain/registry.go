@@ -50,6 +50,21 @@ type PolicyDraft struct {
 	//
 	// ⛔ IT IS A SCALAR. ONE STAGE, FOREVER (SPEC §G.9.1, BINDING, PERMANENT).
 	UnackedReminderAfter *time.Duration
+
+	// DigestWindow and DigestFloor are the two halves of `Digest` (migration
+	// 00058). Nil means the column stays NULL, which is "this policy sends no
+	// digest" — the shipped default.
+	//
+	// ⭐ THEY ARE TWO SCALARS AND NOT A `*Digest`, because the wire is two scalars
+	// (`digest_window_seconds`, `digest_floor`), the columns are two nullable
+	// columns, and `Policy.Validate` reports violations against those two field
+	// paths. A nested command object would have to be flattened at the boundary and
+	// the flattening is where the two spellings would drift.
+	//
+	// ⛔ NEITHER IS A SCHEDULE. The window selects which FACTS a summary covers
+	// (digest.go's binding block); it has no timezone and never will.
+	DigestWindow *time.Duration
+	DigestFloor  *int
 }
 
 // PolicyPatch is the partial update.
@@ -68,13 +83,19 @@ type PolicyPatch struct {
 
 	Throttle             **Throttle
 	UnackedReminderAfter **time.Duration
+	// DigestWindow and DigestFloor are double pointers for the reason Throttle is:
+	// the contract types both as nullable and a pointer to nil CLEARS the column,
+	// which is how an operator turns the summary — or just its floor — off.
+	DigestWindow **time.Duration
+	DigestFloor  **int
 }
 
 // IsEmpty reports whether the patch would change nothing.
 func (p PolicyPatch) IsEmpty() bool {
 	return p.Name == nil && p.Priority == nil && p.Enabled == nil &&
 		p.Matchers == nil && p.Reasons == nil && p.ChannelIDs == nil &&
-		p.Throttle == nil && p.UnackedReminderAfter == nil
+		p.Throttle == nil && p.UnackedReminderAfter == nil &&
+		p.DigestWindow == nil && p.DigestFloor == nil
 }
 
 // DefaultPolicyPriority mirrors the `notification_policies.priority` DDL default.

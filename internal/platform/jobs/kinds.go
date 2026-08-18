@@ -20,7 +20,7 @@ const (
 	// QueueReconcile carries the mandatory Alertmanager reconciler and silence sync.
 	QueueReconcile = "reconcile"
 	// QueueLifecycle carries the periodic state-machine sweeps: reaper, group
-	// close, flap scoring, unacked reminders.
+	// close, unacked reminders, digests.
 	QueueLifecycle = "lifecycle"
 	// QueueMaintenance carries partition management, retention and rollups. One
 	// worker: these are DDL-adjacent and must not race themselves.
@@ -46,17 +46,29 @@ const (
 	KindDeliverDispatch    = "deliver.dispatch"
 	// KindSlackInteraction is one verified Slack block action, taken off the HTTP
 	// request so the endpoint can answer inside Slack's three-second window.
-	KindSlackInteraction      = "slack.interaction"
-	KindSourceReconcile       = "source.reconcile"
-	KindSilencesSync          = "silences.sync"
-	KindCaseReap              = "case.reap"
-	KindGroupClose            = "group.close"
-	KindFlapScore             = "flap.score"
+	KindSlackInteraction = "slack.interaction"
+	KindSourceReconcile  = "source.reconcile"
+	KindSilencesSync     = "silences.sync"
+	KindCaseReap         = "case.reap"
+	KindGroupClose       = "group.close"
+	// ⛔ THERE IS NO `flap.score` KIND ANY MORE. It recomputed
+	// `alerts.flap_score` / `alerts.is_flapping` every five minutes. The case
+	// retention window W (migration 00057) damps a flap at CASE FORMATION, which
+	// left the score counting lifecycle events a damped flap no longer appends —
+	// false exactly when the alert was flapping — so the detector is retired and
+	// the two columns keep their last value, readable and unwritten (ADR 0041,
+	// Amendment 1). A queued tick of this kind is unhandled after this change;
+	// there is no deployment to strand, and `just db-reset` is the answer on the
+	// only database that exists (migration 00059 spends the same argument).
 	KindNotifyUnackedReminder = "notify.unacked_reminder"
-	KindPartitionsManage      = "partitions.manage"
-	KindRetentionPrune        = "retention.prune"
-	KindStatsRollup           = "stats.rollup"
-	KindCacheExpire           = "cache.expire"
+	// KindNotifyDigest is the DIGEST TICK: at each window boundary, count what
+	// matched each digest policy and say so once. It is the only notification job
+	// whose subject is a WINDOW rather than an object (migration 00058).
+	KindNotifyDigest     = "notify.digest"
+	KindPartitionsManage = "partitions.manage"
+	KindRetentionPrune   = "retention.prune"
+	KindStatsRollup      = "stats.rollup"
+	KindCacheExpire      = "cache.expire"
 )
 
 // Priority levels. River orders 1 (highest) before 4 (lowest) within a queue.

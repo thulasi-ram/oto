@@ -64,14 +64,19 @@ func clampPageLimit(n int) int {
 
 // ------------------------------------------------------------------ policies
 
+// scanPolicy reads one `policyColumns` row.
+//
+// ⛔ IT DELEGATES TO `policyRow.scanInto` AND MUST KEEP DOING SO. It used to spell
+// its own argument list, which is exactly the drift that list was introduced to
+// end: `policyColumns` gained `digest_window_s` and `digest_floor` in migration
+// 00058 and this copy did not, so every policy read through the CONFIG repository
+// — the settings list, the settings detail, the row returned from a create and a
+// patch — was scanning fifteen columns into thirteen destinations. That does not
+// fail to compile; it fails at runtime, on the settings screen only, because pgx
+// was being handed a timestamp for an `INT`.
 func scanPolicy(scan func(...any) error) (domain.Policy, error) {
 	var row policyRow
-	err := scan(
-		&row.id, &row.orgID, &row.name, &row.priority, &row.enabled,
-		&row.matchers, &row.reasons, &row.channelIDs, &row.throttle,
-		&row.reminderAfterSecs, &row.createdAt, &row.updatedAt, &row.deletedAt,
-	)
-	if err != nil {
+	if err := scan(row.scanInto()...); err != nil {
 		return domain.Policy{}, err
 	}
 	return row.toDomain()
@@ -169,8 +174,9 @@ func (r *ConfigRepository) GetPolicy(
 const insertPolicySQL = `
 INSERT INTO notification_policies (
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
-  throttle, unacked_reminder_after_s, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+  throttle, unacked_reminder_after_s, digest_window_s, digest_floor,
+  created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
 RETURNING id`
 
 // CreatePolicy writes one routing rule.
@@ -219,7 +225,12 @@ func (r *ConfigRepository) CreatePolicy(
 	var stored uuid.UUID
 	err = r.db(ctx).QueryRow(ctx, insertPolicySQL,
 		newID, s.OrgID(), in.Name, priority, enabled, matchers, reasons,
-		in.ChannelIDs, throttle, secondsPtr(in.UnackedReminderAfter), r.clock.Now().UTC(),
+		in.ChannelIDs, throttle, secondsPtr(in.UnackedReminderAfter),
+		// NULL is "no digest", which is the default and the state of every row
+		// written before migration 00058. Nothing is defaulted here: a caller that
+		// asked for no window must not acquire one from the repository.
+		secondsPtr(in.DigestWindow), in.DigestFloor,
+		r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {
 		return domain.Policy{}, mapErr(err, "policy_not_found", "create a notification policy")
@@ -246,16 +257,24 @@ UPDATE notification_policies SET
     channel_ids = COALESCE($8, channel_ids),
     throttle    = CASE WHEN $9  THEN $10 ELSE throttle END,
     unacked_reminder_after_s = CASE WHEN $11 THEN $12 ELSE unacked_reminder_after_s END,
-    updated_at  = GREATEST(updated_at, $13)
+    digest_window_s = CASE WHEN $13 THEN $14 ELSE digest_window_s END,
+    digest_floor    = CASE WHEN $15 THEN $16 ELSE digest_floor END,
+    updated_at  = GREATEST(updated_at, $17)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
 // UpdatePolicy applies a partial change.
 //
-// `throttle` and `unacked_reminder_after_s` are written through a CASE rather
-// than a COALESCE because both are nullable and clearing them is a real
-// operation: COALESCE cannot express "set this to NULL", and an operator turning
-// a throttle off must be able to say so.
+// `throttle`, `unacked_reminder_after_s`, `digest_window_s` and `digest_floor` are
+// written through a CASE rather than a COALESCE because all four are nullable and
+// clearing them is a real operation: COALESCE cannot express "set this to NULL",
+// and an operator turning a throttle or a digest off must be able to say so.
+//
+// ⭐ THE TWO DIGEST COLUMNS MOVE IN ONE STATEMENT, which is what keeps
+// `policies_digest_pair_ck` satisfiable. Clearing the window and clearing the
+// floor arrive as two independent CASEs of the same UPDATE, so a patch that turns
+// the whole digest off never passes through the momentary "floor without window"
+// the constraint refuses.
 func (r *ConfigRepository) UpdatePolicy(
 	ctx context.Context, s db.TenantScope, policyID uuid.UUID, p domain.PolicyPatch,
 ) (domain.Policy, error) {
@@ -271,6 +290,10 @@ func (r *ConfigRepository) UpdatePolicy(
 		throttleVal []byte
 		setReminder bool
 		reminderVal *int
+		setWindow   bool
+		windowVal   *int
+		setFloor    bool
+		floorVal    *int
 	)
 	if p.Matchers != nil {
 		b, err := encodeMatchers(*p.Matchers)
@@ -301,11 +324,20 @@ func (r *ConfigRepository) UpdatePolicy(
 		setReminder = true
 		reminderVal = secondsPtr(*p.UnackedReminderAfter)
 	}
+	if p.DigestWindow != nil {
+		setWindow = true
+		windowVal = secondsPtr(*p.DigestWindow)
+	}
+	if p.DigestFloor != nil {
+		setFloor = true
+		floorVal = *p.DigestFloor
+	}
 
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updatePolicySQL,
 		s.OrgID(), policyID, p.Name, p.Priority, p.Enabled, matchers, reasons, channels,
-		setThrottle, throttleVal, setReminder, reminderVal, r.clock.Now().UTC(),
+		setThrottle, throttleVal, setReminder, reminderVal,
+		setWindow, windowVal, setFloor, floorVal, r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {
 		return domain.Policy{}, mapErr(err, "policy_not_found", "notification policy")
@@ -398,12 +430,11 @@ func (r *ConfigRepository) ListNotifications(
 	out := make([]domain.Notification, 0, limit+1)
 	for rows.Next() {
 		var row notificationRow
-		if err := rows.Scan(
-			&row.id, &row.orgID, &row.subjectKind, &row.subjectID, &row.groupID,
-			&row.alertID, &row.caseID, &row.reason, &row.policyID,
-			&row.stateVersion, &row.idempotencyKey, &row.status, &row.suppressedReason,
-			&row.createdAt, &row.updatedAt,
-		); err != nil {
+		// ⚠️ THIS IS THE ONE READ THAT MEETS A NULL `group_id` FIRST. The audit list
+		// has no mandatory group filter, so a digest row (migration 00058) arrives
+		// here on any unfiltered page — which is why `notificationRow.groupID` is a
+		// pointer and why the argument list is shared rather than retyped per query.
+		if err := rows.Scan(row.scanInto()...); err != nil {
 			return nil, db.Cursor{}, mapErr(err, "notification_not_found", "scan a notification")
 		}
 		out = append(out, row.toDomain())

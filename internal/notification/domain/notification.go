@@ -199,7 +199,15 @@ type Notification struct {
 	OrgID       uuid.UUID
 	SubjectKind SubjectKind
 	SubjectID   uuid.UUID
-	GroupID     uuid.UUID
+	// GroupID is THE DELIVERY TARGET — which AlertGroup generation's thread this
+	// fact lands on — and it is mandatory for every SubjectKind except
+	// `digest` (notifications_target_ck, migration 00058).
+	//
+	// ⚠️ IT IS THE ZERO UUID FOR A DIGEST, AND THAT IS THE COLUMN BEING NULL. A
+	// digest spans many generations, so it has no single thread to land in; it opens
+	// its own conversation keyed by its policy. Anything that dereferences this
+	// without asking `SubjectKind` first will address the nil UUID.
+	GroupID uuid.UUID
 	// AlertID is set when the fact is about ONE alert. It is MANDATORY for the
 	// alert-scoped reasons (notifications_focus_ck).
 	AlertID *uuid.UUID
@@ -215,9 +223,28 @@ type Notification struct {
 	Status           Status
 	SuppressedReason SuppressedReason
 
+	// DigestWindowStart is the window half of a digest's subject: the inclusive,
+	// epoch-aligned start of the CLOSED window this digest reports on. Present
+	// exactly when SubjectKind is SubjectDigest (notifications_digest_ck).
+	DigestWindowStart *time.Time
+	// DigestCount is how many Cases OPENED inside that window — the number the
+	// digest asserts, and the number the policy's floor was compared against.
+	//
+	// ⭐ IT IS STORED RATHER THAN RECOMPUTED AT CLAIM TIME, which is a deliberate
+	// exception to C11 and migration 00058 carries the argument: the window is closed
+	// so there is no newer truth to render, but `alert_cases` is reapable, so a
+	// recomputed count would shrink as the episodes aged out and the row would say a
+	// different thing every time it was read.
+	DigestCount *int
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
+// Digest reports whether this Notification is about a window rather than about an
+// object — and therefore that GroupID is nil, that its thread is keyed by its
+// policy, and that its card is drawn from DigestCount instead of from a snapshot.
+func (n Notification) Digest() bool { return n.SubjectKind == SubjectDigest }
 
 // Delivery is ONE MATERIALISATION of a Notification on ONE Channel. It owns the
 // retry state, the provider ids and the rendered payload.
