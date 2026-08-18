@@ -1,1 +1,1 @@
-{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":5,"timestamp":1787060671,"nonce":"hfiyHUjxskkTcORvWyX+99SYYL4=","added":["high","notification"],"removed":null}]}
+{"author":{"id":"5698b6d16d951325374257d86a2e673da0e55970c3d21c0f7c6f49018f24e5bf"},"ops":[{"type":3,"timestamp":1787060671,"nonce":"hbm9wnyfXiRBn89COw1JFhdb1fM=","message":"Typo in Done-when 4: `ModEBroadcastReply` should read `ModeBroadcastReply` (`internal/channels/domain/ports.go:146`).","files":null}]}
