@@ -8,7 +8,14 @@ from, and the `DETACH` → Parquet escape hatch), [0003](0003-alert-occurrence-e
 [0001](0001-postgres-sole-datastore-river-job-queue.md)
 **Amends:** SPEC §D.1 (`raw_retention_days` default), §D.3, §D.4, §D.11
 **Resolves:** git-bug `344bf68` — *"Retention defaults delete the history the product is selling, on
-no stated requirement"*, and `docs/ORCHESTRATION.md` open question 5.
+no stated requirement"*, and `docs/ORCHESTRATION.md` open question 5. Also git-bug `747bde8` — the
+thirty-day replay-safety story — in
+[Amendment 4](#amendment-4--the-thirty-days-is-chosen-and-what-it-actually-buys).
+
+> ⚠️ **The `raw_retention_days` derivation in the Decision below is RETIRED.** `oto replay` gates on
+> supersession, not on age, so the 30 is a **chosen** number and its justification lives in
+> [Amendment 4](#amendment-4--the-thirty-days-is-chosen-and-what-it-actually-buys). The number itself
+> did not change.
 
 ## Context
 
@@ -69,9 +76,14 @@ Every clause of it is served by a table retention never touches:
 **After the 14-day (now 30-day) raw boundary** you can still answer every one of the above, plus every
 label and annotation, the flap score, and the daily hygiene rollups. You can no longer answer: *what
 were the exact bytes Alertmanager sent?*, *which elements of that payload were rejected and why?*, and
-you can no longer replay a stored batch after a parser fix. The raw tables have **no read API at all**
+you can no longer replay a stored batch after a parser fix. ~~The raw tables have **no read API at all**
 — no path in `api/openapi/openapi.yaml` touches `ingest_batches` or `ingest_rejections` — so they are
-today a `psql`-only debugging artifact, not a product surface.
+today a `psql`-only debugging artifact, not a product surface.~~ ⚠️ **That stopped being true.** Both
+raw tables are now read by the contract — `GET /api/v1/sources/{id}/rejections` and
+`GET /api/v1/sources/{id}/failed-batches` (`openapi.yaml:2897`, `:2957`;
+`internal/sources/api/feeds.go`) — and neither takes a time-window parameter, so this setting IS the
+depth of both feeds. The boundary now empties a screen, not just a `psql` session
+([Amendment 4](#amendment-4--the-thirty-days-is-chosen-and-what-it-actually-buys)).
 
 **After the 13-month event boundary** you keep the whole table above. What you lose is the
 *instant-by-instant narrative*: the ordered transitions with an actor on each, the pre-rendered
@@ -115,22 +127,26 @@ which is the top of that band exactly.
 
 ## Decision
 
-### `raw_retention_days`: 14 → **30**, and it is derived rather than chosen
+### `raw_retention_days`: 14 → **30**
 
-The one stated requirement a stored raw payload exists to serve is **SPEC acceptance criterion 36** —
+⚠️ **The number stands; the derivation below does NOT — `oto replay` gates on supersession, not on
+age. See [Amendment 4](#amendment-4--the-thirty-days-is-chosen-and-what-it-actually-buys), which is
+where the justification for the 30 now lives.**
+
+~~The one stated requirement a stored raw payload exists to serve is **SPEC acceptance criterion 36** —
 *"replaying a stored `ingest_batch` after a parser fix reproduces the same state without duplicate
 Slack messages"*. That replay is idempotent only while the batch's event dedupe keys are still in
 `alert_event_keys`, which SPEC §D.4 prunes at **30 days**. Past that horizon a replay appends the
-timeline a second time, so a payload kept longer cannot be used for the thing it is kept for.
+timeline a second time, so a payload kept longer cannot be used for the thing it is kept for.~~
 
-Thirty days is therefore the exact width of the window in which a raw payload is *useful*, and it is
+~~Thirty days is therefore the exact width of the window in which a raw payload is *useful*, and it is
 derived from another number in the system rather than picked — the same relationship
 `MinRefireGraceSeconds` has with `ingestion/domain.DedupTTL`. **The two are coupled: if the
 `alert_event_keys` pruner moves, this moves with it.** The coupling is stated on
-`DefaultRawRetention` so a future change to one cannot silently invalidate the other.
+`DefaultRawRetention` so a future change to one cannot silently invalidate the other.~~
 
-14 days was strictly worse: shorter than the horizon, traceable to nothing, and defended by a storage
-figure that turns out to be tens of megabytes.
+14 days was still strictly worse: traceable to nothing, and defended by a storage figure that turns
+out to be tens of megabytes.
 
 ### `event_retention_months`: **13**, kept, on a different reason than the one written down
 
@@ -199,8 +215,9 @@ The shape, deliberately minimal — this is a **retention hook, not an analytics
 **What oto tells a buyer who asks today:** *"The alert record — identity, every episode, the rule text
 at fire time, who was told, on which channel, in which thread, who acknowledged it and how it ended —
 is kept indefinitely and is never deleted by retention. The instant-by-instant timeline is kept for 13
-months by default and is configurable up to 10 years. Raw upstream payloads are kept 30 days and are a
-debugging artifact, not a product surface. There is no cold-storage export yet: if you need the
+months by default and is configurable up to 10 years. Raw upstream payloads are kept 30 days, and
+because the rejections and failed-batches feeds take no time window, those 30 days are how deep both
+of those screens go. There is no cold-storage export yet: if you need the
 timeline beyond your configured window, raise the window. The export is designed and not built."*
 That is a true sentence, which is the only kind worth giving a buyer.
 
@@ -256,13 +273,19 @@ every fallback in the code widens. *(It did not, when this was written — see
 ## Alternatives rejected
 
 **Leave 14 days and document it.** Rejected: nothing derives 14, the storage it saves is a rounding
-error, and it is shorter than the window in which a raw payload is still replayable — so it fails the
-one acceptance criterion the table exists to serve.
+error, and ~~it is shorter than the window in which a raw payload is still replayable — so it fails the
+one acceptance criterion the table exists to serve~~ it halves the window in which criterion 36's
+replay can be run at all, on no stated reason
+([Amendment 4](#amendment-4--the-thirty-days-is-chosen-and-what-it-actually-buys)).
 
 **90 days or 13 months of raw payloads.** Affordable (1.5 GB and 6.7 GB at 10 000 firings/day), and
-rejected because they buy nothing: past the `alert_event_keys` horizon the payload cannot be replayed
+rejected because ~~they buy nothing: past the `alert_event_keys` horizon the payload cannot be replayed
 safely, and there is no read API through which anyone would look at it. Storage for bytes nothing can
-act on.
+act on.~~ nothing has asked for them. **Neither of the two original reasons survives:** a replay is
+refused by supersession, not by age, so a 90-day payload is exactly as replayable as a 1-day one, and
+the raw tables now have a read API — `GET /sources/{id}/rejections` and `GET /sources/{id}/failed-batches`
+([Amendment 4](#amendment-4--the-thirty-days-is-chosen-and-what-it-actually-buys)). An operator who
+wants a longer window should raise it; widening is free and this ADR's own asymmetry favours it.
 
 **Raise event retention to make comments outlive the timeline.** Delays the loss, never fixes it, and
 walks straight into ADR 0014's revisit triggers. The correct fix for irreversible loss is an export,
@@ -314,7 +337,7 @@ the reconciler re-applies and which nothing else dedupes. Both directions are pi
 `TestTheDedupeKeyHorizonIsAFloorThatOnlyWidens`, the grain by
 `TestAKeyOutlivesThePartitionHoldingItsPayload` (which asserts the two jobs' clocks against each other
 rather than restating the arithmetic), and the constants' equality by
-`TestTheShippedRawRetentionIsStillDerivedFromTheKeyHorizon` — prose stating a coupling does not fail
+`TestTheShippedKeyHorizonCoversTheShippedRawWindow` — prose stating a relationship does not fail
 a build.
 
 **What it costs.** One tick is bounded at 20 000 rows, which is arithmetic rather than taste: this
@@ -464,3 +487,74 @@ asserting eight tables are unpartitioned would pin an accident rather than a cho
 is the evidence — the nine constraints above at the file and line given, the four `IF to_regclass`
 blocks in `00005_partitions.sql:174-211`, and SPEC §C14. Drop or relocate any one of them and the row
 naming it here is what stops being true.
+
+## Amendment 4 — the thirty days is chosen, and what it actually buys
+
+**`oto replay` no longer gates on age, so nothing derives `raw_retention_days` any more.** The gate is
+`supersededBy` (`internal/ingestion/service/replay.go`): it takes the batch's touched alert keys, which
+of them the batch carries `firing` for, their current states and the batch's `received_at`, and **no age
+argument at all**. A replay is refused on one of two limbs — `overtaken`, the alert's latest case has
+`source_updated_at` after `received_at`, so a later batch already wrote to it; or `closed`, that case is
+terminal while this batch says firing, which would mint a new case and page someone for an incident that
+ended. Neither limb is a function of how old the batch is. Ticket `539bfdd` and commit `7558177` are the
+change; git-bug `747bde8` is the ticket that this amendment answers.
+
+**The old rule was already unreachable before that change, which is the part worth keeping.** It
+described a readable payload whose keys had aged out, and that state cannot occur:
+`dedupeKeyHorizonOf` (`internal/app/workers.go`) keeps a key for `raw_retention_days + 1` days floored
+at 30, and the extra day is the DAILY partition grain — so the keys always outlive the bytes they
+guard. Once the partition is dropped there are no bytes: `s.batches.Get` returns NotFound and
+`ProcessBatch` skips (`internal/ingestion/service/process.go`), which `--force` cannot override.
+**The coupling therefore runs the opposite way to the one this ADR's body states:** the key horizon is
+derived from the raw window, not the raw window from the key horizon.
+
+### The decision: 30 stays, as a chosen number, on four things that are true today
+
+1. **It is the depth of two operator screens.** `GET /api/v1/sources/{id}/rejections` and
+   `GET /api/v1/sources/{id}/failed-batches` read the raw tables and take **no time-window
+   parameter**, deliberately, because an operator asking *"why did my alert never appear?"* does not
+   know when it went missing (`internal/sources/api/feeds.go`). Retention is the window. This is the
+   reason §2's "psql-only debugging artifact" is struck.
+2. **It is the whole window in which a replay can be attempted.** Not because a replay stops being
+   *safe*, but because past the boundary there is nothing to replay and no flag that changes it.
+3. **It costs 51 MB at 1 000 alert firings a day and 510 MB at 10 000** (§3, measured at 1 698 B per
+   3-alert batch). Ninety days costs 153 MB and 1.5 GB. No number in this range decides anything, so
+   storage does not pick this default and is not offered as if it did.
+4. **Lowering it is irreversible and raising it is free**, and 30 already shipped. That asymmetry —
+   this ADR's own — is what breaks the tie between 30 and any other affordable number, and it is why
+   the answer to "we want longer" is `raw_retention_days`, not an amendment.
+
+**What it is NOT: one calendar month of replay safety.** A three-month-old failed batch is replayable
+if its alerts have not moved; a two-hour-old one is refused if they have. The number bounds how long
+the bytes exist, and nothing else.
+
+**What still holds the 30-day `alert_event_keys` floor** is the second half of
+`alerts/domain.DedupeKeyRetention`'s own comment, which never depended on replay: the reconciler
+re-applies transitions, and that table is the only thing that dedupes them, so an operator who drops
+the install-wide raw window to a day must not thereby unclaim the keys of cases that are still open.
+The two thirties are now **independent numbers that happen to be equal**, not one number stated twice.
+
+**Debt this amendment recorded, and what has since been paid.** Nine sites stated the retired
+derivation as fact, one of them a test. All nine are corrected except the migration, which has already
+run:
+
+- ✅ `internal/app/retention_horizon_test.go` — the test kept its assertion and lost its false name:
+  `TestTheShippedRawRetentionIsStillDerivedFromTheKeyHorizon` is now
+  `TestTheShippedKeyHorizonCoversTheShippedRawWindow`, which is what the equality actually proves —
+  keys outlive the bytes they guard.
+- ✅ `internal/platform/tuning/defaults.go` (`DefaultRawRetention`), `internal/identity/domain/org.go`,
+  `internal/identity/domain/settings.go` (the `Why` string the settings API serves),
+  `internal/alerts/domain/event.go` (`DedupeKeyRetention`'s "IT IS THE PRIMARY NUMBER" is now "an
+  independent number"), `internal/sources/api/feeds.go`, `deploy/helm/oto/values.yaml`,
+  `docs/setup/tuning.md`.
+- ✅ `api/openapi/openapi.yaml` — the `raw_retention_days` description, plus the separate falsehood
+  beside it: it told consumers *no operation in this contract reads `ingest_batches` or
+  `ingest_rejections`* while `/api/v1/sources/{id}/rejections` and
+  `/api/v1/sources/{id}/failed-batches` in the same file do. It now names them.
+- ⛔ **NOT paid, deliberately:** `db/migrations/00036_retention_defaults.sql`'s `COMMENT ON TABLE`
+  still says *"THE 30 IS DERIVED, NOT CHOSEN"* and *"there is no API that reads this table"*. It is an
+  applied migration and is not amended in place; the correction belongs in a new migration that
+  rewrites the comment.
+
+SPEC §D.3/§D.4 and the tuning UI copy were corrected with this amendment; the `docs-site` mirror needs
+a `sync-docs` run to follow.

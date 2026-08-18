@@ -20,11 +20,14 @@ import (
 // click from the reason.
 //
 // Both endpoints are keyset pages over PARTITIONED tables whose retention is
-// `raw_retention_days` (30 by default since 00036; ADR 0024 derives the 30 from
-// the `alert_event_keys` idempotency horizon). There is deliberately NO time-window
-// parameter: the operator arriving here does not know when their alert went
-// missing, and a defaulted window would answer "no rejections" to a question
-// about one that is older than the default.
+// `raw_retention_days` (30 by default since 00036; ADR 0024 Amendment 4 makes that
+// 30 a CHOSEN number, and these two feeds are the first of the four reasons for it
+// — nothing derives it from the `alert_event_keys` horizon any more). There is
+// deliberately NO time-window parameter: the operator arriving here does not know
+// when their alert went missing, and a defaulted window would answer "no
+// rejections" to a question about one that is older than the default. So
+// `raw_retention_days` IS the depth of both feeds, and lowering it empties a
+// screen.
 
 // Query-parameter allow-lists. §E.3 is binding: an unknown query parameter is
 // REJECTED, because a typo'd `?resaon=undecodable` that is silently ignored

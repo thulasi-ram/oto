@@ -13,9 +13,13 @@ import (
 //
 // `ingestion/domain.DedupTTL` is the §C.5 REPLAY window: how long an identical
 // batch is treated as the same delivery arriving twice (an HA Alertmanager
-// sibling, a retry after a 5xx). `refire_grace` is the §B.5 LIFECYCLE window:
-// how long after a resolve a re-fire reopens the existing case (T8) rather
-// than opening a new generation and a new Slack root message (T7).
+// sibling, a retry after a 5xx). `refire_grace` is the §B.5 window that used to
+// select a LIFECYCLE transition: how long after a resolve a re-fire ran the closed
+// case on (T8) rather than opening a new generation and a new Slack root message
+// (T7). ADR 0040 deleted T8 — every re-fire opens the NEXT case, unacknowledged,
+// however fast it arrives, and nothing reopens a closed one — so `refire_grace`
+// now bounds only two other numbers: its own floor is twice this replay window,
+// and `group_close_delay` ships pinned at or above it.
 //
 // Both were ten minutes. A re-fire whose alert set has not changed produces a
 // BYTE-IDENTICAL dedup key, so the two windows being equal made T8 unreachable
@@ -46,8 +50,9 @@ func TestTheReplayWindowIsStrictlyInsideRefireGrace(t *testing.T) {
 
 	if floor <= ingest.DedupTTL {
 		t.Fatalf("the re-fire grace floor (%s) does not clear the ingest replay window (%s): "+
-			"every re-fire inside the grace is dropped as a duplicate delivery, so T8 is unreachable "+
-			"and every re-fire opens a new Slack thread", floor, ingest.DedupTTL)
+			"every re-fire inside the grace is dropped as a duplicate delivery, so the grace has no "+
+			"reachable band and the number group_close_delay is pinned to means nothing",
+			floor, ingest.DedupTTL)
 	}
 
 	// ⭐ TWICE, NOT MERELY MORE. The reachable band — the interval in which a

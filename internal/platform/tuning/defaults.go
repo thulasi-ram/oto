@@ -128,14 +128,10 @@ const (
 	// DefaultFlapDigestInterval SURVIVED unchanged: the rule is "at or above
 	// group_interval, usefully 2×–4×", and 15m is 3 × the 5m the ecosystem runs.
 	DefaultFlapDigestInterval = 900 * time.Second
-	// DefaultStormThreshold is how many DISTINCT alerts must join one generation
-	// inside DefaultStormWindow before it collapses to a single message.
-	DefaultStormThreshold = 25
-	// DefaultStormWindow is the window those joins are counted over.
-	DefaultStormWindow = 60 * time.Second
-	// DefaultStormCooldown is how long a generation must go WITHOUT a new member
-	// before storm mode ends.
-	DefaultStormCooldown = 600 * time.Second
+	// ⛔ `DefaultStormThreshold`, `DefaultStormWindow` AND `DefaultStormCooldown`
+	// WERE HERE AND ARE DELETED. Storm damping is removed; the three settings keys
+	// they seeded left `identity/domain` with it, and a shipped default whose key
+	// nothing admits is a number no install can ever hold.
 )
 
 // The §D.11 retention defaults (ADR 0024). They are per-org settings AND the
@@ -144,26 +140,39 @@ const (
 // every org's setting, so the two must start from the same number or a fresh
 // install drops a partition an org's own retention still claims.
 const (
-	// DefaultRawRetention is 30 DAYS and it is DERIVED, not chosen: it is the
-	// `alert_event_keys` idempotency horizon (SPEC §D.4, `created_at < now() - 30
-	// days`).
+	// DefaultRawRetention is 30 DAYS and it is CHOSEN, not derived (ADR 0024,
+	// Amendment 4).
 	//
-	// The one stated requirement a stored raw payload exists to serve is SPEC
-	// acceptance criterion 36 — "replaying a stored `ingest_batch` after a parser
-	// fix reproduces the same state without duplicate Slack messages". That replay
-	// is idempotent only while the batch's event dedupe keys are still in
-	// `alert_event_keys`. Past that horizon a replay APPENDS the timeline a second
-	// time, so a payload kept longer is a payload that can no longer be used for the
-	// thing it is kept for. Keeping raw bytes beyond the window in which they are
-	// safely replayable buys storage and no capability.
+	// ⛔ IT WAS DOCUMENTED AS DERIVED FROM THE `alert_event_keys` IDEMPOTENCY
+	// HORIZON, AND THAT DERIVATION IS RETIRED. `oto replay` gates on SUPERSESSION,
+	// never on age: `supersededBy` (`ingestion/service/replay.go`) refuses a batch
+	// whose alerts have moved on since it arrived — a later batch already wrote to
+	// the case, or the case closed while this batch still says firing — and it takes
+	// no age argument at all. A three-month-old batch replays if its alerts have not
+	// moved; a two-hour-old one is refused if they have.
 	//
-	// ⛔ THE TWO NUMBERS ARE COUPLED. If the `alert_event_keys` pruner ever moves
-	// off 30 days, this moves with it — the same relationship `MinRefireGraceSeconds`
-	// has with `ingestion/domain.DedupTTL`. See ADR 0024.
+	// What the 30 buys, all of it true today:
 	//
-	// It was 14 days, which was traceable to nothing. See ADR 0024 for the measured
-	// storage this costs: at 10 000 alert firings a day the extra sixteen days is
-	// about 270 MB.
+	//   - the DEPTH of two operator screens. `GET /sources/{id}/rejections` and
+	//     `GET /sources/{id}/failed-batches` read the raw tables and take no
+	//     time-window parameter, because an operator asking "why did my alert never
+	//     appear?" does not know when it went missing. Retention is the window.
+	//   - the whole window in which a replay can be ATTEMPTED — not because a replay
+	//     stops being safe, but because past the boundary there are no bytes and no
+	//     flag that overrides that (`ProcessBatch` skips on NotFound).
+	//   - a measured 51 MB at 1 000 alert firings a day and 510 MB at 10 000; 90 days
+	//     would be 153 MB and 1.5 GB. No number in that range decides anything, so
+	//     storage does not pick this default.
+	//   - lowering it is irreversible and raising it is free, and 30 already shipped.
+	//
+	// ⚠️ THE ONLY COUPLING LEFT RUNS THE OTHER WAY. `dedupeKeyHorizonOf`
+	// (`internal/app/workers.go`) keeps a dedupe key for this window plus one day of
+	// daily-partition grain, floored at `alerts/domain.DedupeKeyRetention`, so keys
+	// always outlive the bytes they guard. This number does not move because that one
+	// does. `TestTheShippedKeyHorizonCoversTheShippedRawWindow` pins the ordering.
+	//
+	// It was 14 days, which was traceable to nothing, and the storage defence of 14
+	// was worth about 270 MB at 10 000 firings a day. See ADR 0024.
 	DefaultRawRetention = 30 * 24 * time.Hour
 	// DefaultEventRetention is 13 MONTHS, and the reason is a CEILING rather than a
 	// preference: it is the longest window that keeps a single org inside ADR 0014's

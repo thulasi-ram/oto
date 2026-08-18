@@ -134,10 +134,21 @@ Consequences, all deliberate:
   one succeeds is the row at `seq - 1`; `reopen_of` was a second spelling of that.
 - `Decision.DropsAck` is now the only road out of a closed episode, so no acknowledgement
   survives any re-fire, however quickly it arrives.
-- `refire_grace` no longer decides a transition. The **setting survives** — `group_close_delay_s`
-  is pinned against it and the ingest replay window is derived from it (`MinRefireGrace =
-  2 × DedupTTL`) — but it is inert at the lifecycle layer. Whether it should be renamed, re-homed
-  or removed is left open on purpose: deleting a settings key is a contract change of its own.
+- `refire_grace` no longer decides a transition, **and the setting stays — under its own name, in
+  `orgs.settings`, with its bounds unchanged.** That is the decision, not a deferral. It is inert at
+  the case-lifecycle layer, and it still constrains two numbers outside that layer, each held by its
+  own test. Its FLOOR is `2 × ingestion/domain.DedupTTL` — `MinRefireGraceSeconds = 600`, derived from
+  the §C.5 replay window rather than chosen, which is what stops the two being edited into
+  contradiction (`TestTheReplayWindowIsStrictlyInsideRefireGrace`). And `DefaultGroupCloseDelay` is
+  pinned **at or above** `DefaultRefireGrace`, equal today at 1200 s — below it is a hard failure and
+  a gap above it is legal but logged (`TestGroupCloseDelayDoesNotDefeatTheRefireGrace`). Renaming,
+  re-homing and removal are all
+  refused: deleting or moving a settings key is a contract change of its own, and there is nothing to
+  buy by paying it — the question this setting used to answer, *how much of a gap should be tolerated
+  before a re-fire counts as a separate episode*, belongs at **case formation**, not at the lifecycle
+  boundary, so the knob for it would be a new key with new semantics rather than this one wearing a
+  new label. Operator copy therefore describes `refire_grace` as the number
+  `group_close_delay` is tied to, and never as a window in which a case reopens.
 
 ## 7. `case.reopened` is retired, not deleted
 

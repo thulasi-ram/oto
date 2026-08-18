@@ -111,22 +111,35 @@ func TestAKeyOutlivesThePartitionHoldingItsPayload(t *testing.T) {
 	}
 }
 
-// TestTheShippedRawRetentionIsStillDerivedFromTheKeyHorizon pins the coupling
-// itself, in the direction ADR 0024 states it.
+// TestTheShippedKeyHorizonCoversTheShippedRawWindow pins the ONE direction that
+// still has to hold: keys outlive the bytes they guard.
 //
-// ⛔ `tuning.DefaultRawRetention` IS 30 DAYS BECAUSE `DedupeKeyRetention` IS.
-// Five places say so in prose — SPEC §D.4, ADR 0024, 00036, `tuning/defaults.go`
-// and `identity/domain.settingBounds` — and prose does not fail a build. Moving
-// one of these two numbers without the other silently makes the shipped raw
-// window either shorter than the replay it exists to serve, or longer than the
-// window in which that replay is safe.
-func TestTheShippedRawRetentionIsStillDerivedFromTheKeyHorizon(t *testing.T) {
+// ⛔ NEITHER NUMBER DERIVES THE OTHER, AND THAT IS THE CORRECTION. `oto replay`
+// gates on supersession — `supersededBy` in `ingestion/service/replay.go` takes no
+// age argument — so `tuning.DefaultRawRetention` is 30 days as a CHOSEN number
+// (ADR 0024, Amendment 4: the depth of the rejections and failed-batch feeds,
+// which take no time window, plus the window a replay can be attempted in at all,
+// at a measured 51 MB per 1 000 daily firings), and `DedupeKeyRetention` is 30
+// days for the reconciler, which re-applies transitions that nothing but
+// `alert_event_keys` dedupes. They are two independent numbers that happen to be
+// equal.
+//
+// What this test forbids is the ORDERING going wrong: a raw window wider than the
+// key horizon would leave a readable payload whose dedupe keys had already been
+// swept, and replaying it appends the timeline a second time while reporting
+// success. `dedupeKeyHorizonOf` widens with the raw window, so at the shipped
+// defaults the equality is exactly what puts the horizon at its floor — move
+// either constant and re-derive the other from the two reasons above rather than
+// from each other.
+func TestTheShippedKeyHorizonCoversTheShippedRawWindow(t *testing.T) {
 	t.Parallel()
 
 	if tuning.DefaultRawRetention != alertsdomain.DedupeKeyRetention {
-		t.Fatalf("DefaultRawRetention is %s and DedupeKeyRetention is %s — they are one number "+
-			"stated twice (ADR 0024): a raw payload is kept for exactly as long as it can still "+
-			"be replayed without duplicating the timeline. Move both or neither",
+		t.Fatalf("DefaultRawRetention is %s and DedupeKeyRetention is %s — the shipped raw window "+
+			"must never exceed the key horizon, or a payload that is still readable has lost the "+
+			"keys that make its replay idempotent (ADR 0024, Amendment 4). They are independent "+
+			"numbers that are equal today: neither is derived from the other, so changing one is a "+
+			"decision about the other, not a consequence of it",
 			tuning.DefaultRawRetention, alertsdomain.DedupeKeyRetention)
 	}
 }
