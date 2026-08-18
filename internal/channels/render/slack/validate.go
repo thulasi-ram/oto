@@ -212,12 +212,9 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 			// section with no text object AT ALL, so `{"type":"mrkdwn","text":""}`
 			// passed every one of oto's eighteen rules and would have been refused by
 			// Slack.
-			if strings.TrimSpace(b.Text.Text) == "" {
-				return fail(payload, "V5", "block %d section text object is empty", idx)
-			}
-			if len(b.Text.Text) > maxSectionText {
-				return fail(payload, "V5", "block %d section text is %d chars, limit %d",
-					idx, len(b.Text.Text), maxSectionText)
+			if err := checkTextObject(payload, "V5",
+				fmt.Sprintf("block %d section", idx), *b.Text, maxSectionText); err != nil {
+				return err
 			}
 		}
 		// V6.
@@ -225,12 +222,9 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 			return fail(payload, "V6", "block %d has %d fields, limit %d", idx, len(b.Fields), maxFields)
 		}
 		for j, f := range b.Fields {
-			if strings.TrimSpace(f.Text) == "" {
-				return fail(payload, "V6", "block %d field %d is an empty text object", idx, j)
-			}
-			if len(f.Text) > maxFieldText {
-				return fail(payload, "V6", "block %d field %d is %d chars, limit %d",
-					idx, j, len(f.Text), maxFieldText)
+			if err := checkTextObject(payload, "V6",
+				fmt.Sprintf("block %d field %d", idx, j), f, maxFieldText); err != nil {
+				return err
 			}
 		}
 		if b.Text == nil && len(b.Fields) == 0 {
@@ -248,6 +242,26 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 		if len(b.Elements) > maxContextItems {
 			return fail(payload, "V7", "block %d has %d context elements, limit %d",
 				idx, len(b.Elements), maxContextItems)
+		}
+		// ⛔⛔ AND V7 COUNTED THEM WITHOUT EVER LOOKING INSIDE ONE.
+		//
+		// Slack's context block takes "an array of image elements and text objects",
+		// and a text object anywhere obeys the same two documented rules V5 and V6
+		// already enforce for a section: the `type` "can be one of plain_text or
+		// mrkdwn", and "the minimum length is 1 and maximum length is 3000
+		// characters". Inside a CONTEXT block neither was checked, so an empty
+		// context text object passed all eighteen rules — the exact hole that was
+		// closed for a section and left open here, two `case` arms apart.
+		//
+		// Four of oto's blocks are context blocks (the rule line, the state trail,
+		// the reply's extra line and the footer), and the footer is emitted on EVERY
+		// root card. Three of the four are guarded by their caller returning `false`
+		// when they have nothing to say; a guard in the renderer is not a rule,
+		// because the check has to hold when the renderer changes.
+		for j, raw := range b.Elements {
+			if err := validateContextElement(payload, idx, j, raw); err != nil {
+				return err
+			}
 		}
 
 	case BlockActions:
@@ -283,6 +297,102 @@ func validateBlock(payload json.RawMessage, idx int, b Block, seen map[string]st
 	}
 
 	return nil
+}
+
+// checkTextObject is the shared text-object rule behind V5, V6 and V7.
+//
+// Slack states both halves in writing, on the composition object itself rather
+// than on any one block: the `type` "can be one of plain_text or mrkdwn", and the
+// `text` has a "minimum length … 1 and maximum length … 3000 characters" (2 000
+// where a section field is the container). A text object that breaks either is
+// `invalid_blocks` — the whole card refused, which for oto is a dead delivery and
+// an alert nobody receives.
+//
+// ⚠️ THE TYPE CHECK IS NEW AND IS NOT PARANOIA ABOUT THE CURRENT RENDERER. Today
+// every text object oto emits comes from `mrkdwn()`, `plain()` or a literal that
+// sets `Type`, so a missing or misspelt type is unreachable — through the
+// constructors. `Text` is an ordinary exported struct with a string field, and a
+// `Text{Text: "…"}` written without its type marshals as `{"type":"","text":"…"}`,
+// which Slack refuses and oto used to send.
+func checkTextObject(payload json.RawMessage, check, where string, t Text, max int) error {
+	switch t.Type {
+	case TypeMrkdwn, TypePlainText:
+	default:
+		return fail(payload, check, "%s text object has type %q; Slack allows only %q or %q",
+			where, t.Type, TypePlainText, TypeMrkdwn)
+	}
+	if strings.TrimSpace(t.Text) == "" {
+		return fail(payload, check, "%s text object is empty", where)
+	}
+	if len(t.Text) > max {
+		return fail(payload, check, "%s text is %d chars, limit %d", where, len(t.Text), max)
+	}
+	return nil
+}
+
+// contextElement is one entry in a context block's `elements`, re-decoded from
+// the marshalled bytes. Elements are `any` in the Block union because Slack uses
+// the same key for a text object and an image element, so the type has to be read
+// off the wire form rather than off a Go type.
+type contextElement struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	AltText  string `json:"alt_text"`
+	ImageURL string `json:"image_url"`
+}
+
+// validateContextElement implements the inside half of V7.
+func validateContextElement(payload json.RawMessage, idx, j int, v any) error {
+	el, err := asContextElement(v)
+	if err != nil {
+		return fail(payload, "V7", "block %d element %d is not a context element: %v", idx, j, err)
+	}
+
+	where := fmt.Sprintf("block %d context element %d", idx, j)
+	switch el.Type {
+	case TypeMrkdwn, TypePlainText:
+		return checkTextObject(payload, "V7", where,
+			Text{Type: el.Type, Text: el.Text}, maxSectionText)
+
+	case BlockImage:
+		// An image ELEMENT carries the same two required fields as an image BLOCK,
+		// and V10 already learned that lesson one `case` arm away.
+		if strings.TrimSpace(el.AltText) == "" {
+			return fail(payload, "V7", "%s is an image with no alt_text", where)
+		}
+		if len(el.AltText) > maxAltText {
+			return fail(payload, "V7", "%s alt_text is %d chars, limit %d",
+				where, len(el.AltText), maxAltText)
+		}
+		if el.ImageURL == "" {
+			return fail(payload, "V7", "%s is an image with no image_url", where)
+		}
+		return checkURL(payload, "V7", where+" image_url", el.ImageURL)
+
+	default:
+		return fail(payload, "V7",
+			"%s has type %q; a context block takes text objects and image elements only",
+			where, el.Type)
+	}
+}
+
+func asContextElement(v any) (contextElement, error) {
+	switch t := v.(type) {
+	case Text:
+		return contextElement{Type: t.Type, Text: t.Text}, nil
+	case *Text:
+		return contextElement{Type: t.Type, Text: t.Text}, nil
+	default:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return contextElement{}, err
+		}
+		var el contextElement
+		if err := json.Unmarshal(raw, &el); err != nil {
+			return contextElement{}, err
+		}
+		return el, nil
+	}
 }
 
 func validateActions(payload json.RawMessage, idx int, b Block) error {

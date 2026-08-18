@@ -33,7 +33,7 @@ func (r *Renderer) renderRoot(v *domain.NotificationView, o domain.RenderOptions
 	if b, ok := r.trailBlock(v, state, nonce); ok {
 		blocks = append(blocks, b)
 	}
-	if b, ok := r.ruleBlock(v, state, nonce); ok {
+	if b, ok := r.ruleBlock(v, nonce); ok {
 		blocks = append(blocks, b)
 	}
 	if b, ok := r.actionsBlock(v, state, nonce); ok {
@@ -75,10 +75,6 @@ func (r *Renderer) titleBlock(v *domain.NotificationView, o domain.RenderOptions
 	if cluster := clusterChip(v); cluster != "" {
 		head += "  ·  " + code(cluster)
 	}
-	if state == CardStorm {
-		head += "  ·  " + code("storm")
-	}
-
 	if summary := oneLine(annotation(v, "summary")); summary != "" {
 		head += "\n_" + escape(truncateRunes(summary, 240)) + "_"
 	}
@@ -211,16 +207,12 @@ func acknowledgedValue(v *domain.NotificationView) string {
 // card LEAST informative at exactly the moment it became the only thing left.
 // A resolved card should read like a closed ticket, not an empty one.
 //
-// Storm mode still collapses to a count: a list of 214 instances nobody will read
-// is not information, and the count plus the link is the faithful summary (S11).
+// ⛔ NOTHING COLLAPSES THE LIST TO A COUNT ANY MORE. Storm mode used to, and it is
+// removed (ADR 0042): a burst of members is a truthful report, and `MaxInstances`
+// is the one bound on how much of it the card draws.
 func (r *Renderer) membersBlock(
 	v *domain.NotificationView, o domain.RenderOptions, state CardState, nonce string,
 ) (Block, bool) {
-	if state == CardStorm {
-		text := "*Affected instances*\n" + plural(v.Group.TotalCount, "alert", "alerts") +
-			" in this group. " + link(v.Links.Group, "See them all in oto") + "."
-		return sectionBlock(blockID("members", nonce), truncateSection(text, v.Links.Group)), true
-	}
 	if len(v.Alerts) <= 1 && !state.IsTerminal() {
 		// One instance is zero information WHILE IT IS LIVE: the title already named
 		// it (S11). On a terminal card it is the record of what was affected, and
@@ -267,11 +259,8 @@ func (r *Renderer) membersBlock(
 // matters most is afterwards, when somebody asks whether the threshold was
 // sensible or when it last changed. Dropping it deleted the one thing oto has
 // that nothing else does, from the one message that outlives the incident.
-//
-// Storm mode still drops it, because a storm card is about volume and is
-// explicitly not about any one rule.
-func (r *Renderer) ruleBlock(v *domain.NotificationView, state CardState, nonce string) (Block, bool) {
-	if state == CardStorm || v.Rule == nil {
+func (r *Renderer) ruleBlock(v *domain.NotificationView, nonce string) (Block, bool) {
+	if v.Rule == nil {
 		return Block{}, false
 	}
 	expr := oneLine(v.Rule.Expr)
@@ -307,7 +296,7 @@ func (r *Renderer) ruleBlock(v *domain.NotificationView, state CardState, nonce 
 // It is rendered in EVERY state, not only the terminal ones. A card that grows
 // its history only at the end teaches nobody to look for it.
 func (r *Renderer) trailBlock(v *domain.NotificationView, state CardState, nonce string) (Block, bool) {
-	if state == CardStorm || len(v.Trail) < 2 {
+	if len(v.Trail) < 2 {
 		// One entry is not a trail: it says "it fired", which the Started field
 		// already said better (S11).
 		return Block{}, false
@@ -370,10 +359,6 @@ func trailEmoji(kind string) string {
 		return ":white_check_mark:"
 	case "expired":
 		return ":grey_question:"
-	case "storm":
-		return ":zap:"
-	case "storm_ended":
-		return ":wind_blowing_face:"
 	default:
 		return ":white_circle:"
 	}
@@ -397,10 +382,6 @@ func trailVerb(kind string) string {
 		return "resolved"
 	case "expired":
 		return "expired"
-	case "storm":
-		return "storm damping on"
-	case "storm_ended":
-		return "storm damping off"
 	default:
 		return kind
 	}
@@ -434,7 +415,7 @@ func trailSpan(v *domain.NotificationView, state CardState) string {
 func (r *Renderer) actionsBlock(v *domain.NotificationView, state CardState, nonce string) (Block, bool) {
 	elements := make([]Action, 0, 4)
 
-	if !state.IsTerminal() && state != CardStorm {
+	if !state.IsTerminal() {
 		primaryUsed := false
 		for _, a := range v.Actions {
 			if len(elements) >= 3 {
@@ -603,10 +584,6 @@ func statusValue(v *domain.NotificationView, state CardState) string {
 		}
 	case CardExpired:
 		current += " — oto stopped hearing about this"
-	case CardStorm:
-		if v.StormCount > 0 {
-			current = "Storm — " + plural(v.StormCount, "alert", "alerts") + " in this group"
-		}
 	case CardFiring, CardResolved:
 	}
 
@@ -655,7 +632,7 @@ func durationLabel(state CardState) string {
 		return "Last seen"
 	case CardSuppressed:
 		return "Silenced for"
-	case CardAcknowledged, CardFiring, CardStorm:
+	case CardAcknowledged, CardFiring:
 		return "Firing for"
 	default:
 		return "Firing for"
@@ -812,8 +789,6 @@ func stateClause(v *domain.NotificationView, state CardState) string {
 		return "silenced since " + plainClock(v.Group.LastActivityAt)
 	case CardAcknowledged:
 		return "acknowledged, firing since " + plainClock(groupStart(v))
-	case CardStorm:
-		return "storm damping on since " + plainClock(v.Group.LastActivityAt)
 	case CardFiring:
 		return "firing since " + plainClock(groupStart(v))
 	default:

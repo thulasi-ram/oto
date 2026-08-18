@@ -30,7 +30,11 @@ const (
 	reasonRuleChanged     = "rule_changed"
 	reasonComment         = "comment"
 	reasonUnackedReminder = "unacked_reminder"
-	reasonStorm           = "storm"
+	// ⛔ `reasonStorm` WAS HERE AND IS DELETED (ADR 0042). Storm damping is removed,
+	// `storm` has left the Reason vocabulary, and migration 00060 narrows
+	// `notifications_reason_ck` so no row can spell it — so the reply heading it
+	// named can never be reached. It was briefly kept to draw a stored row; the
+	// authorised database reset means there is no stored row to draw.
 
 	// System reply types. They have no Reason in the DDL because they are facts
 	// about oto's own delivery machinery, not about the signal (§H.5).
@@ -199,12 +203,6 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 		// is not a reminder. ADR 0020, Amendment 4.
 		body += " — " + link(v.Links.Group, "open in oto")
 
-	case reasonStorm:
-		colour = CardStorm.Colour()
-		body = ":zap: *Storm damping on* — " + plural(v.StormCount, "alert", "alerts") +
-			" in this group. Individual notifications are suppressed. " +
-			link(v.Links.Group, "see them all") + "."
-
 	case reasonDegraded:
 		colour = CardExpired.Colour()
 		body = ":warning: oto could not deliver an update to this thread. " +
@@ -231,8 +229,8 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 }
 
 // ruleChangedReply is the headline differentiator. It is ALWAYS delivered,
-// regardless of verbosity, unless the group is in storm mode (§H.5): "the rule
-// underneath this alert changed" is the single most valuable thing oto can say.
+// regardless of verbosity (§H.5): "the rule underneath this alert changed" is the
+// single most valuable thing oto can say.
 func ruleChangedReply(v *domain.NotificationView) (string, string) {
 	rc := v.RuleChange
 	if rc == nil {
@@ -664,8 +662,6 @@ func replyLead(reason string) string {
 		return ":speech_balloon: New comment on:"
 	case reasonUnackedReminder:
 		return ":rotating_light: Still unacknowledged:"
-	case reasonStorm:
-		return ":zap: Storm damping on for:"
 	case reasonDegraded:
 		return ":warning: oto could not update the thread for:"
 	case reasonContinued:

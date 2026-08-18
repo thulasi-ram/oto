@@ -125,13 +125,10 @@ func (r *Renderer) renderedAt(v *domain.NotificationView) time.Time {
 	return r.clock.Now().UTC()
 }
 
-// cardState is the state the colour will encode, with the view's storm flag
-// overriding the group's counts: storm mode is a visible state and outranks
-// everything (§H.4).
+// cardState is the state the colour will encode. It is the group's member counts
+// and nothing else: no reason and no delivery-time flag overrides what the group
+// actually is (§H.4).
 func cardState(v *domain.NotificationView) CardState {
-	if v.StormCount > 0 {
-		return CardStorm
-	}
 	return DeriveCardState(v.Group)
 }
 
@@ -209,6 +206,17 @@ func focusField(v *domain.NotificationView, get func(domain.AlertView) string) s
 	return ""
 }
 
+// flappingCount counts the members whose LAST STORED flap verdict is true, for
+// §H.4's `Flapping` field.
+//
+// ⛔ IT IS NOT A DETECTOR AND THERE IS NO LONGER ONE BEHIND IT. `AlertView.IsFlapping`
+// carries `alerts.is_flapping`, which is RETIRED IN PLACE (SPEC §B.6.2, ADR 0041
+// Amendment 1): the `flap.score` job and `AlertRepository.SetFlap` are deleted, so the
+// column keeps the last value it was written and nothing recomputes it. Rendering it
+// is right — a value on a row is history, and history is what the card is a receipt
+// for — but the card must say what it is. The field `root.go` builds from this count
+// reads "31 transitions" and never "flapping now", and nothing is withheld because of
+// it: replies follow the Case like any other alert's.
 func flappingCount(v *domain.NotificationView) (int, bool) {
 	n := 0
 	for _, a := range v.Alerts {
@@ -317,8 +325,6 @@ func reasonPhrase(reason string) string {
 		return "comment added"
 	case reasonUnackedReminder:
 		return "still unacknowledged"
-	case reasonStorm:
-		return "storm damping"
 	default:
 		return ""
 	}

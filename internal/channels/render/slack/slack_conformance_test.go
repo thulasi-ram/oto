@@ -187,6 +187,68 @@ func TestAnImageBlockNeedsBothASourceAndADescription(t *testing.T) {
 	}
 }
 
+// ⛔ DIVERGENCE 6 — A TEXT OBJECT INSIDE A CONTEXT BLOCK WAS NEVER LOOKED AT.
+//
+// Divergence 4 closed the empty-text-object hole for a SECTION and for a section
+// FIELD. Two `case` arms away, V7 counted a context block's elements — "an array
+// of image elements and text objects. Maximum number of items is 10" — and never
+// opened one. The same two documented rules apply to a text object wherever it
+// sits: "can be one of `plain_text` or `mrkdwn`", and "the minimum length is 1 and
+// maximum length is 3000 characters".
+//
+// This is not a hypothetical corner. FOUR of oto's blocks are context blocks —
+// the rule expression, the state trail, a reply's second line and the footer — and
+// the footer is on every root card oto has ever rendered. Three of the four are
+// only non-empty because their caller returns `false` when they have nothing to
+// say, which is a renderer convention and not a rule: the whole point of V0–V18 is
+// to hold when the renderer changes.
+func TestATextObjectInsideAContextBlockObeysTheSameRulesAsOneInASection(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"empty mrkdwn": `{"type":"context","block_id":"b1","elements":[{"type":"mrkdwn","text":""}]}`,
+		"whitespace":   `{"type":"context","block_id":"b1","elements":[{"type":"mrkdwn","text":"   "}]}`,
+		"no type":      `{"type":"context","block_id":"b1","elements":[{"text":"oto"}]}`,
+		"unknown type": `{"type":"context","block_id":"b1","elements":[{"type":"markdown","text":"oto"}]}`,
+		"not an element": `{"type":"context","block_id":"b1","elements":[` +
+			`{"type":"button","text":{"type":"plain_text","text":"Ack"}}]}`,
+		"image with no alt_text": `{"type":"context","block_id":"b1","elements":[` +
+			`{"type":"image","image_url":"https://e.example/p.png"}]}`,
+		"image with no source": `{"type":"context","block_id":"b1","elements":[` +
+			`{"type":"image","alt_text":"CPU"}]}`,
+	}
+	for name, block := range cases {
+		if err := mustValidate(t, envelope(block)); err == nil {
+			t.Errorf("%s: an illegal context element was accepted, and Slack would have "+
+				"refused the whole card with invalid_blocks", name)
+		} else if got := checkName(err); got != "V7" {
+			t.Errorf("%s: check = %q, want V7", name, got)
+		}
+	}
+
+	// The 3 000-character bound is the text object's own, and 3 000 exactly is legal.
+	long := strings.Repeat("x", 3001)
+	if err := mustValidate(t, envelope(
+		`{"type":"context","block_id":"b1","elements":[{"type":"mrkdwn","text":"`+long+`"}]}`)); err == nil {
+		t.Error("a 3001-character context text object was accepted")
+	}
+
+	// And every shape oto actually emits still passes: the footer's mrkdwn line,
+	// and the image element the whitelist permits but no card uses yet.
+	for name, block := range map[string]string{
+		"the footer": `{"type":"context","block_id":"b1","elements":[` +
+			`{"type":"mrkdwn","text":"oto  ·  receiver ` + "`platform-critical`" + `"}]}`,
+		"a plain_text element": `{"type":"context","block_id":"b1","elements":[` +
+			`{"type":"plain_text","text":"eu-west-1","emoji":true}]}`,
+		"an image element": `{"type":"context","block_id":"b1","elements":[` +
+			`{"type":"image","image_url":"https://e.example/p.png","alt_text":"CPU"}]}`,
+	} {
+		if err := mustValidate(t, envelope(block)); err != nil {
+			t.Errorf("%s: a legal context element was refused: %v", name, err)
+		}
+	}
+}
+
 // ---------------------------------------------------------------- injection
 
 // ⛔⛔ THE ONE THAT IS A SECURITY BUG AND NOT A LIMIT.

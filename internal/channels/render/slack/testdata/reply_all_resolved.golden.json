@@ -1,0 +1,29 @@
+{
+  "text": ":white_check_mark: All resolved: OtoSmokeTest on smoke-test. Severity critical, team observability, resolved after under a second.",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "metadata": {
+    "event_type": "oto_alert_group",
+    "event_payload": {
+      "generation": 1,
+      "group_id": "019fe297-d84f-7599-b5b2-1f231749104a",
+      "reason": "all_resolved"
+    }
+  },
+  "attachments": [
+    {
+      "color": "#2eb886",
+      "fallback": ":white_check_mark: All resolved: OtoSmokeTest on smoke-test. Severity critical, team observability, resolved after under a second.",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_reply_0da4e96a77",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":white_check_mark: *All resolved* after under a second — 2 of 2 instances"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -46,7 +46,7 @@ func section(t *testing.T, heading string) string {
 	return rest
 }
 
-// TestSlackPaletteUnchanged pins the six card colours to §H.2 — SPEC §M.7, AC-48.
+// TestSlackPaletteUnchanged pins the five card colours to §H.2 — SPEC §M.7, AC-48.
 //
 // ⭐⭐ IT ASSERTS AGAINST THE SPEC, NOT AGAINST THE CODE. A test that read the
 // palette out of `palette.go` into a Go literal would pass forever: an edit to a
@@ -57,11 +57,16 @@ func section(t *testing.T, heading string) string {
 // a decision somebody has to make twice, in the open.
 //
 // ⛔ THIS IS NOT WHAT THE GOLDEN CORPUS COVERS. `test/harness` byte-compares the
-// rendered cards against `test/fixtures/slack/*.message.json`, which carry five of
-// these six literals (`expired` has no capture), and
-// `TestEachCardStateCarriesItsOwnColourForAHumanToVerify` asserts only that the
-// six are DISTINCT — never what they are. A coordinated edit to `palette.go` and
-// the captures passes both. It does not pass this.
+// rendered cards against `test/fixtures/slack/*.message.json`, which carry four of
+// these five literals (`expired` has no capture), and
+// `TestEachCardStateCarriesItsOwnColourForAHumanToVerify` asserts only that they
+// are DISTINCT — never what they are. A coordinated edit to `palette.go` and the
+// captures passes both. It does not pass this.
+//
+// ⛔ IT WAS SIX UNTIL ADR 0042. `storm` and its `#7b1fa2` are deleted from
+// `palette.go` because no group can enter storm mode, and the row-count guard
+// below is what makes §H.2 drop its `storm` row too: the deletion is made twice,
+// in the open, which is the whole design of this gate.
 func TestSlackPaletteUnchanged(t *testing.T) {
 	t.Parallel()
 
@@ -74,7 +79,6 @@ func TestSlackPaletteUnchanged(t *testing.T) {
 		"suppressed":   slack.CardSuppressed,
 		"resolved":     slack.CardResolved,
 		"expired":      slack.CardExpired,
-		"storm":        slack.CardStorm,
 	}
 
 	rows := h2Row.FindAllStringSubmatch(section(t, "### H.2 Palettes (binding)"), -1)
@@ -118,7 +122,7 @@ func TestSlackPaletteUnchanged(t *testing.T) {
 
 	// The other direction: a hue in the renderer that §H.2 never sanctioned. The
 	// `default:` arms return an existing state's colour on purpose; a NEW literal
-	// here is a seventh colour nobody specified.
+	// here is a sixth colour nobody specified.
 	source, err := os.ReadFile("palette.go")
 	if err != nil {
 		t.Fatalf("read palette.go: %v", err)

@@ -1,0 +1,182 @@
+{
+  "text": ":rotating_light: [FIRING] OtoSmokeTest — AUTOMATED TEST from oto — please ignore. This is oto's end-to-end smoke test against a synthetic alert… Severity critical, team observability, firing since 17:56 UTC. Runbook: https://example.com/runbooks/OtoSmokeTest",
+  "unfurl_links": false,
+  "unfurl_media": false,
+  "metadata": {
+    "event_type": "oto_alert_group",
+    "event_payload": {
+      "generation": 1,
+      "group_id": "019fe297-d84f-7599-b5b2-1f231749104a",
+      "reason": "new_alerts"
+    }
+  },
+  "attachments": [
+    {
+      "color": "#a30200",
+      "fallback": "[FIRING] OtoSmokeTest",
+      "blocks": [
+        {
+          "type": "section",
+          "block_id": "oto_title_1420def742",
+          "text": {
+            "type": "mrkdwn",
+            "text": ":rotating_light: *<http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a|OtoSmokeTest>*  ·  `smoke-test`\n_AUTOMATED TEST from oto — please ignore. This is oto's end-to-end smoke test against a synthetic alert; no real service is affected._"
+          }
+        },
+        {
+          "type": "section",
+          "block_id": "oto_body_1420def742",
+          "text": {
+            "type": "mrkdwn",
+            "text": "Synthetic test alert produced by oto's first live Slack verification run. Nothing is wrong. The card you are looking at is the thing under test."
+          }
+        },
+        {
+          "type": "section",
+          "block_id": "oto_fields_1420def742",
+          "fields": [
+            {
+              "type": "mrkdwn",
+              "text": "*Status*\n:fire: Firing"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Severity*\n:rotating_light: critical"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Service*\n`oto-smoke`"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Namespace*\n`observability`"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Started*\n<!date^1786125369^{time}|17:56 UTC>"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Firing for*\n9m 1s"
+            },
+            {
+              "type": "mrkdwn",
+              "text": "*Team*\nobservability"
+            }
+          ]
+        },
+        {
+          "type": "section",
+          "block_id": "oto_members_1420def742",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*Affected instances*\n• `oto-smoke-b2`\n• `oto-smoke-a1`\n• `oto-smoke-c3`"
+          }
+        },
+        {
+          "type": "context",
+          "block_id": "oto_rule_1420def742",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": ":mag: `sum(rate(oto_smoke_requests_total{code=~\"5..\"}[5m])) / sum(rate(oto_smoke_requests_total[5m])) &gt; 0.05`   `for: 5m`"
+            }
+          ]
+        },
+        {
+          "type": "actions",
+          "block_id": "oto_actions_1420def742",
+          "elements": [
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Acknowledge",
+                "emoji": true
+              },
+              "action_id": "oto.ack",
+              "value": "019fe297-d84f-7599-b5b2-1f231749104a",
+              "style": "primary"
+            },
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Runbook",
+                "emoji": true
+              },
+              "action_id": "oto.noop.runbook",
+              "url": "https://example.com/runbooks/OtoSmokeTest"
+            },
+            {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Silence",
+                "emoji": true
+              },
+              "action_id": "oto.noop.silence",
+              "url": "https://am.example.com/#/silences/new?filter=%7Balertname%3D%22OtoSmokeTest%22%2C+cluster%3D%22smoke-test%22%7D"
+            },
+            {
+              "type": "overflow",
+              "action_id": "oto.more",
+              "options": [
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":blue_book: Show timeline",
+                    "emoji": true
+                  },
+                  "url": "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":chart_with_upwards_trend: Open in Prometheus",
+                    "emoji": true
+                  },
+                  "url": "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":bell: Open in Alertmanager",
+                    "emoji": true
+                  },
+                  "url": "https://am.example.com/#/alerts?filter=%7Balertname%3D%22OtoSmokeTest%22%2C+cluster%3D%22smoke-test%22%7D"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":scroll: Rule history",
+                    "emoji": true
+                  },
+                  "url": "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a"
+                },
+                {
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":label: Show all labels",
+                    "emoji": true
+                  },
+                  "value": "labels|019fe297-d84f-7599-b5b2-1f231749104a"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "context",
+          "block_id": "oto_footer_1420def742",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": "oto  ·  `gk_4vbuj1c49jbpf`  ·  receiver `oto-smoke`  ·  _new alerts added_  ·  oto first saw it <!date^1786126629^{time}|18:17 UTC> (21m later)  ·  updated <!date^1786125910^{time}|18:05 UTC>"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

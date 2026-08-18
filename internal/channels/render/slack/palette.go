@@ -8,8 +8,17 @@ import "github.com/thulasiram/oto/internal/channels/domain"
 type CardState string
 
 // The card states. Their hexes are Grafana OnCall's palette, the best-tested open
-// alert palette that exists (§H.2). `expired` and `storm` have no upstream
-// precedent and are oto originals.
+// alert palette that exists (§H.2). `expired` has no upstream precedent and is an
+// oto original.
+//
+// ⛔ THERE IS NO `storm` STATE. Storm damping is removed (ADR 0042) and migration
+// 00059 dropped `alert_groups.storm_mode`, so no group can enter it and the purple
+// it spent is retired with it. The hex is deliberately NOT written here: the palette
+// gate reads every colour literal out of this file and fails on one §H.2 does not
+// list, which is what makes the two agree.
+// A card state is a LIVE reading of a group; it is not a stored value
+// with a row to render, which is why it goes where `notifications.reason = 'storm'`
+// stays.
 //
 // This palette is a SEPARATE, UNCHANGED system from the oto UI tokens. Do not
 // harmonise them: different substrate, different contrast contract. A renderer
@@ -26,9 +35,6 @@ const (
 	CardResolved CardState = "resolved"
 	// CardExpired means oto stopped hearing about it. It is NEVER a resolution.
 	CardExpired CardState = "expired"
-	// CardStorm means damping is on. Storm mode is a VISIBLE state, never silent
-	// suppression.
-	CardStorm CardState = "storm"
 )
 
 // Colour is the attachment colour for a card state (§H.2).
@@ -44,8 +50,6 @@ func (s CardState) Colour() string {
 		return "#2eb886"
 	case CardExpired:
 		return "#6b6b6b"
-	case CardStorm:
-		return "#7b1fa2"
 	default:
 		return "#6b6b6b"
 	}
@@ -64,8 +68,6 @@ func (s CardState) Emoji() string {
 		return ":white_check_mark:"
 	case CardExpired:
 		return ":grey_question:"
-	case CardStorm:
-		return ":zap:"
 	default:
 		return ":grey_question:"
 	}
@@ -85,8 +87,6 @@ func (s CardState) Label() string {
 		return "Resolved"
 	case CardExpired:
 		return "Expired"
-	case CardStorm:
-		return "Storm"
 	default:
 		return "Unknown"
 	}
@@ -105,8 +105,6 @@ func (s CardState) Banner() string {
 		return "RESOLVED"
 	case CardExpired:
 		return "EXPIRED"
-	case CardStorm:
-		return "STORM"
 	default:
 		return "UNKNOWN"
 	}
@@ -151,7 +149,6 @@ func normaliseSeverity(s string) string {
 //
 // The ordering is a product decision, not an implementation detail:
 //
-//   - storm outranks everything, because damping must be visible;
 //   - anything still firing and unacknowledged outranks everything else, because
 //     that is the only state that means "act now";
 //   - expired outranks resolved when both are present, because a group that
@@ -159,8 +156,6 @@ func normaliseSeverity(s string) string {
 //     a resolution (CONTEXT.md §3).
 func DeriveCardState(g domain.GroupView) CardState {
 	switch {
-	case g.StormMode:
-		return CardStorm
 	case g.FiringCount > 0 && g.AckedCount < g.FiringCount:
 		return CardFiring
 	case g.FiringCount > 0:

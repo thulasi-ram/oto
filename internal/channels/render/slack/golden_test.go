@@ -119,7 +119,12 @@ func smokeView() *domain.NotificationView {
 	}
 }
 
-func renderView(t *testing.T, v *domain.NotificationView, mode domain.Mode) domain.RenderedMessage {
+// renderView renders v in mode. `mentions` is variadic because exactly one card
+// carries an audience (the unacked reminder) and every other caller must not have
+// to say so.
+func renderView(
+	t *testing.T, v *domain.NotificationView, mode domain.Mode, mentions ...string,
+) domain.RenderedMessage {
 	t.Helper()
 	msg, err := slackrender.New(clock.New()).Render(context.Background(), v, domain.RenderOptions{
 		Mode:           mode,
@@ -127,6 +132,7 @@ func renderView(t *testing.T, v *domain.NotificationView, mode domain.Mode) doma
 		BaseURL:        "http://localhost:8080",
 		MaxInstances:   10,
 		ShowFieldEmoji: true,
+		Mentions:       mentions,
 	})
 	if err != nil {
 		t.Fatalf("render: %v", err)
@@ -550,6 +556,224 @@ func TestTheStrikethroughRendersThePreviousState(t *testing.T) {
 	status := fieldValue(t, msg.Payload, "Status")
 	if !strings.Contains(status, "~Firing~ →") {
 		t.Fatalf("the §H.4 strikethrough did not render: %q", status)
+	}
+}
+
+// ------------------------------------------- the goldens for the unseen cards
+//
+// git-bug 2078a07: four Slack behaviours have never been observed against a live
+// workspace. Three of the four already had byte-exact offline captures before this
+// change — `test/fixtures/slack/root_update_acked.message.json` is a `chat.update`
+// payload, `broadcast_unacked_reminder.message.json` carries the mention audience
+// in its top-level `text`, and `root_resolved.golden.json` here is the terminal
+// card. The fixtures below close what was actually missing, and what was missing
+// is the SNOOZE.
+//
+// ⛔ NONE OF THESE IS A LIVE OBSERVATION. A golden proves that oto still sends the
+// bytes somebody once read; it cannot prove Slack draws them, and the four unknowns
+// in the issue stay open until a human runs
+// docs/setup/slack-live-verification.md.
+
+// ⭐ TestGoldenUpdateRootWhileStillFiring — ADR 0008's PRIMARY VERB, MID-LIFE.
+//
+// Both existing `ModeUpdateRoot` captures are TERMINAL or near it: the acked card
+// and the resolved receipt. The ordinary case — the card is amended while the
+// signal is still firing, because a member joined the group — had no fixture, and
+// it is the one that happens most. It is also the one where the strikethrough has
+// nothing to strike (`Firing` → `Firing`) and the footer is the only thing that
+// says the card moved at all.
+func TestGoldenUpdateRootWhileStillFiring(t *testing.T) {
+	t.Parallel()
+	msg := renderView(t, updatedWhileFiringView(), domain.ModeUpdateRoot)
+	golden(t, "root_update_firing.golden.json", msg.Payload)
+}
+
+func updatedWhileFiringView() *domain.NotificationView {
+	v := smokeView()
+	grew := upstreamStart.Add(9 * time.Minute)
+	v.Reason = "new_alerts"
+	v.Group.FiringCount = 3
+	v.Group.TotalCount = 3
+	v.Group.LastActivityAt = grew
+	v.Alerts = append(v.Alerts, domain.AlertView{
+		ID: "a3", AlertKey: "ak_3", AlertName: "OtoSmokeTest",
+		Severity: "critical", Namespace: "observability", Service: "oto-smoke",
+		Labels:      map[string]string{"instance": "oto-smoke-c3", "cluster": "smoke-test"},
+		State:       "firing",
+		AckState:    "unacked",
+		FirstSeenAt: grew, LastSeenAt: grew, TotalCases: 1,
+	})
+	v.Previous = &domain.PreviousState{State: "firing", AckState: "unacked"}
+	v.Notifications = 2
+	v.RenderedAt = grew.Add(time.Second)
+	return v
+}
+
+// ⭐ TestGoldenAllResolvedThreadReply — the resolved fact in the THREAD.
+//
+// `root_resolved.golden.json` is the receipt the channel keeps. This is the other
+// half of the same delivery: §H.6 sends `all_resolved` as `update_root` AND a
+// thread reply, and the reply is the only one of the two that NOTIFIES — a
+// `chat.update` is silent (ADR 0020's whole premise), so for a thread participant
+// this sentence is the resolution.
+//
+// ⛔ AND IT SAYS "resolved after under a second" ABOUT A TWENTY-ONE-MINUTE
+// INCIDENT. That is not a fixture typo, it is A1 again in the reply path. A1 was
+// the first live run's "Firing for: under a second": the ROOT card was reading the
+// triggering alert's case clock for a sentence about the GROUP, and it was fixed
+// there (`durationValue`, and the test above it). `resolvedAfter` in reply.go still
+// prefers `Case.Duration` and only falls back to the group's own span when it is
+// zero — so this fixture, whose case is the smoke run's 300ms episode inside a
+// group the root card correctly calls `21m 10s`, reproduces the defect exactly.
+// The fallback is A2's shape as well: it measures from oto's FirstSeenAt rather
+// than upstream's StartedAt, and those were twenty-one minutes apart in the live
+// run.
+//
+// Whether it BITES in production depends on whether the notification module fills
+// `Case.Duration` with the whole episode; `test/harness/slack_cards.go` assumes it
+// does and this fixture assumes it does not, which is itself the reason to write
+// it down. The number is what an operator reads the severity of an outage off, and
+// a resolve that understates the outage is the same class of wrong as A1.
+//
+// The fixture is left as it renders. Correcting the FIXTURE would hide the
+// question; correcting the RENDERER is a decision about which clock a group-scoped
+// sentence may read, and that belongs with whoever owns §H.5.
+func TestGoldenAllResolvedThreadReply(t *testing.T) {
+	t.Parallel()
+	msg := renderView(t, resolvedView(), domain.ModeThreadReply)
+	golden(t, "reply_all_resolved.golden.json", msg.Payload)
+}
+
+// ⭐ TestGoldenUnackedReminderMentionBroadcast — the mention, byte for byte.
+//
+// The rule this pins is argued in reply_mention_test.go and is not repeated here:
+// the mention lives in the top-level `text` and NOWHERE else, because that is the
+// only position a push notification and a screen reader reach (ADR 0020,
+// Amendment 3, re-justified by Amendment 4). Those tests assert the property; this
+// fixture is the wire form a human compares against what their phone actually did.
+//
+// ⚠️ THE WIRE SHAPES ARE THE WHOLE POINT. `<@U024BE7LH>` and
+// `<!subteam^SAZ94GDB8>` are Slack's own encodings; a mention that reaches the
+// channel as the literal text `@ram` notifies nobody, and looks identical in a
+// screenshot. That failure is invisible offline and obvious on a locked phone,
+// which is why step 4 of the live checklist exists.
+func TestGoldenUnackedReminderMentionBroadcast(t *testing.T) {
+	t.Parallel()
+	msg := renderView(t, unackedReminderMentionView(), domain.ModeBroadcastReply,
+		"<@U024BE7LH>", "<!subteam^SAZ94GDB8>")
+	golden(t, "reply_unacked_reminder_mention.golden.json", msg.Payload)
+}
+
+func unackedReminderMentionView() *domain.NotificationView {
+	v := smokeView()
+	reminded := upstreamStart.Add(15 * time.Minute)
+	v.Reason = "unacked_reminder"
+	v.Group.LastActivityAt = reminded
+	v.Notifications = 2
+	v.RenderedAt = reminded
+	return v
+}
+
+// ⛔⛔ TestGoldenSnoozed* — THE CARD OTO SENDS WHEN A HUMAN ASKS IT TO GO QUIET,
+// AND IT DOES NOT SAY SO.
+//
+// These two fixtures are checked in because the bytes are wrong, not because they
+// are right, and a golden is how a wrong rendering stops being invisible. Read
+// them before the live run: what a human must compare on screen is what oto
+// actually sends, and what oto actually sends is this.
+//
+// The chain, all of it verifiable from this repository:
+//
+//  1. `snoozed` and `unsnoozed` are real Reasons (`internal/notification/domain/
+//     reason.go`), and they are the ONLY two a snooze may not suppress
+//     (`SnoozeExempt`) — "a snooze that cannot announce its own beginning and end
+//     is the silent suppression §B.6 forbids".
+//  2. `PlanFor` gives them the default treatment: `update_root` plus a
+//     `thread_reply` (`rootModeFor`, `hasReply` — neither names them), and both sit
+//     in `ungatedReplies`, so the reply is delivered at EVERY verbosity — §H.6
+//     states it as "always — exempt from snooze suppression (§B.8.4)".
+//  3. So both cards below are delivered to a real channel today.
+//  4. And the Slack renderer has no `snoozed` branch at all. `replyBody` falls to
+//     its `default:` arm — `:information_source: *Title* — <status>` — and
+//     `reasonPhrase` returns "" so the footer's "why this card moved" clause is
+//     absent. A snooze is NOT a suppression in oto's model: `SuppressedSnoozed`
+//     lives in oto's own notification-suppression vocabulary and is explicitly
+//     "NOT Alertmanager's `alert_cases.suppression_reason`", so `CardSuppressed`
+//     never fires and the card stays FIRING-COLOURED.
+//  5. `NotificationView` has no snooze axis to render even if the renderer wanted
+//     one: no snoozed-until, no snoozer, and `TrailEntry.Kind` has no `snoozed`
+//     verb (`trailEmoji`/`trailVerb` would print the raw word).
+//
+// The result is a card that changes for no stated reason and a thread line that
+// announces an alert is firing — at the exact moment oto has decided to stop
+// talking about it. That is §B.6's fatal failure mode with a message attached:
+// oto's silence must never be indistinguishable from "there was no alert".
+//
+// ⚠️ THE FIX IS NOT IN THESE FIXTURES ON PURPOSE. It needs a snooze axis on the
+// view (someone else's module), a Reason branch, a trail verb and words a human
+// chooses. What is here is the evidence, frozen, so the next change to any of them
+// shows up as a diff.
+func TestGoldenSnoozedRootCard(t *testing.T) {
+	t.Parallel()
+	msg := renderView(t, snoozedView(), domain.ModeUpdateRoot)
+	golden(t, "root_snoozed.golden.json", msg.Payload)
+}
+
+func TestGoldenSnoozedThreadReply(t *testing.T) {
+	t.Parallel()
+	msg := renderView(t, snoozedView(), domain.ModeThreadReply)
+	golden(t, "reply_snoozed.golden.json", msg.Payload)
+}
+
+// snoozedView is a human asking oto to be quiet about a still-firing signal.
+// Nothing about it is suppressed in Alertmanager's sense: the alerts are firing,
+// the case is open and unacked, and the only thing that changed is that oto has
+// agreed to stop mentioning it.
+func snoozedView() *domain.NotificationView {
+	v := smokeView()
+	snoozedAt := upstreamStart.Add(6 * time.Minute)
+	v.Reason = "snoozed"
+	v.Group.LastActivityAt = snoozedAt
+	v.Actor = &domain.ActorView{
+		Kind: "slack_user", ID: "U024BE7LH", Label: "ram@example.com",
+	}
+	v.Comment = "provider incident — quiet until their ETA"
+	v.Notifications = 2
+	v.RenderedAt = snoozedAt.Add(time.Second)
+	return v
+}
+
+// ⭐ THE `rendered_hash` IS WHAT MAKES `chat.update` SAFE TO CALL ON EVERY FACT.
+//
+// ADR 0008: "a `rendered_hash` check skips no-op updates entirely", and
+// `SuppressedDuplicateRender` is the recorded reason when it does. That mechanism
+// is only as good as the renderer being a pure function of the view — one map
+// iteration, one clock read or one random block_id leaking into the payload turns
+// every amend into a change and oto starts spending Tier-3 budget rewriting a card
+// with the same content.
+//
+// This is the offline half of the update-in-place claim: it cannot prove Slack
+// edits the message, and it can prove oto only asks when there is something to
+// say.
+func TestTheRenderedHashIsStableForOneFactAndMovesWhenTheFactDoes(t *testing.T) {
+	t.Parallel()
+
+	first := renderView(t, smokeView(), domain.ModeUpdateRoot)
+	again := renderView(t, smokeView(), domain.ModeUpdateRoot)
+	if first.Hash != again.Hash {
+		t.Fatalf("two renders of the same fact disagree (%s vs %s); every chat.update "+
+			"would look like a change and the no-op skip is dead", first.Hash, again.Hash)
+	}
+	if !bytes.Equal(first.Payload, again.Payload) {
+		t.Errorf("the payload is not byte-stable:\n%s\n%s", first.Payload, again.Payload)
+	}
+
+	// And a fact that moved must move the hash, or the card silently stops
+	// tracking the incident — the worse failure of the two.
+	changed := renderView(t, resolvedView(), domain.ModeUpdateRoot)
+	if changed.Hash == first.Hash {
+		t.Errorf("a resolved card hashes the same as a firing one; the no-op skip would " +
+			"swallow the resolution")
 	}
 }
 
