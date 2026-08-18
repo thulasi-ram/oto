@@ -458,14 +458,17 @@ DELETE FROM channel_threads WHERE subject_kind = 'digest';
 
 ALTER TABLE notifications DROP CONSTRAINT notifications_digest_ck;
 ALTER TABLE notifications DROP CONSTRAINT notifications_target_ck;
-ALTER TABLE notifications DROP COLUMN digest_count;
-ALTER TABLE notifications DROP COLUMN digest_window_start;
-ALTER TABLE notifications ALTER COLUMN group_id SET NOT NULL;
 
-ALTER TABLE notifications DROP CONSTRAINT notifications_subjkind_ck;
-ALTER TABLE notifications ADD  CONSTRAINT notifications_subjkind_ck
-  CHECK (subject_kind IN ('alert', 'case', 'alert_group'));
-
+-- ⛔ THIS RESTORE MUST PRECEDE THE COLUMN DROPS BELOW; THE ORDER IS LOAD-BEARING.
+-- The predicate the Up installed names `digest_window_start`, and Postgres drops any
+-- CHECK constraint that references a column together WITH that column. Dropping the
+-- digest columns first therefore took `notifications_subject_ck` with them silently,
+-- and the explicit DROP that used to stand below then failed with 42704
+-- (undefined_object) -- a Down that could never run to completion, on a migration
+-- whose Up is fine. Restoring the narrow predicate while `digest_window_start` still
+-- exists keeps the drop explicit and the intent readable, rather than papering over
+-- the dependency with DROP ... IF EXISTS and leaving the next reader to rediscover it.
+--
 -- Byte-identical to the predicate 00056 shipped, so a rolled-back database is in
 -- the state its migration history describes.
 ALTER TABLE notifications DROP CONSTRAINT notifications_subject_ck;
@@ -473,6 +476,14 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_subject_ck CHECK (
      (subject_kind = 'alert'       AND alert_id IS NOT NULL AND subject_id = alert_id)
   OR (subject_kind = 'case'        AND case_id  IS NOT NULL AND subject_id = case_id)
   OR (subject_kind = 'alert_group' AND subject_id = group_id));
+
+ALTER TABLE notifications DROP COLUMN digest_count;
+ALTER TABLE notifications DROP COLUMN digest_window_start;
+ALTER TABLE notifications ALTER COLUMN group_id SET NOT NULL;
+
+ALTER TABLE notifications DROP CONSTRAINT notifications_subjkind_ck;
+ALTER TABLE notifications ADD  CONSTRAINT notifications_subjkind_ck
+  CHECK (subject_kind IN ('alert', 'case', 'alert_group'));
 
 -- The eighteen 00018 left.
 ALTER TABLE notifications DROP CONSTRAINT notifications_reason_ck;
