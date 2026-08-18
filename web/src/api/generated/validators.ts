@@ -98,13 +98,13 @@ export const GroupStateSchema = v.picklist(["open", "closed"]);
 
 export const ActorKindSchema = v.picklist(["system", "ingest", "reconciler", "reaper", "enricher", "notifier", "user", "slack"]);
 
-export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "alert.flapping_started", "alert.flapping_ended", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "group.storm_started", "group.storm_ended", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew"]);
+export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew"]);
 
-export const NotificationReasonSchema = v.picklist(["fired", "new_alerts", "some_resolved", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "unacked_reminder", "storm"]);
+export const NotificationReasonSchema = v.picklist(["fired", "new_alerts", "some_resolved", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "unacked_reminder", "digest"]);
 
 export const NotificationStatusSchema = v.picklist(["pending", "dispatched", "partial", "delivered", "failed", "suppressed"]);
 
-export const NotificationSuppressedReasonSchema = v.nullable(v.picklist(["channel_disabled", "no_policy", "snoozed", "storm", "flapping", "throttled", "verbosity", "duplicate_render"]));
+export const NotificationSuppressedReasonSchema = v.nullable(v.picklist(["channel_disabled", "no_policy", "snoozed", "throttled", "verbosity", "duplicate_render"]));
 
 export const DeliveryModeSchema = v.picklist(["post_root", "update_root", "thread_reply", "broadcast_reply"]);
 
@@ -451,7 +451,6 @@ export const GroupRefDTOSchema = v.looseObject({
     v.maxLength(500),
   ),
   "state": GroupStateSchema,
-  "storm_mode": v.exactOptional(v.boolean()),
 });
 
 export const DeliverySummaryDTOSchema = v.looseObject({
@@ -590,6 +589,27 @@ export const CaseListItemDTOSchema = v.intersect([
     "alert": AlertRefDTOSchema,
   }),
 ]);
+
+export const CasePolicyDTOSchema = v.looseObject({
+  "id": UuidSchema,
+  "namespace": v.pipe(
+    v.string(),
+    v.maxLength(1024),
+  ),
+  "alertname": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(1024),
+  ),
+  "retention_window_seconds": v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(86400),
+  ),
+  "created_at": TimestampSchema,
+  "updated_at": TimestampSchema,
+});
 
 export const AlertEventDTOSchema = v.looseObject({
   "id": UuidSchema,
@@ -828,8 +848,6 @@ export const GroupDTOSchema = v.looseObject({
     v.minValue(0),
   ),
   "snoozed_until": v.exactOptional(v.nullable(TimestampSchema)),
-  "storm_mode": v.boolean(),
-  "storm_since": v.exactOptional(v.nullable(TimestampSchema)),
   "last_notification_reason": v.exactOptional(v.nullable(v.pipe(
     v.string(),
     v.maxLength(64),
@@ -1454,15 +1472,27 @@ export const PolicyDTOSchema = v.looseObject({
     v.minValue(60),
     v.maxValue(86400),
   ))),
+  "digest_window_seconds": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(300),
+    v.maxValue(86400),
+  ))),
+  "digest_floor": v.exactOptional(v.nullable(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(10000),
+  ))),
   "created_at": TimestampSchema,
   "updated_at": TimestampSchema,
 });
 
 export const NotificationDTOSchema = v.looseObject({
   "id": UuidSchema,
-  "subject_kind": v.picklist(["alert_group"]),
+  "subject_kind": v.picklist(["alert", "case", "alert_group", "digest"]),
   "subject_id": UuidSchema,
-  "group_id": UuidSchema,
+  "group_id": v.nullable(UuidSchema),
   "alert_id": v.exactOptional(v.nullable(UuidSchema)),
   "case_id": v.exactOptional(v.nullable(UuidSchema)),
   "reason": NotificationReasonSchema,
@@ -1741,11 +1771,6 @@ export const StatsOverviewDTOSchema = v.looseObject({
       v.integer(),
       v.minValue(0),
     ),
-    "storm": v.pipe(
-      v.number(),
-      v.integer(),
-      v.minValue(0),
-    ),
   }),
   "deliveries": v.looseObject({
     "sent": v.pipe(
@@ -1929,24 +1954,6 @@ export const OrgSettingsDTOSchema = v.looseObject({
     v.maxValue(86400),
   ),
   "flap_digest_interval_s": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(60),
-    v.maxValue(86400),
-  ),
-  "storm_threshold": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(2),
-    v.maxValue(10000),
-  ),
-  "storm_window_s": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(10),
-    v.maxValue(3600),
-  ),
-  "storm_cooldown_s": v.pipe(
     v.number(),
     v.integer(),
     v.minValue(60),
@@ -2175,7 +2182,6 @@ export const GroupUpsertedDataSchema = v.looseObject({
     v.integer(),
     v.minValue(0),
   ),
-  "storm_mode": v.boolean(),
   "last_activity_at": TimestampSchema,
 });
 
@@ -2392,6 +2398,36 @@ export const CommentRequestSchema = v.strictObject({
   ),
 });
 
+export const CreateCasePolicyRequestSchema = v.strictObject({
+  "namespace": v.exactOptional(v.pipe(
+    v.string(),
+    v.maxLength(1024),
+  ), ""),
+  "alertname": v.pipe(
+    v.string(),
+    v.minLength(1),
+    v.maxLength(1024),
+  ),
+  "retention_window_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(0),
+    v.maxValue(86400),
+  ), 0),
+});
+
+export const UpdateCasePolicyRequestSchema = v.pipe(
+  v.strictObject({
+    "retention_window_seconds": v.exactOptional(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(0),
+      v.maxValue(86400),
+    )),
+  }),
+  v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
+);
+
 export const CreateClusterRequestSchema = v.strictObject({
   "cluster_key": ClusterKeySchema,
   "display_name": v.pipe(
@@ -2597,6 +2633,18 @@ export const CreatePolicyRequestSchema = v.strictObject({
     v.minValue(60),
     v.maxValue(86400),
   )),
+  "digest_window_seconds": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(300),
+    v.maxValue(86400),
+  )),
+  "digest_floor": v.exactOptional(v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(10000),
+  )),
 });
 
 export const UpdatePolicyRequestSchema = v.pipe(
@@ -2635,6 +2683,18 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.integer(),
       v.minValue(60),
       v.maxValue(86400),
+    ))),
+    "digest_window_seconds": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(300),
+      v.maxValue(86400),
+    ))),
+    "digest_floor": v.exactOptional(v.nullable(v.pipe(
+      v.number(),
+      v.integer(),
+      v.minValue(1),
+      v.maxValue(10000),
     ))),
   }),
   v.check((value) => Object.keys(value).length >= 1, "at least 1 property required"),
@@ -2832,6 +2892,17 @@ export const FailedBatchListResponseSchema = v.looseObject({
   "meta": MetaSchema,
 });
 
+export const CasePolicyListResponseSchema = v.looseObject({
+  "data": v.array(CasePolicyDTOSchema),
+  "page": PageInfoSchema,
+  "meta": MetaSchema,
+});
+
+export const CasePolicyResponseSchema = v.looseObject({
+  "data": CasePolicyDTOSchema,
+  "meta": MetaSchema,
+});
+
 export const ClusterListResponseSchema = v.looseObject({
   "data": v.array(ClusterDTOSchema),
   "page": PageInfoSchema,
@@ -2988,18 +3059,6 @@ export const OrgSettingsPatchDTOSchema = v.looseObject({
     v.number(),
     v.integer(),
   )),
-  "storm_threshold": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-  )),
-  "storm_window_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-  )),
-  "storm_cooldown_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-  )),
   "raw_retention_days": v.exactOptional(v.pipe(
     v.number(),
     v.integer(),
@@ -3070,24 +3129,6 @@ export const UpdateOrgSettingsRequestSchema = v.strictObject({
     v.maxValue(86400),
   )),
   "flap_digest_interval_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(60),
-    v.maxValue(86400),
-  )),
-  "storm_threshold": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(2),
-    v.maxValue(10000),
-  )),
-  "storm_window_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(10),
-    v.maxValue(3600),
-  )),
-  "storm_cooldown_s": v.exactOptional(v.pipe(
     v.number(),
     v.integer(),
     v.minValue(60),

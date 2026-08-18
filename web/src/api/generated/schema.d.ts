@@ -745,6 +745,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/case-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List case retention windows
+         * @description The **case retention window** W, per `(namespace, alertname)`. A case whose alert has resolved
+         *     stays *open* for W and closes only once the alert has stayed resolved for W, so a re-fire inside
+         *     W lands in the still-open episode instead of opening the next one — an alert flapping six times
+         *     in ten minutes produces **one** case, one notification and one thread reply.
+         *
+         *     The noise never exists, rather than existing and being withheld at delivery: a suppressed
+         *     notification is indistinguishable from a signal that never fired, which is the one thing an
+         *     alerting product cannot afford.
+         *
+         *     Ordered by `alertname`, then `namespace` — the order the rules read in. An **absent row is the
+         *     default**, which is W=0: the case closes on the resolve, exactly as oto behaved before this
+         *     table existed. There is deliberately no org-wide row and no wildcard.
+         */
+        get: operations["listCasePolicies"];
+        put?: never;
+        /**
+         * Set a case retention window
+         * @description `(namespace, alertname)` is the rule's identity and is unique within the org: a second create for
+         *     the same pair is a `409`, and the way to change a window is `PATCH /case-policies/{id}`.
+         *
+         *     An omitted `namespace` is the **absent-namespace partition** — the one every alert that carries no
+         *     `namespace` label falls into. `retention_window_seconds` may be `0`, which records "no window
+         *     here, deliberately"; that is a different statement from having no row at all, which means nobody
+         *     has decided.
+         *
+         *     ⛔ W moves *when* a case closes and nothing else. It is a **delayed close and never a reopen**: an
+         *     episode still closes exactly once.
+         */
+        post: operations["createCasePolicy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/case-policies/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a case retention window
+         * @description Removing the row restores W=0 for that `(namespace, alertname)` — the close-on-resolve behaviour
+         *     oto had before this table existed. It is neither a broken state nor a disabled feature, which is
+         *     why the delete is not soft: nothing references the row.
+         */
+        delete: operations["deleteCasePolicy"];
+        options?: never;
+        head?: never;
+        /**
+         * Change a case retention window
+         * @description Only the window is updatable. `namespace` and `alertname` are **absent from the request body**
+         *     rather than merely rejected: the pair is the rule's identity, and moving a window from one pair to
+         *     another is deleting one rule and writing a second.
+         */
+        patch: operations["updateCasePolicy"];
+        trace?: never;
+    };
     "/api/v1/alert-groups": {
         parameters: {
             query?: never;
@@ -2026,7 +2098,7 @@ export interface paths {
         /**
          * The current principal, its org and that org's settings
          * @description Who am I, which org am I in, and how is that org tuned. The settings block carries the grace
-         *     periods, flap thresholds and storm parameters the UI needs to explain its own damping decisions.
+         *     periods and flap thresholds the UI needs to explain its own damping decisions.
          */
         get: operations["getCurrentPrincipal"];
         put?: never;
@@ -2046,9 +2118,8 @@ export interface paths {
         };
         /**
          * The org's tuning, each value with its origin
-         * @description The knobs that decide how loudly oto talks: `refire_grace`, the flap thresholds, the storm
-         *     damping policy, the unacked-reminder default, the fallback channel verbosity and the one
-         *     configurable broadcast.
+         * @description The knobs that decide how loudly oto talks: `refire_grace`, the flap thresholds, the
+         *     unacked-reminder default, the fallback channel verbosity and the one configurable broadcast.
          *
          *     **It returns three things, and all three are the point.**
          *
@@ -2107,7 +2178,7 @@ export interface paths {
          *     window in which one pod runs the old tuning and another the new.
          *
          *     Requires a **session**: these numbers decide how much oto says and how much it withholds, and a
-         *     leaked token must not be able to raise `storm_threshold` and make the tool go quiet.
+         *     leaked token must not be able to raise `flap_threshold` and make the tool go quiet.
          */
         patch: operations["updateOrgSettings"];
         trace?: never;
@@ -2503,13 +2574,43 @@ export interface components {
          *
          *     Both are valid values of the `type=` filter on every timeline endpoint, which is how "show me
          *     every quiet period on this alert" is asked for.
+         *
+         *     ⛔ **Four damper types were removed rather than retired.** `group.storm_started`,
+         *     `group.storm_ended`, `alert.flapping_started` and `alert.flapping_ended` are gone from this
+         *     enum and from `alert_events`. Storm damping is removed outright (ADR 0042): a storm is many
+         *     *different* alerts arriving together, the thing that owns many different alerts is an
+         *     **incident**, and that object does not exist yet — so the defence had nowhere to put what it
+         *     detected and put it at delivery, where a withheld notification is indistinguishable from a
+         *     signal that never fired. The two flap types named a detector that went **blind** rather than
+         *     dead: the case retention window (`00057`) damps a flap at case formation, so the counted
+         *     events fall below the threshold exactly when the alert is flapping hardest. Migration
+         *     `00060_no_enum_remembers_a_damper.sql` narrows `ev_type_ck` to refuse all four spellings and
+         *     performs no rewrite, so no migrated database can serve one.
+         *
+         *     `group.member_joined`, `group.member_left` and `case.reopened` are **not** in that group. They
+         *     are RETIRED — read but never written — and remain published here, because `ev_type_ck` still
+         *     admits them and rows on disk still spell them.
          * @example case.opened
          * @enum {string}
          */
-        AlertEventType: "alert.created" | "alert.mutated" | "alert.flapping_started" | "alert.flapping_ended" | "case.opened" | "case.reopened" | "case.suppressed" | "case.unsuppressed" | "case.resolved" | "case.expired" | "case.acknowledged" | "case.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "group.storm_started" | "group.storm_ended" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew";
+        AlertEventType: "alert.created" | "alert.mutated" | "case.opened" | "case.reopened" | "case.suppressed" | "case.unsuppressed" | "case.resolved" | "case.expired" | "case.acknowledged" | "case.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew";
         /**
          * @description Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
          *     is mapped onto this enum on ingest.
+         *
+         *     `digest` is the eighteenth value and the only one no transition produces. Every other reason
+         *     names a change to ONE object; a digest is a **window over a namespace** — "what happened in the
+         *     observability namespace in the last ten minutes, and don't bother me unless it was more than a
+         *     trickle". It is minted by a TICK at each window boundary, from a policy carrying
+         *     `digest_window_seconds`, and only when the count of firing episodes that opened inside the window
+         *     clears the policy's `digest_floor`. A digest notification's `subject_kind` is `digest`, its
+         *     `subject_id` is the POLICY, and it is the one notification with **no `group_id`** — it spans many
+         *     generations, so it opens its own conversation per policy per channel with one reply per window
+         *     (migration `00058_a_digest_is_a_window_over_a_namespace.sql`).
+         *
+         *     ⛔ It is not a throttle and not a damper. A policy with a window sends its digest **in addition**
+         *     to whatever else it routes, and alert-based and case-based policies gain no window at all: their
+         *     noise is a signal to fix the Prometheus rule, and oto does not decide to be quiet about a firing.
          *
          *     ⛔ **There is no `severity_raised`, and there was.** ADR 0020 proposed it as the purest case for
          *     broadcasting — a card going amber to red under a silent `chat.update` — and a migration was
@@ -2535,10 +2636,16 @@ export interface components {
          *
          *     `repeat` is the single most important value: it means "nothing changed, this is a nag", and oto
          *     answers it by **updating the existing message and never posting a new one**.
+         *
+         *     ⛔ **There is no `storm`, and there was.** It announced storm damping engaging — one group going
+         *     quiet, plus a once-per-channel notice that oto had started withholding. Storm damping is removed
+         *     outright (ADR 0042) and the value was briefly kept as retired so a stored row could still be
+         *     rendered; migration `00060_no_enum_remembers_a_damper.sql` narrows `notifications_reason_ck` to
+         *     the eighteen that remain, performing no rewrite, so no migrated database can serve one.
          * @example fired
          * @enum {string}
          */
-        NotificationReason: "fired" | "new_alerts" | "some_resolved" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "unacked_reminder" | "storm";
+        NotificationReason: "fired" | "new_alerts" | "some_resolved" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "unacked_reminder" | "digest";
         /**
          * @example delivered
          * @enum {string}
@@ -2574,7 +2681,7 @@ export interface components {
          * @example throttled
          * @enum {string|null}
          */
-        NotificationSuppressedReason: "channel_disabled" | "no_policy" | "snoozed" | "storm" | "flapping" | "throttled" | "verbosity" | "duplicate_render" | null;
+        NotificationSuppressedReason: "channel_disabled" | "no_policy" | "snoozed" | "throttled" | "verbosity" | "duplicate_render" | null;
         /**
          * @description How one delivery materialises in the conversation. `update_root` is the primary mechanism;
          *     thread replies are the exception, gated by the channel's verbosity.
@@ -2614,14 +2721,15 @@ export interface components {
          *
          *     - `all` — every reply type.
          *     - `status_changes` *(default)* — ack, unack, suppressed, unsuppressed, expired, refired,
-         *       new_alerts, all_resolved, rule_changed, comment, unacked_reminder, storm.
-         *     - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, unacked_reminder,
-         *       storm.
-         *     - `firing_only` — new_alerts, rule_changed, unacked_reminder, storm.
+         *       new_alerts, all_resolved, rule_changed, comment, unacked_reminder.
+         *     - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, unacked_reminder.
+         *     - `firing_only` — new_alerts, rule_changed, unacked_reminder.
          *
-         *     `storm` is present at **every** level including the quietest: a channel that asked for less has
-         *     not asked to be lied to about oto withholding things. It is still a reply, so
-         *     `thread_updates: false` still silences it — verbosity is a volume dial, never an override.
+         *     `storm` used to be present at **every** level including the quietest, on the argument that a
+         *     channel which asked for less has not asked to be lied to about oto withholding things. oto
+         *     withholds nothing now — storm damping is removed (ADR 0042) and migration `00060` deletes the
+         *     Reason — so there is no such reply to gate. Every reply listed here is still a reply, so
+         *     `thread_updates: false` silences it — verbosity is a volume dial, never an override.
          *
          *     A channel that names no verbosity falls back to its **org's** `default_verbosity`
          *     (`GET /api/v1/org/settings`), and only then to `status_changes`.
@@ -2947,13 +3055,24 @@ export interface components {
             /**
              * Format: float
              * @description EWMA of state transitions per hour. **A derived signal, never a state.**
+             *
+             *     ⚠️ **RETIRED — this is a stored historical value and is no longer recomputed.** The job
+             *     that maintained it is removed, so the number is the last score it wrote, at the time it
+             *     wrote it. It is kept readable because a measurement taken at a time stays interpretable;
+             *     it is not a statement about the alert now, and it will not change again.
              * @example 1.4
              */
             flap_score: number;
             /**
-             * @description True once `flap_score` crosses the org's threshold (default 5 transitions in 2 hours).
-             *     Flapping is a **visible** state that switches notification to update-only with a periodic
-             *     digest — never a silent drop.
+             * @description The last stored flapping verdict: true if the retired detector had marked this alert
+             *     flapping when it was last evaluated (its threshold was 5 transitions in 2 hours).
+             *
+             *     ⚠️ **RETIRED — read from the row, never written again, and never recomputed.** It was
+             *     always a **visible** state and never a silent drop, and it stays visible: this field, the
+             *     `flapping` filter and the roll-up counter all still report it. What no longer happens is
+             *     detection — nothing re-evaluates it, and no notification is withheld, downgraded or
+             *     digested because an alert is flapping. Flap noise is removed at case formation by the
+             *     case retention window instead, which is why the detector was retired rather than tuned.
              * @example false
              */
             is_flapping: boolean;
@@ -3114,6 +3233,46 @@ export interface components {
          */
         CaseListItemDTO: components["schemas"]["CaseDTO"] & {
             alert: components["schemas"]["AlertRefDTO"];
+        };
+        /**
+         * @description The **case retention window** for one `(namespace, alertname)` pair — the only per-pair shaping of
+         *     the Case itself. `(namespace, alertname)` is the rule's identity and is unique within the org.
+         *
+         *     ⛔ It is a **delayed close and never a reopen**: an episode still closes exactly once, and W moves
+         *     *when* that happens rather than allowing a closed case to be resurrected.
+         */
+        CasePolicyDTO: {
+            id: components["schemas"]["Uuid"];
+            /**
+             * @description The grouping axis. **The empty string is the absent-namespace partition**, not a missing
+             *     value: Prometheus treats an absent and an empty `namespace` label as equivalent, so they are
+             *     one partition, and this is how that partition is spelled.
+             * @example production
+             */
+            namespace: string;
+            /**
+             * @description Mandatory, because it is mandatory on every alert and on every group key. There is no row
+             *     without one: that would be an org-wide default, which this collection deliberately does not
+             *     offer.
+             * @example KubePodCrashLooping
+             */
+            alertname: string;
+            /**
+             * Format: int32
+             * @description W. A case whose alert has resolved stays open for this long and closes only once the alert has
+             *     stayed resolved for this long, so a re-fire inside W is an ordinary repeat observation on the
+             *     still-open episode.
+             *
+             *     `0` means the case closes on the resolve — what oto did before this collection existed, and
+             *     what an absent row means. The ceiling is one day: a longer window keeps an episode open across
+             *     a whole shift's worth of unrelated firings, which stops being noise reduction and starts being
+             *     one case that means nothing.
+             * @default 0
+             * @example 600
+             */
+            retention_window_seconds: number;
+            created_at: components["schemas"]["Timestamp"];
+            updated_at: components["schemas"]["Timestamp"];
         };
         /**
          * @description A compact Alert reference, embedded where a full `AlertDTO` would be wasteful. It carries no
@@ -3457,7 +3616,7 @@ export interface components {
             expired_count: number;
             /**
              * Format: int32
-             * @description Members oto has damped as flapping. A visible state, never a silent drop.
+             * @description Members carrying the retired detector's last flapping verdict. RETIRED — nothing is damped on flapping, and the verdict is never recomputed (SPEC §B.6.2).
              */
             flapping_count: number;
             /**
@@ -3630,15 +3789,6 @@ export interface components {
              */
             snoozed_until?: components["schemas"]["Timestamp"] | null;
             /**
-             * @description True while more than the storm threshold (default 25) distinct alerts have joined this
-             *     generation inside the storm window (default 60 s). In storm mode the group posts exactly one
-             *     root message with a count and suppresses per-alert replies. **A visible UI state, never a
-             *     silent drop.**
-             * @example false
-             */
-            storm_mode: boolean;
-            storm_since?: components["schemas"]["Timestamp"] | null;
-            /**
              * @description Alertmanager's raw wire `notification_reason` as last seen — for example
              *     `repeat interval elapsed`. Empty on Alertmanager older than 0.32.0, where oto falls back to
              *     diffing fingerprint sets.
@@ -3684,7 +3834,6 @@ export interface components {
             generation: number;
             title: string;
             state: components["schemas"]["GroupState"];
-            storm_mode?: boolean;
         };
         /**
          * @description A POINTER to the rule snapshot that was captured at fire time, and nothing more.
@@ -4169,7 +4318,7 @@ export interface components {
          *
          *     **Observed or derived, never typed in.** Every oto tuning knob is a function of these three
          *     numbers: a `refire_grace` below `group_interval` is unreachable and every re-fire opens a new Slack
-         *     thread; a `storm_window` below `group_wait` cannot see a burst; a `flap_threshold` above the
+         *     thread; a `flap_window` below `group_interval` cannot contain two observable transitions; a `flap_threshold` above the
          *     observable ceiling is dead code that looks correctly configured. Asking an operator to enter them
          *     by hand produced an answer that was unshared, unvalidated, and silently wrong the moment somebody
          *     edited `alertmanager.yml`.
@@ -4375,8 +4524,8 @@ export interface components {
             group_by: string[];
             /**
              * @description The `group_by: ['...']` form. Worth surfacing beside the numbers because **no number captures
-             *     it**: grouping by every label means no group ever accumulates a second member, so storm collapse
-             *     is unreachable at any threshold.
+             *     it**: grouping by every label means no group ever accumulates a second member, so a group is
+             *     never more than one alert and grouping buys nothing.
              */
             group_by_all: boolean;
             /**
@@ -4701,6 +4850,41 @@ export interface components {
              * @example 900
              */
             unacked_reminder_after_seconds?: number | null;
+            /**
+             * Format: int32
+             * @description The DIGEST WINDOW: summarise what matched this policy over this many seconds, as ONE message
+             *     per window instead of one per fact. `null` — the default — means this policy sends no digest
+             *     and behaves exactly as it did before migration `00058`.
+             *
+             *     It must **divide 86400**, so every boundary is a wall-clock boundary in UTC and no window
+             *     straddles midnight (300, 600, 900, 1800, 3600, 7200, …). That rule is not expressible in
+             *     JSON Schema, so this schema states the range only and a window that is in range but not a
+             *     divisor comes back as a `422` with `digest_floor`/`digest_window_seconds` field violations.
+             *     Windows are aligned to the epoch, never to the policy's `created_at`: the boundary has to be
+             *     computable from the clock alone.
+             *
+             *     A policy with a window must also list the `digest` reason (`policies_digest_reason_ck`), or
+             *     its digests would be suppressed as `no_policy` once per window, forever.
+             *
+             *     ⛔ IT IS A WINDOW OVER FACTS, NOT A SCHEDULE OF WHEN OTO MAY SPEAK (SCOPE-BOUNDARY §4.8).
+             *     There is no timezone here and there never will be: a per-policy timezone is the first half
+             *     of quiet hours, and quiet hours is a rota by another name.
+             * @example 3600
+             */
+            digest_window_seconds?: number | null;
+            /**
+             * Format: int32
+             * @description Send the digest only if at least this many **Cases opened** inside the window. `null` means
+             *     no floor — send whenever the window was not empty; an empty window never sends at all.
+             *
+             *     It counts Cases — one firing episode each — not alerts, which are identities that outlive
+             *     their firings, and not notifications, which would be a count of oto's own chatter and would
+             *     fall when a channel was throttled. It requires `digest_window_seconds`
+             *     (`policies_digest_pair_ck`): a threshold over an unbounded span is not something anything
+             *     can evaluate.
+             * @example 5
+             */
+            digest_floor?: number | null;
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
@@ -4715,12 +4899,31 @@ export interface components {
         NotificationDTO: {
             id: components["schemas"]["Uuid"];
             /**
-             * @description v1 notifies about group generations only.
+             * @description WHAT this fact is about, which selects what `subject_id` resolves against:
+             *
+             *     - `alert` — the Alert IDENTITY, a fact true of the label set across every firing it has ever
+             *       had. `subject_id` is an `alerts` row.
+             *     - `case` — ONE FIRING EPISODE. `subject_id` is an `alert_cases` row. An acknowledgement is
+             *       here, because ack lives on the firing rather than on the identity.
+             *     - `alert_group` — one GENERATION of a group. `subject_id` is an `alert_groups` row.
+             *     - `digest` — a WINDOW OVER A NAMESPACE, which is not an object at all. `subject_id` is the
+             *       `notification_policies` row that asked, and `group_id` is `null`.
+             *
+             *     It has always been part of the idempotency pre-image, which is why the vocabulary could grow
+             *     (00056, then 00058) without re-keying anything.
              * @enum {string}
              */
-            subject_kind: "alert_group";
+            subject_kind: "alert" | "case" | "alert_group" | "digest";
             subject_id: components["schemas"]["Uuid"];
-            group_id: components["schemas"]["Uuid"];
+            /**
+             * @description THE DELIVERY TARGET — which AlertGroup generation's thread this fact lands on — and NOT the
+             *     subject. Present for every `subject_kind` except `digest`: a fact that could name a
+             *     destination is never allowed to omit one (`notifications_target_ck`).
+             *
+             *     It is `null` for a digest, which spans many generations and therefore has no single thread to
+             *     land in; a digest opens its own conversation, keyed by its policy, with one reply per window.
+             */
+            group_id: components["schemas"]["Uuid"] | null;
             /**
              * @description Set when the fact is about one specific alert. Always set for `acked`, `unacked`, `refired`
              *     and `rule_changed`.
@@ -4857,7 +5060,7 @@ export interface components {
                 channel_name: string;
                 channel_type: components["schemas"]["ChannelType"];
                 mode: components["schemas"]["DeliveryMode"];
-                /** @description False when a verbosity gate, throttle, storm or flap damping would suppress it. */
+                /** @description False when a verbosity gate or a throttle would suppress it. */
                 would_send: boolean;
                 suppressed_reason?: components["schemas"]["NotificationSuppressedReason"];
                 /** @description The plain-text line that would be sent. */
@@ -5015,8 +5218,6 @@ export interface components {
                 open: number;
                 /** Format: int32 */
                 closed: number;
-                /** Format: int32 */
-                storm: number;
             };
             deliveries: {
                 /** Format: int32 */
@@ -5141,9 +5342,9 @@ export interface components {
             settings: components["schemas"]["OrgSettingsDTO"];
         };
         /**
-         * @description Org-level tuning, as **effective values**. **Grouping, flap damping and storm collapse are on by
+         * @description Org-level tuning, as **effective values**. **Grouping is on by default and flap scoring is on by
          *     default** — oto defaults to quiet, and every damping decision it makes is a visible state rather
-         *     than a silent drop.
+         *     than a silent drop. Storm collapse is not here: it was removed rather than defaulted off.
          *
          *     Every bound above is enforced **server-side** on `PATCH /api/v1/org/settings`, not merely by the
          *     settings form: the request that sets `refire_grace_s` to 0 arrives from `curl` long before it
@@ -5235,36 +5436,20 @@ export interface components {
             flap_digest_interval_s: number;
             /**
              * Format: int32
-             * @description Distinct alerts joining one generation inside `storm_window_s` before the group collapses.
-             *     **The floor is 2:** a threshold of 1 puts every group into permanent storm mode and
-             *     suppresses every per-alert reply forever, which is silence wearing a damper's name.
-             * @default 25
-             */
-            storm_threshold: number;
-            /**
-             * Format: int32
-             * @description Must exceed `group_wait`, or a burst Alertmanager is still batching does not look like a burst.
-             * @default 60
-             */
-            storm_window_s: number;
-            /**
-             * Format: int32
-             * @description Below a minute, storm mode flickers on and off across consecutive Alertmanager batches.
-             * @default 600
-             */
-            storm_cooldown_s: number;
-            /**
-             * Format: int32
              * @description How long raw webhook bodies and rejection records are kept. They age out by dropping whole
              *     daily partitions, never by deleting rows, and a dropped partition is unrecoverable.
              *
-             *     **The default 30 is derived, not chosen:** it is the `alert_event_keys` idempotency
-             *     horizon. Past it, replaying a stored batch after a parser fix would append the timeline a
-             *     second time, so a payload kept longer cannot be used for the one thing it is kept for.
+             *     **The default 30 is chosen, not derived.** A replay is refused when the alerts a stored
+             *     batch would touch have moved on since it arrived — a later batch already wrote to the
+             *     case, or the case closed while this batch still says firing — and never because the batch
+             *     is old. So this window is the depth of `GET /sources/{id}/rejections` and
+             *     `GET /sources/{id}/failed-batches`, which take no date range, and the window in which a
+             *     stored batch can be replayed at all: past the boundary there are no bytes.
              *
-             *     Nothing an alert page shows is served from here — no operation in this contract reads
-             *     `ingest_batches` or `ingest_rejections`. Lowering it costs reproducibility of an ingestion
-             *     bug, not history. See ADR 0024.
+             *     Nothing an alert page shows is served from here; the two source feeds named above are the
+             *     only operations in this contract that read `ingest_batches` or `ingest_rejections`.
+             *     Lowering it empties those feeds and costs reproducibility of an ingestion bug, not
+             *     history. See ADR 0024.
              * @default 30
              */
             raw_retention_days: number;
@@ -5309,10 +5494,11 @@ export interface components {
              *     `unacked_reminder` — are fixed by policy, because **a broadcast cannot be
              *     un-sent**: Slack documents nothing that removes a channel reference once made. The bar is
              *
-             *     `storm` is **not** in that list any more. A storm is many alerts, so one broadcast per
-             *     storming group is the flood the damping exists to prevent; the "oto has started withholding"
-             *     notice is now issued once per **channel**, latched on `channels.storm_notice_at`, while each
-             *     group's `storm` reply stays quietly on its own thread.
+             *     `storm` is **not** in that list, and there is no longer a storm to be in it: storm damping is
+             *     removed entirely. A storm is many alerts, so one broadcast per storming group was the flood
+             *     the damping existed to prevent — and the damping itself withheld notifications, which §B.6
+             *     refuses. Migration `00060` deletes the Reason as well; nothing renders one and nothing
+             *     mints one.
              *     *"would an on-call engineer be angry to have missed this?"*, not *"is this interesting?"*, and
              *     a channel that learns to scroll past oto's broadcasts has lost the only mechanism oto has for
              *     genuine urgency.
@@ -5617,7 +5803,6 @@ export interface components {
             total_count: number;
             /** Format: int32 */
             acked_count: number;
-            storm_mode: boolean;
             last_activity_at: components["schemas"]["Timestamp"];
         };
         /**
@@ -5851,6 +6036,42 @@ export interface components {
             body: string;
         };
         /**
+         * @description Set the case retention window for one `(namespace, alertname)` pair. The pair is the rule's
+         *     identity: a second create for the same pair is a `409`, and the way to change a window is
+         *     `PATCH /case-policies/{id}`.
+         */
+        CreateCasePolicyRequest: {
+            /**
+             * @description Omitting it means the **absent-namespace partition** — the one every alert that carries no
+             *     `namespace` label falls into. Leading and trailing whitespace is trimmed, because the stored
+             *     value has to be the one a lookup compares against.
+             * @default
+             */
+            namespace: string;
+            /**
+             * @description Must not be blank after trimming.
+             * @example KubePodCrashLooping
+             */
+            alertname: string;
+            /**
+             * Format: int32
+             * @description W, in seconds. `0` is legal and is not a no-op: it records "no window here, deliberately",
+             *     which is a different statement from having no row at all.
+             * @default 0
+             * @example 600
+             */
+            retention_window_seconds: number;
+        };
+        /**
+         * @description Partial update. `namespace` and `alertname` are deliberately absent because together they are the
+         *     rule's identity — moving a window from one pair to another is deleting one rule and writing a
+         *     second, and a field that cannot be sent cannot be sent by accident.
+         */
+        UpdateCasePolicyRequest: {
+            /** Format: int32 */
+            retention_window_seconds?: number;
+        };
+        /**
          * @description Create an identity/failure domain. **`cluster_key` participates in alert identity and cannot be
          *     changed afterwards** — changing it would re-key every alert in the cluster.
          */
@@ -6024,6 +6245,23 @@ export interface components {
             throttle?: components["schemas"]["ThrottleDTO"];
             /** Format: int32 */
             unacked_reminder_after_seconds?: number;
+            /**
+             * Format: int32
+             * @description Summarise what matched this policy over this many seconds instead of sending one message per
+             *     fact. Optional; omitting it means no digest, which is what every payload written before
+             *     migration `00058` says and why adding it keeps existing clients valid.
+             *
+             *     It must divide 86400 — a rule JSON Schema cannot state, so an in-range non-divisor comes back
+             *     as a `422` with code `alignment` on this field. A policy with a window must also list the
+             *     `digest` reason, or its digests would be suppressed as `no_policy` once per window.
+             */
+            digest_window_seconds?: number;
+            /**
+             * Format: int32
+             * @description Send the digest only if at least this many Cases opened inside the window. Requires
+             *     `digest_window_seconds`; omitting it means no floor.
+             */
+            digest_floor?: number;
         };
         /** @description Partial update; every field is optional and only the supplied ones change. */
         UpdatePolicyRequest: {
@@ -6037,6 +6275,19 @@ export interface components {
             throttle?: components["schemas"]["ThrottleDTO"] | null;
             /** Format: int32 */
             unacked_reminder_after_seconds?: number | null;
+            /**
+             * Format: int32
+             * @description An explicit `null` turns the summary off; omitting the field leaves it alone. Clearing the
+             *     window also requires clearing `digest_floor` in the same request, because a floor without a
+             *     window is a threshold over an unbounded span (`policies_digest_pair_ck`).
+             */
+            digest_window_seconds?: number | null;
+            /**
+             * Format: int32
+             * @description An explicit `null` removes the floor — send whenever the window was not empty — which is a
+             *     different request from omitting the field.
+             */
+            digest_floor?: number | null;
         };
         /**
          * @description Describe the fact to dry-run. Supply exactly one subject — `alert_id`, `case_id` or
@@ -6213,6 +6464,15 @@ export interface components {
         FailedBatchListResponse: {
             data: components["schemas"]["FailedBatchDTO"][];
             page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        CasePolicyListResponse: {
+            data: components["schemas"]["CasePolicyDTO"][];
+            page: components["schemas"]["PageInfo"];
+            meta: components["schemas"]["Meta"];
+        };
+        CasePolicyResponse: {
+            data: components["schemas"]["CasePolicyDTO"];
             meta: components["schemas"]["Meta"];
         };
         ClusterListResponse: {
@@ -6411,12 +6671,6 @@ export interface components {
             /** Format: int32 */
             flap_digest_interval_s?: number;
             /** Format: int32 */
-            storm_threshold?: number;
-            /** Format: int32 */
-            storm_window_s?: number;
-            /** Format: int32 */
-            storm_cooldown_s?: number;
-            /** Format: int32 */
             raw_retention_days?: number;
             /** Format: int32 */
             event_retention_months?: number;
@@ -6450,12 +6704,6 @@ export interface components {
             flap_window_s?: number;
             /** Format: int32 */
             flap_digest_interval_s?: number;
-            /** Format: int32 */
-            storm_threshold?: number;
-            /** Format: int32 */
-            storm_window_s?: number;
-            /** Format: int32 */
-            storm_cooldown_s?: number;
             /** Format: int32 */
             raw_retention_days?: number;
             /** Format: int32 */
@@ -7032,7 +7280,7 @@ export interface operations {
                  *     For a substring search use `q=`, which is backed by a full-text index.
                  */
                 matcher?: components["parameters"]["MatcherParam"];
-                /** @description Restrict to alerts oto has damped as flapping, or exclude them. */
+                /** @description Restrict to alerts carrying the retired detector's last flapping verdict, or exclude them. Nothing is damped on flapping — the verdict is a stored historical value and is never recomputed (SPEC §B.6.2). */
                 flapping?: boolean;
                 /**
                  * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
@@ -7190,7 +7438,7 @@ export interface operations {
                  *     For a substring search use `q=`, which is backed by a full-text index.
                  */
                 matcher?: components["parameters"]["MatcherParam"];
-                /** @description Restrict to alerts oto has damped as flapping, or exclude them. */
+                /** @description Restrict to alerts carrying the retired detector's last flapping verdict, or exclude them. Nothing is damped on flapping — the verdict is a stored historical value and is never recomputed (SPEC §B.6.2). */
                 flapping?: boolean;
                 /**
                  * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
@@ -8320,6 +8568,310 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
+    listCasePolicies: {
+        parameters: {
+            query?: {
+                /** @description Maximum items to return in one page. */
+                limit?: components["parameters"]["LimitParam"];
+                /**
+                 * @description Opaque keyset cursor, taken verbatim from `page.next_cursor` of the previous response. A cursor
+                 *     minted under a different filter set is rejected with `400 cursor_filter_mismatch` — reset
+                 *     pagination when the user changes a filter.
+                 */
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of case retention windows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CasePolicyListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createCasePolicy: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCasePolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description The stored retention window. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CasePolicyResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteCasePolicy: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["NoContent"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    updateCasePolicy: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Client-generated key that makes a retried mutation safe. Replaying the same key with the same
+                 *     body within the retention window returns the original result rather than acting twice; replaying
+                 *     it with a *different* body is a `409`.
+                 *
+                 *     **The retention window is 24 hours.** It is wide enough for the retries that actually happen —
+                 *     an HTTP client's retry budget, a proxy that gave up and was re-driven, a queued client draining
+                 *     after a network outage, an operator returning to a half-finished page — and no wider, because a
+                 *     claim that outlives the caller's memory of making it protects nobody. Beyond it a key is
+                 *     forgotten and re-sending it acts again.
+                 *
+                 *     A key is private to the caller who sent it: claims are scoped to the org, the principal **and
+                 *     the operationId**, so one member's key never refuses another's request and one key can be used
+                 *     once per endpoint.
+                 *
+                 *     ### The carve-out: endpoints whose response carries a secret
+                 *
+                 *     `createSource`, `createApiToken`, `revokeApiToken` and `rotateSourceIngestToken` **refuse a
+                 *     replay rather than replaying it**, with `409 idempotency_key_reuse`. The reason is that "return
+                 *     the original result" is impossible to honour honestly here: the original result of a create or a
+                 *     rotate is a **plaintext credential** — an API token, or a source's ingest token — and oto stores
+                 *     only its hash, so the secret exists for the duration of one response and is gone. Replaying it would mean keeping every minted secret in the clear,
+                 *     addressed by a string the client chose, which is a worse exposure than the retry it protects
+                 *     against; minting a fresh one would hand out a second live credential whose secret went to a
+                 *     response that may never have arrived.
+                 *
+                 *     So oto tells the caller the truth instead: **your first attempt succeeded**, here is the `id` of
+                 *     what it created, and the secret cannot be produced again. A caller that never received it
+                 *     revokes that id and retries with a **new** key — for `createSource` that id is the source, whose
+                 *     ingest token can then be rotated. `revokeApiToken` joins the same rule so the credential
+                 *     endpoints answer the header one way rather than three; it remains idempotent for callers that
+                 *     send no key at all.
+                 *
+                 *     The bodyless operations here — `revokeApiToken` and `rotateSourceIngestToken` — identify a
+                 *     request by the resource in its path as well as by the key, so one key spent on two *different*
+                 *     targets is a `409` naming the reuse rather than a replay of a request the caller never made.
+                 *
+                 *     The problem body names an `id`, and only when the first call created something. **It never
+                 *     contains a secret, and never a token prefix.**
+                 *
+                 *     ### The second carve-out: endpoints that are idempotent by state machine
+                 *
+                 *     `ackCase`, `unackCase`, `unsnoozeAlert` and `retryDelivery` are already safe to repeat without
+                 *     a key, because the state after N calls equals the state after one. They are therefore **not**
+                 *     given a replayed `200`. A keyed retry of one of them meets the settled state and gets a `412`
+                 *     whose problem `code` names it — `already_acked`, `not_acked`, `not_snoozed`, or
+                 *     `delivery_not_dead` — rather than a replay of the original response.
+                 *
+                 *     **Treat those four codes as success-equivalent when you are retrying the same key.** They mean
+                 *     "the thing you asked for is already true", which is what a replayed `200` would have told you.
+                 *
+                 *     Replaying a `200` here would be the *less* honest answer, not the more. A claim records only
+                 *     that a key was used and the `id` of what it created, never a response body, so a replayed `200`
+                 *     would have to be re-derived from current state — and `unackCase` legitimately round-trips
+                 *     ack → unack → ack, so a caller retrying an unack under one key could be shown a body describing
+                 *     a withdrawal that a later, deliberate re-acknowledgement has since undone.
+                 */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+            };
+            path: {
+                /** @description Resource identifier (UUIDv7). */
+                id: components["parameters"]["IdParam"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCasePolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated retention window. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CasePolicyResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["UnprocessableContent"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
     listAlertGroups: {
         parameters: {
             query?: {
@@ -8337,8 +8889,6 @@ export interface operations {
                  *     ADR 0038 is derived from the alert's own labels.
                  */
                 receiver?: string;
-                /** @description Restrict to groups currently collapsed into storm mode, or exclude them. */
-                storm?: boolean;
                 /** @description `unacked` returns groups with at least one unacknowledged member; `acked` returns fully acknowledged groups. */
                 ack?: components["schemas"]["AckState"];
                 /** @description Lower bound on `last_activity_at`. */
@@ -10860,7 +11410,7 @@ export interface operations {
                 /** @description Comma-separated reasons. */
                 reason?: components["schemas"]["NotificationReason"][];
                 /** @description Comma-separated suppression reasons. Implies `status=suppressed`. */
-                suppressed_reason?: ("no_policy" | "throttled" | "storm" | "flapping" | "verbosity" | "channel_disabled" | "duplicate_render")[];
+                suppressed_reason?: ("no_policy" | "throttled" | "verbosity" | "channel_disabled" | "duplicate_render")[];
                 group_id?: components["schemas"]["Uuid"];
                 alert_id?: components["schemas"]["Uuid"];
                 policy_id?: components["schemas"]["Uuid"];
