@@ -18,12 +18,12 @@ type Kind string
 // three places that state this bound — this constant block, the DTO enum and the
 // CHECK constraint — must stay identical.
 const (
-	KindAlertUpserted      Kind = "alert.upserted"
-	KindOccurrenceUpserted Kind = "occurrence.upserted"
-	KindGroupUpserted      Kind = "group.upserted"
-	KindEventAppended      Kind = "event.appended"
-	KindDeliveryUpdated    Kind = "delivery.updated"
-	KindSourceHealth       Kind = "source.health"
+	KindAlertUpserted   Kind = "alert.upserted"
+	KindCaseUpserted    Kind = "case.upserted"
+	KindGroupUpserted   Kind = "group.upserted"
+	KindEventAppended   Kind = "event.appended"
+	KindDeliveryUpdated Kind = "delivery.updated"
+	KindSourceHealth    Kind = "source.health"
 
 	// KindResync is a STREAM-LEVEL kind and is never persisted to `ui_events` —
 	// it is a statement about this connection, not about any resource, which is
@@ -38,7 +38,7 @@ type Resource string
 // The persisted resources.
 const (
 	ResourceAlert      Resource = "alert"
-	ResourceOccurrence Resource = "occurrence"
+	ResourceCase       Resource = "case"
 	ResourceGroup      Resource = "group"
 	ResourceAlertEvent Resource = "alert_event"
 	ResourceDelivery   Resource = "delivery"
@@ -49,12 +49,12 @@ const (
 // a client switches on `kind` to pick a decoder and on `resource` to pick an
 // endpoint, and a mismatched pair makes it do both wrongly.
 var kindResource = map[Kind]Resource{
-	KindAlertUpserted:      ResourceAlert,
-	KindOccurrenceUpserted: ResourceOccurrence,
-	KindGroupUpserted:      ResourceGroup,
-	KindEventAppended:      ResourceAlertEvent,
-	KindDeliveryUpdated:    ResourceDelivery,
-	KindSourceHealth:       ResourceSource,
+	KindAlertUpserted:   ResourceAlert,
+	KindCaseUpserted:    ResourceCase,
+	KindGroupUpserted:   ResourceGroup,
+	KindEventAppended:   ResourceAlertEvent,
+	KindDeliveryUpdated: ResourceDelivery,
+	KindSourceHealth:    ResourceSource,
 }
 
 // MaxPayloadBytes is the hard cap on a frame payload, measured on the COMPACTED
@@ -308,7 +308,7 @@ func ScopeOf(kind Kind, resourceID uuid.UUID, payload json.RawMessage) (alertID,
 			id := resourceID
 			groupID = &id
 		}
-	case KindOccurrenceUpserted, KindEventAppended, KindDeliveryUpdated, KindSourceHealth, KindResync:
+	case KindCaseUpserted, KindEventAppended, KindDeliveryUpdated, KindSourceHealth, KindResync:
 	}
 	return alertID, groupID
 }

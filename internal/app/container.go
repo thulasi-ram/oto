@@ -537,7 +537,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// package graph does not: `grouping` needs the alert timeline, and `alerts`
 	// needs a group's state_version. Both holders answer safely until filled.
 	alertRepo := alertsrepo.NewAlertRepository(general, clk, trigramAvailable)
-	occurrenceRepo := alertsrepo.NewOccurrenceRepository(general)
+	caseRepo := alertsrepo.NewCaseRepository(general)
 	eventRepo := alertsrepo.NewEventRepository(general, clk)
 	snoozeRepo := alertsrepo.NewSnoozeRepository(general, clk)
 	enrichmentRepo := enrichrepo.NewEnrichmentRepository(general).WithLogger(logger)
@@ -547,15 +547,14 @@ func New(ctx context.Context, o Options) (*Container, error) {
 
 	c.Alerts, err = alertsservice.New(alertsservice.Deps{
 		Alerts:        alertRepo,
-		Occurrences:   occurrenceRepo,
+		Cases:         caseRepo,
 		Events:        eventRepo,
 		Snoozes:       snoozeRepo,
 		Tx:            alertsrepo.NewTxRunner(general),
 		AlertLister:   alertRepo,
 		AlertBatch:    alertRepo,
-		SnoozeProj:    alertRepo,
-		OccBatch:      occurrenceRepo,
-		OccSources:    occurrenceRepo,
+		OccBatch:      caseRepo,
+		OccSources:    caseRepo,
 		EventCounts:   eventRepo,
 		SnoozeHistory: snoozeRepo,
 		Enqueuer:      c.enqueuer,
@@ -603,7 +602,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 	// ---- enrichment: the budgeted, provenanced pipeline ------------------
 	alertReadModel := enrichrepo.NewAlertReadModel(general)
 	enricherRegistry, err := enrichservice.NewRegistry(
-		promrule.New(c.Rules, occurrenceRepo),
+		promrule.New(c.Rules, caseRepo),
 		runbook.New(runbook.StaticTemplates{}),
 		alerthistory.New(alertReadModel, clk),
 		relatedalerts.New(alertReadModel, clk),
@@ -619,7 +618,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 			alerts:   c.Alerts,
 			grouping: c.Grouping,
 			sources:  c.Sources,
-			occSrc:   &occurrenceSourceReader{resolver: occurrenceRepo},
+			occSrc:   &caseSourceReader{resolver: caseRepo},
 		},
 		Notifier: enrichservice.NewQueueNotifier(c.enqueuer),
 		Events:   timeline,
@@ -679,7 +678,7 @@ func New(ctx context.Context, o Options) (*Container, error) {
 		// asking a question, and spending an ingest connection on it would put an
 		// operator's recovery command in the way of the webhook path it is trying
 		// to recover.
-		AlertStates: alertStates{alerts: alertRepo, occurrences: occurrenceRepo},
+		AlertStates: alertStates{alerts: alertRepo, cases: caseRepo},
 		Clock:       clk,
 		Logger:      logger,
 		Registry:    reg,
@@ -1226,8 +1225,8 @@ func bridgeMetrics(m *streamingservice.Metrics) streamingservice.BridgeMetrics {
 // batch was received — and every extra field handed across this boundary is a
 // field the ingest path can start branching on.
 type alertStates struct {
-	alerts      *alertsrepo.AlertRepository
-	occurrences *alertsrepo.OccurrenceRepository
+	alerts *alertsrepo.AlertRepository
+	cases  *alertsrepo.CaseRepository
 }
 
 func (a alertStates) StatesByAlertKey(
@@ -1249,7 +1248,7 @@ func (a alertStates) StatesByAlertKey(
 		ids = append(ids, al.ID())
 		byID[al.ID()] = al
 	}
-	latest, err := a.occurrences.LatestByAlerts(ctx, s, ids)
+	latest, err := a.cases.LatestByAlerts(ctx, s, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -1268,23 +1267,23 @@ func (a alertStates) StatesByAlertKey(
 			Exists:   true,
 			Identity: alertIdentity(al),
 		}
-		occ, ok := latest[al.ID()]
+		ac, ok := latest[al.ID()]
 		if !ok {
 			// An alert row with no episode yet. There is no timeline to duplicate.
 			out[key] = st
 			continue
 		}
 
-		st.State = occ.State().String()
-		st.Terminal = occ.State().IsTerminal()
-		st.SourceUpdatedAt = occ.SourceUpdatedAt()
+		st.State = ac.State().String()
+		st.Terminal = ac.State().IsTerminal()
+		st.SourceUpdatedAt = ac.SourceUpdatedAt()
 		// ⛔ THE LATER OF THE TWO, AND `ended_at` IS WHY. Reaper expiry closes an
-		// occurrence without any upstream saying so and never touches
+		// case without any upstream saying so and never touches
 		// `source_updated_at`, so reporting only the latter would print "last moved"
 		// as the day the alert last fired for an episode that closed a week later.
-		st.MovedAt = occ.SourceUpdatedAt()
-		if occ.EndedAt().After(st.MovedAt) {
-			st.MovedAt = occ.EndedAt()
+		st.MovedAt = ac.SourceUpdatedAt()
+		if ac.EndedAt().After(st.MovedAt) {
+			st.MovedAt = ac.EndedAt()
 		}
 		out[key] = st
 	}

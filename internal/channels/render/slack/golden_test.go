@@ -75,20 +75,20 @@ func smokeView() *domain.NotificationView {
 				},
 				GeneratorURL: "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1",
 				State:        "firing", AckState: "unacked",
-				FirstSeenAt: otoFirstSeen, LastSeenAt: renderedAt, TotalOccurrences: 1,
+				FirstSeenAt: otoFirstSeen, LastSeenAt: renderedAt, TotalCases: 1,
 			},
 			{
 				ID: "a2", AlertKey: "ak_2", AlertName: "OtoSmokeTest",
 				Severity: "critical", Namespace: "observability", Service: "oto-smoke",
 				Labels: map[string]string{"instance": "oto-smoke-a1", "cluster": "smoke-test"},
 				State:  "firing", AckState: "unacked",
-				FirstSeenAt: otoFirstSeen, LastSeenAt: renderedAt, TotalOccurrences: 1,
+				FirstSeenAt: otoFirstSeen, LastSeenAt: renderedAt, TotalCases: 1,
 			},
 		},
-		// ⛔ THE OCCURRENCE IS 300ms OLD AND THE GROUP IS 80s OLD. The card is about
+		// ⛔ THE CASE IS 300ms OLD AND THE GROUP IS 80s OLD. The card is about
 		// the group; if the renderer reads this Duration the fixture says "under a
 		// second" and A1 is back.
-		Occurrence: &domain.OccurrenceView{
+		Case: &domain.CaseView{
 			ID: "occ1", Seq: 1, State: "firing", AckState: "unacked",
 			StartedAt: occStart, Duration: 300 * time.Millisecond,
 		},
@@ -204,17 +204,17 @@ func topLevelText(t *testing.T, payload []byte) string {
 
 // ⛔ A1. The observed card said `Firing for: under a second` about a group that
 // had been firing for eighty. The duration came from the TRIGGERING ALERT's
-// occurrence, which for a `fired` intent is milliseconds old; the card is about
+// case, which for a `fired` intent is milliseconds old; the card is about
 // the GROUP. A card that misstates how long an outage has lasted is worse than
 // one that omits it, because that number is what an operator triages on.
-func TestFiringForMeasuresTheGroupAndNotTheTriggeringOccurrence(t *testing.T) {
+func TestFiringForMeasuresTheGroupAndNotTheTriggeringCase(t *testing.T) {
 	t.Parallel()
 
 	msg := renderView(t, smokeView(), domain.ModePostRoot)
 	got := fieldValue(t, msg.Payload, "Firing for")
 
 	if got == "under a second" {
-		t.Fatalf("Firing for came from the triggering occurrence again (%q); "+
+		t.Fatalf("Firing for came from the triggering case again (%q); "+
 			"the group had been firing 80s", got)
 	}
 	if got != "1m 20s" {
@@ -345,9 +345,9 @@ func TestABroadcastTopLevelTextCarriesSeverityAndDuration(t *testing.T) {
 
 	v := smokeView()
 	v.Reason = "refired"
-	v.Occurrence.Duration = 3*time.Minute + 12*time.Second
-	v.Occurrence.Seq = 4
-	v.Occurrence.ReopenCount = 2
+	v.Case.Duration = 3*time.Minute + 12*time.Second
+	v.Case.Seq = 4
+	v.Case.ReopenCount = 2
 
 	msg := renderView(t, v, domain.ModeBroadcastReply)
 	text := topLevelText(t, msg.Payload)
@@ -387,9 +387,9 @@ func TestGoldenBroadcastRefired(t *testing.T) {
 	t.Parallel()
 	v := smokeView()
 	v.Reason = "refired"
-	v.Occurrence.Duration = 3*time.Minute + 12*time.Second
-	v.Occurrence.Seq = 4
-	v.Occurrence.ReopenCount = 2
+	v.Case.Duration = 3*time.Minute + 12*time.Second
+	v.Case.Seq = 4
+	v.Case.ReopenCount = 2
 	v.Previous = &domain.PreviousState{State: "resolved"}
 	msg := renderView(t, v, domain.ModeBroadcastReply)
 	golden(t, "broadcast_refired.golden.json", msg.Payload)
@@ -410,11 +410,11 @@ func resolvedView() *domain.NotificationView {
 	v.Group.LastActivityAt = ended
 	v.Alerts[0].State = "resolved"
 	v.Alerts[1].State = "resolved"
-	v.Occurrence.State = "resolved"
-	v.Occurrence.AckState = "acked"
-	v.Occurrence.AckedAt = &acked
-	v.Occurrence.AckedByLabel = "ram@example.com"
-	v.Occurrence.EndedAt = &ended
+	v.Case.State = "resolved"
+	v.Case.AckState = "acked"
+	v.Case.AckedAt = &acked
+	v.Case.AckedByLabel = "ram@example.com"
+	v.Case.EndedAt = &ended
 	v.Notifications = 3
 	v.Previous = &domain.PreviousState{State: "firing", AckState: "acked"}
 	v.Trail = []domain.TrailEntry{

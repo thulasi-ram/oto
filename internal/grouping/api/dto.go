@@ -124,7 +124,6 @@ type AlertRefDTO struct {
 	Namespace  *string   `json:"namespace"`
 	ClusterKey string    `json:"cluster_key"`
 	State      string    `json:"state"`
-	AckState   string    `json:"ack_state"`
 }
 
 // AlertDTO renders `AlertDTO` for `listAlertGroupAlerts`.
@@ -141,13 +140,16 @@ type AlertDTO struct {
 	Annotations       map[string]string `json:"annotations"`
 	GeneratorURL      *string           `json:"generator_url"`
 	State             string            `json:"state"`
-	AckState          string            `json:"ack_state"`
-	FirstSeenAt       time.Time         `json:"first_seen_at"`
-	LastSeenAt        time.Time         `json:"last_seen_at"`
-	LastStateChangeAt time.Time         `json:"last_state_change_at"`
-	TotalOccurrences  int32             `json:"total_occurrences"`
-	FlapScore         float32           `json:"flap_score"`
-	IsFlapping        bool              `json:"is_flapping"`
+	// ⛔ THERE IS NO `ack_state`. An Alert has no ack: the receipt belongs to the
+	// firing episode it was given for. A member of a group card IS an episode —
+	// membership is `alert_cases.group_id` — so the card reads ack from the
+	// member's own case, and this schema does not carry one.
+	FirstSeenAt       time.Time `json:"first_seen_at"`
+	LastSeenAt        time.Time `json:"last_seen_at"`
+	LastStateChangeAt time.Time `json:"last_state_change_at"`
+	TotalCases        int32     `json:"total_cases"`
+	FlapScore         float32   `json:"flap_score"`
+	IsFlapping        bool      `json:"is_flapping"`
 	// Synthetic marks an Alert oto manufactured for a DELIVERY DRILL. It is the
 	// SAME field, with the same contract, as on the alerts list — `AlertDTO` is
 	// one schema, and it lists `synthetic` among its required members.
@@ -194,18 +196,18 @@ type SnoozeDTO struct {
 // documented resume protocol read `null` forever and could never advance its
 // cursor. Timelines page by `cursor`, which is served.
 type AlertEventDTO struct {
-	ID           uuid.UUID      `json:"id"`
-	AlertID      *uuid.UUID     `json:"alert_id"`
-	OccurrenceID *uuid.UUID     `json:"occurrence_id"`
-	GroupID      *uuid.UUID     `json:"group_id"`
-	Type         string         `json:"type"`
-	OccurredAt   time.Time      `json:"occurred_at"`
-	RecordedAt   time.Time      `json:"recorded_at"`
-	ActorKind    string         `json:"actor_kind"`
-	ActorID      *string        `json:"actor_id"`
-	ActorLabel   *string        `json:"actor_label"`
-	Summary      string         `json:"summary"`
-	Payload      map[string]any `json:"payload,omitempty"`
+	ID         uuid.UUID      `json:"id"`
+	AlertID    *uuid.UUID     `json:"alert_id"`
+	CaseID     *uuid.UUID     `json:"case_id"`
+	GroupID    *uuid.UUID     `json:"group_id"`
+	Type       string         `json:"type"`
+	OccurredAt time.Time      `json:"occurred_at"`
+	RecordedAt time.Time      `json:"recorded_at"`
+	ActorKind  string         `json:"actor_kind"`
+	ActorID    *string        `json:"actor_id"`
+	ActorLabel *string        `json:"actor_label"`
+	Summary    string         `json:"summary"`
+	Payload    map[string]any `json:"payload,omitempty"`
 }
 
 // ------------------------------------------------------------------ requests

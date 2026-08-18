@@ -186,7 +186,7 @@ func TestUIEventPayloadAtTheGoCapStores(t *testing.T) {
 			strings.Repeat(" ", domain.MaxPayloadBytes) + `}`)
 		require.Greater(t, len(padded), domain.MaxPayloadBytes)
 
-		ev, err := domain.NewAppend(domain.KindOccurrenceUpserted, uuid.New(), padded)
+		ev, err := domain.NewAppend(domain.KindCaseUpserted, uuid.New(), padded)
 		require.NoError(t, err, "whitespace is insignificant to JSON and free in jsonb")
 
 		got, err := repo.Append(h.Ctx, scope, ev)

@@ -13,21 +13,21 @@ import (
 // schema talks about the row that changed. Mapping between them here is the only
 // place the two vocabularies meet.
 const (
-	SelectorAlerts      = "alerts"
-	SelectorGroups      = "groups"
-	SelectorOccurrences = "occurrences"
-	SelectorEvents      = "events"
-	SelectorDeliveries  = "deliveries"
-	SelectorSources     = "sources"
+	SelectorAlerts     = "alerts"
+	SelectorGroups     = "groups"
+	SelectorCases      = "cases"
+	SelectorEvents     = "events"
+	SelectorDeliveries = "deliveries"
+	SelectorSources    = "sources"
 )
 
 var selectorResource = map[string]Resource{
-	SelectorAlerts:      ResourceAlert,
-	SelectorGroups:      ResourceGroup,
-	SelectorOccurrences: ResourceOccurrence,
-	SelectorEvents:      ResourceAlertEvent,
-	SelectorDeliveries:  ResourceDelivery,
-	SelectorSources:     ResourceSource,
+	SelectorAlerts:     ResourceAlert,
+	SelectorGroups:     ResourceGroup,
+	SelectorCases:      ResourceCase,
+	SelectorEvents:     ResourceAlertEvent,
+	SelectorDeliveries: ResourceDelivery,
+	SelectorSources:    ResourceSource,
 }
 
 // Interest is one subscriber's declared filter.
@@ -61,7 +61,7 @@ func ParseInterest(resources []string, alertID, groupID *uuid.UUID) (Interest, e
 					"unknown stream resource "+part).WithViolations(errs.Violation{
 					Field:   "resources",
 					Code:    "oneof",
-					Message: part + " is not one of alerts, groups, occurrences, events, deliveries, sources",
+					Message: part + " is not one of alerts, groups, cases, events, deliveries, sources",
 				})
 			}
 			if set == nil {

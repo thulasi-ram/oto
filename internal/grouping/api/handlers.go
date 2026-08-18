@@ -74,7 +74,7 @@ func (rt *Router) getAlertGroup(w http.ResponseWriter, r *http.Request) {
 
 // ackAlertGroup is `POST /api/v1/alert-groups/{id}/ack`.
 //
-// Every open member occurrence gets the same acknowledgement; members that have
+// Every open member case gets the same acknowledgement; members that have
 // already ended are SKIPPED rather than failing the request, because refusing the
 // other thirty-nine because one resolved would make the button unusable in
 // exactly the storm it exists for. A group with no open members at all is a 412.
@@ -104,11 +104,11 @@ func (rt *Router) ackAlertGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	// ⚠️ THE GATE ASKS ABOUT OPEN MEMBERS, BECAUSE THAT IS WHAT THE 412 SAYS. The
 	// contract's precondition is "a group with no open members at all", so the
-	// only evidence that settles it is the REFUSAL CODE: `no_open_occurrence` is a
+	// only evidence that settles it is the REFUSAL CODE: `no_open_case` is a
 	// member whose episode has ended, and it is the one refusal that means there
 	// was nothing to acknowledge. `already_acked` is the opposite — that member is
 	// open, somebody simply got there first — and answering it with
-	// `no_open_occurrence` would be oto naming the wrong nothing.
+	// `no_open_case` would be oto naming the wrong nothing.
 	//
 	// ⛔ IT IS DELIBERATELY NOT `Complete()`. Gating on reach made a 5 000-member
 	// group whose episodes have ALL ended answer 200 with group detail, which is a
@@ -118,9 +118,9 @@ func (rt *Router) ackAlertGroup(w http.ResponseWriter, r *http.Request) {
 	// members are already acked and whose remaining thousands are not — is already
 	// excluded here by its `already_acked` refusals, and is excluded whether or
 	// not the fan-out hit its ceiling.
-	if res.Applied == 0 && res.SkippedCodes["no_open_occurrence"] == res.Skipped() {
-		httpx.WriteProblem(w, r, errs.Precondition("no_open_occurrence",
-			"this group has no open member occurrence to acknowledge"))
+	if res.Applied == 0 && res.SkippedCodes["no_open_case"] == res.Skipped() {
+		httpx.WriteProblem(w, r, errs.Precondition("no_open_case",
+			"this group has no open member case to acknowledge"))
 		return
 	}
 
@@ -309,7 +309,7 @@ func (rt *Router) snoozeUntil(body SnoozeRequest) (time.Time, error) {
 }
 
 // getAlertGroupTimeline is `GET /api/v1/alert-groups/{id}/timeline` — the
-// signature view: every event from every member alert, occurrence, notification
+// signature view: every event from every member alert, case, notification
 // and delivery, merged into one ordered list.
 func (rt *Router) getAlertGroupTimeline(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
@@ -345,7 +345,8 @@ func (rt *Router) getAlertGroupTimeline(w http.ResponseWriter, r *http.Request) 
 // materialises the ENTIRE membership, then sort and slice it in Go — correct for
 // a group of forty and a full membership fetch for a storm of five thousand,
 // which is the one case the endpoint exists to survive. `Members` is now a
-// keyset read over `(joined_at DESC, occurrence_id DESC)`.
+// keyset read over the live episodes of the generation, `(started_at DESC, id
+// DESC)`.
 //
 // Each member alert is still resolved through the `alerts` service port and
 // never by reaching into another domain's repository (CONTEXT.md §5.4).

@@ -25,20 +25,19 @@ import (
 // the configuration §I.1 requires oto to be runnable in.
 type Deps struct {
 	// Required.
-	Alerts      AlertRepository
-	Occurrences OccurrenceRepository
-	Events      EventRepository
-	Snoozes     SnoozeRepository
-	Tx          TxRunner
+	Alerts  AlertRepository
+	Cases   CaseRepository
+	Events  EventRepository
+	Snoozes SnoozeRepository
+	Tx      TxRunner
 
 	// Optional repository capabilities. Each is satisfied by the same concrete
 	// repository as its required sibling; they are separate interfaces because a
 	// consumer should depend on the methods it calls and no more.
 	AlertLister   AlertLister
 	AlertBatch    AlertBatchReader
-	SnoozeProj    AlertProjectionWriter
-	OccBatch      OccurrenceBatchReader
-	OccSources    OccurrenceSourceResolver
+	OccBatch      CaseBatchReader
+	OccSources    CaseSourceResolver
 	EventCounts   EventCounter
 	SnoozeHistory SnoozeHistoryReader
 
@@ -62,7 +61,7 @@ type Deps struct {
 }
 
 // Service is the alerts module's business logic: identity and dedup, the §B.3
-// occurrence state machine, the append-only timeline, snooze, and the read paths
+// case state machine, the append-only timeline, snooze, and the read paths
 // the API serves.
 //
 // ⛔ It NEVER calls time.Now(). Every clock reading comes from the injected
@@ -75,10 +74,9 @@ type Service struct {
 	alerts      AlertRepository
 	lister      AlertLister
 	alertBatch  AlertBatchReader
-	snoozeProj  AlertProjectionWriter
-	occurrences OccurrenceRepository
-	occBatch    OccurrenceBatchReader
-	occSources  OccurrenceSourceResolver
+	cases       CaseRepository
+	occBatch    CaseBatchReader
+	occSources  CaseSourceResolver
 	events      EventRepository
 	eventCounts EventCounter
 	snoozes     SnoozeRepository
@@ -103,8 +101,8 @@ func New(d Deps) (*Service, error) {
 	switch {
 	case d.Alerts == nil:
 		return nil, errs.Internal("alerts_repo_required", errMissingDep("AlertRepository"))
-	case d.Occurrences == nil:
-		return nil, errs.Internal("occurrence_repo_required", errMissingDep("OccurrenceRepository"))
+	case d.Cases == nil:
+		return nil, errs.Internal("case_repo_required", errMissingDep("CaseRepository"))
 	case d.Events == nil:
 		return nil, errs.Internal("event_repo_required", errMissingDep("EventRepository"))
 	case d.Snoozes == nil:
@@ -126,8 +124,7 @@ func New(d Deps) (*Service, error) {
 		alerts:        d.Alerts,
 		lister:        d.AlertLister,
 		alertBatch:    d.AlertBatch,
-		snoozeProj:    d.SnoozeProj,
-		occurrences:   d.Occurrences,
+		cases:         d.Cases,
 		occBatch:      d.OccBatch,
 		occSources:    d.OccSources,
 		events:        d.Events,
@@ -199,7 +196,7 @@ func (s *Service) appendEvents(ctx context.Context, scope db.TenantScope, evs []
 // appendEventsBatched is appendEvents for the observe path: the timeline write
 // is the same one round trip, but the matching UI frames are QUEUED on the
 // accumulator for the batch's single flush instead of being published one by
-// one. The frames land after the occurrence and alert frames the loop queued,
+// one. The frames land after the case and alert frames the loop queued,
 // which is exactly where the per-event appends used to put them.
 func (s *Service) appendEventsBatched(ctx context.Context, scope db.TenantScope, acc *observeAccum) (int, error) {
 	if len(acc.events) == 0 {
@@ -236,8 +233,8 @@ func eventFramePayload(e domain.Event) map[string]any {
 	if e.GroupID() != uuid.Nil {
 		payload["group_id"] = e.GroupID()
 	}
-	if e.OccurrenceID() != uuid.Nil {
-		payload["occurrence_id"] = e.OccurrenceID()
+	if e.CaseID() != uuid.Nil {
+		payload["case_id"] = e.CaseID()
 	}
 	return payload
 }
@@ -250,17 +247,17 @@ func (s *Service) publishAlert(ctx context.Context, scope db.TenantScope, alertI
 	return s.publish(ctx, scope, StreamAlertUpserted, alertID, extra)
 }
 
-// publishOccurrence announces that an episode changed.
-func (s *Service) publishOccurrence(ctx context.Context, scope db.TenantScope, o domain.Occurrence) error {
+// publishCase announces that an episode changed.
+func (s *Service) publishCase(ctx context.Context, scope db.TenantScope, o domain.Case) error {
 	if s.stream == nil {
 		return nil
 	}
-	return s.publish(ctx, scope, StreamOccurrenceUpserted, o.ID(), occurrenceFramePayload(o))
+	return s.publish(ctx, scope, StreamCaseUpserted, o.ID(), caseFramePayload(o))
 }
 
-// occurrenceFramePayload is the §E.4 envelope of one episode change, shared by
+// caseFramePayload is the §E.4 envelope of one episode change, shared by
 // the per-item publish and the batched observe path.
-func occurrenceFramePayload(o domain.Occurrence) map[string]any {
+func caseFramePayload(o domain.Case) map[string]any {
 	return map[string]any{
 		"alert_id": o.AlertID(),
 		"state":    o.State().String(),
@@ -329,11 +326,11 @@ func encodeFramePayload(payload map[string]any) ([]byte, error) {
 // than at each call site so that the §C.7 inputs — group, reason, state version —
 // are never partially filled.
 type notifyRequest struct {
-	groupID      uuid.UUID
-	reason       string
-	alertID      *uuid.UUID
-	occurrenceID *uuid.UUID
-	actor        string
+	groupID uuid.UUID
+	reason  string
+	alertID *uuid.UUID
+	caseID  *uuid.UUID
+	actor   string
 }
 
 // enqueueNotify queues policy evaluation IN THE CALLER'S TRANSACTION.
@@ -343,7 +340,7 @@ type notifyRequest struct {
 // promise" true (§G.1). A request whose group is unknown is DROPPED, not
 // guessed: `notifications.group_id` is NOT NULL and a fabricated group would
 // mint an intent about nothing.
-// awaitingEnrichment is the set of occurrence ids whose inline enrichment pass
+// awaitingEnrichment is the set of case ids whose inline enrichment pass
 // was queued in this same transaction; their `fired` evaluation is scheduled at
 // the end of the pre-notification budget instead of immediately.
 //
@@ -385,11 +382,11 @@ func (s *Service) enqueueNotify(
 			Reason:       r.reason,
 			StateVersion: v,
 			AlertID:      r.alertID,
-			OccurrenceID: r.occurrenceID,
+			CaseID:       r.caseID,
 			Actor:        r.actor,
 		}}
-		if r.reason == reasonFired && r.occurrenceID != nil {
-			if _, waiting := awaitingEnrichment[*r.occurrenceID]; waiting {
+		if r.reason == reasonFired && r.caseID != nil {
+			if _, waiting := awaitingEnrichment[*r.caseID]; waiting {
 				req.Opts = append(req.Opts,
 					db.WithScheduledAt(s.Now().Add(jobs.PreNotificationBudget)))
 			}
@@ -422,15 +419,15 @@ func (s *Service) groupStateVersion(ctx context.Context, scope db.TenantScope, g
 // enqueueEnrich queues the inline enrichment pass for a freshly opened episode.
 // Enrichment is NEVER on the ingest critical path; this is a queue insert in the
 // same transaction and nothing more.
-func (s *Service) enqueueEnrich(ctx context.Context, occurrenceIDs []uuid.UUID) (int, error) {
-	if s.enqueuer == nil || len(occurrenceIDs) == 0 {
+func (s *Service) enqueueEnrich(ctx context.Context, caseIDs []uuid.UUID) (int, error) {
+	if s.enqueuer == nil || len(caseIDs) == 0 {
 		return 0, nil
 	}
-	reqs := make([]db.JobRequest, 0, len(occurrenceIDs))
-	for _, id := range occurrenceIDs {
+	reqs := make([]db.JobRequest, 0, len(caseIDs))
+	for _, id := range caseIDs {
 		reqs = append(reqs, db.JobRequest{Args: jobs.EnrichRunArgs{
-			OccurrenceID: id,
-			Phase:        "inline",
+			CaseID: id,
+			Phase:  "inline",
 		}})
 	}
 	if _, err := s.enqueuer.EnqueueMany(ctx, reqs); err != nil {

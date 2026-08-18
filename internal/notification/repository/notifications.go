@@ -20,7 +20,7 @@ type notificationRow struct {
 	subjectID        uuid.UUID
 	groupID          uuid.UUID
 	alertID          *uuid.UUID
-	occurrenceID     *uuid.UUID
+	caseID           *uuid.UUID
 	reason           string
 	policyID         *uuid.UUID
 	stateVersion     int
@@ -39,7 +39,7 @@ func (r notificationRow) toDomain() domain.Notification {
 		SubjectID:      r.subjectID,
 		GroupID:        r.groupID,
 		AlertID:        r.alertID,
-		OccurrenceID:   r.occurrenceID,
+		CaseID:         r.caseID,
 		Reason:         domain.Reason(r.reason),
 		PolicyID:       r.policyID,
 		StateVersion:   r.stateVersion,
@@ -67,13 +67,13 @@ func NewNotificationRepository(q db.Querier) *NotificationRepository {
 func (r *NotificationRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
 const notificationColumns = `
-  id, org_id, subject_kind, subject_id, group_id, alert_id, occurrence_id,
+  id, org_id, subject_kind, subject_id, group_id, alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   created_at, updated_at`
 
 const insertNotificationSQL = `
 INSERT INTO notifications (
-  id, org_id, subject_kind, subject_id, group_id, alert_id, occurrence_id,
+  id, org_id, subject_kind, subject_id, group_id, alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   created_at, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
@@ -112,11 +112,11 @@ func (r *NotificationRepository) Insert(
 	var row notificationRow
 	err := r.db(ctx).QueryRow(ctx, insertNotificationSQL,
 		n.ID, s.OrgID(), string(n.SubjectKind), n.SubjectID, n.GroupID,
-		n.AlertID, n.OccurrenceID, string(n.Reason), n.PolicyID, n.StateVersion,
+		n.AlertID, n.CaseID, string(n.Reason), n.PolicyID, n.StateVersion,
 		n.IdempotencyKey, string(n.Status), suppressed, n.CreatedAt,
 	).Scan(
 		&row.id, &row.orgID, &row.subjectKind, &row.subjectID, &row.groupID,
-		&row.alertID, &row.occurrenceID, &row.reason, &row.policyID,
+		&row.alertID, &row.caseID, &row.reason, &row.policyID,
 		&row.stateVersion, &row.idempotencyKey, &row.status, &row.suppressedReason,
 		&row.createdAt, &row.updatedAt,
 	)
@@ -141,7 +141,7 @@ func (r *NotificationRepository) GetByIdempotencyKey(
 	var row notificationRow
 	err := r.db(ctx).QueryRow(ctx, selectByIdemSQL, s.OrgID(), key).Scan(
 		&row.id, &row.orgID, &row.subjectKind, &row.subjectID, &row.groupID,
-		&row.alertID, &row.occurrenceID, &row.reason, &row.policyID,
+		&row.alertID, &row.caseID, &row.reason, &row.policyID,
 		&row.stateVersion, &row.idempotencyKey, &row.status, &row.suppressedReason,
 		&row.createdAt, &row.updatedAt,
 	)
@@ -163,7 +163,7 @@ func (r *NotificationRepository) Get(
 	var row notificationRow
 	err := r.db(ctx).QueryRow(ctx, getNotificationSQL, s.OrgID(), id).Scan(
 		&row.id, &row.orgID, &row.subjectKind, &row.subjectID, &row.groupID,
-		&row.alertID, &row.occurrenceID, &row.reason, &row.policyID,
+		&row.alertID, &row.caseID, &row.reason, &row.policyID,
 		&row.stateVersion, &row.idempotencyKey, &row.status, &row.suppressedReason,
 		&row.createdAt, &row.updatedAt,
 	)

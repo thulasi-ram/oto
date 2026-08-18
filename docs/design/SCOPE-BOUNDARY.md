@@ -27,7 +27,7 @@ does none of those things.
 > **FR-1. Complete this sentence about the row the feature writes:**
 > **"This row is a fact about ______."**
 >
-> - If the blank is a **signal** — an Alert, an AlertOccurrence, an AlertGroup, a RuleSnapshot, a
+> - If the blank is a **signal** — an Alert, an AlertCase, an AlertGroup, a RuleSnapshot, a
 >   Notification, a Delivery, an AlertSource, or an aggregate over those — the feature is **IN**.
 > - If the blank is a **person, a team, a rota, a responsibility, a response effort, a meeting, a
 >   ticket, or a customer-facing statement** — the feature is **OUT**.
@@ -42,8 +42,8 @@ The test in one line, for a whiteboard:
 
 ### Why this is the right primary test
 
-- It is the difference between `occurrence.acked_by = alice` (a fact about the occurrence: it was
-  acknowledged, by whom) and `occurrence.assigned_to = alice` (a fact about Alice: she owes work).
+- It is the difference between `case.acked_by = alice` (a fact about the case: it was
+  acknowledged, by whom) and `case.assigned_to = alice` (a fact about Alice: she owes work).
   Identical columns; opposite products.
 - It derives R8 for free. A per-person response-time aggregate is a fact about a person → OUT, with no
   additional rule needed.
@@ -73,7 +73,7 @@ minutes to respond", `@alice` pings chosen by oto. A notification policy that ro
 
 Postmortems, incident records, status pages, rotas, runbook libraries, war-room channels and ticket
 queues all survive the deletion of every alert, because they were never about the alerts. Acks,
-comments, occurrences, rule snapshots and delivery records all die with the alert, because they were
+comments, cases, rule snapshots and delivery records all die with the alert, because they were
 facts about it.
 
 ### H-3. The Write-Path Heuristic
@@ -120,7 +120,7 @@ argued otherwise against FR-1.
 
 | # | Feature | Verdict | Deciding argument |
 |---|---|---|---|
-| 1 | Acknowledge an alert | **IN** | A receipt on an occurrence, past tense. Subject = the occurrence; the human is the actor. |
+| 1 | Acknowledge an alert | **IN** | A receipt on a case, past tense. Subject = the case; the human is the actor. |
 | 2 | Un-acknowledge | **IN** | Same shape as ack, inverse. |
 | 3 | Comment on an alert | **IN** | An immutable `comment.added` event on the signal's timeline. Subject = the alert. |
 | 4 | Assign an alert to a person | **OUT** | Subject = a person's workload. Present-tense obligation (H-1). The clearest violation on the list. |
@@ -158,7 +158,7 @@ argued otherwise against FR-1.
 | 36 | Per-person response metrics | **OUT** | R8. Unrepresentable in the schema by construction. |
 | 37 | Saved views / filters | **IN** (deferred) | Subject = a query. |
 | 38 | Delivery audit + manual retry | **IN** | Subject = a delivery. oto's silence must never be indistinguishable from "no alert". |
-| 39 | Rule drift diff between occurrences | **IN** | Subject = a rule definition. The differentiator. |
+| 39 | Rule drift diff between cases | **IN** | Subject = a rule definition. The differentiator. |
 | 40 | Maintenance windows (suppress notifications during a window) | **BORDERLINE → IN** | Same shape as #19: a fact about which signals notify, stored in oto, no cluster write. OUT if it becomes a calendar of human availability. |
 
 ---
@@ -172,8 +172,8 @@ Everything below crosses, brushes, or props open the line. Ruled `KEEP` / `CUT` 
 
 | Element | Ruling | Detail |
 |---|---|---|
-| `ackAlert`, `unackAlert`, `ackAlertGroup` (openapi); `POST /alerts/{id}/ack`, `/unack`, `/alert-groups/{id}/ack`; T9/T10 | **KEEP** | Ack is a receipt on an occurrence, not a claim on a person. The orthogonal `ack_state` axis (B.1) and the openapi copy *"an acked alert is still firing… says 'a human has seen this', not 'this is over'"* are already exactly right. **Guard to add:** ack MUST NOT be presented in UI copy or docs as "take ownership", "I'm on it", or "assign to me". |
-| `alert_occurrences.acked_by`, `acked_by_label`, `acked_at`, `ack_note` | **KEEP** | Attribution as metadata on a signal row. |
+| `ackAlert`, `unackAlert`, `ackAlertGroup` (openapi); `POST /alerts/{id}/ack`, `/unack`, `/alert-groups/{id}/ack`; T9/T10 | **KEEP** | Ack is a receipt on a case, not a claim on a person. The orthogonal `ack_state` axis (B.1) and the openapi copy *"an acked alert is still firing… says 'a human has seen this', not 'this is over'"* are already exactly right. **Guard to add:** ack MUST NOT be presented in UI copy or docs as "take ownership", "I'm on it", or "assign to me". |
+| `alert_cases.acked_by`, `acked_by_label`, `acked_at`, `ack_note` | **KEEP** | Attribution as metadata on a signal row. |
 | `commentOnAlert`, `commentOnAlertGroup`, `comment.added`, T14 | **KEEP** | Immutable events on a signal timeline; the openapi already forbids edit and delete. **Guards to add:** (a) no `@mention` semantics that select a human recipient; (b) no comment threading or replies-to-comments — that is a conversation, and conversations are OUT; (c) the mirror is one-way oto→Slack (already implied by C9; state it). |
 | `alert_events.actor_kind = 'user'`, `actor_id`, `actor_label` | **KEEP** | The literal encoding of *actor, never subject*. This is the schema-level proof that FR-1 holds. |
 | `alert_events.type` closed enum (§D.4.1) + *"Adding a type requires a SPEC amendment"* | **KEEP — this is the single strongest existing enforcement mechanism** | Every incident-management feature needs a new event type. Route all such requests through §N and refuse them there, citing FR-1. |
@@ -199,11 +199,11 @@ Everything below crosses, brushes, or props open the line. Ruled `KEEP` / `CUT` 
 |---|---|---|
 | `stats` module (PERIPHERAL), `stats.rollup` job, `internal/stats/*` | **KEEP** | Alert hygiene is the ethical counterweight (memo §6.1). Keeping it PERIPHERAL is correct. |
 | `alert_quality_daily` — keyed `(org_id, day, cluster_key, alertname)`, no user column | **KEEP** | Subject = an alertname. The comment *"per-person response metrics are unrepresentable in this schema by construction"* is the doctrine already working. |
-| `alert_quality_daily.acked_occurrences`; `getAlertQualityStats` sort key `ack_rate` | **KEEP** | Ack **rate per alertname** is a fact about the alert — *did anyone ever care about this rule?* — not about a person. The openapi framing (*"finds the ones nobody ever acknowledges"*) is correct and should not be softened. |
+| `alert_quality_daily.acked_cases`; `getAlertQualityStats` sort key `ack_rate` | **KEEP** | Ack **rate per alertname** is a fact about the alert — *did anyone ever care about this rule?* — not about a person. The openapi framing (*"finds the ones nobody ever acknowledges"*) is correct and should not be softened. |
 | `alert_quality_daily.total_firing_seconds` | **KEEP** | Signal duration. This is the only legitimate "MTTR". |
 | Absence of any ack-latency column | **KEEP — and make it explicit** | **Add a binding clause to §D.10:** *"`alert_quality_daily` MUST NEVER gain `time_to_ack_seconds`, `acked_seconds`, `ack_latency_p50`, or any column measuring the interval between a machine event and a human action. That interval is a measure of people (SCOPE-BOUNDARY §4.14)."* |
 | `getStatsOverview` / `StatsOverviewDTO` (open/firing/acked counts, delivery health, source health) | **KEEP** | Counts of signals and of oto's own health. |
-| openapi prose: `OccurrenceDTO` description and the glossary entry — *"This is what you acknowledge and what you time for **MTTR**"* (openapi.yaml ~L28, ~L4722) | **RESHAPE** | Replace "what you time for MTTR" with *"whose **firing duration** is measured"*. The acronym imports incident-management vocabulary into the glossary, which is where vocabulary leaks start. |
+| openapi prose: `CaseDTO` description and the glossary entry — *"This is what you acknowledge and what you time for **MTTR**"* (openapi.yaml ~L28, ~L4722) | **RESHAPE** | Replace "what you time for MTTR" with *"whose **firing duration** is measured"*. The acronym imports incident-management vocabulary into the glossary, which is where vocabulary leaks start. |
 
 ### 5.5 Rulings — the module map (§I.1), where the doors are propped open
 
@@ -221,7 +221,7 @@ Everything below crosses, brushes, or props open the line. Ruled `KEEP` / `CUT` 
 
 | Element | Ruling | Detail |
 |---|---|---|
-| `alerts`, `alert_occurrences`, `alert_groups` column sets | **KEEP + guard** | **Add a binding clause to §D:** *"`alerts`, `alert_occurrences` and `alert_groups` MUST NEVER gain `assigned_to`, `assignee_id`, `owner_id`, `owner_team_id`, `watchers`, `subscriber_ids`, `incident_id`, `ticket_id`, `status_page_id`, `priority` (human-set), `sla_due_at`, or any nullable person-reference with a present-tense meaning. `acked_by` is past-tense attribution and is the ONLY person reference permitted on a signal row."* This one clause is worth more than the rest of this document, because it is the door every slippery-slope feature in §6 needs to walk through. |
+| `alerts`, `alert_cases`, `alert_groups` column sets | **KEEP + guard** | **Add a binding clause to §D:** *"`alerts`, `alert_cases` and `alert_groups` MUST NEVER gain `assigned_to`, `assignee_id`, `owner_id`, `owner_team_id`, `watchers`, `subscriber_ids`, `incident_id`, `ticket_id`, `status_page_id`, `priority` (human-set), `sla_due_at`, or any nullable person-reference with a present-tense meaning. `acked_by` is past-tense attribution and is the ONLY person reference permitted on a signal row."* This one clause is worth more than the rest of this document, because it is the door every slippery-slope feature in §6 needs to walk through. |
 | `users`, `slack_identities` | **KEEP** | Identity for attribution and for Slack button authorship. Not a directory of responsibilities. |
 | Absence of `POST /alerts/{id}/resolve` | **KEEP — and state it** | **Add to §E.1 principles:** *"There is no endpoint by which a human sets a signal's `state`. `state` is owned by Alertmanager and mirrored by oto (C2). `ack_state` is the only state axis a human may write."* Currently this is true by omission; omission is not enforcement. |
 | Silences read-only (R3), `listSilences`, `getSilence`, Slack silence deep-link button | **KEEP** | Correct, and refused for the **right** reason. **Add a cross-reference:** R3 is an H-3 (safety) refusal, not an FR-1 (scope) refusal — it is *earnable*; the FR-1 refusals in this document are not. |
@@ -330,13 +330,13 @@ consumer of incident state.*
 
 | # | Surface | What a downstream gets |
 |---|---|---|
-| **H-1** | **Stable, published identity** — `alert_key` (`ak_…`), `group_key` (`gk_…`), occurrence `(alert_id, seq)` | 128-bit, URL-safe, human-copyable, **durable across `alertmanager.yml` edits** (C3/C4). incident.io/PagerDuty/Jira can key their own records on these and the join survives config churn. This is worth more to them than anything else on the list. |
+| **H-1** | **Stable, published identity** — `alert_key` (`ak_…`), `group_key` (`gk_…`), case `(alert_id, seq)` | 128-bit, URL-safe, human-copyable, **durable across `alertmanager.yml` edits** (C3/C4). incident.io/PagerDuty/Jira can key their own records on these and the join survives config churn. This is worth more to them than anything else on the list. |
 | **H-2** | **The generic `webhook` channel** — a stable `oto.notification.v1` JSON envelope | The primary handoff. Point it at PagerDuty Events API v2, incident.io, keep, or an automation runner. R5's rule that the webhook provider gets **no Slack-specific affordances** is exactly what makes it a clean integration surface rather than a degraded Slack. AC-30 already tests this. |
 | **H-3** | **Incident tools as `Channel` providers** | A PagerDuty or incident.io provider is a *destination for a fact about a signal* — **IN by FR-1**. It is deferred by R5 (two impls in v1), not excluded. When the demand arrives, this is a provider, not a scope change. Say so out loud in the pitch: **oto pages nobody; oto tells the thing that pages.** |
-| **H-4** | **The full read API** — `listAlerts`, `listAlertEvents`, `getAlertGroupTimeline`, `listAlertOccurrences`, `listAlertNotifications`, `listDeliveries` | Keyset-paginated, PAT-authenticated, RFC 9457 errors. E.1's *"the UI has ZERO private endpoints"* is what makes the handoff possible at all: anything oto can show, a downstream can fetch. Postmortem tooling pulls the forensic record from here. |
-| **H-5** | **`getAlertRuleHistory` / `getOccurrenceRule`** — the rule `expr` and `for` **as they were at fire time**, plus version history | **This is oto's unique contribution to someone else's incident workflow.** No incident management platform has it, and it is the single most valuable artefact at postmortem time. Lead the integration story with this, not with "we also have a timeline". |
+| **H-4** | **The full read API** — `listAlerts`, `listAlertEvents`, `getAlertGroupTimeline`, `listAlertCases`, `listAlertNotifications`, `listDeliveries` | Keyset-paginated, PAT-authenticated, RFC 9457 errors. E.1's *"the UI has ZERO private endpoints"* is what makes the handoff possible at all: anything oto can show, a downstream can fetch. Postmortem tooling pulls the forensic record from here. |
+| **H-5** | **`getAlertRuleHistory` / `getCaseRule`** — the rule `expr` and `for` **as they were at fire time**, plus version history | **This is oto's unique contribution to someone else's incident workflow.** No incident management platform has it, and it is the single most valuable artefact at postmortem time. Lead the integration story with this, not with "we also have a timeline". |
 | **H-6** | **SSE with durable resume** — `streamEvents`, `Last-Event-ID`, 24h replay window | A downstream tails oto without polling and without losing events across its own restarts. |
-| **H-7** | **Stable deep links** | Every alert, occurrence and group has a permanent URL an incident record can cite. |
+| **H-7** | **Stable deep links** | Every alert, case and group has a permanent URL an incident record can cite. |
 | **H-8** | **Exactly one inbound human verb: acknowledge** | `ackAlert` with a PAT is how an incident tool tells oto *"a human has this"*. oto accepts the **receipt**; it does not manage the responder. `commentOnAlert` is the second and last inbound verb, and it is an annotation, not a state change. |
 
 ### What oto must NOT try to own

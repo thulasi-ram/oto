@@ -154,14 +154,14 @@ var settingBounds = map[SettingKey]Bound{
 	// it, because the §C.5 replay window is a property of Alertmanager's retry
 	// budget rather than of anybody's route timing.
 	KeyRefireGrace: {Min: MinRefireGraceSeconds, Max: 86400,
-		Why: "seconds, 600..86400: the floor is twice the §C.5 ingest replay window, because a re-fire inside that window is dropped as a duplicate delivery and the grace can never be reached; above a day two separate incidents merge into one occurrence and the history lies"},
+		Why: "seconds, 600..86400: the floor is twice the §C.5 ingest replay window, because a re-fire inside that window is dropped as a duplicate delivery and the grace can never be reached; above a day two separate incidents merge into one case and the history lies"},
 	KeyResolveGrace: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: must exceed the EndsAt lease Prometheus refreshes (typically 3-4 minutes) or one missed scrape looks like an expiry"},
 	// The SECOND relationship, and the one the shipped defaults used to break:
 	// keep it at or above `refire_grace`. Closing a generation freezes its thread,
 	// so a re-fire that oto classified as "the same problem coming back" still gets
 	// a brand-new root card when the generation closed first — the grace reopens
-	// the occurrence and buys nothing visible. It is not enforced as a cross-key
+	// the case and buys nothing visible. It is not enforced as a cross-key
 	// bound because a cross-key bound would reject a legal partial PATCH that
 	// merely arrives in the wrong order; the settings screen warns instead.
 	KeyGroupCloseDelay: {Min: 60, Max: 86400,

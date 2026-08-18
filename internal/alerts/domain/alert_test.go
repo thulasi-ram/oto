@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -36,11 +37,10 @@ func validAlertParams(t *testing.T) AlertParams {
 		Labels:            ls,
 		Annotations:       ann,
 		State:             StateFiring,
-		AckState:          AckStateUnacked,
 		FirstSeenAt:       t0,
 		LastSeenAt:        t0,
 		LastStateChangeAt: t0,
-		TotalOccurrences:  1,
+		TotalCases:        1,
 	}
 }
 
@@ -64,7 +64,7 @@ func TestNewAlert_RequiredFields(t *testing.T) {
 			mut:  func(p *AlertParams) { p.GeneratorURL = strings.Repeat("u", MaxGeneratorURLBytes+1) },
 			code: "max_length",
 		},
-		{name: "negative occurrence count", mut: func(p *AlertParams) { p.TotalOccurrences = -1 }, code: "min"},
+		{name: "negative case count", mut: func(p *AlertParams) { p.TotalCases = -1 }, code: "min"},
 		{name: "negative flap score", mut: func(p *AlertParams) { p.FlapScore = -0.1 }, code: "min"},
 		{
 			name: "last_seen_at before first_seen_at",
@@ -97,8 +97,7 @@ func TestNewAlert_HappyPath(t *testing.T) {
 	assert.Equal(t, "prod", a.Namespace())
 	assert.Equal(t, "checkout", a.Service())
 	assert.Equal(t, StateFiring, a.State())
-	assert.Equal(t, AckStateUnacked, a.AckState())
-	assert.False(t, a.HasOpenOccurrence())
+	assert.False(t, a.HasOpenCase())
 	assert.False(t, a.IsFlapping())
 	assert.Equal(t, p.Key, a.Key())
 	assert.Equal(t, p.Fingerprint, a.Fingerprint())
@@ -106,17 +105,29 @@ func TestNewAlert_HappyPath(t *testing.T) {
 	assert.Equal(t, clusterIDFix, a.ClusterID())
 }
 
-func TestNewAlert_UnsetAckStateDefaultsToUnacked(t *testing.T) {
-	p := validAlertParams(t)
-	p.AckState = AckState{}
-	a, err := NewAlert(p)
-	require.NoError(t, err)
-	assert.Equal(t, AckStateUnacked, a.AckState())
+// TestAlert_CarriesNoAck is the §B.1 boundary this entity had to lose.
+//
+// ⛔ AN ACK IS A RECEIPT FOR ONE FIRING EPISODE. `case_ackorder_ck` says an ack
+// cannot exist without an episode to belong to; projecting one onto the Alert,
+// which outlives every episode it has, is how a March acknowledgement
+// pre-acknowledges a September firing. The reflective assertion is the point:
+// re-adding the field is what this refuses, not a particular value of it.
+func TestAlert_CarriesNoAck(t *testing.T) {
+	for _, name := range []string{"AckState", "Acked", "AckedAt", "AckedBy", "AckedByLabel"} {
+		_, ok := reflect.TypeOf(AlertParams{}).FieldByName(name)
+		assert.False(t, ok, "AlertParams must not carry %q: ack belongs to the episode", name)
+
+		_, ok = reflect.TypeOf(AlertProjection{}).FieldByName(name)
+		assert.False(t, ok, "AlertProjection must not carry %q: ack is not projected", name)
+
+		_, ok = reflect.TypeOf(Alert{}).MethodByName(name)
+		assert.False(t, ok, "Alert must not answer %q: ask the Case", name)
+	}
 }
 
 func TestAlert_TerminalStatesAreLegalProjections(t *testing.T) {
 	// An Alert survives resolution forever: the projection carries the most
-	// recent occurrence's state when none is open.
+	// recent case's state when none is open.
 	for _, state := range []State{StateFiring, StateSuppressed, StateResolved, StateExpired} {
 		p := validAlertParams(t)
 		p.State = state
@@ -128,60 +139,40 @@ func TestAlert_TerminalStatesAreLegalProjections(t *testing.T) {
 
 // TestAlert_SnoozeIsTheThirdOrthogonalAxis — CONTEXT.md §3 and §B.8: a snoozed
 // alert is STILL FIRING and must still be rendered as firing.
+//
+// ⭐ WHAT THIS TEST ASSERTS CHANGED SHAPE, AND THE NEW SHAPE IS STRONGER. It used
+// to build an Alert carrying a snooze timestamp and check that the timestamp had
+// moved neither state nor severity. The Alert can no longer carry one at all —
+// the quiet period lives on `alert_snoozes` — so orthogonality is now structural
+// rather than something the entity has to be careful about, and what is left to
+// prove is that neither the entity nor the state enum has any way to express it.
 func TestAlert_SnoozeIsTheThirdOrthogonalAxis(t *testing.T) {
-	until := t0.Add(time.Hour)
 	p := validAlertParams(t)
 	p.State = StateFiring
-	p.AckState = AckStateAcked
-	p.SnoozedUntil = until
 
 	a, err := NewAlert(p)
 	require.NoError(t, err)
 
-	// Firing AND acked AND snoozed, all at once, all three displayable.
-	assert.Equal(t, StateFiring, a.State(), "snooze never alters state")
-	assert.Equal(t, AckStateAcked, a.AckState(), "snooze never alters ack state")
+	assert.Equal(t, StateFiring, a.State(), "snooze cannot reach state")
 	assert.Equal(t, SeverityCritical, a.Severity(), "a snoozed critical is still critical")
-	assert.True(t, a.IsSnoozedAt(t0.Add(time.Minute)))
-	assert.Equal(t, until, a.SnoozedUntil())
 
 	// State cannot express snooze at all, which is the mechanism.
 	_, err = NewState("snoozed")
 	assert.Error(t, err)
-}
 
-func TestAlert_IsSnoozedAt(t *testing.T) {
-	until := t0.Add(time.Hour)
-	p := validAlertParams(t)
-	p.SnoozedUntil = until
-	snoozed, err := NewAlert(p)
-	require.NoError(t, err)
-
-	p.SnoozedUntil = time.Time{}
-	awake, err := NewAlert(p)
-	require.NoError(t, err)
-
-	tests := []struct {
-		name string
-		a    Alert
-		now  time.Time
-		want bool
-	}{
-		{name: "before the wake-up", a: snoozed, now: until.Add(-time.Nanosecond), want: true},
-		{name: "exactly at the wake-up", a: snoozed, now: until},
-		{name: "after the wake-up", a: snoozed, now: until.Add(time.Hour)},
-		{name: "never snoozed", a: awake, now: t0},
+	// Nor can the constructor input, the projection, or the entity: there is no
+	// field to set and no accessor to read. `AlertParams` is the rehydration
+	// shape, so a snooze column reappearing on `alerts` would have to appear here
+	// first — which is what makes this reflective check the tripwire rather than a
+	// restatement of the compiler's job.
+	for _, shape := range []any{AlertParams{}, AlertProjection{}, Alert{}} {
+		ty := reflect.TypeOf(shape)
+		for i := range ty.NumField() {
+			name := ty.Field(i).Name
+			assert.NotContains(t, strings.ToLower(name), "snooz",
+				"%s must carry no snooze field: the row is the record", ty.Name())
+		}
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, tc.a.IsSnoozedAt(tc.now))
-		})
-	}
-
-	// The instant is a PARAMETER: the same Alert answers differently for
-	// different clock readings, and the domain never calls time.Now().
-	assert.True(t, snoozed.IsSnoozedAt(t0))
-	assert.False(t, snoozed.IsSnoozedAt(t0.Add(2*time.Hour)))
 }
 
 // TestAlert_Materially is §B.3 T2: only a MATERIAL change deserves an
@@ -258,25 +249,20 @@ func TestAlert_Project(t *testing.T) {
 	a, err := NewAlert(validAlertParams(t))
 	require.NoError(t, err)
 
-	occ := occID
-	until := t0.Add(2 * time.Hour)
+	ac := caseID
 	next, err := a.Project(AlertProjection{
-		State:               StateResolved,
-		AckState:            AckStateAcked,
-		CurrentOccurrenceID: &occ,
-		SnoozedUntil:        &until,
-		LastSeenAt:          t0.Add(time.Hour),
-		LastStateChangeAt:   t0.Add(time.Hour),
-		TotalOccurrences:    9,
+		State:             StateResolved,
+		CurrentCaseID:     &ac,
+		LastSeenAt:        t0.Add(time.Hour),
+		LastStateChangeAt: t0.Add(time.Hour),
+		TotalCases:        9,
 	})
 	require.NoError(t, err)
 
 	assert.Equal(t, StateResolved, next.State())
-	assert.Equal(t, AckStateAcked, next.AckState())
-	assert.Equal(t, occ, next.CurrentOccurrenceID())
-	assert.True(t, next.HasOpenOccurrence())
-	assert.Equal(t, until, next.SnoozedUntil())
-	assert.Equal(t, 9, next.TotalOccurrences())
+	assert.Equal(t, ac, next.CurrentCaseID())
+	assert.True(t, next.HasOpenCase())
+	assert.Equal(t, 9, next.TotalCases())
 
 	// Identity and first sighting never move.
 	assert.Equal(t, a.ID(), next.ID())
@@ -284,19 +270,16 @@ func TestAlert_Project(t *testing.T) {
 	assert.Equal(t, a.FirstSeenAt(), next.FirstSeenAt())
 	assert.Equal(t, StateFiring, a.State(), "the receiver is untouched")
 
-	// Nil pointers mean "no current occurrence" and "awake".
+	// Nil pointers mean "no current case" and "awake".
 	cleared, err := next.Project(AlertProjection{
 		State:             StateExpired,
-		AckState:          AckStateUnacked,
 		LastSeenAt:        t0.Add(time.Hour),
 		LastStateChangeAt: t0.Add(time.Hour),
-		TotalOccurrences:  9,
+		TotalCases:        9,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, uuid.Nil, cleared.CurrentOccurrenceID())
-	assert.False(t, cleared.HasOpenOccurrence())
-	assert.True(t, cleared.SnoozedUntil().IsZero())
-	assert.False(t, cleared.IsSnoozedAt(t0))
+	assert.Equal(t, uuid.Nil, cleared.CurrentCaseID())
+	assert.False(t, cleared.HasOpenCase())
 }
 
 func TestAlert_ProjectReProvesInvariants(t *testing.T) {

@@ -42,6 +42,7 @@ import { EmptyState, ErrorState, PageEmptyState, TableSkeleton } from "~/compone
 import { count as fmtCount } from "~/lib/format";
 import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFeed";
 import { AlertTable } from "~/features/alerts/AlertTable";
+import { AlertTabs, summariseQuiet, type QuietSummary } from "~/features/alerts/AlertTabs";
 import { FilterBar } from "~/features/alerts/FilterBar";
 import { GroupedAlerts } from "~/features/alerts/GroupedAlerts";
 import {
@@ -50,15 +51,35 @@ import {
   compileRollupFilters,
   filtersFromSearch,
   isExpiredOnly,
+  isQuietTab,
   isUnfiltered,
+  quietBadgeFilters,
   searchFromFilters,
   withMatcher,
   withRollupBucket,
+  withTab,
   type AlertFilters,
+  type AlertTab,
 } from "~/features/alerts/filters";
 
 const PAGE_SIZE = 100;
 const BUCKET_PAGE_SIZE = 100;
+
+/**
+ * How many quiet alerts the **Quiet** badge will count before it stops counting
+ * and says `200+`.
+ *
+ * ⭐ IT IS BOUNDED BECAUSE THE BADGE IS NOT THE LIST. The count exists so an
+ * operator can see at a glance that something live is being held back; it is not
+ * a report, and paging an org's entire snooze history to render a number in a tab
+ * would spend a request budget on a digit. Where the cap bites, the badge reads
+ * `200+` — the same promise the org-wide snooze banner makes: it may understate
+ * how many holds are in force, it may never claim a total it did not see.
+ *
+ * The 30-day maximum is what makes this bound safe in practice: a snooze cannot
+ * accumulate forever, so the live set is small by construction.
+ */
+const QUIET_BADGE_LIMIT = 200;
 
 /** One shared empty set, so "nothing is held" is stable by reference. */
 const NOTHING_HELD: ReadonlySet<string> = new Set<string>();
@@ -145,6 +166,62 @@ export default function AlertsRoute() {
 
   const alerts = listFeed.rows;
   const buckets = bucketFeed.rows;
+
+  /* ---- the Quiet tab's badge ---------------------------------------------- */
+
+  /**
+   * ⭐⭐ THE BADGE IS ITS OWN BOUNDED REQUEST, AND IT IS NOT THE LIST QUERY.
+   *
+   * Splitting snoozed alerts onto their own tab is only safe if the tab says how
+   * many are behind it and how alive they are (`AlertTabs` argues this at
+   * length). Neither of the two queries above can answer that:
+   *
+   *   - the flat list is on ONE tab at a time, so on the main tab it has never
+   *     seen a quiet alert, and on the Quiet tab it holds however many pages the
+   *     operator has pressed "Load more" for — a running total, not a total;
+   *   - the roll-up answers in buckets and would need summing across its own
+   *     pagination to produce one number, which is the client-side-aggregate
+   *     mistake this screen was rewritten to stop making.
+   *
+   * So it is one small request of its own, capped, carrying the operator's whole
+   * filter set (`quietBadgeFilters`) so the number promises exactly what the tab
+   * will contain. It rides the same `["alerts"]` cache prefix, so a snooze — or
+   * its expiry arriving over SSE — refreshes the badge with everything else.
+   */
+  const quietCompiled = createMemo(() =>
+    compileFilters(quietBadgeFilters(filters()), QUIET_BADGE_LIMIT, null),
+  );
+
+  const quietCount = useQuery(() => ({
+    queryKey: qk.alerts.list(quietCompiled().query),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      listAlerts(quietCompiled().query, {}, { signal }),
+    enabled: quietCompiled().ok,
+    placeholderData: keepPrevious,
+  }));
+
+  /** `null` until the count is known: the tab renders bare rather than "(0)". */
+  const quiet = createMemo<QuietSummary | null>(() => {
+    const envelope = quietCount.data;
+    if (envelope === undefined) return null;
+    return summariseQuiet(envelope.data, envelope.page.has_more === true);
+  });
+
+  const setTab = (tab: AlertTab): void => {
+    setWentQuiet(null);
+    setFilters(withTab(filters(), tab));
+  };
+
+  /**
+   * The alert the operator has just snoozed, if any — so the screen can say
+   * where its row went.
+   *
+   * ⛔ A DISAPPEARING ROW IS NOT A RESULT. Snoozing from the main tab removes the
+   * row from the list it was snoozed on, which is correct and is also exactly
+   * what a failed request looks like from the operator's chair. The sentence
+   * below is what makes the two distinguishable, and it carries the way back.
+   */
+  const [wentQuiet, setWentQuiet] = createSignal<string | null>(null);
 
   /* ---- inserts do not move the list under the operator (§0.5) ------------ */
 
@@ -447,6 +524,15 @@ export default function AlertsRoute() {
           }
           partialMatchEnabled={session.me()?.search?.partial_match_enabled}
         />
+
+        {/* ⛔ THE TABS SIT BELOW THE FILTERS, NOT BESIDE THEM, AND THE ORDER IS
+            THE ARGUMENT. The filters narrow both tabs identically — the Quiet
+            badge is counted under the same filter set — so they scope the tabs
+            rather than the other way round. Putting the tabs above would read as
+            two independent screens that happen to share a toolbar. */}
+        <div class="flex items-center border-b border-line px-md py-1.5">
+          <AlertTabs tab={filters().tab} onChange={setTab} quiet={quiet()} />
+        </div>
       </div>
 
       {/* ⛔ A STRIP, NOT A SECOND CHROME BAR. This was `h-14`, holding one 12 px
@@ -478,6 +564,25 @@ export default function AlertsRoute() {
           >
             {fmtCount(pending())} new
           </Button>
+        </Show>
+
+        {/* ⭐ WHERE THE ROW WENT. It is spoken inside the strip's existing polite
+            region rather than as a toast, for the reason `AppShell` records: a
+            message about what just happened to the screen must not be able to
+            expire before it is read. It clears on the next tab change, and the
+            button is the way back rather than a second copy of the tab. */}
+        <Show when={wentQuiet()}>
+          {(name) => (
+            <span class="flex items-center gap-2 text-body text-ink-muted">
+              <span>
+                oto is now quiet about <span class="text-ink">{name()}</span>. It is still firing —
+                its row moved to Quiet.
+              </span>
+              <Button variant="secondary" size="sm" onClick={() => setTab("quiet")}>
+                Show me
+              </Button>
+            </span>
+          )}
         </Show>
       </header>
 
@@ -511,15 +616,21 @@ export default function AlertsRoute() {
             <Match when={buckets().length === 0}>
               <PageEmptyState
                 motif="kumo"
-                title="No alerts match these filters, so there is nothing to group."
-                body="The buckets are computed from the same filtered set as the list. An empty roll-up means an empty list, not a grouping problem."
+                title={
+                  isQuietTab(filters())
+                    ? "Nothing is quiet, so there is nothing to group."
+                    : "No alerts match these filters, so there is nothing to group."
+                }
+                body="The buckets are computed from the same filtered set as the list, on the same tab. An empty roll-up means an empty list, not a grouping problem."
                 action={
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => setFilters(DEFAULT_FILTERS)}
+                    onClick={() =>
+                      isQuietTab(filters()) ? setTab("active") : setFilters(DEFAULT_FILTERS)
+                    }
                   >
-                    Clear filters
+                    {isQuietTab(filters()) ? "Back to alerts" : "Clear filters"}
                   </Button>
                 }
               />
@@ -552,6 +663,24 @@ export default function AlertsRoute() {
             be asked first. */}
         <Match when={rows().length === 0}>
           <Switch>
+            {/* ⭐ FOUR EMPTY LISTS NOW, AND THE NEW ONE IS THE GOOD VERSION OF
+                THIS SCREEN. "Nothing is quiet" is not "nothing matched" and is
+                certainly not "nothing has fired" — it means oto is telling you
+                about everything it knows, which is the state this tab exists to
+                let somebody confirm. It is asked FIRST because it is true
+                regardless of what else is filtering. */}
+            <Match when={isQuietTab(filters())}>
+              <PageEmptyState
+                motif="kumo"
+                title="oto is not holding anything back."
+                body="Nothing matching this view is snoozed, so every alert oto knows about is on the main tab. A snooze always expires — at most thirty days — so this tab empties itself."
+                action={
+                  <Button variant="secondary" size="sm" onClick={() => setTab("active")}>
+                    Back to alerts
+                  </Button>
+                }
+              />
+            </Match>
             <Match when={isUnfiltered(filters())}>
               <PageEmptyState
                 motif="kumo"
@@ -589,10 +718,11 @@ export default function AlertsRoute() {
         <Match when={true}>
           <AlertTable
             alerts={rows()}
-            snoozedKnown={filters().snoozed}
+            quiet={isQuietTab(filters())}
             rules={rulesById()}
             rulesPending={rules.isFetching}
             onFilterLabel={onFilterLabel}
+            onSnoozed={(a) => setWentQuiet(a.alertname)}
             footer={
               <Footer
                 hasMore={hasMore()}

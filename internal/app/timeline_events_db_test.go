@@ -44,7 +44,7 @@ import (
 // the one `container.go` injects, not a stand-in for it.
 //
 // ⚠️ WHAT EACH TEST DRIVES IS THE MOMENT, NOT THE METHOD. AC-16 is a claim about
-// when a row appears — "when a rule's threshold changes between occurrences" — so
+// when a row appears — "when a rule's threshold changes between cases" — so
 // the drift test edits a threshold between two captures of the same rule rather
 // than asserting that a recorder called with a drift event writes one.
 
@@ -58,7 +58,7 @@ type timelineRig struct {
 	scope    db.TenantScope
 	sourceID uuid.UUID
 	alertID  uuid.UUID
-	occID    uuid.UUID
+	caseID   uuid.UUID
 
 	recorder *timelineRecorder
 	rules    *rulesservice.Service
@@ -74,7 +74,7 @@ func newTimelineRig(t *testing.T) *timelineRig {
 	source := h.Source(org, cluster)
 	group := h.Group(org, source, cluster)
 	alert := h.Alert(org, cluster)
-	occ := h.Occurrence(alert, group)
+	ac := h.Case(alert, group)
 
 	r := &timelineRig{
 		h: h,
@@ -87,7 +87,7 @@ func newTimelineRig(t *testing.T) *timelineRig {
 		scope:    org.Scope,
 		sourceID: source.ID,
 		alertID:  alert.ID,
-		occID:    occ.ID,
+		caseID:   ac.ID,
 		lookup:   &stubRuleLookup{},
 	}
 
@@ -95,15 +95,15 @@ func newTimelineRig(t *testing.T) *timelineRig {
 	// `AppendTimelineEvent`, and what it has to satisfy — the closed enum, the C.8
 	// key claim, ev_subject_ck, ev_summary_ck — is enforced below it, in SQL.
 	alerts, err := alertsservice.New(alertsservice.Deps{
-		Alerts:      alertsrepo.NewAlertRepository(h.Pool, r.clk, false),
-		Occurrences: alertsrepo.NewOccurrenceRepository(h.Pool),
-		Events:      alertsrepo.NewEventRepository(h.Pool, r.clk),
-		Snoozes:     alertsrepo.NewSnoozeRepository(h.Pool, r.clk),
-		Tx:          alertsrepo.NewTxRunner(h.Pool),
-		AlertBatch:  alertsrepo.NewAlertRepository(h.Pool, r.clk, false),
-		OccBatch:    alertsrepo.NewOccurrenceRepository(h.Pool),
-		Clock:       r.clk,
-		Logger:      quietLogger(),
+		Alerts:     alertsrepo.NewAlertRepository(h.Pool, r.clk, false),
+		Cases:      alertsrepo.NewCaseRepository(h.Pool),
+		Events:     alertsrepo.NewEventRepository(h.Pool, r.clk),
+		Snoozes:    alertsrepo.NewSnoozeRepository(h.Pool, r.clk),
+		Tx:         alertsrepo.NewTxRunner(h.Pool),
+		AlertBatch: alertsrepo.NewAlertRepository(h.Pool, r.clk, false),
+		OccBatch:   alertsrepo.NewCaseRepository(h.Pool),
+		Clock:      r.clk,
+		Logger:     quietLogger(),
 	})
 	require.NoError(t, err)
 
@@ -122,14 +122,14 @@ func newTimelineRig(t *testing.T) *timelineRig {
 	return r
 }
 
-// capture drives one rule capture for this rig's occurrence, the way the
+// capture drives one rule capture for this rig's case, the way the
 // `prom.rule` enricher drives it in production.
 func (r *timelineRig) capture(t *testing.T) rulesservice.Capture {
 	t.Helper()
 	c, err := r.rules.Capture(context.Background(), r.scope, rulesservice.CaptureRequest{
 		SourceID:     r.sourceID,
 		AlertID:      r.alertID,
-		OccurrenceID: r.occID,
+		CaseID:       r.caseID,
 		Labels:       map[string]string{"alertname": "HighErrorRate", "severity": "critical"},
 		Annotations:  map[string]string{"summary": "error rate high"},
 		GeneratorURL: "https://prom.internal/graph?g0.expr=up+%3D%3D+0&g0.tab=1",
@@ -138,7 +138,7 @@ func (r *timelineRig) capture(t *testing.T) rulesservice.Capture {
 	return c
 }
 
-// enrichment builds the pipeline over this rig's occurrence with one enricher.
+// enrichment builds the pipeline over this rig's case with one enricher.
 func (r *timelineRig) enrichment(t *testing.T, e enrichdomain.Enricher) *enrichservice.Service {
 	t.Helper()
 
@@ -148,7 +148,7 @@ func (r *timelineRig) enrichment(t *testing.T, e enrichdomain.Enricher) *enrichs
 	svc, err := enrichservice.New(enrichservice.Options{
 		Registry: registry,
 		Repo:     enrichrepo.NewEnrichmentRepository(r.h.Pool),
-		Subjects: stubSubjects{alertID: r.alertID, occurrenceID: r.occID},
+		Subjects: stubSubjects{alertID: r.alertID, caseID: r.caseID},
 		Events:   r.recorder,
 		Clock:    r.clk,
 		Logger:   quietLogger(),
@@ -169,7 +169,7 @@ type timelineRow struct {
 	DedupeKey  string
 }
 
-// events reads every timeline row for this rig's occurrence, in timeline order.
+// events reads every timeline row for this rig's case, in timeline order.
 func (r *timelineRig) events(t *testing.T) []timelineRow {
 	t.Helper()
 
@@ -177,8 +177,8 @@ func (r *timelineRig) events(t *testing.T) []timelineRow {
 		SELECT type, actor_kind, coalesce(actor_id, ''), coalesce(actor_label, ''),
 		       summary, payload, alert_id, coalesce(dedupe_key, '')
 		  FROM alert_events
-		 WHERE occurrence_id = $1
-		 ORDER BY recorded_at, id`, r.occID)
+		 WHERE case_id = $1
+		 ORDER BY recorded_at, id`, r.caseID)
 	require.NoError(t, err)
 	defer rows.Close()
 
@@ -262,25 +262,25 @@ func recoveredRule(expr string, forSeconds float64) rulesdomain.Recovery {
 // services; what these tests are about is what the pipeline NARRATES, and the
 // subject only has to be well-formed for that.
 type stubSubjects struct {
-	alertID      uuid.UUID
-	occurrenceID uuid.UUID
+	alertID uuid.UUID
+	caseID  uuid.UUID
 }
 
 func (s stubSubjects) LoadSubject(
-	_ context.Context, scope db.TenantScope, occurrenceID uuid.UUID,
+	_ context.Context, scope db.TenantScope, caseID uuid.UUID,
 ) (enrichservice.Loaded, error) {
 	return enrichservice.Loaded{
 		Subject: enrichdomain.Subject{
 			OrgID:       scope.OrgID().String(),
-			SubjectKind: enrichdomain.SubjectOccurrence,
-			SubjectID:   occurrenceID.String(),
+			SubjectKind: enrichdomain.SubjectCase,
+			SubjectID:   caseID.String(),
 			Alert: enrichdomain.AlertSnapshot{
 				ID:        s.alertID.String(),
 				AlertName: "HighErrorRate",
 				Severity:  "critical",
 			},
-			Occurrence: enrichdomain.OccurrenceSnapshot{
-				ID: occurrenceID.String(), Seq: 1, State: "firing",
+			Case: enrichdomain.CaseSnapshot{
+				ID: caseID.String(), Seq: 1, State: "firing",
 			},
 		},
 		AlertID: s.alertID,
@@ -329,10 +329,10 @@ func TestRuleCaptureWritesTheSnapshotEvent(t *testing.T) {
 	require.NotEmpty(t, ev.DedupeKey, "C.8: the append is idempotent or it is not an append")
 }
 
-// ⭐⭐ TestThresholdChangeBetweenOccurrencesWritesTheDiff IS ACCEPTANCE CRITERION
+// ⭐⭐ TestThresholdChangeBetweenCasesWritesTheDiff IS ACCEPTANCE CRITERION
 // 16, or the half of it that lives in this repository's timeline:
 //
-//	"When a rule's threshold changes between occurrences, the alert timeline shows
+//	"When a rule's threshold changes between cases, the alert timeline shows
 //	 `rule.definition_changed` with a diff, and Slack receives a `rule_changed`
 //	 thread reply — regardless of channel verbosity."
 //
@@ -342,7 +342,7 @@ func TestRuleCaptureWritesTheSnapshotEvent(t *testing.T) {
 // not carry the two expressions is a timeline entry that says "something changed"
 // and leaves the operator to go and find out what, which is the product's headline
 // claim reduced to a notification.
-func TestThresholdChangeBetweenOccurrencesWritesTheDiff(t *testing.T) {
+func TestThresholdChangeBetweenCasesWritesTheDiff(t *testing.T) {
 	t.Parallel()
 
 	r := newTimelineRig(t)
@@ -428,8 +428,8 @@ func TestEnrichmentRunWritesTheCompletedEvent(t *testing.T) {
 	})
 
 	res, err := svc.Run(context.Background(), r.scope, enrichservice.RunRequest{
-		OccurrenceID: r.occID,
-		Phase:        enrichdomain.PhaseInline,
+		CaseID: r.caseID,
+		Phase:  enrichdomain.PhaseInline,
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, res.Succeeded())
@@ -459,8 +459,8 @@ func TestEnrichmentFailureWritesTheFailedEvent(t *testing.T) {
 	})
 
 	_, err := svc.Run(context.Background(), r.scope, enrichservice.RunRequest{
-		OccurrenceID: r.occID,
-		Phase:        enrichdomain.PhaseInline,
+		CaseID: r.caseID,
+		Phase:  enrichdomain.PhaseInline,
 	})
 	require.NoError(t, err, "an enricher that fails is a recorded result, never a failed run")
 

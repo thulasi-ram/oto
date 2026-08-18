@@ -280,7 +280,6 @@ func alertRefDTO(a alertdomain.Alert) AlertRefDTO {
 		Namespace:  strPtr(a.Namespace()),
 		ClusterKey: a.ClusterKey().String(),
 		State:      a.State().String(),
-		AckState:   a.AckState().String(),
 	}
 }
 

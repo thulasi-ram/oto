@@ -13,7 +13,7 @@ import (
 //   - validation — the caller can fix it by changing the request.
 //   - conflict — the caller must re-read and retry.
 //   - precondition — the request is valid but the entity is in the wrong state
-//     (acknowledging a resolved AlertOccurrence, for example).
+//     (acknowledging a resolved AlertCase, for example).
 //   - upstream — nothing the caller did is wrong; a dead Alertmanager is never
 //     the caller's fault.
 //   - unavailable — oto's own backpressure. On the ingest path this is the ONLY
@@ -191,8 +191,8 @@ func NotFound(code, message string) *Error { return New(KindNotFound, code, mess
 func Conflict(code, message string) *Error { return New(KindConflict, code, message) }
 
 // Precondition reports that the request is valid but the entity is in the wrong
-// state — an illegal AlertOccurrence lifecycle transition, or acknowledging an
-// occurrence that has already resolved.
+// state — an illegal AlertCase lifecycle transition, or acknowledging an
+// case that has already resolved.
 func Precondition(code, message string) *Error { return New(KindPrecondition, code, message) }
 
 // TooLarge reports a body over the layer's hard bound. On the ingest path this is

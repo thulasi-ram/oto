@@ -127,7 +127,7 @@ func previewReason(raw string) (domain.Reason, error) {
 	return r, nil
 }
 
-// resolveSubject turns exactly one of alert_id / occurrence_id / group_id into
+// resolveSubject turns exactly one of alert_id / case_id / group_id into
 // the group generation whose card would carry the fact.
 //
 // Routing is about the GROUP: the thing being routed is the group's card, and
@@ -137,7 +137,7 @@ func (rt *Router) resolveSubject(
 	ctx context.Context, scope db.TenantScope, dto PolicyPreviewRequest,
 ) (uuid.UUID, error) {
 	supplied := 0
-	for _, p := range []*uuid.UUID{dto.AlertID, dto.OccurrenceID, dto.GroupID} {
+	for _, p := range []*uuid.UUID{dto.AlertID, dto.CaseID, dto.GroupID} {
 		if p != nil && *p != uuid.Nil {
 			supplied++
 		}
@@ -146,7 +146,7 @@ func (rt *Router) resolveSubject(
 		return uuid.Nil, errs.Validation("validation_failed", "1 field failed validation.",
 			errs.Violation{
 				Field: "group_id", Code: "required",
-				Message: "supply exactly one of alert_id, occurrence_id or group_id",
+				Message: "supply exactly one of alert_id, case_id or group_id",
 			})
 	}
 
@@ -166,7 +166,7 @@ func (rt *Router) resolveSubject(
 	if dto.AlertID != nil {
 		return rt.subjects.GroupIDForAlert(ctx, scope, *dto.AlertID)
 	}
-	return rt.subjects.GroupIDForOccurrence(ctx, scope, *dto.OccurrenceID)
+	return rt.subjects.GroupIDForCase(ctx, scope, *dto.CaseID)
 }
 
 // buildView projects the subject into the renderer's read model.
@@ -184,13 +184,13 @@ func (rt *Router) buildView(
 	}
 	return rt.views.Build(ctx, scope, service.ViewRequest{
 		Notification: domain.Notification{
-			OrgID:        scope.OrgID(),
-			SubjectKind:  domain.SubjectAlertGroup,
-			SubjectID:    groupID,
-			GroupID:      groupID,
-			AlertID:      dto.AlertID,
-			OccurrenceID: dto.OccurrenceID,
-			Reason:       reason,
+			OrgID:       scope.OrgID(),
+			SubjectKind: domain.SubjectAlertGroup,
+			SubjectID:   groupID,
+			GroupID:     groupID,
+			AlertID:     dto.AlertID,
+			CaseID:      dto.CaseID,
+			Reason:      reason,
 		},
 	})
 }

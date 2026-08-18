@@ -17,7 +17,7 @@ import (
 // an unbounded one that holds a transaction open.
 const DefaultSweepLimit = 200
 
-// ReapResult is the audit of one `occurrence.reap` tick.
+// ReapResult is the audit of one `case.reap` tick.
 type ReapResult struct {
 	// Considered is how many open episodes were past source_ends_at +
 	// resolve_grace.
@@ -29,7 +29,7 @@ type ReapResult struct {
 	// `source_degraded_holds` counter of §B.4, and it should be exported.
 	Held int
 	// HeldSources names the sources responsible, so one `source.unreachable`
-	// banner can be raised per source rather than one per occurrence.
+	// banner can be raised per source rather than one per case.
 	HeldSources []uuid.UUID
 	// Superseded is how many candidates were ABANDONED because the row had moved
 	// since the sweep read it: somebody else ended the episode, or a fresh
@@ -42,7 +42,7 @@ type ReapResult struct {
 	Superseded int
 }
 
-// Reap is the `occurrence.reap` sweep — SPEC §B.3 T6.
+// Reap is the `case.reap` sweep — SPEC §B.3 T6.
 //
 // ⭐⭐ THE TWO RULES THIS METHOD EXISTS TO ENFORCE, and they are the highest-value
 // correctness rules in the system:
@@ -55,7 +55,7 @@ type ReapResult struct {
 //     `resolve_reason='timeout'`, and the assertion below refuses anything else.
 //
 //  2. THE REAPER IS BLOCKED WHILE THE SOURCE IS NOT HEALTHY (§B.4). Losing sight
-//     of an alert is not the same as the alert resolving. An occurrence whose
+//     of an alert is not the same as the alert resolving. A case whose
 //     AlertSource cannot be PROVEN healthy is HELD in its current state —
 //     including when the health port is not wired at all, when the source cannot
 //     be resolved, and when the health lookup itself fails. Every one of those is
@@ -78,7 +78,7 @@ func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (Re
 	now := s.Now()
 	before := now.Add(-cfg.ResolveGrace)
 
-	candidates, err := s.occurrences.ReapCandidates(ctx, scope, before, limit)
+	candidates, err := s.cases.ReapCandidates(ctx, scope, before, limit)
 	if err != nil {
 		return ReapResult{}, err
 	}
@@ -95,8 +95,8 @@ func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (Re
 	res := ReapResult{Considered: len(candidates)}
 	heldSources := map[uuid.UUID]struct{}{}
 
-	for _, occ := range candidates {
-		sourceID, known := sources[occ.ID()]
+	for _, ac := range candidates {
+		sourceID, known := sources[ac.ID()]
 		if !known || !healthy[sourceID] {
 			res.Held++
 			if known {
@@ -104,12 +104,12 @@ func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (Re
 			}
 			continue
 		}
-		expired, err := s.expire(ctx, scope, occ, now, cfg)
+		expired, err := s.expire(ctx, scope, ac, now, cfg)
 		if err != nil {
-			// One occurrence failing must not cost the rest of the sweep; the
+			// One case failing must not cost the rest of the sweep; the
 			// next tick will see it again in sixty seconds.
-			s.log.WarnContext(ctx, "alerts: could not expire occurrence",
-				"occurrence_id", occ.ID(), "error", err)
+			s.log.WarnContext(ctx, "alerts: could not expire case",
+				"case_id", ac.ID(), "error", err)
 			continue
 		}
 		if expired {
@@ -123,17 +123,17 @@ func (s *Service) Reap(ctx context.Context, scope db.TenantScope, limit int) (Re
 		res.HeldSources = append(res.HeldSources, src)
 	}
 	if res.Held > 0 {
-		s.log.InfoContext(ctx, "alerts: reaper held occurrences, source not proven healthy",
+		s.log.InfoContext(ctx, "alerts: reaper held cases, source not proven healthy",
 			"org_id", scope.OrgID(), "held", res.Held, "sources", len(res.HeldSources))
 	}
 	return res, nil
 }
 
-// resolveSources maps every candidate onto its owning AlertSource. An occurrence
+// resolveSources maps every candidate onto its owning AlertSource. A case
 // absent from the result is one whose source could not be determined, and the
 // caller reads that as "cannot prove healthy".
 func (s *Service) resolveSources(
-	ctx context.Context, scope db.TenantScope, candidates []domain.Occurrence,
+	ctx context.Context, scope db.TenantScope, candidates []domain.Case,
 ) (map[uuid.UUID]uuid.UUID, error) {
 	if s.occSources == nil {
 		return map[uuid.UUID]uuid.UUID{}, nil
@@ -154,7 +154,7 @@ func (s *Service) resolveSources(
 //
 // ABSENCE FROM THE RESULT IS "NO". An unwired port, a nil source id, a failed
 // lookup and a source the batch simply did not return are all the same answer —
-// "oto does not know" — and the caller holds every occurrence they own. That is
+// "oto does not know" — and the caller holds every case they own. That is
 // why a failed lookup is reported by returning nothing rather than by an error:
 // not knowing holds candidates, it must never abort the sweep.
 func (s *Service) healthBySource(
@@ -187,7 +187,7 @@ func (s *Service) healthBySource(
 	return healthy
 }
 
-// expire moves ONE occurrence through T6, in its own transaction so that a
+// expire moves ONE case through T6, in its own transaction so that a
 // single failure cannot roll back a whole sweep.
 //
 // `candidate` is the STALE SNAPSHOT the sweep scan returned, and it is used for
@@ -199,9 +199,9 @@ func (s *Service) healthBySource(
 // had already moved, or the fresh row no longer justifies an expiry. That is a
 // normal outcome and the caller counts it as Superseded.
 //
-// ⚠️ LOCK ORDER: THIS TRANSACTION TAKES `alert_occurrences` BEFORE `alerts`.
+// ⚠️ LOCK ORDER: THIS TRANSACTION TAKES `alert_cases` BEFORE `alerts`.
 // `Service.observe` (lifecycle.go) takes them the OTHER WAY ROUND — `UpsertBatch`
-// locks the alert row before the occurrence is even read. The two orders form a
+// locks the alert row before the case is even read. The two orders form a
 // cycle, and today it is survivable only because neither side WAITS while holding
 // the other's row for long: the reaper's alerts write is the last statement in a
 // short transaction, and Postgres breaks a genuine cycle with a deadlock error
@@ -213,7 +213,7 @@ func (s *Service) healthBySource(
 // both comments. The correctness of this file rests on the compare-and-set above,
 // not on a lock, precisely so that no lock has to be held across the sweep.
 func (s *Service) expire(
-	ctx context.Context, scope db.TenantScope, candidate domain.Occurrence, now time.Time, cfg Settings,
+	ctx context.Context, scope db.TenantScope, candidate domain.Case, now time.Time, cfg Settings,
 ) (bool, error) {
 	actor, err := domain.SystemActor(domain.ActorReaper)
 	if err != nil {
@@ -228,7 +228,7 @@ func (s *Service) expire(
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
 		// ⭐ THE RE-READ. The candidate came from a scan that ran outside any
 		// transaction; this row is the one that will actually be overwritten.
-		fresh, err := s.occurrences.GetByID(ctx, scope, candidate.ID())
+		fresh, err := s.cases.GetByID(ctx, scope, candidate.ID())
 		if err != nil {
 			if errs.IsKind(err, errs.KindNotFound) {
 				return nil // deleted under us; there is nothing to expire
@@ -241,12 +241,12 @@ func (s *Service) expire(
 		// It interrogates THE ROW ABOUT TO BE OVERWRITTEN. The version this
 		// replaces inspected the DOMAIN RESULT — `r.To == expired` — which is
 		// vacuously true for every T6 the machine can produce and therefore
-		// guarded nothing at all: the machine had been fed a stale occurrence,
+		// guarded nothing at all: the machine had been fed a stale case,
 		// answered honestly about it, and the assertion nodded at an answer to the
 		// wrong question while `expired`/`timeout` went over a firing alert.
 		if reason := unreapable(fresh, now, cfg.ResolveGrace); reason != "" {
 			s.log.InfoContext(ctx, "alerts: reaper stood down, the row disproved the expiry",
-				"occurrence_id", fresh.ID(), "reason", reason)
+				"case_id", fresh.ID(), "reason", reason)
 			return nil
 		}
 
@@ -269,7 +269,7 @@ func (s *Service) expire(
 			}
 			return err
 		}
-		if r.To != domain.StateExpired || r.Occurrence.ResolveReason() != domain.ResolveTimeout {
+		if r.To != domain.StateExpired || r.Case.ResolveReason() != domain.ResolveTimeout {
 			return errs.Internal("reaper_would_fabricate_resolution",
 				errsInvariant("the reaper produced "+r.To.String()+"; only expired/timeout is permitted"))
 		}
@@ -280,10 +280,10 @@ func (s *Service) expire(
 		// The precondition is `fresh`'s `state_version`, and `Observe` bumps that
 		// too — so a repeat webhook landing in the microseconds between the re-read
 		// above and this UPDATE loses the reaper its compare-and-set even though it
-		// moved no state letter. That is the intended reading: an occurrence oto has
+		// moved no state letter. That is the intended reading: a case oto has
 		// heard about since it read the row is not one oto has stopped hearing about.
 		trans := transitionOf(r, domain.SuppressedBy{})
-		if err := s.occurrences.Transition(ctx, scope, r.Occurrence.ID(), trans); err != nil {
+		if err := s.cases.Transition(ctx, scope, r.Case.ID(), trans); err != nil {
 			// ⛔ ABANDON, never re-decide. The reaper is the one caller that must
 			// NOT retry a lost compare-and-set: every reason it can lose one is a
 			// reason not to expire — somebody ended the episode, or something was
@@ -292,23 +292,23 @@ func (s *Service) expire(
 			// strictly safer place to reconsider than a hot loop holding a verdict.
 			if errs.IsKind(err, errs.KindConflict) {
 				s.log.InfoContext(ctx, "alerts: reaper lost the compare-and-set, expiry abandoned",
-					"occurrence_id", r.Occurrence.ID())
+					"case_id", r.Case.ID())
 				return nil
 			}
 			return err
 		}
 
-		alert, err := s.alerts.GetByID(ctx, scope, r.Occurrence.AlertID())
+		alert, err := s.alerts.GetByID(ctx, scope, r.Case.AlertID())
 		if err != nil {
 			return err
 		}
-		if err := s.projectFromOccurrence(ctx, scope, alert, r.Occurrence, at, true, 0); err != nil {
+		if err := s.projectFromCase(ctx, scope, alert, r.Case, at, true, 0); err != nil {
 			return err
 		}
 		if _, err := s.appendEvents(ctx, scope, r.Events); err != nil {
 			return err
 		}
-		if err := s.publishOccurrence(ctx, scope, r.Occurrence); err != nil {
+		if err := s.publishCase(ctx, scope, r.Case); err != nil {
 			return err
 		}
 		if err := s.publishAlert(ctx, scope, alert.ID(), map[string]any{
@@ -317,11 +317,11 @@ func (s *Service) expire(
 			return err
 		}
 		if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
-			groupID:      r.Occurrence.GroupID(),
-			reason:       reasonExpired,
-			alertID:      ptr(alert.ID()),
-			occurrenceID: ptr(r.Occurrence.ID()),
-			actor:        domain.ActorReaper.String(),
+			groupID: r.Case.GroupID(),
+			reason:  reasonExpired,
+			alertID: ptr(alert.ID()),
+			caseID:  ptr(r.Case.ID()),
+			actor:   domain.ActorReaper.String(),
 		}}, nil); err != nil {
 			return err
 		}
@@ -339,17 +339,17 @@ func (s *Service) expire(
 // row itself justifies the expiry.
 //
 // It is deliberately a duplicate of the checks inside domain.Apply's T6 arm. The
-// duplication is the point: Apply answers about whatever occurrence it is handed,
+// duplication is the point: Apply answers about whatever case it is handed,
 // and the bug this guards was Apply being handed a snapshot that had stopped
 // being true. Asking the same questions of the row about to be written is the
 // only form of the question that cannot be answered about the wrong row.
-func unreapable(row domain.Occurrence, now time.Time, grace time.Duration) string {
+func unreapable(row domain.Case, now time.Time, grace time.Duration) string {
 	switch {
 	case !row.IsOpen():
 		// The loudest case: overwriting a `resolved` with `expired` replaces a
 		// fact somebody upstream stated with one oto inferred, and leaves the
 		// append-only timeline permanently disagreeing with the projection.
-		return "occurrence is already " + row.State().String()
+		return "case is already " + row.State().String()
 	case row.SourceEndsAt().IsZero():
 		return "no upstream end time"
 	case !now.After(row.SourceEndsAt().Add(grace)):
@@ -371,7 +371,8 @@ type SnoozeExpiryResult struct {
 
 // ExpireSnoozes is the 60-second `snooze.expire` sweep (§B.8.3).
 //
-// It ends every active snooze whose clock has run out, clears the projection,
+// It ends every active snooze whose clock has run out — by stamping `ended_at`
+// on the row and nothing else, because there is no projection to clear any more —
 // appends `alert.unsnoozed` with reason `expired`, and — when the alert's episode
 // is still open — enqueues `notify.evaluate(reason=unsnoozed)` so the channel is
 // told oto is speaking again.
@@ -416,9 +417,6 @@ func (s *Service) ExpireSnoozes(
 			if err != nil {
 				return err
 			}
-			if err := s.writeSnoozeProjection(ctx, scope, alert, nil); err != nil {
-				return err
-			}
 			if _, err := s.appendEvents(ctx, scope, evs); err != nil {
 				return err
 			}
@@ -453,7 +451,7 @@ type FlapResult struct {
 //
 // The score is transitions per hour over the configured window, and an Alert
 // above `flap_threshold` is MARKED flapping. Marking is the whole point:
-// occurrences still open and close normally and nothing is hidden — flapping is a
+// cases still open and close normally and nothing is hidden — flapping is a
 // VISIBLE UI state, never silent suppression. What changes is downstream, where
 // `notify.evaluate` switches to update-only mode.
 //

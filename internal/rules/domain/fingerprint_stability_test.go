@@ -18,11 +18,11 @@ import (
 //
 // `rule_fingerprint` is the whole drift mechanism (ADR 0009): "the newest
 // snapshot for this rule key has a different fingerprint than the one bound to
-// the previous occurrence". So it has exactly two ways to be wrong, and they
+// the previous case". So it has exactly two ways to be wrong, and they
 // fail in opposite directions:
 //
 //   - TOO UNSTABLE — the same rule, expressed the same way, addressed twice.
-//     Every occurrence then records a spurious `rule.definition_changed`, the
+//     Every case then records a spurious `rule.definition_changed`, the
 //     Slack thread grows a "the rule changed" reply that is a lie, and the drift
 //     signal becomes noise an operator learns to ignore.
 //   - TOO STABLE — a real edit that does not move the address. The threshold was

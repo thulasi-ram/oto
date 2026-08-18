@@ -130,7 +130,7 @@ COMMENT ON COLUMN source_health.last_reconcile_status IS 'Free-text outcome of t
 COMMENT ON COLUMN source_health.am_version IS 'Alertmanager build version from GET /api/v2/status. Gates notification_reason handling (AM >= 0.32.0).';
 COMMENT ON COLUMN source_health.send_resolved IS 'Whether matching receivers have send_resolved enabled. false means oto will only ever see firing and must expire rather than resolve. NULL = not yet observed.';
 COMMENT ON COLUMN source_health.clock_skew_ms IS 'EWMA of observed_at minus the upstream timestamp. Measured, never used to reject an event (SPEC C12).';
-COMMENT ON COLUMN source_health.divergence_count IS 'Occurrences where oto and Alertmanager disagreed on the last reconcile. The canary for every correctness bug in the system (SPEC §G.8.4).';
+COMMENT ON COLUMN source_health.divergence_count IS 'Occurrences where oto and Alertmanager disagreed on the last reconcile. The canary for every correctness bug in the system (SPEC §G.8.4).';  -- vocab:allow -- the ordinary English noun, not oto's entity: this column counts disagreements between oto and Alertmanager, and it is not about a firing episode at all.
 COMMENT ON COLUMN source_health.warnings IS 'JSON array of structured operator warnings, e.g. send_resolved_false (SPEC C15).';
 
 -- +goose Down

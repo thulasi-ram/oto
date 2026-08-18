@@ -79,7 +79,7 @@ CREATE INDEX alert_snoozes_org_idx    ON alert_snoozes (org_id, alert_id, snooze
 
 COMMENT ON TABLE  alert_snoozes IS
   'Snooze suppresses OTO OWN NOTIFICATIONS for one alert_key until a fixed time T (SPEC §B.8). It writes nothing into Alertmanager and changes nothing about the signal: a snoozed alert is still firing and is still rendered as firing. snoozed is NEVER a state and NEVER a suppression_reason; it records itself as notifications.suppressed_reason = snoozed.';
-COMMENT ON COLUMN alert_snoozes.alert_id IS 'The Alert whose notifications are quiet. Snooze is scoped to an alert_key: an occurrence is too narrow (a re-fire restores the noise) and a group is too broad (it mutes alerts nobody has seen).';
+COMMENT ON COLUMN alert_snoozes.alert_id IS 'The Alert whose notifications are quiet. Snooze is scoped to an alert_key: an occurrence is too narrow (a re-fire restores the noise) and a group is too broad (it mutes alerts nobody has seen).';  -- vocab:allow -- migration history: this file states the schema as it was at its own version, and a shipped migration is not editable. ADR 0036 renamed the entity and 00052 carries the rename.
 COMMENT ON COLUMN alert_snoozes.alert_key IS 'Denormalised alerts.alert_key so the audit trail survives the Alert row. Same shape as alerts_key_ck.';
 COMMENT ON COLUMN alert_snoozes.snoozed_at IS 'When the snooze began, on the oto clock.';
 COMMENT ON COLUMN alert_snoozes.snoozed_until IS 'NOT NULL: THERE IS NO INDEFINITE SNOOZE. Minimum 5 minutes, maximum 30 days (alert_snoozes_min_ck, alert_snoozes_max_ck). An unexpiring snooze is a mute, and mutes are how channels die.';

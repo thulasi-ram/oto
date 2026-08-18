@@ -86,10 +86,10 @@ func (v *ViewService) Build(
 ) (*NotificationView, error) {
 	n := req.Notification
 	snap, err := v.snapshots.Snapshot(ctx, scope, domain.SnapshotQuery{
-		GroupID:      n.GroupID,
-		AlertID:      n.AlertID,
-		OccurrenceID: n.OccurrenceID,
-		MaxAlerts:    v.maxAlerts,
+		GroupID:   n.GroupID,
+		AlertID:   n.AlertID,
+		CaseID:    n.CaseID,
+		MaxAlerts: v.maxAlerts,
 		// The Reason travels because it is what names the timeline entry that
 		// caused this card: without it the read model can say what the world looks
 		// like but not who moved it.
@@ -124,8 +124,8 @@ func (v *ViewService) project(snap domain.Snapshot, req ViewRequest) *Notificati
 		focus := alertView(*snap.Focus)
 		view.Focus = &focus
 	}
-	if snap.Occurrence != nil {
-		view.Occurrence = v.occurrence(snap)
+	if snap.Case != nil {
+		view.Case = v.caseView(snap)
 	}
 	if snap.Rule != nil {
 		view.Rule = ruleView(*snap.Rule)
@@ -192,7 +192,7 @@ func actorViewKind(kind string) string {
 
 // trailKinds maps `alert_events.type` onto the renderer's small closed
 // vocabulary. A type with no entry is DROPPED, never printed raw: the trail is
-// read by a human at 03:00 and `occurrence.unsuppressed` is not a sentence.
+// read by a human at 03:00 and `case.unsuppressed` is not a sentence.
 //
 // ⭐ IT IS KEYED BY THE KERNEL'S `EventType`, NOT BY TEN STRING LITERALS. Keyed by
 // string, this map was the quietest of the re-declaration sites and the one with
@@ -202,16 +202,16 @@ func actorViewKind(kind string) string {
 // field — so it is a map key like any other, and now a key that is not one of the
 // closed 36 does not compile.
 var trailKinds = map[kernel.EventType]string{
-	kernel.EventOccurrenceOpened:         "fired",
-	kernel.EventOccurrenceReopened:       "refired",
-	kernel.EventOccurrenceAcknowledged:   "acked",
-	kernel.EventOccurrenceUnacknowledged: "unacked",
-	kernel.EventOccurrenceSuppressed:     "suppressed",
-	kernel.EventOccurrenceUnsuppressed:   "unsuppressed",
-	kernel.EventOccurrenceResolved:       "resolved",
-	kernel.EventOccurrenceExpired:        "expired",
-	kernel.EventGroupStormStarted:        "storm",
-	kernel.EventGroupStormEnded:          "storm_ended",
+	kernel.EventCaseOpened:         "fired",
+	kernel.EventCaseReopened:       "refired",
+	kernel.EventCaseAcknowledged:   "acked",
+	kernel.EventCaseUnacknowledged: "unacked",
+	kernel.EventCaseSuppressed:     "suppressed",
+	kernel.EventCaseUnsuppressed:   "unsuppressed",
+	kernel.EventCaseResolved:       "resolved",
+	kernel.EventCaseExpired:        "expired",
+	kernel.EventGroupStormStarted:  "storm",
+	kernel.EventGroupStormEnded:    "storm_ended",
 	// `group.opened` and `group.closed` are oto's OWN bookkeeping about a
 	// generation, not things that happened to the signal. They are deliberately
 	// absent: a trail that says "oto opened a group" answers a question nobody
@@ -221,7 +221,7 @@ var trailKinds = map[kernel.EventType]string{
 // trail projects the group's state history onto the card's receipt.
 //
 // ⛔ CONSECUTIVE DUPLICATES COLLAPSE. A group of twelve instances that all fire
-// in one batch produces twelve `occurrence.opened` events, and a trail reading
+// in one batch produces twelve `case.opened` events, and a trail reading
 // "fired → fired → fired …" is noise wearing a history's clothes. The FIRST of
 // each run is kept, because the first is when the state actually changed.
 func trail(snap domain.Snapshot) []TrailEntry {
@@ -348,26 +348,26 @@ func alertView(a domain.AlertFacts) AlertView {
 		AlertName:         a.AlertName,
 		// The RAW upstream severity, never normalised: users filter on their own
 		// vocabulary and normalising here would destroy it.
-		Severity:         a.Severity,
-		Namespace:        a.Namespace,
-		Service:          a.Service,
-		ClusterKey:       a.ClusterKey,
-		Labels:           a.Labels,
-		Annotations:      a.Annotations,
-		GeneratorURL:     a.GeneratorURL,
-		State:            a.State,
-		AckState:         a.AckState,
-		FirstSeenAt:      a.FirstSeenAt,
-		LastSeenAt:       a.LastSeenAt,
-		TotalOccurrences: a.TotalOccurrences,
-		IsFlapping:       a.IsFlapping,
-		Value:            a.Value,
+		Severity:     a.Severity,
+		Namespace:    a.Namespace,
+		Service:      a.Service,
+		ClusterKey:   a.ClusterKey,
+		Labels:       a.Labels,
+		Annotations:  a.Annotations,
+		GeneratorURL: a.GeneratorURL,
+		State:        a.State,
+		AckState:     a.AckState,
+		FirstSeenAt:  a.FirstSeenAt,
+		LastSeenAt:   a.LastSeenAt,
+		TotalCases:   a.TotalCases,
+		IsFlapping:   a.IsFlapping,
+		Value:        a.Value,
 	}
 }
 
-func (v *ViewService) occurrence(snap domain.Snapshot) *OccurrenceView {
-	o := snap.Occurrence
-	return &OccurrenceView{
+func (v *ViewService) caseView(snap domain.Snapshot) *CaseView {
+	o := snap.Case
+	return &CaseView{
 		ID:                o.ID.String(),
 		Seq:               o.Seq,
 		State:             o.State,
@@ -497,7 +497,7 @@ func (v *ViewService) links(snap domain.Snapshot) Links {
 // is looked up in oto's own database when the click comes back.
 func (v *ViewService) actions(snap domain.Snapshot) []Action {
 	groupID := snap.Group.ID.String()
-	acked := snap.Occurrence != nil && snap.Occurrence.AckState == "acked"
+	acked := snap.Case != nil && snap.Case.AckState == "acked"
 
 	actions := make([]Action, 0, 4)
 	if acked {

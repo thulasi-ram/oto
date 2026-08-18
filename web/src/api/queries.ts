@@ -287,7 +287,7 @@ export const FRESHNESS: Readonly<Record<string, Freshness>> = {
   "alerts.rollups": { by: "live" },
   "alerts.detail": { by: "live" },
   "alerts.events": { by: "live" },
-  "alerts.occurrences": { by: "live" },
+  "alerts.cases": { by: "live" },
   "alerts.enrichments": { by: "live" },
   "alerts.rule": { by: "live" },
   "alerts.snoozes": { by: "live" },

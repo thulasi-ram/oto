@@ -37,7 +37,7 @@ import (
 //     the HTTP layer means layers 1-3 have a hole).
 //
 // The rule is edited between the two fires the way it happens in production:
-// somebody lowers a threshold, and the next occurrence of the SAME alert
+// somebody lowers a threshold, and the next case of the SAME alert
 // recovers different text.
 
 func TestMain(m *testing.M) { harness.Main(m) }
@@ -94,9 +94,9 @@ func newDBRig(t *testing.T) *dbRig {
 func (r *dbRig) fire(t *testing.T) service.Capture {
 	t.Helper()
 	c, err := r.svc.Capture(r.h.Ctx, r.scope, service.CaptureRequest{
-		SourceID:     r.source,
-		AlertID:      id.New(),
-		OccurrenceID: id.New(),
+		SourceID: r.source,
+		AlertID:  id.New(),
+		CaseID:   id.New(),
 		Labels: map[string]string{
 			"alertname": "HighErrorRate",
 			"severity":  "critical",
@@ -562,8 +562,8 @@ func unavailableRecovery() domain.Recovery {
 // recovered nothing, so there is no file and no group to store — and it is the
 // NEWEST row for the key. `Latest` therefore handed the recovery fire an empty
 // predecessor, `previous.Fingerprint != stored.Fingerprint` was trivially true,
-// and every recovering occurrence recorded a `rule.definition_changed` whose
-// diff is "" against the real PromQL. `dedupeKey` is per-occurrence, so it is
+// and every recovering case recorded a `rule.definition_changed` whose
+// diff is "" against the real PromQL. `dedupeKey` is per-case, so it is
 // not one bad event: it is one per rule per fire, for as long as the recovery
 // takes. domain/fingerprint_stability_test.go names this the cardinal failure of
 // the whole mechanism — the drift signal becoming noise an operator learns to

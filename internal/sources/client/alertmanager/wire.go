@@ -45,15 +45,6 @@ type wireAlertStatus struct {
 	MutedBy     []string `json:"mutedBy"`
 }
 
-// wireAlertGroup is `alertGroup`. routeLabels is undocumented in the published
-// webhook docs but is first-class in the v2 model.
-type wireAlertGroup struct {
-	Labels      map[string]string `json:"labels"`
-	RouteLabels map[string]string `json:"routeLabels"`
-	Receiver    wireReceiver      `json:"receiver"`
-	Alerts      []wireAlert       `json:"alerts"`
-}
-
 // wireReceiver is `receiver`.
 type wireReceiver struct {
 	Name string `json:"name"`

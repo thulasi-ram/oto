@@ -2,7 +2,7 @@
 //
 // ⚠️ IT READS SEVERAL MODULES' TABLES, AND THAT IS DELIBERATE. A staged result is
 // a REPORT over artefacts other modules wrote — `ingest_batches`, `alerts`,
-// `alert_occurrences`, `alert_groups`, `notifications`, `channel_threads`,
+// `alert_cases`, `alert_groups`, `notifications`, `channel_threads`,
 // `notification_deliveries` — in the same shape `stats/repository` reads five
 // modules' tables to build one dashboard. The alternative, a port per table, would
 // mean seven round trips through seven services to answer one screen, and every

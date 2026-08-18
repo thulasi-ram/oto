@@ -15,7 +15,7 @@ type NotificationView struct {
 	Alerts []AlertView
 	// Focus is set when the fact is about ONE alert: an ack, a re-fire, a rule change.
 	Focus       *AlertView
-	Occurrence  *OccurrenceView
+	Case        *CaseView
 	Rule        *RuleView
 	RuleChange  *RuleChangeView
 	Enrichments map[string]EnrichmentView // keyed by enricher name
@@ -87,13 +87,13 @@ type AlertView struct {
 	GeneratorURL                                        string
 	State, AckState                                     string
 	FirstSeenAt, LastSeenAt                             time.Time
-	TotalOccurrences                                    int
+	TotalCases                                          int
 	IsFlapping                                          bool
 	Value                                               *float64
 }
 
-// OccurrenceView is one firing episode as a renderer sees it.
-type OccurrenceView struct {
+// CaseView is one firing episode as a renderer sees it.
+type CaseView struct {
 	ID                                                string
 	Seq                                               int
 	State, AckState, SuppressionReason, ResolveReason string
@@ -106,7 +106,7 @@ type OccurrenceView struct {
 	AckNote                                           string
 }
 
-// RuleView is what the alerting rule said at the moment the occurrence fired.
+// RuleView is what the alerting rule said at the moment the case fired.
 // Capturing this is the defensible differentiator (R6).
 type RuleView struct {
 	SnapshotID, Fingerprint string
@@ -119,7 +119,7 @@ type RuleView struct {
 }
 
 // RuleChangeView is the headline differentiator's payload: what changed in the
-// rule definition between this occurrence and the previous one.
+// rule definition between this case and the previous one.
 type RuleChangeView struct {
 	PreviousSnapshotID    string
 	PreviousFingerprint   string

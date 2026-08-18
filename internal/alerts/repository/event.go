@@ -18,24 +18,24 @@ import (
 // eventRow is the row model of `alert_events`. Unexported, per the three-model
 // rule.
 type eventRow struct {
-	id           uuid.UUID
-	orgID        uuid.UUID
-	alertID      *uuid.UUID
-	occurrenceID *uuid.UUID
-	groupID      *uuid.UUID
-	typ          string
-	occurredAt   time.Time
-	recordedAt   time.Time
-	actorKind    string
-	actorID      *string
-	actorLabel   *string
-	summary      string
-	payload      []byte
-	dedupeKey    *string
+	id         uuid.UUID
+	orgID      uuid.UUID
+	alertID    *uuid.UUID
+	caseID     *uuid.UUID
+	groupID    *uuid.UUID
+	typ        string
+	occurredAt time.Time
+	recordedAt time.Time
+	actorKind  string
+	actorID    *string
+	actorLabel *string
+	summary    string
+	payload    []byte
+	dedupeKey  *string
 }
 
 var eventColumnList = []string{
-	"id", "org_id", "alert_id", "occurrence_id", "group_id", "type", "occurred_at", "recorded_at",
+	"id", "org_id", "alert_id", "case_id", "group_id", "type", "occurred_at", "recorded_at",
 	"actor_kind", "actor_id", "actor_label", "summary", "payload", "dedupe_key",
 }
 
@@ -43,7 +43,7 @@ var eventColumns = strings.Join(eventColumnList, ", ")
 
 func (r *eventRow) scanDest() []any {
 	return []any{
-		&r.id, &r.orgID, &r.alertID, &r.occurrenceID, &r.groupID, &r.typ, &r.occurredAt,
+		&r.id, &r.orgID, &r.alertID, &r.caseID, &r.groupID, &r.typ, &r.occurredAt,
 		&r.recordedAt, &r.actorKind, &r.actorID, &r.actorLabel, &r.summary, &r.payload,
 		&r.dedupeKey,
 	}
@@ -72,17 +72,17 @@ func (r *eventRow) toDomain() (domain.Event, error) {
 	}
 
 	e, err := domain.NewEvent(domain.EventParams{
-		ID:           r.id,
-		OrgID:        r.orgID,
-		AlertID:      idOrNil(r.alertID),
-		OccurrenceID: idOrNil(r.occurrenceID),
-		GroupID:      idOrNil(r.groupID),
-		Type:         typ,
-		At:           at,
-		Actor:        actor,
-		Summary:      r.summary,
-		Payload:      payload,
-		DedupeKey:    strOrEmpty(r.dedupeKey),
+		ID:        r.id,
+		OrgID:     r.orgID,
+		AlertID:   idOrNil(r.alertID),
+		CaseID:    idOrNil(r.caseID),
+		GroupID:   idOrNil(r.groupID),
+		Type:      typ,
+		At:        at,
+		Actor:     actor,
+		Summary:   r.summary,
+		Payload:   payload,
+		DedupeKey: strOrEmpty(r.dedupeKey),
 	})
 	if err != nil {
 		return domain.Event{}, errs.Internal("event_row_invalid", err)
@@ -122,15 +122,15 @@ ON CONFLICT (org_id, dedupe_key) DO NOTHING
 RETURNING dedupe_key`
 
 const insertEventsSQL = `
-INSERT INTO alert_events (id, org_id, alert_id, occurrence_id, group_id, type, occurred_at,
+INSERT INTO alert_events (id, org_id, alert_id, case_id, group_id, type, occurred_at,
                           recorded_at, actor_kind, actor_id, actor_label, summary, payload,
                           dedupe_key)
-SELECT t.id, $1, t.alert_id, t.occurrence_id, t.group_id, t.type, t.occurred_at, t.recorded_at,
+SELECT t.id, $1, t.alert_id, t.case_id, t.group_id, t.type, t.occurred_at, t.recorded_at,
        t.actor_kind, t.actor_id, t.actor_label, t.summary, t.payload, t.dedupe_key
   FROM unnest($2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[], $6::text[], $7::timestamptz[],
               $8::timestamptz[], $9::text[], $10::text[], $11::text[], $12::text[], $13::jsonb[],
               $14::text[])
-    AS t(id, alert_id, occurrence_id, group_id, type, occurred_at, recorded_at, actor_kind,
+    AS t(id, alert_id, case_id, group_id, type, occurred_at, recorded_at, actor_kind,
          actor_id, actor_label, summary, payload, dedupe_key)`
 
 // Append writes one event, idempotently.
@@ -207,7 +207,7 @@ func (r *EventRepository) AppendBatch(ctx context.Context, s db.TenantScope, in 
 	n := len(accepted)
 	ids := make([]uuid.UUID, n)
 	alertIDs := make([]*uuid.UUID, n)
-	occIDs := make([]*uuid.UUID, n)
+	caseIDs := make([]*uuid.UUID, n)
 	groupIDs := make([]*uuid.UUID, n)
 	types := make([]string, n)
 	occurredAt := make([]time.Time, n)
@@ -226,7 +226,7 @@ func (r *EventRepository) AppendBatch(ctx context.Context, s db.TenantScope, in 
 		}
 		ids[i] = e.ID()
 		alertIDs[i] = idPtr(e.AlertID())
-		occIDs[i] = idPtr(e.OccurrenceID())
+		caseIDs[i] = idPtr(e.CaseID())
 		groupIDs[i] = idPtr(e.GroupID())
 		types[i] = e.Type().String()
 		occurredAt[i] = e.OccurredAt()
@@ -239,7 +239,7 @@ func (r *EventRepository) AppendBatch(ctx context.Context, s db.TenantScope, in 
 		dedupeKeys[i] = strPtr(e.DedupeKey())
 	}
 
-	if _, err := r.db(ctx).Exec(ctx, insertEventsSQL, s.OrgID(), ids, alertIDs, occIDs, groupIDs,
+	if _, err := r.db(ctx).Exec(ctx, insertEventsSQL, s.OrgID(), ids, alertIDs, caseIDs, groupIDs,
 		types, occurredAt, recordedAt, actorKinds, actorIDs, actorLabels, summaries, payloads,
 		dedupeKeys); err != nil {
 		return 0, mapErr(err, "append alert events")
@@ -369,11 +369,11 @@ func (r *EventRepository) ListByAlert(
 	return r.listBy(ctx, s, "alert_id", alertID, w, p)
 }
 
-// ListByOccurrence is the episode-scoped timeline (ev_occ_idx).
-func (r *EventRepository) ListByOccurrence(
-	ctx context.Context, s db.TenantScope, occID uuid.UUID, w db.TimeWindow, p db.Keyset,
+// ListByCase is the episode-scoped timeline (ev_case_idx).
+func (r *EventRepository) ListByCase(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID, w db.TimeWindow, p db.Keyset,
 ) ([]domain.Event, db.Cursor, error) {
-	return r.listBy(ctx, s, "occurrence_id", occID, w, p)
+	return r.listBy(ctx, s, "case_id", caseID, w, p)
 }
 
 // ListByGroup is §D.12(b), the GROUP TIMELINE — the signature UI view
@@ -537,7 +537,10 @@ SELECT alert_id, count(*)
  WHERE org_id = $1
    AND recorded_at >= $2 AND recorded_at < $3
    AND alert_id IS NOT NULL
-   AND type IN ('occurrence.opened','occurrence.reopened','occurrence.resolved',
+   AND type IN ('case.opened','case.reopened','case.resolved',
+                'case.expired','case.suppressed','case.unsuppressed',
+                -- vocab:allow -- pre-ADR-0036 spellings of the same six facts, still on disk for thirteen months (alerts/domain.legacySpellings, migration 00052). Dropping them here would make the flap score read a calmer alert than the truth for every window that reaches back past the rename.
+                'occurrence.opened','occurrence.reopened','occurrence.resolved',
                 'occurrence.expired','occurrence.suppressed','occurrence.unsuppressed')
  GROUP BY alert_id
  ORDER BY count(*) DESC, alert_id

@@ -31,8 +31,8 @@ const (
 	CodeMissingRepository = "enrichment_missing_repository"
 	// CodeMissingSubjects means the service was built without a subject loader.
 	CodeMissingSubjects = "enrichment_missing_subject_loader"
-	// CodeNoOccurrence means the run named no occurrence.
-	CodeNoOccurrence = "enrichment_no_occurrence"
+	// CodeNoCase means the run named no case.
+	CodeNoCase = "enrichment_no_case"
 )
 
 // ⛔ THE TWO `enrichment.*` STRING CONSTANTS THAT USED TO BE HERE ARE GONE.
@@ -130,10 +130,10 @@ func New(o Options) (*Service, error) {
 // health endpoint that reports phase, version and hit rate (SPEC §E).
 func (s *Service) Registry() *Registry { return s.reg }
 
-// RunRequest is one pass of the pipeline over one occurrence.
+// RunRequest is one pass of the pipeline over one case.
 type RunRequest struct {
-	// OccurrenceID is the firing episode being enriched. Required.
-	OccurrenceID uuid.UUID
+	// CaseID is the firing episode being enriched. Required.
+	CaseID uuid.UUID
 	// Phase selects the pass: inline (pre-notification) or async (after).
 	Phase domain.Phase
 	// Enrichers narrows the run to named enrichers. Empty means every enabled
@@ -174,7 +174,7 @@ func (r RunResult) Succeeded() int {
 	return n
 }
 
-// Run executes one phase of the pipeline for one occurrence.
+// Run executes one phase of the pipeline for one case.
 //
 // It returns an error ONLY for the things that make the run meaningless: an
 // unloadable subject, a storage failure, and a result the domain refuses to
@@ -186,25 +186,25 @@ func (r RunResult) Succeeded() int {
 func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest) (RunResult, error) {
 	started := s.clk.Now()
 
-	if req.OccurrenceID == uuid.Nil {
-		return RunResult{}, errs.New(errs.KindValidation, CodeNoOccurrence,
-			"an enrichment run must name an occurrence")
+	if req.CaseID == uuid.Nil {
+		return RunResult{}, errs.New(errs.KindValidation, CodeNoCase,
+			"an enrichment run must name a case")
 	}
 	phase := req.Phase
 	if !phase.Valid() {
 		phase = domain.PhaseInline
 	}
 
-	loaded, err := s.subjects.LoadSubject(ctx, scope, req.OccurrenceID)
+	loaded, err := s.subjects.LoadSubject(ctx, scope, req.CaseID)
 	if err != nil {
 		return RunResult{}, err
 	}
 	subject := loaded.Subject
 	if subject.SubjectKind == "" {
-		subject.SubjectKind = domain.SubjectOccurrence
+		subject.SubjectKind = domain.SubjectCase
 	}
 	if subject.SubjectID == "" {
-		subject.SubjectID = req.OccurrenceID.String()
+		subject.SubjectID = req.CaseID.String()
 	}
 	if subject.OrgID == "" {
 		subject.OrgID = scope.OrgID().String()
@@ -326,7 +326,7 @@ func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest)
 	}
 
 	if phase == domain.PhaseInline {
-		out.Deferred = s.deferStragglers(ctx, req.OccurrenceID, out.Results)
+		out.Deferred = s.deferStragglers(ctx, req.CaseID, out.Results)
 		// ⭐ THE FIRST CARD WAITS FOR THIS AND NOTHING ELSE. Releasing it here —
 		// after the results are stored, before anything slow — is what puts the rule
 		// snapshot on the message a human actually reads instead of on a silent
@@ -343,7 +343,7 @@ func (s *Service) Run(ctx context.Context, scope db.TenantScope, req RunRequest)
 	out.Duration = s.clk.Since(started)
 
 	s.log.InfoContext(ctx, "enrichment: phase complete",
-		"occurrence_id", req.OccurrenceID,
+		"case_id", req.CaseID,
 		"phase", phase.String(),
 		"ran", len(out.Results),
 		"succeeded", out.Succeeded(),
@@ -576,7 +576,7 @@ func (s *Service) cachePut(
 //
 // ONE job carries all of them. A job per straggler would produce a notification
 // per straggler, which is exactly the noise the coalescing rule exists to stop.
-func (s *Service) deferStragglers(ctx context.Context, occurrenceID uuid.UUID, results []domain.Enrichment) []string {
+func (s *Service) deferStragglers(ctx context.Context, caseID uuid.UUID, results []domain.Enrichment) []string {
 	var names []string
 	for _, r := range results {
 		if r.Status() == domain.StatusTimeout {
@@ -588,14 +588,14 @@ func (s *Service) deferStragglers(ctx context.Context, occurrenceID uuid.UUID, r
 	}
 
 	if _, err := s.enqueuer.Enqueue(ctx, jobs.EnrichRunArgs{
-		OccurrenceID: occurrenceID,
-		Phase:        domain.PhaseNameAsync,
-		Enrichers:    names,
+		CaseID:    caseID,
+		Phase:     domain.PhaseNameAsync,
+		Enrichers: names,
 	}); err != nil {
 		// The results are already recorded as timed out, so the UI is honest
 		// either way; all that is lost is the retry.
 		s.log.WarnContext(ctx, "enrichment: could not defer stragglers to the async phase",
-			"occurrence_id", occurrenceID, "enrichers", strings.Join(names, ","), "error", err)
+			"case_id", caseID, "enrichers", strings.Join(names, ","), "error", err)
 	}
 	return names
 }
@@ -624,15 +624,15 @@ func (s *Service) announce(ctx context.Context, scope db.TenantScope, loaded Loa
 		return false
 	}
 
-	occurrenceID := uuid.Nil
-	if occ, err := uuid.Parse(loaded.Subject.Occurrence.ID); err == nil {
-		occurrenceID = occ
+	caseID := uuid.Nil
+	if ac, err := uuid.Parse(loaded.Subject.Case.ID); err == nil {
+		caseID = ac
 	}
 
 	if err := s.notifier.NotifyEnriched(ctx, scope, EnrichedNotice{
 		GroupID:      loaded.GroupID,
 		AlertID:      loaded.AlertID,
-		OccurrenceID: occurrenceID,
+		CaseID:       caseID,
 		StateVersion: loaded.StateVersion,
 		Enrichers:    names,
 	}); err != nil {
@@ -654,19 +654,19 @@ func (s *Service) release(ctx context.Context, scope db.TenantScope, loaded Load
 	if s.notifier == nil || loaded.GroupID == uuid.Nil {
 		return false
 	}
-	occurrenceID := uuid.Nil
-	if occ, err := uuid.Parse(loaded.Subject.Occurrence.ID); err == nil {
-		occurrenceID = occ
+	caseID := uuid.Nil
+	if ac, err := uuid.Parse(loaded.Subject.Case.ID); err == nil {
+		caseID = ac
 	}
 	if err := s.notifier.NotifyPreNotificationReady(ctx, scope, PreNotificationNotice{
 		GroupID:      loaded.GroupID,
 		AlertID:      loaded.AlertID,
-		OccurrenceID: occurrenceID,
+		CaseID:       caseID,
 		StateVersion: loaded.StateVersion,
 	}); err != nil {
 		s.log.WarnContext(ctx, "enrichment: could not release the deferred first notification; "+
 			"the scheduled backstop will send it",
-			"group_id", loaded.GroupID, "occurrence_id", occurrenceID, "error", err)
+			"group_id", loaded.GroupID, "case_id", caseID, "error", err)
 		return false
 	}
 	return true
@@ -677,11 +677,11 @@ func (s *Service) narrate(ctx context.Context, scope db.TenantScope, loaded Load
 	if s.events == nil || len(results) == 0 {
 		return
 	}
-	occurrenceID := uuid.Nil
-	if occ, err := uuid.Parse(loaded.Subject.Occurrence.ID); err == nil {
-		occurrenceID = occ
+	caseID := uuid.Nil
+	if ac, err := uuid.Parse(loaded.Subject.Case.ID); err == nil {
+		caseID = ac
 	}
-	if loaded.AlertID == uuid.Nil && occurrenceID == uuid.Nil {
+	if loaded.AlertID == uuid.Nil && caseID == uuid.Nil {
 		return
 	}
 
@@ -709,12 +709,12 @@ func (s *Service) narrate(ctx context.Context, scope db.TenantScope, loaded Load
 	}
 
 	if err := s.events.RecordEnrichmentEvent(ctx, scope, EnrichmentEvent{
-		Type:         typ,
-		AlertID:      loaded.AlertID,
-		OccurrenceID: occurrenceID,
-		Summary:      truncate(summary, 500),
-		Payload:      detail,
-		DedupeKey:    fmt.Sprintf("enrich:%s:%s", occurrenceID, phase),
+		Type:      typ,
+		AlertID:   loaded.AlertID,
+		CaseID:    caseID,
+		Summary:   truncate(summary, 500),
+		Payload:   detail,
+		DedupeKey: fmt.Sprintf("enrich:%s:%s", caseID, phase),
 	}); err != nil {
 		s.log.WarnContext(ctx, "enrichment: could not record the enrichment event", "error", err)
 	}

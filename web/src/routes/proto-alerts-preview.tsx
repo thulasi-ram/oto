@@ -10,7 +10,7 @@
  *
  * ⭐ IT RENDERS THE SHIPPING COMPONENTS, NEVER COPIES OF THEM. `FilterBar`,
  * `AlertTable`, `GroupedAlerts`, `AlertActions`, `Timeline`, `RulePanel`,
- * `OccurrencePanel`, `EnrichmentPanel`, `SnoozePanel` and `DeliveryPanel` are
+ * `CasePanel`, `EnrichmentPanel`, `SnoozePanel` and `DeliveryPanel` are
  * imported and fed props — so what a reviewer sees here is what an operator will
  * see. What IS restated below is the route-level markup those components sit in
  * (the column frame from `routes/alerts.tsx`, the detail header from
@@ -63,7 +63,7 @@ import { GroupedAlerts } from "~/features/alerts/GroupedAlerts";
 import { AlertActions } from "~/features/alerts/detail/Actions";
 import { DeliveryPanel } from "~/features/alerts/detail/DeliveryPanel";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
-import { OccurrencePanel } from "~/features/alerts/detail/OccurrencePanel";
+import { CasePanel } from "~/features/alerts/detail/CasePanel";
 import { PANEL_BODY, PANEL_HEADER } from "~/features/alerts/detail/rhythm";
 import { RulePanel } from "~/features/alerts/detail/RuleDrift";
 import { SnoozePanel } from "~/features/alerts/detail/SnoozePanel";
@@ -78,7 +78,7 @@ import {
   PREVIEW_EVENTS,
   PREVIEW_LABEL_NAMES,
   PREVIEW_NOTIFICATIONS,
-  PREVIEW_OCCURRENCES,
+  PREVIEW_CASES,
   PREVIEW_ROLLUPS,
   PREVIEW_RULE_HISTORY,
   PREVIEW_RULE_SNAPSHOTS,
@@ -148,7 +148,7 @@ for (const [key, data] of PREVIEW_FIXTURES) previewClient.setQueryData(key, data
  * The real screen sends every one of these to the server, and this preview has
  * no server — but a filter panel whose controls change nothing cannot be
  * reviewed, so the axes that need no index (state, severity, cluster, namespace,
- * ack, flapping, snoozed and free text) are honoured locally. Matchers, `since`
+ * flapping, snoozed and free text) are honoured locally. Matchers, `since`
  * and sorting are not: approximating those is how a preview starts lying.
  */
 function matchesPreviewFilters(alert: Alert, f: AlertFilters): boolean {
@@ -157,11 +157,11 @@ function matchesPreviewFilters(alert: Alert, f: AlertFilters): boolean {
   if (f.cluster.length > 0 && !f.cluster.includes(alert.cluster_key)) return false;
   if (f.namespace.length > 0 && !f.namespace.includes(alert.namespace ?? "")) return false;
   if (f.alertname.length > 0 && !f.alertname.includes(alert.alertname)) return false;
-  if (f.ack !== null && alert.ack_state !== f.ack) return false;
   if (f.flapping !== null && alert.is_flapping !== f.flapping) return false;
-  if (f.snoozed !== null && (alert.snooze !== null && alert.snooze !== undefined) !== f.snoozed) {
-    return false;
-  }
+  // The tab, applied client-side the way the server applies `?snoozed=`: the
+  // main tab is the alerts with no snooze in force, Quiet is the rest.
+  const quiet = alert.snooze !== null && alert.snooze !== undefined;
+  if (quiet !== (f.tab === "quiet")) return false;
   const q = f.q.trim().toLowerCase();
   if (q !== "") {
     const haystack = `${alert.alertname} ${alert.namespace ?? ""} ${alert.service ?? ""}`;
@@ -253,7 +253,7 @@ const ListBand: Component = () => {
 
           <AlertTable
             alerts={rows()}
-            snoozedKnown={filters().snoozed}
+            quiet={filters().tab === "quiet"}
             rules={PREVIEW_RULE_SNAPSHOTS}
             rulesPending={false}
             onFilterLabel={onFilterLabel}
@@ -407,11 +407,11 @@ const DetailHeader: Component = () => (
             state={PREVIEW_DETAIL.state}
             urgent={
               PREVIEW_DETAIL.state === "firing" &&
-              PREVIEW_DETAIL.ack_state === "unacked" &&
+              (PREVIEW_DETAIL.current_case?.ack_state ?? "unacked") === "unacked" &&
               normaliseSeverity(PREVIEW_DETAIL.severity) === "critical"
             }
           />
-          <AckChip ackState={PREVIEW_DETAIL.ack_state} />
+          <AckChip ackState={PREVIEW_DETAIL.current_case?.ack_state} />
           <Show when={PREVIEW_DETAIL.is_flapping}>
             <FlappingChip />
           </Show>
@@ -446,19 +446,19 @@ const DetailHeader: Component = () => (
               <RelativeTime value={PREVIEW_DETAIL.last_seen_at} label="Last seen" /> ago
             </span>
           </span>
-          <Show when={PREVIEW_DETAIL.current_occurrence}>
-            {(occ) => (
+          <Show when={PREVIEW_DETAIL.current_case}>
+            {(ac) => (
               <span>
                 firing duration{" "}
                 <span class="text-ink-muted">
-                  <Elapsed from={occ().started_at} to={occ().ended_at ?? null} />
+                  <Elapsed from={ac().started_at} to={ac().ended_at ?? null} />
                 </span>
               </span>
             )}
           </Show>
           <span title="Firing episodes since oto first saw this identity">
             episodes{" "}
-            <span class="text-ink-muted">{fmtCount(PREVIEW_DETAIL.total_occurrences)}</span>
+            <span class="text-ink-muted">{fmtCount(PREVIEW_DETAIL.total_cases)}</span>
           </span>
           <span title="EWMA of state transitions per hour. A derived signal, never a state.">
             flap score <span class="text-ink-muted">{PREVIEW_DETAIL.flap_score.toFixed(1)}</span>
@@ -545,11 +545,11 @@ const DetailBand: Component = () => {
 
             <RulePanel history={PREVIEW_RULE_HISTORY} />
 
-            <OccurrencePanel
-              occurrences={PREVIEW_OCCURRENCES}
+            <CasePanel
+              cases={PREVIEW_CASES}
               loading={false}
               error={null}
-              currentId={PREVIEW_DETAIL.current_occurrence?.id ?? null}
+              currentId={PREVIEW_DETAIL.current_case?.id ?? null}
             />
 
             <EnrichmentPanel enrichments={PREVIEW_ENRICHMENTS} loading={false} error={null} />

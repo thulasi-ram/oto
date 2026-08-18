@@ -71,13 +71,13 @@ func newFanOutWorld(t *testing.T) *fanOutWorld {
 	user := h.User(org)
 
 	alerts, err := alerts.New(alerts.Deps{
-		Alerts:      alertsrepo.NewAlertRepository(h.Pool, h.Clock, false),
-		Occurrences: alertsrepo.NewOccurrenceRepository(h.Pool),
-		Events:      alertsrepo.NewEventRepository(h.Pool, h.Clock),
-		Snoozes:     alertsrepo.NewSnoozeRepository(h.Pool, h.Clock),
-		Tx:          alertsrepo.NewTxRunner(h.Pool),
-		Clock:       h.Clock,
-		Logger:      discardLogger(),
+		Alerts:  alertsrepo.NewAlertRepository(h.Pool, h.Clock, false),
+		Cases:   alertsrepo.NewCaseRepository(h.Pool),
+		Events:  alertsrepo.NewEventRepository(h.Pool, h.Clock),
+		Snoozes: alertsrepo.NewSnoozeRepository(h.Pool, h.Clock),
+		Tx:      alertsrepo.NewTxRunner(h.Pool),
+		Clock:   h.Clock,
+		Logger:  discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("alerts service: %v", err)
@@ -123,11 +123,16 @@ func (w *fanOutWorld) seedMembers(t *testing.T, n int) []uuid.UUID {
 			"severity":  "critical",
 			"instance":  "i-" + strconv.Itoa(w.seq),
 		})
-		occ := w.h.Occurrence(alert, w.group)
-		w.h.Exec(`INSERT INTO alert_group_members (group_id, occurrence_id, org_id, alert_id, joined_at)
-		          VALUES ($1, $2, $3, $4, $5)`,
-			w.group.ID, occ.ID, w.org.ID, alert.ID,
-			w.h.Now().Add(time.Duration(w.seq)*time.Second))
+		// The episode IS the membership since 00051 — `h.Case` writes
+		// `group_id`, and there is no second row to insert. What still has to be
+		// arranged is the ORDER: the fan-out reads oldest first, and a harness that
+		// starts every episode at the same instant would leave the ceiling cutting
+		// an arbitrary set.
+		ac := w.h.Case(alert, w.group)
+		startedAt := w.h.Now().Add(time.Duration(w.seq) * time.Second)
+		w.h.Exec(`UPDATE alert_cases
+		             SET started_at = $2, last_observed_at = $2, source_starts_at = $2
+		           WHERE id = $1`, ac.ID, startedAt)
 		out = append(out, alert.ID)
 	}
 	return out
@@ -145,16 +150,16 @@ func (w *fanOutWorld) comment(t *testing.T, svc *Service, body string) (CommentR
 		"user", w.actorID, w.actorLabel, body, alerts.Idempotency{})
 }
 
-// ackedOccurrences is how many of the generation's episodes carry a receipt.
-func (w *fanOutWorld) ackedOccurrences(t *testing.T) int {
+// ackedCases is how many of the generation's episodes carry a receipt.
+func (w *fanOutWorld) ackedCases(t *testing.T) int {
 	t.Helper()
 	var n int
 	err := w.h.Pool.QueryRow(w.h.Ctx,
-		`SELECT count(*) FROM alert_occurrences
+		`SELECT count(*) FROM alert_cases
 		  WHERE org_id = $1 AND group_id = $2 AND ack_state = 'acked'`,
 		w.org.ID, w.group.ID).Scan(&n)
 	if err != nil {
-		t.Fatalf("count acked occurrences: %v", err)
+		t.Fatalf("count acked cases: %v", err)
 	}
 	return n
 }
@@ -164,7 +169,7 @@ func (w *fanOutWorld) ackedOccurrences(t *testing.T) int {
 // invisibly, but the timeline is append-only and cannot.
 func (w *fanOutWorld) ackEvents(t *testing.T) int {
 	t.Helper()
-	return w.eventsOfType(t, kernel.EventOccurrenceAcknowledged)
+	return w.eventsOfType(t, kernel.EventCaseAcknowledged)
 }
 
 // commentEvents is the same detector pointed at the one group verb that has no
@@ -372,8 +377,8 @@ func TestFanOutPartialFailureLosesNoMember(t *testing.T) {
 		t.Fatalf("applied %d + skipped %d + unreached %d = %d, want %d members accounted for",
 			res.Applied, res.Skipped(), res.Unreached, got, members)
 	}
-	if n := w.ackedOccurrences(t); n != applied {
-		t.Fatalf("%d occurrences acked in the database, want %d: the receipts written "+
+	if n := w.ackedCases(t); n != applied {
+		t.Fatalf("%d cases acked in the database, want %d: the receipts written "+
 			"before the failure must stand", n, applied)
 	}
 
@@ -387,8 +392,8 @@ func TestFanOutPartialFailureLosesNoMember(t *testing.T) {
 		t.Fatalf("second run = %+v, want %d applied and %d already_acked",
 			res2, members-applied, applied)
 	}
-	if n := w.ackedOccurrences(t); n != members {
-		t.Fatalf("%d occurrences acked after the retry, want %d", n, members)
+	if n := w.ackedCases(t); n != members {
+		t.Fatalf("%d cases acked after the retry, want %d", n, members)
 	}
 	if n := w.ackEvents(t); n != members {
 		t.Fatalf("%d acknowledgement events, want %d: the retry re-applied the verb",
@@ -424,7 +429,7 @@ func TestFanOutRetryDoesNotDoubleApply(t *testing.T) {
 
 	var ackedAt time.Time
 	if err := w.h.Pool.QueryRow(w.h.Ctx,
-		`SELECT max(acked_at) FROM alert_occurrences WHERE org_id = $1 AND group_id = $2`,
+		`SELECT max(acked_at) FROM alert_cases WHERE org_id = $1 AND group_id = $2`,
 		w.org.ID, w.group.ID).Scan(&ackedAt); err != nil {
 		t.Fatalf("read acked_at: %v", err)
 	}
@@ -451,7 +456,7 @@ func TestFanOutRetryDoesNotDoubleApply(t *testing.T) {
 	}
 	var after time.Time
 	if err := w.h.Pool.QueryRow(w.h.Ctx,
-		`SELECT max(acked_at) FROM alert_occurrences WHERE org_id = $1 AND group_id = $2`,
+		`SELECT max(acked_at) FROM alert_cases WHERE org_id = $1 AND group_id = $2`,
 		w.org.ID, w.group.ID).Scan(&after); err != nil {
 		t.Fatalf("re-read acked_at: %v", err)
 	}

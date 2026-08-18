@@ -89,14 +89,14 @@ func TestNewTreatsTheOptionalPortsAsOptional(t *testing.T) {
 	assert.Equal(t, 1, e.repo.writes(), "the provenanced record is written regardless")
 }
 
-func TestRunRequiresAnOccurrence(t *testing.T) {
+func TestRunRequiresAnCase(t *testing.T) {
 	t.Parallel()
 
 	e := newEnv(t, nil, &stubEnricher{name: "test.alpha"})
 
 	_, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{})
 	require.Error(t, err)
-	assert.Equal(t, service.CodeNoOccurrence, errs.CodeOf(err))
+	assert.Equal(t, service.CodeNoCase, errs.CodeOf(err))
 	assert.Equal(t, errs.KindValidation, errs.KindOf(err))
 }
 
@@ -107,8 +107,8 @@ func TestRunDefaultsAnUnknownPhaseToInline(t *testing.T) {
 	e := newEnv(t, nil, inline)
 
 	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.Phase(42),
+		CaseID: e.caseID,
+		Phase:  domain.Phase(42),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, domain.PhaseInline, out.Phase,
@@ -277,8 +277,8 @@ func TestEnrichmentFailureNeverBlocksTheNotification(t *testing.T) {
 	)
 
 	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.PhaseInline,
+		CaseID: e.caseID,
+		Phase:  domain.PhaseInline,
 	})
 
 	require.NoError(t, err, "a phase in which EVERY enricher failed is not a failed run")
@@ -289,7 +289,7 @@ func TestEnrichmentFailureNeverBlocksTheNotification(t *testing.T) {
 	require.Len(t, released, 1, "exactly one release, whatever the enrichers did")
 	assert.Equal(t, e.groupID, released[0].GroupID)
 	assert.Equal(t, e.alertID, released[0].AlertID)
-	assert.Equal(t, e.occurrenceID, released[0].OccurrenceID)
+	assert.Equal(t, e.caseID, released[0].CaseID)
 	assert.Equal(t, 7, released[0].StateVersion,
 		"pinned to the group state the evaluation was minted against (SPEC §C.7)")
 }
@@ -305,8 +305,8 @@ func TestTheCardIsReleasedEvenWhenTheReleaseItselfFails(t *testing.T) {
 	e.notifier.releaseErr = stubErr("the queue is unreachable")
 
 	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.PhaseInline,
+		CaseID: e.caseID,
+		Phase:  domain.PhaseInline,
 	})
 
 	require.NoError(t, err, "a failed release must not fail the enrichment run")
@@ -314,9 +314,9 @@ func TestTheCardIsReleasedEvenWhenTheReleaseItselfFails(t *testing.T) {
 	assert.Len(t, e.notifier.releaseCalls(), 1, "it was attempted")
 }
 
-// TestAnUngroupedOccurrenceReleasesNothing: no open group means no card to
+// TestAnUngroupedCaseReleasesNothing: no open group means no card to
 // amend and nothing to release.
-func TestAnUngroupedOccurrenceReleasesNothing(t *testing.T) {
+func TestAnUngroupedCaseReleasesNothing(t *testing.T) {
 	t.Parallel()
 
 	e := newEnv(t, nil, &stubEnricher{name: "test.alpha"})
@@ -368,7 +368,7 @@ func TestATimedOutInlineEnricherIsDeferredAsOneAsyncJob(t *testing.T) {
 
 	args, ok := enqueued[0].(jobs.EnrichRunArgs)
 	require.True(t, ok, "the deferral is an enrich.run job")
-	assert.Equal(t, e.occurrenceID, args.OccurrenceID)
+	assert.Equal(t, e.caseID, args.CaseID)
 	assert.Equal(t, domain.PhaseNameAsync, args.Phase)
 	assert.ElementsMatch(t, []string{"test.slowa", "test.slowb"}, args.Enrichers,
 		"and it names only the ones that ran out of budget")
@@ -820,8 +820,8 @@ func TestAFailedAnnouncementDoesNotFailTheRun(t *testing.T) {
 	e.notifier.enrichedErr = stubErr("the queue refused the insert")
 
 	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.PhaseAsync,
+		CaseID: e.caseID,
+		Phase:  domain.PhaseAsync,
 	})
 
 	require.NoError(t, err)
@@ -835,11 +835,11 @@ func TestAnUnloadableSubjectFailsTheRun(t *testing.T) {
 	t.Parallel()
 
 	e := newEnv(t, nil, &stubEnricher{name: "test.alpha"})
-	e.subjects.err = stubErr("the occurrence has been deleted")
+	e.subjects.err = stubErr("the case has been deleted")
 
 	_, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.PhaseInline,
+		CaseID: e.caseID,
+		Phase:  domain.PhaseInline,
 	})
 	require.Error(t, err, "a run about a subject that cannot be loaded is meaningless")
 }
@@ -851,8 +851,8 @@ func TestAnUnreadableRecordFailsTheRun(t *testing.T) {
 	e.repo.listErr = stubErr("the pool is exhausted")
 
 	_, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.PhaseInline,
+		CaseID: e.caseID,
+		Phase:  domain.PhaseInline,
 	})
 	require.Error(t, err)
 }
@@ -873,8 +873,8 @@ func TestAStorageFailureIsReturnedWithTheResultsAlreadyComputed(t *testing.T) {
 	e.repo.upsertErr = stubErr("could not store the enrichment results")
 
 	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.PhaseInline,
+		CaseID: e.caseID,
+		Phase:  domain.PhaseInline,
 	})
 
 	require.Error(t, err, "a storage failure is one of the two things that make a run meaningless")
@@ -919,11 +919,11 @@ func TestTheTimelineSaysWhetherAnythingWasLearned(t *testing.T) {
 			require.Len(t, recorded, 1)
 			assert.Equal(t, tc.wantType, recorded[0].Type)
 			assert.Equal(t, e.alertID, recorded[0].AlertID)
-			assert.Equal(t, e.occurrenceID, recorded[0].OccurrenceID)
+			assert.Equal(t, e.caseID, recorded[0].CaseID)
 			assert.NotEmpty(t, recorded[0].Summary)
 			assert.LessOrEqual(t, len(recorded[0].Summary), 500)
-			assert.Contains(t, recorded[0].DedupeKey, e.occurrenceID.String(),
-				"SPEC §C.8: the append is idempotent per (occurrence, phase)")
+			assert.Contains(t, recorded[0].DedupeKey, e.caseID.String(),
+				"SPEC §C.8: the append is idempotent per (case, phase)")
 			assert.Contains(t, recorded[0].Payload, "test.alpha",
 				"per-enricher status and duration, so the timeline is readable")
 		})
@@ -938,8 +938,8 @@ func TestATimelineFailureNeverFailsAnEnrichment(t *testing.T) {
 	e.events.err = stubErr("the partition is missing")
 
 	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.PhaseInline,
+		CaseID: e.caseID,
+		Phase:  domain.PhaseInline,
 	})
 	require.NoError(t, err)
 	assert.Len(t, out.Results, 1)
@@ -1072,9 +1072,9 @@ func TestEachEnricherSeesItsOwnCopyOfTheSubject(t *testing.T) {
 	got := byName(out.Results)
 	require.Contains(t, got, "test.witness")
 	assert.Equal(t, map[string]any{"alertname": "HighErrorRate"}, got["test.witness"].Payload())
-	assert.Equal(t, e.occurrenceID.String(), got["test.vandal"].SubjectID(),
+	assert.Equal(t, e.caseID.String(), got["test.vandal"].SubjectID(),
 		"and the recorded row still names the real subject")
-	assert.Equal(t, e.occurrenceID.String(), out.Subject.SubjectID)
+	assert.Equal(t, e.caseID.String(), out.Subject.SubjectID)
 }
 
 // ----------------------------------------------------------------- ordering
@@ -1137,7 +1137,7 @@ func TestEveryRecordedResultSatisfiesTheDomainInvariants(t *testing.T) {
 			assert.GreaterOrEqual(t, rec.Duration(), time.Duration(0))
 			assert.NotEmpty(t, rec.ID())
 			assert.Equal(t, e.orgID.String(), rec.OrgID())
-			assert.Equal(t, domain.SubjectOccurrence, rec.SubjectKind())
+			assert.Equal(t, domain.SubjectCase, rec.SubjectKind())
 		})
 	}
 
@@ -1156,9 +1156,9 @@ func TestTheRunFillsInTheSubjectCoordinatesTheLoaderOmitted(t *testing.T) {
 
 	out := e.run(t, domain.PhaseInline)
 
-	assert.Equal(t, domain.SubjectOccurrence, out.Subject.SubjectKind,
+	assert.Equal(t, domain.SubjectCase, out.Subject.SubjectKind,
 		"an enrichment is a fact about a FIRE, not about an identity")
-	assert.Equal(t, e.occurrenceID.String(), out.Subject.SubjectID)
+	assert.Equal(t, e.caseID.String(), out.Subject.SubjectID)
 	assert.Equal(t, e.orgID.String(), out.Subject.OrgID)
 	require.Len(t, out.Results, 1,
 		"and the row is built from them: without an org it would not have been recorded at all")
@@ -1186,8 +1186,8 @@ func TestASubjectKindTheDomainRejectsFailsTheRun(t *testing.T) {
 	e.subjects.loaded.Subject.SubjectKind = "workspace"
 
 	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        domain.PhaseInline,
+		CaseID: e.caseID,
+		Phase:  domain.PhaseInline,
 	})
 
 	require.Error(t, err, "a phase that recorded nothing because oto built nothing is not a success")

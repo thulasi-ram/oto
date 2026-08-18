@@ -616,14 +616,14 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 			wantAcks: 1,
 		},
 		{
-			// The occurrence resolved or expired while the human was deciding.
+			// The case resolved or expired while the human was deciding.
 			name: "every member has already ended",
 			conv: alphaConversations(),
 			groups: &fakeGroups{
 				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
 				result: GroupAckResult{
 					Members: 3, Applied: 0,
-					SkippedCodes: map[string]int{"no_open_occurrence": 3},
+					SkippedCodes: map[string]int{"no_open_case": 3},
 				},
 			},
 			args:     ackArgs(),
@@ -648,7 +648,7 @@ func TestApplyTellsTheUserWhenTheActionCannotApply(t *testing.T) {
 				live: map[uuid.UUID]uuid.UUID{groupOne: orgAlpha},
 				result: GroupAckResult{
 					Members: 4, Applied: 0,
-					SkippedCodes: map[string]int{"already_acked": 1, "no_open_occurrence": 3},
+					SkippedCodes: map[string]int{"already_acked": 1, "no_open_case": 3},
 				},
 			},
 			args:     ackArgs(),
@@ -761,8 +761,8 @@ func TestNothingOtoSaysImpliesOwnership(t *testing.T) {
 	said := []string{
 		nothingAppliedText(GroupAckResult{Members: 0}),
 		nothingAppliedText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"already_acked": 2}}),
-		nothingAppliedText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"no_open_occurrence": 2}}),
-		nothingAppliedText(GroupAckResult{Members: 4, SkippedCodes: map[string]int{"already_acked": 1, "no_open_occurrence": 3}}),
+		nothingAppliedText(GroupAckResult{Members: 2, SkippedCodes: map[string]int{"no_open_case": 2}}),
+		nothingAppliedText(GroupAckResult{Members: 4, SkippedCodes: map[string]int{"already_acked": 1, "no_open_case": 3}}),
 		partialAckText(GroupAckResult{Members: 500, Applied: 500, Unreached: 4500}),
 		partialAckText(GroupAckResult{Members: 500, Applied: 0, Unreached: 4500,
 			SkippedCodes: map[string]int{"already_acked": 500}}),

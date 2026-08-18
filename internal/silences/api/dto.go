@@ -63,7 +63,6 @@ type AlertRefDTO struct {
 	Namespace  *string   `json:"namespace"`
 	ClusterKey string    `json:"cluster_key"`
 	State      string    `json:"state"`
-	AckState   string    `json:"ack_state"`
 }
 
 // ListSilencesQuery is the validated form of the `listSilences` query string.

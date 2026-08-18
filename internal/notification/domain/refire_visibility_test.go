@@ -10,7 +10,7 @@ import (
 //
 // ADR 0020 grants exactly two Reasons an irreversible `reply_broadcast`, and
 // `refired` is one of them, on this reasoning: a re-fire INSIDE `refire_grace`
-// reopens the existing occurrence, so it produces an update and a thread reply and
+// reopens the existing case, so it produces an update and a thread reply and
 // NO new root message — *"the thread said resolved and people stopped following
 // it"*. Its quiet form is invisible, which is the only property that earns a
 // channel post.

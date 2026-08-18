@@ -129,24 +129,24 @@ func (rt *Router) listAlertRollups(w http.ResponseWriter, r *http.Request) {
 func (rt *Router) embed(
 	r *http.Request, scope db.TenantScope, dto *AlertDTO, a domain.Alert, inc includeSet, now time.Time,
 ) {
-	if !inc.CurrentOccurrence && !inc.Enrichments && !inc.Rule {
+	if !inc.CurrentCase && !inc.Enrichments && !inc.Rule {
 		return
 	}
 
-	if inc.CurrentOccurrence || inc.Rule {
+	if inc.CurrentCase || inc.Rule {
 		detail, err := rt.svc.Get(r.Context(), scope, a.ID())
 		if err == nil {
-			occ := detail.CurrentOccurrence
-			if occ == nil {
-				occ = detail.LatestOccurrence
+			ac := detail.CurrentCase
+			if ac == nil {
+				ac = detail.LatestCase
 			}
-			if occ != nil {
-				if inc.CurrentOccurrence {
-					o := occurrenceDTO(*occ, now)
-					dto.CurrentOccurrence = &o
+			if ac != nil {
+				if inc.CurrentCase {
+					o := caseDTO(*ac, now)
+					dto.CurrentCase = &o
 				}
 				if inc.Rule {
-					if id := idPtr(occ.RuleSnapshotID()); id != nil {
+					if id := idPtr(ac.RuleSnapshotID()); id != nil {
 						dto.Rule = &RuleSnapshotRef{ID: *id}
 					}
 				}
@@ -190,13 +190,13 @@ func (rt *Router) getAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dto := AlertDetailDTO{AlertDTO: alertDTO(detail.Alert)}
-	occ := detail.CurrentOccurrence
-	if occ == nil {
-		occ = detail.LatestOccurrence
+	ac := detail.CurrentCase
+	if ac == nil {
+		ac = detail.LatestCase
 	}
-	if occ != nil {
-		o := occurrenceDTO(*occ, started)
-		dto.CurrentOccurrence = &o
+	if ac != nil {
+		o := caseDTO(*ac, started)
+		dto.CurrentCase = &o
 	}
 	if detail.Snooze != nil {
 		s := snoozeDTO(*detail.Snooze)
@@ -227,7 +227,7 @@ func (rt *Router) getAlert(w http.ResponseWriter, r *http.Request) {
 	httpx.Data(w, r, http.StatusOK, dto, started)
 }
 
-func (rt *Router) listAlertOccurrences(w http.ResponseWriter, r *http.Request) {
+func (rt *Router) listAlertCases(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
 	scope, err := scopeOf(r)
@@ -246,14 +246,14 @@ func (rt *Router) listAlertOccurrences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := rt.svc.Occurrences(r.Context(), scope, id, page)
+	res, err := rt.svc.Cases(r.Context(), scope, id, page)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	out := make([]OccurrenceDTO, 0, len(res.Occurrences))
-	for _, o := range res.Occurrences {
-		out = append(out, occurrenceDTO(o, started))
+	out := make([]CaseDTO, 0, len(res.Cases))
+	for _, o := range res.Cases {
+		out = append(out, caseDTO(o, started))
 	}
 	httpx.List(w, r, out, pageOf(res.Cursor, limit), started)
 }
@@ -275,16 +275,16 @@ func (rt *Router) listAlertEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// listOccurrenceEvents is `GET /api/v1/occurrences/{id}/events` — "what happened
+// listCaseEvents is `GET /api/v1/cases/{id}/events` — "what happened
 // during THIS outage", which is a different question from "what has this rule
 // ever done" and therefore defaults to ascending order.
-func (rt *Router) listOccurrenceEvents(w http.ResponseWriter, r *http.Request) {
+func (rt *Router) listCaseEvents(w http.ResponseWriter, r *http.Request) {
 	rt.timeline(w, r, "asc", func(rq timelineRequest, scope db.TenantScope) (eventsPage, error) {
 		id, err := httpx.PathUUID(r, "id")
 		if err != nil {
 			return eventsPage{}, err
 		}
-		res, err := rt.svc.OccurrenceTimeline(r.Context(), scope, id, rq.Window, rq.Page)
+		res, err := rt.svc.CaseTimeline(r.Context(), scope, id, rq.Window, rq.Page)
 		if err != nil {
 			return eventsPage{}, err
 		}
@@ -292,7 +292,7 @@ func (rt *Router) listOccurrenceEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (rt *Router) getOccurrence(w http.ResponseWriter, r *http.Request) {
+func (rt *Router) getCase(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
 	scope, err := scopeOf(r)
@@ -310,21 +310,21 @@ func (rt *Router) getOccurrence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	occ, err := rt.svc.GetOccurrence(r.Context(), scope, id)
+	ac, err := rt.svc.GetCase(r.Context(), scope, id)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
 
-	dto := OccurrenceDetailDTO{
-		OccurrenceDTO: occurrenceDTO(occ, started),
-		Enrichments:   []EnrichmentDTO{},
+	dto := CaseDetailDTO{
+		CaseDTO:     caseDTO(ac, started),
+		Enrichments: []EnrichmentDTO{},
 	}
-	if detail, err := rt.svc.Get(r.Context(), scope, occ.AlertID()); err == nil {
+	if detail, err := rt.svc.Get(r.Context(), scope, ac.AlertID()); err == nil {
 		ref := alertRefDTO(detail.Alert)
 		dto.Alert = &ref
 	}
-	if rows, err := rt.svc.Enrichments(r.Context(), scope, occ.AlertID()); err == nil {
+	if rows, err := rt.svc.Enrichments(r.Context(), scope, ac.AlertID()); err == nil {
 		for _, e := range rows {
 			dto.Enrichments = append(dto.Enrichments, enrichmentDTO(e))
 		}
@@ -334,7 +334,7 @@ func (rt *Router) getOccurrence(w http.ResponseWriter, r *http.Request) {
 	// above, a failure here is NOT swallowed: an absent enrichment is a missing
 	// nicety, an absent delivery roll-up is oto claiming silence it has not
 	// checked.
-	rollup, err := rt.svc.DeliveryRollupForOccurrence(r.Context(), scope, occ.ID())
+	rollup, err := rt.svc.DeliveryRollupForCase(r.Context(), scope, ac.ID())
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
@@ -419,7 +419,7 @@ func (rt *Router) listAlertNotifications(w http.ResponseWriter, r *http.Request)
 //
 // This is the same service method the Slack acknowledge button calls, so acking
 // from chat and acking from the API produce byte-identical state. Acking an
-// occurrence that has already ended is a 412 and not a 409: the request is valid,
+// case that has already ended is a 412 and not a 409: the request is valid,
 // the entity is simply in the wrong state — which the service says by returning a
 // precondition error, translated here by the shared problem writer.
 func (rt *Router) ackAlert(w http.ResponseWriter, r *http.Request) {
@@ -436,17 +436,17 @@ func (rt *Router) ackAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	occ, err := rt.svc.Acknowledge(r.Context(), scope, id, actor, body.Note)
+	ac, err := rt.svc.Acknowledge(r.Context(), scope, id, actor, body.Note)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	httpx.Data(w, r, http.StatusOK, occurrenceDTO(occ, started), started)
+	httpx.Data(w, r, http.StatusOK, caseDTO(ac, started), started)
 }
 
 // unackAlert is `POST /api/v1/alerts/{id}/unack`: a DELIBERATE withdrawal,
 // recorded with `reason: manual` to distinguish it from the automatic unack that
-// happens when a new occurrence opens.
+// happens when a new case opens.
 func (rt *Router) unackAlert(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
@@ -461,14 +461,14 @@ func (rt *Router) unackAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// `note` is carried through to the `occurrence.unacknowledged` event. It used
+	// `note` is carried through to the `case.unacknowledged` event. It used
 	// to be bound here, length-validated here, and then thrown away.
-	occ, err := rt.svc.Unacknowledge(r.Context(), scope, id, actor, body.Note)
+	ac, err := rt.svc.Unacknowledge(r.Context(), scope, id, actor, body.Note)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	httpx.Data(w, r, http.StatusOK, occurrenceDTO(occ, started), started)
+	httpx.Data(w, r, http.StatusOK, caseDTO(ac, started), started)
 }
 
 // commentOnAlert is `POST /api/v1/alerts/{id}/comments`.
@@ -730,13 +730,13 @@ func (rt *Router) writeAlertDetail(
 	}
 
 	dto := AlertDetailDTO{AlertDTO: alertDTO(detail.Alert)}
-	occ := detail.CurrentOccurrence
-	if occ == nil {
-		occ = detail.LatestOccurrence
+	ac := detail.CurrentCase
+	if ac == nil {
+		ac = detail.LatestCase
 	}
-	if occ != nil {
-		o := occurrenceDTO(*occ, started)
-		dto.CurrentOccurrence = &o
+	if ac != nil {
+		o := caseDTO(*ac, started)
+		dto.CurrentCase = &o
 	}
 	if detail.Snooze != nil {
 		s := snoozeDTO(*detail.Snooze)

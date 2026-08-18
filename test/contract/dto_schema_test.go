@@ -88,8 +88,8 @@ var bindings = []binding{
 	{"alerts", "AlertRefDTO", alertsapi.AlertRefDTO{}},
 	{"alerts", "AlertEventDTO", alertsapi.AlertEventDTO{}},
 	{"alerts", "AlertRollupDTO", alertsapi.AlertRollupDTO{}},
-	{"alerts", "OccurrenceDTO", alertsapi.OccurrenceDTO{}},
-	{"alerts", "OccurrenceDetailDTO", alertsapi.OccurrenceDetailDTO{}},
+	{"alerts", "CaseDTO", alertsapi.CaseDTO{}},
+	{"alerts", "CaseDetailDTO", alertsapi.CaseDetailDTO{}},
 	{"alerts", "EnrichmentDTO", alertsapi.EnrichmentDTO{}},
 	{"alerts", "EnrichmentSummaryDTO", alertsapi.EnrichmentSummaryDTO{}},
 	{"alerts", "DeliverySummaryDTO", alertsapi.DeliverySummaryDTO{}},
@@ -245,7 +245,7 @@ var queryObjects = map[string]bool{
 // not reach is a failure. Otherwise this map would be the escape hatch that
 // quietly empties the gate.
 var nestedOnly = map[string]string{
-	"alerts.SuppressedByDTO":              "inlined in OccurrenceDTO.suppressed_by",
+	"alerts.SuppressedByDTO":              "inlined in CaseDTO.suppressed_by",
 	"identity.SearchDTO":                  "inlined in MeDTO.search",
 	"notification.PolicyPreviewResultDTO": "inlined in PolicyPreviewDTO",
 	"rules.RuleKeyDTO":                    "inlined in the rules snapshot schemas",
@@ -279,8 +279,8 @@ var unbuiltProperties = map[string]string{
 	// is `X | null` in the contract and no mapper ever sets it.
 	"alerts.AlertDetailDTO.source":                "SourceRefDTO expansion never built",
 	"alerts.AlertDetailDTO.group":                 "GroupRefDTO expansion never built",
-	"alerts.OccurrenceDetailDTO.group":            "GroupRefDTO expansion never built",
-	"alerts.OccurrenceDetailDTO.rule":             "rule expansion never built",
+	"alerts.CaseDetailDTO.group":                  "GroupRefDTO expansion never built",
+	"alerts.CaseDetailDTO.rule":                   "rule expansion never built",
 	"grouping.GroupDetailDTO.source":              "SourceRefDTO expansion never built",
 	"silences.SilenceDetailDTO.source":            "SourceRefDTO expansion never built",
 	"notification.NotificationDetailDTO.alert":    "AlertRefDTO expansion never built",
@@ -290,9 +290,9 @@ var unbuiltProperties = map[string]string{
 	// `listAlertGroupAlerts` serves the same `AlertDTO` schema from its own,
 	// shorter Go struct. These three are `include=`-gated on the alerts list and
 	// that endpoint has no `include=`, so their absence is correct there.
-	"grouping.AlertDTO.current_occurrence": "listAlertGroupAlerts has no include= parameter",
-	"grouping.AlertDTO.enrichments":        "listAlertGroupAlerts has no include= parameter",
-	"grouping.AlertDTO.rule":               "listAlertGroupAlerts has no include= parameter",
+	"grouping.AlertDTO.current_case": "listAlertGroupAlerts has no include= parameter",
+	"grouping.AlertDTO.enrichments":  "listAlertGroupAlerts has no include= parameter",
+	"grouping.AlertDTO.rule":         "listAlertGroupAlerts has no include= parameter",
 }
 
 // unenforceableRequired lists REQUEST properties the contract marks `required`
@@ -929,7 +929,7 @@ func openAPITypeOf(t reflect.Type) (string, bool) {
 //
 // It is a list and not one id because several of these structs serve more than
 // one route — `alerts.TimelineQuery` is the event-list query of both
-// `listAlertEvents` and `listOccurrenceEvents` — and checking only one of them
+// `listAlertEvents` and `listCaseEvents` — and checking only one of them
 // is how the other quietly acquires a parameter nobody reads.
 type queryBinding struct {
 	pkg   string
@@ -959,7 +959,7 @@ var queryBindings = []queryBinding{
 		deepObject: map[string]string{"label": labelSelectorParam}},
 	{pkg: "alerts", opIDs: []string{"listAlertRollups"}, v: alertsapi.ListRollupsQuery{},
 		deepObject: map[string]string{"label": labelSelectorParam}},
-	{pkg: "alerts", opIDs: []string{"listAlertEvents", "listOccurrenceEvents"},
+	{pkg: "alerts", opIDs: []string{"listAlertEvents", "listCaseEvents"},
 		v: alertsapi.TimelineQuery{}},
 	{pkg: "alerts", opIDs: []string{"listLabelNames"}, v: alertsapi.LabelQuery{}},
 	{pkg: "grouping", opIDs: []string{"listAlertGroups"}, v: groupingapi.ListGroupsQuery{}},

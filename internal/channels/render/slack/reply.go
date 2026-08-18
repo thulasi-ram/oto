@@ -104,8 +104,8 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 		// actor — which is why this call site passes `v.Actor != nil` itself.
 		body = ":arrow_uturn_left: *Un-acknowledged*" +
 			by(actorLabel(v), " automatically", v.Actor != nil)
-		if v.Occurrence != nil && v.Occurrence.ReopenCount > 0 {
-			body += " — new occurrence opened"
+		if v.Case != nil && v.Case.ReopenCount > 0 {
+			body += " — new case opened"
 		}
 
 	case reasonNewAlerts:
@@ -122,13 +122,13 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 	case reasonRefired:
 		colour = CardFiring.Colour()
 		body = ":repeat: *Re-fired*"
-		if v.Occurrence != nil {
-			if v.Occurrence.Duration > 0 {
-				body += " after " + humanDuration(v.Occurrence.Duration)
+		if v.Case != nil {
+			if v.Case.Duration > 0 {
+				body += " after " + humanDuration(v.Case.Duration)
 			}
-			body += " — occurrence #" + strconv.Itoa(v.Occurrence.Seq)
-			if v.Occurrence.ReopenCount > 0 {
-				body += ", reopen #" + strconv.Itoa(v.Occurrence.ReopenCount)
+			body += " — case #" + strconv.Itoa(v.Case.Seq)
+			if v.Case.ReopenCount > 0 {
+				body += ", reopen #" + strconv.Itoa(v.Case.ReopenCount)
 			}
 		}
 
@@ -232,11 +232,11 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 func ruleChangedReply(v *domain.NotificationView) (string, string) {
 	rc := v.RuleChange
 	if rc == nil {
-		return ":scroll: *The rule changed since the last occurrence.*", ""
+		return ":scroll: *The rule changed since the last case.*", ""
 	}
 
 	var b strings.Builder
-	b.WriteString(":scroll: *The rule changed since the last occurrence.*")
+	b.WriteString(":scroll: *The rule changed since the last case.*")
 
 	if rc.ExprChanged {
 		b.WriteString("\n```")
@@ -386,7 +386,7 @@ func by(who, impersonal string, attributed bool) string {
 // BEING ANNOUNCED, not of the ack — on a `comment` card it is whoever commented
 // — so reading it unconditionally would print one person's name against another
 // person's action on any card that happens to be in the acknowledged state. The
-// ack has its own frozen attribution on the occurrence, and that is what every
+// ack has its own frozen attribution on the case, and that is what every
 // other card reads.
 //
 // It is one function because the root card's Status field, the root card's
@@ -397,7 +397,7 @@ func by(who, impersonal string, attributed bool) string {
 // "no human is named", and only the ACK's own record can say whether that is a
 // machine or an absence — so `attributed` is true only where this function
 // actually looked at the acknowledgement: the announcing card's own actor, or the
-// occurrence's frozen label. On any other card an unnamed ack is oto not knowing,
+// case's frozen label. On any other card an unnamed ack is oto not knowing,
 // and `by` must render nothing rather than claim a machine took it.
 func ackedBy(v *domain.NotificationView) (who string, attributed bool) {
 	// The card IS the acknowledgement: its own actor is the freshest answer and
@@ -407,8 +407,8 @@ func ackedBy(v *domain.NotificationView) (who string, attributed bool) {
 			return name, true
 		}
 	}
-	if v.Occurrence != nil && v.Occurrence.AckedByLabel != "" {
-		return code(v.Occurrence.AckedByLabel), true
+	if v.Case != nil && v.Case.AckedByLabel != "" {
+		return code(v.Case.AckedByLabel), true
 	}
 	// A recorded actor on the acknowledgement itself that renders to no name is
 	// one of oto's machines, and " automatically" is the true sentence for it.
@@ -419,13 +419,13 @@ func ackedBy(v *domain.NotificationView) (who string, attributed bool) {
 //
 // ⛔ "upstream" IS THE TRUE ANSWER, NOT A HEDGE, and it is why this one does not
 // go through `by`. oto has no write path into the cluster and v1 will not grow
-// one (R3, H-3), and only the reconciler can move an occurrence into
+// one (R3, H-3), and only the reconciler can move a case into
 // `suppressed` — so a silence was ALWAYS created in somebody else's UI, whether
 // or not oto recorded who. Saying nothing would leave a reader to assume oto
 // went quiet by itself, which is the one thing §B.6 will not have a card imply.
 //
 // Unlike an ack, a silence has no frozen attribution anywhere in the read model
-// — `alert_occurrences` keeps the suppression's REASON, never its author — so
+// — `alert_cases` keeps the suppression's REASON, never its author — so
 // the announcing notification is the only card that can name a person at all,
 // and every later amend of the same root honestly says `upstream`.
 func silencedBy(v *domain.NotificationView) string {
@@ -438,8 +438,8 @@ func silencedBy(v *domain.NotificationView) string {
 }
 
 func ackNote(v *domain.NotificationView) string {
-	if v.Occurrence != nil && v.Occurrence.AckNote != "" {
-		return escape(oneLine(v.Occurrence.AckNote))
+	if v.Case != nil && v.Case.AckNote != "" {
+		return escape(oneLine(v.Case.AckNote))
 	}
 	if v.Comment != "" {
 		return escape(oneLine(v.Comment))
@@ -448,8 +448,8 @@ func ackNote(v *domain.NotificationView) string {
 }
 
 func suppressionNote(v *domain.NotificationView) string {
-	if v.Occurrence != nil && v.Occurrence.SuppressionReason != "" {
-		return escape(oneLine(v.Occurrence.SuppressionReason))
+	if v.Case != nil && v.Case.SuppressionReason != "" {
+		return escape(oneLine(v.Case.SuppressionReason))
 	}
 	if v.Comment != "" {
 		return escape(oneLine(v.Comment))
@@ -458,15 +458,15 @@ func suppressionNote(v *domain.NotificationView) string {
 }
 
 func suppressedUntil(v *domain.NotificationView) string {
-	if v.Occurrence != nil && v.Occurrence.EndedAt != nil {
-		return slackDate(*v.Occurrence.EndedAt)
+	if v.Case != nil && v.Case.EndedAt != nil {
+		return slackDate(*v.Case.EndedAt)
 	}
 	return ""
 }
 
 func resolvedAfter(v *domain.NotificationView) string {
-	if v.Occurrence != nil && v.Occurrence.Duration > 0 {
-		return humanDuration(v.Occurrence.Duration)
+	if v.Case != nil && v.Case.Duration > 0 {
+		return humanDuration(v.Case.Duration)
 	}
 	if !v.Group.FirstSeenAt.IsZero() && v.Group.LastActivityAt.After(v.Group.FirstSeenAt) {
 		return humanDuration(v.Group.LastActivityAt.Sub(v.Group.FirstSeenAt))
@@ -476,8 +476,8 @@ func resolvedAfter(v *domain.NotificationView) string {
 
 func unackedFor(v *domain.NotificationView) string {
 	start := v.Group.FirstSeenAt
-	if v.Occurrence != nil && !v.Occurrence.StartedAt.IsZero() {
-		start = v.Occurrence.StartedAt
+	if v.Case != nil && !v.Case.StartedAt.IsZero() {
+		start = v.Case.StartedAt
 	}
 	if start.IsZero() || !v.RenderedAt.After(start) {
 		return ""
@@ -493,7 +493,7 @@ func newlyFiring(v *domain.NotificationView) []domain.AlertView {
 		return out
 	}
 	for _, a := range v.Alerts {
-		if a.State == "firing" && a.TotalOccurrences <= 1 {
+		if a.State == "firing" && a.TotalCases <= 1 {
 			out = append(out, a)
 		}
 	}
@@ -613,8 +613,8 @@ func replyFacts(v *domain.NotificationView) string {
 	case reasonRefired:
 		// "It came back, and it came back fast" is the whole reason a re-fire
 		// broadcasts at all (ADR 0020, Amendment 1). Saying how fast is the point.
-		if v.Occurrence != nil && v.Occurrence.Duration > 0 {
-			facts = append(facts, "firing again after "+humanDuration(v.Occurrence.Duration))
+		if v.Case != nil && v.Case.Duration > 0 {
+			facts = append(facts, "firing again after "+humanDuration(v.Case.Duration))
 		} else {
 			facts = append(facts, "firing again since "+plainClock(groupStart(v)))
 		}

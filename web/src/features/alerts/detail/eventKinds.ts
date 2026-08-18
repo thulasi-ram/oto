@@ -77,54 +77,54 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     shape: "bar",
   },
 
-  "occurrence.opened": {
+  "case.opened": {
     label: "Started firing",
     category: "lifecycle",
     tone: LIFECYCLE_FIRING,
     shape: "dot",
   },
-  "occurrence.reopened": {
+  "case.reopened": {
     label: "Fired again",
     category: "lifecycle",
     tone: LIFECYCLE_FIRING,
     shape: "ring",
     note: "A re-fire inside the grace window reopens the same episode rather than starting a new one.",
   },
-  "occurrence.suppressed": {
+  "case.suppressed": {
     label: "Suppressed upstream",
     category: "lifecycle",
     tone: LIFECYCLE_SUPPRESSED,
     shape: "square",
     note: "Alertmanager stopped delivering this — a silence, an inhibition or a mute window.",
   },
-  "occurrence.unsuppressed": {
+  "case.unsuppressed": {
     label: "No longer suppressed",
     category: "lifecycle",
     tone: LIFECYCLE_FIRING,
     shape: "square",
   },
-  "occurrence.resolved": {
+  "case.resolved": {
     label: "Resolved",
     category: "lifecycle",
     tone: LIFECYCLE_RESOLVED,
     shape: "dot",
     note: "The upstream said this ended.",
   },
-  "occurrence.expired": {
+  "case.expired": {
     label: "Expired",
     category: "lifecycle",
     tone: LIFECYCLE_EXPIRED,
     shape: "diamond",
     note: "oto stopped hearing about this. That is not the same as it being fixed.",
   },
-  "occurrence.acknowledged": {
+  "case.acknowledged": {
     label: "Acknowledged",
     category: "ack",
     tone: LIFECYCLE_ACKED,
     shape: "ring",
     note: "A receipt on a signal — someone has seen it. It is still firing.",
   },
-  "occurrence.unacknowledged": {
+  "case.unacknowledged": {
     label: "Acknowledgement withdrawn",
     category: "ack",
     tone: NEUTRAL,
@@ -133,6 +133,13 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
 
   "group.opened": { label: "Group opened", category: "group", tone: NEUTRAL, shape: "square" },
   "group.closed": { label: "Group closed", category: "group", tone: NEUTRAL, shape: "square" },
+  // ⛔ RETIRED, AND KEPT ANYWAY. Nothing has written either of these since
+  // membership became a property of the case rather than an event (migration
+  // 00051) — `group.member_left` never had a production writer at all. They stay
+  // in this map because `alert_events` is retained thirteen months and old
+  // timelines still carry `group.member_joined`; a kind missing from here renders
+  // as nothing, which is the one outcome a timeline may not have. Delete them when
+  // the last partition holding them is dropped.
   "group.member_joined": {
     label: "Joined a group",
     category: "group",
@@ -173,7 +180,7 @@ export const EVENT_KINDS: Record<AlertEventType, EventKind> = {
     category: "rule",
     tone: NEUTRAL,
     shape: "diamond",
-    note: "oto could not reach the rule's origin, so this occurrence has no snapshot.",
+    note: "oto could not reach the rule's origin, so this case has no snapshot.",
   },
 
   "enrichment.completed": {

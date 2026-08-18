@@ -27,20 +27,20 @@ import (
 // ⛔ THE FIRST IMPLEMENTATION GATED ON AGE AND THE GATE PROTECTED AN EMPTY SET.
 // It refused a batch older than the `ingest_dedup` horizon, on the theory that
 // surviving dedupe keys make a re-append a no-op. But dedupe keys are
-// OCCURRENCE-scoped and a FAILED batch committed nothing, so it holds zero keys
+// CASE-scoped and a FAILED batch committed nothing, so it holds zero keys
 // at any age whatsoever. Meanwhile the real harm sailed straight through: a batch
 // that failed on Monday carrying `firing`, replayed on Thursday after Tuesday's
-// batch resolved the alert, takes T7 — a BRAND NEW occurrence id, which the
+// batch resolved the alert, takes T7 — a BRAND NEW case id, which the
 // dedupe key is keyed to and therefore misses by construction. New episode, new
-// `occurrence.opened`, fresh `notify.evaluate`. Somebody is paged for an incident
+// `case.opened`, fresh `notify.evaluate`. Somebody is paged for an incident
 // that closed two days ago.
 //
 // So the gate is SUPERSESSION, and it has two limbs that no single comparison
 // covers:
 //
-//	(a) OVERTAKEN — `source_updated_at` on the alert's latest occurrence is after
+//	(a) OVERTAKEN — `source_updated_at` on the alert's latest case is after
 //	    the batch's `received_at`. A later batch already wrote here.
-//	(b) CLOSED — that occurrence is terminal while the batch carries `firing`. It
+//	(b) CLOSED — that case is terminal while the batch carries `firing`. It
 //	    is a SEPARATE limb because reaper expiry closes an episode without any
 //	    upstream saying so, and expiry NEVER touches `source_updated_at`: on the
 //	    timestamp axis a reaper-closed alert looks untouched.
@@ -207,7 +207,7 @@ func (e *ingestEnv) queuedReplays(t *testing.T, batchID uuid.UUID) int {
 	return n
 }
 
-// expireOccurrence closes the alert's latest episode the way the REAPER does:
+// expireCase closes the alert's latest episode the way the REAPER does:
 // `expired` / `timeout`, with `source_updated_at` LEFT ALONE.
 //
 // ⭐ THAT LAST CLAUSE IS THE WHOLE TEST. Nothing upstream said anything, so there
@@ -215,19 +215,19 @@ func (e *ingestEnv) queuedReplays(t *testing.T, batchID uuid.UUID) int {
 // limb cannot see this and a second limb has to exist.
 // `endedAt` is passed rather than taken from `now()` so the assertion about it is
 // arithmetic instead of a race with how fast the test ran.
-func (e *ingestEnv) expireOccurrence(t *testing.T, alertname string, endedAt time.Time) {
+func (e *ingestEnv) expireCase(t *testing.T, alertname string, endedAt time.Time) {
 	t.Helper()
 	tag, err := e.pool.Exec(e.ctx, `
-UPDATE alert_occurrences o
+UPDATE alert_cases o
    SET state = 'expired', resolve_reason = 'timeout', ended_at = $3
   FROM alerts a
  WHERE a.id = o.alert_id AND a.org_id = $1 AND a.alertname = $2`,
 		e.orgID, alertname, endedAt)
 	if err != nil {
-		t.Fatalf("expire occurrence: %v", err)
+		t.Fatalf("expire case: %v", err)
 	}
 	if tag.RowsAffected() != 1 {
-		t.Fatalf("expired %d occurrences, want exactly 1", tag.RowsAffected())
+		t.Fatalf("expired %d cases, want exactly 1", tag.RowsAffected())
 	}
 }
 
@@ -317,7 +317,7 @@ func TestReplayRefusesAnOvertakenBatch(t *testing.T) {
 // The episode was closed by the REAPER, so `source_updated_at` still points at
 // the day the alert last fired — BEFORE the failed batch was received. On the
 // timestamp axis nothing has happened. Replay the batch anyway and `selectRule`
-// sees `firing` on a terminal occurrence, takes T7, and mints a new occurrence id
+// sees `firing` on a terminal case, takes T7, and mints a new case id
 // that the `alert_event_keys` dedupe cannot possibly match.
 func TestReplayRefusesAFiringBatchOverAClosedEpisode(t *testing.T) {
 	t.Parallel()
@@ -339,7 +339,7 @@ func TestReplayRefusesAFiringBatchOverAClosedEpisode(t *testing.T) {
 	// The reaper, not an upstream: the grace elapsed a minute after the batch was
 	// received. `source_updated_at` is untouched and still predates the failed
 	// batch, so limb (a) sees a perfectly quiet alert.
-	e.expireOccurrence(t, labels["alertname"], failedAt.Add(time.Minute))
+	e.expireCase(t, labels["alertname"], failedAt.Add(time.Minute))
 
 	before := e.queuedReplays(t, failed)
 

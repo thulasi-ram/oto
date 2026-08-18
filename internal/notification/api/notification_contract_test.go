@@ -62,7 +62,7 @@ const renderedHash = "3b1f8c2e9a7d4f6b0c5e8a1d2f4b6c8e0a3d5f7b9c1e3a5d7f9b1c3e5a
 
 func notificationFixture(id, org uuid.UUID) domain.Notification {
 	alert := notifAlert
-	occ := notifOccurred
+	ac := notifOccurred
 	return domain.Notification{
 		ID:           id,
 		OrgID:        org,
@@ -70,7 +70,7 @@ func notificationFixture(id, org uuid.UUID) domain.Notification {
 		SubjectID:    notifGroup,
 		GroupID:      notifGroup,
 		AlertID:      &alert,
-		OccurrenceID: &occ,
+		CaseID:       &ac,
 		Reason:       domain.ReasonFired,
 		StateVersion: 3,
 		Status:       domain.StatusDelivered,
@@ -339,7 +339,7 @@ func (f *notifViews) Build(
 	return f.view, nil
 }
 
-// notifSubjects resolves an alert or occurrence onto its group generation, and
+// notifSubjects resolves an alert or case onto its group generation, and
 // refuses an id belonging to somebody else.
 type notifSubjects struct{ groupFor map[uuid.UUID]uuid.UUID }
 
@@ -352,13 +352,13 @@ func (f *notifSubjects) GroupIDForAlert(
 	return uuid.Nil, errs.NotFound("alert_not_found", "no such alert")
 }
 
-func (f *notifSubjects) GroupIDForOccurrence(
-	_ context.Context, _ db.TenantScope, occurrenceID uuid.UUID,
+func (f *notifSubjects) GroupIDForCase(
+	_ context.Context, _ db.TenantScope, caseID uuid.UUID,
 ) (uuid.UUID, error) {
-	if g, ok := f.groupFor[occurrenceID]; ok {
+	if g, ok := f.groupFor[caseID]; ok {
 		return g, nil
 	}
-	return uuid.Nil, errs.NotFound("occurrence_not_found", "no such occurrence")
+	return uuid.Nil, errs.NotFound("case_not_found", "no such case")
 }
 
 // notifQueue is the Requeuer. The row moving back to `pending` is the durable
@@ -996,7 +996,7 @@ func TestAPolicyNamingAnUnknownReasonNamesTheOffendingIndex(t *testing.T) {
 
 // TestAPreviewWithNoSubjectNamesTheFieldToSupply.
 //
-// Exactly one of alert_id / occurrence_id / group_id. Previewing against the wrong
+// Exactly one of alert_id / case_id / group_id. Previewing against the wrong
 // subject would produce a confidently wrong answer, which is the one thing this
 // endpoint must never do.
 func TestAPreviewWithNoSubjectNamesTheFieldToSupply(t *testing.T) {

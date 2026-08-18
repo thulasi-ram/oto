@@ -5,7 +5,7 @@ package api
 // `rules_contract_test.go` proves the handler picks the predecessor out of a set
 // of episodes a stub hands it. What a stub cannot show is that the predecessor
 // EXISTS as a row and is found by a query — that "the episode before this one,
-// that had a rule bound to it" is `alert_occurrences` ordered by `seq`, and that
+// that had a rule bound to it" is `alert_cases` ordered by `seq`, and that
 // a newer capture of the same rule key, made for somebody else's alert, does not
 // become one side of this alert's diff.
 //
@@ -90,13 +90,13 @@ func newDriftRig(t *testing.T) *driftRig {
 	}
 
 	alertsSvc, err := alerts.New(alerts.Deps{
-		Alerts:      alertsrepo.NewAlertRepository(h.Pool, h.Clock, false),
-		Occurrences: alertsrepo.NewOccurrenceRepository(h.Pool),
-		Events:      alertsrepo.NewEventRepository(h.Pool, h.Clock),
-		Snoozes:     alertsrepo.NewSnoozeRepository(h.Pool, h.Clock),
-		Tx:          alertsrepo.NewTxRunner(h.Pool),
-		Clock:       h.Clock,
-		Logger:      driftLogger(),
+		Alerts:  alertsrepo.NewAlertRepository(h.Pool, h.Clock, false),
+		Cases:   alertsrepo.NewCaseRepository(h.Pool),
+		Events:  alertsrepo.NewEventRepository(h.Pool, h.Clock),
+		Snoozes: alertsrepo.NewSnoozeRepository(h.Pool, h.Clock),
+		Tx:      alertsrepo.NewTxRunner(h.Pool),
+		Clock:   h.Clock,
+		Logger:  driftLogger(),
 	})
 	require.NoError(t, err)
 	r.alerts = alertsSvc
@@ -133,43 +133,43 @@ func (r *driftRig) alert(t *testing.T, instance string) harness.Alert {
 //
 // The episodes are seeded rather than driven through `ObserveBatch` because what
 // is under test is a read over them: what matters is that `seq` really is the
-// episode ordinal and that `occ_one_open_idx` is really satisfied, both of which
+// episode ordinal and that `case_one_open_idx` is really satisfied, both of which
 // the database enforces here exactly as it does in production.
 func (r *driftRig) open(t *testing.T, a harness.Alert, seq int) uuid.UUID {
 	t.Helper()
 
-	r.h.Exec(`UPDATE alert_occurrences
+	r.h.Exec(`UPDATE alert_cases
 	             SET state = 'resolved', ended_at = $2, resolve_reason = 'upstream'
 	           WHERE alert_id = $1 AND ended_at IS NULL`, a.ID, r.h.Now())
 
-	occID := id.New()
+	caseID := id.New()
 	now := r.h.Now()
-	r.h.Exec(`INSERT INTO alert_occurrences
+	r.h.Exec(`INSERT INTO alert_cases
 	            (id, org_id, alert_id, group_id, seq, state, started_at, last_observed_at,
 	             source_starts_at, source_updated_at)
 	          VALUES ($1, $2, $3, $4, $5, 'firing', $6, $6, $6, $6)`,
-		occID, a.OrgID, a.ID, r.group.ID, seq, now)
-	r.h.Exec(`UPDATE alerts SET current_occurrence_id = $1, total_occurrences = $2, last_seen_at = $3
-	           WHERE id = $4`, occID, seq, now, a.ID)
-	return occID
+		caseID, a.OrgID, a.ID, r.group.ID, seq, now)
+	r.h.Exec(`UPDATE alerts SET current_case_id = $1, total_cases = $2, last_seen_at = $3
+	           WHERE id = $4`, caseID, seq, now, a.ID)
+	return caseID
 }
 
 // capture recovers the rule behind an episode and binds it, which is what the
 // `prom.rule` enricher does at fire time.
-func (r *driftRig) capture(t *testing.T, a harness.Alert, occID uuid.UUID) service.Capture {
+func (r *driftRig) capture(t *testing.T, a harness.Alert, caseID uuid.UUID) service.Capture {
 	t.Helper()
 
 	c, err := r.rules.Capture(r.h.Ctx, r.scope, service.CaptureRequest{
-		SourceID:     r.source,
-		AlertID:      a.ID,
-		OccurrenceID: occID,
-		Labels:       map[string]string{"alertname": driftRuleName, "severity": "critical"},
-		Annotations:  map[string]string{"summary": "error rate high"},
+		SourceID:    r.source,
+		AlertID:     a.ID,
+		CaseID:      caseID,
+		Labels:      map[string]string{"alertname": driftRuleName, "severity": "critical"},
+		Annotations: map[string]string{"summary": "error rate high"},
 	})
 	require.NoError(t, err)
 	require.True(t, c.Recovered(), "the fixture must recover a definition")
 	require.NoError(t, r.alerts.BindRuleSnapshot(
-		r.h.Ctx, r.scope, occID, uuid.MustParse(c.Snapshot.ID)))
+		r.h.Ctx, r.scope, caseID, uuid.MustParse(c.Snapshot.ID)))
 	return c
 }
 

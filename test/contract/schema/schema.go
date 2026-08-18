@@ -180,7 +180,7 @@ func parse() (*document, error) {
 	c := jsonschema.NewCompiler()
 	c.DefaultDraft(jsonschema.Draft2020)
 	// Formats are asserted. `format: date-time` and `format: uuid` are load
-	// bearing here: an occurrence timestamp emitted as a unix integer, or an id
+	// bearing here: a case timestamp emitted as a unix integer, or an id
 	// emitted as an internal integer key, is precisely the drift this package
 	// exists to catch, and without assertion both would pass as "a string".
 	c.AssertFormat()

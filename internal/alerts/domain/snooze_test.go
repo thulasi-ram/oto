@@ -48,7 +48,7 @@ func TestSnoozeIsNotAState(t *testing.T) {
 }
 
 // TestSnoozeIsNotASuppressionReason is snooze.go's ⛔ note 2:
-// `alert_occurrences.suppression_reason` mirrors ALERTMANAGER'S FOUR REASONS and
+// `alert_cases.suppression_reason` mirrors ALERTMANAGER'S FOUR REASONS and
 // nothing else. Adding `snoozed` would make oto report "Alertmanager is
 // suppressing this" when the truth is "a human asked oto to be quiet".
 func TestSnoozeIsNotASuppressionReason(t *testing.T) {
@@ -68,15 +68,27 @@ func TestSnoozeIsNotASuppressionReason(t *testing.T) {
 
 // TestSnoozeAndSilenceAreRepresentableSimultaneously — both facts are about two
 // different systems and neither overrides the other.
+//
+// The two now live on two rows, which is the shape of the claim: `alerts.state`
+// says what Alertmanager is doing and the `alert_snoozes` row says what oto is
+// doing, and nothing on the Alert can express the second.
 func TestSnoozeAndSilenceAreRepresentableSimultaneously(t *testing.T) {
 	p := validAlertParams(t)
 	p.State = StateSuppressed
-	p.SnoozedUntil = t0.Add(time.Hour)
 	a, err := NewAlert(p)
 	require.NoError(t, err)
 
+	sp := validSnoozeParams(t)
+	sp.AlertID = a.ID()
+	sp.OrgID = a.OrgID()
+	sp.AlertKey = a.Key()
+	sp.SnoozedAt = t0
+	sp.SnoozedUntil = t0.Add(time.Hour)
+	snz, err := NewSnooze(sp)
+	require.NoError(t, err)
+
 	assert.Equal(t, StateSuppressed, a.State(), "Alertmanager is suppressing this")
-	assert.True(t, a.IsSnoozedAt(t0), "and oto is separately being quiet about it")
+	assert.True(t, snz.IsActiveAt(t0), "and oto is separately being quiet about it")
 	assert.Equal(t, SeverityCritical, a.Severity(), "neither touches severity")
 }
 
@@ -261,7 +273,7 @@ func TestStartSnooze(t *testing.T) {
 	ev := events[0]
 	assert.Equal(t, EventAlertSnoozed, ev.Type())
 	assert.Equal(t, a.ID(), ev.AlertID())
-	assert.Equal(t, uuid.Nil, ev.OccurrenceID(), "a snooze is a fact about the ALERT, not one episode")
+	assert.Equal(t, uuid.Nil, ev.CaseID(), "a snooze is a fact about the ALERT, not one episode")
 	assert.Equal(t, "Notifications snoozed by Ram", ev.Summary(),
 		"a snooze that does not announce itself is the silent suppression §B.6 forbids")
 	assert.Equal(t, "snooze:"+snoozeIDFix.String()+":started", ev.DedupeKey())
@@ -276,9 +288,7 @@ func TestStartSnooze(t *testing.T) {
 // TestStartSnooze_DoesNotTouchTheSignal — §B.8: it changes nothing in the
 // cluster, nothing upstream, and nothing about the signal's state.
 func TestStartSnooze_DoesNotTouchTheSignal(t *testing.T) {
-	p := validAlertParams(t)
-	p.AckState = AckStateAcked
-	a, err := NewAlert(p)
+	a, err := NewAlert(validAlertParams(t))
 	require.NoError(t, err)
 
 	before := a
@@ -293,7 +303,6 @@ func TestStartSnooze_DoesNotTouchTheSignal(t *testing.T) {
 
 	assert.Equal(t, before, a, "StartSnooze has no code path by which it could alter the Alert")
 	assert.Equal(t, StateFiring, a.State())
-	assert.Equal(t, AckStateAcked, a.AckState())
 	assert.Equal(t, SeverityCritical, a.Severity())
 	assert.InDelta(t, before.FlapScore(), a.FlapScore(), 1e-6)
 }

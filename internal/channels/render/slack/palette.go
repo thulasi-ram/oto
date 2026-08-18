@@ -2,7 +2,7 @@ package slack
 
 import "github.com/thulasiram/oto/internal/channels/domain"
 
-// CardState is what the card's colour says. It is NOT AlertOccurrence.State: a
+// CardState is what the card's colour says. It is NOT AlertCase.State: a
 // group has many members, and the card must answer one question — "do I need to
 // act?" — with one colour (S4).
 type CardState string

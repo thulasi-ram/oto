@@ -94,7 +94,7 @@ type HealthWarningDTO struct {
 // SourceHealthDTO is liveness, lag, skew and divergence for one source.
 //
 // This is not decoration: HEALTH GATES THE REAPER (§B.4). While `status` is
-// anything other than `healthy`, occurrences are held in place and cannot be
+// anything other than `healthy`, cases are held in place and cannot be
 // expired, so killing Alertmanager can never make oto conclude that every alert
 // went away.
 type SourceHealthDTO struct {

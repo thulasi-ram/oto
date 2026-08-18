@@ -39,7 +39,7 @@ func TestBoundsAreEnforcedServerSide(t *testing.T) {
 			field: "refire_grace_s",
 		},
 		{
-			// Two incidents a day apart would merge into one occurrence, and the
+			// Two incidents a day apart would merge into one case, and the
 			// history would lie about how many times this happened.
 			name:  "refire_grace above the ceiling",
 			patch: domain.SettingsPatch{RefireGraceS: intp(90000)},

@@ -125,14 +125,14 @@ describe("violations", () => {
 describe("the request primitive", () => {
   it("unwraps the item envelope and sends the idempotency key exactly once", async () => {
     const fetchStub = stubFetch({
-      "POST /api/v1/alerts/a1/ack": item({ id: "occ-1", state: "firing" }),
+      "POST /api/v1/alerts/a1/ack": item({ id: "ac-1", state: "firing" }),
     });
 
-    const occ = await postItem<{ id: string }>("/api/v1/alerts/a1/ack", { note: "seen" }, {
+    const ac = await postItem<{ id: string }>("/api/v1/alerts/a1/ack", { note: "seen" }, {
       idempotencyKey: "key-1",
     });
 
-    expect(occ.id).toBe("occ-1");
+    expect(ac.id).toBe("ac-1");
     const call = fetchStub.calls[0];
     expect(call?.method).toBe("POST");
     expect(call?.headers["Idempotency-Key"]).toBe("key-1");

@@ -90,62 +90,131 @@ SELECT g.id, g.group_key, g.generation, coalesce(g.source_group_key,''), g.recei
 //
 // It is `min(source_starts_at)` over the members that are still live, because
 // that — not oto's `first_seen_at` — is when the thing an operator is being
-// woken up about actually began. `started_at` is the fallback for an occurrence
+// woken up about actually began. `started_at` is the fallback for a case
 // whose upstream sent no usable `startsAt`; taking the two in one `least` keeps
 // a member with a missing upstream time from dropping out of the aggregate
 // entirely.
 //
-// It reads every occurrence of the GENERATION rather than only the live ones, so
-// a resolved card's Duration still spans the whole episode. `occ_group_idx`
+// It reads every case of the GENERATION rather than only the live ones, so
+// a resolved card's Duration still spans the whole episode. `case_group_idx`
 // (org_id, group_id, started_at DESC) is the index it uses.
 const groupFiringSinceSQL = `
 SELECT min(least(o.source_starts_at, o.started_at))
-  FROM alert_occurrences o
+  FROM alert_cases o
  WHERE o.org_id = $1 AND o.group_id = $2`
 
+// memberAlertsSQL reads the group's members, and takes each member's ack FROM
+// THE MEMBER'S OWN EPISODE.
+//
+// ⭐ THE MEMBER IS THE EPISODE. Since migration 00051 there is no join table:
+// `alert_cases.group_id` IS the membership, so the row this query drives
+// from already carries the ack, and the ack it carries is the receipt for the very
+// firing this card is about. `alerts` no longer carries an ack column at all — an
+// ack is a statement about one episode and a projection onto the Alert outlives
+// its subject.
+//
+// ⭐ `o.ended_at IS NULL` IS THE MEMBERSHIP PREDICATE, and it replaces
+// `m.left_at IS NULL`, which matched every row that had ever been inserted because
+// nothing ever wrote `left_at`. The card used to list resolved and expired
+// episodes as current members — and list an alert twice if it had resolved and
+// re-fired inside one generation. `case_terminal_ended` makes this clause exactly
+// `state IN ('firing','suppressed')`, and the state machine writes it.
+//
+// The join to `alerts` is by primary key, the cheapest read in the schema, and it
+// is INNER: an episode without its alert is not a row that can exist.
+//
+// ⭐ ONE ROW PER ALERT IS NOW STRUCTURAL. `case_one_open_idx` is UNIQUE (alert_id)
+// WHERE ended_at IS NULL, so "the live episodes of this generation" cannot contain
+// the same alert twice. The join table could and did.
+//
+// ⭐⭐ THE SNOOZE COMES FROM `alert_snoozes`, AND THE JOIN THAT FETCHES IT IS THE
+// POINT OF THIS QUERY'S SECOND HALF. Whether oto speaks about this group is
+// decided from `SnoozedMemberCount` below; deciding it from a denormalised
+// `alerts.snoozed_until` meant the answer came from a bare timestamp maintained
+// by a write path in another module, and a bare timestamp cannot name the person
+// who asked for quiet, what they wrote, or how the quiet period ended. The
+// authoritative row carries all three, one column-list entry away from here.
+//
+// It costs approximately nothing. `alert_snoozes_active_idx` is
+// UNIQUE (alert_id) WHERE ended_at IS NULL, so the relation this LEFT JOIN builds
+// from is the snoozes CURRENTLY IN FORCE across the whole tenant — dozens of rows.
+// It hashes once and the members stream past it whether the group holds five or
+// five thousand. The uniqueness is also what makes it safe: at most one live
+// snooze per alert means the join cannot duplicate a member.
+//
+// LEFT, so an awake alert is still a member. `snoozed_until` arrives NULL, which
+// is exactly what `AlertFacts.Snoozed` reads as "not quiet".
 const memberAlertsSQL = `
 SELECT a.id, a.alert_key, a.source_fingerprint, a.alertname,
        coalesce(a.severity,''), coalesce(a.namespace,''), coalesce(a.service,''),
        a.cluster_key, a.labels, a.annotations, coalesce(a.generator_url,''),
-       a.state, a.ack_state, a.snoozed_until, a.first_seen_at, a.last_seen_at,
-       a.total_occurrences, a.is_flapping, a.flap_score
-  FROM alert_group_members m
-  JOIN alerts a ON a.id = m.alert_id
- WHERE m.org_id = $1 AND m.group_id = $2 AND m.left_at IS NULL
+       a.state, o.ack_state, z.snoozed_until,
+       a.first_seen_at, a.last_seen_at,
+       a.total_cases, a.is_flapping, a.flap_score
+  FROM alert_cases o
+  JOIN alerts a ON a.id = o.alert_id
+  LEFT JOIN alert_snoozes z
+         ON z.alert_id = a.id AND z.org_id = a.org_id AND z.ended_at IS NULL
+ WHERE o.org_id = $1 AND o.group_id = $2 AND o.ended_at IS NULL
  ORDER BY a.last_seen_at DESC, a.id DESC
  LIMIT $3`
 
+// memberCountsSQL counts over EVERY current member, not over the capped page
+// `memberAlertsSQL` returns — the suppression decision must not depend on how
+// many instances the renderer happens to show.
+//
+// The snooze half asks the same question of the same table as the query above,
+// through the same partial unique index, and `$3` is the instant it is asked at:
+// a row whose `ended_at` is still NULL but whose clock ran out belongs to a
+// snooze the 60-second `snooze.expire` job has not swept yet, and oto must be
+// speaking again by then.
 const memberCountsSQL = `
 SELECT count(*),
-       count(*) FILTER (WHERE a.snoozed_until IS NOT NULL AND a.snoozed_until > $3)
-  FROM alert_group_members m
-  JOIN alerts a ON a.id = m.alert_id
- WHERE m.org_id = $1 AND m.group_id = $2 AND m.left_at IS NULL`
+       count(*) FILTER (WHERE z.snoozed_until IS NOT NULL AND z.snoozed_until > $3)
+  FROM alert_cases o
+  JOIN alerts a ON a.id = o.alert_id
+  LEFT JOIN alert_snoozes z
+         ON z.alert_id = a.id AND z.org_id = a.org_id AND z.ended_at IS NULL
+ WHERE o.org_id = $1 AND o.group_id = $2 AND o.ended_at IS NULL`
 
+// focusAlertSQL reads the one Alert the intent is about, with its ack taken from
+// the case it is currently having. There is no member row to key off here, so
+// the case is the CURRENT case — the same episode `include=current_case`
+// expands on the alert list, and the only episode about which an ack still says
+// anything true.
+//
+// Its snooze comes from `alert_snoozes` for the same reason the members' does,
+// and it MATTERS MORE HERE: a fact about one alert is decided by that alert's own
+// snooze (§B.8.1), so this join is the whole input to `Snapshot.FocusSnoozed` and
+// therefore to whether oto says anything at all.
 const focusAlertSQL = `
 SELECT a.id, a.alert_key, a.source_fingerprint, a.alertname,
        coalesce(a.severity,''), coalesce(a.namespace,''), coalesce(a.service,''),
        a.cluster_key, a.labels, a.annotations, coalesce(a.generator_url,''),
-       a.state, a.ack_state, a.snoozed_until, a.first_seen_at, a.last_seen_at,
-       a.total_occurrences, a.is_flapping, a.flap_score
+       a.state, coalesce(o.ack_state,'unacked'), z.snoozed_until,
+       a.first_seen_at, a.last_seen_at,
+       a.total_cases, a.is_flapping, a.flap_score
   FROM alerts a
+  LEFT JOIN alert_cases o ON o.id = a.current_case_id
+  LEFT JOIN alert_snoozes z
+         ON z.alert_id = a.id AND z.org_id = a.org_id AND z.ended_at IS NULL
  WHERE a.org_id = $1 AND a.id = $2`
 
-const occurrenceByIDSQL = `
+const caseByIDSQL = `
 SELECT id, alert_id, seq, state, coalesce(suppression_reason,''),
        coalesce(resolve_reason,''), started_at, ended_at, reopen_count,
        ack_state, coalesce(acked_by_label,''), acked_at, coalesce(ack_note,''),
        rule_snapshot_id
-  FROM alert_occurrences
+  FROM alert_cases
  WHERE org_id = $1 AND id = $2`
 
-const currentOccurrenceSQL = `
+const currentCaseSQL = `
 SELECT o.id, o.alert_id, o.seq, o.state, coalesce(o.suppression_reason,''),
        coalesce(o.resolve_reason,''), o.started_at, o.ended_at, o.reopen_count,
        o.ack_state, coalesce(o.acked_by_label,''), o.acked_at, coalesce(o.ack_note,''),
        o.rule_snapshot_id
   FROM alerts a
-  JOIN alert_occurrences o ON o.id = a.current_occurrence_id
+  JOIN alert_cases o ON o.id = a.current_case_id
  WHERE a.org_id = $1 AND a.id = $2`
 
 const ruleSnapshotSQL = `
@@ -159,7 +228,7 @@ const previousRuleSnapshotSQL = `
 SELECT rs.id, rs.rule_fingerprint, rs.rule_file, rs.rule_group, rs.rule_name,
        rs.expr, rs.for_seconds, rs.keep_firing_for_seconds, rs.rule_labels,
        rs.rule_annotations, rs.origin, rs.match_confidence, rs.captured_at
-  FROM alert_occurrences o
+  FROM alert_cases o
   JOIN rule_snapshots rs ON rs.id = o.rule_snapshot_id
  WHERE o.org_id = $1 AND o.alert_id = $2 AND o.seq < $3
    AND o.rule_snapshot_id IS NOT NULL
@@ -199,9 +268,12 @@ const groupTrailSQL = `
 SELECT type, occurred_at, coalesce(actor_label,'')
   FROM alert_events
  WHERE org_id = $1 AND group_id = $2
-   AND type IN ('occurrence.opened','occurrence.reopened','occurrence.suppressed',
-                'occurrence.unsuppressed','occurrence.resolved','occurrence.expired',
-                'occurrence.acknowledged','occurrence.unacknowledged',
+   AND type IN ('case.opened','case.reopened','case.suppressed',
+                'case.unsuppressed','case.resolved','case.expired',
+                'case.acknowledged','case.unacknowledged',
+                -- vocab:allow -- pre-ADR-0036 spellings of the same eight facts, still on disk for thirteen months (alerts/domain.legacySpellings, migration 00052). Dropping them here would empty the state trail of any generation that opened before the rename.
+                'occurrence.opened','occurrence.reopened','occurrence.suppressed','occurrence.unsuppressed',
+                'occurrence.resolved','occurrence.expired','occurrence.acknowledged','occurrence.unacknowledged',
                 'group.opened','group.closed','group.storm_started','group.storm_ended')
  ORDER BY recorded_at DESC, id DESC
  LIMIT $3`
@@ -225,41 +297,61 @@ SELECT type, occurred_at, coalesce(actor_label,'')
 // ⚠️ THE VALUES ARE THE KERNEL'S ENUM, NOT FOUR MORE STRING LITERALS. They used to
 // be spelled out here, and a typo in one produced a query that silently matched
 // nothing — worse than a bad write, because a read that returns no rows looks
-// exactly like a fact that never happened. Here that hazard is GONE rather than
-// gated: the value is bound as a parameter, so `.String()` happens at the bind in
-// readCause and a value that has left the enum is a compile error.
+// exactly like a fact that never happened. Binding the value gates the TYPO: a
+// constant that has left the enum is a compile error.
+//
+// ⛔ IT DOES NOT GATE THE RENAME, AND AN EARLIER VERSION OF THIS COMMENT CLAIMED
+// THE HAZARD WAS "GONE RATHER THAN GATED". Three of these four values were renamed
+// by ADR 0036, and 00052 deliberately did NOT rewrite `alert_events` — so an ack
+// written before the rename is on disk as `occurrence.acknowledged` and a predicate
+// built from `.String()` alone matches ZERO of them, for the whole thirteen-month
+// retention. `readCause` therefore binds `PersistedSpellings()` and the three
+// statements say `type = ANY($3)`; `internal/alerts/domain.EventType` states the
+// rule ("USE IT FOR EVERY PREDICATE ON alert_events.type, never String()") and this
+// is a predicate, whether the value arrives as a literal or as a parameter.
+// `test/arch.TestEventTypeSQLNamesLiveValues` cannot see this one: it reads SQL
+// string literals, and a bound parameter has none.
 //
 // ⚠️ IT IS NOT TRUE OF THIS WHOLE FILE, AND AN EARLIER VERSION OF THIS COMMENT
 // IMPLIED IT WAS. `groupTrailSQL`, forty lines up, still spells twelve of these
 // values out — it must, because they sit in a predicate rather than a parameter —
-// so `occurrence.acknowledged` IS still written in Go in this package. What
+// so `case.acknowledged` IS still written in Go in this package. What
 // changed is that the copy is now registered and checked: see that statement's own
 // comment and `test/arch.TestEventTypeSQLNamesLiveValues`.
 var causeEventTypes = map[domain.Reason]kernel.EventType{
-	domain.ReasonAcked:      kernel.EventOccurrenceAcknowledged,
-	domain.ReasonUnacked:    kernel.EventOccurrenceUnacknowledged,
+	domain.ReasonAcked:      kernel.EventCaseAcknowledged,
+	domain.ReasonUnacked:    kernel.EventCaseUnacknowledged,
 	domain.ReasonComment:    kernel.EventCommentAdded,
-	domain.ReasonSuppressed: kernel.EventOccurrenceSuppressed,
+	domain.ReasonSuppressed: kernel.EventCaseSuppressed,
 }
 
-// causeByOccurrenceSQL, causeByAlertSQL and causeByGroupSQL read the ONE event
+// causeByCaseSQL, causeByAlertSQL and causeByGroupSQL read the ONE event
 // that caused the fact being rendered: the newest of its type against the
 // narrowest subject the notification names.
 //
 // Three statements rather than one with an `OR`, because an `OR` across three
-// columns cannot use any of their indexes: they ride `ev_occ_idx`
-// (org_id, occurrence_id, recorded_at DESC, id DESC), `ev_alert_idx` and
+// columns cannot use any of their indexes: they ride `ev_case_idx`
+// (org_id, case_id, recorded_at DESC, id DESC), `ev_alert_idx` and
 // `ev_group_idx` respectively, and each is a LIMIT 1 walk backwards from the
 // newest row.
 //
 // `payload->>'body'` is the comment's text and is NULL for the other three
 // types, which is why one set of statements serves all four: the body column is
 // simply empty for a fact that has no text.
-const causeByOccurrenceSQL = `
+//
+// ⛔ `type = ANY($3)` AND NOT `type = $3`. $3 is every string the column may hold
+// for this fact — `PersistedSpellings()`, canonical plus any pre-ADR-0036 spelling
+// — because 00052 left thirteen months of `occurrence.*` rows on disk. With the
+// equality, an ack from before the rename returned `pgx.ErrNoRows`, `readCause`
+// gave up silently, and the card rendered an acknowledgement with NO ACKER NAME,
+// indistinguishable from an ack nobody made. `ANY` over a one-to-two element array
+// is still an index range per element on `ev_case_idx` / `ev_alert_idx` /
+// `ev_group_idx`, so the LIMIT 1 walk backwards from the newest row is unchanged.
+const causeByCaseSQL = `
 SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
        coalesce(payload->>'body','')
   FROM alert_events
- WHERE org_id = $1 AND occurrence_id = $2 AND type = $3
+ WHERE org_id = $1 AND case_id = $2 AND type = ANY($3)
  ORDER BY recorded_at DESC, id DESC
  LIMIT 1`
 
@@ -267,7 +359,7 @@ const causeByAlertSQL = `
 SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
        coalesce(payload->>'body','')
   FROM alert_events
- WHERE org_id = $1 AND alert_id = $2 AND type = $3
+ WHERE org_id = $1 AND alert_id = $2 AND type = ANY($3)
  ORDER BY recorded_at DESC, id DESC
  LIMIT 1`
 
@@ -275,7 +367,7 @@ const causeByGroupSQL = `
 SELECT actor_kind, coalesce(actor_id,''), coalesce(actor_label,''),
        coalesce(payload->>'body','')
   FROM alert_events
- WHERE org_id = $1 AND group_id = $2 AND type = $3
+ WHERE org_id = $1 AND group_id = $2 AND type = ANY($3)
  ORDER BY recorded_at DESC, id DESC
  LIMIT 1`
 
@@ -296,13 +388,13 @@ SELECT count(*)
 const enrichmentsSQL = `
 SELECT enricher, status, payload, warnings, coalesce(error,''), computed_at
   FROM enrichments
- WHERE org_id = $1 AND subject_kind = 'occurrence' AND subject_id = $2
+ WHERE org_id = $1 AND subject_kind = 'case' AND subject_id = $2
  ORDER BY enricher ASC`
 
 // Snapshot builds the whole read model for one delivery, AT CLAIM TIME.
 //
 // It is several round trips on purpose rather than one heroic join. The group,
-// its members, the focused occurrence, the rule and the enrichments have
+// its members, the focused case, the rule and the enrichments have
 // genuinely different cardinalities, and a single query would either fan the
 // group's columns out across every member row or need lateral subqueries that
 // nobody can read a year from now. Delivery is not the hot path — ingestion is —
@@ -325,10 +417,10 @@ func (r *SnapshotRepository) Snapshot(
 	if err := r.readMembers(ctx, s, q, now, &snap); err != nil {
 		return domain.Snapshot{}, err
 	}
-	if err := r.readFocus(ctx, s, q, &snap); err != nil {
+	if err := r.readFocus(ctx, s, q, now, &snap); err != nil {
 		return domain.Snapshot{}, err
 	}
-	if err := r.readOccurrence(ctx, s, q, &snap); err != nil {
+	if err := r.readCase(ctx, s, q, &snap); err != nil {
 		return domain.Snapshot{}, err
 	}
 	r.readTrail(ctx, s, q.GroupID, &snap)
@@ -367,23 +459,23 @@ func (r *SnapshotRepository) readCause(
 
 	// The NARROWEST subject the notification names, and every one of these
 	// reasons names an EPISODE in production — `alerts` enqueues them from the
-	// occurrence it just moved. That matters: a group is many alerts acknowledged
+	// case it just moved. That matters: a group is many alerts acknowledged
 	// one at a time, so a group-scoped read would return whichever member was
 	// acted on last and put one person's name against another person's action.
 	// The group is the fallback for a preview that names nothing narrower.
 	//
-	// ⛔ IT NARROWS EXACTLY AS `readOccurrence` DOES, INCLUDING THE ALERT
-	// FALLBACK, and the two must not drift. `readOccurrence` answers "which
-	// episode is this card about" from the occurrence id and then from the alert
+	// ⛔ IT NARROWS EXACTLY AS `readCase` DOES, INCLUDING THE ALERT
+	// FALLBACK, and the two must not drift. `readCase` answers "which
+	// episode is this card about" from the case id and then from the alert
 	// id; this answers "who caused that card". A preview by `alert_id` — the
-	// policy-preview endpoint takes exactly one of alert/occurrence/group and any
+	// policy-preview endpoint takes exactly one of alert/case/group and any
 	// reason — would otherwise pair Ada's episode with the whole GROUP's newest
 	// acknowledgement, which is grace's, and render "Acknowledged by grace" over
 	// Ada's alert. For `comment` it would drag the sibling's WORDS across too.
 	sql, subject := causeByGroupSQL, q.GroupID
 	switch {
-	case q.OccurrenceID != nil:
-		sql, subject = causeByOccurrenceSQL, *q.OccurrenceID
+	case q.CaseID != nil:
+		sql, subject = causeByCaseSQL, *q.CaseID
 	case q.AlertID != nil:
 		sql, subject = causeByAlertSQL, *q.AlertID
 	}
@@ -392,7 +484,11 @@ func (r *SnapshotRepository) readCause(
 		actor domain.ActorFacts
 		body  string
 	)
-	if err := r.db(ctx).QueryRow(ctx, sql, s.OrgID(), subject, eventType.String()).
+	// ⛔ `PersistedSpellings()`, never `String()`. See `causeByCaseSQL`: three of the
+	// four types in `causeEventTypes` were renamed by ADR 0036, 00052 left the old
+	// rows spelled the old way, and a predicate over the canonical value alone is
+	// valid SQL that stops matching everything written before the rename.
+	if err := r.db(ctx).QueryRow(ctx, sql, s.OrgID(), subject, eventType.PersistedSpellings()).
 		Scan(&actor.Kind, &actor.ID, &actor.Label, &body); err != nil {
 		return
 	}
@@ -517,7 +613,8 @@ func (r *SnapshotRepository) readMembers(
 }
 
 func (r *SnapshotRepository) readFocus(
-	ctx context.Context, s db.TenantScope, q domain.SnapshotQuery, snap *domain.Snapshot,
+	ctx context.Context, s db.TenantScope, q domain.SnapshotQuery, now time.Time,
+	snap *domain.Snapshot,
 ) error {
 	if q.AlertID == nil {
 		return nil
@@ -533,50 +630,56 @@ func (r *SnapshotRepository) readFocus(
 		return mapErr(err, "alert_not_found", "focus alert")
 	}
 	snap.Focus = &a
-	if a.SnoozedUntil != nil {
+	// ⚠️ THE `After(now)` GUARD IS THE SAME ONE `readMembers` APPLIES, and until
+	// this change only one of the two had it. `alert_snoozes.ended_at IS NULL`
+	// means "not yet swept", not "still in force": the expiry job runs every 60
+	// seconds, so for up to a minute a row is live and its clock has run out. A
+	// map entry written without this guard would report the focus as quiet after
+	// oto should already be speaking again.
+	if a.Snoozed(now) {
 		snap.SnoozedAlerts[a.ID] = *a.SnoozedUntil
 	}
 	return nil
 }
 
-func (r *SnapshotRepository) readOccurrence(
+func (r *SnapshotRepository) readCase(
 	ctx context.Context, s db.TenantScope, q domain.SnapshotQuery, snap *domain.Snapshot,
 ) error {
 	var (
 		row      pgx.Row
-		occ      domain.OccurrenceFacts
+		ac       domain.CaseFacts
 		alertID  uuid.UUID
 		ruleSnap *uuid.UUID
 	)
 	switch {
-	case q.OccurrenceID != nil:
-		row = r.db(ctx).QueryRow(ctx, occurrenceByIDSQL, s.OrgID(), *q.OccurrenceID)
+	case q.CaseID != nil:
+		row = r.db(ctx).QueryRow(ctx, caseByIDSQL, s.OrgID(), *q.CaseID)
 	case q.AlertID != nil:
-		row = r.db(ctx).QueryRow(ctx, currentOccurrenceSQL, s.OrgID(), *q.AlertID)
+		row = r.db(ctx).QueryRow(ctx, currentCaseSQL, s.OrgID(), *q.AlertID)
 	default:
 		return nil
 	}
 
 	err := row.Scan(
-		&occ.ID, &alertID, &occ.Seq, &occ.State, &occ.SuppressionReason,
-		&occ.ResolveReason, &occ.StartedAt, &occ.EndedAt, &occ.ReopenCount,
-		&occ.AckState, &occ.AckedByLabel, &occ.AckedAt, &occ.AckNote, &ruleSnap,
+		&ac.ID, &alertID, &ac.Seq, &ac.State, &ac.SuppressionReason,
+		&ac.ResolveReason, &ac.StartedAt, &ac.EndedAt, &ac.ReopenCount,
+		&ac.AckState, &ac.AckedByLabel, &ac.AckedAt, &ac.AckNote, &ruleSnap,
 	)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil
 	case err != nil:
-		return mapErr(err, "occurrence_not_found", "occurrence")
+		return mapErr(err, "case_not_found", "case")
 	}
-	snap.Occurrence = &occ
+	snap.Case = &ac
 
-	if err := r.readEnrichments(ctx, s, occ.ID, snap); err != nil {
+	if err := r.readEnrichments(ctx, s, ac.ID, snap); err != nil {
 		return err
 	}
 	if ruleSnap == nil {
 		return nil
 	}
-	return r.readRule(ctx, s, *ruleSnap, alertID, occ.Seq, snap)
+	return r.readRule(ctx, s, *ruleSnap, alertID, ac.Seq, snap)
 }
 
 func (r *SnapshotRepository) readRule(
@@ -610,9 +713,9 @@ func (r *SnapshotRepository) readRule(
 }
 
 func (r *SnapshotRepository) readEnrichments(
-	ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID, snap *domain.Snapshot,
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID, snap *domain.Snapshot,
 ) error {
-	rows, err := r.db(ctx).Query(ctx, enrichmentsSQL, s.OrgID(), occurrenceID)
+	rows, err := r.db(ctx).Query(ctx, enrichmentsSQL, s.OrgID(), caseID)
 	if err != nil {
 		return mapErr(err, "enrichment_not_found", "list enrichments")
 	}
@@ -647,7 +750,7 @@ func scanAlertFacts(row pgx.Row) (domain.AlertFacts, error) {
 		&a.ID, &a.AlertKey, &a.SourceFingerprint, &a.AlertName, &a.Severity,
 		&a.Namespace, &a.Service, &a.ClusterKey, &labels, &annotation,
 		&a.GeneratorURL, &a.State, &a.AckState, &a.SnoozedUntil,
-		&a.FirstSeenAt, &a.LastSeenAt, &a.TotalOccurrences, &a.IsFlapping, &a.FlapScore,
+		&a.FirstSeenAt, &a.LastSeenAt, &a.TotalCases, &a.IsFlapping, &a.FlapScore,
 	)
 	if err != nil {
 		return domain.AlertFacts{}, err
@@ -678,7 +781,7 @@ func scanRuleFacts(row pgx.Row) (domain.RuleFacts, error) {
 }
 
 // diffRules is the headline differentiator's payload: what actually changed in
-// the rule between two occurrences of the same alert.
+// the rule between two cases of the same alert.
 //
 // It compares the DEFINITION, not the rendered text: an expression that was
 // reformatted is not a change an operator needs woken up about, and one whose

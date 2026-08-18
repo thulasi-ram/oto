@@ -48,9 +48,9 @@ func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
 
 	// 1. The sweep reads its candidates, outside any transaction.
 	before := now.Add(-cfg.ResolveGrace)
-	candidates, err := f.occurrences.ReapCandidates(ctx, f.scope, before, 10)
+	candidates, err := f.cases.ReapCandidates(ctx, f.scope, before, 10)
 	require.NoError(t, err)
-	require.Len(t, candidates, 1, "the occurrence should be past source_ends_at + resolve_grace")
+	require.Len(t, candidates, 1, "the case should be past source_ends_at + resolve_grace")
 	stale := candidates[0]
 
 	// 2. A webhook arrives while the sweep is resolving sources and health. T2
@@ -61,7 +61,7 @@ func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
 	_, err = f.svc.ObserveBatch(ctx, f.scope, []domain.Observation{fresh}, ObserveOptions{})
 	require.NoError(t, err)
 
-	refreshed := f.currentOccurrence()
+	refreshed := f.currentCase()
 	require.True(t, refreshed.SourceEndsAt().After(now),
 		"the webhook should have moved source_ends_at into the future")
 
@@ -71,24 +71,24 @@ func TestReaperDoesNotExpireAnAlertAWebhookJustRefreshed(t *testing.T) {
 	assert.False(t, expired, "the reaper must stand down, not expire a refreshed alert")
 
 	// ⭐ THE ASSERTION THAT MATTERS.
-	after := f.currentOccurrence()
+	after := f.currentCase()
 	require.Equal(t, domain.StateFiring, after.State(),
 		"a firing alert was expired from a stale read")
 	require.True(t, after.EndedAt().IsZero(), "ended_at must not have been written")
 	require.True(t, after.ResolveReason().IsZero(), "resolve_reason must not have been written")
-	require.Zero(t, f.countEvents(domain.EventOccurrenceExpired.String()),
-		"no occurrence.expired may be appended for an alert that is still firing")
+	require.Zero(t, f.countEvents(domain.EventCaseExpired.String()),
+		"no case.expired may be appended for an alert that is still firing")
 }
 
 // TestReaperDoesNotClobberAGenuineResolution stages the narrower window that the
 // in-transaction re-read alone cannot close, and which only the compare-and-set
 // catches.
 //
-// Ingest resolves the occurrence but has not committed. The reaper's re-read is a
+// Ingest resolves the case but has not committed. The reaper's re-read is a
 // plain SELECT at READ COMMITTED, so it still sees `firing` and proceeds; its
 // UPDATE then blocks on ingest's row lock. When ingest commits and the reaper
 // wakes, the pre-fix predicate — `WHERE org_id AND id` — still matched, and
-// `expired`/`timeout` went straight over an `occurrence.resolved` that Alertmanager
+// `expired`/`timeout` went straight over an `case.resolved` that Alertmanager
 // had explicitly stated. The append-only timeline and the projection then
 // disagreed permanently.
 func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
@@ -100,7 +100,7 @@ func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
 	startsAt := now.Add(-2 * time.Hour)
 	f.openFiring(startsAt, now.Add(-30*time.Minute))
 
-	candidates, err := f.occurrences.ReapCandidates(ctx, f.scope, now.Add(-cfg.ResolveGrace), 10)
+	candidates, err := f.cases.ReapCandidates(ctx, f.scope, now.Add(-cfg.ResolveGrace), 10)
 	require.NoError(t, err)
 	require.Len(t, candidates, 1)
 
@@ -133,23 +133,23 @@ func TestReaperDoesNotClobberAGenuineResolution(t *testing.T) {
 	require.NoError(t, got.err)
 	assert.False(t, got.expired, "the reaper must abandon a transition it lost")
 
-	after := f.currentOccurrence()
+	after := f.currentCase()
 	require.Equal(t, domain.StateResolved, after.State(),
 		"an upstream resolution was overwritten with a fabricated expiry")
 	require.Equal(t, domain.ResolveUpstream, after.ResolveReason())
 	require.False(t, after.EndedAt().IsZero())
-	require.Zero(t, f.countEvents(domain.EventOccurrenceExpired.String()))
-	require.Equal(t, 1, f.countEvents(domain.EventOccurrenceResolved.String()))
+	require.Zero(t, f.countEvents(domain.EventCaseExpired.String()))
+	require.Equal(t, 1, f.countEvents(domain.EventCaseResolved.String()))
 }
 
 // TestReconcilerT3DoesNotResurrectAResolvedEpisode is the §B.3 T3-versus-T5 race.
 //
-// Both witnesses read the occurrence as `firing`. Ingest's T5 commits `resolved`
+// Both witnesses read the case as `firing`. Ingest's T5 commits `resolved`
 // with an `ended_at`. The reconciler's T3, decided against the same pre-image,
 // then lands — and before the fix it wrote `state='suppressed'` with a NULL
 // `ended_at`, because `transitionOf` passes nil for a non-terminal state. A closed
 // episode silently returned to `suppressed` with its end time erased, and
-// occ_one_open_idx counted it open again.
+// case_one_open_idx counted it open again.
 func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 	now := harness.Epoch
 	f := newFixture(t, now)
@@ -159,7 +159,7 @@ func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 	f.openFiring(startsAt, now.Add(30*time.Minute))
 
 	// The snapshot BOTH witnesses hold.
-	pre := f.currentOccurrence()
+	pre := f.currentCase()
 	require.Equal(t, domain.StateFiring, pre.State())
 
 	// Ingest wins the race and commits T5.
@@ -167,7 +167,7 @@ func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 	_, err := f.svc.ObserveBatch(ctx, f.scope, []domain.Observation{res}, ObserveOptions{})
 	require.NoError(t, err)
 
-	won := f.currentOccurrence()
+	won := f.currentCase()
 	require.Equal(t, domain.StateResolved, won.State())
 	endedAt := won.EndedAt()
 	require.False(t, endedAt.IsZero())
@@ -177,13 +177,13 @@ func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, domain.StateSuppressed, r.To)
 
-	err = f.svc.occurrences.Transition(ctx, f.scope, r.Occurrence.ID(),
+	err = f.svc.cases.Transition(ctx, f.scope, r.Case.ID(),
 		transitionOf(r, domain.SuppressedBy{SilencedBy: []string{"sil-1"}}))
 	assert.Error(t, err, "a transition decided against a superseded row must not succeed")
 	assert.True(t, errs.IsKind(err, errs.KindConflict),
 		"expected a conflict, got %v (%s)", err, errs.KindOf(err))
 
-	after := f.currentOccurrence()
+	after := f.currentCase()
 	require.Equal(t, domain.StateResolved, after.State(), "a resolved episode was resurrected")
 	require.Equal(t, domain.ResolveUpstream, after.ResolveReason())
 	require.WithinDuration(t, endedAt, after.EndedAt(), 0, "ended_at was erased")
@@ -193,12 +193,12 @@ func TestReconcilerT3DoesNotResurrectAResolvedEpisode(t *testing.T) {
 // TestTwoConcurrentReconcilerPassesAppendOneSuppressedEvent covers F9 together
 // with the compare-and-set.
 //
-// Two reconcile passes over one occurrence both read it as `firing` and both
+// Two reconcile passes over one case both read it as `firing` and both
 // decide T3 — the shape two HA replicas of one Alertmanager produce, since
 // reconciliation is scoped by cluster and every replica reports the same alert
 // set. They process a moment apart on oto's own clock.
 //
-// Before the fix that was two `occurrence.suppressed` events for one suppression:
+// Before the fix that was two `case.suppressed` events for one suppression:
 // the §C.8 dedupe key was built from `lastObservedAt`, which is `cmd.At.RecordedAt()`
 // — the instant oto happened to run — so the two passes minted two different keys,
 // and nothing stopped the second unguarded UPDATE from landing either.
@@ -209,7 +209,7 @@ func TestTwoConcurrentReconcilerPassesAppendOneSuppressedEvent(t *testing.T) {
 
 	startsAt := now.Add(-time.Hour)
 	f.openFiring(startsAt, now.Add(30*time.Minute))
-	pre := f.currentOccurrence()
+	pre := f.currentCase()
 
 	// Both passes decide against `pre`, at two different processing instants.
 	pass := func(at time.Time) error {
@@ -218,7 +218,7 @@ func TestTwoConcurrentReconcilerPassesAppendOneSuppressedEvent(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if err := f.svc.occurrences.Transition(ctx, f.scope, r.Occurrence.ID(),
+			if err := f.svc.cases.Transition(ctx, f.scope, r.Case.ID(),
 				transitionOf(r, domain.SuppressedBy{SilencedBy: []string{"sil-1"}})); err != nil {
 				return err
 			}
@@ -234,10 +234,10 @@ func TestTwoConcurrentReconcilerPassesAppendOneSuppressedEvent(t *testing.T) {
 	assert.True(t, errs.IsKind(err, errs.KindConflict),
 		"expected a conflict, got %v (%s)", err, errs.KindOf(err))
 
-	require.Equal(t, 1, f.countEvents(domain.EventOccurrenceSuppressed.String()),
-		"one suppression must append exactly one occurrence.suppressed event (§C.8)")
+	require.Equal(t, 1, f.countEvents(domain.EventCaseSuppressed.String()),
+		"one suppression must append exactly one case.suppressed event (§C.8)")
 
-	after := f.currentOccurrence()
+	after := f.currentCase()
 	require.Equal(t, domain.StateSuppressed, after.State())
 	require.Equal(t, domain.SuppressionSilence, after.SuppressionReason())
 }
@@ -250,15 +250,15 @@ func TestTwoConcurrentReconcilerPassesAppendOneSuppressedEvent(t *testing.T) {
 // differ, or the fix would trade a duplicated timeline entry for a lost one.
 func TestSuppressionDedupeKeyIsACounterNotAClock(t *testing.T) {
 	base := harness.Epoch
-	occ := firingOccurrence(t, base)
+	ac := firingCase(t, base)
 
-	first, err := domain.Apply(occ, suppressCommandAt(t, base.Add(time.Second), base))
+	first, err := domain.Apply(ac, suppressCommandAt(t, base.Add(time.Second), base))
 	require.NoError(t, err)
 	require.Len(t, first.Events, 1)
-	require.Equal(t, 1, first.Occurrence.SuppressCount())
+	require.Equal(t, 1, first.Case.SuppressCount())
 
 	// The same pre-image, processed three seconds later by another pass.
-	second, err := domain.Apply(occ, suppressCommandAt(t, base.Add(4*time.Second), base))
+	second, err := domain.Apply(ac, suppressCommandAt(t, base.Add(4*time.Second), base))
 	require.NoError(t, err)
 	require.Len(t, second.Events, 1)
 
@@ -268,21 +268,21 @@ func TestSuppressionDedupeKeyIsACounterNotAClock(t *testing.T) {
 		"the key must not embed a timestamp at all")
 
 	// A genuinely SECOND suppression of this episode is a different fact.
-	unsuppressed, err := domain.Apply(first.Occurrence, unsuppressCommand(t, base.Add(time.Minute)))
+	unsuppressed, err := domain.Apply(first.Case, unsuppressCommand(t, base.Add(time.Minute)))
 	require.NoError(t, err)
-	require.Equal(t, 1, unsuppressed.Occurrence.SuppressCount(),
+	require.Equal(t, 1, unsuppressed.Case.SuppressCount(),
 		"T4 ends a suppression, it does not start one")
 
-	again, err := domain.Apply(unsuppressed.Occurrence, suppressCommandAt(t, base.Add(2*time.Minute), base))
+	again, err := domain.Apply(unsuppressed.Case, suppressCommandAt(t, base.Add(2*time.Minute), base))
 	require.NoError(t, err)
 	require.Len(t, again.Events, 1)
-	require.Equal(t, 2, again.Occurrence.SuppressCount())
+	require.Equal(t, 2, again.Case.SuppressCount())
 	require.NotEqual(t, first.Events[0].DedupeKey(), again.Events[0].DedupeKey(),
 		"a second suppression is a different fact and must not be collapsed")
 }
 
 // TestRepeatedSuppressionInOneEpisodeIsCounted is the same claim end to end: T3,
-// T4, T3 inside ONE occurrence leaves suppress_count = 2 and three distinct
+// T4, T3 inside ONE case leaves suppress_count = 2 and three distinct
 // timeline facts.
 //
 // This is what the interim `sourceUpdatedAt` key could not promise and what a
@@ -297,13 +297,13 @@ func TestRepeatedSuppressionInOneEpisodeIsCounted(t *testing.T) {
 
 	step := func(cmd domain.TransitionCommand) {
 		t.Helper()
-		pre := f.currentOccurrence()
+		pre := f.currentCase()
 		require.NoError(t, db.Tx(ctx, f.pool, func(ctx context.Context) error {
 			r, err := domain.Apply(pre, cmd)
 			if err != nil {
 				return err
 			}
-			if err := f.svc.occurrences.Transition(ctx, f.scope, r.Occurrence.ID(),
+			if err := f.svc.cases.Transition(ctx, f.scope, r.Case.ID(),
 				transitionOf(r, domain.SuppressedBy{SilencedBy: []string{"sil-1"}})); err != nil {
 				return err
 			}
@@ -313,19 +313,19 @@ func TestRepeatedSuppressionInOneEpisodeIsCounted(t *testing.T) {
 	}
 
 	step(suppressCommand(t, now.Add(time.Minute)))
-	require.Equal(t, 1, f.currentOccurrence().SuppressCount())
+	require.Equal(t, 1, f.currentCase().SuppressCount())
 
 	step(unsuppressCommand(t, now.Add(2*time.Minute)))
-	require.Equal(t, 1, f.currentOccurrence().SuppressCount())
+	require.Equal(t, 1, f.currentCase().SuppressCount())
 
 	step(suppressCommand(t, now.Add(3*time.Minute)))
 
-	after := f.currentOccurrence()
+	after := f.currentCase()
 	require.Equal(t, 2, after.SuppressCount(),
 		"two suppressions of one episode must be counted, not collapsed")
 	require.Equal(t, domain.StateSuppressed, after.State())
-	require.Equal(t, 2, f.countEvents(domain.EventOccurrenceSuppressed.String()))
-	require.Equal(t, 1, f.countEvents(domain.EventOccurrenceUnsuppressed.String()))
+	require.Equal(t, 2, f.countEvents(domain.EventCaseSuppressed.String()))
+	require.Equal(t, 1, f.countEvents(domain.EventCaseUnsuppressed.String()))
 }
 
 // TestOutOfOrderWebhookCannotRewindSourceEndsAt is the T2 rewind regression.
@@ -335,7 +335,7 @@ func TestRepeatedSuppressionInOneEpisodeIsCounted(t *testing.T) {
 // at-least-once from an HA pair with no ordering guarantee between replicas, so
 // the second replica's copy of an older payload arriving after the first
 // replica's newer one is ordinary traffic. Assigning it verbatim rewound
-// `source_ends_at` into the past, the occurrence became a reap candidate on the
+// `source_ends_at` into the past, the case became a reap candidate on the
 // next tick, and a firing alert was expired — the same fabricated resolution,
 // reached without ever racing anybody.
 func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
@@ -352,7 +352,7 @@ func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
 		now, startsAt, now.Add(30*time.Minute))
 	_, err := f.svc.ObserveBatch(ctx, f.scope, []domain.Observation{ahead}, ObserveOptions{})
 	require.NoError(t, err)
-	require.True(t, f.currentOccurrence().SourceEndsAt().After(now))
+	require.True(t, f.currentCase().SourceEndsAt().After(now))
 
 	// Replica B's copy of an OLDER payload, delivered late. It arrives on oto's
 	// clock AFTER the newer one, which is exactly why plain assignment loses.
@@ -361,31 +361,31 @@ func TestOutOfOrderWebhookCannotRewindSourceEndsAt(t *testing.T) {
 	_, err = f.svc.ObserveBatch(ctx, f.scope, []domain.Observation{behind}, ObserveOptions{})
 	require.NoError(t, err)
 
-	rewound := f.currentOccurrence()
+	rewound := f.currentCase()
 	assert.True(t, rewound.SourceEndsAt().After(now),
 		"a stale delivery rewound source_ends_at into the past")
 
 	// Now let the reaper run exactly as the sweep would.
-	candidates, err := f.occurrences.ReapCandidates(ctx, f.scope, now.Add(-cfg.ResolveGrace), 10)
+	candidates, err := f.cases.ReapCandidates(ctx, f.scope, now.Add(-cfg.ResolveGrace), 10)
 	require.NoError(t, err)
 	for _, c := range candidates {
 		_, err := f.svc.expire(ctx, f.scope, c, now, cfg)
 		require.NoError(t, err)
 	}
 
-	after := f.currentOccurrence()
+	after := f.currentCase()
 	require.Equal(t, domain.StateFiring, after.State(),
 		"a firing alert was expired because a late webhook rewound source_ends_at")
 	require.True(t, after.EndedAt().IsZero())
-	require.Zero(t, f.countEvents(domain.EventOccurrenceExpired.String()))
+	require.Zero(t, f.countEvents(domain.EventCaseExpired.String()))
 }
 
 // TestAcknowledgeCannotLandOnAnEpisodeThatEnded is the SetAck ruling.
 //
-// The domain refuses to acknowledge a terminal occurrence, but it can only refuse
+// The domain refuses to acknowledge a terminal case, but it can only refuse
 // against the snapshot it read. A resolve committing between that read and the
 // ack write used to stamp `acked` on a closed episode AND rewind the alert
-// projection: the ack path writes `alert.State()` and `current_occurrence_id`
+// projection: the ack path writes `alert.State()` and `current_case_id`
 // from the alert IT read, so the list went back to showing `firing` for an alert
 // Alertmanager had explicitly resolved.
 func TestAcknowledgeCannotLandOnAnEpisodeThatEnded(t *testing.T) {
@@ -397,7 +397,7 @@ func TestAcknowledgeCannotLandOnAnEpisodeThatEnded(t *testing.T) {
 	f.openFiring(startsAt, now.Add(30*time.Minute))
 
 	// What the human's request read.
-	pre := f.currentOccurrence()
+	pre := f.currentCase()
 	require.Equal(t, domain.StateFiring, pre.State())
 
 	// Upstream resolves while the human is deciding.
@@ -406,7 +406,7 @@ func TestAcknowledgeCannotLandOnAnEpisodeThatEnded(t *testing.T) {
 	require.NoError(t, err)
 
 	label := "ram"
-	err = f.svc.occurrences.SetAck(ctx, f.scope, pre.ID(), domain.AckChange{
+	err = f.svc.cases.SetAck(ctx, f.scope, pre.ID(), domain.AckChange{
 		To:      domain.AckStateAcked,
 		At:      now.Add(time.Second),
 		ByLabel: &label,
@@ -416,7 +416,7 @@ func TestAcknowledgeCannotLandOnAnEpisodeThatEnded(t *testing.T) {
 	require.True(t, errs.IsKind(err, errs.KindConflict),
 		"expected a conflict, got %v (%s)", err, errs.KindOf(err))
 
-	after := f.currentOccurrence()
+	after := f.currentCase()
 	require.Equal(t, domain.StateResolved, after.State())
 	require.Equal(t, domain.AckStateUnacked, after.AckState(),
 		"a resolved episode was acknowledged")
@@ -463,10 +463,10 @@ func unsuppressCommand(t *testing.T, recordedAt time.Time) domain.TransitionComm
 	}
 }
 
-// firingOccurrence builds an in-memory open episode, for the domain-only test.
-func firingOccurrence(t *testing.T, now time.Time) domain.Occurrence {
+// firingCase builds an in-memory open episode, for the domain-only test.
+func firingCase(t *testing.T, now time.Time) domain.Case {
 	t.Helper()
-	o, err := domain.NewOccurrence(domain.OccurrenceParams{
+	o, err := domain.NewCase(domain.CaseParams{
 		ID:             id.New(),
 		OrgID:          id.New(),
 		AlertID:        id.New(),

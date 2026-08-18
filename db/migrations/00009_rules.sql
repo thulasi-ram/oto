@@ -80,7 +80,7 @@ COMMENT ON COLUMN rule_snapshots.captured_at IS 'When oto captured it. Newest-pe
 
 -- alert_occurrences.rule_snapshot_id was declared in 00007 without a FK because
 -- rule_snapshots did not exist yet. Close the loop (SPEC §D.6).
-ALTER TABLE alert_occurrences ADD CONSTRAINT occ_rule_fk
+ALTER TABLE alert_occurrences ADD CONSTRAINT occ_rule_fk  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   FOREIGN KEY (rule_snapshot_id) REFERENCES rule_snapshots(id) ON DELETE SET NULL;
 
 -- +goose Down

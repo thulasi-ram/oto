@@ -199,7 +199,7 @@ func (r *EnrichmentRepository) ListBySubject(
 // enricher) — WITHOUT the version, deliberately. There is exactly one current
 // answer per enricher per subject, and a version bump REPLACES the old answer
 // rather than accumulating beside it. That is what makes `enrich.run`
-// idempotent on (occurrence_id, phase): re-running a phase overwrites its own
+// idempotent on (case_id, phase): re-running a phase overwrites its own
 // rows, so a retry after a partial failure converges instead of double-counting.
 const upsertEnrichmentSQL = `
 INSERT INTO enrichments (

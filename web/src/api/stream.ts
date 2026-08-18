@@ -41,7 +41,7 @@ export type ConnectionState =
 export type StreamResource =
   | "alerts"
   | "groups"
-  | "occurrences"
+  | "cases"
   | "events"
   | "deliveries"
   | "sources";
@@ -94,7 +94,7 @@ function isFrame(x: unknown): x is StreamFrame {
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set<UiEventKind>([
   "alert.upserted",
-  "occurrence.upserted",
+  "case.upserted",
   "group.upserted",
   "event.appended",
   "delivery.updated",

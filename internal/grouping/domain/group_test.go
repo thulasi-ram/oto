@@ -93,7 +93,7 @@ func TestNewState(t *testing.T) {
 		{name: "closed", in: "closed", want: "closed", ok: true},
 		{name: "empty is not a state", in: ""},
 		{name: "case is significant", in: "Open"},
-		{name: "an occurrence state is not a group state", in: "firing"},
+		{name: "a case state is not a group state", in: "firing"},
 		{name: "resolved is not a group state", in: "resolved"},
 		{name: "whitespace is not trimmed", in: " open"},
 	}

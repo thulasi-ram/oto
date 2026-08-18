@@ -36,11 +36,32 @@ func cardFor(
 	t *testing.T, h *harness.H, kind, baseURL string, groupLabels map[string]string,
 ) *service.NotificationView {
 	t.Helper()
+	return cardForGroup(t, h, kind, baseURL, groupLabels, false)
+}
+
+// cardForGroup is cardFor with one extra question: whether to blank the group's
+// labels after seeding it.
+//
+// ⭐ A LABEL-LESS GROUP CAN NO LONGER BE BUILT, ONLY INHERITED. Since ADR 0038 a
+// group's `group_labels` are `SplitLabels` of the alert's own set, and a label
+// set must carry a non-empty `alertname` — so every group opened from now on has
+// at least one label to filter on. `{}` is the shape every PRE-00050 generation
+// still has on disk (00050 adds no backfill and re-keying live groups was
+// rejected), which is why the bare-console link still has to work and still has
+// to be tested. Blanking after the fact is how a legacy row is reached.
+func cardForGroup(
+	t *testing.T, h *harness.H, kind, baseURL string,
+	groupLabels map[string]string, legacyBare bool,
+) *service.NotificationView {
+	t.Helper()
 
 	org := h.Org()
 	cluster := h.Cluster(org)
 	source := h.SourceOfKind(org, cluster, kind, baseURL)
 	group := h.GroupWith(org, source, cluster, groupLabels)
+	if legacyBare {
+		h.Exec(`UPDATE alert_groups SET group_labels = '{}'::jsonb WHERE id = $1`, group.ID)
+	}
 
 	views, err := service.NewViewService(service.ViewConfig{
 		Snapshots: repository.NewSnapshotRepository(h.Pool, h.Clock),
@@ -77,9 +98,13 @@ func TestAlertmanagerSourceGetsTheDeepLinks(t *testing.T) {
 
 	// The filter is built from the GROUP LABELS, so this card carries the two
 	// filtered shapes.
-	view := cardFor(t, h, "alertmanager", base, map[string]string{"severity": "critical"})
+	view := cardFor(t, h, "alertmanager", base, map[string]string{"alertname": "HighErrorRate", "severity": "critical"})
 
-	escaped := url.QueryEscape(`{severity="critical"}`)
+	// The filter names the AXES, not every label: `group_labels` are `SplitLabels`
+	// of the alert's set (ADR 0038), and `severity` is not an axis. Filtering the
+	// console by `alertname` is also the more useful of the two — it is the shape
+	// the generation actually spans.
+	escaped := url.QueryEscape(`{alertname="HighErrorRate"}`)
 	require.Equal(t, base+"/#/alerts?filter="+escaped, view.Links.Alertmanager)
 	require.Equal(t, base+"/#/silences/new?filter="+escaped, view.Links.AlertmanagerSilenceNew)
 	require.True(t, hasSilenceAction(view),
@@ -87,7 +112,8 @@ func TestAlertmanagerSourceGetsTheDeepLinks(t *testing.T) {
 
 	// A group with no labels to filter on still gets the third shape — the bare
 	// alert list — because there is still a console to open.
-	bare := cardFor(t, h, "alertmanager", base, map[string]string{})
+	bare := cardForGroup(t, h, "alertmanager", base,
+		map[string]string{"alertname": "HighErrorRate"}, true)
 	require.Equal(t, base+"/#/alerts", bare.Links.Alertmanager)
 }
 
@@ -105,7 +131,7 @@ func TestGrafanaSourceGetsNoDeepLink(t *testing.T) {
 
 	view := cardFor(t, h, "grafana",
 		"https://grafana.example.com/api/alertmanager/grafana",
-		map[string]string{"severity": "critical"})
+		map[string]string{"alertname": "HighErrorRate", "severity": "critical"})
 
 	require.Empty(t, view.Links.Alertmanager,
 		"a grafana base_url is an API prefix, not a console oto may send anyone to")
@@ -159,7 +185,7 @@ func (unvouchedSnapshots) Snapshot(
 	return domain.Snapshot{
 		Group: domain.GroupFacts{
 			ID: q.GroupID, GroupKey: "gk", Generation: 1, Title: "A group",
-			GroupLabels:     map[string]string{"severity": "critical"},
+			GroupLabels:     map[string]string{"alertname": "HighErrorRate", "severity": "critical"},
 			State:           "open",
 			AlertmanagerURL: "",
 		},

@@ -37,29 +37,32 @@ func TestMain(m *testing.M) { harness.Main(m) }
 const previewLimit = domain.MemberPreviewLimit + 1
 
 // TestTheCurrentMemberReadRidesTheIndexAndNeverSorts is the verification behind
-// 00044.
+// 00051's `case_group_live_idx`, and it is the successor to the same assertion
+// 00044 made about `gm_current_idx`.
 //
 // ⭐ THE CLAIM BEING TESTED. `listCurrentMembersSQL` asks for `org_id = $1 AND
-// group_id = $2 AND left_at IS NULL`, ordered `(joined_at DESC, occurrence_id
-// DESC)`, with a LIMIT. Until 00044 no index on `alert_group_members` could
-// serve that: the primary key `(group_id, occurrence_id)` restricts to the
-// generation and then offers the wrong order, `gm_alert_idx` puts `joined_at`
-// behind an `alert_id` this read does not supply, and `gm_occ_idx` carries
-// neither the tenant nor the group nor a timestamp. So the LIMIT bounded the
-// ANSWER and nothing bounded the WORK.
+// group_id = $2 AND ended_at IS NULL`, ordered `(started_at DESC, id DESC)`, with
+// a LIMIT. The two access paths `alert_cases` already carried for a group
+// cannot serve it: `case_group_idx (org_id, group_id, started_at DESC)` offers the
+// leading sort column and NO TIEBREAK for the keyset's row comparison, and it
+// spans the generation's whole history, so the liveness predicate becomes a heap
+// filter over every episode the generation ever held; `case_one_open_idx` is
+// UNIQUE (alert_id) and supplies no group at all. So the LIMIT would bound the
+// ANSWER and nothing would bound the WORK.
 //
 // ⭐ WHY "NO SORT NODE" IS THE ASSERTION, and not a row count. A Sort must
 // consume its ENTIRE input before it can emit the first row, so a plan with a
-// Sort in it reads every current member of the generation no matter how small
-// the LIMIT is — which is precisely the defect, moved from Go into Postgres. An
+// Sort in it reads every live member of the generation no matter how small the
+// LIMIT is — which is precisely the defect, moved from Go into Postgres. An
 // ordered index scan under a Limit stops. The absence of the node IS the bound,
 // and it is a structural fact rather than an estimate.
 //
 // ⛔ AND A PLAN TEST THAT WOULD PASS WITHOUT THE INDEX PROVES NOTHING, so the
 // control is not decoration. The same statement is EXPLAINed a second time
-// inside a transaction that has DROPPED gm_current_idx and is then rolled back:
-// same rows, same statistics, one difference. There the plan must sort — if it
-// does not, the assertion above was never evidence that 00044 changed anything.
+// inside a transaction that has DROPPED case_group_live_idx and is then rolled
+// back: same rows, same statistics, one difference. There the plan must sort — if
+// it does not, the assertion above was never evidence that 00051 changed
+// anything.
 //
 // The table is seeded and ANALYZEd rather than left empty because the question
 // is a COST question: on an empty table a sequential scan is correct and the
@@ -79,89 +82,96 @@ func TestTheCurrentMemberReadRidesTheIndexAndNeverSorts(t *testing.T) {
 
 	// The generation under test, and a decoy beside it. Without the decoy
 	// `group_id = $2` selects the whole table and "it used the index" would be
-	// indistinguishable from "there was nothing else to read".
-	group := h.GroupWith(org, source, cluster, map[string]string{"severity": "critical"})
-	decoy := h.GroupWith(org, source, cluster, map[string]string{"severity": "warning"})
+	// indistinguishable from "there was nothing else to read". The decoy carries
+	// LIVE episodes of its own, so `case_group_live_idx` holds more than one
+	// generation and the group predicate is doing real work inside it.
+	// ⭐ THE DECOY MUST DIFFER ON AN AXIS. Since ADR 0038 the key is derived from
+	// `(cluster, alertname, namespace-or-∅)`, so two groups separated only by
+	// `severity` would hash to ONE key and this test would silently stop having a
+	// second generation to discriminate against.
+	group := h.GroupWith(org, source, cluster, map[string]string{"alertname": "HighErrorRate"})
+	decoy := h.GroupWith(org, source, cluster, map[string]string{"alertname": "DiskFilling"})
 
-	// Eight alerts, because `alert_group_members.alert_id` is real and a single
-	// alert would make the fan-out degenerate. `occ_one_open_idx` permits one
-	// OPEN episode per alert, so every episode below is closed.
-	const fanout = 8
-	alertIDs := make([]uuid.UUID, 0, fanout)
-	for i := range fanout {
-		a := h.AlertWith(org, cluster, map[string]string{
-			"alertname": fmt.Sprintf("MemberPlanAlert%02d", i),
-			"severity":  "critical",
-			"service":   "checkout",
-		})
-		alertIDs = append(alertIDs, a.ID)
+	// ⭐ THE STORM THE CODE ITSELF NAMES, seeded the only way the schema now
+	// permits. `member.go` calls "a storm of five thousand" the case the old
+	// full-membership fetch was wrong for. Since membership IS the episode,
+	// `case_one_open_idx` — UNIQUE (alert_id) WHERE ended_at IS NULL — caps the LIVE
+	// membership at one episode per alert, which is itself the defect this change
+	// closes: the join table could list one alert twice, and this cannot.
+	//
+	// So: 200 alerts × 25 episodes = 5 000 members of the generation, of which 200
+	// are live. The live ones are every 25th row in `started_at` order, so a plan
+	// that reached for `case_group_idx` would have to walk ~525 entries and filter
+	// on the heap to find the 21 this read wants.
+	const alertsInGroup = 200
+	const alertsInDecoy = 40
+	const episodesPerAlert = 25
+
+	seedAlerts := func(prefix string, n int) []uuid.UUID {
+		ids := make([]uuid.UUID, 0, n)
+		for i := range n {
+			a := h.AlertWith(org, cluster, map[string]string{
+				"alertname": fmt.Sprintf("%s%03d", prefix, i),
+				"severity":  "critical",
+				"service":   "checkout",
+			})
+			ids = append(ids, a.ID)
+		}
+		return ids
 	}
 
-	// ⭐ THE STORM THE CODE ITSELF NAMES. `member.go` calls "a storm of five
-	// thousand" the case the old full-membership fetch was wrong for, and twenty
-	// of those five thousand reach the response. Seeding fewer would be testing a
-	// group of forty, which was never the case in question.
-	const members = 5000
-	const decoyMembers = 1000
-	seed := func(groupID uuid.UUID, count, offset int) {
+	// The LAST episode of each alert is the open one, which is what an episode
+	// sequence means: 1..n-1 have ended, n is the firing one. Physical correlation
+	// between `started_at` and insertion order is an input to the planner's choice,
+	// so the rows are written in that order too.
+	seed := func(groupID uuid.UUID, alertIDs []uuid.UUID) {
 		h.Exec(`
-			INSERT INTO alert_occurrences
+			INSERT INTO alert_cases
 			  (id, org_id, alert_id, group_id, seq, state, resolve_reason,
 			   started_at, ended_at, last_observed_at, source_starts_at)
 			SELECT gen_random_uuid(),
 			       $1,
-			       ($2::uuid[])[(i % $3) + 1],
-			       $4,
-			       i + $7,
-			       'resolved',
-			       'upstream',
-			       $5::timestamptz + (i * interval '1 second'),
-			       $5::timestamptz + (i * interval '1 second') + interval '5 minutes',
-			       $5::timestamptz + (i * interval '1 second') + interval '5 minutes',
-			       $5::timestamptz + (i * interval '1 second')
-			  FROM generate_series(1, $6) AS i`,
-			org.ID, alertIDs, fanout, groupID, harness.Epoch, count, offset)
-
-		// Membership follows the episodes, joined at the instant they started —
-		// which is how the ingest path writes it, and physical correlation is an
-		// input to the planner's choice.
-		//
-		// ⭐ EVERY FIFTH MEMBER HAS LEFT. gm_current_idx is PARTIAL on `left_at
-		// IS NULL`; a table where every row qualifies would let a plain index
-		// pass this test and would never exercise the predicate.
-		h.Exec(`
-			INSERT INTO alert_group_members (group_id, occurrence_id, org_id, alert_id, joined_at, left_at)
-			SELECT o.group_id, o.id, o.org_id, o.alert_id, o.started_at,
-			       CASE WHEN (o.seq % 5) = 0 THEN o.ended_at END
-			  FROM alert_occurrences o
-			 WHERE o.org_id = $1 AND o.group_id = $2`, org.ID, groupID)
+			       ($2::uuid[])[a + 1],
+			       $3,
+			       s,
+			       CASE WHEN s = $4 THEN 'firing' ELSE 'resolved' END,
+			       CASE WHEN s = $4 THEN NULL ELSE 'upstream' END,
+			       $5::timestamptz + ((a * $4 + s) * interval '1 second'),
+			       CASE WHEN s = $4 THEN NULL
+			            ELSE $5::timestamptz + ((a * $4 + s) * interval '1 second')
+			                 + interval '30 seconds' END,
+			       $5::timestamptz + ((a * $4 + s) * interval '1 second') + interval '30 seconds',
+			       $5::timestamptz + ((a * $4 + s) * interval '1 second')
+			  FROM generate_series(0, $6 - 1) AS a,
+			       generate_series(1, $4) AS s`,
+			org.ID, alertIDs, groupID, episodesPerAlert, harness.Epoch, len(alertIDs))
 	}
-	seed(group.ID, members, 0)
-	seed(decoy.ID, decoyMembers, members)
+	seed(group.ID, seedAlerts("MemberPlanAlert", alertsInGroup))
+	seed(decoy.ID, seedAlerts("MemberPlanDecoy", alertsInDecoy))
 
 	// ⛔ WITHOUT THIS THE TEST IS A COIN TOSS. A freshly written table has
 	// `reltuples = -1` and no histogram, so the planner assumes a handful of
 	// pages and picks a sequential scan with the index and without it — and the
 	// control would agree with the assertion for the wrong reason.
-	h.Exec(`ANALYZE alert_group_members`)
+	h.Exec(`ANALYZE alert_cases`)
 
 	withIndex := explainCurrentMembers(t, h, org.ID, group.ID)
 
-	scan := scanOf(t, withIndex, "alert_group_members")
+	scan := scanOf(t, withIndex, "alert_cases")
 	if scan.NodeType == "Seq Scan" {
-		t.Fatalf("the current-member read scans alert_group_members sequentially:\n%s",
+		t.Fatalf("the current-member read scans alert_cases sequentially:\n%s",
 			withIndex.pretty())
 	}
-	if !indexesUnder(scan)["gm_current_idx"] {
-		t.Fatalf("the current-member read reaches alert_group_members by %q without naming "+
-			"gm_current_idx, so 00044's index is not what is serving `org_id = $1 AND group_id = "+
-			"$2 AND left_at IS NULL` ordered by (joined_at DESC, occurrence_id DESC):\n%s",
+	if !indexesUnder(scan)["case_group_live_idx"] {
+		t.Fatalf("the current-member read reaches alert_cases by %q without naming "+
+			"case_group_live_idx, so 00051's index is not what is serving `org_id = $1 AND group_id = "+
+			"$2 AND ended_at IS NULL` ordered by (started_at DESC, id DESC):\n%s",
 			scan.NodeType, withIndex.pretty())
 	}
 	if sorts := sortsIn(withIndex.root); len(sorts) > 0 {
 		t.Fatalf("the current-member read still sorts (%s), so the LIMIT bounds the ANSWER and "+
 			"not the WORK: a Sort consumes its whole input before it emits a row, which is the "+
-			"entire membership of the generation — the same fetch-everything-and-order-it the "+
+			"entire live membership of the generation — the same fetch-everything-and-order-it the "+
 			"detail page used to do in Go, moved one process away:\n%s",
 			strings.Join(sorts, ", "), withIndex.pretty())
 	}
@@ -173,12 +183,13 @@ func TestTheCurrentMemberReadRidesTheIndexAndNeverSorts(t *testing.T) {
 	without := explainWithoutTheIndex(t, h, org.ID, group.ID)
 
 	if sorts := sortsIn(without.root); len(sorts) == 0 {
-		t.Fatalf("the plan sorts nowhere even with gm_current_idx dropped, so the assertion "+
-			"above was not evidence that 00044 changed anything — some other access path is "+
-			"already delivering (joined_at DESC, occurrence_id DESC):\n%s", without.pretty())
+		t.Fatalf("the plan sorts nowhere even with case_group_live_idx dropped, so the assertion "+
+			"above was not evidence that 00051 changed anything — some other access path is "+
+			"already delivering (started_at DESC, id DESC) under the liveness predicate:\n%s",
+			without.pretty())
 	}
-	if node := scanOf(t, without, "alert_group_members"); indexesUnder(node)["gm_current_idx"] {
-		t.Fatalf("gm_current_idx is still named after being dropped inside the control "+
+	if node := scanOf(t, without, "alert_cases"); indexesUnder(node)["case_group_live_idx"] {
+		t.Fatalf("case_group_live_idx is still named after being dropped inside the control "+
 			"transaction:\n%s", without.pretty())
 	}
 }
@@ -203,7 +214,7 @@ func explainCurrentMembers(t *testing.T, h *harness.H, org, group uuid.UUID) pla
 }
 
 // explainWithoutTheIndex plans the same statement in a transaction that has
-// dropped 00044's index, then rolls it back.
+// dropped 00051's index, then rolls it back.
 func explainWithoutTheIndex(t *testing.T, h *harness.H, org, group uuid.UUID) plan {
 	t.Helper()
 
@@ -219,9 +230,9 @@ func explainWithoutTheIndex(t *testing.T, h *harness.H, org, group uuid.UUID) pl
 		}
 	}()
 
-	if _, err := tx.Exec(h.Ctx, "DROP INDEX gm_current_idx"); err != nil {
-		t.Fatalf("drop gm_current_idx inside the control transaction: %v — 00044 is what creates "+
-			"it, so a missing index here means the migration did not run", err)
+	if _, err := tx.Exec(h.Ctx, "DROP INDEX case_group_live_idx"); err != nil {
+		t.Fatalf("drop case_group_live_idx inside the control transaction: %v — 00051 is what "+
+			"creates it, so a missing index here means the migration did not run", err)
 	}
 
 	var afterAt *time.Time

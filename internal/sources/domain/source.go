@@ -263,7 +263,7 @@ type SourceHealth struct {
 	UpdatedAt time.Time
 }
 
-// BlocksReaper reports whether this health state forbids expiring occurrences.
+// BlocksReaper reports whether this health state forbids expiring cases.
 // The reaper guard is the highest-value correctness rule in the system: a source
 // that is merely unobserved must never produce a fabricated expiry (SPEC §B.4).
 func (h SourceHealth) BlocksReaper() bool { return h.Status != HealthHealthy }

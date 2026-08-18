@@ -202,8 +202,8 @@ type Notification struct {
 	GroupID     uuid.UUID
 	// AlertID is set when the fact is about ONE alert. It is MANDATORY for the
 	// alert-scoped reasons (notifications_focus_ck).
-	AlertID      *uuid.UUID
-	OccurrenceID *uuid.UUID
+	AlertID *uuid.UUID
+	CaseID  *uuid.UUID
 
 	Reason   Reason
 	PolicyID *uuid.UUID

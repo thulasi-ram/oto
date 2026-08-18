@@ -40,12 +40,12 @@ const SampleLimit = 200
 // That keeps the query trivially reviewable, keeps the percentile logic unit
 // testable without a database, and stops the two drifting apart.
 type Stats struct {
-	// Count24h, Count7d and Count30d are occurrence counts in rolling windows.
+	// Count24h, Count7d and Count30d are case counts in rolling windows.
 	Count24h int
 	Count7d  int
 	Count30d int
-	// TotalOccurrences is the lifetime count from the alert projection.
-	TotalOccurrences int
+	// TotalCases is the lifetime count from the alert projection.
+	TotalCases int
 	// FlapScore and IsFlapping come from the alert projection (SPEC §B.6).
 	FlapScore  float64
 	IsFlapping bool
@@ -80,10 +80,10 @@ type Distribution struct {
 
 // Payload is the enricher's typed output.
 type Payload struct {
-	Count24h         int `json:"count_24h"`
-	Count7d          int `json:"count_7d"`
-	Count30d         int `json:"count_30d"`
-	TotalOccurrences int `json:"total_occurrences"`
+	Count24h   int `json:"count_24h"`
+	Count7d    int `json:"count_7d"`
+	Count30d   int `json:"count_30d"`
+	TotalCases int `json:"total_cases"`
 
 	FlapScore  float64 `json:"flap_score"`
 	IsFlapping bool    `json:"is_flapping"`
@@ -146,7 +146,7 @@ func (e *Enricher) Applicable(s *domain.Subject) bool {
 }
 
 // CacheSeed keys on the Alert identity. The result is shared across every
-// occurrence of the same alert within the TTL, which is exactly the case a
+// case of the same alert within the TTL, which is exactly the case a
 // storm produces.
 func (*Enricher) CacheSeed(s *domain.Subject) string {
 	if s == nil {
@@ -172,16 +172,16 @@ func (e *Enricher) Enrich(ctx context.Context, s *domain.Subject) (domain.Result
 	}
 
 	payload := Payload{
-		Count24h:         stats.Count24h,
-		Count7d:          stats.Count7d,
-		Count30d:         stats.Count30d,
-		TotalOccurrences: stats.TotalOccurrences,
-		FlapScore:        stats.FlapScore,
-		IsFlapping:       stats.IsFlapping,
-		FirstSeenAt:      stats.FirstSeenAt.UTC(),
-		LastSeenAt:       stats.LastSeenAt.UTC(),
-		FiringDuration:   summarise(stats.FiringDurationsSeconds),
-		Noisy:            stats.Count30d >= NoisyThreshold30d,
+		Count24h:       stats.Count24h,
+		Count7d:        stats.Count7d,
+		Count30d:       stats.Count30d,
+		TotalCases:     stats.TotalCases,
+		FlapScore:      stats.FlapScore,
+		IsFlapping:     stats.IsFlapping,
+		FirstSeenAt:    stats.FirstSeenAt.UTC(),
+		LastSeenAt:     stats.LastSeenAt.UTC(),
+		FiringDuration: summarise(stats.FiringDurationsSeconds),
+		Noisy:          stats.Count30d >= NoisyThreshold30d,
 	}
 	if len(stats.FiringDurationsSeconds) > 0 {
 		payload.LastFiringDurationS = round(stats.FiringDurationsSeconds[0])

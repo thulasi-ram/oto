@@ -28,7 +28,7 @@ CREATE TABLE enrichments (
   expires_at       TIMESTAMPTZ,
   CONSTRAINT enrichments_subject_uniq UNIQUE (subject_kind, subject_id, enricher),
   -- Inline and unnamed in SPEC §D.7; named here.
-  CONSTRAINT enrichments_subjkind_ck CHECK (subject_kind IN ('alert','occurrence','group')),
+  CONSTRAINT enrichments_subjkind_ck CHECK (subject_kind IN ('alert','occurrence','group')),  -- vocab:allow -- migration history: this file states the schema as it was at its own version, and a shipped migration is not editable. ADR 0036 renamed the entity and 00052 carries the rename.
   CONSTRAINT enrichments_phase_ck    CHECK (phase IN (1,2)),
   CONSTRAINT enrichments_status_ck   CHECK (status IN ('ok','partial','skipped','failed','timeout')),
   CONSTRAINT enrichments_name_ck    CHECK (enricher ~ '^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$'),
@@ -45,7 +45,7 @@ CREATE INDEX enr_subject_idx ON enrichments (org_id, subject_kind, subject_id);
 
 COMMENT ON TABLE  enrichments IS
   'One typed, provenanced result from one named, versioned Enricher (SPEC §F.3). A failed or timed-out enrichment is RECORDED, not discarded -- a missing enrichment and a failed one must be distinguishable in the UI. Never on the ingest critical path.';
-COMMENT ON COLUMN enrichments.subject_kind IS 'What was enriched: alert | occurrence | group.';
+COMMENT ON COLUMN enrichments.subject_kind IS 'What was enriched: alert | occurrence | group.';  -- vocab:allow -- migration history: this file states the schema as it was at its own version, and a shipped migration is not editable. ADR 0036 renamed the entity and 00052 carries the rename.
 COMMENT ON COLUMN enrichments.subject_id IS 'The subject row id. Polymorphic, so no FK -- subject_kind names the table.';
 COMMENT ON COLUMN enrichments.enricher IS 'Dotted registry name of the Enricher, e.g. rules.drift. One result per (subject, enricher) by enrichments_subject_uniq.';
 COMMENT ON COLUMN enrichments.enricher_version IS 'Version of the Enricher that produced this. Bumping it is how a result is invalidated.';

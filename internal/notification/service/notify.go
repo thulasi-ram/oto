@@ -32,7 +32,7 @@ type Intent struct {
 	Reason       domain.Reason
 	StateVersion int
 	AlertID      *uuid.UUID
-	OccurrenceID *uuid.UUID
+	CaseID       *uuid.UUID
 	// Actor labels the human or system that caused this, for the rendered card.
 	// ACTOR, NEVER SUBJECT.
 	Actor string
@@ -247,9 +247,9 @@ func (s *NotificationService) evaluate(
 	now := s.clk.Now().UTC()
 
 	snap, err := s.snapshots.Snapshot(ctx, scope, domain.SnapshotQuery{
-		GroupID:      in.GroupID,
-		AlertID:      in.AlertID,
-		OccurrenceID: in.OccurrenceID,
+		GroupID: in.GroupID,
+		AlertID: in.AlertID,
+		CaseID:  in.CaseID,
 	})
 	if err != nil {
 		return Result{}, err
@@ -266,6 +266,13 @@ func (s *NotificationService) evaluate(
 
 	n := s.mint(scope, in, snap, now)
 
+	// ⭐ THE MATCHER SEES THE GROUP'S LABELS, and that is correct rather than lazy:
+	// they are the only label set true of EVERY member. Since ADR 0038 they are
+	// oto's own axes — `alertname`, and `namespace` when the alert has one — rather
+	// than whatever the operator put in `group_by`. Before that, a policy matching
+	// `namespace` matched nothing on most deployments, and failed as a `no_policy`
+	// suppression rather than as an error, which is a filter that silently deletes
+	// notifications.
 	match, err := s.policies.Evaluate(ctx, scope, MatchRequest{
 		Reason: in.Reason,
 		Labels: snap.Group.GroupLabels,
@@ -363,7 +370,7 @@ func (s *NotificationService) mint(
 		SubjectID:    in.GroupID,
 		GroupID:      in.GroupID,
 		AlertID:      in.AlertID,
-		OccurrenceID: in.OccurrenceID,
+		CaseID:       in.CaseID,
 		Reason:       in.Reason,
 		StateVersion: stateVersion,
 		Status:       domain.StatusPending,

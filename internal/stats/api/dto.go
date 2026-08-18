@@ -86,15 +86,15 @@ type StatsOverviewDTO struct {
 // carries no user column, so per-person aggregates are unrepresentable rather
 // than merely absent.
 type AlertQualityDTO struct {
-	AlertName        string  `json:"alertname"`
-	ClusterKey       string  `json:"cluster_key"`
-	Occurrences      int32   `json:"occurrences"`
-	Notifications    int32   `json:"notifications"`
-	Deliveries       int32   `json:"deliveries"`
-	AckedOccurrences int32   `json:"acked_occurrences"`
-	AckRate          float32 `json:"ack_rate"`
-	AutoResolved     int32   `json:"auto_resolved"`
-	Expired          int32   `json:"expired"`
+	AlertName     string  `json:"alertname"`
+	ClusterKey    string  `json:"cluster_key"`
+	Cases         int32   `json:"cases"`
+	Notifications int32   `json:"notifications"`
+	Deliveries    int32   `json:"deliveries"`
+	AckedCases    int32   `json:"acked_cases"`
+	AckRate       float32 `json:"ack_rate"`
+	AutoResolved  int32   `json:"auto_resolved"`
+	Expired       int32   `json:"expired"`
 	// TotalFiringSeconds is the summed FIRING DURATION.
 	TotalFiringSeconds int64   `json:"total_firing_seconds"`
 	FlapTransitions    int32   `json:"flap_transitions"`
@@ -116,7 +116,7 @@ type AlertQualityQuery struct {
 	Until     *time.Time `json:"until"`
 	Cluster   []string   `json:"cluster"   validate:"omitempty,max=32,unique,dive,clusterkey"`
 	AlertName []string   `json:"alertname" validate:"omitempty,max=64,unique,dive,max=1024"`
-	Sort      string     `json:"sort"      validate:"omitempty,oneof=-occurrences -notifications ack_rate -flap_transitions -total_firing_seconds"`
+	Sort      string     `json:"sort"      validate:"omitempty,oneof=-cases -notifications ack_rate -flap_transitions -total_firing_seconds"`
 	Limit     int        `json:"limit"     validate:"min=1,max=200"`
 	Cursor    string     `json:"cursor"    validate:"omitempty,cursor"`
 }
@@ -171,10 +171,10 @@ func qualityDTO(q domain.AlertQuality) AlertQualityDTO {
 	return AlertQualityDTO{
 		AlertName:          q.AlertName,
 		ClusterKey:         q.ClusterKey,
-		Occurrences:        int32(q.Occurrences),
+		Cases:              int32(q.Cases),
 		Notifications:      int32(q.Notifications),
 		Deliveries:         int32(q.Deliveries),
-		AckedOccurrences:   int32(q.AckedOccurrences),
+		AckedCases:         int32(q.AckedCases),
 		AckRate:            q.AckRate(),
 		AutoResolved:       int32(q.AutoResolved),
 		Expired:            int32(q.Expired),

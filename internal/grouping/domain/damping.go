@@ -13,7 +13,7 @@ import (
 //	Flapping and storm mode are VISIBLE UI STATES, NEVER SILENT SUPPRESSION.
 //
 // Damping never hides an alert, never changes its state, never changes its
-// severity and never stops an AlertEvent being written. Occurrences still open
+// severity and never stops an AlertEvent being written. Cases still open
 // and close normally; the ONLY thing that changes is how loudly oto talks about
 // them, and the fact that it went quieter is itself displayed and recorded on the
 // timeline. Silence destroys trust, so oto's quiet is always accounted for.

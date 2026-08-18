@@ -42,10 +42,10 @@ var baseTime = time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 const alertName = "HighErrorRate"
 
 var (
-	sourceID     = id.New()
-	alertID      = id.New()
-	occurrenceID = id.New()
-	snapshotID   = id.New()
+	sourceID   = id.New()
+	alertID    = id.New()
+	caseID     = id.New()
+	snapshotID = id.New()
 )
 
 // ------------------------------------------------------- the rules-service double
@@ -138,7 +138,7 @@ func (s *snapshotter) Capture(
 	}, nil
 }
 
-// binder is `alert_occurrences.rule_snapshot_id`, and its failure mode.
+// binder is `alert_cases.rule_snapshot_id`, and its failure mode.
 type binder struct {
 	err   error
 	calls int
@@ -158,8 +158,8 @@ func (b *binder) BindRuleSnapshot(
 func subject() *domain.Subject {
 	return &domain.Subject{
 		OrgID:       id.NewString(),
-		SubjectKind: domain.SubjectOccurrence,
-		SubjectID:   occurrenceID.String(),
+		SubjectKind: domain.SubjectCase,
+		SubjectID:   caseID.String(),
 		Alert: domain.AlertSnapshot{
 			ID:           alertID.String(),
 			AlertKey:     "ak_abcdefghijklmnopqrstuvwxyz",
@@ -169,8 +169,8 @@ func subject() *domain.Subject {
 			Annotations:  map[string]string{"summary": "errors are up"},
 			GeneratorURL: "https://prom.example/graph?g0.expr=rate(errors[5m])",
 		},
-		Occurrence: domain.OccurrenceSnapshot{ID: occurrenceID.String(), StartedAt: baseTime},
-		Source:     domain.SourceRef{ID: sourceID.String(), Kind: "alertmanager"},
+		Case:   domain.CaseSnapshot{ID: caseID.String(), StartedAt: baseTime},
+		Source: domain.SourceRef{ID: sourceID.String(), Kind: "alertmanager"},
 	}
 }
 
@@ -247,16 +247,16 @@ func TestApplicableRequiresAnAlertname(t *testing.T) {
 	assert.False(t, e.Applicable(nameless))
 }
 
-// TestCacheSeedFixesTheQuestionAndNotTheOccurrence. A cache keyed by occurrence
+// TestCacheSeedFixesTheQuestionAndNotTheCase. A cache keyed by case
 // would never hit.
-func TestCacheSeedFixesTheQuestionAndNotTheOccurrence(t *testing.T) {
+func TestCacheSeedFixesTheQuestionAndNotTheCase(t *testing.T) {
 	t.Parallel()
 
 	e := promrule.New(&snapshotter{}, nil)
 
 	other := subject()
-	other.Occurrence.ID = id.NewString()
-	other.SubjectID = other.Occurrence.ID
+	other.Case.ID = id.NewString()
+	other.SubjectID = other.Case.ID
 	assert.Equal(t, e.CacheSeed(subject()), e.CacheSeed(other),
 		"a second fire of the same alert asks the same question")
 
@@ -303,7 +303,7 @@ func TestAFoundRuleIsCapturedPinnedAndProjected(t *testing.T) {
 	assert.Equal(t, 1, p.CandidateCount)
 	assert.False(t, p.Drifted)
 
-	// The snapshot is pinned to the occurrence, which is what makes "show me the
+	// The snapshot is pinned to the case, which is what makes "show me the
 	// rule as it was when THIS fired" a single join.
 	assert.Equal(t, 1, bind.calls)
 	assert.Equal(t, snapshotID, bind.sawID)
@@ -317,7 +317,7 @@ func TestAFoundRuleIsCapturedPinnedAndProjected(t *testing.T) {
 	// And the capture was asked the right question.
 	assert.Equal(t, sourceID, snaps.sawReq.SourceID)
 	assert.Equal(t, alertID, snaps.sawReq.AlertID)
-	assert.Equal(t, occurrenceID, snaps.sawReq.OccurrenceID)
+	assert.Equal(t, caseID, snaps.sawReq.CaseID)
 	assert.Equal(t, subject().Alert.GeneratorURL, snaps.sawReq.GeneratorURL)
 }
 
@@ -452,7 +452,7 @@ func TestARuleThatCannotBeRecoveredIsRecordedNotSilent(t *testing.T) {
 	assert.Zero(t, p.ForSeconds)
 
 	assert.Zero(t, bind.calls,
-		"an unavailable snapshot is not pinned to the occurrence: there is nothing to pin")
+		"an unavailable snapshot is not pinned to the case: there is nothing to pin")
 }
 
 // TestAnAlertWithNoSourceIsSkippedNotFailed.
@@ -491,7 +491,7 @@ func TestAnUpstreamServerErrorIsAnErrorAndNothingElse(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, domain.Result{}, res,
 		"an error carries the ZERO result: nothing to render, nothing stale, nothing wrong")
-	assert.Zero(t, bind.calls, "and nothing is pinned to the occurrence")
+	assert.Zero(t, bind.calls, "and nothing is pinned to the case")
 	assert.Equal(t, errs.KindUpstreamDown, errs.KindOf(err),
 		"a Prometheus that is down is an upstream failure, not oto's")
 }

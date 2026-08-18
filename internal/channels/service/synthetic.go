@@ -15,7 +15,7 @@ const SyntheticAlertName = "OtoChannelTest"
 // SyntheticView builds the NotificationView the test card renders from.
 //
 // It is populated ENOUGH TO EXERCISE THE REAL RENDERER: a group with a title and
-// counts, one member alert with labels and annotations, an occurrence, a rule
+// counts, one member alert with labels and annotations, a case, a rule
 // snapshot, the standard actions and the deep links. A sparse view would render a
 // sparse card, which would pass validation that a real card might not — and the
 // whole value of this endpoint is that a pass means the real path works.
@@ -57,7 +57,7 @@ func SyntheticView(inst domain.Instance, now time.Time, baseURL string) *domain.
 		AckState:          "unacked",
 		FirstSeenAt:       started,
 		LastSeenAt:        now,
-		TotalOccurrences:  1,
+		TotalCases:        1,
 	}
 
 	view := &domain.NotificationView{
@@ -84,7 +84,7 @@ func SyntheticView(inst domain.Instance, now time.Time, baseURL string) *domain.
 		},
 		Alerts: []domain.AlertView{alert},
 		Focus:  &alert,
-		Occurrence: &domain.OccurrenceView{
+		Case: &domain.CaseView{
 			ID:        "00000000-0000-7000-8000-000000000003",
 			Seq:       1,
 			State:     "firing",

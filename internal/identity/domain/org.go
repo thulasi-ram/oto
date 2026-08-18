@@ -96,10 +96,10 @@ func (o Org) Shadowed() SettingsPatch {
 // that no caller has to remember which unit a particular key was written in.
 type Settings struct {
 	// RefireGrace decides T8 from T7: a re-fire inside the window reopens the
-	// existing occurrence, one after it opens a new episode (§B.5).
+	// existing case, one after it opens a new episode (§B.5).
 	RefireGrace time.Duration
 	// ResolveGrace is how long past `source_ends_at` the reaper waits before an
-	// occurrence may expire (§B.4).
+	// case may expire (§B.4).
 	ResolveGrace time.Duration
 	// GroupCloseDelay is how long an idle generation is held open before closing,
 	// which freezes its Slack thread.
@@ -207,10 +207,10 @@ type Settings struct {
 // default cannot drift away from the arithmetic that produced it.
 const (
 	// DefaultRefireGrace decides T7 from T8: a re-fire inside this window reopens
-	// the existing occurrence, a re-fire after it opens a new episode (§B.5).
+	// the existing case, a re-fire after it opens a new episode (§B.5).
 	DefaultRefireGrace = tuning.DefaultRefireGrace
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
-	// before an occurrence may expire (§B.4).
+	// before a case may expire (§B.4).
 	DefaultResolveGrace = tuning.DefaultResolveGrace
 	// DefaultGroupCloseDelay is pinned EQUAL to DefaultRefireGrace, and the
 	// equality is the whole point rather than a coincidence: a generation that

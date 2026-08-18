@@ -66,12 +66,12 @@ type Event struct {
 	// Type is the closed §D.4.1 enum, not a string: the value reaching the INSERT
 	// can only have come from `alerts/domain`, which is the one property this
 	// second writer can offer without being folded into the seam.
-	Type         kernel.EventType
-	AlertID      *uuid.UUID
-	OccurrenceID *uuid.UUID
-	GroupID      *uuid.UUID
-	Summary      string
-	Payload      map[string]any
+	Type    kernel.EventType
+	AlertID *uuid.UUID
+	CaseID  *uuid.UUID
+	GroupID *uuid.UUID
+	Summary string
+	Payload map[string]any
 	// DedupeKey makes the append idempotent across an at-least-once job (§C.8).
 	// Empty means "append unconditionally", which is right for facts that
 	// genuinely can recur, such as a retry failing again.
@@ -86,7 +86,7 @@ ON CONFLICT DO NOTHING`
 
 const insertEventSQL = `
 INSERT INTO alert_events (
-  id, org_id, alert_id, occurrence_id, group_id, type, occurred_at, recorded_at,
+  id, org_id, alert_id, case_id, group_id, type, occurred_at, recorded_at,
   actor_kind, actor_label, summary, payload, dedupe_key)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12)`
 
@@ -135,7 +135,7 @@ func (r *EventRepository) Append(ctx context.Context, s db.TenantScope, e Event)
 		// parameter, which is what CONTEXT.md §6 means by "TEXT + CHECK in SQL,
 		// closed value-object types in Go": the string exists at the driver
 		// boundary and nowhere above it.
-		id, s.OrgID(), e.AlertID, e.OccurrenceID, e.GroupID, e.Type.String(), e.At,
+		id, s.OrgID(), e.AlertID, e.CaseID, e.GroupID, e.Type.String(), e.At,
 		actorNotifier, "oto", truncate(e.Summary, 500), payload, key,
 	)
 	return mapErr(err, "event_not_found", "append a timeline event")
@@ -147,10 +147,10 @@ func (r *EventRepository) AppendNotificationCreated(
 ) error {
 	groupID := n.GroupID
 	return r.Append(ctx, s, Event{
-		Type:         kernel.EventNotificationCreated,
-		AlertID:      n.AlertID,
-		OccurrenceID: n.OccurrenceID,
-		GroupID:      &groupID,
+		Type:    kernel.EventNotificationCreated,
+		AlertID: n.AlertID,
+		CaseID:  n.CaseID,
+		GroupID: &groupID,
 		Summary: "oto notified " + strconv.Itoa(destinations) + " destination(s): " +
 			string(n.Reason),
 		Payload: map[string]any{
@@ -180,10 +180,10 @@ func (r *EventRepository) AppendNotificationSuppressed(
 	}
 	groupID := n.GroupID
 	return r.Append(ctx, s, Event{
-		Type:         kernel.EventNotificationSuppressed,
-		AlertID:      n.AlertID,
-		OccurrenceID: n.OccurrenceID,
-		GroupID:      &groupID,
+		Type:    kernel.EventNotificationSuppressed,
+		AlertID: n.AlertID,
+		CaseID:  n.CaseID,
+		GroupID: &groupID,
 		Summary: "oto did not notify (" + string(n.SuppressedReason) + "): " +
 			string(n.Reason),
 		Payload: map[string]any{

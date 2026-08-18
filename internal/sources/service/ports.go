@@ -160,17 +160,17 @@ type CredentialStore interface {
 
 // AlertmanagerClient is the port shape the service consumes.
 //
-// It is domain.AlertmanagerClient (SPEC §F.4, unchanged) plus the three reads
-// the port does not declare but the sources screen, the silence mirror and the
-// probe all need. Keeping them here rather than widening the SPEC's interface
-// leaves §F.4 byte-identical to the specification.
+// It is domain.AlertmanagerClient (SPEC §F.4, unchanged) plus the two reads the
+// port does not declare but the sources screen, the silence mirror and the probe
+// all need. Keeping them here rather than widening the SPEC's interface leaves
+// §F.4 byte-identical to the specification.
+//
+// It was three until ADR 0038: `AlertGroups` is gone with the derived group key.
 type AlertmanagerClient interface {
 	domain.AlertmanagerClient
 
 	// StatusDetail adds the config-parse outcome that AMStatus has no room for.
 	StatusDetail(ctx context.Context) (alertmanager.Status, error)
-	// AlertGroups reads GET /api/v2/alerts/groups.
-	AlertGroups(ctx context.Context, f alertmanager.AlertGroupFilter) ([]alertmanager.AlertGroup, error)
 	// Silence reads GET /api/v2/silence/{id} (SINGULAR).
 	Silence(ctx context.Context, id string) (domain.GettableSilence, error)
 }

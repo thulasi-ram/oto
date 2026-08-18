@@ -17,7 +17,7 @@ func full() domain.Artifacts {
 	return domain.Artifacts{
 		Batch:              domain.BatchFact{Found: true, Status: "processed", AlertCount: 1},
 		Alert:              domain.AlertFact{Found: true, ID: uuid.New(), Key: "ak_x", Synthetic: true, State: "firing"},
-		Occurrence:         domain.OccurrenceFact{Found: true, ID: uuid.New(), Seq: 1, State: "firing", RuleSnapshotID: uuid.New()},
+		Case:               domain.CaseFact{Found: true, ID: uuid.New(), Seq: 1, State: "firing", RuleSnapshotID: uuid.New()},
 		Group:              domain.GroupFact{Found: true, ID: uuid.New(), Key: "gk_x", Generation: 1, Synthetic: true, Member: true},
 		Notification:       domain.NotificationFact{Found: true, ID: uuid.New(), Status: "delivered", Reason: "fired", PolicyName: "all critical"},
 		Threads:            []domain.ThreadFact{{ChannelID: channel, ChannelName: "#sre", State: "open", ProviderConversationID: "C1", ProviderThreadID: "1700000000.000100", LastSentSeq: 1}},
@@ -163,7 +163,7 @@ func TestObserveReportsAnOrderingStallWithBothSequences(t *testing.T) {
 // operator hunting a problem that does not exist.
 func TestObserveSkipsTheRuleSnapshotHonestly(t *testing.T) {
 	a := full()
-	a.Occurrence.RuleSnapshotID = uuid.Nil
+	a.Case.RuleSnapshotID = uuid.Nil
 	a.RuleLookupPossible = false
 
 	res := domain.Observe(a, false)

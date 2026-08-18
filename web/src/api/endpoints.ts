@@ -54,7 +54,7 @@ import type {
   Me,
   Notification,
   NotificationListQuery,
-  Occurrence,
+  Case,
   OrgSettingsView,
   Policy,
   PolicyPreview,
@@ -147,12 +147,12 @@ export function getAlert(id: Uuid, c: Ctx = {}): Promise<AlertDetail> {
   return getItem<AlertDetail>(`${V1}/alerts/${id}`, ctx(c));
 }
 
-export function listAlertOccurrences(
+export function listAlertCases(
   id: Uuid,
   query: { limit?: number; cursor?: string },
   c: Ctx = {},
-): Promise<ListEnvelope<Occurrence>> {
-  return getList<Occurrence>(`${V1}/alerts/${id}/occurrences`, {
+): Promise<ListEnvelope<Case>> {
+  return getList<Case>(`${V1}/alerts/${id}/cases`, {
     ...ctx(c),
     query: query as QueryParams,
   });
@@ -266,20 +266,20 @@ export function listAlertNotifications(
 /* -------------------------------------------------------------------------- */
 
 /**
- * Acknowledge the current occurrence.
+ * Acknowledge the current case.
  *
  * SCOPE-BOUNDARY: this is a **receipt on a signal** — "a human has seen this".
  * It is not ownership, not an assignment, and an acked alert is still firing.
  */
-export function ackAlert(id: Uuid, note: string | undefined, key: string): Promise<Occurrence> {
+export function ackAlert(id: Uuid, note: string | undefined, key: string): Promise<Case> {
   const body = note !== undefined && note !== "" ? { note } : {};
-  return postItem<Occurrence>(`${V1}/alerts/${id}/ack`, body, { idempotencyKey: key });
+  return postItem<Case>(`${V1}/alerts/${id}/ack`, body, { idempotencyKey: key });
 }
 
 /** Withdraw a receipt. Recorded with `reason: manual`. */
-export function unackAlert(id: Uuid, note: string | undefined, key: string): Promise<Occurrence> {
+export function unackAlert(id: Uuid, note: string | undefined, key: string): Promise<Case> {
   const body = note !== undefined && note !== "" ? { note } : {};
-  return postItem<Occurrence>(`${V1}/alerts/${id}/unack`, body, { idempotencyKey: key });
+  return postItem<Case>(`${V1}/alerts/${id}/unack`, body, { idempotencyKey: key });
 }
 
 /** Append an immutable `comment.added` event to the timeline. */

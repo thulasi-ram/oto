@@ -47,7 +47,7 @@ func (r *DrillRepository) Artifacts(
 		return domain.Artifacts{}, err
 	}
 	if out.Alert.Found {
-		if err := r.readOccurrence(ctx, s, out.Alert.ID, &out); err != nil {
+		if err := r.readCase(ctx, s, out.Alert.ID, &out); err != nil {
 			return domain.Artifacts{}, err
 		}
 		if err := r.readGroup(ctx, s, out.Alert.ID, &out); err != nil {
@@ -147,34 +147,34 @@ SELECT id, alert_key, synthetic, state
 	return nil
 }
 
-func (r *DrillRepository) readOccurrence(
+func (r *DrillRepository) readCase(
 	ctx context.Context, s db.TenantScope, alertID uuid.UUID, out *domain.Artifacts,
 ) error {
 	var (
-		occ      domain.OccurrenceFact
+		ac       domain.CaseFact
 		snapshot *uuid.UUID
 		ruleName *string
 	)
 	err := r.db(ctx).QueryRow(ctx, `
 SELECT o.id, o.seq, o.state, o.rule_snapshot_id, rs.rule_name
-  FROM alert_occurrences o
+  FROM alert_cases o
   LEFT JOIN rule_snapshots rs ON rs.id = o.rule_snapshot_id AND rs.org_id = o.org_id
  WHERE o.org_id = $1 AND o.alert_id = $2
  ORDER BY o.seq DESC
  LIMIT 1`, s.OrgID(), alertID,
-	).Scan(&occ.ID, &occ.Seq, &occ.State, &snapshot, &ruleName)
+	).Scan(&ac.ID, &ac.Seq, &ac.State, &snapshot, &ruleName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
-		return mapErr(err, "read the drill's occurrence")
+		return mapErr(err, "read the drill's case")
 	}
-	occ.Found = true
-	occ.RuleSnapshotID = idOrNil(snapshot)
+	ac.Found = true
+	ac.RuleSnapshotID = idOrNil(snapshot)
 	if ruleName != nil {
-		occ.RuleName = *ruleName
+		ac.RuleName = *ruleName
 	}
-	out.Occurrence = occ
+	out.Case = ac
 	return nil
 }
 
@@ -184,9 +184,9 @@ func (r *DrillRepository) readGroup(
 	var group domain.GroupFact
 	err := r.db(ctx).QueryRow(ctx, `
 SELECT g.id, g.group_key, g.generation, g.synthetic, g.title
-  FROM alert_group_members m
-  JOIN alert_groups g ON g.id = m.group_id AND g.org_id = m.org_id
- WHERE m.org_id = $1 AND m.alert_id = $2
+  FROM alert_cases o
+  JOIN alert_groups g ON g.id = o.group_id AND g.org_id = o.org_id
+ WHERE o.org_id = $1 AND o.alert_id = $2
  ORDER BY g.generation DESC
  LIMIT 1`, s.OrgID(), alertID,
 	).Scan(&group.ID, &group.Key, &group.Generation, &group.Synthetic, &group.Title)
@@ -201,6 +201,11 @@ SELECT g.id, g.group_key, g.generation, g.synthetic, g.title
 	// separate flag exists because the group can be resolved before the alert
 	// joins it, and a drill that reported "grouped" one poll early would be
 	// claiming something it had not seen.
+	//
+	// Since 00051 the membership is `alert_cases.group_id` rather than a row
+	// in `alert_group_members`. The proof is the same and it is now stronger: the
+	// old join table could hold a membership row for an episode the group no longer
+	// had, because nothing ever wrote `left_at`.
 	group.Member = true
 	out.Group = group
 	return nil

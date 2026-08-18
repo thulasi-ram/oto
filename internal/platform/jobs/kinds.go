@@ -49,7 +49,7 @@ const (
 	KindSlackInteraction      = "slack.interaction"
 	KindSourceReconcile       = "source.reconcile"
 	KindSilencesSync          = "silences.sync"
-	KindOccurrenceReap        = "occurrence.reap"
+	KindCaseReap              = "case.reap"
 	KindGroupClose            = "group.close"
 	KindFlapScore             = "flap.score"
 	KindNotifyUnackedReminder = "notify.unacked_reminder"

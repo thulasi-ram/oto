@@ -118,7 +118,7 @@ type Detail struct {
 // button, which is exactly when they are pressing them. It now takes the first
 // domain.MemberPreviewLimit rows of the same keyset read that
 // `/alert-groups/{id}/alerts` pages through, already ordered newest-join-first
-// by gm_current_idx.
+// by case_group_live_idx.
 //
 // ⭐ THIS LIMIT IS THE ONLY PLACE THE PREVIEW IS BOUNDED. Nothing downstream cuts
 // the slice again — `api` renders exactly what this returns — so the contract's
@@ -185,10 +185,17 @@ func (s *Service) History(
 	return s.members.AllMembers(ctx, scope, groupID)
 }
 
-// MembersAt replays which occurrences were in the generation at one instant.
+// MembersAt replays which cases were in the generation at one instant.
 //
 // This is what makes "what was in this group when the thread was posted?"
-// answerable, and it is why a member that leaves keeps its row.
+// answerable, and it is why an episode that ends is not forgotten.
+//
+// ⭐⭐ IT CAN ANSWER A SMALLER NUMBER THAN IT DID A MOMENT AGO, WHICH IT COULD NOT
+// BEFORE. Membership used to be a join-table row whose `left_at` no production
+// code ever wrote, so the "instant" clause was a tautology and this method could
+// only ever show the generation growing. Since 00051 membership is the episode's
+// own span — `started_at` to `ended_at`, written by the §B.3 state machine — so a
+// replay shrinks when the generation shrank.
 //
 // ⭐ THE INSTANT GOES DOWN TO SQL. This used to read `AllMembers` — every
 // membership row the generation has ever had, joined and departed — and then run
@@ -263,7 +270,7 @@ type FanOutResult struct {
 	// ⭐ It exists because "nothing happened" has more than one honest
 	// explanation, and a caller that has to tell a human which one it was cannot
 	// get it from a count. `already_acked` means somebody got there first;
-	// `no_open_occurrence` means every episode has already resolved or expired.
+	// `no_open_case` means every episode has already resolved or expired.
 	// Those are different sentences, and a surface that cannot say which — the
 	// Slack Acknowledge button, in particular — is back to being a button that
 	// silently does nothing.

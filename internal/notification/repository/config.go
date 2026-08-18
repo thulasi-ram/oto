@@ -400,7 +400,7 @@ func (r *ConfigRepository) ListNotifications(
 		var row notificationRow
 		if err := rows.Scan(
 			&row.id, &row.orgID, &row.subjectKind, &row.subjectID, &row.groupID,
-			&row.alertID, &row.occurrenceID, &row.reason, &row.policyID,
+			&row.alertID, &row.caseID, &row.reason, &row.policyID,
 			&row.stateVersion, &row.idempotencyKey, &row.status, &row.suppressedReason,
 			&row.createdAt, &row.updatedAt,
 		); err != nil {

@@ -206,7 +206,7 @@ CREATE TABLE notifications (
   subject_id      UUID        NOT NULL,
   group_id        UUID        NOT NULL REFERENCES alert_groups(id) ON DELETE CASCADE,
   alert_id        UUID,                            -- set when the fact is about one alert
-  occurrence_id   UUID,
+  occurrence_id   UUID,  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   reason          TEXT        NOT NULL,            -- §H.6 Reason enum
   policy_id       UUID        REFERENCES notification_policies(id) ON DELETE SET NULL,
   state_version   INT         NOT NULL,

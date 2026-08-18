@@ -112,7 +112,7 @@ func TestStormChunkedBatchExercisesB17(t *testing.T) {
 		DistinctAlerts: alerts,
 		Groups:         1,
 		// One per chunk is the CORRECT shape here: each chunk is its own
-		// transaction and its own `JoinMany`. Five chunks, one opening, one storm,
+		// transaction and its own `Recompute`. Five chunks, one opening, one storm,
 		// plus slack.
 		MaxRollupsPerGroup: 12,
 		StormGroups:        1,
@@ -307,7 +307,7 @@ func TestStormSheddingSays503NeverA429(t *testing.T) {
 	assertStormInvariants(t, e, r, invariantSpec{
 		DistinctAlerts: total,
 		Groups:         1,
-		// 48 batches into one group. Each is its own `JoinMany`, so the bound is
+		// 48 batches into one group. Each is its own `Recompute`, so the bound is
 		// per-batch and not per-alert: that is still O(batches x groups) and 1920
 		// alerts produce at most ~50 rollups rather than 1920.
 		MaxRollupsPerGroup: concurrent + 8,

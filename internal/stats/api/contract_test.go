@@ -74,10 +74,10 @@ func qualityFixture() service.QualityResult {
 	q := domain.AlertQuality{
 		AlertName:          "KubePodCrashLooping",
 		ClusterKey:         "prod-eu",
-		Occurrences:        47,
+		Cases:              47,
 		Notifications:      47,
 		Deliveries:         51,
-		AckedOccurrences:   0,
+		AckedCases:         0,
 		AutoResolved:       31,
 		Expired:            16,
 		TotalFiringSeconds: 86_400,
@@ -86,7 +86,7 @@ func qualityFixture() service.QualityResult {
 	return service.QualityResult{
 		Rows: []repository.QualityRow{{
 			Quality:   q,
-			SortValue: float64(q.Occurrences),
+			SortValue: float64(q.Cases),
 			KeysetKey: "prod-eu\x1fKubePodCrashLooping",
 		}},
 		HasMore: false,
@@ -168,14 +168,14 @@ func TestTheHygieneReportAnswersTheShapeTheContractDeclares(t *testing.T) {
 	t.Parallel()
 
 	c, svc := newStatsStack(t)
-	resp := c.GET("/stats/alert-quality?sort=-occurrences&limit=25&cluster=prod-eu").
+	resp := c.GET("/stats/alert-quality?sort=-cases&limit=25&cluster=prod-eu").
 		MustStatus(t, http.StatusOK)
 	schema.Assert(t, "getAlertQualityStats", http.StatusOK, resp.Body())
 
 	if svc.qualityCalls != 1 {
 		t.Fatalf("the service was asked %d times, want 1", svc.qualityCalls)
 	}
-	if svc.lastQuality.Sort != domain.SortOccurrencesDesc {
+	if svc.lastQuality.Sort != domain.SortCasesDesc {
 		t.Fatalf("sort = %q, want the key the caller asked for", svc.lastQuality.Sort)
 	}
 	if svc.lastQuality.Limit != 25 {
@@ -191,7 +191,7 @@ func TestTheHygieneReportAnswersTheShapeTheContractDeclares(t *testing.T) {
 		t.Fatalf("data has %d rows, want 1", len(rows))
 	}
 	row, _ := rows[0].(map[string]any)
-	if row["ack_rate"] != float64(0) || row["occurrences"] != float64(47) {
+	if row["ack_rate"] != float64(0) || row["cases"] != float64(47) {
 		t.Fatalf("row = %#v; the answer this endpoint exists for is \"47 times, "+
 			"acknowledged 0\"", row)
 	}

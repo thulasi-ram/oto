@@ -26,12 +26,15 @@ import {
   compileRollupFilters,
   filtersFromSearch,
   isExpiredOnly,
+  isQuietTab,
   isUnfiltered,
   matcherTextFromSelector,
+  quietBadgeFilters,
   searchFromFilters,
   toggleIn,
   withMatcher,
   withRollupBucket,
+  withTab,
   withoutMatcher,
   type AlertFilters,
 } from "./filters";
@@ -59,9 +62,8 @@ describe("filters <-> URL", () => {
       cluster: ["prod-eu"],
       namespace: ["payments"],
       alertname: ["HighErrorRate"],
-      ack: "unacked",
       flapping: true,
-      snoozed: false,
+      tab: "quiet",
       since: "2026-08-01T00:00:00.000Z",
       q: "error rate",
       sort: "-first_seen_at",
@@ -74,10 +76,16 @@ describe("filters <-> URL", () => {
 
   it("writes nothing for a filter at its default, so a shared link stays readable", () => {
     expect(searchFromFilters(DEFAULT_FILTERS)).toBe("");
-    // `snoozed: null` is the default and means "include both" — a deliberate
-    // choice (§B.8), and one that must not be spelled out in the URL.
-    expect(searchFromFilters(f({ snoozed: null }))).toBe("");
-    expect(searchFromFilters(f({ snoozed: false }))).toBe("?snoozed=false");
+    // The main tab is the default and is not spelled out; the Quiet tab is, so a
+    // link to it opens on it.
+    expect(searchFromFilters(f({ tab: "active" }))).toBe("");
+    expect(searchFromFilters(f({ tab: "quiet" }))).toBe("?tab=quiet");
+  });
+
+  it("degrades a hand-edited tab to the main list rather than to an error page", () => {
+    expect(filtersFromSearch("?tab=loud").tab).toBe("active");
+    expect(filtersFromSearch("?tab=quiet").tab).toBe("quiet");
+    expect(filtersFromSearch("").tab).toBe("active");
   });
 
   it("drops a hand-edited state the server would 422 rather than showing an error page", () => {
@@ -117,7 +125,7 @@ describe("counting what is on", () => {
   });
 
   it("counts each axis once", () => {
-    expect(activeFilterCount(f({ state: ["firing", "resolved"], ack: "acked", q: "x" }))).toBe(3);
+    expect(activeFilterCount(f({ state: ["firing", "resolved"], flapping: true, q: "x" }))).toBe(3);
   });
 
   // §M.9 / ADR 0035. `expired` is the one state whose meaning is transience —
@@ -137,7 +145,13 @@ describe("counting what is on", () => {
     expect(isExpiredOnly(f({ state: ["expired", "resolved"] }))).toBe(false);
     expect(isExpiredOnly(f({ state: ["expired"], namespace: ["prod"] }))).toBe(false);
     expect(isExpiredOnly(f({ state: ["expired"], q: "disk" }))).toBe(false);
-    expect(isExpiredOnly(f({ state: ["expired"], snoozed: false }))).toBe(false);
+
+    // ⭐ THE TAB IS NOT A FILTER, so it changes neither predicate. It is the
+    // `<Switch>` on /alerts that asks `isQuietTab` FIRST — "nothing is quiet" is
+    // a different sentence from "nothing matched", and folding the tab into
+    // these two would have produced the wrong one of the two.
+    expect(isExpiredOnly(f({ state: ["expired"], tab: "quiet" }))).toBe(true);
+    expect(isUnfiltered(f({ tab: "quiet" }))).toBe(true);
   });
 
   // The two predicates read the same eleven fields, and the whole point of
@@ -159,10 +173,10 @@ describe("counting what is on", () => {
 describe("filters -> the wire", () => {
   it("asks for the two things the row needs and nothing more", () => {
     const compiled = compileFilters(f(), 50, null);
-    // `current_occurrence` carries ack state and firing duration; `rule` carries
+    // `current_case` carries ack state and firing duration; `rule` carries
     // the snapshot id the Rule column resolves in one batch (ADR 0025). Both are
-    // free on the same occurrence read.
-    expect(compiled.query.include).toEqual(["current_occurrence", "rule"]);
+    // free on the same case read.
+    expect(compiled.query.include).toEqual(["current_case", "rule"]);
     expect(compiled.query.limit).toBe(50);
     expect(compiled.query.sort).toBe("-last_seen_at");
     expect(compiled.ok).toBe(true);
@@ -266,5 +280,78 @@ describe("click-to-filter", () => {
   it("toggles a value in and out of an OR-ed array", () => {
     expect(toggleIn(["firing"], "resolved")).toEqual(["firing", "resolved"]);
     expect(toggleIn(["firing", "resolved"], "firing")).toEqual(["resolved"]);
+  });
+});
+
+/**
+ * The Quiet tab.
+ *
+ * ⛔ THESE ARE THE ASSERTIONS THAT MAKE HIDING SNOOZED ALERTS SAFE. Splitting
+ * them off the default list reverses `filters.ts`'s own former rule — *"hiding
+ * snoozed alerts from the default list is how an incident is lost"* — and the
+ * reversal only holds while the tab is unmissable and its badge is honest. Each
+ * test below is one clause of that argument.
+ */
+describe("the Quiet tab", () => {
+  it("always tells the server which tab it is on, and never asks for both", () => {
+    // ⛔ An omitted `snoozed` means "both tabs at once" — a list with no honest
+    // heading, and on the main tab exactly the behaviour this replaced.
+    const main = compileFilters(f(), 50, null).query as Record<string, unknown>;
+    const quiet = compileFilters(f({ tab: "quiet" }), 50, null).query as Record<string, unknown>;
+
+    expect(main["snoozed"]).toBe(false);
+    expect(quiet["snoozed"]).toBe(true);
+  });
+
+  it("sends the tab on the roll-up too, so the buckets summarise the tab beside them", () => {
+    const rollup = compileRollupFilters(f({ tab: "quiet" }), "namespace", 50, null).query as Record<
+      string,
+      unknown
+    >;
+    expect(rollup["snoozed"]).toBe(true);
+    // The same three axes as the main tab — the Quiet tab is the whole list
+    // machine pointed at a different set, not a reduced view of it.
+    expect(rollup["group_by"]).toBe("namespace");
+  });
+
+  it("keeps every filter when moving between tabs", () => {
+    const base = f({ state: ["firing"], namespace: ["payments"], q: "disk" });
+    const quiet = withTab(base, "quiet");
+
+    expect(isQuietTab(quiet)).toBe(true);
+    expect(quiet.state).toEqual(["firing"]);
+    expect(quiet.namespace).toEqual(["payments"]);
+    expect(quiet.q).toBe("disk");
+    expect(withTab(quiet, "active")).toEqual(base);
+  });
+
+  it("returns the same object when the tab is not changing, so nothing re-renders", () => {
+    const base = f({ tab: "quiet" });
+    expect(withTab(base, "quiet")).toBe(base);
+  });
+
+  it("counts the badge under the operator's own filters, never under none", () => {
+    // ⛔ A count of every quiet alert in the org, beside a list narrowed to one
+    // namespace, sends somebody to a tab that then shows them nothing. The badge
+    // promises exactly what the tab will contain.
+    const base = f({ namespace: ["payments"], severity: ["critical"], groupBy: "alertname" });
+    const badge = quietBadgeFilters(base);
+
+    expect(badge.tab).toBe("quiet");
+    expect(badge.namespace).toEqual(["payments"]);
+    expect(badge.severity).toEqual(["critical"]);
+    // The badge counts alerts; the roll-up would answer in buckets.
+    expect(badge.groupBy).toBe("none");
+
+    const query = compileFilters(badge, 200, null).query as Record<string, unknown>;
+    expect(query["snoozed"]).toBe(true);
+    expect(query["namespace"]).toEqual(["payments"]);
+  });
+
+  it("does not count the tab as an active filter", () => {
+    // "You are on the Quiet tab" is not a filter somebody forgot to clear, and a
+    // "1 filter" badge over a tab that is plainly labelled would be noise.
+    expect(activeFilterCount(f({ tab: "quiet" }))).toBe(0);
+    expect(activeFilterCount(f({ tab: "quiet", state: ["firing"] }))).toBe(1);
   });
 });

@@ -44,6 +44,27 @@
 -- alerts.snoozed_until (00017) is NOT an exception: it is a bare timestamp
 -- projection of alert_snoozes, and the attribution lives on that side table
 -- precisely so this ban stays absolute (SPEC §D.8b).
+--
+-- ⭐ AMENDMENT -- READ THIS BEFORE APPLYING THE CLAUSE ABOVE. The clause is
+-- BINDING AND UNCHANGED; two of the names it uses are not current, and the text
+-- above is left verbatim because it is what §D.4.0 said at THIS migration's
+-- version, not because it is a description of today's schema.
+--
+--   * `alert_occurrences` IS `alert_cases` (00052, ADR 0036). The ban travelled
+--     with the table and did not narrow: read every `alert_occurrences` and
+--     `occurrence.` above as `alert_cases` and `case.`. SCOPE-BOUNDARY §5.6 and
+--     §5.1 carry the current spelling, and `test/scope/forbidden_columns_test.go`
+--     enforces the ban against the LIVE schema, so the doctrine is mechanical
+--     rather than dependent on this comment being re-typed.
+--   * `alerts.snoozed_until` NO LONGER EXISTS (00048). Suppression reads
+--     `alert_snoozes` directly. The paragraph above survives because its RULING
+--     survives -- a bare-timestamp projection of a side table would not have been
+--     an exception to the ban -- but the column it exempts is gone, and
+--     `test/arch/snoozecolumn_test.go` now refuses its reintroduction.
+--
+-- Nothing here weakens the ban. `assigned_to`, `owner_id`, `watchers`,
+-- `incident_id`, `sla_due_at` and every sibling are still forbidden on `alerts`,
+-- `alert_cases` and `alert_groups`, permanently.
 
 ALTER TABLE alerts ADD CONSTRAINT alerts_sev_ck
   CHECK (severity IS NULL OR length(severity) BETWEEN 1 AND 256);

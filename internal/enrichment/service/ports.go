@@ -27,7 +27,7 @@ type EnrichmentRepository interface {
 	// enrichments_subject_uniq (subject_kind, subject_id, enricher).
 	//
 	// That constraint is what makes `enrich.run` idempotent on
-	// (occurrence_id, phase): re-running a phase overwrites ITS OWN rows and can
+	// (case_id, phase): re-running a phase overwrites ITS OWN rows and can
 	// never accumulate duplicates or double-count a failure.
 	UpsertMany(ctx context.Context, s db.TenantScope, in []domain.Enrichment) error
 }
@@ -35,7 +35,7 @@ type EnrichmentRepository interface {
 // CacheRepository owns `enrichment_cache` — the disposable layer.
 //
 // The two layers are not redundant. `enrichments` answers "what does oto know
-// about THIS occurrence, and who computed it"; the cache answers "has anyone
+// about THIS case, and who computed it"; the cache answers "has anyone
 // asked this same question of an upstream recently". Truncating the cache costs
 // latency; truncating `enrichments` destroys the record.
 type CacheRepository interface {
@@ -54,7 +54,7 @@ type CacheRepository interface {
 	DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error)
 }
 
-// SubjectLoader denormalises one occurrence into the Subject an Enricher is
+// SubjectLoader denormalises one case into the Subject an Enricher is
 // asked about.
 //
 // This is the narrow interface onto the `alerts` module. It is ONE method on
@@ -63,7 +63,7 @@ type CacheRepository interface {
 // the async phase must quote back when it asks for the root message to be
 // amended.
 type SubjectLoader interface {
-	LoadSubject(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (Loaded, error)
+	LoadSubject(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (Loaded, error)
 }
 
 // Loaded is a Subject plus the notification coordinates that go with it.
@@ -71,10 +71,10 @@ type Loaded struct {
 	// Subject is what the Enrichers see. It is denormalised so that an Enricher
 	// never has to query oto's own database to know what it is enriching.
 	Subject domain.Subject
-	// AlertID is the Alert identity this occurrence belongs to.
+	// AlertID is the Alert identity this case belongs to.
 	AlertID uuid.UUID
 	// GroupID is the AlertGroup generation carrying it, or uuid.Nil when the
-	// occurrence is not in an open group. No group means nothing to amend.
+	// case is not in an open group. No group means nothing to amend.
 	GroupID uuid.UUID
 	// StateVersion is `alert_groups.state_version` at load time. It pins the
 	// enriched notification to the group state it was minted against
@@ -98,7 +98,7 @@ type Loaded struct {
 type Notifier interface {
 	NotifyEnriched(ctx context.Context, s db.TenantScope, n EnrichedNotice) error
 
-	// NotifyPreNotificationReady releases the FIRST notification for an occurrence
+	// NotifyPreNotificationReady releases the FIRST notification for a case
 	// whose inline pass has just finished (SPEC §F.3, ADR 0009).
 	//
 	// ⛔ ENRICHMENT IS NOT DECIDING THAT AN ALERT FIRED. `alerts` already decided
@@ -115,11 +115,11 @@ type Notifier interface {
 	NotifyPreNotificationReady(ctx context.Context, s db.TenantScope, n PreNotificationNotice) error
 }
 
-// PreNotificationNotice names the occurrence whose pre-notification pass is over.
+// PreNotificationNotice names the case whose pre-notification pass is over.
 type PreNotificationNotice struct {
 	GroupID      uuid.UUID
 	AlertID      uuid.UUID
-	OccurrenceID uuid.UUID
+	CaseID       uuid.UUID
 	StateVersion int
 }
 
@@ -127,7 +127,7 @@ type PreNotificationNotice struct {
 type EnrichedNotice struct {
 	GroupID      uuid.UUID
 	AlertID      uuid.UUID
-	OccurrenceID uuid.UUID
+	CaseID       uuid.UUID
 	StateVersion int
 	// Enrichers names what completed, in deterministic order. It is the raw
 	// material for the ":sparkles: +2 enrichments — …" context line (SPEC §H.6)
@@ -157,9 +157,9 @@ type EnrichmentEvent struct {
 	// RULE K (§5.2b) grants this package the import; the WRITE is still the port
 	// above, so this remains a value crossing and not an `enrichment ──► alerts`
 	// module edge.
-	Type         kernel.EventType
-	AlertID      uuid.UUID
-	OccurrenceID uuid.UUID
+	Type    kernel.EventType
+	AlertID uuid.UUID
+	CaseID  uuid.UUID
 	// Summary is the pre-rendered one-liner for the timeline, 1..500 bytes.
 	Summary string
 	// Payload is the structured detail: per-enricher status and duration.

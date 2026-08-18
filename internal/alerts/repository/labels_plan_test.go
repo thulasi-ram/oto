@@ -96,7 +96,7 @@ func TestTheLabelTypeaheadsNeverScanAlerts(t *testing.T) {
 		INSERT INTO alerts
 		  (id, org_id, cluster_id, alert_key, source_fingerprint, alertname, severity,
 		   cluster_key, labels, state, first_seen_at, last_seen_at, last_state_change_at,
-		   total_occurrences, synthetic)
+		   total_cases, synthetic)
 		SELECT gen_random_uuid(), $1, $2,
 		       'ak_' || lpad(to_hex(i), 26, '0'),
 		       lpad(to_hex(i), 16, '0'),

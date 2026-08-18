@@ -260,7 +260,7 @@ describe("the shell is a layout route, not five wrappers", () => {
     // Still a live connection rather than a surviving corpse: a frame pushed down
     // connection #1 must still reach the cache on the screen the nav arrived at.
     const before = w.http.to("/api/v1/alert-groups").length;
-    w.push(1, sse(frame(1, "occurrence.upserted", { id: "an-occurrence" })));
+    w.push(1, sse(frame(1, "case.upserted", { id: "a-case" })));
     await until(() => expect(w.http.to("/api/v1/alert-groups").length).toBeGreaterThan(before));
     expect(w.opened()).toBe(1);
   });

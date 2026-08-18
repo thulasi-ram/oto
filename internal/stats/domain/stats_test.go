@@ -81,7 +81,7 @@ func TestAlertQualityIsKeyedByTheSignalOnly(t *testing.T) {
 // TestSortKeysAreSignalScoped — a sort key is a hygiene problem, never a person.
 func TestSortKeysAreSignalScoped(t *testing.T) {
 	for _, s := range []Sort{
-		SortOccurrencesDesc, SortNotificationsDesc, SortAckRateAsc,
+		SortCasesDesc, SortNotificationsDesc, SortAckRateAsc,
 		SortFlapTransitionsDesc, SortFiringSecondsDesc,
 	} {
 		lower := strings.ToLower(s.String())
@@ -106,20 +106,20 @@ func TestNewSort(t *testing.T) {
 		want Sort
 		ok   bool
 	}{
-		{name: "empty falls back to the default", in: "", want: SortOccurrencesDesc, ok: true},
-		{name: "noisiest rules", in: "-occurrences", want: SortOccurrencesDesc, ok: true},
+		{name: "empty falls back to the default", in: "", want: SortCasesDesc, ok: true},
+		{name: "noisiest rules", in: "-cases", want: SortCasesDesc, ok: true},
 		{name: "most interruptions", in: "-notifications", want: SortNotificationsDesc, ok: true},
 		{name: "nobody ever acks these", in: "ack_rate", want: SortAckRateAsc, ok: true},
 		{name: "unstable", in: "-flap_transitions", want: SortFlapTransitionsDesc, ok: true},
 		{name: "firing longest", in: "-total_firing_seconds", want: SortFiringSecondsDesc, ok: true},
 
-		{name: "ascending occurrences is not offered", in: "occurrences"},
+		{name: "ascending cases is not offered", in: "cases"},
 		{name: "descending ack rate is not offered", in: "-ack_rate"},
 		{name: "an arbitrary column would be an unindexed sort", in: "alertname"},
 		{name: "sql injection", in: "1; DROP TABLE alerts"},
 		{name: "a per-person sort does not exist", in: "-acked_by"},
 		{name: "mttr does not exist", in: "-mttr"},
-		{name: "case matters", in: "-Occurrences"},
+		{name: "case matters", in: "-Cases"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,7 +142,7 @@ func TestNewSort(t *testing.T) {
 func TestNewSort_DefaultIsTheNoisiestRules(t *testing.T) {
 	got, err := NewSort("")
 	require.NoError(t, err)
-	assert.Equal(t, SortOccurrencesDesc, got,
+	assert.Equal(t, SortCasesDesc, got,
 		"the best alert is the one that no longer exists, so the noisiest come first")
 }
 
@@ -154,11 +154,11 @@ func TestAlertQuality_AckRate(t *testing.T) {
 		q    AlertQuality
 		want float32
 	}{
-		{name: "never acked — the rule whose best future is deletion", q: AlertQuality{Occurrences: 47}},
-		{name: "always acked", q: AlertQuality{Occurrences: 4, AckedOccurrences: 4}, want: 1},
-		{name: "half", q: AlertQuality{Occurrences: 4, AckedOccurrences: 2}, want: 0.5},
-		{name: "no occurrences at all", q: AlertQuality{AckedOccurrences: 3}},
-		{name: "a negative count cannot divide", q: AlertQuality{Occurrences: -1, AckedOccurrences: 3}},
+		{name: "never acked — the rule whose best future is deletion", q: AlertQuality{Cases: 47}},
+		{name: "always acked", q: AlertQuality{Cases: 4, AckedCases: 4}, want: 1},
+		{name: "half", q: AlertQuality{Cases: 4, AckedCases: 2}, want: 0.5},
+		{name: "no cases at all", q: AlertQuality{AckedCases: 3}},
+		{name: "a negative count cannot divide", q: AlertQuality{Cases: -1, AckedCases: 3}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,10 +173,10 @@ func TestAlertQuality_FlapScore(t *testing.T) {
 		q    AlertQuality
 		want float32
 	}{
-		{name: "stable", q: AlertQuality{Occurrences: 10}},
-		{name: "one transition each", q: AlertQuality{Occurrences: 10, FlapTransitions: 10}, want: 1},
-		{name: "very noisy", q: AlertQuality{Occurrences: 2, FlapTransitions: 9}, want: 4.5},
-		{name: "no occurrences", q: AlertQuality{FlapTransitions: 5}},
+		{name: "stable", q: AlertQuality{Cases: 10}},
+		{name: "one transition each", q: AlertQuality{Cases: 10, FlapTransitions: 10}, want: 1},
+		{name: "very noisy", q: AlertQuality{Cases: 2, FlapTransitions: 9}, want: 4.5},
+		{name: "no cases", q: AlertQuality{FlapTransitions: 5}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -189,9 +189,9 @@ func TestAlertQuality_SortValue(t *testing.T) {
 	q := AlertQuality{
 		AlertName:          "KubePodCrashLooping",
 		ClusterKey:         "prod-eu",
-		Occurrences:        47,
+		Cases:              47,
 		Notifications:      52,
-		AckedOccurrences:   4,
+		AckedCases:         4,
 		FlapTransitions:    9,
 		TotalFiringSeconds: 86_400,
 	}
@@ -200,7 +200,7 @@ func TestAlertQuality_SortValue(t *testing.T) {
 		sort Sort
 		want float64
 	}{
-		{sort: SortOccurrencesDesc, want: 47},
+		{sort: SortCasesDesc, want: 47},
 		{sort: SortNotificationsDesc, want: 52},
 		{sort: SortAckRateAsc, want: float64(float32(4) / float32(47))},
 		{sort: SortFlapTransitionsDesc, want: 9},
@@ -221,13 +221,13 @@ func TestAlertQuality_AnswersTheReportsHeadlineSentence(t *testing.T) {
 	q := AlertQuality{
 		AlertName:     "KubePodCrashLooping",
 		ClusterKey:    "prod-eu",
-		Occurrences:   47,
+		Cases:         47,
 		Notifications: 47,
 	}
 	assert.Zero(t, q.AckRate())
-	assert.Equal(t, 47, q.Occurrences)
+	assert.Equal(t, 47, q.Cases)
 	assert.Equal(t, 47, q.Notifications)
-	assert.Equal(t, float64(47), q.SortValue(SortOccurrencesDesc))
+	assert.Equal(t, float64(47), q.SortValue(SortCasesDesc))
 }
 
 // TestExpiredIsCountedApartFromResolved — CONTEXT.md §3 and §6: losing sight of
@@ -259,7 +259,7 @@ func TestExpiredIsCountedApartFromResolved(t *testing.T) {
 
 	// A worked example: the two are read separately, and there is no derived
 	// "closed" total on the type to read them back out of.
-	q := AlertQuality{Occurrences: 10, AutoResolved: 6, Expired: 4}
+	q := AlertQuality{Cases: 10, AutoResolved: 6, Expired: 4}
 	assert.Equal(t, 6, q.AutoResolved)
 	assert.Equal(t, 4, q.Expired)
 	assert.NotContains(t, methodNames(reflect.TypeOf(q)), "Closed")

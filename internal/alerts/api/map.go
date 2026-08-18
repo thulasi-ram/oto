@@ -29,11 +29,10 @@ func alertDTO(a domain.Alert) AlertDTO {
 		Annotations:       emptyMap(a.Annotations().Map()),
 		GeneratorURL:      strPtr(a.GeneratorURL()),
 		State:             a.State().String(),
-		AckState:          a.AckState().String(),
 		FirstSeenAt:       utc(a.FirstSeenAt()),
 		LastSeenAt:        utc(a.LastSeenAt()),
 		LastStateChangeAt: utc(a.LastStateChangeAt()),
-		TotalOccurrences:  int32(a.TotalOccurrences()),
+		TotalCases:        int32(a.TotalCases()),
 		FlapScore:         a.FlapScore(),
 		IsFlapping:        a.IsFlapping(),
 		Synthetic:         a.Synthetic(),
@@ -49,17 +48,16 @@ func alertRefDTO(a domain.Alert) AlertRefDTO {
 		Namespace:  strPtr(a.Namespace()),
 		ClusterKey: a.ClusterKey().String(),
 		State:      a.State().String(),
-		AckState:   a.AckState().String(),
 	}
 }
 
-// occurrenceDTO renders one episode.
+// caseDTO renders one episode.
 //
 // `duration_seconds` is computed against `now` rather than a fresh clock reading
 // so that every row on one page is measured from the same instant — a list where
 // each row asks the clock again disagrees with itself.
-func occurrenceDTO(o domain.Occurrence, now time.Time) OccurrenceDTO {
-	dto := OccurrenceDTO{
+func caseDTO(o domain.Case, now time.Time) CaseDTO {
+	dto := CaseDTO{
 		ID:             o.ID(),
 		AlertID:        o.AlertID(),
 		GroupID:        idPtr(o.GroupID()),
@@ -104,18 +102,18 @@ func occurrenceDTO(o domain.Occurrence, now time.Time) OccurrenceDTO {
 func eventDTO(e domain.Event) AlertEventDTO {
 	actor := e.Actor()
 	return AlertEventDTO{
-		ID:           e.ID(),
-		AlertID:      idPtr(e.AlertID()),
-		OccurrenceID: idPtr(e.OccurrenceID()),
-		GroupID:      idPtr(e.GroupID()),
-		Type:         e.Type().String(),
-		OccurredAt:   utc(e.OccurredAt()),
-		RecordedAt:   utc(e.RecordedAt()),
-		ActorKind:    actor.Kind().String(),
-		ActorID:      strPtr(actor.ID()),
-		ActorLabel:   strPtr(actor.Label()),
-		Summary:      e.Summary(),
-		Payload:      e.Payload(),
+		ID:         e.ID(),
+		AlertID:    idPtr(e.AlertID()),
+		CaseID:     idPtr(e.CaseID()),
+		GroupID:    idPtr(e.GroupID()),
+		Type:       e.Type().String(),
+		OccurredAt: utc(e.OccurredAt()),
+		RecordedAt: utc(e.RecordedAt()),
+		ActorKind:  actor.Kind().String(),
+		ActorID:    strPtr(actor.ID()),
+		ActorLabel: strPtr(actor.Label()),
+		Summary:    e.Summary(),
+		Payload:    e.Payload(),
 	}
 }
 
@@ -185,7 +183,7 @@ func notificationDTO(n service.NotificationSummary) NotificationDTO {
 		SubjectID:       n.GroupID,
 		GroupID:         n.GroupID,
 		AlertID:         n.AlertID,
-		OccurrenceID:    n.OccurrenceID,
+		CaseID:          n.CaseID,
 		PolicyID:        n.PolicyID,
 		Reason:          n.Reason,
 		StateVersion:    int32(n.StateVersion),
@@ -247,12 +245,13 @@ func snoozeDTO(s domain.Snooze) SnoozeDTO {
 
 // withSnooze attaches the §B.8 quiet period to an alert row.
 //
-// ⭐ IT IS SET FROM THE `alert_snoozes` ROW AND NEVER FROM THE PROJECTION.
-// `alerts.snoozed_until` is a bare timestamp — deliberately, because a person
-// reference on a signal row is the one door §D.4.0 keeps shut — so the row alone
-// could render a countdown and could never say who asked or why. Both are shown
-// wherever a snooze is shown (§B.8.1): a quiet period nobody can be asked about
-// is the silent suppression §B.6 forbids.
+// ⭐ IT IS SET FROM THE `alert_snoozes` ROW, WHICH IS NOW THE ONLY PLACE A
+// SNOOZE EXISTS. There was once a bare `alerts.snoozed_until` mirror beside it —
+// deliberately bare, because a person reference on a signal row is the one door
+// §D.4.0 keeps shut — and being bare is exactly why it had to go: it could render
+// a countdown and could never say who asked or why. Both are shown wherever a
+// snooze is shown (§B.8.1): a quiet period nobody can be asked about is the
+// silent suppression §B.6 forbids.
 //
 // A snooze whose clock has run out but which `snooze.expire` has not yet swept
 // is deliberately still rendered. It is a fact about the ROW, `ended_at` is
@@ -323,10 +322,7 @@ func rollupDTO(r domain.AlertRollup, by string) AlertRollupDTO {
 		SuppressedCount: int32(r.Suppressed),
 		ResolvedCount:   int32(r.Resolved),
 		ExpiredCount:    int32(r.Expired),
-		AckedCount:      int32(r.Acked),
-		UnackedCount:    int32(r.Unacked()),
 		FlappingCount:   int32(r.Flapping),
-		SnoozedCount:    int32(r.Snoozed),
 		SeverityCounts:  sev,
 		FirstSeenAt:     utc(r.FirstSeenAt),
 		LastSeenAt:      utc(r.LastSeenAt),

@@ -20,7 +20,7 @@ const eventWindow = 5 * time.Minute
 //
 // ⛔⛔ THIS IS THE ONLY FUNCTION IN OTO THAT DELETES A SIGNAL ROW, and the
 // argument for it is narrow and must stay narrow. ADR 0024's promise — `alerts`,
-// `alert_occurrences`, `alert_groups`, `notifications`, `notification_deliveries`
+// `alert_cases`, `alert_groups`, `notifications`, `notification_deliveries`
 // and `channel_threads` are never reaped — is a promise about THE RECORD OF AN
 // UPSTREAM EVENT. A drill records none. Nothing fired, no cluster was involved,
 // and oto manufactured every byte to answer a question an operator asked by
@@ -73,38 +73,88 @@ func (r *DrillRepository) Dispose(ctx context.Context, s db.TenantScope, d domai
 	// 1. The timeline. `alert_events` is partitioned and carries no FK to its
 	//    subjects, so it is deleted explicitly and BEFORE them, by the three ids
 	//    it could carry. The `recorded_at` predicate is there to prune partitions.
-	if d.AlertID != uuid.Nil || d.OccurrenceID != uuid.Nil || d.GroupID != uuid.Nil {
+	if d.AlertID != uuid.Nil || d.CaseID != uuid.Nil || d.GroupID != uuid.Nil {
 		if _, err := q.Exec(ctx, `
 DELETE FROM alert_events
  WHERE org_id = $1 AND recorded_at >= $2
-   AND (alert_id = $3 OR occurrence_id = $4 OR group_id = $5)`,
-			s.OrgID(), from, nilID(d.AlertID), nilID(d.OccurrenceID), nilID(d.GroupID)); err != nil {
+   AND (alert_id = $3 OR case_id = $4 OR group_id = $5)`,
+			s.OrgID(), from, nilID(d.AlertID), nilID(d.CaseID), nilID(d.GroupID)); err != nil {
 			return mapErr(err, "delete the drill's timeline")
 		}
 	}
+
+	// ⛔⛔ THE GROUP IS NOT THIS DRILL'S TO DELETE ON ITS OWN. Since ADR 0038 the
+	// §C.4 key is `(org, cluster, alertname, namespace-or-∅)` and neither the
+	// drill's receiver nor its `oto_drill` nonce is an axis, so two drills fired
+	// inside `group_close_delay` (20 minutes by default) land in ONE synthetic
+	// generation and one thread. Each still has its own Alert and its own case —
+	// those go in step 4 — but the generation and the thread are SHARED, and an
+	// unconditional delete here would take the second drill's group out from under
+	// a drill that is still running or still being read.
+	//
+	// ⭐ THE FAILURE WAS SELF-TRIGGERING, which is why it is a guard and not a
+	// comment. A drill exists to give an operator confidence in the delivery path;
+	// a second drill whose result screen is missing its group and its thread reads
+	// as "the delivery path is broken", and the natural response is to run another
+	// drill immediately — well inside the same twenty minutes. The retry IS the
+	// collision, so the modal way to meet this bug was to have met it once already.
+	//
+	// ⭐ THE GUARD IS A PREDICATE, NOT A NEW GROUPING AXIS. Giving each drill its
+	// own value on an axis would be a grouping rule invented for exactly one
+	// caller, which is what ADR 0038 forbids. The collision is not really about the
+	// key: it is about a delete reaching a row another live drill still points at.
+	// So the delete asks that question directly.
+	//
+	// ⭐ IT STAYS IDEMPOTENT, which is what lets this function keep running without
+	// a transaction (see above). A skipped delete is not a lost one: the group and
+	// its thread are collected by whichever drill sharing them disposes LAST, whose
+	// own guard then finds no other undisposed holder. `disposed_at` is still
+	// stamped for this drill, so `retention.prune` does not spin on it; and a
+	// process that dies before the stamp is re-run by the next sweep with every
+	// statement here a no-op.
+	//
+	// ⚠️ `alert_events` (step 1) is deliberately NOT guarded. Its rows are the
+	// narration, not the subject: nothing on the drill path ever reads
+	// `alert_events` (`test/arch/sqltables_test.go` declares it delete-only for
+	// this module), so losing a shared generation's timeline rows early degrades
+	// no result screen. Guarding it would mean splitting one partition-pruned
+	// delete into three for no reader's benefit.
+	const groupStillHeld = `
+   AND NOT EXISTS (
+         SELECT 1 FROM delivery_drills dd
+          WHERE dd.org_id = $1 AND dd.group_id = $2
+            AND dd.disposed_at IS NULL AND dd.id <> $3)`
 
 	// 2. The thread binding. `channel_threads.subject_id` carries no FK to
 	//    `alert_groups` — the column is designed to grow other subject kinds — so
 	//    nothing cascades and it is deleted by hand. It goes BEFORE the group
 	//    because a delivery's `thread_id` is ON DELETE SET NULL, and deleting the
 	//    thread afterwards would be a pointless write to rows already gone.
+	//
+	//    It carries the same guard as the group: the thread belongs to the
+	//    GENERATION, not to the drill, and a surviving group whose thread has been
+	//    deleted is the same degraded result screen by another route.
 	if d.GroupID != uuid.Nil {
 		if _, err := q.Exec(ctx, `
 DELETE FROM channel_threads
- WHERE org_id = $1 AND subject_kind = 'alert_group' AND subject_id = $2`,
-			s.OrgID(), d.GroupID); err != nil {
+ WHERE org_id = $1 AND subject_kind = 'alert_group' AND subject_id = $2`+groupStillHeld,
+			s.OrgID(), d.GroupID, d.ID); err != nil {
 			return mapErr(err, "delete the drill's thread")
 		}
-		// 3. The group. CASCADES to `alert_group_members`, `notifications` and
-		//    through them to `notification_deliveries`.
+		// 3. The group. CASCADES to `notifications` and through them to
+		//    `notification_deliveries`. It does NOT cascade to the episodes: since
+		//    00051 membership is `alert_cases.group_id`, whose FK is
+		//    ON DELETE SET NULL, so the drill's episodes are briefly groupless
+		//    between this delete and step 4 — which deletes the alert and cascades
+		//    them away for real.
 		if _, err := q.Exec(ctx,
-			`DELETE FROM alert_groups WHERE org_id = $1 AND id = $2 AND synthetic`,
-			s.OrgID(), d.GroupID); err != nil {
+			`DELETE FROM alert_groups WHERE org_id = $1 AND id = $2 AND synthetic`+groupStillHeld,
+			s.OrgID(), d.GroupID, d.ID); err != nil {
 			return mapErr(err, "delete the drill's group")
 		}
 	}
 
-	// 4. The alert. CASCADES to `alert_occurrences` and `alert_snoozes`.
+	// 4. The alert. CASCADES to `alert_cases` and `alert_snoozes`.
 	//
 	// ⭐ `AND synthetic` on both deletes is a BELT-AND-BRACES PREDICATE, not a
 	// filter. The ids already came from this drill's own manifest; the extra

@@ -5,8 +5,8 @@
 //
 // CONTEXT.md §41-43 states the line this package guards:
 //
-//	`occurrence.acked_by = alice` is a fact about the occurrence — it was
-//	acknowledged, by whom. `occurrence.assigned_to = alice` is a fact about
+//	`case.acked_by = alice` is a fact about the case — it was
+//	acknowledged, by whom. `case.assigned_to = alice` is a fact about
 //	Alice — she owes work. Identical columns; opposite products.
 //
 // Until this package existed, that line was guarded entirely by `tools/lintvocab`

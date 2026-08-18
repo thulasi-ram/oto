@@ -116,38 +116,41 @@ describe("the enumerable filters", () => {
 });
 
 describe("the orthogonal axes", () => {
-  it("defaults snoozed to `any`, because hiding snoozed alerts is how an incident is lost", async () => {
+  /**
+   * ⛔ THE TOOLBAR OFFERS NO SNOOZE CONTROL, AND THAT IS THE ASSERTION.
+   *
+   * Snooze did not lose its home, it got a better one: it is a TAB. A tri-state
+   * buried three levels into this popover could not do the one job that makes
+   * hiding snoozed alerts safe — say, permanently and at rest, how many are being
+   * held back and whether any of them is still firing. Two controls for one axis
+   * would also let the toolbar and the tab bar disagree about which list is on
+   * screen, and only one of them is in the URL.
+   */
+  it("offers no snooze control, because snooze is a tab and not a facet", async () => {
     stubReferenceData();
     mount();
     await openMenu("Status");
-    const trigger = screen.getByTitle(/currently holding its notifications/i);
-    const option = await openOption(trigger, /Any \(default/);
-    expect(option).toHaveAttribute("aria-selected", "true");
+
+    expect(screen.queryByTitle(/currently holding its notifications/i)).toBeNull();
+    expect(screen.queryByText("Notifications held")).toBeNull();
+    expect(screen.queryByText("Snoozed")).toBeNull();
   });
 
-  it("maps the snooze control onto a tri-state, never onto a lifecycle state", async () => {
+  /**
+   * ⛔ THE TOOLBAR OFFERS NO ACK CONTROL, AND THAT IS THE ASSERTION. `?ack=`
+   * filtered `alerts.ack_state`, a column that no longer exists: an ack is a
+   * receipt for one firing episode, so a filter over the Alert answered a
+   * question about some earlier firing while reading as a question about this
+   * one. Re-adding the control is the regression this test refuses.
+   */
+  it("offers no acknowledgement filter, because ack is not an Alert-scoped fact", async () => {
     stubReferenceData();
-    const { onChange } = mount();
+    mount();
     await openMenu("Status");
-    const trigger = screen.getByTitle(/currently holding its notifications/i);
 
-    const option = await openOption(trigger, "Notifications held");
-    fireEvent.click(option);
-    expect(onChange.mock.calls[0]?.[0]?.snoozed).toBe(true);
-    // And it never touches `state` — a snoozed alert is still firing.
-    expect(onChange.mock.calls[0]?.[0]?.state).toEqual([]);
-  });
-
-  it("keeps acknowledgement orthogonal to state too", async () => {
-    stubReferenceData();
-    const { onChange } = mount();
-    await openMenu("Status");
-    const trigger = screen.getByTitle(/A receipt on a signal/i);
-
-    const option = await openOption(trigger, "Seen by someone");
-    fireEvent.click(option);
-    expect(onChange.mock.calls[0]?.[0]?.ack).toBe("acked");
-    expect(onChange.mock.calls[0]?.[0]?.state).toEqual([]);
+    expect(screen.queryByTitle(/A receipt on a signal/i)).toBeNull();
+    expect(screen.queryByText("Seen by someone")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Acked" })).toBeNull();
   });
 });
 

@@ -66,7 +66,7 @@ func seedSynthetic(t *testing.T, e *env, orgID uuid.UUID, clusterID, sourceID uu
 		if _, err := e.pool.Exec(e.ctx, `
 INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname, severity,
                     namespace, service, cluster_key, labels, annotations, state,
-                    first_seen_at, last_seen_at, last_state_change_at, total_occurrences, synthetic)
+                    first_seen_at, last_seen_at, last_state_change_at, total_cases, synthetic)
 VALUES ($1, $2, $3, $4, $5, $6, 'warning', 'oto', 'oto', 'prod-eu', $7::jsonb, '{}'::jsonb,
         'firing', $8, $8, $8, 1, $9)`,
 			id, orgID, clusterID, alertKeyFor(id), "0123456789abcdef", name, labels, f.day, synthetic,
@@ -81,11 +81,11 @@ VALUES ($1, $2, $3, $4, $5, $6, 'warning', 'oto', 'oto', 'prod-eu', $7::jsonb, '
 
 	for _, a := range []uuid.UUID{f.realAlert, f.syntheticAlert} {
 		if _, err := e.pool.Exec(e.ctx, `
-INSERT INTO alert_occurrences (id, org_id, alert_id, seq, state, started_at, last_observed_at,
+INSERT INTO alert_cases (id, org_id, alert_id, seq, state, started_at, last_observed_at,
                                source_starts_at, ack_state)
 VALUES ($1, $2, $3, 1, 'firing', $4, $4, $4, 'unacked')`,
 			uuid.New(), orgID, a, f.day); err != nil {
-			t.Fatalf("seed occurrence: %v", err)
+			t.Fatalf("seed case: %v", err)
 		}
 	}
 
@@ -98,10 +98,11 @@ VALUES ($1, $2, $3, $4, $5, 1, 'oto-delivery-drill', '{}'::jsonb, 'drill', 'open
 		t.Fatalf("seed group: %v", err)
 	}
 
+	// Membership is the episode's own `group_id` since 00051, so the drill's
+	// episodes are pointed at the generation rather than listed in a second table.
 	if _, err := e.pool.Exec(e.ctx, `
-INSERT INTO alert_group_members (group_id, alert_id, occurrence_id, org_id, joined_at)
-SELECT $1, $2, o.id, $3, $4 FROM alert_occurrences o WHERE o.alert_id = $2`,
-		f.syntheticGroup, f.syntheticAlert, orgID, f.day); err != nil {
+UPDATE alert_cases SET group_id = $1 WHERE org_id = $2 AND alert_id = $3`,
+		f.syntheticGroup, orgID, f.syntheticAlert); err != nil {
 		t.Fatalf("seed membership: %v", err)
 	}
 

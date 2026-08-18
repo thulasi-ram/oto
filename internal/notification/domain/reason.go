@@ -43,7 +43,7 @@ const (
 	// ReasonEnriched is a late enrichment landing.
 	ReasonEnriched Reason = "enriched"
 	// ReasonRuleChanged is the headline differentiator: the alerting rule's
-	// definition changed since the previous occurrence.
+	// definition changed since the previous case.
 	ReasonRuleChanged Reason = "rule_changed"
 	// ReasonComment is a human speaking into the thread.
 	ReasonComment Reason = "comment"
@@ -137,7 +137,7 @@ const (
 	WireSuppress
 	// WireDiffFallback means the payload predates AM 0.32.0 (or said `unknown`),
 	// so the Reason must be derived by diffing the incoming fingerprint set
-	// against alert_group_members.
+	// against the generation's current members (alert_cases.group_id).
 	WireDiffFallback
 )
 
@@ -194,7 +194,7 @@ func ReasonFromWire(wire string) (Reason, WireVerdict) {
 //   - Alertmanager's `notification_reason` knows WHY THIS BATCH WAS DELIVERED
 //     about a whole group. It is the only source that can tell a first fire from
 //     a member joining a group that was already notified, because the per-alert
-//     view of both is identical: an occurrence opened.
+//     view of both is identical: a case opened.
 //
 // Before this existed, `new_alerts`, `all_resolved` and `repeat` were CHECK
 // constraint values nothing could ever write — the first live run posted a fully
@@ -221,7 +221,7 @@ func ReconcileWithWire(derived Reason, wire string, allResolved bool) Reason {
 		return derived
 
 	case ReasonFired:
-		// An occurrence opened. Whether it opened a group or JOINED one that had
+		// A case opened. Whether it opened a group or JOINED one that had
 		// already been notified is a distinction only Alertmanager can draw:
 		// oto sees an identical transition either way, and guessing from the member
 		// count would turn three alerts firing in one first batch into three

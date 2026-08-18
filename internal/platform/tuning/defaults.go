@@ -60,7 +60,7 @@ const (
 	// (T8) is reachable for the commonest rule shape in the wild.
 	//
 	// ⛔ IT WAS 600s AND 600s IS UNREACHABLE FOR 76% OF REAL RULES. The clock
-	// starts at the occurrence's `ended_at`, which T5 takes from the UPSTREAM
+	// starts at the case's `ended_at`, which T5 takes from the UPSTREAM
 	// `EndsAt` — the moment Prometheus stopped considering the rule firing, not
 	// the moment oto heard about it. For the same alert to fire again its
 	// condition must hold for `for:` all over again, and Alertmanager then batches
@@ -73,18 +73,18 @@ const (
 	// every rule up to `for: 15m` — 86.5%.
 	DefaultRefireGrace = 1200 * time.Second
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
-	// before an occurrence may expire (§B.4).
+	// before a case may expire (§B.4).
 	DefaultResolveGrace = 300 * time.Second
 	// DefaultGroupCloseDelay is how long a generation with no live member stays
 	// open before it closes and freezes its thread. It EQUALS DefaultRefireGrace,
 	// and the equality is the whole point rather than a coincidence.
 	//
 	// ⛔ IT WAS 300s WHILE `refire_grace` WAS 600s, WHICH DEFEATED `refire_grace`.
-	// Reopening an occurrence only avoids a new Slack root message if the group
+	// Reopening a case only avoids a new Slack root message if the group
 	// GENERATION is still open — a closed generation freezes its thread and the
 	// next observation opens generation N+1 with a brand-new root (§B.5). With the
 	// old pair the generation closed 5 minutes after the resolve and the grace ran
-	// for 10, so the whole second half of the grace bought an occurrence reopen
+	// for 10, so the whole second half of the grace bought a case reopen
 	// that still posted a new card. oto's own tuning guidance already said "keep
 	// group_close_delay at or above refire_grace"; the shipped defaults broke it.
 	//

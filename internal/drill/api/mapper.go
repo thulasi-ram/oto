@@ -24,7 +24,7 @@ func drillDTO(d domain.Drill, res domain.Result) DrillDTO {
 		Stages:         stageDTOs(res.Stages),
 		Destinations:   destinationDTOs(res.Destinations),
 		AlertID:        idPtr(d.AlertID),
-		OccurrenceID:   idPtr(d.OccurrenceID),
+		CaseID:         idPtr(d.CaseID),
 		GroupID:        idPtr(d.GroupID),
 		NotificationID: idPtr(d.NotificationID),
 		BatchID:        idPtr(d.BatchID),

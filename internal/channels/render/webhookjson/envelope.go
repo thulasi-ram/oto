@@ -30,11 +30,16 @@ type Envelope struct {
 	Continued   bool      `json:"continued,omitempty"`
 	DeliveredAt time.Time `json:"delivered_at"`
 
-	Org         Org                   `json:"org"`
-	Group       Group                 `json:"group"`
-	Alerts      []Alert               `json:"alerts"`
-	Focus       *Alert                `json:"focus,omitempty"`
-	Occurrence  *Occurrence           `json:"occurrence,omitempty"`
+	Org    Org     `json:"org"`
+	Group  Group   `json:"group"`
+	Alerts []Alert `json:"alerts"`
+	Focus  *Alert  `json:"focus,omitempty"`
+	// The key is `occurrence`, and the Go name is Case, ON PURPOSE. This envelope is
+	// frozen at oto.notification.v1 (§H.10, SCOPE-BOUNDARY H-2) and ADR 0036's
+	// consequences do not name this surface. A wire key is a promise to a consumer
+	// oto cannot survey; it becomes `case` at oto.notification.v2, with dual-emit,
+	// under its own ticket — not as fallout from an internal rename.
+	Case        *Case                 `json:"occurrence,omitempty"` // vocab:allow — a FROZEN EXTERNAL WIRE SPELLING under oto.notification.v1, not internal vocabulary; the Go name is Case and only a v2 bump may move the key.
 	Rule        *Rule                 `json:"rule,omitempty"`
 	RuleChange  *RuleChange           `json:"rule_change,omitempty"`
 	Enrichments map[string]Enrichment `json:"enrichments,omitempty"`
@@ -97,13 +102,14 @@ type Alert struct {
 	AckState          string            `json:"ack_state"`
 	FirstSeenAt       time.Time         `json:"first_seen_at"`
 	LastSeenAt        time.Time         `json:"last_seen_at"`
-	TotalOccurrences  int               `json:"total_occurrences"`
-	IsFlapping        bool              `json:"is_flapping"`
-	Value             *float64          `json:"value,omitempty"`
+	// vocab:allow — a FROZEN EXTERNAL WIRE SPELLING under oto.notification.v1, not internal vocabulary; the Go name is TotalCases and only a v2 bump may move the key (§H.10).
+	TotalCases int      `json:"total_occurrences"`
+	IsFlapping bool     `json:"is_flapping"`
+	Value      *float64 `json:"value,omitempty"`
 }
 
-// Occurrence is one firing episode.
-type Occurrence struct {
+// Case is one firing episode.
+type Case struct {
 	ID                string     `json:"id"`
 	Seq               int        `json:"seq"`
 	State             string     `json:"state"`
@@ -119,7 +125,7 @@ type Occurrence struct {
 	AckNote           string     `json:"ack_note,omitempty"`
 }
 
-// Rule is what the alerting rule said when the occurrence fired.
+// Rule is what the alerting rule said when the case fired.
 type Rule struct {
 	SnapshotID          string            `json:"snapshot_id"`
 	Fingerprint         string            `json:"fingerprint"`
@@ -136,7 +142,7 @@ type Rule struct {
 	CapturedAt          time.Time         `json:"captured_at"`
 }
 
-// RuleChange is what changed in the rule between occurrences.
+// RuleChange is what changed in the rule between cases.
 type RuleChange struct {
 	PreviousSnapshotID  string               `json:"previous_snapshot_id"`
 	PreviousFingerprint string               `json:"previous_fingerprint"`
@@ -197,7 +203,7 @@ func mapAlert(a domain.AlertView) Alert {
 		AckState:          a.AckState,
 		FirstSeenAt:       utc(a.FirstSeenAt),
 		LastSeenAt:        utc(a.LastSeenAt),
-		TotalOccurrences:  a.TotalOccurrences,
+		TotalCases:        a.TotalCases,
 		IsFlapping:        a.IsFlapping,
 		Value:             a.Value,
 	}

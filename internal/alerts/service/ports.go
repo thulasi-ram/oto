@@ -64,32 +64,32 @@ type AlertRepository interface {
 	Rollup(ctx context.Context, s db.TenantScope, f domain.AlertFilter, key domain.RollupKey, after string, limit int) ([]domain.AlertRollup, bool, error)
 }
 
-// OccurrenceRepository owns `alert_occurrences` — the table the authoritative
+// CaseRepository owns `alert_cases` — the table the authoritative
 // §B.3 state machine runs on.
-type OccurrenceRepository interface {
-	OpenOccurrence(ctx context.Context, s db.TenantScope, in domain.OpenOccurrence) (domain.Occurrence, error)
-	GetOpenByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Occurrence, bool, error)
-	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Occurrence, error)
-	GetLatestByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Occurrence, bool, error)
+type CaseRepository interface {
+	OpenCase(ctx context.Context, s db.TenantScope, in domain.OpenCase) (domain.Case, error)
+	GetOpenByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Case, bool, error)
+	GetByID(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Case, error)
+	GetLatestByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (domain.Case, bool, error)
 	// PreviousWithRuleSnapshot is "the last time this alert fired with a rule oto
 	// could see": the newest episode before beforeSeq that carries a rule
 	// snapshot. It is what rule drift between two episodes is measured from, and
 	// it cannot be assembled from the reads above — GetLatestByAlert answers about
 	// the CURRENT episode and ListByAlert pages by started_at.
-	PreviousWithRuleSnapshot(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (domain.Occurrence, bool, error)
-	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) ([]domain.Occurrence, db.Cursor, error)
+	PreviousWithRuleSnapshot(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (domain.Case, bool, error)
+	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) ([]domain.Case, db.Cursor, error)
 	Observe(ctx context.Context, s db.TenantScope, id uuid.UUID, o domain.Observation) error
 	Transition(ctx context.Context, s db.TenantScope, id uuid.UUID, t domain.Transition) error
-	// SetAck asserts `expectVersion` — the occurrence's state_version as read —
+	// SetAck asserts `expectVersion` — the case's state_version as read —
 	// so an acknowledgement cannot land on an episode that ended while the human
 	// was deciding. It does NOT bump the version: ack is orthogonal to state
 	// (§B.1) and must never cancel a concurrent transition.
 	SetAck(ctx context.Context, s db.TenantScope, id uuid.UUID, a domain.AckChange, expectVersion int) error
 	BindRuleSnapshot(ctx context.Context, s db.TenantScope, id, snapshotID uuid.UUID) error
 	// ReapCandidates feeds T6. THE REAPER GUARD (§B.4) IS THE CALLER'S: an
-	// occurrence whose AlertSource is not healthy is HELD, never expired. Losing
+	// case whose AlertSource is not healthy is HELD, never expired. Losing
 	// sight of an alert is not the same as the alert resolving.
-	ReapCandidates(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]domain.Occurrence, error)
+	ReapCandidates(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]domain.Case, error)
 }
 
 // EventRepository is APPEND ONLY. There is no Update and there is no Delete —
@@ -110,7 +110,7 @@ type EventRepository interface {
 	// The db.TimeWindow is REQUIRED on every event query: recorded_at is the
 	// partition key, and an unbounded event query scans thirteen months.
 	ListByAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
-	ListByOccurrence(ctx context.Context, s db.TenantScope, occID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
+	ListByCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
 	ListByGroup(ctx context.Context, s db.TenantScope, groupID uuid.UUID, w db.TimeWindow, p db.Keyset) ([]domain.Event, db.Cursor, error)
 	// GetByDedupeKey resolves the entry a C.8 key already belongs to, so that a
 	// retried KEYED comment can be answered with the annotation its first attempt

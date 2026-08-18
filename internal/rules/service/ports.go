@@ -146,9 +146,9 @@ type RuleEvent struct {
 	// grants this package the import; the WRITE is still the port below, so this
 	// remains a value crossing and not a `rules ──► alerts` module edge.
 	Type kernel.EventType
-	// AlertID and OccurrenceID scope the event; at least one is required.
-	AlertID      uuid.UUID
-	OccurrenceID uuid.UUID
+	// AlertID and CaseID scope the event; at least one is required.
+	AlertID uuid.UUID
+	CaseID  uuid.UUID
 	// SnapshotID is the snapshot this event is about, when there is one.
 	SnapshotID uuid.UUID
 	// Summary is the pre-rendered one-liner for the timeline, 1..500 bytes.

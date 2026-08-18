@@ -309,7 +309,7 @@ func migrateTemplate(ctx context.Context, dsn string) error {
 // epochPartitionsSQL gives Epoch the window `oto_partitions_manage` gives
 // `now()` — the grains and the counts are 00005's, table for table — plus one
 // period of headroom BEHIND it, so a test that stamps something just before
-// Epoch (an occurrence "three hours ago", a batch "yesterday") has a partition
+// Epoch (a case "three hours ago", a batch "yesterday") has a partition
 // too.
 //
 // Widening it is cheap; a partition is an empty table in a template nothing else

@@ -28,7 +28,7 @@ const Timeout = 2 * time.Second
 // CacheTTL is short: "what else is firing" is a statement about right now.
 const CacheTTL = 30 * time.Second
 
-// Window is how far either side of this occurrence's start another alert must
+// Window is how far either side of this case's start another alert must
 // have been firing to count as related.
 //
 // One hour, and it is a WINDOW rather than a causal claim. oto states that
@@ -64,16 +64,16 @@ const (
 
 // Related is one other alert that was firing nearby.
 type Related struct {
-	Relation     string    `json:"relation"`
-	AlertID      string    `json:"alert_id"`
-	AlertKey     string    `json:"alert_key"`
-	AlertName    string    `json:"alertname"`
-	Severity     string    `json:"severity,omitempty"`
-	Namespace    string    `json:"namespace,omitempty"`
-	Service      string    `json:"service,omitempty"`
-	State        string    `json:"state"`
-	OccurrenceID string    `json:"occurrence_id"`
-	StartedAt    time.Time `json:"started_at"`
+	Relation  string    `json:"relation"`
+	AlertID   string    `json:"alert_id"`
+	AlertKey  string    `json:"alert_key"`
+	AlertName string    `json:"alertname"`
+	Severity  string    `json:"severity,omitempty"`
+	Namespace string    `json:"namespace,omitempty"`
+	Service   string    `json:"service,omitempty"`
+	State     string    `json:"state"`
+	CaseID    string    `json:"case_id"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // Payload is the enricher's typed output.
@@ -90,17 +90,17 @@ type Payload struct {
 
 // Query is what the store is asked for.
 type Query struct {
-	// OccurrenceID and AlertID identify the subject, which is excluded from its
+	// CaseID and AlertID identify the subject, which is excluded from its
 	// own results.
-	OccurrenceID uuid.UUID
-	AlertID      uuid.UUID
-	// The same_group relation is resolved FROM OccurrenceID by the store: the
+	CaseID  uuid.UUID
+	AlertID uuid.UUID
+	// The same_group relation is resolved FROM CaseID by the store: the
 	// group a fire belongs to is a fact the store can join to, and passing it in
 	// would mean every caller had to know it first.
 	// AlertName and Namespace scope the label relations; empty skips them.
 	AlertName string
 	Namespace string
-	// From and To bound the window on alert_occurrences.started_at.
+	// From and To bound the window on alert_cases.started_at.
 	From time.Time
 	To   time.Time
 	// Limit bounds each relation's result set.
@@ -165,15 +165,15 @@ func (e *Enricher) Applicable(s *domain.Subject) bool {
 
 // CacheSeed keys on the alert plus the window bucket.
 //
-// The bucket is the occurrence's start truncated to the window, NOT the current
-// time: two occurrences of the same alert minutes apart genuinely have
+// The bucket is the case's start truncated to the window, NOT the current
+// time: two cases of the same alert minutes apart genuinely have
 // different neighbourhoods, and a seed built from `now` would make the cache
 // either useless or wrong depending on which way it rounded.
 func (e *Enricher) CacheSeed(s *domain.Subject) string {
 	if s == nil || s.Alert.ID == "" {
 		return ""
 	}
-	bucket := s.Occurrence.StartedAt.Truncate(e.window).Unix()
+	bucket := s.Case.StartedAt.Truncate(e.window).Unix()
 	return s.Alert.ID + "\x00" + strconv.FormatInt(bucket, 10)
 }
 
@@ -188,20 +188,20 @@ func (e *Enricher) Enrich(ctx context.Context, s *domain.Subject) (domain.Result
 		return domain.Result{Status: domain.StatusSkipped, Warnings: []string{"no_alert_id"}}, nil
 	}
 
-	anchor := s.Occurrence.StartedAt
+	anchor := s.Case.StartedAt
 	if anchor.IsZero() {
 		anchor = e.clk.Now()
 	}
-	occurrenceID, _ := uuid.Parse(s.Occurrence.ID)
+	caseID, _ := uuid.Parse(s.Case.ID)
 
 	found, counts, err := e.store.RelatedAlerts(ctx, scope, Query{
-		OccurrenceID: occurrenceID,
-		AlertID:      alertID,
-		AlertName:    s.Alert.AlertName,
-		Namespace:    s.Alert.Namespace,
-		From:         anchor.Add(-e.window),
-		To:           anchor.Add(e.window),
-		Limit:        MaxPerRelation,
+		CaseID:    caseID,
+		AlertID:   alertID,
+		AlertName: s.Alert.AlertName,
+		Namespace: s.Alert.Namespace,
+		From:      anchor.Add(-e.window),
+		To:        anchor.Add(e.window),
+		Limit:     MaxPerRelation,
 	})
 	if err != nil {
 		return domain.Result{}, err

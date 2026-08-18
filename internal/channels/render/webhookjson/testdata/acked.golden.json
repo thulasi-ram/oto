@@ -1,0 +1,85 @@
+{
+  "schema": "oto.notification.v1",
+  "reason": "acked",
+  "mode": "post_root",
+  "delivered_at": "2026-08-07T17:57:29Z",
+  "org": {
+    "id": "o1",
+    "slug": "acme",
+    "name": "Acme"
+  },
+  "group": {
+    "id": "019fe297-d84f-7599-b5b2-1f231749104a",
+    "group_key": "gk_4vbuj1c49jbpf",
+    "generation": 1,
+    "title": "OtoSmokeTest",
+    "receiver": "oto-smoke",
+    "group_labels": {
+      "alertname": "OtoSmokeTest",
+      "cluster": "smoke-test"
+    },
+    "state": "open",
+    "severity": "critical",
+    "firing_count": 2,
+    "suppressed_count": 0,
+    "resolved_count": 0,
+    "expired_count": 0,
+    "total_count": 2,
+    "acked_count": 0,
+    "storm_mode": false,
+    "first_seen_at": "2026-08-07T18:17:09Z",
+    "last_activity_at": "2026-08-07T17:57:29Z"
+  },
+  "alerts": [
+    {
+      "id": "a1",
+      "alert_key": "ak_1",
+      "alert_name": "OtoSmokeTest",
+      "severity": "critical",
+      "namespace": "observability",
+      "service": "oto-smoke",
+      "labels": {
+        "cluster": "smoke-test",
+        "instance": "oto-smoke-b2"
+      },
+      "state": "firing",
+      "ack_state": "",
+      "first_seen_at": "2026-08-07T18:17:09Z",
+      "last_seen_at": "2026-08-07T17:57:29Z",
+      "total_occurrences": 1,
+      "is_flapping": false
+    },
+    {
+      "id": "a2",
+      "alert_key": "ak_2",
+      "alert_name": "OtoSmokeTest",
+      "severity": "critical",
+      "namespace": "observability",
+      "service": "oto-smoke",
+      "labels": {
+        "cluster": "smoke-test",
+        "instance": "oto-smoke-a1"
+      },
+      "state": "firing",
+      "ack_state": "",
+      "first_seen_at": "2026-08-07T18:17:09Z",
+      "last_seen_at": "2026-08-07T17:57:29Z",
+      "total_occurrences": 1,
+      "is_flapping": false
+    }
+  ],
+  "occurrence": {
+    "id": "case1",
+    "seq": 1,
+    "state": "firing",
+    "ack_state": "acked",
+    "started_at": "2026-08-07T17:57:28.7Z",
+    "duration_seconds": 0.3,
+    "reopen_count": 0
+  },
+  "links": {
+    "group": "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a",
+    "timeline": "http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline"
+  },
+  "summary": "[FIRING] OtoSmokeTest — 2 of 2 instances firing (acked)"
+}

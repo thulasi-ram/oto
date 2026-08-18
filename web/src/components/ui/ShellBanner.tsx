@@ -156,7 +156,7 @@ const NAMED_SOURCES_MAX = 3;
 /**
  * ⛔ QUIET IS NOT THE SAME AS BLIND, AND THE SCREEN MUST SAY WHICH IT IS.
  *
- * The reaper guard (§B.4) holds every occurrence belonging to a source oto
+ * The reaper guard (§B.4) holds every case belonging to a source oto
  * cannot reach rather than expiring it. That is the single highest-value
  * correctness rule in the system and it is completely invisible: the list below
  * simply stops changing. Without this strip, an operator reads a calm table as

@@ -132,15 +132,23 @@ func (s *Service) policy(ctx context.Context, scope db.TenantScope) domain.Storm
 
 // ------------------------------------------------------------------- resolve
 
-// ResolveRequest names the notification group an observation belongs to.
+// ResolveRequest names the AlertGroup an observation belongs to.
 type ResolveRequest struct {
 	SourceID  uuid.UUID
 	ClusterID uuid.UUID
+	// ClusterKey is the failure domain's stable machine name and the FIRST axis of
+	// the §C.4 key. It is resolved from the source's configuration, never read out
+	// of a label, and it is never absent: it participates in Alert identity (§C.2).
+	ClusterKey kernel.ClusterKey
+	// Labels is the ALERT'S OWN label set — the second and third axes (`alertname`
+	// and `namespace-or-∅`) are projected out of it by kernel.SplitLabels.
+	//
+	// ⭐ It is the alert's labels and not Alertmanager's groupLabels because those
+	// are the only labels present on EVERY alert on BOTH ingest paths.
+	Labels kernel.LabelSet
 	// Receiver is the Alertmanager receiver name, "" for a reconciler-sourced
-	// group with no groupLabels.
+	// group. PROVENANCE ONLY — it left the key with ADR 0038.
 	Receiver string
-	// GroupLabels are the labels Alertmanager grouped by.
-	GroupLabels map[string]string
 	// SourceGroupKey is Alertmanager's raw groupKey. It is stored VERBATIM for
 	// observability and MUST NOT be parsed: it is unescaped and unbounded (C3).
 	SourceGroupKey string
@@ -166,6 +174,13 @@ type ResolveRequest struct {
 // a group keyed by it would be reborn — with a new Slack thread — every time an
 // operator edited a route.
 //
+// ⭐ AND IT IS DERIVED, NOT MIRRORED. `(org, cluster, alertname, namespace-or-∅)`
+// is computed here from the alert's own labels, identically for the webhook path
+// and the reconciler path, and it is FIXED rather than configurable (ADR 0038).
+// The same projection is stored as the generation's `group_labels`, so a
+// notification policy matching `namespace` now matches something regardless of
+// what the operator put in `group_by`.
+//
 // ⭐ Opening a generation when the previous one CLOSED is what gives a re-opened
 // group a new thread: yesterday's conversation is not where today's incident
 // belongs. Rejoining a still-open generation reuses the thread, which is why
@@ -178,22 +193,30 @@ func (s *Service) Resolve(
 	// directly: depguard RULE K sanctions the import, and re-exporting a pure
 	// identity function through a service would give it a fake dependency on a
 	// database.
-	labels, err := kernel.NewLabels(in.GroupLabels)
-	if err != nil {
-		return domain.Group{}, err
-	}
 	if scope.OrgID() == uuid.Nil || in.SourceID == uuid.Nil {
 		return domain.Group{}, errs.Validation("group_key_inputs_required",
 			"a group key needs both an org and a source")
 	}
-	key := kernel.ComputeGroupKey(scope.OrgID(), in.SourceID, in.Receiver, labels).String()
+	if in.ClusterKey.IsZero() || in.Labels.IsZero() {
+		// Both are guaranteed by §C.2 — an Observation that reached here without
+		// them could not have produced an alert_key either — so this is a layer-3
+		// invariant rather than input validation. It degrades in the orchestrator
+		// (the alert is recorded without a group) instead of costing the batch.
+		return domain.Group{}, errs.Validation("group_key_inputs_required",
+			"a group key needs the alert's cluster and its labels")
+	}
+	// ⛔ The split labels are the GROUP's labels from here on. Alertmanager's own
+	// groupLabels are not an input, are not stored, and are not consulted: the raw
+	// envelope is already on disk in `ingest_batches.payload`.
+	split := kernel.SplitLabels(in.Labels).Map()
+	key := kernel.ComputeGroupKey(scope.OrgID(), in.ClusterKey, in.Labels).String()
 	at := in.At
 	if at.IsZero() {
 		at = s.Now()
 	}
 
 	var out domain.Group
-	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
 		if g, ok, err := s.groups.GetOpenByKey(ctx, scope, key); err != nil {
 			return err
 		} else if ok {
@@ -217,10 +240,14 @@ func (s *Service) Resolve(
 			GroupKey:       key,
 			SourceGroupKey: in.SourceGroupKey,
 			Receiver:       in.Receiver,
-			GroupLabels:    in.GroupLabels,
-			Title:          domain.Title(in.GroupLabels, in.Receiver),
-			At:             at,
-			Synthetic:      in.Synthetic,
+			GroupLabels:    split,
+			// The fallback is never reached: `split` always carries a non-empty
+			// alertname, so Title() always has a name to render. It is passed anyway
+			// because Title's signature is total and a call site that pretends a
+			// branch cannot happen is how it starts happening.
+			Title:     domain.Title(split, in.Receiver),
+			At:        at,
+			Synthetic: in.Synthetic,
 		})
 		if err != nil {
 			// Two ingest workers can race the same first observation. The unique
@@ -263,74 +290,62 @@ func (s *Service) Resolve(
 
 // -------------------------------------------------------------- membership
 
-// ⛔ THERE IS NO SINGLE-MEMBER `Join`. JoinMany is the only shape.
+// ⛔ THERE IS NO `Join`, NO `JoinMany` AND NO `Leave`, AND THERE MUST NOT BE.
 //
-// One existed as a `JoinMany` of one, kept so a caller holding a single
-// occurrence would not have to build a slice. It had no production caller —
-// `alertObserver.joinMembers` batches — so its only consumer was its own test,
-// which is the exact trap `tools/lintreach` exists to find and which SPEC §C.6/§C.7
-// had already sprung once: a function that compiles, lints, is exported and is
-// wired to nothing reads as canonical to the next person who edits it.
+// Membership is not something this service does; it is something an episode HAS.
+// Since ADR 0038 the group key is derived from the alert's own labels, so an
+// episode belongs to exactly one generation, and `alert_cases.group_id` —
+// written once by `alerts`, at the moment the episode opens — is the whole record
+// (migration 00051). There is nothing left for a membership verb to write.
 //
-// If a single-member caller ever appears, it can write `JoinMany(..., []JoinMember{m}, ...)`
-// at the call site. That is one line, and it does not create a second answer to
-// "what does joining do".
-
-// JoinMember names one occurrence to add to a generation.
+// `Leave` is the one worth naming, because it existed at three layers, appended
+// `group.member_left`, and WAS CALLED FROM NOWHERE for its entire life. The
+// consequence was not a missing feature: it was that `left_at` was never set, so
+// every "current members" read matched every row ever inserted, the point-in-time
+// replay could only show growth, `gm_current_idx` narrowed nothing, and an alert
+// that resolved and re-fired inside one generation was listed twice — once
+// resolved, once firing. Wiring it up was considered and rejected. A human does
+// not end an episode's membership of a group; the episode ending is what ends it,
+// and that fact already had a column.
 //
-// It is a service-layer type on purpose: the composition root hands these in, and
-// a composition root that had to build a `grouping/domain` value would be reaching
-// into another module's domain (CONTEXT.md §5.4).
-type JoinMember struct {
-	AlertID      uuid.UUID
-	OccurrenceID uuid.UUID
-}
+// `group.member_joined` and `group.member_left` went with them. They were facts
+// about the EPISODE phrased as if the group were the actor, and each is implied by
+// one that survives: `case.opened` and `case.resolved`/`.expired`.
+// They remain in the closed EventType enum, unemitted, because thirteen months of
+// `alert_events` still contain them — see `kernel.EventType.Retired`.
 
-// JoinManyResult is what ONE JoinMany did to ONE generation.
-type JoinManyResult struct {
-	Group domain.Group
-	// Joined is how many of the requested members were NEWLY joined. The rest were
-	// already members, which is a redelivered batch working as designed rather than
-	// an error.
-	Joined int
-
-	// ⛔ THERE ARE NO StormStarted/StormEnded FIELDS. A damping transition is a
-	// VISIBLE state change, and `evaluateStorm` already does everything it implies
-	// inside the transaction: it flips the mode, appends `group.storm_started` /
-	// `group.storm_ended` to the timeline (§B.6) and enqueues the one
-	// `notify.evaluate` that the §H.6 latch on `channels.storm_notice_at` needs.
-	// Reporting it again to a caller that must not act on it a second time is how a
-	// storm gets announced twice. Group.StormMode() is the state; the timeline is
-	// the record.
-}
-
-// JoinMany adds EVERY member of one batch to one generation and then re-derives
-// the generation ONCE.
+// Recompute re-derives EVERYTHING about a generation that is a projection of its
+// members, and it is the only entry point that does.
 //
-// ⭐ THE ROLLUP IS RECOMPUTED ONCE PER GROUP PER BATCH, NOT ONCE PER MEMBER. A
-// rollup is a PURE PROJECTION of the current members (see `recompute`), so joining
-// 500 occurrences and rolling up 500 times produces 499 results nobody reads —
-// each one a full aggregate over the group plus a compare-and-set write to the
-// same `alert_groups` row, which the CAS then serialises. That is O(n) contention
-// on one row, arriving exactly when a 500-alert Alertmanager batch is landing and
+// It re-rolls the counts, the state and the severity, and it evaluates the §B.6
+// storm window. It is called ONCE PER GROUP PER BATCH by the ingest orchestrator,
+// and again by nothing else.
+//
+// ⭐ ONCE PER BATCH, NOT ONCE PER MEMBER. A rollup is a PURE PROJECTION of the
+// members (see `recompute`), so a 500-alert Alertmanager batch that recomputed per
+// member would produce 499 results nobody reads — each one a full aggregate over
+// the group plus a compare-and-set write to the same `alert_groups` row, which the
+// CAS then serialises. That is O(n) contention on one row, arriving exactly when
 // Alertmanager's ~5-minute retry budget (ADR 0007, `ingestion/api/shed.go`) is the
-// only thing between a slow ingest and an alert that is lost silently. Joining
-// first and projecting once makes the same batch O(1) in rollups.
+// only thing between a slow ingest and an alert that is lost silently.
 //
-// ⭐ The storm evaluation moves with it, and MUST. It counts DISTINCT JOINS INSIDE
-// A WINDOW by querying `alert_group_members` (§B.6) — it has never counted its own
-// invocations — so one evaluation over the settled membership sees every member
-// this batch added and reaches the same verdict the last of 500 per-member
-// evaluations would have reached. What it does NOT do is announce that verdict
-// once per member: one transition, one `group.storm_started`, one `notify.evaluate`
-// job, and therefore still exactly one storm notice per channel behind the
+// ⭐ THE STORM EVALUATION BELONGS HERE AND NOWHERE ELSE. It counts DISTINCT ALERTS
+// THAT JOINED INSIDE A WINDOW (§B.6) — it has never counted its own invocations —
+// so one evaluation over the settled membership reaches the same verdict 500
+// per-member evaluations would have. What it does not do is announce that verdict
+// 500 times: one transition, one `group.storm_started`, one `notify.evaluate` job,
+// and therefore exactly one storm notice per channel behind the
 // `channels.storm_notice_at` latch.
 //
-// Members are joined in the order given, so the `group.member_joined` events land
-// on the timeline in batch order.
-func (s *Service) JoinMany(
-	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, members []JoinMember, at time.Time,
-) (JoinManyResult, error) {
+// ⚠️ A BATCH THAT ONLY RESOLVED THINGS NOW EVALUATES THE STORM TOO, where the old
+// `JoinMany`/`Recompute` split evaluated it only when something joined. It cannot
+// START a storm — that needs joins in the window, which a resolve-only batch does
+// not add — but it can END one whose cooldown has elapsed, on the batch that
+// proves the flood is over rather than on the next one to arrive. §B.6 says the
+// damper must be visible; ending it late is the same fault as hiding it.
+func (s *Service) Recompute(
+	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, at time.Time,
+) (domain.Group, error) {
 	if at.IsZero() {
 		at = s.Now()
 	}
@@ -338,104 +353,6 @@ func (s *Service) JoinMany(
 	// re-reading `orgs.settings` per member was the same 500× waste in miniature.
 	policy := s.policy(ctx, scope)
 
-	var out JoinManyResult
-	err := s.tx.InTx(ctx, func(ctx context.Context) error {
-		out = JoinManyResult{}
-		for _, m := range members {
-			joined, err := s.members.Join(ctx, scope, groupID, m.OccurrenceID, m.AlertID, at)
-			if err != nil {
-				return err
-			}
-			if !joined {
-				continue
-			}
-			out.Joined++
-			if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
-				Type:         kernel.EventGroupMemberJoined,
-				GroupID:      groupID,
-				AlertID:      m.AlertID,
-				OccurrenceID: m.OccurrenceID,
-				Summary:      "Alert joined the group",
-				DedupeKey:    "group:" + groupID.String() + ":joined:" + m.OccurrenceID.String(),
-				OccurredAt:   at,
-			}); err != nil {
-				return err
-			}
-		}
-
-		g, material, err := s.recompute(ctx, scope, groupID, at)
-		if err != nil {
-			return err
-		}
-		out.Group = g
-
-		stormed, err := s.evaluateStorm(ctx, scope, g, at, policy)
-		if err != nil {
-			return err
-		}
-		out.Group = stormed.group
-
-		if material || stormed.started || stormed.ended {
-			if err := s.publish(ctx, scope, out.Group); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return JoinManyResult{}, err
-	}
-	return out, nil
-}
-
-// Leave records that an occurrence stopped being a member and re-derives the
-// rollup. The membership row survives — membership is history (§D.5).
-func (s *Service) Leave(
-	ctx context.Context, scope db.TenantScope, groupID, alertID, occurrenceID uuid.UUID, at time.Time,
-) error {
-	if at.IsZero() {
-		at = s.Now()
-	}
-	return s.tx.InTx(ctx, func(ctx context.Context) error {
-		left, err := s.members.Leave(ctx, scope, groupID, occurrenceID, at)
-		if err != nil {
-			return err
-		}
-		if left {
-			if err := s.appendGroupEvent(ctx, scope, alerts.TimelineEventRequest{
-				Type:         kernel.EventGroupMemberLeft,
-				GroupID:      groupID,
-				AlertID:      alertID,
-				OccurrenceID: occurrenceID,
-				Summary:      "Alert left the group",
-				DedupeKey:    "group:" + groupID.String() + ":left:" + occurrenceID.String(),
-				OccurredAt:   at,
-			}); err != nil {
-				return err
-			}
-		}
-		g, material, err := s.recompute(ctx, scope, groupID, at)
-		if err != nil {
-			return err
-		}
-		if material {
-			return s.publish(ctx, scope, g)
-		}
-		return nil
-	})
-}
-
-// Recompute re-derives a generation's rollup after a member's state changed.
-//
-// It is the entry point the alerts lifecycle calls after a transition: the group
-// counts, the group state and the group severity are all PROJECTIONS of the
-// member occurrences, and this is where the projection is refreshed.
-func (s *Service) Recompute(
-	ctx context.Context, scope db.TenantScope, groupID uuid.UUID, at time.Time,
-) (domain.Group, error) {
-	if at.IsZero() {
-		at = s.Now()
-	}
 	var out domain.Group
 	err := s.tx.InTx(ctx, func(ctx context.Context) error {
 		g, material, err := s.recompute(ctx, scope, groupID, at)
@@ -443,8 +360,15 @@ func (s *Service) Recompute(
 			return err
 		}
 		out = g
-		if material {
-			return s.publish(ctx, scope, g)
+
+		stormed, err := s.evaluateStorm(ctx, scope, g, at, policy)
+		if err != nil {
+			return err
+		}
+		out = stormed.group
+
+		if material || stormed.started || stormed.ended {
+			return s.publish(ctx, scope, out)
 		}
 		return nil
 	})
@@ -515,7 +439,7 @@ type stormOutcome struct {
 // evaluateStorm applies §B.6 storm collapse.
 //
 // ⭐ Storm mode is a VISIBLE UI STATE, never silent suppression. Entering it does
-// not hide a single alert: every occurrence still opens, closes and appears in the
+// not hide a single alert: every case still opens, closes and appears in the
 // list and on the timeline. What collapses is oto's OWN chatter — one root message
 // with a count and a link instead of N thread replies — and the fact that oto went
 // quiet is itself posted, recorded and shown.
@@ -533,9 +457,10 @@ func (s *Service) evaluateStorm(
 	}
 	// The storm verdict was derived from `g`, so `g`'s version is what it is
 	// entitled to overwrite. A lost compare-and-set means the membership moved
-	// while the window was being counted; the caller's next Join re-evaluates
+	// while the window was being counted; the next `Recompute` re-evaluates
 	// against the newer generation rather than announcing a damping transition
-	// for counts that no longer exist.
+	// for counts that no longer exist. (It said "the caller's next Join" until
+	// 00051 made membership derived and deleted `Join` — see the tombstone above.)
 	if err := s.groups.SetStorm(ctx, scope, next, g.StateVersion()); err != nil {
 		return stormOutcome{}, err
 	}

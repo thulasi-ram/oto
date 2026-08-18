@@ -11,7 +11,7 @@ import (
 )
 
 // HistoryStore reads the notification history of one alert, and the delivery
-// roll-up of one alert, occurrence or group generation.
+// roll-up of one alert, case or group generation.
 type HistoryStore interface {
 	ListForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, page db.Keyset) ([]repository.Summary, db.Cursor, error)
 	DeliveryRollupFor(ctx context.Context, s db.TenantScope, subject repository.RollupSubject, id uuid.UUID) (repository.DeliveryRollup, error)
@@ -61,7 +61,7 @@ func (s *HistoryService) ListForAlert(
 }
 
 // DeliveryRollup answers "was anybody told about this, and did it land?" for one
-// alert, one occurrence or one group generation.
+// alert, one case or one group generation.
 //
 // ⭐ IT IS WHAT STOPS OTO'S SILENCE FROM LOOKING LIKE "NO ALERT". A user who sees
 // nothing in Slack has two very different situations to tell apart — nothing

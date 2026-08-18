@@ -14,7 +14,7 @@ import (
 // `ingestion/domain.DedupTTL` is the §C.5 REPLAY window: how long an identical
 // batch is treated as the same delivery arriving twice (an HA Alertmanager
 // sibling, a retry after a 5xx). `refire_grace` is the §B.5 LIFECYCLE window:
-// how long after a resolve a re-fire reopens the existing occurrence (T8) rather
+// how long after a resolve a re-fire reopens the existing case (T8) rather
 // than opening a new generation and a new Slack root message (T7).
 //
 // Both were ten minutes. A re-fire whose alert set has not changed produces a

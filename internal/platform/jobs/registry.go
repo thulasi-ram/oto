@@ -136,7 +136,7 @@ type Handlers struct {
 	SilencesSync       Handler[SilencesSyncArgs]
 	SlackInteraction   Handler[SlackInteractionArgs]
 
-	OccurrenceReap        Handler[OccurrenceReapArgs]
+	CaseReap              Handler[CaseReapArgs]
 	GroupClose            Handler[GroupCloseArgs]
 	FlapScore             Handler[FlapScoreArgs]
 	NotifyUnackedReminder Handler[NotifyUnackedReminderArgs]
@@ -167,7 +167,7 @@ func orStub[T river.JobArgs](fn Handler[T], kind string) Handler[T] {
 // a partition sweep legitimately takes minutes.
 //
 // ⭐ FOR THE PER-TENANT PERIODICS THE TIMEOUT IS NOW PER TENANT, and that is the
-// whole of what 2d699d6 bought. `occurrence.reap`'s two minutes used to be two
+// whole of what 2d699d6 bought. `case.reap`'s two minutes used to be two
 // minutes for EVERY tenant put together, so the number below meant something
 // different on every install and got quietly tighter with each customer. It now
 // bounds one tenant's sweep, which is a quantity somebody can reason about, and
@@ -213,7 +213,7 @@ func RegisterAll(r *Registry, h Handlers) error {
 		},
 		func() error {
 			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
-				orStub(h.OccurrenceReap, KindOccurrenceReap))
+				orStub(h.CaseReap, KindCaseReap))
 		},
 		func() error {
 			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
@@ -265,7 +265,7 @@ func RegisterAll(r *Registry, h Handlers) error {
 // AND a nil org id, and both expansions happen in the handler.
 //
 // ⭐ THE PER-TENANT PERIODICS ARE STILL HERE, AND THE ZERO ARGS BELOW ARE WHY.
-// `occurrence.reap`, `group.close`, `flap.score`, `notify.unacked_reminder`,
+// `case.reap`, `group.close`, `flap.score`, `notify.unacked_reminder`,
 // `retention.prune` and `stats.rollup` are all fanned out per tenant now
 // (jobs.TenantFanOut), but their SCHEDULE still needs no list: an args struct
 // with a nil OrgID IS the fan-out tick, and expanding it into one job per
@@ -291,8 +291,8 @@ func AddDefaultPeriodic(r *Registry, clk clock.Clock) {
 		))
 	}
 
-	add(time.Minute, KindOccurrenceReap, func() (river.JobArgs, *river.InsertOpts) {
-		return OccurrenceReapArgs{}, nil
+	add(time.Minute, KindCaseReap, func() (river.JobArgs, *river.InsertOpts) {
+		return CaseReapArgs{}, nil
 	})
 	add(time.Minute, KindGroupClose, func() (river.JobArgs, *river.InsertOpts) {
 		return GroupCloseArgs{}, nil

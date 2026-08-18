@@ -93,15 +93,15 @@ func TestThePrunerDeletesOnlyKeysPastTheHorizon(t *testing.T) {
 	f := newKeyFixture(t)
 
 	horizon := f.h.Now().Add(-domain.DedupeKeyRetention)
-	f.claim(f.orgA.ID, "occ:stale:opened", horizon.Add(-time.Minute))
-	f.claim(f.orgA.ID, "occ:exactly:opened", horizon)
-	f.claim(f.orgA.ID, "occ:fresh:opened", horizon.Add(time.Minute))
+	f.claim(f.orgA.ID, "case:stale:opened", horizon.Add(-time.Minute))
+	f.claim(f.orgA.ID, "case:exactly:opened", horizon)
+	f.claim(f.orgA.ID, "case:fresh:opened", horizon.Add(time.Minute))
 
 	deleted, err := f.repo.PruneDedupeKeys(f.h.Ctx, horizon, 100)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deleted)
 
-	require.Equal(t, []string{"occ:exactly:opened", "occ:fresh:opened"}, f.keysOf(f.orgA.ID),
+	require.Equal(t, []string{"case:exactly:opened", "case:fresh:opened"}, f.keysOf(f.orgA.ID),
 		"a key inside the horizon must survive the sweep: unclaiming one early does not fail, it "+
 			"lets the next replay of that batch append the timeline a second time and report success")
 }
@@ -152,8 +152,8 @@ func TestTheSweepReachesEveryTenant(t *testing.T) {
 
 	horizon := f.h.Now().Add(-domain.DedupeKeyRetention)
 	for _, org := range []uuid.UUID{f.orgA.ID, f.orgB.ID} {
-		f.claim(org, "occ:stale:opened", horizon.Add(-time.Hour))
-		f.claim(org, "occ:fresh:opened", horizon.Add(time.Hour))
+		f.claim(org, "case:stale:opened", horizon.Add(-time.Hour))
+		f.claim(org, "case:fresh:opened", horizon.Add(time.Hour))
 	}
 
 	deleted, err := f.repo.PruneDedupeKeys(f.h.Ctx, horizon, 100)
@@ -168,7 +168,7 @@ func TestTheSweepReachesEveryTenant(t *testing.T) {
 	// `dedupe_key`. A delete keyed on `dedupe_key` alone would have taken the other
 	// tenant's live key with it.
 	for _, org := range []uuid.UUID{f.orgA.ID, f.orgB.ID} {
-		require.Equal(t, []string{"occ:fresh:opened"}, f.keysOf(org))
+		require.Equal(t, []string{"case:fresh:opened"}, f.keysOf(org))
 	}
 }
 
@@ -191,7 +191,7 @@ func TestASweptKeyIsFreeAgainAndALiveOneStillSuppresses(t *testing.T) {
 	// now — unlike the key rows above, which live in an unpartitioned table and can
 	// be dated freely.
 	now := time.Now().UTC()
-	event := newKeyedEvent(t, f.orgA.ID, now, "occ:"+id.New().String()+":opened")
+	event := newKeyedEvent(t, f.orgA.ID, now, "case:"+id.New().String()+":opened")
 
 	written, err := f.repo.AppendBatch(f.h.Ctx, f.orgA.Scope, []domain.Event{event})
 	require.NoError(t, err)
@@ -232,14 +232,14 @@ func newKeyedEvent(t *testing.T, orgID uuid.UUID, at time.Time, dedupeKey string
 	require.NoError(t, err)
 
 	e, err := domain.NewEvent(domain.EventParams{
-		ID:           id.New(),
-		OrgID:        orgID,
-		OccurrenceID: id.New(),
-		Type:         domain.EventOccurrenceOpened,
-		At:           observed,
-		Actor:        actor,
-		Summary:      "occurrence opened",
-		DedupeKey:    dedupeKey,
+		ID:        id.New(),
+		OrgID:     orgID,
+		CaseID:    id.New(),
+		Type:      domain.EventCaseOpened,
+		At:        observed,
+		Actor:     actor,
+		Summary:   "case opened",
+		DedupeKey: dedupeKey,
 	})
 	require.NoError(t, err)
 	return e

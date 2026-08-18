@@ -26,14 +26,14 @@ const (
 	// StageIdentity is §C.2: the label set became an Alert, with an alert_key.
 	// Evidence: `alerts`.
 	StageIdentity StageName = "identity"
-	// StageOccurrence is §B.3 T1: a firing episode opened. Evidence:
-	// `alert_occurrences`.
-	StageOccurrence StageName = "occurrence"
+	// StageCase is §B.3 T1: a firing episode opened. Evidence:
+	// `alert_cases`.
+	StageCase StageName = "case"
 	// StageGroup is §C.4: an AlertGroup generation was resolved and the alert
-	// joined it. Evidence: `alert_groups`, `alert_group_members`.
+	// joined it. Evidence: `alert_groups`, `alert_cases.group_id`.
 	StageGroup StageName = "group"
 	// StageRuleSnapshot is ADR 0009: what the rule said at fire time. Evidence:
-	// `alert_occurrences.rule_snapshot_id`.
+	// `alert_cases.rule_snapshot_id`.
 	//
 	// ⭐ THIS STAGE IS ALLOWED TO SKIP, and that is not a weakness. A drill's
 	// alert corresponds to no Prometheus rule, because oto did not invent one in
@@ -63,7 +63,7 @@ const (
 // as much as what broke.
 func AllStages() []StageName {
 	return []StageName{
-		StageAccept, StageProcess, StageIdentity, StageOccurrence, StageGroup,
+		StageAccept, StageProcess, StageIdentity, StageCase, StageGroup,
 		StageRuleSnapshot, StagePolicy, StageThread, StageOrdering, StageDelivery,
 	}
 }

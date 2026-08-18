@@ -48,7 +48,7 @@ type slackWorld struct {
 	alphaOrg     uuid.UUID
 	alphaGroup   uuid.UUID
 	alphaAlert   uuid.UUID
-	alphaOcc     uuid.UUID
+	alphaCase    uuid.UUID
 	alphaChannel string // Slack conversation id
 
 	betaOrg     uuid.UUID
@@ -118,9 +118,9 @@ func TestSlackAcknowledgeButtonActuallyAcknowledges(t *testing.T) {
 	})
 
 	// ---- 4. THE RECORD -------------------------------------------------
-	ackState, ackedBy, ackedLabel := env.occurrenceAck(t, w.alphaOcc)
+	ackState, ackedBy, ackedLabel := env.caseAck(t, w.alphaCase)
 	if ackState != "acked" {
-		t.Fatalf("the occurrence is %q after an Acknowledge press, want acked. "+
+		t.Fatalf("the case is %q after an Acknowledge press, want acked. "+
 			"The button is still a no-op that looks like it worked", ackState)
 	}
 	// The member is LINKED, so the receipt names the oto user.
@@ -131,10 +131,18 @@ func TestSlackAcknowledgeButtonActuallyAcknowledges(t *testing.T) {
 		t.Fatalf("acked_by_label = %q, want %q", ackedLabel, w.linkedEmail)
 	}
 
-	// The alert PROJECTION moved too — that is what every list and every card
-	// renders from.
-	if got := env.alertAckState(t, w.alphaAlert); got != "acked" {
-		t.Fatalf("alerts.ack_state = %q, want acked", got)
+	// ⛔ AND THE ALERT ROW DID NOT MOVE, BECAUSE IT HAS NOWHERE TO MOVE TO.
+	// `alerts` carries no ack column: a receipt for one firing must not outlive
+	// that firing. What every list and every card renders from is this alert's
+	// CURRENT EPISODE, which is the row asserted above.
+	if col := env.alertsHasColumn(t, "ack_state"); col {
+		t.Fatal("`alerts` has an ack_state column again. An ack is a statement about " +
+			"ONE firing episode; projected onto the Alert it keeps asserting itself " +
+			"after that episode has closed, which is how a firing months later arrives " +
+			"pre-acknowledged and never reaches anybody.")
+	}
+	if got := env.currentCaseAckState(t, w.alphaAlert); got != "acked" {
+		t.Fatalf("the alert's current episode is %q, want acked", got)
 	}
 
 	// ---- 5. THE TIMELINE -----------------------------------------------
@@ -184,12 +192,12 @@ func TestSlackAcknowledgeCannotCrossTenants(t *testing.T) {
 		SlackUserID: "U0123456789",
 	})
 
-	if n := env.ackedOccurrences(t, w.betaOrg); n != 0 {
-		t.Fatalf("%d of org beta's occurrences were acknowledged from org alpha's Slack channel. "+
+	if n := env.ackedCases(t, w.betaOrg); n != 0 {
+		t.Fatalf("%d of org beta's cases were acknowledged from org alpha's Slack channel. "+
 			"An interaction from one workspace must never reach another tenant's alerts", n)
 	}
-	if n := env.ackedOccurrences(t, w.alphaOrg); n != 0 {
-		t.Fatalf("%d of org alpha's occurrences were acknowledged by a press naming beta's group", n)
+	if n := env.ackedCases(t, w.alphaOrg); n != 0 {
+		t.Fatalf("%d of org alpha's cases were acknowledged by a press naming beta's group", n)
 	}
 }
 
@@ -217,9 +225,9 @@ func TestSlackAcknowledgeAttributesAnUnlinkedMemberHonestly(t *testing.T) {
 		SlackUserName: "newcomer",
 	})
 
-	ackState, ackedBy, label := env.occurrenceAck(t, w.alphaOcc)
+	ackState, ackedBy, label := env.caseAck(t, w.alphaCase)
 	if ackState != "acked" {
-		t.Fatalf("an unlinked Slack member's press left the occurrence %q; the acknowledgement was lost", ackState)
+		t.Fatalf("an unlinked Slack member's press left the case %q; the acknowledgement was lost", ackState)
 	}
 	if ackedBy != nil {
 		t.Fatalf("acked_by = %v for an unlinked member; oto invented an oto user", *ackedBy)
@@ -249,7 +257,7 @@ func TestSlackAcknowledgeAttributesAnUnlinkedMemberHonestly(t *testing.T) {
 // TestSlackAcknowledgeIsIdempotent covers the double-click and the replay.
 //
 // Both converge on the same row, because the idempotency lives in the DOMAIN —
-// `Occurrence.Acknowledge` refuses an already-acked episode — rather than in the
+// `Case.Acknowledge` refuses an already-acked episode — rather than in the
 // transport. A second press does not move `acked_at`, does not re-attribute the
 // receipt, and does not append a second event.
 func TestSlackAcknowledgeIsIdempotent(t *testing.T) {
@@ -269,8 +277,8 @@ func TestSlackAcknowledgeIsIdempotent(t *testing.T) {
 		SlackUserName: "ram",
 	}
 	env.applySlackJob(t, press)
-	_, _, firstLabel := env.occurrenceAck(t, w.alphaOcc)
-	firstAt := env.occurrenceAckedAt(t, w.alphaOcc)
+	_, _, firstLabel := env.caseAck(t, w.alphaCase)
+	firstAt := env.caseAckedAt(t, w.alphaCase)
 
 	// The same press again — a double-click, a Slack redelivery, or a job retry.
 	env.applySlackJob(t, press)
@@ -280,16 +288,16 @@ func TestSlackAcknowledgeIsIdempotent(t *testing.T) {
 	second.SlackUserName = "other"
 	env.applySlackJob(t, second)
 
-	_, _, label := env.occurrenceAck(t, w.alphaOcc)
+	_, _, label := env.caseAck(t, w.alphaCase)
 	if label != firstLabel {
 		t.Fatalf("a second press re-attributed the acknowledgement from %q to %q; "+
 			"the first human to see it is the fact on the record", firstLabel, label)
 	}
-	if at := env.occurrenceAckedAt(t, w.alphaOcc); !at.Equal(firstAt) {
+	if at := env.caseAckedAt(t, w.alphaCase); !at.Equal(firstAt) {
 		t.Fatalf("a second press moved acked_at from %s to %s", firstAt, at)
 	}
 	if n := env.countAckEvents(t, w.alphaAlert); n != 1 {
-		t.Fatalf("the timeline carries %d occurrence.acknowledged events after three presses, want 1", n)
+		t.Fatalf("the timeline carries %d case.acknowledged events after three presses, want 1", n)
 	}
 }
 
@@ -451,14 +459,14 @@ func (e *env) countNotifyEvaluate(t *testing.T, reason string) int {
 	return n
 }
 
-func (e *env) occurrenceAck(t *testing.T, occurrenceID uuid.UUID) (state string, by *uuid.UUID, label string) {
+func (e *env) caseAck(t *testing.T, caseID uuid.UUID) (state string, by *uuid.UUID, label string) {
 	t.Helper()
 	var lbl *string
 	err := e.pool.QueryRow(e.ctx,
-		`SELECT ack_state, acked_by, acked_by_label FROM alert_occurrences WHERE id = $1`,
-		occurrenceID).Scan(&state, &by, &lbl)
+		`SELECT ack_state, acked_by, acked_by_label FROM alert_cases WHERE id = $1`,
+		caseID).Scan(&state, &by, &lbl)
 	if err != nil {
-		t.Fatalf("read occurrence ack: %v", err)
+		t.Fatalf("read case ack: %v", err)
 	}
 	if lbl != nil {
 		label = *lbl
@@ -466,11 +474,11 @@ func (e *env) occurrenceAck(t *testing.T, occurrenceID uuid.UUID) (state string,
 	return state, by, label
 }
 
-func (e *env) occurrenceAckedAt(t *testing.T, occurrenceID uuid.UUID) time.Time {
+func (e *env) caseAckedAt(t *testing.T, caseID uuid.UUID) time.Time {
 	t.Helper()
 	var at *time.Time
 	if err := e.pool.QueryRow(e.ctx,
-		`SELECT acked_at FROM alert_occurrences WHERE id = $1`, occurrenceID).Scan(&at); err != nil {
+		`SELECT acked_at FROM alert_cases WHERE id = $1`, caseID).Scan(&at); err != nil {
 		t.Fatalf("read acked_at: %v", err)
 	}
 	if at == nil {
@@ -479,14 +487,34 @@ func (e *env) occurrenceAckedAt(t *testing.T, occurrenceID uuid.UUID) time.Time 
 	return *at
 }
 
-func (e *env) alertAckState(t *testing.T, alertID uuid.UUID) string {
+// currentCaseAckState is what a list row and a card actually read: the
+// ack of the episode the Alert is having, reached through `current_case_id`.
+func (e *env) currentCaseAckState(t *testing.T, alertID uuid.UUID) string {
 	t.Helper()
 	var s string
-	if err := e.pool.QueryRow(e.ctx,
-		`SELECT ack_state FROM alerts WHERE id = $1`, alertID).Scan(&s); err != nil {
-		t.Fatalf("read alert ack_state: %v", err)
+	if err := e.pool.QueryRow(e.ctx, `
+		SELECT o.ack_state
+		  FROM alerts a
+		  JOIN alert_cases o ON o.id = a.current_case_id
+		 WHERE a.id = $1`, alertID).Scan(&s); err != nil {
+		t.Fatalf("read the current episode's ack_state: %v", err)
 	}
 	return s
+}
+
+// alertsHasColumn asks the LIVE schema, not the migration files. A column that
+// came back by any route — a hotfix ALTER, an un-deployed contract half, a
+// rolled-back Down — has rows, and the rows are what a migration cannot take back.
+func (e *env) alertsHasColumn(t *testing.T, name string) bool {
+	t.Helper()
+	var n int
+	if err := e.pool.QueryRow(e.ctx, `
+		SELECT count(*) FROM information_schema.columns
+		 WHERE table_schema = 'public' AND table_name = 'alerts' AND column_name = $1`,
+		name).Scan(&n); err != nil {
+		t.Fatalf("introspect alerts.%s: %v", name, err)
+	}
+	return n > 0
 }
 
 func (e *env) ackEvent(t *testing.T, alertID uuid.UUID) (actorKind, actorLabel string) {
@@ -494,7 +522,7 @@ func (e *env) ackEvent(t *testing.T, alertID uuid.UUID) (actorKind, actorLabel s
 	var lbl *string
 	err := e.pool.QueryRow(e.ctx,
 		`SELECT actor_kind, actor_label FROM alert_events
-		  WHERE alert_id = $1 AND type = 'occurrence.acknowledged'
+		  WHERE alert_id = $1 AND type = 'case.acknowledged'
 		  ORDER BY recorded_at DESC LIMIT 1`, alertID).Scan(&actorKind, &lbl)
 	if err != nil {
 		t.Fatalf("read ack event (the timeline has no acknowledgement on it): %v", err)
@@ -509,7 +537,7 @@ func (e *env) countAckEvents(t *testing.T, alertID uuid.UUID) int {
 	t.Helper()
 	var n int
 	err := e.pool.QueryRow(e.ctx,
-		`SELECT count(*) FROM alert_events WHERE alert_id = $1 AND type = 'occurrence.acknowledged'`,
+		`SELECT count(*) FROM alert_events WHERE alert_id = $1 AND type = 'case.acknowledged'`,
 		alertID).Scan(&n)
 	if err != nil {
 		t.Fatalf("count ack events: %v", err)
@@ -517,14 +545,14 @@ func (e *env) countAckEvents(t *testing.T, alertID uuid.UUID) int {
 	return n
 }
 
-func (e *env) ackedOccurrences(t *testing.T, orgID uuid.UUID) int {
+func (e *env) ackedCases(t *testing.T, orgID uuid.UUID) int {
 	t.Helper()
 	var n int
 	err := e.pool.QueryRow(e.ctx,
-		`SELECT count(*) FROM alert_occurrences WHERE org_id = $1 AND ack_state = 'acked'`,
+		`SELECT count(*) FROM alert_cases WHERE org_id = $1 AND ack_state = 'acked'`,
 		orgID).Scan(&n)
 	if err != nil {
-		t.Fatalf("count acked occurrences: %v", err)
+		t.Fatalf("count acked cases: %v", err)
 	}
 	return n
 }
@@ -596,9 +624,9 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 	// `alerts_key_ck` and `groups_key_ck` are `^(ak|gk)_[0-9a-v]{26}$` — a
 	// Crockford-base32 digest, 26 characters, no letters past `v`. The seed
 	// satisfies the real constraint rather than relaxing it.
-	seedOrg := func(orgID uuid.UUID, slug, keySuffix, conversation string) (groupID, alertID, occID uuid.UUID) {
+	seedOrg := func(orgID uuid.UUID, slug, keySuffix, conversation string) (groupID, alertID, caseID uuid.UUID) {
 		clusterID, sourceID, credID := id.New(), id.New(), id.New()
-		groupID, alertID, occID = id.New(), id.New(), id.New()
+		groupID, alertID, caseID = id.New(), id.New(), id.New()
 
 		// `created_at`/`updated_at` are NAMED on both: 00034 removed their DEFAULT
 		// now() so that nothing on these tables can take the database's clock while
@@ -612,7 +640,7 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 
 		exec(`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
 		         severity, cluster_key, labels, state,
-		         first_seen_at, last_seen_at, last_state_change_at, total_occurrences)
+		         first_seen_at, last_seen_at, last_state_change_at, total_cases)
 		      VALUES ($1,$2,$3,$4,'3f8c1a2b9d4e5f60','HighErrorRate',
 		         'critical','prod','{"alertname":"HighErrorRate"}'::jsonb,'firing',$5,$5,$5,1)`,
 			alertID, orgID, clusterID, "ak_"+keySuffix, now)
@@ -622,13 +650,13 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 		      VALUES ($1,$2,$3,$4,$5,'HighErrorRate · prod','open',1,1,1,$6,$6)`,
 			groupID, orgID, sourceID, clusterID, "gk_"+keySuffix, now)
 
-		exec(`INSERT INTO alert_occurrences (id, org_id, alert_id, group_id, seq, state,
+		exec(`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state,
 		         started_at, last_observed_at, source_starts_at)
-		      VALUES ($1,$2,$3,$4,1,'firing',$5,$5,$5)`, occID, orgID, alertID, groupID, now)
+		      VALUES ($1,$2,$3,$4,1,'firing',$5,$5,$5)`, caseID, orgID, alertID, groupID, now)
 
-		exec(`UPDATE alerts SET current_occurrence_id = $2 WHERE id = $1`, alertID, occID)
-		exec(`INSERT INTO alert_group_members (group_id, occurrence_id, org_id, alert_id, joined_at)
-		      VALUES ($1,$2,$3,$4,$5)`, groupID, occID, orgID, alertID, now)
+		exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`, alertID, caseID)
+		// The episode's own `group_id` above IS the membership since 00051; there is
+		// no join table row to add.
 
 		// The Slack destination. `channels_cred_ck` requires a credential on a
 		// slack channel, and the sealed blob has a 29-byte floor; the seed
@@ -649,10 +677,10 @@ func seedSlackWorld(t *testing.T, e *env) slackWorld {
 				slackTeam, conversation, slug),
 			credID, now)
 
-		return groupID, alertID, occID
+		return groupID, alertID, caseID
 	}
 
-	w.alphaGroup, w.alphaAlert, w.alphaOcc = seedOrg(w.alphaOrg, "alpha", "0a0123456789abcdefghijklmn", w.alphaChannel)
+	w.alphaGroup, w.alphaAlert, w.alphaCase = seedOrg(w.alphaOrg, "alpha", "0a0123456789abcdefghijklmn", w.alphaChannel)
 	w.betaGroup, _, _ = seedOrg(w.betaOrg, "beta", "0b0123456789abcdefghijklmn", w.betaChannel)
 	return w
 }

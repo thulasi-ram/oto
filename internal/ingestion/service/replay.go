@@ -31,23 +31,23 @@ type SupersessionLimb string
 
 const (
 	// LimbOvertaken is a later batch having already written to this alert:
-	// `source_updated_at` on its latest occurrence is after the replayed batch's
+	// `source_updated_at` on its latest case is after the replayed batch's
 	// `received_at`. Replaying would apply a stale observation over a fresher one.
 	LimbOvertaken SupersessionLimb = "overtaken"
-	// LimbClosed is the alert's latest occurrence being TERMINAL — resolved or
+	// LimbClosed is the alert's latest case being TERMINAL — resolved or
 	// expired — while this batch carries `firing` for it.
 	//
 	// ⭐ THIS IS THE T7/T8 DOUBLE-WRITE, and it is the limb the first attempt at
 	// this feature missed. `selectRule` sees a firing observation on a terminal
-	// occurrence and takes `refireAfterGrace`, which MINTS A NEW OCCURRENCE ID —
-	// so the `alert_event_keys` dedupe, which is keyed to the occurrence, is a
-	// guaranteed MISS. The result is a new episode, a new `occurrence.opened` and
+	// case and takes `refireAfterGrace`, which MINTS A NEW CASE ID —
+	// so the `alert_event_keys` dedupe, which is keyed to the case, is a
+	// guaranteed MISS. The result is a new episode, a new `case.opened` and
 	// a fresh `notify.evaluate`: somebody is paged for an incident that closed two
 	// days ago.
 	//
 	// ⛔ IT CANNOT BE EXPRESSED AS A TIMESTAMP COMPARISON, which is why it is a
 	// second limb rather than a wider window on the first. The reaper expires an
-	// occurrence with nothing upstream saying so, and expiry never touches
+	// case with nothing upstream saying so, and expiry never touches
 	// `source_updated_at` — so a reaper-closed alert is invisible to LimbOvertaken
 	// and is exactly as dangerous.
 	LimbClosed SupersessionLimb = "closed"
@@ -62,7 +62,7 @@ type Supersession struct {
 	AlertKey string
 	// Identity is the alert rendered for a human, e.g. `HighErrorRate{service=checkout}`.
 	Identity string
-	// State is the latest occurrence's state, rendered.
+	// State is the latest case's state, rendered.
 	State string
 	// MovedAt is when it last moved. See AlertState.MovedAt for why this is not
 	// simply `source_updated_at`.
@@ -119,8 +119,8 @@ func (r ReplayResult) Refused() bool { return len(r.Superseded) > 0 && !r.Enqueu
 // ⭐ THE SUPERSESSION GATE IS THE SAFETY ARGUMENT, and it replaced a WRONG one.
 // The first attempt gated on AGE: refuse a batch older than the `ingest_dedup`
 // horizon, on the theory that surviving dedupe keys make a re-append a no-op.
-// That gate protects an empty set. Dedupe keys are OCCURRENCE-scoped
-// (`alerts/domain.lifecycle`, `"occ:"+id+":opened"`) and a FAILED batch committed
+// That gate protects an empty set. Dedupe keys are CASE-scoped
+// (`alerts/domain.lifecycle`, `"case:"+id+":opened"`) and a FAILED batch committed
 // nothing, so it holds zero keys at any age whatsoever. The real risk is not
 // being old; it is being OVERTAKEN — and the only way to know is to work out
 // which alerts the payload names and go and look at them.
@@ -255,9 +255,9 @@ func touchedAlerts(observations []alerts.Observation) ([]string, map[string]bool
 
 // supersededBy applies the two refusal limbs to the touched set.
 //
-// An alert with no row and an alert with no occurrence are both SAFE and are not
+// An alert with no row and an alert with no case are both SAFE and are not
 // listed: a replay cannot overtake a timeline that does not exist, and creating
-// the first occurrence for an alert is the ordinary thing this batch was supposed
+// the first case for an alert is the ordinary thing this batch was supposed
 // to do in the first place.
 func supersededBy(
 	keys []string, firing map[string]bool, states map[string]AlertState, receivedAt time.Time,

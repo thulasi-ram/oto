@@ -43,44 +43,44 @@ const MaxCommentBytes = domain.MaxAckNoteBytes
 // request is well-formed, there is simply nothing running to acknowledge.
 func (s *Service) Acknowledge(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
-) (domain.Occurrence, error) {
+) (domain.Case, error) {
 	return s.setAck(ctx, scope, alertID, actor, note, true, domain.UnackReasonManual)
 }
 
 // Unacknowledge drops an acknowledgement a human placed (T10, reason `manual`).
 //
 // `note` is the human's explanation for the withdrawal. It does NOT go back onto
-// the occurrence — `ack_note` describes the acknowledgement being removed and is
+// the case — `ack_note` describes the acknowledgement being removed and is
 // cleared by the transition — it goes onto the timeline, in the
-// `occurrence.unacknowledged` event payload.
+// `case.unacknowledged` event payload.
 func (s *Service) Unacknowledge(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
-) (domain.Occurrence, error) {
+) (domain.Case, error) {
 	return s.setAck(ctx, scope, alertID, actor, note, false, domain.UnackReasonManual)
 }
 
 func (s *Service) setAck(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, actor domain.Actor,
 	note string, ack bool, reason string,
-) (domain.Occurrence, error) {
+) (domain.Case, error) {
 	if actor.IsZero() || !actor.Kind().IsHuman() {
-		return domain.Occurrence{}, errs.Validation("actor_required",
+		return domain.Case{}, errs.Validation("actor_required",
 			"an acknowledgement requires a human actor")
 	}
 
-	var out domain.Occurrence
+	var out domain.Case
 	err := s.tx.InTx(ctx, func(ctx context.Context) error {
 		alert, err := s.alerts.GetByID(ctx, scope, alertID)
 		if err != nil {
 			return err
 		}
-		occ, ok, err := s.occurrences.GetOpenByAlert(ctx, scope, alertID)
+		ac, ok, err := s.cases.GetOpenByAlert(ctx, scope, alertID)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return errs.Precondition("no_open_occurrence",
-				"this alert has no open occurrence to acknowledge")
+			return errs.Precondition("no_open_case",
+				"this alert has no open case to acknowledge")
 		}
 
 		now := s.Now()
@@ -97,13 +97,13 @@ func (s *Service) setAck(
 		}
 
 		var (
-			next domain.Occurrence
+			next domain.Case
 			evs  []domain.Event
 		)
 		if ack {
-			next, evs, err = occ.Acknowledge(cmd)
+			next, evs, err = ac.Acknowledge(cmd)
 		} else {
-			next, evs, err = occ.Unacknowledge(cmd)
+			next, evs, err = ac.Unacknowledge(cmd)
 		}
 		if err != nil {
 			return err
@@ -122,24 +122,25 @@ func (s *Service) setAck(
 				change.Note = &note
 			}
 		}
-		// The version `occ` was read at. If the episode resolved or expired while
+		// The version `ac` was read at. If the episode resolved or expired while
 		// the human was deciding, this fails with a conflict rather than stamping
 		// an acknowledgement on a closed episode and rewinding the alert
 		// projection to its pre-resolution state.
-		if err := s.occurrences.SetAck(ctx, scope, next.ID(), change, occ.StateVersion()); err != nil {
+		if err := s.cases.SetAck(ctx, scope, next.ID(), change, ac.StateVersion()); err != nil {
 			return err
 		}
 
-		// The ack projection moves ack_state and NOTHING else — not state, not
-		// snoozed_until (§B.1).
+		// ⭐ THE ACK ITSELF IS ALREADY WRITTEN, on the case, by SetAck above.
+		// This projection re-states `state` and `current_case_id` and moves
+		// NOTHING else: `alerts` carries no ack column, because a receipt for one
+		// firing must not outlive that firing, and no snooze column, because a
+		// quiet period outlives every one of them (§B.1).
 		if err := s.alerts.SetProjection(ctx, scope, alert.ID(), domain.AlertProjection{
-			State:               alert.State(),
-			CurrentOccurrenceID: ptr(next.ID()),
-			AckState:            next.AckState(),
-			SnoozedUntil:        nilTime(alert.SnoozedUntil()),
-			LastSeenAt:          alert.LastSeenAt(),
-			LastStateChangeAt:   alert.LastStateChangeAt(),
-			TotalOccurrences:    alert.TotalOccurrences(),
+			State:             alert.State(),
+			CurrentCaseID:     ptr(next.ID()),
+			LastSeenAt:        alert.LastSeenAt(),
+			LastStateChangeAt: alert.LastStateChangeAt(),
+			TotalCases:        alert.TotalCases(),
 		}); err != nil {
 			return err
 		}
@@ -147,7 +148,7 @@ func (s *Service) setAck(
 		if _, err := s.appendEvents(ctx, scope, evs); err != nil {
 			return err
 		}
-		if err := s.publishOccurrence(ctx, scope, next); err != nil {
+		if err := s.publishCase(ctx, scope, next); err != nil {
 			return err
 		}
 		if err := s.publishAlert(ctx, scope, alert.ID(), map[string]any{
@@ -161,11 +162,11 @@ func (s *Service) setAck(
 			notifyReason = reasonUnacked
 		}
 		if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
-			groupID:      next.GroupID(),
-			reason:       notifyReason,
-			alertID:      ptr(alert.ID()),
-			occurrenceID: ptr(next.ID()),
-			actor:        actor.Label(),
+			groupID: next.GroupID(),
+			reason:  notifyReason,
+			alertID: ptr(alert.ID()),
+			caseID:  ptr(next.ID()),
+			actor:   actor.Label(),
 		}}, nil); err != nil {
 			return err
 		}
@@ -174,7 +175,7 @@ func (s *Service) setAck(
 		return nil
 	})
 	if err != nil {
-		return domain.Occurrence{}, err
+		return domain.Case{}, err
 	}
 	return out, nil
 }
@@ -224,7 +225,7 @@ func (s *Service) Comment(
 		if err != nil {
 			return err
 		}
-		occ, hasOpen, err := s.occurrences.GetOpenByAlert(ctx, scope, alertID)
+		ac, hasOpen, err := s.cases.GetOpenByAlert(ctx, scope, alertID)
 		if err != nil {
 			return err
 		}
@@ -264,8 +265,8 @@ func (s *Service) Comment(
 			DedupeKey: dedupe,
 		}
 		if hasOpen {
-			params.OccurrenceID = occ.ID()
-			params.GroupID = occ.GroupID()
+			params.CaseID = ac.ID()
+			params.GroupID = ac.GroupID()
 		}
 
 		ev, err := domain.NewEvent(params)
@@ -286,11 +287,11 @@ func (s *Service) Comment(
 		}
 		if hasOpen {
 			if _, err := s.enqueueNotify(ctx, scope, []notifyRequest{{
-				groupID:      occ.GroupID(),
-				reason:       reasonComment,
-				alertID:      ptr(alert.ID()),
-				occurrenceID: ptr(occ.ID()),
-				actor:        actor.Label(),
+				groupID: ac.GroupID(),
+				reason:  reasonComment,
+				alertID: ptr(alert.ID()),
+				caseID:  ptr(ac.ID()),
+				actor:   actor.Label(),
 			}}, nil); err != nil {
 				return err
 			}
@@ -346,7 +347,7 @@ func commentSummary(who, body string) string {
 // default list (§B.8.6).
 //
 // In one transaction: close any active snooze as `superseded`, insert the new
-// row, write the `alerts.snoozed_until` projection, append `alert.snoozed`, and
+// row, append `alert.snoozed`, and
 // enqueue `notify.evaluate(reason=snoozed)` so the channel is TOLD it is going
 // quiet. A snooze that does not announce itself is the silent suppression §B.6
 // forbids, which is why that last step is not optional.
@@ -445,9 +446,6 @@ func (s *Service) Snooze(
 		}
 		events = append(events, evs...)
 
-		if err := s.writeSnoozeProjection(ctx, scope, alert, ptr(created.SnoozedUntil())); err != nil {
-			return err
-		}
 		if _, err := s.appendEvents(ctx, scope, events); err != nil {
 			return err
 		}
@@ -518,9 +516,6 @@ func (s *Service) Unsnooze(
 
 		ended, evs, err := s.endSnooze(ctx, scope, active, actor, domain.SnoozeEndedManual, at, note)
 		if err != nil {
-			return err
-		}
-		if err := s.writeSnoozeProjection(ctx, scope, alert, nil); err != nil {
 			return err
 		}
 		if _, err := s.appendEvents(ctx, scope, evs); err != nil {
@@ -594,27 +589,18 @@ func (s *Service) createSnooze(
 	return s.snoozes.Create(ctx, scope, req)
 }
 
-// writeSnoozeProjection writes `alerts.snoozed_until` and NOTHING else.
+// ⛔ `writeSnoozeProjection` IS GONE, AND ITS ABSENCE IS THE POINT OF THIS
+// CHANGE. It wrote `alerts.snoozed_until` from THREE places — Snooze, Unsnooze
+// and the 60-second expiry sweep — so three transactions had to remember to keep
+// a mirror in step with the row they had just written. The notification path then
+// read the mirror rather than the row, which is how "should oto be quiet?" came
+// to be answered by a bare timestamp that cannot name who asked, what they wrote,
+// or how the quiet period ended.
 //
-// It prefers the narrow port for exactly that reason: SetProjection could move
-// state and ack_state too, and a snooze that could move them is a snooze that one
-// day will.
-func (s *Service) writeSnoozeProjection(
-	ctx context.Context, scope db.TenantScope, alert domain.Alert, until *time.Time,
-) error {
-	if s.snoozeProj != nil {
-		return s.snoozeProj.SetSnoozedUntil(ctx, scope, alert.ID(), until)
-	}
-	return s.alerts.SetProjection(ctx, scope, alert.ID(), domain.AlertProjection{
-		State:               alert.State(),
-		CurrentOccurrenceID: nilID(alert.CurrentOccurrenceID()),
-		AckState:            alert.AckState(),
-		SnoozedUntil:        until,
-		LastSeenAt:          alert.LastSeenAt(),
-		LastStateChangeAt:   alert.LastStateChangeAt(),
-		TotalOccurrences:    alert.TotalOccurrences(),
-	})
-}
+// The row is now the only answer. `alert_snoozes` is written once per verb, the
+// unique partial index `alert_snoozes_active_idx` enforces at most one live
+// snooze per alert, and every reader — the list's two tabs, the group card, the
+// suppression decision — joins to it.
 
 // notifySnoozeChange announces a snooze beginning or ending.
 //
@@ -624,7 +610,7 @@ func (s *Service) writeSnoozeProjection(
 func (s *Service) notifySnoozeChange(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, reason, actor string,
 ) error {
-	occ, ok, err := s.occurrences.GetOpenByAlert(ctx, scope, alertID)
+	ac, ok, err := s.cases.GetOpenByAlert(ctx, scope, alertID)
 	if err != nil {
 		return err
 	}
@@ -634,11 +620,11 @@ func (s *Service) notifySnoozeChange(
 		return nil
 	}
 	_, err = s.enqueueNotify(ctx, scope, []notifyRequest{{
-		groupID:      occ.GroupID(),
-		reason:       reason,
-		alertID:      ptr(alertID),
-		occurrenceID: ptr(occ.ID()),
-		actor:        actor,
+		groupID: ac.GroupID(),
+		reason:  reason,
+		alertID: ptr(alertID),
+		caseID:  ptr(ac.ID()),
+		actor:   actor,
 	}}, nil)
 	return err
 }

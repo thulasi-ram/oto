@@ -16,7 +16,7 @@ import (
 //
 // They are DATA, not entities. They carry no invariants of their own and have no
 // constructors: an invariant belongs on the entity the repository returns
-// (Alert, Occurrence, Snooze), and duplicating it here would give two answers to
+// (Alert, Case, Snooze), and duplicating it here would give two answers to
 // the same question. They also carry NO `json` STRUCT TAGS — those are what
 // would quietly turn a domain type into a DTO (§L.4.1, §P-21b). `encoding/json`
 // itself is permitted here; it does no I/O.
@@ -90,25 +90,31 @@ type Observation struct {
 	// reason to reject an observation (C12).
 	SkewMS int64
 
-	// ---------------------------------------------------- the grouping inputs
+	// -------------------------------------------------- the grouping provenance
 	//
-	// ⭐ The four fields below are CARRIED, NEVER READ, by this module. They are
-	// the §C.4 inputs the INGEST ORCHESTRATOR needs to resolve the AlertGroup
-	// generation at §G.4 step 4 — between the alert upsert and the state machine
-	// — and they travel on the Observation because the Observation is the only
-	// thing that crosses from `ingestion` to the orchestrator.
+	// ⛔ NONE OF THE THREE FIELDS BELOW IS A §C.4 KEY INPUT ANY MORE, AND NOTHING
+	// MAY MAKE ONE OF THEM ONE AGAIN. Since ADR 0038 the group key is derived from
+	// the alert's OWN labels — `(org, cluster, alertname, namespace-or-∅)` — every
+	// one of which is already on this struct as `ClusterKey` and `Labels`. What
+	// remains here is what Alertmanager was DOING when the observation arrived:
+	// provenance recorded on the generation and rendered in a card's footer, never
+	// identity.
+	//
+	// ⭐ They are still CARRIED, NEVER READ, by this module. They travel on the
+	// Observation because the Observation is the only thing that crosses from
+	// `ingestion` to the INGEST ORCHESTRATOR, which resolves the AlertGroup
+	// generation at §G.4 step 4 — between the alert upsert and the state machine.
 	//
 	// ⛔ `alerts` must not import `grouping` to record a signal: an observation
 	// whose group could not be resolved is still recorded in full. The RESOLVED
 	// group comes back in through ObserveOptions.GroupID, which is why that field
 	// exists at all.
 
-	// Receiver is the Alertmanager receiver this webhook was delivered to. It is
-	// "" for a reconciler-sourced observation, which has no receiver (§C.4).
+	// Receiver is the Alertmanager receiver this webhook was delivered to, "" for
+	// a reconciler-sourced observation. PROVENANCE ONLY: one alert reaching two
+	// receivers via `continue: true` used to occupy two groups at once, and a
+	// thing cannot be identical to two different things.
 	Receiver string
-	// GroupLabels are the labels Alertmanager grouped by — the second half of the
-	// durable §C.4 key. Empty is legal and hashes as the empty object.
-	GroupLabels map[string]string
 	// SourceGroupKey is Alertmanager's OWN `groupKey`, carried verbatim so it can
 	// be stored verbatim for observability.
 	//
@@ -124,7 +130,7 @@ type Observation struct {
 }
 
 // SuppressedBy mirrors Alertmanager's three suppression witnesses, as stored in
-// `alert_occurrences.suppressed_by`.
+// `alert_cases.suppressed_by`.
 //
 // The JSONB keys are Alertmanager's own camelCase, which is why this type
 // marshals through an explicit shadow struct rather than `json` tags: tags on a
@@ -207,19 +213,22 @@ type AlertUpsertResult struct {
 }
 
 // AlertProjection is the denormalised current-state summary written onto
-// `alerts` in the SAME TRANSACTION as the occurrence transition that caused it.
+// `alerts` in the SAME TRANSACTION as the case transition that caused it.
 // Current state is a projection; alert_events is the truth.
 type AlertProjection struct {
-	State               State
-	CurrentOccurrenceID *uuid.UUID
-	AckState            AckState
-	// SnoozedUntil is the §B.8 projection of the active alert_snoozes row, nil
-	// when the Alert is awake. It is NOT a state and it NEVER affects State,
-	// AckState or severity — the three axes are independent (§B.1).
-	SnoozedUntil      *time.Time
+	State         State
+	CurrentCaseID *uuid.UUID
+	// ⛔ ACK IS NOT PROJECTED EITHER. An ack is a receipt for ONE episode, so it
+	// stays on the episode: a transition that carried it onto `alerts` was
+	// writing a claim that outlives its own subject. Read it from the Case.
+	//
+	// ⛔ SNOOZE IS NOT PROJECTED. It lives on `alert_snoozes` and nowhere else, so
+	// there is no snooze field for a transition to carry, forget to carry, or
+	// carry wrongly — the failure mode that made every write path on `alerts`
+	// responsible for a fact it had no business knowing (§B.1, §D.8b).
 	LastSeenAt        time.Time
 	LastStateChangeAt time.Time
-	TotalOccurrences  int
+	TotalCases        int
 }
 
 // AlertProjectionWrite pairs one AlertProjection with the alert it lands on, so
@@ -246,20 +255,37 @@ type AlertFilter struct {
 	// `namespace`, the other two axes, have had their filter since the first
 	// draft; this is the third.
 	Fingerprints []string
-	AckState     *AckState
-	Flapping     *bool
-	// Snoozed is nil for INCLUDE BOTH, and nil is the default. THE DEFAULT LIST
-	// NEVER HIDES SNOOZED ALERTS (§B.8.6) — hiding them is how an incident is
-	// lost. `?snoozed=true|false` is an explicit, visible filter chip.
-	Snoozed *bool
-	// Synthetic filters on `alerts.synthetic`, and nil means EXCLUDE — the
-	// opposite default from Snoozed, one field up, on purpose.
+	// ⛔ THERE IS NO `AckState` FILTER, AND ADDING ONE BACK IS THE BUG. `alerts`
+	// carries no ack column: the receipt belongs to the firing it was given for,
+	// and `?ack=` over this table asked whether a closed episode was acknowledged.
+	// The ack facet is served on the case surface — `alert_cases`, where
+	// `case_ack_idx (org_id, ack_state, started_at DESC) WHERE ended_at IS NULL`
+	// is the index that answers it — never here, where no index ever covered it.
+	Flapping *bool
+	// Snoozed selects which TAB of the alert list this query is: `false` is the
+	// main tab (alerts oto is not being quiet about), `true` is the Quiet tab.
+	// nil still means INCLUDE BOTH and remains the API default, because a caller
+	// that asked no question must not be given a filtered answer.
 	//
-	// A snoozed alert is a real thing happening in a real cluster, so hiding it
-	// by default is how an incident is lost. A synthetic alert is one oto
-	// manufactured for a delivery drill: nothing fired anywhere, and letting it
-	// into a default list would put oto's own plumbing into the customer's
-	// history. `?synthetic=true` is the explicit way to look at one.
+	// ⭐ IT IS ANSWERED FROM `alert_snoozes`, NEVER FROM A COLUMN ON `alerts`.
+	// `false` compiles to a LEFT ANTI-JOIN and `true` to a driving read of the
+	// active-snooze rows; both are cheap because `alert_snoozes_active_idx` is
+	// UNIQUE (alert_id) WHERE ended_at IS NULL, so the relation either side sees
+	// holds only the snoozes currently in force.
+	//
+	// ⛔ THE UI DEFAULT REVERSED AND THE API DEFAULT DID NOT, and the difference
+	// is the whole safety argument. §B.8.6 refused to hide snoozed alerts because
+	// a snooze badge on row 400 of a scrolling list is already invisible, so
+	// hiding the row loses the incident. A **Quiet** tab whose count carries the
+	// worst state inside it — `Quiet (12 · 2 firing)` — is not invisible, and it
+	// makes the total legible in a way the badge never did.
+	Snoozed *bool
+	// Synthetic filters on `alerts.synthetic`, and nil means EXCLUDE.
+	//
+	// A synthetic alert is one oto manufactured for a delivery drill: nothing
+	// fired anywhere, and letting it into a default list would put oto's own
+	// plumbing into the customer's history. `?synthetic=true` is the explicit way
+	// to look at one.
 	Synthetic *bool
 	// LabelsAll is the AND form: labels @> {…}.
 	LabelsAll map[string]string
@@ -281,12 +307,12 @@ type AlertFilter struct {
 	FilterHash string
 }
 
-// ----------------------------------------------------------------- occurrences
+// ----------------------------------------------------------------- cases
 
-// OpenOccurrence is the repository input for T1 and T7 — opening a new firing
-// episode. The domain-side factory that produces it and its `occurrence.opened`
-// event is OpenNewOccurrence.
-type OpenOccurrence struct {
+// OpenCase is the repository input for T1 and T7 — opening a new firing
+// episode. The domain-side factory that produces it and its `case.opened`
+// event is OpenNewCase.
+type OpenCase struct {
 	ID              uuid.UUID
 	AlertID         uuid.UUID
 	GroupID         *uuid.UUID
@@ -323,7 +349,7 @@ const (
 
 // Transition is the persisted effect of one edge. It is produced by the domain
 // state machine (Apply) and NEVER assembled by hand in a repository or a handler
-// — assembling one by hand is how an occurrence acquires a state no §B.3 row
+// — assembling one by hand is how a case acquires a state no §B.3 row
 // permits.
 type Transition struct {
 	Kind              TransitionKind
@@ -365,10 +391,10 @@ type Transition struct {
 // COMMITTED. Without a precondition the loser of a race blocks on the row lock,
 // re-evaluates nothing but `id`, and then overwrites the winner with a verdict
 // reached against state that has since changed. Three real consequences, all
-// traced: the reaper stamping `expired`/`timeout` on an occurrence a webhook
+// traced: the reaper stamping `expired`/`timeout` on a case a webhook
 // just proved is firing; the reaper clobbering a genuine `resolved` from ingest;
 // and a reconciler T3 resurrecting `suppressed` over an ingest T5 and erasing
-// `ended_at`, which puts a closed episode back inside occ_one_open_idx.
+// `ended_at`, which puts a closed episode back inside case_one_open_idx.
 //
 // Carrying the pre-image on the Transition itself — rather than as an optional
 // argument some call site can forget — is deliberate: the repository refuses a
@@ -377,7 +403,7 @@ type Transition struct {
 //
 // ⭐ IT IS ONE FIELD, AND THAT IS THE POINT. This began as a four-column
 // pre-image — state, ended_at, source_ends_at, reopen_count — because the schema
-// offered nothing better. `alert_occurrences.state_version` (migration 00023) now
+// offered nothing better. `alert_cases.state_version` (migration 00023) now
 // does, and collapsing onto it is stronger rather than merely cheaper: a
 // multi-column pre-image can be PARTIALLY specified, so a future call site could
 // assert three of the four, read as guarded in review, and still lose the one
@@ -395,29 +421,29 @@ type TransitionPrecondition struct {
 	StateVersion int
 }
 
-// PreconditionFor renders the compare-and-set pre-image of an occurrence.
+// PreconditionFor renders the compare-and-set pre-image of a case.
 //
 // It is the ONLY way a TransitionPrecondition should be built: hand-assembling
 // one is how a caller ends up asserting a pre-image that is not the one it
 // actually decided against, which is worse than no precondition at all because it
 // looks guarded.
-func PreconditionFor(o Occurrence) TransitionPrecondition {
+func PreconditionFor(o Case) TransitionPrecondition {
 	return TransitionPrecondition{StateVersion: o.StateVersion()}
 }
 
 // AckChange carries both directions of T9/T10. Ack fields are all-or-nothing
-// (occ_ack_ck): a repository writing three of the four is writing a row the
+// (case_ack_ck): a repository writing three of the four is writing a row the
 // database will refuse.
 type AckChange struct {
 	To AckState
 	// By is nil for actor_kind='system' — the T10 automatic unack when a new
-	// occurrence opens has no human behind it.
+	// case opens has no human behind it.
 	By      *uuid.UUID
 	ByLabel *string
 	At      time.Time
 	Note    *string
-	// Reason is "manual" or "new_occurrence" (UnackReasonManual,
-	// UnackReasonNewOccurrence).
+	// Reason is "manual" or "new_case" (UnackReasonManual,
+	// UnackReasonNewCase).
 	Reason string
 }
 
@@ -498,13 +524,22 @@ type AlertRollup struct {
 	Suppressed int
 	Resolved   int
 	Expired    int
-	// Acked is how many have a human receipt. Orthogonal to state: an acked
-	// alert is still firing (§B.1).
-	Acked int
-	// Flapping and Snoozed are the two damping facets, counted so the bucket can
-	// render them as the VISIBLE states §B.6 and §B.8.6 require.
+	// ⛔ THERE IS NO `Acked` COUNTER, AND IT IS THE ONE THAT DID NOT BELONG.
+	// `Firing`/`Suppressed`/`Resolved`/`Expired` are the current episode's state
+	// and `Flapping` is alert-scoped — every counter here is a property of the
+	// Alert. Ack is not: it is a receipt for one episode, and counting it beside
+	// them said "N of these alerts are acknowledged" about firings that had ended.
+	// The acked count lives on the case surface, where its subject still exists.
+	// Flapping is the damping facet, counted so the bucket can render it as the
+	// VISIBLE state §B.6 requires.
+	//
+	// ⛔ THERE IS NO `Snoozed` COUNTER, AND THERE CANNOT BE A USEFUL ONE. A
+	// roll-up shares the filter of the list it summarises — that identity is the
+	// whole promise of the endpoint — and the list is now always on one tab or the
+	// other. On the main tab every bucket's snoozed count is zero by construction;
+	// on the Quiet tab it equals `Total`. A column that can only ever report 0 or
+	// `Total` is not a count, it is a restatement of which tab you are on.
 	Flapping int
-	Snoozed  int
 	// SeverityCounts is the RAW severity label to its count. Raw because
 	// operators filter on their own vocabulary (§L.4.2), which also means oto
 	// must not rank it — the client applies its own precedence.
@@ -531,14 +566,6 @@ func (r AlertRollup) RollupState() State {
 	default:
 		return StateResolved
 	}
-}
-
-// Unacked is how many members carry no human receipt.
-func (r AlertRollup) Unacked() int {
-	if r.Acked >= r.Total {
-		return 0
-	}
-	return r.Total - r.Acked
 }
 
 // -------------------------------------------------------------- small helpers

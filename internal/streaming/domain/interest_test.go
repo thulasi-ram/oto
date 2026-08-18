@@ -16,7 +16,7 @@ import (
 var allSelectors = []string{
 	domain.SelectorAlerts,
 	domain.SelectorGroups,
-	domain.SelectorOccurrences,
+	domain.SelectorCases,
 	domain.SelectorEvents,
 	domain.SelectorDeliveries,
 	domain.SelectorSources,
@@ -32,12 +32,12 @@ func TestParseInterestAcceptsEverySelector(t *testing.T) {
 	t.Parallel()
 
 	wantResource := map[string]domain.Resource{
-		domain.SelectorAlerts:      domain.ResourceAlert,
-		domain.SelectorGroups:      domain.ResourceGroup,
-		domain.SelectorOccurrences: domain.ResourceOccurrence,
-		domain.SelectorEvents:      domain.ResourceAlertEvent,
-		domain.SelectorDeliveries:  domain.ResourceDelivery,
-		domain.SelectorSources:     domain.ResourceSource,
+		domain.SelectorAlerts:     domain.ResourceAlert,
+		domain.SelectorGroups:     domain.ResourceGroup,
+		domain.SelectorCases:      domain.ResourceCase,
+		domain.SelectorEvents:     domain.ResourceAlertEvent,
+		domain.SelectorDeliveries: domain.ResourceDelivery,
+		domain.SelectorSources:    domain.ResourceSource,
 	}
 	require.Len(t, wantResource, len(allSelectors))
 
@@ -53,7 +53,7 @@ func TestParseInterestAcceptsEverySelector(t *testing.T) {
 
 			// It must admit that resource and no other.
 			for _, other := range []domain.Resource{
-				domain.ResourceAlert, domain.ResourceOccurrence, domain.ResourceGroup,
+				domain.ResourceAlert, domain.ResourceCase, domain.ResourceGroup,
 				domain.ResourceAlertEvent, domain.ResourceDelivery, domain.ResourceSource,
 			} {
 				if other == res {
@@ -90,7 +90,7 @@ func TestParseInterestEmptyMeansEverything(t *testing.T) {
 				"an EventSource opened with no filter must not be a silent no-op stream")
 
 			for _, res := range []domain.Resource{
-				domain.ResourceAlert, domain.ResourceOccurrence, domain.ResourceGroup,
+				domain.ResourceAlert, domain.ResourceCase, domain.ResourceGroup,
 				domain.ResourceAlertEvent, domain.ResourceDelivery, domain.ResourceSource,
 			} {
 				assert.True(t, in.Matches(event(res, nil, nil)), "must admit %q", res)
@@ -289,7 +289,7 @@ func TestZeroInterestMatchesEverything(t *testing.T) {
 	assert.True(t, in.AllResources())
 
 	for _, res := range []domain.Resource{
-		domain.ResourceAlert, domain.ResourceOccurrence, domain.ResourceGroup,
+		domain.ResourceAlert, domain.ResourceCase, domain.ResourceGroup,
 		domain.ResourceAlertEvent, domain.ResourceDelivery, domain.ResourceSource,
 	} {
 		assert.True(t, in.Matches(event(res, nil, nil)), "%q", res)
@@ -310,7 +310,7 @@ func TestInterestCanOnlyNarrow(t *testing.T) {
 
 	events := []domain.Event{}
 	for _, res := range []domain.Resource{
-		domain.ResourceAlert, domain.ResourceOccurrence, domain.ResourceGroup,
+		domain.ResourceAlert, domain.ResourceCase, domain.ResourceGroup,
 		domain.ResourceAlertEvent, domain.ResourceDelivery, domain.ResourceSource,
 	} {
 		events = append(events, []domain.Event{
@@ -351,7 +351,7 @@ func TestAllSelectorsIsTheSameWidthAsNoSelector(t *testing.T) {
 	var none domain.Interest
 
 	for _, res := range []domain.Resource{
-		domain.ResourceAlert, domain.ResourceOccurrence, domain.ResourceGroup,
+		domain.ResourceAlert, domain.ResourceCase, domain.ResourceGroup,
 		domain.ResourceAlertEvent, domain.ResourceDelivery, domain.ResourceSource,
 	} {
 		ev := event(res, nil, nil)

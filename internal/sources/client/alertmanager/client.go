@@ -31,8 +31,6 @@ const (
 	PathStatus = "/api/v2/status"
 	// PathAlerts is GET /api/v2/alerts.
 	PathAlerts = "/api/v2/alerts"
-	// PathAlertGroups is GET /api/v2/alerts/groups.
-	PathAlertGroups = "/api/v2/alerts/groups"
 	// PathSilences is GET /api/v2/silences (PLURAL: list).
 	PathSilences = "/api/v2/silences"
 	// PathSilence is GET /api/v2/silence/{id} (SINGULAR: one silence).
@@ -248,69 +246,13 @@ func (c *Client) Alerts(ctx context.Context, f domain.AlertFilter) ([]domain.Get
 	return out, nil
 }
 
-// AlertGroupFilter selects which alert groups to fetch. Note the fourth boolean:
-// GET /api/v2/alerts/groups takes `muted`, which GET /api/v2/alerts does not.
-type AlertGroupFilter struct {
-	Active, Silenced, Inhibited, Muted bool
-	Filter                             []string
-	Receiver                           string
-}
-
-// AlertGroup is one Alertmanager notification group as the v2 API returns it.
+// ⛔ THERE IS NO `AlertGroups` READ, AND `PathAlertGroups` IS NOT DIALLED.
 //
-// It is NOT oto's AlertGroup. Alertmanager's grouping is derived from the route
-// tree and changes on every alertmanager.yml reload, which is exactly why C3
-// makes oto's own group_key = H(org, source, receiver, sorted groupLabels) the
-// durable identity and keeps AM's groupKey only as an observability hint.
-type AlertGroup struct {
-	// Labels are the group labels — the durable part.
-	Labels map[string]string
-	// RouteLabels come from the matched route. They are first-class in the v2
-	// model and absent from the published webhook docs.
-	RouteLabels map[string]string
-	// Receiver is the receiver name this group routed to.
-	Receiver string
-	// Alerts are the group's members.
-	Alerts []domain.GettableAlert
-}
-
-// AlertGroups reads GET /api/v2/alerts/groups.
-func (c *Client) AlertGroups(ctx context.Context, f AlertGroupFilter) ([]AlertGroup, error) {
-	q := url.Values{}
-	// All four default to TRUE upstream. An all-false filter is the zero value,
-	// not a request for nothing, so it means "the API default" (see alertQuery).
-	if f.Active || f.Silenced || f.Inhibited || f.Muted {
-		q.Set("active", strconv.FormatBool(f.Active))
-		q.Set("silenced", strconv.FormatBool(f.Silenced))
-		q.Set("inhibited", strconv.FormatBool(f.Inhibited))
-		q.Set("muted", strconv.FormatBool(f.Muted))
-	}
-	if err := addFilters(q, f.Filter); err != nil {
-		return nil, err
-	}
-	if f.Receiver != "" {
-		q.Set("receiver", f.Receiver)
-	}
-
-	var w []wireAlertGroup
-	if _, err := c.http.GetJSON(ctx, PathAlertGroups, q, &w); err != nil {
-		return nil, err
-	}
-	out := make([]AlertGroup, 0, len(w))
-	for _, g := range w {
-		grp := AlertGroup{
-			Labels:      copyMap(g.Labels),
-			RouteLabels: copyMap(g.RouteLabels),
-			Receiver:    g.Receiver.Name,
-			Alerts:      make([]domain.GettableAlert, 0, len(g.Alerts)),
-		}
-		for _, a := range g.Alerts {
-			grp.Alerts = append(grp.Alerts, a.toAlert())
-		}
-		out = append(out, grp)
-	}
-	return out, nil
-}
+// The client could fetch `GET /api/v2/alerts/groups`, and did: it was the only
+// way the reconciler could learn the groupLabels the old §C.4 key hashed. ADR
+// 0038 derives the group key from the alert's own labels instead, so the endpoint
+// answers a question oto no longer asks — and mirroring Alertmanager's grouping
+// with nobody reading it is how it quietly becomes load-bearing again.
 
 // Silences reads GET /api/v2/silences (PLURAL).
 //
@@ -385,7 +327,7 @@ func (c *Client) alertQuery(f domain.AlertFilter) (url.Values, error) {
 	// All four booleans default to TRUE in the Alertmanager API, so the Go zero
 	// value of AlertFilter would, sent literally, ask for NOTHING. An all-false
 	// filter therefore means "the API default": the alternative is a reconciler
-	// that silently returns an empty world and expires every open occurrence.
+	// that silently returns an empty world and expires every open case.
 	if f.Active || f.Silenced || f.Inhibited || f.Unprocessed {
 		q.Set("active", strconv.FormatBool(f.Active))
 		q.Set("silenced", strconv.FormatBool(f.Silenced))

@@ -19,8 +19,8 @@ import (
 // "nothing to report" are then the same bytes, so no client can tell them apart
 // and no test that asserts on values rather than on PRESENCE can fail.
 //
-//  1. `suppressed_by` was written to `alert_occurrences`, SELECTed, scanned into
-//     the row struct — and never unmarshalled. `domain.Occurrence` had no such
+//  1. `suppressed_by` was written to `alert_cases`, SELECTed, scanned into
+//     the row struct — and never unmarshalled. `domain.Case` had no such
 //     field, so the one column that answers "WHICH silence is muting this alert"
 //     stopped at the repository. An operator saw `suppression_reason: silence`
 //     and could not learn the silence id, which was sitting in the row.
@@ -36,8 +36,8 @@ import (
 // lived precisely in the seam between a layer that had the value and a layer
 // that never asked for it.
 
-// occurrenceView is the slice of OccurrenceDTO these tests read.
-type occurrenceView struct {
+// caseView is the slice of CaseDTO these tests read.
+type caseView struct {
 	ID                uuid.UUID `json:"id"`
 	State             string    `json:"state"`
 	SuppressionReason *string   `json:"suppression_reason"`
@@ -62,9 +62,9 @@ func TestSuppressedByNamesTheSilence(t *testing.T) {
 
 	// ---- 1. The suppressed episode names its witnesses --------------------
 	var suppressed struct {
-		Data occurrenceView `json:"data"`
+		Data caseView `json:"data"`
 	}
-	env.do(t, http.MethodGet, "/api/v1/occurrences/"+seed.suppressedOccurrence.String(),
+	env.do(t, http.MethodGet, "/api/v1/cases/"+seed.suppressedCase.String(),
 		seed.token, nil, http.StatusOK, &suppressed)
 
 	got := suppressed.Data
@@ -72,8 +72,8 @@ func TestSuppressedByNamesTheSilence(t *testing.T) {
 		t.Fatalf("suppression_reason = %v, want silence", got.SuppressionReason)
 	}
 	if got.SuppressedBy == nil {
-		t.Fatal("a silenced occurrence carries no suppressed_by. The ids ARE in the row: " +
-			"`alert_occurrences.suppressed_by` was written, selected and scanned, and then " +
+		t.Fatal("a silenced case carries no suppressed_by. The ids ARE in the row: " +
+			"`alert_cases.suppressed_by` was written, selected and scanned, and then " +
 			"never unmarshalled, so `suppression_reason: silence` could never be followed " +
 			"to the silence doing the silencing")
 	}
@@ -94,16 +94,16 @@ func TestSuppressedByNamesTheSilence(t *testing.T) {
 	// about an alert that is demonstrably firing, which is a worse failure than
 	// saying nothing.
 	var firing struct {
-		Data occurrenceView `json:"data"`
+		Data caseView `json:"data"`
 	}
-	env.do(t, http.MethodGet, "/api/v1/occurrences/"+seed.firingOccurrence.String(),
+	env.do(t, http.MethodGet, "/api/v1/cases/"+seed.firingCase.String(),
 		seed.token, nil, http.StatusOK, &firing)
 
 	if firing.Data.State != "firing" {
 		t.Fatalf("state = %q, want firing", firing.Data.State)
 	}
 	if firing.Data.SuppressedBy != nil {
-		t.Fatalf("a firing occurrence reports suppressed_by = %+v; witnesses are meaningful "+
+		t.Fatalf("a firing case reports suppressed_by = %+v; witnesses are meaningful "+
 			"in exactly the states `suppression_reason` is, and in no others",
 			firing.Data.SuppressedBy)
 	}
@@ -121,7 +121,7 @@ func TestUnackAndUnsnoozeNotesReachTheTimeline(t *testing.T) {
 	env.do(t, http.MethodPost, alert+"/unack", seed.token,
 		map[string]any{"note": "un-acking, it is back"}, http.StatusOK, nil)
 
-	unacked := findEvent(t, env, seed, "occurrence.unacknowledged")
+	unacked := findEvent(t, env, seed, "case.unacknowledged")
 	if unacked.Payload["reason"] != "manual" {
 		t.Fatalf("unack reason = %v, want manual", unacked.Payload["reason"])
 	}
@@ -189,10 +189,10 @@ func findEvent(t *testing.T, e *env, seed suppressedSeed, kind string) timelineE
 type suppressedSeed struct {
 	token string
 	// alertID's open episode is `firing` and carries STALE witnesses on the row.
-	alertID          uuid.UUID
-	firingOccurrence uuid.UUID
-	// suppressedOccurrence belongs to a second alert and is genuinely silenced.
-	suppressedOccurrence uuid.UUID
+	alertID    uuid.UUID
+	firingCase uuid.UUID
+	// suppressedCase belongs to a second alert and is genuinely silenced.
+	suppressedCase uuid.UUID
 }
 
 // seedSuppressed writes two alerts: one firing (with stale witnesses left on the
@@ -220,10 +220,10 @@ func seedSuppressed(t *testing.T, e *env) suppressedSeed {
 
 	now := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	out := suppressedSeed{
-		token:                boot.Token,
-		alertID:              id.New(),
-		firingOccurrence:     id.New(),
-		suppressedOccurrence: id.New(),
+		token:          boot.Token,
+		alertID:        id.New(),
+		firingCase:     id.New(),
+		suppressedCase: id.New(),
 	}
 	clusterID, sourceID := id.New(), id.New()
 	silencedAlert := id.New()
@@ -246,38 +246,38 @@ func seedSuppressed(t *testing.T, e *env) suppressedSeed {
 
 	exec(`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
 	         severity, cluster_key, labels, state,
-	         first_seen_at, last_seen_at, last_state_change_at, total_occurrences)
+	         first_seen_at, last_seen_at, last_state_change_at, total_cases)
 	      VALUES ($1,$2,$3,'ak_0123456789abcdefghijklmnop','3f8c1a2b9d4e5f60','HighErrorRate',
 	         'critical','prod','{"alertname":"HighErrorRate"}'::jsonb,'firing',$4,$4,$4,1)`,
 		out.alertID, orgID, clusterID, now)
 
 	exec(`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
 	         severity, cluster_key, labels, state,
-	         first_seen_at, last_seen_at, last_state_change_at, total_occurrences)
+	         first_seen_at, last_seen_at, last_state_change_at, total_cases)
 	      VALUES ($1,$2,$3,'ak_abcdefghijklmnopqrstuv0123','a1b2c3d4e5f60789','DiskFilling',
 	         'warning','prod','{"alertname":"DiskFilling"}'::jsonb,'suppressed',$4,$4,$4,1)`,
 		silencedAlert, orgID, clusterID, now)
 
-	// ⛔ STALE WITNESSES ON A FIRING ROW. This is what every occurrence written
+	// ⛔ STALE WITNESSES ON A FIRING ROW. This is what every case written
 	// before the persistence path learned to clear the column looks like, and
 	// the read path must refuse to report them.
-	exec(`INSERT INTO alert_occurrences (id, org_id, alert_id, seq, state, suppressed_by,
+	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state, suppressed_by,
 	         started_at, last_observed_at, source_starts_at)
 	      VALUES ($1,$2,$3,1,'firing','{"silencedBy":["stale-sil"],"inhibitedBy":[],"mutedBy":[]}'::jsonb,
 	         $4,$4,$4)`,
-		out.firingOccurrence, orgID, out.alertID, now)
+		out.firingCase, orgID, out.alertID, now)
 
-	exec(`INSERT INTO alert_occurrences (id, org_id, alert_id, seq, state, suppression_reason,
+	exec(`INSERT INTO alert_cases (id, org_id, alert_id, seq, state, suppression_reason,
 	         suppressed_by, suppress_count, started_at, last_observed_at, source_starts_at)
 	      VALUES ($1,$2,$3,1,'suppressed','silence',
 	         '{"silencedBy":["b3d1f0aa-sil"],"inhibitedBy":["f00dcafe"],"mutedBy":[]}'::jsonb,
 	         1,$4,$4,$4)`,
-		out.suppressedOccurrence, orgID, silencedAlert, now)
+		out.suppressedCase, orgID, silencedAlert, now)
 
-	exec(`UPDATE alerts SET current_occurrence_id = $2 WHERE id = $1`,
-		out.alertID, out.firingOccurrence)
-	exec(`UPDATE alerts SET current_occurrence_id = $2 WHERE id = $1`,
-		silencedAlert, out.suppressedOccurrence)
+	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`,
+		out.alertID, out.firingCase)
+	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`,
+		silencedAlert, out.suppressedCase)
 
 	return out
 }

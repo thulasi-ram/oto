@@ -538,7 +538,7 @@ func (r GroupAckResult) Skipped() int {
 // `actor_kind = 'slack'` — the kind `alerts/domain` declares for exactly this
 // person: "a human acting through a Slack interaction". Their id is the Slack
 // member id, their label is the handle they had at press time, and
-// `alert_occurrences.acked_by` stays NULL because there is no oto user to point
+// `alert_cases.acked_by` stays NULL because there is no oto user to point
 // at. Every one of those is the truth about what happened.
 //
 // ⛔ NOTHING HERE IS AN ACCOUNT, AN INVITATION OR A CLAIM. Recording who pressed

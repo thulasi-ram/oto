@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// The wire DTOs of the Alerts, Occurrences and Discovery tags.
+// The wire DTOs of the Alerts, Cases and Discovery tags.
 //
 // ⛔ THE THREE-MODEL RULE (CONTEXT.md §5.5). These structs are the ONLY shape
 // that reaches a client. A repository row never appears in a handler and a domain
@@ -31,13 +31,16 @@ type AlertDTO struct {
 	Annotations       map[string]string `json:"annotations"`
 	GeneratorURL      *string           `json:"generator_url"`
 	State             string            `json:"state"`
-	AckState          string            `json:"ack_state"`
-	FirstSeenAt       time.Time         `json:"first_seen_at"`
-	LastSeenAt        time.Time         `json:"last_seen_at"`
-	LastStateChangeAt time.Time         `json:"last_state_change_at"`
-	TotalOccurrences  int32             `json:"total_occurrences"`
-	FlapScore         float32           `json:"flap_score"`
-	IsFlapping        bool              `json:"is_flapping"`
+	// ⛔ THERE IS NO `ack_state` ON AN ALERT. An ack is a receipt for ONE firing
+	// episode and stops being true when that episode ends; a field here would
+	// keep asserting it. `include=current_case` is what makes a row show
+	// ack state, and it costs no extra query.
+	FirstSeenAt       time.Time `json:"first_seen_at"`
+	LastSeenAt        time.Time `json:"last_seen_at"`
+	LastStateChangeAt time.Time `json:"last_state_change_at"`
+	TotalCases        int32     `json:"total_cases"`
+	FlapScore         float32   `json:"flap_score"`
+	IsFlapping        bool      `json:"is_flapping"`
 	// Synthetic marks an Alert oto manufactured for a DELIVERY DRILL. It is
 	// carried from the mode of the batch that first observed this identity, never
 	// from a label — a label is forgeable by any upstream and participates in
@@ -58,17 +61,17 @@ type AlertDTO struct {
 	// except by opening every one of them. `null` says "awake"; an absent key
 	// would say "unknown", and those are different facts.
 	//
-	// ⛔ It sits BESIDE `state` and `ack_state` and never inside them. The three
-	// are orthogonal axes: a snoozed critical is still critical and still
-	// firing, and the row must keep rendering it that way, with the snooze as a
-	// separate `:zzz:` badge and countdown.
+	// ⛔ It sits BESIDE `state` and the episode's `ack_state` and never inside
+	// them. The three are orthogonal axes: a snoozed critical is still critical
+	// and still firing, and the row must keep rendering it that way, with the
+	// snooze as a separate `:zzz:` badge and countdown.
 	Snooze *SnoozeDTO `json:"snooze"`
 
 	// The three `include=` sub-resources. Absent unless the caller asked, which
 	// is what keeps the list one query instead of N+1.
-	CurrentOccurrence *OccurrenceDTO   `json:"current_occurrence,omitempty"`
-	Enrichments       []EnrichmentDTO  `json:"enrichments,omitempty"`
-	Rule              *RuleSnapshotRef `json:"rule,omitempty"`
+	CurrentCase *CaseDTO         `json:"current_case,omitempty"`
+	Enrichments []EnrichmentDTO  `json:"enrichments,omitempty"`
+	Rule        *RuleSnapshotRef `json:"rule,omitempty"`
 }
 
 // AlertDetailDTO renders `AlertDetailDTO`.
@@ -87,7 +90,7 @@ type AlertDTO struct {
 // hand-copied mapping exists to prevent.
 type AlertDetailDTO struct {
 	AlertDTO
-	CurrentOccurrence *OccurrenceDTO         `json:"current_occurrence"`
+	CurrentCase       *CaseDTO               `json:"current_case"`
 	EnrichmentSummary []EnrichmentSummaryDTO `json:"enrichment_summary"`
 	// DeliverySummary is NOT a pointer and carries NO omitempty, and both are
 	// deliberate. The field spent its whole life declared here and emitted
@@ -110,8 +113,8 @@ type RuleSnapshotRef struct {
 	ID uuid.UUID `json:"id"`
 }
 
-// OccurrenceDTO renders `OccurrenceDTO`: one contiguous firing episode.
-type OccurrenceDTO struct {
+// CaseDTO renders `CaseDTO`: one contiguous firing episode.
+type CaseDTO struct {
 	ID                uuid.UUID        `json:"id"`
 	AlertID           uuid.UUID        `json:"alert_id"`
 	GroupID           *uuid.UUID       `json:"group_id"`
@@ -144,13 +147,13 @@ type SuppressedByDTO struct {
 	MutedBy     []string `json:"muted_by,omitempty"`
 }
 
-// OccurrenceDetailDTO renders `OccurrenceDetailDTO`.
+// CaseDetailDTO renders `CaseDetailDTO`.
 //
 // `group` and `rule` are optional properties of the contract schema and are
-// deliberately not embedded — see AlertDetailDTO. `/occurrences/{id}/rule` serves
+// deliberately not embedded — see AlertDetailDTO. `/cases/{id}/rule` serves
 // the snapshot whole.
-type OccurrenceDetailDTO struct {
-	OccurrenceDTO
+type CaseDetailDTO struct {
+	CaseDTO
 	Alert       *AlertRefDTO    `json:"alert,omitempty"`
 	Enrichments []EnrichmentDTO `json:"enrichments"`
 	// DeliverySummary is a value type for the same reason as on AlertDetailDTO:
@@ -167,7 +170,6 @@ type AlertRefDTO struct {
 	Namespace  *string   `json:"namespace"`
 	ClusterKey string    `json:"cluster_key"`
 	State      string    `json:"state"`
-	AckState   string    `json:"ack_state"`
 }
 
 // AlertEventDTO renders `AlertEventDTO`: one immutable thing that happened at one
@@ -183,18 +185,18 @@ type AlertRefDTO struct {
 // documented resume protocol read `null` forever and could never advance its
 // cursor. Timelines page by `cursor`, which is served.
 type AlertEventDTO struct {
-	ID           uuid.UUID      `json:"id"`
-	AlertID      *uuid.UUID     `json:"alert_id"`
-	OccurrenceID *uuid.UUID     `json:"occurrence_id"`
-	GroupID      *uuid.UUID     `json:"group_id"`
-	Type         string         `json:"type"`
-	OccurredAt   time.Time      `json:"occurred_at"`
-	RecordedAt   time.Time      `json:"recorded_at"`
-	ActorKind    string         `json:"actor_kind"`
-	ActorID      *string        `json:"actor_id"`
-	ActorLabel   *string        `json:"actor_label"`
-	Summary      string         `json:"summary"`
-	Payload      map[string]any `json:"payload,omitempty"`
+	ID         uuid.UUID      `json:"id"`
+	AlertID    *uuid.UUID     `json:"alert_id"`
+	CaseID     *uuid.UUID     `json:"case_id"`
+	GroupID    *uuid.UUID     `json:"group_id"`
+	Type       string         `json:"type"`
+	OccurredAt time.Time      `json:"occurred_at"`
+	RecordedAt time.Time      `json:"recorded_at"`
+	ActorKind  string         `json:"actor_kind"`
+	ActorID    *string        `json:"actor_id"`
+	ActorLabel *string        `json:"actor_label"`
+	Summary    string         `json:"summary"`
+	Payload    map[string]any `json:"payload,omitempty"`
 }
 
 // EnrichmentDTO renders `EnrichmentDTO`: one provenanced enricher result.
@@ -250,7 +252,7 @@ type NotificationDTO struct {
 	SubjectID        uuid.UUID           `json:"subject_id"`
 	GroupID          uuid.UUID           `json:"group_id"`
 	AlertID          *uuid.UUID          `json:"alert_id"`
-	OccurrenceID     *uuid.UUID          `json:"occurrence_id"`
+	CaseID           *uuid.UUID          `json:"case_id"`
 	PolicyID         *uuid.UUID          `json:"policy_id"`
 	Reason           string              `json:"reason"`
 	StateVersion     int32               `json:"state_version"`
@@ -336,21 +338,21 @@ type LabelValueDTO struct {
 // A roll-up bucket has none of those and exists for the duration of one query
 // (§A.1). The two are separate endpoints for exactly that reason.
 type AlertRollupDTO struct {
-	Key             string           `json:"key"`
-	GroupBy         string           `json:"group_by"`
-	State           string           `json:"state"`
-	TotalCount      int32            `json:"total_count"`
-	FiringCount     int32            `json:"firing_count"`
-	SuppressedCount int32            `json:"suppressed_count"`
-	ResolvedCount   int32            `json:"resolved_count"`
-	ExpiredCount    int32            `json:"expired_count"`
-	AckedCount      int32            `json:"acked_count"`
-	UnackedCount    int32            `json:"unacked_count"`
-	FlappingCount   int32            `json:"flapping_count"`
-	SnoozedCount    int32            `json:"snoozed_count"`
-	SeverityCounts  map[string]int32 `json:"severity_counts"`
-	FirstSeenAt     time.Time        `json:"first_seen_at"`
-	LastSeenAt      time.Time        `json:"last_seen_at"`
+	Key             string `json:"key"`
+	GroupBy         string `json:"group_by"`
+	State           string `json:"state"`
+	TotalCount      int32  `json:"total_count"`
+	FiringCount     int32  `json:"firing_count"`
+	SuppressedCount int32  `json:"suppressed_count"`
+	ResolvedCount   int32  `json:"resolved_count"`
+	ExpiredCount    int32  `json:"expired_count"`
+	// ⛔ THERE ARE NO ACK COUNTS. Every counter here is a property of the Alert;
+	// the ack pair was a property of one of its episodes, and it read a column
+	// that no longer exists. The acked count is a case-surface number.
+	FlappingCount  int32            `json:"flapping_count"`
+	SeverityCounts map[string]int32 `json:"severity_counts"`
+	FirstSeenAt    time.Time        `json:"first_seen_at"`
+	LastSeenAt     time.Time        `json:"last_seen_at"`
 }
 
 // ------------------------------------------------------------------ requests
@@ -426,9 +428,13 @@ type ListAlertsQuery struct {
 	// Matcher is the ADR 0017 label selector in Alertmanager syntax. It is the
 	// ONLY spelling that can carry `=~` and `!~`; `label[k]=v` structurally
 	// cannot, which is why regex matchers were unreachable before it existed.
-	Matcher  string `json:"matcher"    validate:"omitempty,max=8192"`
-	Ack      string `json:"ack"        validate:"omitempty,oneof=unacked acked"`
-	Flapping *bool  `json:"flapping"`
+	Matcher string `json:"matcher"    validate:"omitempty,max=8192"`
+	// ⛔ THERE IS NO `ack` FILTER. It read `alerts.ack_state`, a column that no
+	// longer exists because an ack is a statement about one firing and the Alert
+	// outlives the firing. `?ack=acked` is now `400 unknown_parameter`, which is
+	// the honest answer: a filter that quietly returned the wrong page is how a
+	// triage queue starts lying. The ack facet is served on the case surface.
+	Flapping *bool `json:"flapping"`
 	// Snoozed is an EXPLICIT filter and its absence means INCLUDE BOTH (§B.8.6).
 	// The default list never hides a snoozed alert — hiding one is how an
 	// incident is lost.
@@ -442,7 +448,7 @@ type ListAlertsQuery struct {
 	Since     *time.Time `json:"since"`
 	Q         string     `json:"q"          validate:"omitempty,max=200"`
 	Sort      string     `json:"sort"       validate:"omitempty,oneof=-last_seen_at -first_seen_at"`
-	Include   []string   `json:"include"    validate:"omitempty,max=3,unique,dive,oneof=current_occurrence enrichments rule"`
+	Include   []string   `json:"include"    validate:"omitempty,max=3,unique,dive,oneof=current_case enrichments rule"`
 	Limit     int        `json:"limit"      validate:"min=1,max=200"`
 	Cursor    string     `json:"cursor"     validate:"omitempty,cursor"`
 }
@@ -465,7 +471,6 @@ type ListRollupsQuery struct {
 	// the list beside it.
 	SourceFingerprint []string   `json:"source_fingerprint" validate:"omitempty,max=64,unique,dive,len=16"`
 	Matcher           string     `json:"matcher"    validate:"omitempty,max=8192"`
-	Ack               string     `json:"ack"        validate:"omitempty,oneof=unacked acked"`
 	Flapping          *bool      `json:"flapping"`
 	Snoozed           *bool      `json:"snoozed"`
 	Synthetic         *bool      `json:"synthetic"`
@@ -476,7 +481,7 @@ type ListRollupsQuery struct {
 }
 
 // TimelineQuery is the validated form of the event-list query string shared by
-// `listAlertEvents`, `listOccurrenceEvents` and `getAlertGroupTimeline`.
+// `listAlertEvents`, `listCaseEvents` and `getAlertGroupTimeline`.
 type TimelineQuery struct {
 	// The bound is the SIZE OF THE CLOSED ENUM (domain.AllEventTypes), so that
 	// "give me everything" is always expressible. It must never fall below that

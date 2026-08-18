@@ -1,0 +1,36 @@
+[
+  {
+    "_note": "group_by: [alertname, severity] — an operator's deliberate partition on an axis oto refuses. Two upstream groups collapse into one derived group, and the groupLabels DIFFER, so this is the SUSPECT over-merge: an escalation and its warning now share a thread. That is the intended behaviour (a group's severity is an aggregate), and it is counted separately so the trade stays visible.",
+    "id": "018f3a4b-0000-7000-8000-000000000f04",
+    "org_id": "018f3a4b-0000-7000-8000-000000000001",
+    "source_id": "018f3a4b-0000-7000-8000-0000000000a2",
+    "cluster_key": "prod-us",
+    "payload": {
+      "version": "4",
+      "receiver": "sre-slack",
+      "groupKey": "{}:{alertname=\"TargetDown\",severity=\"warning\"}",
+      "truncatedAlerts": 0,
+      "groupLabels": { "alertname": "TargetDown", "severity": "warning" },
+      "alerts": [
+        { "labels": { "alertname": "TargetDown", "namespace": "infra", "job": "node-exporter", "instance": "10.1.0.1:9100", "severity": "warning" } }
+      ]
+    }
+  },
+  {
+    "id": "018f3a4b-0000-7000-8000-000000000f05",
+    "org_id": "018f3a4b-0000-7000-8000-000000000001",
+    "source_id": "018f3a4b-0000-7000-8000-0000000000a2",
+    "cluster_key": "prod-us",
+    "payload": {
+      "version": "4",
+      "receiver": "sre-slack",
+      "groupKey": "{}:{alertname=\"TargetDown\",severity=\"critical\"}",
+      "truncatedAlerts": 3,
+      "groupLabels": { "alertname": "TargetDown", "severity": "critical" },
+      "alerts": [
+        { "labels": { "alertname": "TargetDown", "namespace": "infra", "job": "node-exporter", "instance": "10.1.0.2:9100", "severity": "critical" } },
+        { "labels": { "alertname": "TargetDown", "namespace": "infra", "job": "node-exporter", "instance": "10.1.0.3:9100", "severity": "critical" } }
+      ]
+    }
+  }
+]

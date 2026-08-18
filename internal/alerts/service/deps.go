@@ -52,29 +52,26 @@ type AlertBatchReader interface {
 	GetByAlertKeys(ctx context.Context, s db.TenantScope, alertKeys []string) (map[string]domain.Alert, error)
 }
 
-// AlertProjectionWriter writes the §B.8 snooze projection and nothing else.
-//
-// It is separate from SetProjection because a snooze MUST NOT be able to move
-// state, ack_state or severity: the three axes are independent (§B.1), and a
-// method that could write all of them is a method that one day will.
-type AlertProjectionWriter interface {
-	SetSnoozedUntil(ctx context.Context, s db.TenantScope, alertID uuid.UUID, until *time.Time) error
-}
+// ⛔ THERE IS NO `AlertProjectionWriter` PORT ANY MORE. It existed so a snooze
+// could write its own mirror onto `alerts` without being able to move state —
+// a narrow port around a projection that should never have existed. A snooze
+// writes `alert_snoozes` and stops; the list, the card and the suppression
+// decision all read that row (§B.1, §D.8b, migration 00048).
 
-// OccurrenceBatchReader reads the latest episode of many Alerts in one round
+// CaseBatchReader reads the latest episode of many Alerts in one round
 // trip. A 200-alert webhook must not become 200 round trips (§G.4).
-type OccurrenceBatchReader interface {
-	LatestByAlerts(ctx context.Context, s db.TenantScope, alertIDs []uuid.UUID) (map[uuid.UUID]domain.Occurrence, error)
+type CaseBatchReader interface {
+	LatestByAlerts(ctx context.Context, s db.TenantScope, alertIDs []uuid.UUID) (map[uuid.UUID]domain.Case, error)
 }
 
-// OccurrenceSourceResolver answers which AlertSource an occurrence came from.
+// CaseSourceResolver answers which AlertSource a case came from.
 //
 // It exists for one caller: the §B.4 reaper guard, which must load the owning
-// source's health before it may expire anything. An occurrence absent from the
+// source's health before it may expire anything. A case absent from the
 // result has no resolvable source, and the reaper reads that as "cannot prove
 // healthy" and HOLDS it.
-type OccurrenceSourceResolver interface {
-	SourceIDs(ctx context.Context, s db.TenantScope, occurrenceIDs []uuid.UUID) (map[uuid.UUID]uuid.UUID, error)
+type CaseSourceResolver interface {
+	SourceIDs(ctx context.Context, s db.TenantScope, caseIDs []uuid.UUID) (map[uuid.UUID]uuid.UUID, error)
 }
 
 // EventCounter counts lifecycle transitions per Alert in a window, for the
@@ -111,7 +108,7 @@ type SourceHealth interface {
 	// ABSENCE IS A VERDICT: a source missing from the result — never probed, not
 	// this org's, unresolvable — is one the implementation cannot vouch for, and
 	// the caller must read absence exactly as it reads false: not proven healthy,
-	// so every occurrence it owns is held.
+	// so every case it owns is held.
 	HealthyFor(ctx context.Context, s db.TenantScope, sourceIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
@@ -122,8 +119,8 @@ type SourceHealth interface {
 const (
 	// StreamAlertUpserted announces that an Alert row changed.
 	StreamAlertUpserted = "alert.upserted"
-	// StreamOccurrenceUpserted announces that an episode changed.
-	StreamOccurrenceUpserted = "occurrence.upserted"
+	// StreamCaseUpserted announces that an episode changed.
+	StreamCaseUpserted = "case.upserted"
 	// StreamEventAppended announces a new timeline entry.
 	StreamEventAppended = "event.appended"
 )
@@ -157,7 +154,7 @@ type StreamAppender interface {
 // imports `enrichment`. A failed enrichment and a missing one are deliberately
 // distinguishable — that is what Status is for.
 type EnrichmentReader interface {
-	ListForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, occurrenceID *uuid.UUID) ([]EnrichmentSummary, error)
+	ListForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID, caseID *uuid.UUID) ([]EnrichmentSummary, error)
 }
 
 // EnrichmentSummary is the alerts-side view of one enrichment result.
@@ -193,8 +190,8 @@ type NotificationReader interface {
 	// — the intents that name the alert AND the intents about the group
 	// generations it has been part of, because oto notifies about generations.
 	DeliveryRollupForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (DeliveryRollup, error)
-	// DeliveryRollupForOccurrence is the same question narrowed to one episode.
-	DeliveryRollupForOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (DeliveryRollup, error)
+	// DeliveryRollupForCase is the same question narrowed to one episode.
+	DeliveryRollupForCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (DeliveryRollup, error)
 }
 
 // DeliveryRollup is the alerts-side view of one subject's fan-out health.
@@ -228,10 +225,10 @@ type DeliveryRollup struct {
 // rendered as `CreatedAt`, which made "this intent has never changed" and "this
 // intent changed a minute ago" indistinguishable on the wire.
 type NotificationSummary struct {
-	ID           uuid.UUID
-	GroupID      uuid.UUID
-	AlertID      *uuid.UUID
-	OccurrenceID *uuid.UUID
+	ID      uuid.UUID
+	GroupID uuid.UUID
+	AlertID *uuid.UUID
+	CaseID  *uuid.UUID
 	// PolicyID is the notification_policy that routed this intent. It is nil when
 	// no policy matched — which is itself a fact worth showing, and is why
 	// SuppressedReason has a `no_policy` value.
@@ -283,10 +280,10 @@ type GroupVersionReader interface {
 // changes what a transition MEANS, only when it fires.
 type Settings struct {
 	// RefireGrace decides T8 from T7: a re-fire inside the window reopens the
-	// existing occurrence, one after it opens a new episode (§B.5).
+	// existing case, one after it opens a new episode (§B.5).
 	RefireGrace time.Duration
 	// ResolveGrace is how long past `source_ends_at` the reaper waits before an
-	// occurrence may expire (§B.4).
+	// case may expire (§B.4).
 	ResolveGrace time.Duration
 	// FlapThreshold is the transition count above which an Alert is marked
 	// flapping. Flapping is a VISIBLE state, never silent suppression (§B.6).

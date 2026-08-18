@@ -33,8 +33,8 @@ const (
 	// RollupAlert is one Alert: everything anybody was told about this alert,
 	// whether the intent named the alert or the group it was part of.
 	RollupAlert RollupSubject = "alert"
-	// RollupOccurrence is one firing episode.
-	RollupOccurrence RollupSubject = "occurrence"
+	// RollupCase is one firing episode.
+	RollupCase RollupSubject = "case"
 	// RollupGroup is one AlertGroup generation — the subject oto actually
 	// notifies about.
 	RollupGroup RollupSubject = "alert_group"
@@ -77,6 +77,12 @@ type DeliveryRollup struct {
 // including every one that fired and was announced, which is the exact false
 // silence this field exists to prevent. Membership is history, so the roll-up
 // covers every generation this alert has ever been part of.
+//
+// The membership subqueries read `alert_cases.group_id`, which since
+// migration 00051 IS the membership — one row per episode instead of a join-table
+// row saying the same thing. `group_id IS NOT NULL` is the only new clause: an
+// episode recorded groupless (the §C.4 key could not be computed) has no
+// generation to contribute, where the join table simply had no row for it.
 const rollupSQL = `
 SELECT
   count(d.id),
@@ -94,12 +100,13 @@ SELECT
    AND (
         ($3 = 'alert' AND (
             n.alert_id = $2
-         OR n.group_id IN (SELECT m.group_id FROM alert_group_members m
-                            WHERE m.org_id = $1 AND m.alert_id = $2)))
-     OR ($3 = 'occurrence' AND (
-            n.occurrence_id = $2
-         OR n.group_id IN (SELECT m.group_id FROM alert_group_members m
-                            WHERE m.occurrence_id = $2)))
+         OR n.group_id IN (SELECT o.group_id FROM alert_cases o
+                            WHERE o.org_id = $1 AND o.alert_id = $2
+                              AND o.group_id IS NOT NULL)))
+     OR ($3 = 'case' AND (
+            n.case_id = $2
+         OR n.group_id IN (SELECT o.group_id FROM alert_cases o
+                            WHERE o.id = $2 AND o.group_id IS NOT NULL)))
      OR ($3 = 'alert_group' AND n.group_id = $2)
    )`
 
@@ -114,7 +121,7 @@ func (r *NotificationRepository) DeliveryRollupFor(
 	ctx context.Context, s db.TenantScope, subject RollupSubject, id uuid.UUID,
 ) (DeliveryRollup, error) {
 	switch subject {
-	case RollupAlert, RollupOccurrence, RollupGroup:
+	case RollupAlert, RollupCase, RollupGroup:
 	default:
 		return DeliveryRollup{}, errors.New("unknown delivery roll-up subject " + string(subject))
 	}

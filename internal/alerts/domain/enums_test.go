@@ -374,7 +374,7 @@ func TestNewSuppressionReason_MirrorsAlertmanagerAndNothingElse(t *testing.T) {
 	// the two vocabularies must not leak into one another.
 	for _, s := range SuppressorPrecedence() {
 		_, err := NewSuppressionReason(s)
-		assert.Error(t, err, "%q is a notification suppressor, never an occurrence suppression_reason", s)
+		assert.Error(t, err, "%q is a notification suppressor, never a case suppression_reason", s)
 	}
 }
 

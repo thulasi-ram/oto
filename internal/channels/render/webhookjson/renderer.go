@@ -72,8 +72,8 @@ func (r *Renderer) Render(
 		f := mapAlert(*v.Focus)
 		env.Focus = &f
 	}
-	if v.Occurrence != nil {
-		env.Occurrence = mapOccurrence(*v.Occurrence)
+	if v.Case != nil {
+		env.Case = mapCase(*v.Case)
 	}
 	if v.Rule != nil {
 		env.Rule = mapRule(*v.Rule)
@@ -171,8 +171,8 @@ func mapAlerts(in []domain.AlertView, limit int) []Alert {
 	return out
 }
 
-func mapOccurrence(o domain.OccurrenceView) *Occurrence {
-	out := &Occurrence{
+func mapCase(o domain.CaseView) *Case {
+	out := &Case{
 		ID:                o.ID,
 		Seq:               o.Seq,
 		State:             o.State,

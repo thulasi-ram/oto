@@ -117,7 +117,7 @@ func (w *Workers) NotifyEvaluate(ctx context.Context, job *jobs.Job[jobs.NotifyE
 		Reason:       reason,
 		StateVersion: args.StateVersion,
 		AlertID:      args.AlertID,
-		OccurrenceID: args.OccurrenceID,
+		CaseID:       args.CaseID,
 		Actor:        args.Actor,
 	})
 	if err != nil {

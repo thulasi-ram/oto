@@ -131,13 +131,23 @@ func (f SourceFingerprint) String() string { return f.s }
 // IsZero reports whether the fingerprint is unset.
 func (f SourceFingerprint) IsZero() bool { return f.s == "" }
 
-// GroupKey is the durable identity of an Alertmanager notification group
-// (SPEC §C.4).
+// GroupKey is the durable identity of an AlertGroup (SPEC §C.4).
 //
-// It is stable across `alertmanager.yml` route edits, which is exactly what
-// Alertmanager's own `groupKey` is not: AM's value embeds route config and
-// changes on reload. AM's value is stored verbatim as `source_group_key` for
-// observability and MUST NOT be parsed — it is unescaped and unbounded (C3).
+// ⭐ IT IS DERIVED FROM THE ALERT'S OWN LABELS AND FROM NOTHING UPSTREAM CHOSE.
+// It used to hash `(org, source_id, receiver, Alertmanager's groupLabels)`, which
+// put the identity of a Slack thread under the control of a file oto can neither
+// read back nor validate: editing `group_by` in `alertmanager.yml` shifted the
+// whole key space, and `continue: true` gave one alert two threads at once. An
+// Alertmanager group is a declared notification-BATCHING boundary, never a claim
+// that its members are related — see ADR 0038.
+//
+// The axes are now oto's own, fixed, and stated rather than configured:
+// `(org, cluster, alertname, namespace-or-∅)`. Every one of them is present on
+// EVERY alert on BOTH ingest paths, which is what makes the webhook path and the
+// reconciler path agree — `GET /api/v2/alerts` returns no grouping at all, so
+// under the old rule reconciler-sourced groups got an empty receiver and no group
+// labels (`00008_grouping.sql`) and the two paths answered "which thread does
+// this belong to" differently.
 type GroupKey struct{ s string }
 
 // NewGroupKey parses a group key.
@@ -149,27 +159,94 @@ func NewGroupKey(s string) (GroupKey, error) {
 	return GroupKey{s: s}, nil
 }
 
+// GroupSplitAxes names the label axes an AlertGroup splits on, in canonical
+// order. It exists so a reader, a test and the replay harness all quote the same
+// list, and so that adding an axis is one edit in one place.
+//
+// ⛔ IT IS NOT CONFIGURABLE AND MUST NOT BECOME SO. A tunable split key
+// reinvents `group_by` inside oto and re-inherits the problem the derivation was
+// built to escape; SPEC's `correlation` charter already words the requirement as
+// "machine-derived groupings… with a STATED algorithm" — stated, not configured.
+var GroupSplitAxes = []string{LabelAlertName, LabelNamespace}
+
+// SplitLabels projects an Alert's label set onto the axes an AlertGroup splits
+// on. It is the label half of ComputeGroupKey's pre-image and it is ALSO what is
+// stored as `alert_groups.group_labels`, which is what makes a notification
+// policy matching `namespace` work: every matcher in oto is fed the group's
+// labels, so under the old rule a matcher on `namespace` matched nothing unless
+// the operator happened to put `namespace` in `group_by`, and it failed quietly
+// as a `no_policy` suppression rather than as an error.
+//
+// # WHAT IS DELIBERATELY ABSENT
+//
+//   - `severity` — an escalation is the same problem getting worse, and a group's
+//     severity is an AGGREGATE that only means something if `warning` and
+//     `critical` live in one group.
+//   - `pod` / `instance` — that is the thing being grouped. Splitting on it makes
+//     every alert its own group and every group its own thread.
+//   - `service` — omitted until evidence says otherwise (see the replay harness in
+//     `tools/groupreplay`). Adding it later SPLITS existing groups, which is the
+//     safe direction; removing an axis would MERGE them, and Slack threads cannot
+//     be re-parented.
+//   - `cluster` — it is an axis of the key, but it is not a LABEL. It is resolved
+//     from the source's configuration, participates in Alert identity (§C.2) and
+//     is first-class on the group as `cluster_id`/`cluster_key`. Writing it into
+//     the group's labels would invent a label the upstream never sent.
+//
+// # AN ABSENT NAMESPACE IS ITS OWN PARTITION, NOT AN ERROR
+//
+// The label is simply omitted from the result, and canon()'s length prefixes make
+// the omission injective: `{alertname:X}` and `{alertname:X, namespace:""}` are
+// different byte strings and would be different groups. Prometheus treats an
+// empty label value as equivalent to an absent one, and `alerts.namespace` stores
+// NULL for both (`nilIfEmpty`), so an EMPTY namespace is folded onto absent here
+// too — the group key and the promoted column must not disagree about what ∅ is.
+func SplitLabels(ls LabelSet) Labels {
+	// The alertname is present and non-empty by LabelSet's own invariant, so this
+	// is total: there is no label set that has no group.
+	m := map[string]string{LabelAlertName: ls.AlertName()}
+	if ns := ls.Namespace(); ns != "" {
+		m[LabelNamespace] = ns
+	}
+	// Constructed directly rather than through NewLabels: this is a SUBSET of a set
+	// that has already passed every B3–B6 bound, so no bound can be broken by
+	// taking two of its entries, and a constructor that can fail here would force
+	// every call site to handle an error no input can produce.
+	return Labels{m: m}
+}
+
 // ComputeGroupKey derives the durable group identity (SPEC §C.4):
 //
 //	"gk_" || base32hexLower( sha256(
-//	     field(org_id_bytes(16)) || field(source_id_bytes(16))
-//	  || field(receiver) || canon(groupLabels, {}) )[0:16] )
+//	     field(org_id_bytes(16)) || field(cluster_key)
+//	  || canon(SplitLabels(labels), {}) )[0:16] )
 //
-// where field(x) := uint32be(len(x)) || x, the framing writeField documents.
+// where field(x) := uint32be(len(x)) || x, the framing writeField documents. The
+// trailing canon() is written raw and needs no prefix: it is the remainder.
 //
-// `receiver` is free-form text out of the operator's alertmanager.yml and is the
-// reason this key is length-prefixed rather than NUL-separated: under the old
-// framing a receiver carrying a NUL could forge the leading bytes of the group
-// labels and merge two unrelated notification groups into one.
+// ⭐ IT IS THE SAME SHAPE AS ComputeAlertKey ON PURPOSE. Both hash
+// `(org, cluster_key, some canonical projection of the alert's labels)`, because
+// a group is now a COARSENING of alert identity rather than a mirror of something
+// upstream. That is what makes the split key IMMUTABLE for an alert's whole life:
+// alert identity IS the label set, so changing any label makes a different Alert
+// with its own cases, and a label-based rule can therefore never move an existing
+// alert between threads. The residual risk is choosing too FINELY up front, not
+// re-parenting — and re-parenting is the one thing Slack cannot do.
 //
-// For a reconciler-sourced observation with no groupLabels, receiver is "" and
-// groupLabels is the Alertmanager alert group's own labels.
-func ComputeGroupKey(orgID, sourceID uuid.UUID, receiver string, groupLabels Labels) GroupKey {
+// ⚠️ DROPPING `receiver` MERGES ROUTES THAT DELIBERATELY SEPARATED THE SAME
+// ALERTS. Two receivers fed by `continue: true` used to produce two groups and
+// two threads for one alert; they now produce one. `cluster_key` is what must
+// distinguish alerts that genuinely belong in different conversations — which it
+// should be anyway, since alert identity is already `(org, cluster)`. ADR 0038
+// records the trade.
+//
+// ⚠️ THE AXES ARE AS-YET UNVALIDATED AGAINST PRODUCTION PAYLOADS. See
+// `tools/groupreplay`.
+func ComputeGroupKey(orgID uuid.UUID, clusterKey ClusterKey, labels LabelSet) GroupKey {
 	h := sha256.New()
 	writeField(h, orgID[:])
-	writeField(h, sourceID[:])
-	writeField(h, []byte(receiver))
-	_, _ = h.Write(groupLabels.Canonical(nil))
+	writeField(h, []byte(clusterKey.s))
+	_, _ = h.Write(SplitLabels(labels).Canonical(nil))
 	return GroupKey{s: GroupKeyPrefix + encodeIdentity(h.Sum(nil))}
 }
 
@@ -181,7 +258,7 @@ func (k GroupKey) IsZero() bool { return k.s == "" }
 
 // RuleFingerprint is the content address of one Prometheus alerting-rule
 // definition (SPEC §C.6). Rule drift — "the newest snapshot for this RuleKey has
-// a different fingerprint than the one bound to the previous occurrence" — is the
+// a different fingerprint than the one bound to the previous case" — is the
 // headline differentiator, and this is what makes it decidable.
 type RuleFingerprint struct{ s string }
 
@@ -327,10 +404,16 @@ func (t SlackTS) IsZero() bool { return t.s == "" }
 // only under an assumption no call site could enforce: that no field CONTAINS a
 // NUL. That held for the fixed-width UUIDs, for cluster_key (whose charset
 // excludes 0x00) and for the closed internal enums `subject_kind` and `reason`.
-// It did NOT hold for `receiver`, which is free-form text out of the operator's
-// alertmanager.yml, nor for `expr`, which is free-form PromQL out of Prometheus.
-// Receiver "a" with groupLabels {b:"1"} and receiver "a\x00\x00\x00\x00\x01b…"
-// with no groupLabels were one pre-image and one GroupKey.
+// It did NOT hold for `expr`, which is free-form PromQL out of Prometheus, nor —
+// while §C.4 still hashed it — for `receiver`, free-form text out of the
+// operator's alertmanager.yml: receiver "a" with groupLabels {b:"1"} and receiver
+// "a\x00\x00\x00\x00\x01b…" with no groupLabels were one pre-image and one
+// GroupKey.
+//
+// `receiver` left §C.4 with ADR 0038 and no §C key hashes operator free text any
+// more, but the framing STAYS. It is not a cost worth reclaiming: `expr` still
+// needs it, an identity function that is injective only until someone adds a
+// free-text field is a trap, and re-framing would re-key every Alert.
 //
 // A length prefix removes the assumption instead of relying on it. Injectivity
 // holds by decodability: a reader takes 4 bytes as a count n, then exactly n bytes

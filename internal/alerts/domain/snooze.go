@@ -25,7 +25,7 @@ import (
 //  1. Snooze is NOT a State. `State` must never gain a `snoozed` value. Snooze is
 //     the THIRD ORTHOGONAL AXIS beside `state` and `ack_state` (§B.1). An alert
 //     can be firing AND acked AND snoozed at once, and all three are displayed.
-//  2. Snooze is NOT a SuppressionReason. `alert_occurrences.suppression_reason`
+//  2. Snooze is NOT a SuppressionReason. `alert_cases.suppression_reason`
 //     mirrors ALERTMANAGER'S FOUR REASONS and nothing else. Adding `snoozed` to
 //     it would make oto report "Alertmanager is suppressing this" when the truth
 //     is "a human asked oto to be quiet" — a lie about the world, in the one
@@ -327,10 +327,13 @@ type SnoozeCommand struct {
 // append (§B.8.3, T15).
 //
 // The CALLER must, in the SAME TRANSACTION: close any active snooze on this
-// alert as `superseded` (Snooze.End), write the `alerts.snoozed_until`
-// projection, and enqueue `notify.evaluate(reason=snoozed)` — so the channel is
-// TOLD it is going quiet. A snooze that does not announce itself is the silent
-// suppression §B.6 forbids.
+// alert as `superseded` (Snooze.End), and enqueue
+// `notify.evaluate(reason=snoozed)` — so the channel is TOLD it is going quiet.
+// A snooze that does not announce itself is the silent suppression §B.6 forbids.
+//
+// ⭐ THERE IS NO PROJECTION TO WRITE ANY MORE. This row is the whole record of
+// the quiet period; nothing mirrors it onto `alerts`, so no caller can forget to
+// keep a mirror in step and no reader can consult one instead of this.
 //
 // It does not touch the Alert's state, ack state, severity or flap score, and
 // there is no code path here by which it could.
@@ -406,9 +409,10 @@ type UnsnoozeCommand struct {
 
 // End closes a snooze and returns the `alert.unsnoozed` event to append.
 //
-// The CALLER must, in the SAME TRANSACTION: clear the `alerts.snoozed_until`
-// projection and — when the reason is not `superseded`, and the alert's
-// occurrence is still open — enqueue `notify.evaluate(reason=unsnoozed)`.
+// The CALLER must, in the SAME TRANSACTION — when the reason is not
+// `superseded`, and the alert's case is still open — enqueue
+// `notify.evaluate(reason=unsnoozed)`. Stamping `ended_at` on this row IS the
+// wake-up: there is no second place the quiet period is recorded.
 // Because deliveries are rendered at CLAIM time (C11), that wake-up notification
 // reflects the alert's state NOW, not a replay of what was suppressed: an alert
 // that fired and resolved entirely inside the window produces no stale card.

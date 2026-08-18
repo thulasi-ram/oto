@@ -36,15 +36,13 @@ type alertRow struct {
 	annotations  []byte
 	generatorURL *string
 
-	state               string
-	currentOccurrenceID *uuid.UUID
-	ackState            string
-	snoozedUntil        *time.Time
+	state         string
+	currentCaseID *uuid.UUID
 
 	firstSeenAt       time.Time
 	lastSeenAt        time.Time
 	lastStateChangeAt time.Time
-	totalOccurrences  int32
+	totalCases        int32
 	flapScore         float32
 	isFlapping        bool
 	synthetic         bool
@@ -57,8 +55,8 @@ type alertRow struct {
 var alertColumnList = []string{
 	"id", "org_id", "cluster_id", "alert_key", "source_fingerprint", "alertname", "severity",
 	"namespace", "service", "cluster_key", "labels", "annotations", "generator_url", "state",
-	"current_occurrence_id", "ack_state", "snoozed_until", "first_seen_at", "last_seen_at",
-	"last_state_change_at", "total_occurrences", "flap_score", "is_flapping", "synthetic",
+	"current_case_id", "first_seen_at", "last_seen_at",
+	"last_state_change_at", "total_cases", "flap_score", "is_flapping", "synthetic",
 }
 
 // alertColumns is alertColumnList rendered for hand-written SQL.
@@ -68,8 +66,8 @@ func (r *alertRow) scanDest() []any {
 	return []any{
 		&r.id, &r.orgID, &r.clusterID, &r.alertKey, &r.fingerprint, &r.alertName, &r.severity,
 		&r.namespace, &r.service, &r.clusterKey, &r.labels, &r.annotations, &r.generatorURL,
-		&r.state, &r.currentOccurrenceID, &r.ackState, &r.snoozedUntil, &r.firstSeenAt,
-		&r.lastSeenAt, &r.lastStateChangeAt, &r.totalOccurrences, &r.flapScore, &r.isFlapping,
+		&r.state, &r.currentCaseID, &r.firstSeenAt,
+		&r.lastSeenAt, &r.lastStateChangeAt, &r.totalCases, &r.flapScore, &r.isFlapping,
 		&r.synthetic,
 	}
 }
@@ -110,32 +108,26 @@ func (r *alertRow) toDomain() (domain.Alert, error) {
 	if err != nil {
 		return domain.Alert{}, errs.Internal("alert_state_invalid", err)
 	}
-	ack, err := domain.NewAckState(r.ackState)
-	if err != nil {
-		return domain.Alert{}, errs.Internal("alert_ack_state_invalid", err)
-	}
 
 	a, err := domain.NewAlert(domain.AlertParams{
-		ID:                  r.id,
-		OrgID:               r.orgID,
-		ClusterID:           r.clusterID,
-		Key:                 key,
-		Fingerprint:         fp,
-		ClusterKey:          ck,
-		Labels:              ls,
-		Annotations:         ann,
-		GeneratorURL:        strOrEmpty(r.generatorURL),
-		State:               state,
-		AckState:            ack,
-		CurrentOccurrenceID: idOrNil(r.currentOccurrenceID),
-		SnoozedUntil:        timeOrZero(r.snoozedUntil),
-		FirstSeenAt:         r.firstSeenAt,
-		LastSeenAt:          r.lastSeenAt,
-		LastStateChangeAt:   r.lastStateChangeAt,
-		TotalOccurrences:    int(r.totalOccurrences),
-		FlapScore:           r.flapScore,
-		IsFlapping:          r.isFlapping,
-		Synthetic:           r.synthetic,
+		ID:                r.id,
+		OrgID:             r.orgID,
+		ClusterID:         r.clusterID,
+		Key:               key,
+		Fingerprint:       fp,
+		ClusterKey:        ck,
+		Labels:            ls,
+		Annotations:       ann,
+		GeneratorURL:      strOrEmpty(r.generatorURL),
+		State:             state,
+		CurrentCaseID:     idOrNil(r.currentCaseID),
+		FirstSeenAt:       r.firstSeenAt,
+		LastSeenAt:        r.lastSeenAt,
+		LastStateChangeAt: r.lastStateChangeAt,
+		TotalCases:        int(r.totalCases),
+		FlapScore:         r.flapScore,
+		IsFlapping:        r.isFlapping,
+		Synthetic:         r.synthetic,
 	})
 	if err != nil {
 		return domain.Alert{}, errs.Internal("alert_row_invalid", err)
@@ -186,8 +178,8 @@ func (r *AlertRepository) db(ctx context.Context) db.Querier { return db.FromCon
 
 // ⭐ THE UPSERT IS ALSO THE ONLY WRITER OF THE LABEL PROJECTION, which is why it
 // grew a tail. `alerts.labels` is written here and nowhere else in this tree —
-// the three other UPDATEs on `alerts` touch flap_score, snoozed_until and the
-// occurrence projection — so 00045's `alert_labels` and `alert_label_names` are
+// the two other UPDATEs on `alerts` touch flap_score and the
+// case projection — so 00045's `alert_labels` and `alert_label_names` are
 // maintained in this statement, inside the same transaction, while
 // `Service.observe` holds the alert's row lock. A projection maintained anywhere
 // else is a projection that can be observed disagreeing with its source.
@@ -304,7 +296,7 @@ SELECT ` + alertColumns + `, was_inserted FROM up`
 // Two observations in the same batch may carry the same alert_key — Alertmanager
 // sends `firing` and `resolved` for one label set in one payload. `ON CONFLICT DO
 // UPDATE` cannot touch the same row twice in one statement, so the input is
-// collapsed by key first, keeping the LAST occurrence (the most recently seen).
+// collapsed by key first, keeping the LAST case (the most recently seen).
 // The returned slice is index-aligned with `in`, and WasInserted is true only on
 // the first index of each key.
 func (r *AlertRepository) UpsertBatch(
@@ -614,21 +606,33 @@ func (r *AlertRepository) ListSorted(
 	return out, cur, nil
 }
 
+// activeSnoozeExistsSQL is "oto is currently being quiet about this alert",
+// asked of the ONE table that can answer it. Prefixed with `NOT ` it is the
+// anti-join the main tab rides.
+//
+// It is a fragment rather than a statement because it is spliced into a squirrel
+// query whose other predicates are built dimension by dimension. The `?` is the
+// instant the question is asked, bound as a parameter like every other one here.
+const activeSnoozeExistsSQL = `EXISTS (
+	SELECT 1 FROM alert_snoozes s
+	 WHERE s.alert_id = alerts.id AND s.org_id = alerts.org_id
+	   AND s.ended_at IS NULL AND s.snoozed_until > ?)`
+
 // applyAlertFilter compiles §E.3 onto the query. Every dimension is optional and
 // a nil or empty value means "no constraint", which is what makes the default
 // list the whole open world rather than an accidental subset.
 func applyAlertFilter(
 	q sq.SelectBuilder, f domain.AlertFilter, now time.Time, trigramAvailable bool,
 ) (sq.SelectBuilder, error) {
-	// ⭐⭐ SYNTHETICS ARE EXCLUDED BY DEFAULT, and this is the OPPOSITE default
-	// from `Snoozed` two dimensions down. The reason is that they answer opposite
-	// questions. A snoozed alert is a real thing happening in a real cluster and
-	// hiding it is how an incident is lost (§B.8.6). A synthetic alert is
-	// something oto manufactured for a delivery drill; nothing in the cluster
-	// fired, and counting it as history would make the product lie about the
-	// customer's estate. `?synthetic=true` is the explicit, visible way to see
-	// one — normally reached from a drill's own result screen, never a chip an
-	// operator is expected to know about.
+	// ⭐⭐ SYNTHETICS ARE EXCLUDED BY DEFAULT, and this is still not the same kind
+	// of default as `Snoozed` two dimensions down. A snoozed alert is a real thing
+	// happening in a real cluster: it is not dropped from the product, it is moved
+	// to a tab that names it and counts it. A synthetic alert is something oto
+	// manufactured for a delivery drill; nothing in the cluster fired, and counting
+	// it as history would make the product lie about the customer's estate.
+	// `?synthetic=true` is the explicit, visible way to see one — normally reached
+	// from a drill's own result screen, never a chip an operator is expected to
+	// know about.
 	//
 	// ⛔ This is ONE of the reads that had to change. The complete list is on the
 	// `alerts.synthetic` column comment in 00039_delivery_drills.sql.
@@ -669,19 +673,43 @@ func applyAlertFilter(
 	if len(f.Fingerprints) > 0 {
 		q = q.Where(sq.Eq{"source_fingerprint": f.Fingerprints})
 	}
-	if f.AckState != nil {
-		q = q.Where(sq.Eq{"ack_state": f.AckState.String()})
-	}
 	if f.Flapping != nil {
 		q = q.Where(sq.Eq{"is_flapping": *f.Flapping})
 	}
-	// §B.8.6: nil means INCLUDE BOTH, and nil is the default. Hiding snoozed
-	// alerts from the default list is how an incident is lost.
+	// ⭐⭐ THE TWO TABS, AND THE ONE TABLE BOTH OF THEM ASK. `?snoozed=false` is
+	// the main tab, `?snoozed=true` is **Quiet**, and nil — still the API default —
+	// is both. Every one of the three reads `alert_snoozes`, which is where a
+	// snooze has always lived; the bare `alerts.snoozed_until` mirror this used to
+	// test is gone (00048).
+	//
+	// ⛔ IT IS `EXISTS`, NOT A JOIN, AND THAT IS A CONSTRAINT OF THIS FILE RATHER
+	// THAN A PREFERENCE. `alerts` and `alert_snoozes` share four column names —
+	// `id`, `org_id`, `alert_key`, `created_at` — so a real JOIN would make
+	// `alertColumnList` and half the predicates above ambiguous, and every one of
+	// them would have to be qualified. A correlated `EXISTS` is the same relational
+	// operator with none of that: Postgres flattens both forms into a semi-join and
+	// an anti-join respectively, and it cannot duplicate a row even if it did not,
+	// because `alert_snoozes_active_idx` is UNIQUE (alert_id) WHERE ended_at IS
+	// NULL.
+	//
+	// NOTE (planner). That partial unique index is also why this is cheap enough to
+	// sit on the primary screen. Its whole relation is the snoozes CURRENTLY IN
+	// FORCE — dozens, never millions — so the anti-join's build side is tiny, the
+	// keyset order of `alerts_list_all_idx` survives it, and `LIMIT` still stops
+	// early instead of materialising the org. For the Quiet tab the small side is
+	// the DRIVING side: `alert_snoozes_active_org_idx (org_id, snoozed_until)
+	// WHERE ended_at IS NULL` (00022) ranges over one tenant's live snoozes and
+	// reaches `alerts` by primary key, which is strictly less work than the
+	// `alerts_snooze_idx` scan this replaced.
+	//
+	// `s.org_id = alerts.org_id` is not redundant with the correlation on
+	// `alert_id`: it is what lets the Quiet tab's plan start from the org-leading
+	// index instead of a global one.
 	if f.Snoozed != nil {
 		if *f.Snoozed {
-			q = q.Where(sq.Expr("snoozed_until IS NOT NULL AND snoozed_until > ?", now.UTC()))
+			q = q.Where(sq.Expr(activeSnoozeExistsSQL, now.UTC()))
 		} else {
-			q = q.Where(sq.Expr("(snoozed_until IS NULL OR snoozed_until <= ?)", now.UTC()))
+			q = q.Where(sq.Expr("NOT "+activeSnoozeExistsSQL, now.UTC()))
 		}
 	}
 	if len(f.LabelsAll) > 0 {
@@ -789,12 +817,20 @@ var rollupKeyExpr = map[string]string{
 // ⛔ A roll-up bucket is a VIEW and is NEVER an AlertGroup: no row, no
 // generation, no chat thread (§A.1).
 //
+// ⛔ THERE IS NO `acked` COUNTER HERE. Every other counter in the inner SELECT
+// is a property of the Alert — `firing`/`suppressed`/`resolved`/`expired` are its
+// current episode's state, `flapping` and `snoozed` are alert-scoped — and
+// `acked` was the one that was not: a receipt for one firing, counted as though
+// it described the identity. It is gone with the column it read, and the ack
+// facet is answered on the case surface, where the receipt's subject still
+// exists.
+//
 // ⭐ IT IS ONE PASS OVER THE BASE TABLE, and the shape is load-bearing. The
 // obvious spelling — a CTE holding the filtered rows, plus a correlated subquery
 // per bucket for the severity breakdown — makes Postgres MATERIALISE the CTE and
-// rescan it once per bucket: measured, 280 ms and a Seq Scan where this shape is
-// 23 ms. Aggregating by `(bucket, severity)` and re-aggregating to `bucket` gets
-// the same answer from a single grouped read.
+// rescan it once per bucket: measured on the `alertname` axis, 280 ms and a Seq
+// Scan where this shape is 23 ms. Aggregating by `(bucket, severity)` and
+// re-aggregating to `bucket` gets the same answer from a single grouped read.
 //
 // NOTE (planner), measured on 60 000 alerts:
 //
@@ -807,10 +843,16 @@ var rollupKeyExpr = map[string]string{
 //     has to read every alert in that org. No index removes that, and reporting
 //     a count that had not read them all is the failure this endpoint exists to
 //     fix.
-//   - `namespace` and `fingerprint` have no (org_id, <key>) index, so their
-//     keyset predicate is a filter rather than a range. They are still one
-//     grouped pass; the DDL that would make them index ranges is reported
-//     rather than written, because migrations are not owned here.
+//   - `fingerprint` rides alerts_fp_group_idx (org_id, source_fingerprint),
+//     written by migration 00021: `source_fingerprint > $after` is an index
+//     range there, the same shape the alertname axis has.
+//   - `namespace` groups from alerts_ns_group_idx (org_id, namespace), also
+//     written by 00021, which is what makes it a streaming GroupAggregate
+//     rather than the hash aggregate over a Seq Scan it used to be. Its keyset
+//     predicate alone stays a filter over that ordered scan: the column is
+//     nullable, so the bucket expression wraps it in COALESCE (see
+//     rollupKeyExpr), and a plain btree on the bare column cannot be ranged on
+//     the wrapped form.
 func (r *AlertRepository) Rollup(
 	ctx context.Context, s db.TenantScope, f domain.AlertFilter, key domain.RollupKey,
 	after string, limit int,
@@ -833,16 +875,18 @@ func (r *AlertRepository) Rollup(
 	// `severity` is the RAW label and is grouped on, never ranked — operators
 	// choose their own vocabulary (§L.4.2), so precedence is the client's.
 	inner := r.sb.
-		Select(expr+" AS bucket").
+		Select(expr + " AS bucket").
 		Column("COALESCE(severity, '') AS sev").
 		Column("count(*) AS n").
 		Column("count(*) FILTER (WHERE state = 'firing') AS firing").
 		Column("count(*) FILTER (WHERE state = 'suppressed') AS suppressed").
 		Column("count(*) FILTER (WHERE state = 'resolved') AS resolved").
 		Column("count(*) FILTER (WHERE state = 'expired') AS expired").
-		Column("count(*) FILTER (WHERE ack_state = 'acked') AS acked").
 		Column("count(*) FILTER (WHERE is_flapping) AS flapping").
-		Column("count(*) FILTER (WHERE snoozed_until > ?) AS snoozed", now).
+		// ⛔ NO `snoozed` COUNTER. The roll-up shares the list's filter, and the
+		// list is now on one tab or the other: the count would be 0 on the main tab
+		// and `total` on Quiet, which is a restatement of the tab rather than a
+		// fact about the bucket. See domain.AlertRollup.
 		Column("min(first_seen_at) AS first_seen").
 		Column("max(last_seen_at) AS last_seen").
 		From("alerts").
@@ -869,9 +913,7 @@ SELECT bucket,
        sum(suppressed)::bigint AS suppressed,
        sum(resolved)::bigint   AS resolved,
        sum(expired)::bigint    AS expired,
-       sum(acked)::bigint      AS acked,
        sum(flapping)::bigint   AS flapping,
-       sum(snoozed)::bigint    AS snoozed,
        min(first_seen)         AS first_seen_at,
        max(last_seen)          AS last_seen_at,
        COALESCE(jsonb_object_agg(sev, n) FILTER (WHERE sev <> ''), '{}'::jsonb) AS severity_counts
@@ -893,7 +935,7 @@ SELECT bucket,
 			sev []byte
 		)
 		if err := rows.Scan(&b.Key, &b.Total, &b.Firing, &b.Suppressed, &b.Resolved,
-			&b.Expired, &b.Acked, &b.Flapping, &b.Snoozed,
+			&b.Expired, &b.Flapping,
 			&b.FirstSeenAt, &b.LastSeenAt, &sev); err != nil {
 			return nil, false, mapErr(err, "scan alert rollup")
 		}
@@ -917,22 +959,20 @@ SELECT bucket,
 const setProjectionBatchSQL = `
 UPDATE alerts a SET
     state                 = p.state,
-    current_occurrence_id = p.current_occurrence_id,
-    ack_state             = p.ack_state,
-    snoozed_until         = p.snoozed_until,
+    current_case_id = p.current_case_id,
     last_seen_at          = GREATEST(a.last_seen_at, p.last_seen_at),
     last_state_change_at  = GREATEST(a.first_seen_at, p.last_state_change_at),
-    total_occurrences     = p.total_occurrences,
+    total_cases     = p.total_cases,
     updated_at            = now()
-  FROM unnest($2::uuid[], $3::text[], $4::uuid[], $5::text[], $6::timestamptz[],
-              $7::timestamptz[], $8::timestamptz[], $9::int[])
-       AS p(alert_id, state, current_occurrence_id, ack_state, snoozed_until,
-            last_seen_at, last_state_change_at, total_occurrences)
+  FROM unnest($2::uuid[], $3::text[], $4::uuid[],
+              $5::timestamptz[], $6::timestamptz[], $7::int[])
+       AS p(alert_id, state, current_case_id,
+            last_seen_at, last_state_change_at, total_cases)
  WHERE a.org_id = $1 AND a.id = p.alert_id`
 
 // SetProjection writes the denormalised current-state summary onto `alerts`.
 //
-// It runs in the SAME transaction as the occurrence transition that caused it —
+// It runs in the SAME transaction as the case transition that caused it —
 // current state is a projection and `alert_events` is the truth, so the two must
 // never be observable apart. The GREATEST guards mirror alerts_seen_ck and
 // alerts_change_ck so that a skewed clock produces a clamped row rather than a
@@ -944,12 +984,12 @@ UPDATE alerts a SET
 //   - `Service.observe` holds this alert's row lock from its `UpsertBatch`
 //     onwards, so two ingest or reconcile batches touching one alert cannot
 //     interleave here at all;
-//   - `Service.expire` reaches this line only after WINNING the occurrence's
+//   - `Service.expire` reaches this line only after WINNING the case's
 //     `state_version` compare-and-set, so a projection it writes describes a
 //     transition it actually made;
 //   - the acknowledge path reaches it only after winning `SetAck`'s version
 //     assertion, which is the guard that stopped it rewinding `state` and
-//     `current_occurrence_id` to a pre-resolution episode.
+//     `current_case_id` to a pre-resolution episode.
 //
 // Adding a version predicate here would therefore arbitrate between writers that
 // cannot race, at the cost of a second failure mode on the ingest hot path. What
@@ -987,9 +1027,7 @@ func (r *AlertRepository) SetProjectionBatch(
 	n := len(in)
 	ids := make([]uuid.UUID, n)
 	states := make([]string, n)
-	currentOccs := make([]*uuid.UUID, n)
-	acks := make([]string, n)
-	snoozed := make([]*time.Time, n)
+	currentCases := make([]*uuid.UUID, n)
 	lastSeen := make([]time.Time, n)
 	lastChange := make([]time.Time, n)
 	totals := make([]int32, n)
@@ -1008,25 +1046,19 @@ func (r *AlertRepository) SetProjectionBatch(
 		if !p.State.IsOpen() && !p.State.IsTerminal() {
 			return errs.Internal("alert_projection_invalid", errsMissing("state is required"))
 		}
-		ack := p.AckState
-		if ack.IsZero() {
-			ack = domain.AckStateUnacked
-		}
-		if p.TotalOccurrences < 0 {
-			return errs.Internal("alert_projection_invalid", errsMissing("total_occurrences must be >= 0"))
+		if p.TotalCases < 0 {
+			return errs.Internal("alert_projection_invalid", errsMissing("total_cases must be >= 0"))
 		}
 		ids[i] = w.AlertID
 		states[i] = p.State.String()
-		currentOccs[i] = p.CurrentOccurrenceID
-		acks[i] = ack.String()
-		snoozed[i] = p.SnoozedUntil
+		currentCases[i] = p.CurrentCaseID
 		lastSeen[i] = p.LastSeenAt.UTC()
 		lastChange[i] = p.LastStateChangeAt.UTC()
-		totals[i] = int32(p.TotalOccurrences)
+		totals[i] = int32(p.TotalCases)
 	}
 
 	tag, err := r.db(ctx).Exec(ctx, setProjectionBatchSQL, s.OrgID(), ids, states,
-		currentOccs, acks, snoozed, lastSeen, lastChange, totals)
+		currentCases, lastSeen, lastChange, totals)
 	if err != nil {
 		return mapErr(err, "write alert projection")
 	}
@@ -1064,29 +1096,13 @@ func (r *AlertRepository) SetFlap(
 	return nil
 }
 
-// SetSnoozedUntil writes ONLY the §B.8 projection, leaving state, ack_state and
-// severity untouched — the three axes are independent (§B.1) and a snooze that
-// moved any of them would be the lie §B.8.1 forbids.
-func (r *AlertRepository) SetSnoozedUntil(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID, until *time.Time,
-) error {
-	if err := db.RequireScope(s); err != nil {
-		return err
-	}
-	if err := db.RequireID("alert_id", alertID); err != nil {
-		return err
-	}
-	tag, err := r.db(ctx).Exec(ctx,
-		`UPDATE alerts SET snoozed_until = $3, updated_at = now() WHERE org_id = $1 AND id = $2`,
-		s.OrgID(), alertID, until)
-	if err != nil {
-		return mapErr(err, "write snooze projection")
-	}
-	if tag.RowsAffected() == 0 {
-		return errs.NotFound("alert_not_found", "no such alert")
-	}
-	return nil
-}
+// ⛔ THERE IS NO `SetSnoozedUntil` ANY MORE, AND NOTHING MAY REINTRODUCE IT. It
+// wrote a mirror of the active `alert_snoozes` row onto `alerts`, which made
+// three write paths (snooze, unsnooze, the 60-second expiry sweep) jointly
+// responsible for a fact none of them owned, and gave the notification path a
+// column to read INSTEAD of the record that knows who asked for quiet and why.
+// The row is the answer; see `SnoozeRepository` and `activeSnoozeExistsSQL`
+// above. `test/arch` refuses the column's return.
 
 // ------------------------------------------------------------------ discovery
 

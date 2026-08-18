@@ -44,11 +44,22 @@ type GroupRepository interface {
 	CloseCandidates(ctx context.Context, s db.TenantScope, idleBefore time.Time, limit int) ([]domain.Group, error)
 }
 
-// MemberRepository owns `alert_group_members`. Membership is history: there is no
-// Delete here and there never will be.
+// MemberRepository READS a generation's membership off `alert_cases`.
+//
+// ⛔ THERE IS NO WRITE ON THIS PORT AND THERE MUST NOT BE ONE. Membership is not
+// an event: since ADR 0038 derived the group key from the alert's own labels, an
+// episode belongs to exactly one generation and `alert_cases.group_id` — set
+// once, by the alerts module, when the episode opens — is the record. Migration
+// 00051 dropped the `alert_group_members` table this port used to write through.
+//
+// There were a `Join` and a `Leave` here. `Join` inserted the row that made the
+// group's rollup mean anything; `Leave` set the `left_at` that made "current
+// members" current, and HAD NO PRODUCTION CALLER at any point in its life — three
+// layers of implementation and an event type, reachable only from its own test.
+// That is the defect `tools/lintreach` exists to catch, and the fix was not to
+// wire it up: a human does not end an episode's membership of a group, the episode
+// ending is what ends it.
 type MemberRepository interface {
-	Join(ctx context.Context, s db.TenantScope, groupID, occurrenceID, alertID uuid.UUID, at time.Time) (bool, error)
-	Leave(ctx context.Context, s db.TenantScope, groupID, occurrenceID uuid.UUID, at time.Time) (bool, error)
 	// ListCurrentMembers is the READ PATH's view of a generation's current
 	// members, and it is bounded. There was an unbounded `CurrentMembers` beside
 	// it until the detail page's twenty-row preview stopped fetching a storm to

@@ -58,7 +58,7 @@ type Drill struct {
 	BatchID uuid.UUID
 	// The disposal manifest, filled in as stages discover each artefact.
 	AlertID        uuid.UUID
-	OccurrenceID   uuid.UUID
+	CaseID         uuid.UUID
 	GroupID        uuid.UUID
 	NotificationID uuid.UUID
 

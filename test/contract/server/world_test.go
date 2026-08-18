@@ -145,23 +145,24 @@ func (w *world) seed(h *harness.H, orgID uuid.UUID) {
 	source := h.SourceAt(org, cluster, w.alertmanager.URL())
 	group := h.Group(org, source, cluster)
 	alert := h.Alert(org, cluster)
-	occurrence := h.Occurrence(alert, group)
+	alertCase := h.Case(alert, group)
 
 	w.ids["cluster"] = cluster.ID.String()
 	w.ids["source"] = source.ID.String()
 	w.ids["group"] = group.ID.String()
 	w.ids["alert"] = alert.ID.String()
-	w.ids["occurrence"] = occurrence.ID.String()
+	w.ids["case"] = alertCase.ID.String()
 
-	// Join the occurrence to the group. The builders stop short of this because
-	// membership is what the grouping SERVICE writes, and a fixture that wrote it
-	// would be pre-deciding the thing most grouping tests are about. G2 is not
-	// about grouping: it needs a group with an open member so that the three
-	// group verbs answer 200 rather than the perfectly correct 412 an empty group
-	// earns, and the SHAPE of that 200 is the whole point.
-	h.Exec(`INSERT INTO alert_group_members (group_id, occurrence_id, org_id, alert_id, joined_at)
-	        VALUES ($1, $2, $3, $4, $5)`,
-		group.ID, occurrence.ID, orgID, alert.ID, h.Now())
+	// The case is already a member: `h.Case` writes `group_id`, and
+	// since migration 00051 that IS the membership — there is no join table left to
+	// insert into. G2 is not about grouping; it needs a group with an OPEN member
+	// so that the three group verbs answer 200 rather than the perfectly correct
+	// 412 an empty group earns, and the SHAPE of that 200 is the whole point.
+	if alertCase.GroupID != group.ID {
+		w.t.Fatalf("the fixture episode is not a member of the fixture group (%s vs %s); the group "+
+			"verbs below would answer 412 and the probe table would be asserting about the wrong "+
+			"response", alertCase.GroupID, group.ID)
+	}
 
 	// An id that is syntactically perfect and belongs to nobody. Every probe that
 	// asks for a resource this org does not own uses it, and the answer must be

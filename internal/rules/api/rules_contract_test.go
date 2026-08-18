@@ -3,7 +3,7 @@ package api
 // THE THREE ID-ADDRESSED RULE READS, CHECKED AGAINST THE CONTRACT ITSELF.
 //
 //	getRuleSnapshot     GET /api/v1/rule-snapshots/{id}
-//	getOccurrenceRule   GET /api/v1/occurrences/{id}/rule
+//	getCaseRule   GET /api/v1/cases/{id}/rule
 //	getAlertRuleHistory GET /api/v1/alerts/{id}/rule
 //
 // ⭐ NOTHING HERE RE-STATES A RESPONSE SHAPE BY HAND. Every success body goes to
@@ -20,7 +20,7 @@ package api
 //     never somebody else's rule text. The fakes 404 every id they do not own,
 //     which is exactly what `WHERE org_id = $scope AND id = $id` does: no row,
 //     not a forbidden one;
-//   - a `404` on the occurrence rule means NO SNAPSHOT COULD BE CAPTURED AT ALL.
+//   - a `404` on the case rule means NO SNAPSHOT COULD BE CAPTURED AT ALL.
 //     A stored snapshot whose `origin` is `unavailable` is a DIFFERENT fact — the
 //     capture was attempted and honestly recorded as empty — and it is a 200.
 //     Collapsing the two would turn "we looked and could not see it" into "there
@@ -80,10 +80,10 @@ var (
 	// `change` is the diff between what the previous episode fired under and what
 	// this one fired under, so a world with one episode in it cannot tell a
 	// correct diff from a diff against the newest text upstream.
-	ruleContractOccurrenceID         = uuid.MustParse("0198f3c3-1111-7111-8111-111111111111")
-	ruleContractBlindOccurrenceID    = uuid.MustParse("0198f3c3-2222-7222-8222-222222222222")
-	ruleContractBareOccurrenceID     = uuid.MustParse("0198f3c3-3333-7333-8333-333333333333")
-	ruleContractPreviousOccurrenceID = uuid.MustParse("0198f3c3-4444-7444-8444-444444444444")
+	ruleContractCaseID         = uuid.MustParse("0198f3c3-1111-7111-8111-111111111111")
+	ruleContractBlindCaseID    = uuid.MustParse("0198f3c3-2222-7222-8222-222222222222")
+	ruleContractBareCaseID     = uuid.MustParse("0198f3c3-3333-7333-8333-333333333333")
+	ruleContractPreviousCaseID = uuid.MustParse("0198f3c3-4444-7444-8444-444444444444")
 )
 
 const (
@@ -218,21 +218,20 @@ func ruleContractAlertFrom(t *testing.T, generatorURL string) alertdomain.Alert 
 	}
 
 	a, err := alertdomain.NewAlert(alertdomain.AlertParams{
-		ID:                  ruleContractAlertID,
-		OrgID:               apitest.OrgID,
-		ClusterID:           ruleContractClusterID,
-		Key:                 alertdomain.ComputeAlertKey(apitest.OrgID, clusterKey, labels, nil),
-		Fingerprint:         alertdomain.ComputeSourceFingerprint(labels),
-		ClusterKey:          clusterKey,
-		Labels:              labels,
-		GeneratorURL:        generatorURL,
-		State:               alertdomain.StateFiring,
-		AckState:            alertdomain.AckStateUnacked,
-		CurrentOccurrenceID: ruleContractOccurrenceID,
-		FirstSeenAt:         ruleContractEpoch,
-		LastSeenAt:          ruleContractEpoch.Add(5 * time.Minute),
-		LastStateChangeAt:   ruleContractEpoch,
-		TotalOccurrences:    4,
+		ID:                ruleContractAlertID,
+		OrgID:             apitest.OrgID,
+		ClusterID:         ruleContractClusterID,
+		Key:               alertdomain.ComputeAlertKey(apitest.OrgID, clusterKey, labels, nil),
+		Fingerprint:       alertdomain.ComputeSourceFingerprint(labels),
+		ClusterKey:        clusterKey,
+		Labels:            labels,
+		GeneratorURL:      generatorURL,
+		State:             alertdomain.StateFiring,
+		CurrentCaseID:     ruleContractCaseID,
+		FirstSeenAt:       ruleContractEpoch,
+		LastSeenAt:        ruleContractEpoch.Add(5 * time.Minute),
+		LastStateChangeAt: ruleContractEpoch,
+		TotalCases:        4,
 	})
 	if err != nil {
 		t.Fatalf("build the alert: %v", err)
@@ -240,13 +239,13 @@ func ruleContractAlertFrom(t *testing.T, generatorURL string) alertdomain.Alert 
 	return a
 }
 
-// ruleContractOccurrence builds one episode bound to snapID. A uuid.Nil snapID
+// ruleContractCase builds one episode bound to snapID. A uuid.Nil snapID
 // is the "nothing could be captured" case the contract spells 404.
-func ruleContractOccurrence(t *testing.T, id uuid.UUID, seq int, snapID uuid.UUID) alertdomain.Occurrence {
+func ruleContractCase(t *testing.T, id uuid.UUID, seq int, snapID uuid.UUID) alertdomain.Case {
 	t.Helper()
 
 	started := ruleContractEpoch.Add(time.Duration(seq) * time.Hour)
-	o, err := alertdomain.NewOccurrence(alertdomain.OccurrenceParams{
+	o, err := alertdomain.NewCase(alertdomain.CaseParams{
 		ID:              id,
 		OrgID:           apitest.OrgID,
 		AlertID:         ruleContractAlertID,
@@ -262,7 +261,7 @@ func ruleContractOccurrence(t *testing.T, id uuid.UUID, seq int, snapID uuid.UUI
 		RuleSnapshotID:  snapID,
 	})
 	if err != nil {
-		t.Fatalf("build occurrence %s: %v", id, err)
+		t.Fatalf("build case %s: %v", id, err)
 	}
 	return o
 }
@@ -347,7 +346,7 @@ func (s *stubRuleReads) ListSnapshots(
 // episodes and, like the repository behind it, 404s everything else.
 type stubAlertReads struct {
 	detail alerts.AlertDetail
-	occs   map[uuid.UUID]alertdomain.Occurrence
+	acs    map[uuid.UUID]alertdomain.Case
 
 	alertCalls int
 	occCalls   int
@@ -364,40 +363,40 @@ func (s *stubAlertReads) Get(
 	return s.detail, nil
 }
 
-func (s *stubAlertReads) GetOccurrence(
-	_ context.Context, _ db.TenantScope, occurrenceID uuid.UUID,
-) (alertdomain.Occurrence, error) {
+func (s *stubAlertReads) GetCase(
+	_ context.Context, _ db.TenantScope, caseID uuid.UUID,
+) (alertdomain.Case, error) {
 	s.occCalls++
-	occ, ok := s.occs[occurrenceID]
+	ac, ok := s.acs[caseID]
 	if !ok {
-		return alertdomain.Occurrence{}, errs.NotFound("not_found", "no such resource")
+		return alertdomain.Case{}, errs.NotFound("not_found", "no such resource")
 	}
-	return occ, nil
+	return ac, nil
 }
 
-// PreviousOccurrenceWithRule mirrors `repository.PreviousWithRuleSnapshot`
+// PreviousCaseWithRule mirrors `repository.PreviousWithRuleSnapshot`
 // predicate for predicate — same alert, `seq` strictly lower, a rule snapshot
 // bound, highest `seq` wins — because the whole point of the read is WHICH
 // episode it picks. A double that returned "the one the test meant" would prove
 // the handler asked a question, not that the answer is the predecessor.
-func (s *stubAlertReads) PreviousOccurrenceWithRule(
+func (s *stubAlertReads) PreviousCaseWithRule(
 	_ context.Context, _ db.TenantScope, alertID uuid.UUID, beforeSeq int,
-) (alertdomain.Occurrence, bool, error) {
+) (alertdomain.Case, bool, error) {
 	s.prevCalls++
 
 	var (
-		best  alertdomain.Occurrence
+		best  alertdomain.Case
 		found bool
 	)
-	for _, occ := range s.occs {
-		if occ.AlertID() != alertID || occ.Seq() >= beforeSeq {
+	for _, ac := range s.acs {
+		if ac.AlertID() != alertID || ac.Seq() >= beforeSeq {
 			continue
 		}
-		if occ.RuleSnapshotID() == uuid.Nil {
+		if ac.RuleSnapshotID() == uuid.Nil {
 			continue
 		}
-		if !found || occ.Seq() > best.Seq() {
-			best, found = occ, true
+		if !found || ac.Seq() > best.Seq() {
+			best, found = ac, true
 		}
 	}
 	return best, found, nil
@@ -423,7 +422,7 @@ type ruleContractFixture struct {
 //	under test both fired under THAT text, and three days later — after both
 //	fires — somebody doubled the threshold.
 //
-// So the alert's current occurrence is bound to the OLDER of two versions, which
+// So the alert's current case is bound to the OLDER of two versions, which
 // is the only arrangement in which "the rule as it was when this fired" and "the
 // rule as it is now" can be told apart at all. `change` is null in this world and
 // SHOULD be: nothing moved between the two fires, and the later edit is a fact
@@ -474,23 +473,23 @@ func newRuleContractFixtureFor(
 		},
 	}
 
-	current := ruleContractOccurrence(t, ruleContractOccurrenceID, 4, boundSnapshot)
+	current := ruleContractCase(t, ruleContractCaseID, 4, boundSnapshot)
 	reader := &stubAlertReads{
 		detail: alerts.AlertDetail{
-			Alert:             ruleContractAlertFrom(t, generatorURL),
-			CurrentOccurrence: &current,
-			LatestOccurrence:  &current,
+			Alert:       ruleContractAlertFrom(t, generatorURL),
+			CurrentCase: &current,
+			LatestCase:  &current,
 		},
-		occs: map[uuid.UUID]alertdomain.Occurrence{
-			ruleContractOccurrenceID: current,
+		acs: map[uuid.UUID]alertdomain.Case{
+			ruleContractCaseID: current,
 			// The episode BEFORE the one under test. It fired under the old
 			// text, which is the text `change` must measure from.
-			ruleContractPreviousOccurrenceID: ruleContractOccurrence(
-				t, ruleContractPreviousOccurrenceID, 3, ruleContractOldSnapshotID),
-			ruleContractBlindOccurrenceID: ruleContractOccurrence(
-				t, ruleContractBlindOccurrenceID, 2, ruleContractBlindSnapshotID),
-			ruleContractBareOccurrenceID: ruleContractOccurrence(
-				t, ruleContractBareOccurrenceID, 1, uuid.Nil),
+			ruleContractPreviousCaseID: ruleContractCase(
+				t, ruleContractPreviousCaseID, 3, ruleContractOldSnapshotID),
+			ruleContractBlindCaseID: ruleContractCase(
+				t, ruleContractBlindCaseID, 2, ruleContractBlindSnapshotID),
+			ruleContractBareCaseID: ruleContractCase(
+				t, ruleContractBareCaseID, 1, uuid.Nil),
 		},
 	}
 
@@ -505,11 +504,11 @@ func newRuleContractFixtureFor(
 	}
 }
 
-// snapshotPath, occurrenceRulePath and alertRulePath keep the routes in one
+// snapshotPath, caseRulePath and alertRulePath keep the routes in one
 // place, because the tenant probe runs the same shape over all three.
-func snapshotPath(id uuid.UUID) string    { return "/rule-snapshots/" + id.String() }
-func occurrenceRulePath(id string) string { return "/occurrences/" + id + "/rule" }
-func alertRulePath(id string) string      { return "/alerts/" + id + "/rule" }
+func snapshotPath(id uuid.UUID) string { return "/rule-snapshots/" + id.String() }
+func caseRulePath(id string) string    { return "/cases/" + id + "/rule" }
+func alertRulePath(id string) string   { return "/alerts/" + id + "/rule" }
 
 /* -------------------------------------------------------------------------- */
 /* Happy paths                                                                */
@@ -547,26 +546,26 @@ func TestGetRuleSnapshotAnswersTheSnapshotShapeTheContractDeclares(t *testing.T)
 	}
 }
 
-// ⭐ TestGetOccurrenceRuleAnswersTheSnapshotBoundToThatEpisode.
+// ⭐ TestGetCaseRuleAnswersTheSnapshotBoundToThatEpisode.
 //
 // The promise: the episode's OWN capture is returned — the threshold that was
-// actually in force when it fired — resolved through the id the occurrence
+// actually in force when it fired — resolved through the id the case
 // carries and not by looking up the newest text for the rule.
 //
 // What broke when it did not hold: an alert from six weeks ago showing today's
 // threshold is worse than showing none. The operator reads a number, believes it
 // explains the fire, and it is a number that did not exist at the time.
-func TestGetOccurrenceRuleAnswersTheSnapshotBoundToThatEpisode(t *testing.T) {
+func TestGetCaseRuleAnswersTheSnapshotBoundToThatEpisode(t *testing.T) {
 	t.Parallel()
 
 	f := newRuleContractFixture(t)
-	resp := f.c.GET(occurrenceRulePath(ruleContractOccurrenceID.String())).MustStatus(t, http.StatusOK)
-	schema.Assert(t, "getOccurrenceRule", http.StatusOK, resp.Body())
+	resp := f.c.GET(caseRulePath(ruleContractCaseID.String())).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getCaseRule", http.StatusOK, resp.Body())
 
 	if f.reader.occCalls != 1 {
-		t.Fatalf("the occurrence was read %d time(s), want exactly 1", f.reader.occCalls)
+		t.Fatalf("the case was read %d time(s), want exactly 1", f.reader.occCalls)
 	}
-	// ⭐ The snapshot fetched is the one the OCCURRENCE named, not the newest
+	// ⭐ The snapshot fetched is the one the CASE named, not the newest
 	// version of the same rule.
 	if len(f.rules.getIDs) != 1 || f.rules.getIDs[0] != ruleContractOldSnapshotID {
 		t.Fatalf("the handler read %v, want the snapshot the episode is bound to (%s)",
@@ -599,12 +598,12 @@ func TestAnAttemptedButEmptyCaptureIsATwoHundredAndNotAFourOhFour(t *testing.T) 
 	t.Parallel()
 
 	f := newRuleContractFixture(t)
-	resp := f.c.GET(occurrenceRulePath(ruleContractBlindOccurrenceID.String())).
+	resp := f.c.GET(caseRulePath(ruleContractBlindCaseID.String())).
 		MustStatus(t, http.StatusOK)
 	// ⭐ Still a legal RuleSnapshotResponse: an empty `expr` under `origin:
 	// unavailable` is expressible without breaking the schema, which is what
 	// makes the honest degradation representable at all.
-	schema.Assert(t, "getOccurrenceRule", http.StatusOK, resp.Body())
+	schema.Assert(t, "getCaseRule", http.StatusOK, resp.Body())
 
 	data, ok := resp.JSON(t)["data"].(map[string]any)
 	if !ok {
@@ -626,7 +625,7 @@ func TestAnAttemptedButEmptyCaptureIsATwoHundredAndNotAFourOhFour(t *testing.T) 
 
 // ⛔ TestAnEpisodeNothingCouldBeCapturedForIsAFourOhFour.
 //
-// The promise: an occurrence carrying NO bound snapshot id — no Prometheus URL
+// The promise: a case carrying NO bound snapshot id — no Prometheus URL
 // configured and no usable `generatorURL`, so nothing was ever written — is the
 // 404 the contract describes, and the rule store is never even consulted.
 //
@@ -638,9 +637,9 @@ func TestAnEpisodeNothingCouldBeCapturedForIsAFourOhFour(t *testing.T) {
 	t.Parallel()
 
 	f := newRuleContractFixture(t)
-	resp := f.c.GET(occurrenceRulePath(ruleContractBareOccurrenceID.String())).
+	resp := f.c.GET(caseRulePath(ruleContractBareCaseID.String())).
 		MustStatus(t, http.StatusNotFound)
-	schema.AssertProblem(t, "getOccurrenceRule", http.StatusNotFound, resp.Body())
+	schema.AssertProblem(t, "getCaseRule", http.StatusNotFound, resp.Body())
 
 	if ct := resp.Header("Content-Type"); !strings.Contains(ct, "problem+json") {
 		t.Fatalf("Content-Type = %q, want application/problem+json", ct)
@@ -674,7 +673,7 @@ func TestGetAlertRuleHistoryAnswersTheHistoryShapeTheContractDeclares(t *testing
 	// ⭐ `current` is the EPISODE's snapshot, not the newest one upstream.
 	current, ok := data["current"].(map[string]any)
 	if !ok {
-		t.Fatalf("current = %v, want the snapshot bound to the current occurrence: %s", data["current"], resp)
+		t.Fatalf("current = %v, want the snapshot bound to the current case: %s", data["current"], resp)
 	}
 	if got := current["id"]; got != ruleContractOldSnapshotID.String() {
 		t.Fatalf("current.id = %v, want the bound snapshot %s; the newest text is %s and this endpoint is not about it",
@@ -818,10 +817,10 @@ func TestAnAlertWhoseGeneratorURLCarriesNoExpressionIsNotAValidationFailure(t *t
 	}
 }
 
-// TestTheOccurrenceVariantOfTheSameAlertIsAFourOhFourAndNotA422.
+// TestTheCaseVariantOfTheSameAlertIsAFourOhFourAndNotA422.
 //
 // The sibling read of the same fact, checked at the same time because it has the
-// same shape of hole. `/occurrences/{id}/rule` answers ONE snapshot and its
+// same shape of hole. `/cases/{id}/rule` answers ONE snapshot and its
 // success schema is a `RuleSnapshotDTO` — there is no 200 that can spell "there
 // isn't one", so absence is the 404 the contract declares in as many words. It
 // must still never be a 422, and it must never reach the rule store with an id
@@ -829,13 +828,13 @@ func TestAnAlertWhoseGeneratorURLCarriesNoExpressionIsNotAValidationFailure(t *t
 //
 // Two endpoints, two statuses, one reason: the answer is shaped by what the
 // operation returns, not by a house preference for 404s.
-func TestTheOccurrenceVariantOfTheSameAlertIsAFourOhFourAndNotA422(t *testing.T) {
+func TestTheCaseVariantOfTheSameAlertIsAFourOhFourAndNotA422(t *testing.T) {
 	t.Parallel()
 
 	f := newRuleContractFixtureFor(t, uuid.Nil, ruleContractBareGeneratorURL)
-	resp := f.c.GET(occurrenceRulePath(ruleContractBareOccurrenceID.String())).
+	resp := f.c.GET(caseRulePath(ruleContractBareCaseID.String())).
 		MustStatus(t, http.StatusNotFound)
-	schema.AssertProblem(t, "getOccurrenceRule", http.StatusNotFound, resp.Body())
+	schema.AssertProblem(t, "getCaseRule", http.StatusNotFound, resp.Body())
 
 	if code := resp.Problem(t).Code; code != "not_found" {
 		t.Fatalf("code = %q, want not_found — absence is not a validation failure", code)
@@ -895,20 +894,20 @@ func TestARuleReadOutsideTheCallersTenantIsANotFound(t *testing.T) {
 	routes := []apitest.Route{
 		{Name: "a snapshot id owned by another org", Op: "getRuleSnapshot",
 			Method: http.MethodGet, Path: snapshotPath(apitest.StrangerID)},
-		{Name: "an occurrence id owned by another org", Op: "getOccurrenceRule",
-			Method: http.MethodGet, Path: occurrenceRulePath(apitest.StrangerID.String())},
+		{Name: "a case id owned by another org", Op: "getCaseRule",
+			Method: http.MethodGet, Path: caseRulePath(apitest.StrangerID.String())},
 		{Name: "an alert id owned by another org", Op: "getAlertRuleHistory",
 			Method: http.MethodGet, Path: alertRulePath(apitest.StrangerID.String())},
 		{Name: "a snapshot id that is not a uuid at all", Op: "getRuleSnapshot",
 			Method: http.MethodGet, Path: "/rule-snapshots/banana"},
-		{Name: "an occurrence id that is not a uuid at all", Op: "getOccurrenceRule",
-			Method: http.MethodGet, Path: occurrenceRulePath("banana")},
+		{Name: "a case id that is not a uuid at all", Op: "getCaseRule",
+			Method: http.MethodGet, Path: caseRulePath("banana")},
 		{Name: "an alert id that is not a uuid at all", Op: "getAlertRuleHistory",
 			Method: http.MethodGet, Path: alertRulePath("banana")},
 		{Name: "the nil uuid as a snapshot id", Op: "getRuleSnapshot",
 			Method: http.MethodGet, Path: "/rule-snapshots/00000000-0000-0000-0000-000000000000"},
-		{Name: "the nil uuid as an occurrence id", Op: "getOccurrenceRule",
-			Method: http.MethodGet, Path: occurrenceRulePath("00000000-0000-0000-0000-000000000000")},
+		{Name: "the nil uuid as a case id", Op: "getCaseRule",
+			Method: http.MethodGet, Path: caseRulePath("00000000-0000-0000-0000-000000000000")},
 		{Name: "the nil uuid as an alert id", Op: "getAlertRuleHistory",
 			Method: http.MethodGet, Path: alertRulePath("00000000-0000-0000-0000-000000000000")},
 	}
@@ -985,7 +984,7 @@ func TestAnUnauthenticatedCallerGetsTheSame401OnEveryRuleRoute(t *testing.T) {
 
 	routes := []apitest.Route{
 		{Op: "getRuleSnapshot", Method: http.MethodGet, Path: snapshotPath(ruleContractOldSnapshotID)},
-		{Op: "getOccurrenceRule", Method: http.MethodGet, Path: occurrenceRulePath(ruleContractOccurrenceID.String())},
+		{Op: "getCaseRule", Method: http.MethodGet, Path: caseRulePath(ruleContractCaseID.String())},
 		{Op: "getAlertRuleHistory", Method: http.MethodGet, Path: alertRulePath(ruleContractAlertID.String())},
 	}
 
@@ -1026,7 +1025,7 @@ func TestAFailedRuleReadIsNotAnEmptyRule(t *testing.T) {
 func TestTheDeclaredRuleReadOperationsAreTheOnesThisPackageServes(t *testing.T) {
 	t.Parallel()
 
-	for _, id := range []string{"getRuleSnapshot", "getOccurrenceRule", "getAlertRuleHistory"} {
+	for _, id := range []string{"getRuleSnapshot", "getCaseRule", "getAlertRuleHistory"} {
 		op := schema.Op(t, id)
 		if op.SuccessStatus() != http.StatusOK {
 			t.Fatalf("%s declares success %d, and this file asserts 200", id, op.SuccessStatus())
@@ -1046,7 +1045,7 @@ func TestTheDeclaredRuleReadOperationsAreTheOnesThisPackageServes(t *testing.T) 
 	if !schema.Op(t, "getAlertRuleHistory").Declares(http.StatusUnprocessableEntity) {
 		t.Fatal("getAlertRuleHistory declares no 422, but `limit` is bounded 1..200")
 	}
-	for _, id := range []string{"getRuleSnapshot", "getOccurrenceRule"} {
+	for _, id := range []string{"getRuleSnapshot", "getCaseRule"} {
 		if schema.Op(t, id).Declares(http.StatusUnprocessableEntity) {
 			t.Fatalf("%s has grown a 422; it takes no query parameters and its only input is a path id", id)
 		}
@@ -1060,9 +1059,9 @@ func TestTheDeclaredRuleReadOperationsAreTheOnesThisPackageServes(t *testing.T) 
 // ⭐⭐ TestTheRuleChangeIsDiffedAgainstThePreviousEpisodeAndNotTheNewestVersion.
 //
 // The contract defines `RuleChangeDTO` as "a structured diff between the rule
-// snapshot bound to this occurrence and the one bound to the PREVIOUS occurrence
+// snapshot bound to this case and the one bound to the PREVIOUS case
 // of the same RuleKey", and `RuleHistoryDTO.change` as "the diff against the
-// previous occurrence's snapshot, when the definition changed". `dto.go` repeats
+// previous case's snapshot, when the definition changed". `dto.go` repeats
 // that definition word for word, and now so does the handler.
 //
 // It used to compute a `DiffSince(bound.Fingerprint)` — `Compare(this episode's
@@ -1095,7 +1094,7 @@ func TestTheRuleChangeIsDiffedAgainstThePreviousEpisodeAndNotTheNewestVersion(t 
 	data, _ := resp.JSON(t)["data"].(map[string]any)
 	change, ok := data["change"].(map[string]any)
 	if !ok {
-		t.Fatalf("change = %v, want the diff against the previous occurrence's snapshot: %s",
+		t.Fatalf("change = %v, want the diff against the previous case's snapshot: %s",
 			data["change"], resp)
 	}
 	if got := change["previous_snapshot_id"]; got != ruleContractOldSnapshotID.String() {
@@ -1135,10 +1134,10 @@ func TestTheFirstEpisodeOfAnAlertHasNoRuleChangeToShow(t *testing.T) {
 
 	f := newRuleContractFixtureBoundTo(t, ruleContractNewSnapshotID)
 	// The alert's whole history is this one episode, and it is seq 1.
-	only := ruleContractOccurrence(t, ruleContractOccurrenceID, 1, ruleContractNewSnapshotID)
-	f.reader.detail.CurrentOccurrence = &only
-	f.reader.detail.LatestOccurrence = &only
-	f.reader.occs = map[uuid.UUID]alertdomain.Occurrence{ruleContractOccurrenceID: only}
+	only := ruleContractCase(t, ruleContractCaseID, 1, ruleContractNewSnapshotID)
+	f.reader.detail.CurrentCase = &only
+	f.reader.detail.LatestCase = &only
+	f.reader.acs = map[uuid.UUID]alertdomain.Case{ruleContractCaseID: only}
 
 	resp := f.c.GET(alertRulePath(ruleContractAlertID.String())).MustStatus(t, http.StatusOK)
 	schema.Assert(t, "getAlertRuleHistory", http.StatusOK, resp.Body())
@@ -1171,7 +1170,7 @@ func TestAnEpisodeWhosePredecessorWentBlindReportsNoChange(t *testing.T) {
 	f := newRuleContractFixtureBoundTo(t, ruleContractNewSnapshotID)
 	// Drop the episode that fired under the old text, leaving the blind capture
 	// (seq 2) as the newest predecessor that has anything bound at all.
-	delete(f.reader.occs, ruleContractPreviousOccurrenceID)
+	delete(f.reader.acs, ruleContractPreviousCaseID)
 
 	resp := f.c.GET(alertRulePath(ruleContractAlertID.String())).MustStatus(t, http.StatusOK)
 	schema.Assert(t, "getAlertRuleHistory", http.StatusOK, resp.Body())
@@ -1204,8 +1203,8 @@ func TestAnUnknownQueryParameterIsRefusedWithADeclared400(t *testing.T) {
 	}, []apitest.Route{
 		{Op: "getRuleSnapshot", Method: http.MethodGet,
 			Path: snapshotPath(ruleContractOldSnapshotID) + "?verbose=true"},
-		{Op: "getOccurrenceRule", Method: http.MethodGet,
-			Path: occurrenceRulePath(ruleContractOccurrenceID.String()) + "?verbose=true"},
+		{Op: "getCaseRule", Method: http.MethodGet,
+			Path: caseRulePath(ruleContractCaseID.String()) + "?verbose=true"},
 		{Op: "getAlertRuleHistory", Method: http.MethodGet,
 			Path: alertRulePath(ruleContractAlertID.String()) + "?limt=1"},
 	})

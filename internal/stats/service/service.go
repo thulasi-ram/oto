@@ -158,7 +158,7 @@ func (s *Service) AlertQuality(
 	}
 	sort := q.Sort
 	if sort == "" {
-		sort = domain.SortOccurrencesDesc
+		sort = domain.SortCasesDesc
 	}
 
 	rows, hasMore, err := s.repo.AlertQuality(ctx, scope, repository.QualityFilter{

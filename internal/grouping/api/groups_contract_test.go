@@ -145,11 +145,6 @@ func fxAlert(t *testing.T, id uuid.UUID, alertKey, fingerprint, name, severity s
 	if err != nil {
 		t.Fatalf("build an alert state: %v", err)
 	}
-	ack, err := alertdomain.NewAckState("acked")
-	if err != nil {
-		t.Fatalf("build an ack state: %v", err)
-	}
-
 	a, err := alertdomain.NewAlert(alertdomain.AlertParams{
 		ID:                id,
 		OrgID:             apitest.OrgID,
@@ -161,11 +156,10 @@ func fxAlert(t *testing.T, id uuid.UUID, alertKey, fingerprint, name, severity s
 		Annotations:       annotations,
 		GeneratorURL:      "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1",
 		State:             state,
-		AckState:          ack,
 		FirstSeenAt:       fxNow.Add(-3 * time.Hour),
 		LastSeenAt:        fxNow.Add(-1 * time.Minute),
 		LastStateChangeAt: fxNow.Add(-90 * time.Minute),
-		TotalOccurrences:  7,
+		TotalCases:        7,
 		FlapScore:         1.4,
 	})
 	if err != nil {
@@ -204,15 +198,15 @@ func fxSnooze(t *testing.T, alertID uuid.UUID, alertKey string) *alertdomain.Sno
 }
 
 // fxMember builds one membership row.
-func fxMember(t *testing.T, alertID, occurrenceID uuid.UUID, joinedAt time.Time) domain.Member {
+func fxMember(t *testing.T, alertID, caseID uuid.UUID, joinedAt time.Time) domain.Member {
 	t.Helper()
 
 	m, err := domain.NewMember(domain.MemberParams{
-		GroupID:      fxGroupID,
-		OccurrenceID: occurrenceID,
-		OrgID:        apitest.OrgID,
-		AlertID:      alertID,
-		JoinedAt:     joinedAt,
+		GroupID:  fxGroupID,
+		CaseID:   caseID,
+		OrgID:    apitest.OrgID,
+		AlertID:  alertID,
+		JoinedAt: joinedAt,
 	})
 	if err != nil {
 		t.Fatalf("build a member: %v", err)
@@ -234,16 +228,16 @@ func fxEvent(t *testing.T, id uuid.UUID, typ alertdomain.EventType, summary stri
 		t.Fatalf("build an actor: %v", err)
 	}
 	e, err := alertdomain.NewEvent(alertdomain.EventParams{
-		ID:           id,
-		OrgID:        apitest.OrgID,
-		AlertID:      fxAlertID,
-		OccurrenceID: fxOccID,
-		GroupID:      fxGroupID,
-		Type:         typ,
-		At:           at,
-		Actor:        actor,
-		Summary:      summary,
-		Payload:      map[string]any{"reason": "manual"},
+		ID:      id,
+		OrgID:   apitest.OrgID,
+		AlertID: fxAlertID,
+		CaseID:  fxOccID,
+		GroupID: fxGroupID,
+		Type:    typ,
+		At:      at,
+		Actor:   actor,
+		Summary: summary,
+		Payload: map[string]any{"reason": "manual"},
 	})
 	if err != nil {
 		t.Fatalf("build an event: %v", err)
@@ -276,7 +270,7 @@ type fakeGroupService struct {
 	events  []alertdomain.Event
 	comment alertdomain.Event
 
-	// ackApplied is how many member occurrences accepted the ack. Zero is the
+	// ackApplied is how many member cases accepted the ack. Zero is the
 	// 412 branch: a group with nothing open to acknowledge.
 	ackApplied int
 	// snoozeMembers is how many currently-joined members the snooze reached.
@@ -425,7 +419,7 @@ func newGroupRouter(t *testing.T) (*Router, *fakeGroupService) {
 		snoozes: map[uuid.UUID]domain.SnoozeRollup{fxGroupID: {Count: 1, Until: fxNow.Add(4 * time.Hour)}},
 		members: members,
 		events: []alertdomain.Event{
-			fxEvent(t, fxEventID, alertdomain.EventOccurrenceAcknowledged, "Acknowledged by Ada Lovelace"),
+			fxEvent(t, fxEventID, alertdomain.EventCaseAcknowledged, "Acknowledged by Ada Lovelace"),
 		},
 		comment:       fxEvent(t, fxCommentID, alertdomain.EventCommentAdded, "Tracking on the provider status page"),
 		ackApplied:    3,
@@ -601,7 +595,7 @@ func TestTheMemberListCollapsesAnAlertThatJoinedTwice(t *testing.T) {
 	t.Parallel()
 
 	rt, svc := newGroupRouter(t)
-	// The same alert joins twice under two occurrences, which is what a re-fire
+	// The same alert joins twice under two cases, which is what a re-fire
 	// inside one generation looks like.
 	svc.members = append(svc.members, fxMember(t, fxAlertID, fxOccBID, fxNow.Add(-10*time.Minute)))
 
@@ -739,8 +733,8 @@ func TestAckingAGroupWithNothingOpenIsAPrecondition(t *testing.T) {
 		MustStatus(t, http.StatusPreconditionFailed)
 
 	schema.AssertProblem(t, "ackAlertGroup", http.StatusPreconditionFailed, resp.Body())
-	if code := resp.Problem(t).Code; code != "no_open_occurrence" {
-		t.Fatalf("code = %q, want no_open_occurrence — a client has to be able to say WHICH "+
+	if code := resp.Problem(t).Code; code != "no_open_case" {
+		t.Fatalf("code = %q, want no_open_case — a client has to be able to say WHICH "+
 			"nothing-happened this was\n%s", code, resp)
 	}
 }

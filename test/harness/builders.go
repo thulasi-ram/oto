@@ -212,19 +212,28 @@ type Group struct {
 	Labels map[string]string
 }
 
-// Group seeds an open group with `{"severity":"critical"}` group labels.
+// Group seeds an open group for a default alert label set.
 func (h *H) Group(org Org, src Source, cl Cluster) Group {
-	return h.GroupWith(org, src, cl, map[string]string{"severity": "critical"})
+	return h.GroupWith(org, src, cl, map[string]string{
+		"alertname": "HarnessAlert",
+		"namespace": "harness",
+		"severity":  "critical",
+	})
 }
 
-// GroupWith seeds an open group over explicit group labels. The group_key is
+// GroupWith seeds an open group for one ALERT'S label set. The group_key is
 // COMPUTED, never invented: `groups_key_ck` accepts only `gk_` plus 26
 // base32hex characters, and a hand-rolled string that happens to match is a
 // group whose identity does not agree with the ingest path's.
-func (h *H) GroupWith(org Org, src Source, cl Cluster, groupLabels map[string]string) Group {
+//
+// ⭐ The argument is the alert's labels, not Alertmanager's groupLabels. Since
+// ADR 0038 the group key is `(org, cluster, alertname, namespace-or-∅)` and the
+// group's own `group_labels` are `SplitLabels` of the same set, so seeding a
+// group means naming an alert — which is what a group has always meant.
+func (h *H) GroupWith(org Org, src Source, cl Cluster, alertLabels map[string]string) Group {
 	h.T.Helper()
 
-	labels, err := alerts.NewLabels(groupLabels)
+	labels, err := alerts.NewLabelSet(alertLabels)
 	if err != nil {
 		h.T.Fatalf("harness: group labels: %v", err)
 	}
@@ -233,9 +242,9 @@ func (h *H) GroupWith(org Org, src Source, cl Cluster, groupLabels map[string]st
 		OrgID:      org.ID,
 		SourceID:   src.ID,
 		ClusterID:  cl.ID,
-		Key:        alerts.ComputeGroupKey(org.ID, src.ID, "", labels),
+		Key:        alerts.ComputeGroupKey(org.ID, cl.Key, labels),
 		Generation: 1,
-		Labels:     labels.Map(),
+		Labels:     alerts.SplitLabels(labels).Map(),
 	}
 	now := h.Now()
 	h.Exec(`INSERT INTO alert_groups
@@ -298,7 +307,7 @@ func (h *H) AlertWith(org Org, cl Cluster, kv map[string]string) Alert {
 	h.Exec(`INSERT INTO alerts
 	          (id, org_id, cluster_id, alert_key, source_fingerprint, alertname, severity,
 	           cluster_key, labels, state, first_seen_at, last_seen_at, last_state_change_at,
-	           total_occurrences)
+	           total_cases)
 	        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'firing', $10, $10, $10, 1)`,
 		a.ID, a.OrgID, a.ClusterID, a.Key.String(),
 		alerts.ComputeSourceFingerprint(labels).String(),
@@ -307,10 +316,10 @@ func (h *H) AlertWith(org Org, cl Cluster, kv map[string]string) Alert {
 	return a
 }
 
-// Occurrence is one seeded AlertOccurrence — the episode the state machine runs
+// Case is one seeded AlertCase — the episode the state machine runs
 // on.
-type Occurrence struct {
-	// ID is alert_occurrences.id.
+type Case struct {
+	// ID is alert_cases.id.
 	ID uuid.UUID
 	// OrgID is the tenant.
 	OrgID uuid.UUID
@@ -322,19 +331,19 @@ type Occurrence struct {
 	Seq int
 }
 
-// Occurrence seeds an open, firing occurrence of a and points the Alert's
-// current_occurrence_id at it, which is the projection the read path uses.
-func (h *H) Occurrence(a Alert, g Group) Occurrence {
+// Case seeds an open, firing case of a and points the Alert's
+// current_case_id at it, which is the projection the read path uses.
+func (h *H) Case(a Alert, g Group) Case {
 	h.T.Helper()
 
-	o := Occurrence{ID: id.New(), OrgID: a.OrgID, AlertID: a.ID, GroupID: g.ID, Seq: 1}
+	o := Case{ID: id.New(), OrgID: a.OrgID, AlertID: a.ID, GroupID: g.ID, Seq: 1}
 	now := h.Now()
-	h.Exec(`INSERT INTO alert_occurrences
+	h.Exec(`INSERT INTO alert_cases
 	          (id, org_id, alert_id, group_id, seq, state, started_at, last_observed_at,
 	           source_starts_at, source_updated_at)
 	        VALUES ($1, $2, $3, $4, $5, 'firing', $6, $6, $6, $6)`,
 		o.ID, o.OrgID, o.AlertID, nullableUUID(o.GroupID), o.Seq, now)
-	h.Exec(`UPDATE alerts SET current_occurrence_id = $1 WHERE id = $2`, o.ID, a.ID)
+	h.Exec(`UPDATE alerts SET current_case_id = $1 WHERE id = $2`, o.ID, a.ID)
 	return o
 }
 

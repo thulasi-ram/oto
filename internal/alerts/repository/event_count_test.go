@@ -39,8 +39,8 @@ func newCountFixture(t *testing.T) countFixture {
 	}
 }
 
-// transitions appends n `occurrence.opened` events for one alert at one
-// instant. `occurrence.opened` is one of the six types the statement counts;
+// transitions appends n `case.opened` events for one alert at one
+// instant. `case.opened` is one of the six types the statement counts;
 // WHICH of the six does not matter to the cap.
 func (f countFixture) transitions(t *testing.T, alertID uuid.UUID, n int, at time.Time) {
 	t.Helper()
@@ -53,14 +53,14 @@ func (f countFixture) transitions(t *testing.T, alertID uuid.UUID, n int, at tim
 	events := make([]domain.Event, 0, n)
 	for i := 0; i < n; i++ {
 		e, err := domain.NewEvent(domain.EventParams{
-			ID:           id.New(),
-			OrgID:        f.org.ID,
-			AlertID:      alertID,
-			OccurrenceID: id.New(),
-			Type:         domain.EventOccurrenceOpened,
-			At:           observed,
-			Actor:        actor,
-			Summary:      "occurrence opened",
+			ID:      id.New(),
+			OrgID:   f.org.ID,
+			AlertID: alertID,
+			CaseID:  id.New(),
+			Type:    domain.EventCaseOpened,
+			At:      observed,
+			Actor:   actor,
+			Summary: "case opened",
 		})
 		require.NoError(t, err)
 		events = append(events, e)

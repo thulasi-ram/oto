@@ -331,20 +331,17 @@ const BucketRow: Component<{
         </For>
       </span>
 
-      {/* The three chips below are each conditional on their own count, but
-          together they still occupy exactly one grid cell: the reserved
-          column is the same width whether none, one, or all three render, so
-          it alone absorbs that variability and nothing after it has to. */}
-      <div class={cn(BUCKET_CELL, "flex items-center gap-xs overflow-hidden")}>
-        <Show when={b().unacked_count > 0}>
-          <span
-            class="shrink-0 rounded-chip border border-line-strong bg-raised px-2xs text-meta leading-4 text-ink"
-            title="Nobody has recorded seeing these yet."
-          >
-            {b().unacked_count} unseen
-          </span>
-        </Show>
+      {/* The chips below are each conditional on their own count, but together
+          they still occupy exactly one grid cell: the reserved column is the
+          same width whether none or all of them render, so it alone absorbs
+          that variability and nothing after it has to.
 
+          ⛔ THERE IS NO "N unseen" CHIP. It counted `unacked_count`, which the
+          bucket no longer carries: every other counter here is a property of
+          the Alert, and an ack is a receipt for one of its firings. A bucket
+          that said "12 unseen" while some of those twelve had been acknowledged
+          during a firing that ended months ago is worse than no number. */}
+      <div class={cn(BUCKET_CELL, "flex items-center gap-xs overflow-hidden")}>
         <Show when={b().flapping_count > 0}>
           <span
             class="shrink-0 rounded-chip border border-line bg-surface px-2xs text-meta leading-4 text-ink-muted"
@@ -354,16 +351,12 @@ const BucketRow: Component<{
           </span>
         </Show>
 
-        {/* Snoozed members are counted, never dimmed: they are still firing and
-            still whatever severity they were. */}
-        <Show when={b().snoozed_count > 0}>
-          <span
-            class="shrink-0 rounded-chip border border-line bg-surface px-2xs text-meta leading-4 text-ink-muted"
-            title="Members whose notifications oto is holding. They are still firing and still counted as such."
-          >
-            {b().snoozed_count} snoozed
-          </span>
-        </Show>
+        {/* ⛔ THERE IS NO `snoozed` CHIP, AND ITS ABSENCE IS NOT AN OVERSIGHT. A
+            roll-up shares the filter of the list it summarises, and the list is
+            always on one tab or the other — so this count could only ever read 0
+            (main tab) or the bucket's whole total (Quiet). It would be a
+            restatement of which tab you are on, drawn once per bucket. The
+            Quiet tab's own badge is where the number lives now. */}
       </div>
 
       <span class={cn(BUCKET_CELL, "truncate text-right text-meta text-ink-subtle")}>

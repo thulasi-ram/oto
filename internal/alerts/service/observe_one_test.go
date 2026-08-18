@@ -43,7 +43,7 @@ func (f *fixture) observeOnce(o domain.Observation, opt ObserveOptions) *observe
 	require.NoError(f.t, err)
 	require.Len(f.t, results, 1)
 
-	latest, err := f.svc.latestOccurrences(ctx, f.scope, []uuid.UUID{results[0].Alert.ID()})
+	latest, err := f.svc.latestCases(ctx, f.scope, []uuid.UUID{results[0].Alert.ID()})
 	require.NoError(f.t, err)
 
 	acc := &observeAccum{
@@ -88,23 +88,23 @@ func TestObserveOne_T1_OpensTheFirstEpisode(t *testing.T) {
 	require.Len(t, acc.outcomes, 1)
 	out := acc.outcomes[0]
 	assert.Equal(t, domain.TransitionT1.String(), out.Transition)
-	assert.True(t, out.OccurrenceOpened)
+	assert.True(t, out.CaseOpened)
 	assert.True(t, out.AlertCreated)
 	// ⭐ EMPTY IS THE HONEST `From` FOR T1 AND ONLY FOR T1: there was no episode
 	// to come from. See the T7 test, where it is `resolved`.
 	assert.Empty(t, out.From)
 	assert.Equal(t, domain.StateFiring.String(), out.To)
 
-	occ := f.currentOccurrence()
-	assert.Equal(t, occ.ID(), out.OccurrenceID)
-	assert.Equal(t, 1, occ.Seq())
-	assert.Equal(t, uuid.Nil, occ.ReopenOf())
+	ac := f.currentCase()
+	assert.Equal(t, ac.ID(), out.CaseID)
+	assert.Equal(t, 1, ac.Seq())
+	assert.Equal(t, uuid.Nil, ac.ReopenOf())
 
-	assert.Equal(t, []uuid.UUID{occ.ID()}, acc.enrichIDs)
+	assert.Equal(t, []uuid.UUID{ac.ID()}, acc.enrichIDs)
 	assert.Equal(t, 1, acc.newEpisode[out.AlertID])
 	assert.Equal(t, []string{
 		domain.EventAlertCreated.String(),
-		domain.EventOccurrenceOpened.String(),
+		domain.EventCaseOpened.String(),
 	}, eventTypes(acc))
 	assert.Equal(t, []string{reasonFired}, notifyReasons(acc))
 	assert.Equal(t, group.ID, acc.notifies[0].groupID)
@@ -117,7 +117,7 @@ func TestObserveOne_T1_OpensTheFirstEpisode(t *testing.T) {
 // blocks forty lines apart inside one 294-line function. The blocks had drifted:
 // one enqueued `unacked` beside the auto-unack event and the other enqueued
 // nothing, and neither site said which was intended. SPEC §B.3 T10 is explicit —
-// "Emit `occurrence.unacknowledged` … enqueue `notify.evaluate(reason=unacked)`"
+// "Emit `case.unacknowledged` … enqueue `notify.evaluate(reason=unacked)`"
 // — so the notifying half is the correct one, and it now happens in `applyOpen`,
 // which is the ONLY place either row can be applied from.
 func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
@@ -131,13 +131,13 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	firstSeen := now.Add(-3 * time.Hour)
 	f.observeOnce(f.observation(domain.ObservedByIngest, "firing",
 		firstSeen, firstSeen, time.Time{}), opt)
-	first := f.currentOccurrence()
+	first := f.currentCase()
 
-	// 2. A human takes it. The ack is staged through the occurrence repository
+	// 2. A human takes it. The ack is staged through the case repository
 	//    because WHO acked is not this test's subject; that the ack does not
 	//    survive into the next episode is.
 	label := "ada@example.com"
-	require.NoError(t, f.occurrences.SetAck(ctx, f.scope, first.ID(), domain.AckChange{
+	require.NoError(t, f.cases.SetAck(ctx, f.scope, first.ID(), domain.AckChange{
 		To:      domain.AckStateAcked,
 		At:      firstSeen.Add(time.Minute),
 		ByLabel: &label,
@@ -151,7 +151,7 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 		resolvedAt, firstSeen, resolvedAt), opt)
 	require.Len(t, resolved.outcomes, 1)
 	assert.Equal(t, domain.TransitionT5.String(), resolved.outcomes[0].Transition)
-	require.True(t, f.currentOccurrence().AckState().IsAcked())
+	require.True(t, f.currentCase().AckState().IsAcked())
 
 	// 4. It fires again, hours later — beyond refire_grace, so T7 and not T8.
 	acc := f.observeOnce(f.observation(domain.ObservedByIngest, "firing",
@@ -160,15 +160,15 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	require.Len(t, acc.outcomes, 1)
 	out := acc.outcomes[0]
 	assert.Equal(t, domain.TransitionT7.String(), out.Transition)
-	assert.True(t, out.OccurrenceOpened)
+	assert.True(t, out.CaseOpened)
 	// ⭐ THE OTHER HALF OF THE DIVERGENCE. This edge came out of `resolved`, and
 	// the branch that reported "" for it was describing a first sighting that had
 	// not happened.
 	assert.Equal(t, domain.StateResolved.String(), out.From)
 	assert.Equal(t, domain.StateFiring.String(), out.To)
 
-	opened := f.currentOccurrence()
-	assert.Equal(t, opened.ID(), out.OccurrenceID)
+	opened := f.currentCase()
+	assert.Equal(t, opened.ID(), out.CaseID)
 	assert.NotEqual(t, first.ID(), opened.ID(), "T7 opens a NEW episode")
 	assert.Equal(t, 2, opened.Seq())
 	assert.Equal(t, first.ID(), opened.ReopenOf())
@@ -176,11 +176,11 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 
 	// The timeline records the dropped acknowledgement against the NEW episode.
 	assert.Equal(t, []string{
-		domain.EventOccurrenceOpened.String(),
-		domain.EventOccurrenceUnacknowledged.String(),
+		domain.EventCaseOpened.String(),
+		domain.EventCaseUnacknowledged.String(),
 	}, eventTypes(acc))
 	for _, e := range acc.events {
-		assert.Equal(t, opened.ID(), e.OccurrenceID())
+		assert.Equal(t, opened.ID(), e.CaseID())
 	}
 
 	// ⭐ AND IT NOTIFIES — the half the two branches disagreed about. `unacked` is
@@ -190,8 +190,8 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	assert.Equal(t, []string{reasonUnacked, reasonFired}, notifyReasons(acc))
 	for _, n := range acc.notifies {
 		assert.Equal(t, group.ID, n.groupID)
-		require.NotNil(t, n.occurrenceID)
-		assert.Equal(t, opened.ID(), *n.occurrenceID, "both intents are about the NEW episode")
+		require.NotNil(t, n.caseID)
+		assert.Equal(t, opened.ID(), *n.caseID, "both intents are about the NEW episode")
 	}
 	assert.Equal(t, []uuid.UUID{opened.ID()}, acc.enrichIDs)
 	assert.Equal(t, 1, acc.newEpisode[out.AlertID])
@@ -199,7 +199,7 @@ func TestObserveOne_T7_OutOfAnAckedEpisodeIsDecidedInOnePlace(t *testing.T) {
 	// ⛔ THE PREVIOUS EPISODE IS UNTOUCHED. Clearing its ack would erase who took
 	// a closed episode; `acked_by_label` is denormalised precisely so the timeline
 	// reads the same in a year.
-	prev, err := f.occurrences.GetByID(ctx, f.scope, first.ID())
+	prev, err := f.cases.GetByID(ctx, f.scope, first.ID())
 	require.NoError(t, err)
 	assert.True(t, prev.AckState().IsAcked())
 	assert.Equal(t, domain.StateResolved, prev.State())
@@ -218,8 +218,8 @@ func TestObserveOne_NoLegalRowRecordsTheOutcomeAndNothingElse(t *testing.T) {
 	require.Len(t, acc.outcomes, 1)
 	out := acc.outcomes[0]
 	assert.Empty(t, out.Transition)
-	assert.False(t, out.OccurrenceOpened)
-	assert.Equal(t, uuid.Nil, out.OccurrenceID)
+	assert.False(t, out.CaseOpened)
+	assert.Equal(t, uuid.Nil, out.CaseID)
 	// The identity was still recorded: the Alert row and its `alert.created`
 	// entry are in the transaction either way.
 	assert.True(t, out.AlertCreated)
@@ -227,7 +227,7 @@ func TestObserveOne_NoLegalRowRecordsTheOutcomeAndNothingElse(t *testing.T) {
 	assert.Empty(t, acc.notifies)
 	assert.Empty(t, acc.enrichIDs)
 
-	_, ok, err := f.svc.occurrences.GetLatestByAlert(t.Context(), f.scope, out.AlertID)
+	_, ok, err := f.svc.cases.GetLatestByAlert(t.Context(), f.scope, out.AlertID)
 	require.NoError(t, err)
 	assert.False(t, ok, "no episode may be fabricated to close")
 }

@@ -92,12 +92,12 @@ COMMENT ON COLUMN alert_groups.last_activity_at IS 'Drives group.close. Idle pas
 
 CREATE TABLE alert_group_members (
   group_id      UUID        NOT NULL REFERENCES alert_groups(id) ON DELETE CASCADE,
-  occurrence_id UUID        NOT NULL REFERENCES alert_occurrences(id) ON DELETE CASCADE,
+  occurrence_id UUID        NOT NULL REFERENCES alert_occurrences(id) ON DELETE CASCADE,  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   org_id        UUID        NOT NULL,
   alert_id      UUID        NOT NULL,
   joined_at     TIMESTAMPTZ NOT NULL,
   left_at       TIMESTAMPTZ,
-  PRIMARY KEY (group_id, occurrence_id),
+  PRIMARY KEY (group_id, occurrence_id),  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   CONSTRAINT gm_order_ck CHECK (left_at IS NULL OR left_at >= joined_at)
 );
 
@@ -105,17 +105,17 @@ CREATE TABLE alert_group_members (
 CREATE INDEX gm_alert_idx ON alert_group_members (org_id, alert_id, joined_at DESC);
 -- Serves: the reverse lookup when an occurrence changes state and every group
 -- holding it needs a notify.evaluate.
-CREATE INDEX gm_occ_idx   ON alert_group_members (occurrence_id);
+CREATE INDEX gm_occ_idx   ON alert_group_members (occurrence_id);  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 
 COMMENT ON TABLE  alert_group_members IS
-  'Membership of one AlertOccurrence in one AlertGroup generation, with join/leave times so the group card can be replayed at any past instant.';
+  'Membership of one AlertOccurrence in one AlertGroup generation, with join/leave times so the group card can be replayed at any past instant.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 COMMENT ON COLUMN alert_group_members.org_id IS 'Denormalised so gm_alert_idx can lead with org_id (CONTEXT.md §5 rule 7).';
-COMMENT ON COLUMN alert_group_members.alert_id IS 'Denormalised from the occurrence to answer "groups for this alert" without a join.';
+COMMENT ON COLUMN alert_group_members.alert_id IS 'Denormalised from the occurrence to answer "groups for this alert" without a join.';  -- vocab:allow -- migration history: this file states the schema as it was at its own version, and a shipped migration is not editable. ADR 0036 renamed the entity and 00052 carries the rename.
 COMMENT ON COLUMN alert_group_members.left_at IS 'NULL while still a member. Membership is history, not a boolean.';
 
 -- alert_occurrences.group_id was declared in 00007 without a FK because
 -- alert_groups did not exist yet. Close the loop (SPEC §D.5).
-ALTER TABLE alert_occurrences ADD CONSTRAINT occ_group_fk
+ALTER TABLE alert_occurrences ADD CONSTRAINT occ_group_fk  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   FOREIGN KEY (group_id) REFERENCES alert_groups(id) ON DELETE SET NULL;
 
 -- +goose Down

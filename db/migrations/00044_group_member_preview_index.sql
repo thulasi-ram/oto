@@ -104,11 +104,11 @@
 
 -- +goose Up
 
-CREATE INDEX gm_current_idx ON alert_group_members (org_id, group_id, joined_at DESC, occurrence_id DESC)
+CREATE INDEX gm_current_idx ON alert_group_members (org_id, group_id, joined_at DESC, occurrence_id DESC)  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   WHERE left_at IS NULL;
 
 COMMENT ON INDEX gm_current_idx IS
-  'Serves listCurrentMembersSQL, the only read of the CURRENT members of a generation: the keyset page behind GET /alert-groups/{id}/alerts and the twenty-row top_alerts preview behind GET /alert-groups/{id}, which the ack, snooze and unsnooze replies render too. It carries both equalities, the partial predicate and the WHOLE sort key, so the LIMIT stops the scan and nothing is sorted. None of the three access paths from 00008 could: the primary key (group_id, occurrence_id) restricts to the generation and then offers the wrong order, gm_alert_idx (org_id, alert_id, joined_at DESC) puts joined_at behind an alert_id this read does not supply, and gm_occ_idx (occurrence_id) carries neither the tenant nor the group nor a timestamp. PARTIAL on left_at IS NULL to stay the size of the current membership rather than of the history, which also means the replay reads (allMembersSQL, membersAtSQL) do NOT ride it and are not meant to: they want the departed rows back and fall to the primary key group_id prefix or to a scan.';
+  'Serves listCurrentMembersSQL, the only read of the CURRENT members of a generation: the keyset page behind GET /alert-groups/{id}/alerts and the twenty-row top_alerts preview behind GET /alert-groups/{id}, which the ack, snooze and unsnooze replies render too. It carries both equalities, the partial predicate and the WHOLE sort key, so the LIMIT stops the scan and nothing is sorted. None of the three access paths from 00008 could: the primary key (group_id, occurrence_id) restricts to the generation and then offers the wrong order, gm_alert_idx (org_id, alert_id, joined_at DESC) puts joined_at behind an alert_id this read does not supply, and gm_occ_idx (occurrence_id) carries neither the tenant nor the group nor a timestamp. PARTIAL on left_at IS NULL to stay the size of the current membership rather than of the history, which also means the replay reads (allMembersSQL, membersAtSQL) do NOT ride it and are not meant to: they want the departed rows back and fall to the primary key group_id prefix or to a scan.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 
 -- +goose Down
 

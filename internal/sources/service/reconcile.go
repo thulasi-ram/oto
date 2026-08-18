@@ -46,7 +46,6 @@ import (
 	"github.com/thulasiram/oto/internal/platform/db"
 	"github.com/thulasiram/oto/internal/platform/errs"
 	"github.com/thulasiram/oto/internal/platform/jobs"
-	"github.com/thulasiram/oto/internal/sources/client/alertmanager"
 	"github.com/thulasiram/oto/internal/sources/domain"
 )
 
@@ -194,7 +193,7 @@ func NewReconciler(o ReconcilerOptions) (*Reconciler, error) {
 //
 //  2. IT NEVER EXPIRES ANYTHING ITSELF, EVEN WHEN THE SOURCE IS HEALTHY. Alerts
 //     open in oto and absent upstream are COUNTED as `MissingUpstream` and left
-//     entirely alone. They age out through `occurrence.reap`, which applies
+//     entirely alone. They age out through `case.reap`, which applies
 //     `resolve_grace` and re-checks source health at the moment of expiry (§G.8.4,
 //     T6). There is no code path in this file that writes a terminal state, and
 //     there must never be one.
@@ -458,12 +457,15 @@ const (
 // upstream `status="resolved"`, and `GET /api/v2/alerts` returns only what is
 // currently active; absence is absence, and absence is `expired`'s business, not
 // this function's (§B.2).
+// ⛔ THE TENANT SCOPE IS UNUSED, AND ITS ABSENCE IS THE CHANGE. It was there for
+// `groupLabels`, the second Alertmanager call this function no longer makes; it
+// is kept in the signature only because the caller has one and a normaliser that
+// suddenly needs a scope again should have to add the parameter back deliberately.
 func (r *Reconciler) observations(
-	ctx context.Context, scope db.TenantScope, src domain.Source,
+	ctx context.Context, _ db.TenantScope, src domain.Source,
 	clusterKey alerts.ClusterKey, upstream []domain.GettableAlert,
 ) ([]alerts.Observation, int) {
 	now := r.clk.Now().UTC()
-	groups := r.groupLabels(ctx, scope, src)
 	out := make([]alerts.Observation, 0, len(upstream))
 	rejected := 0
 
@@ -501,26 +503,27 @@ func (r *Reconciler) observations(
 			if reason == "" {
 				// §G.8.3 requires a witness. Alertmanager saying `suppressed` while
 				// naming nothing that suppresses it is a payload oto cannot honour:
-				// T3 would fail `occ_suppress_ck`. Observe it as firing — which is
+				// T3 would fail `case_suppress_ck`. Observe it as firing — which is
 				// what it was a moment ago — rather than losing the alert.
 				status = statusFiring
 			}
 		}
 
-		// §C.4: a reconciler-sourced observation's `receiver` is "" and its
-		// groupLabels are the AM ALERT GROUP's labels. An alert that belongs to no
-		// group upstream (an unprocessed one) carries neither, and the orchestrator
-		// records it without a generation rather than inventing one.
-		grp := groups[a.Fingerprint]
-
+		// ⭐ THE RECONCILER CAN NOW BUILD A GROUP, AND THIS IS WHERE IT BECAME ABLE
+		// TO. `GET /api/v2/alerts` returns no grouping at all, so while the §C.4 key
+		// hashed `(source, receiver, groupLabels)` this path had to make a SECOND
+		// call to `/api/v2/alerts/groups` purely to learn them — and a reconciled
+		// alert that belonged to no group upstream still landed groupless. Since ADR
+		// 0038 the key is `(org, cluster, alertname, namespace-or-∅)`, every axis of
+		// which is in `clusterKey` and `labels` right here, so both ingest paths now
+		// give the same answer to "which thread does this belong to" with no extra
+		// round trip. `Receiver` is "" because a reconcile pass has no receiver.
 		out = append(out, alerts.Observation{
 			// ⭐ THE LOAD-BEARING FIELD. `reconciler` is what admits T3 (§B.3.1);
 			// no other value in this enum may enter `suppressed`.
-			Source:      alerts.ObservedByReconciler,
-			SourceID:    src.ID,
-			ClusterID:   src.ClusterID,
-			Receiver:    grp.receiver,
-			GroupLabels: grp.labels,
+			Source:    alerts.ObservedByReconciler,
+			SourceID:  src.ID,
+			ClusterID: src.ClusterID,
 			// BatchID is deliberately zero. A reconcile pass is not a batch: there
 			// is no raw payload to keep, nothing to replay, and no `ingest_batches`
 			// row it could point at (C18).
@@ -553,54 +556,18 @@ func (r *Reconciler) observations(
 	return out, rejected
 }
 
-// upstreamGroup is one alert's notification group as Alertmanager reports it.
-type upstreamGroup struct {
-	receiver string
-	labels   map[string]string
-}
-
-// groupLabels reads `GET /api/v2/alerts/groups` and indexes each member alert's
-// group by Alertmanager's own fingerprint.
+// ⛔ THERE IS NO SECOND CALL TO `GET /api/v2/alerts/groups`, AND THERE MUST NOT
+// BE ONE AGAIN.
 //
-// ⭐ WHY A SECOND CALL. §C.4 says a reconciler-sourced observation's group labels
-// are "the AM alert group's labels", and `GET /api/v2/alerts` does not carry
-// them. Without this, every alert the reconciler recovered would land in one
-// degenerate per-source group — recorded, and threaded into a Slack conversation
-// that means nothing.
+// One existed — `groupLabels`, indexing each member alert's Alertmanager group by
+// fingerprint — because the §C.4 key hashed `(source, receiver, groupLabels)` and
+// `GET /api/v2/alerts` carries none of them. It was a whole extra round trip per
+// pass, it degraded silently when it failed, and it still could not group an
+// alert Alertmanager had not routed yet.
 //
-// ⛔ AM's own `groupKey` is NOT read here even though the endpoint could supply
-// it. It embeds the route path, changes on every `alertmanager.yml` reload, and is
-// unescaped and unbounded (C3). oto's §C.4 key is computed from the group LABELS,
-// which are stable.
-//
-// A failure DEGRADES, it does not fail the pass: the suppression truth in the
-// alert set is the correctness, and the group is the delivery. Losing the alert
-// to protect the notification would be exactly backwards.
-func (r *Reconciler) groupLabels(
-	ctx context.Context, scope db.TenantScope, src domain.Source,
-) map[string]upstreamGroup {
-	out := map[string]upstreamGroup{}
-
-	groups, err := r.sources.AlertGroups(ctx, scope, src.ID, alertmanager.AlertGroupFilter{
-		Active: true, Silenced: true, Inhibited: true, Muted: true,
-	})
-	if err != nil {
-		r.log.WarnContext(ctx, "sources: reconcile could not read alert groups; observing without group labels",
-			"source_id", src.ID, "code", errs.CodeOf(err))
-		return out
-	}
-
-	for _, g := range groups {
-		info := upstreamGroup{receiver: g.Receiver, labels: g.Labels}
-		for _, a := range g.Alerts {
-			if a.Fingerprint == "" {
-				continue
-			}
-			out[a.Fingerprint] = info
-		}
-	}
-	return out
-}
+// ADR 0038 removed its reason to exist: the key is derived from the alert's own
+// labels, which this endpoint already returns. Reinstating the call would put
+// oto's thread identity back under a grouping oto does not control.
 
 // suppressionReasonFor maps Alertmanager's three witnesses onto its four
 // suppression reasons, in §G.8.3's order.

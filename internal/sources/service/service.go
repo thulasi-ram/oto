@@ -197,18 +197,12 @@ func (s *Service) Alerts(ctx context.Context, scope db.TenantScope, id uuid.UUID
 	return c.Alerts(ctx, f)
 }
 
-// AlertGroups reads GET /api/v2/alerts/groups.
-//
-// The returned groups are Alertmanager's, not oto's. AM's groupKey embeds the
-// route path and changes on every config reload, so it is an observability hint
-// and MUST NOT be parsed or used as a key (C3).
-func (s *Service) AlertGroups(ctx context.Context, scope db.TenantScope, id uuid.UUID, f alertmanager.AlertGroupFilter) ([]alertmanager.AlertGroup, error) {
-	c, err := s.alertmanager(ctx, scope, id)
-	if err != nil {
-		return nil, err
-	}
-	return c.AlertGroups(ctx, f)
-}
+// ⛔ THERE IS NO `AlertGroups` READ. `GET /api/v2/alerts/groups` was called by
+// exactly one caller — the reconciler, to learn the groupLabels the old §C.4 key
+// hashed — and ADR 0038 removed that need. It is not kept "in case": an unread
+// mirror of Alertmanager's grouping is the thing oto stopped deriving identity
+// from, and leaving the client able to fetch it is an invitation to hang
+// something on it again.
 
 // Silences reads the source's silences. READ ONLY (R3).
 func (s *Service) Silences(ctx context.Context, scope db.TenantScope, id uuid.UUID, f domain.SilenceFilter) ([]domain.GettableSilence, error) {

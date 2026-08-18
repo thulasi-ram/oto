@@ -60,7 +60,7 @@ func TestIdempotencyKeyPreImageIsLengthPrefixed(t *testing.T) {
 func TestIdempotencyKeyAgreesWithTheKernel(t *testing.T) {
 	t.Parallel()
 
-	for _, kind := range []domain.SubjectKind{domain.SubjectAlertGroup, "occurrence", ""} {
+	for _, kind := range []domain.SubjectKind{domain.SubjectAlertGroup, "case", ""} {
 		for _, reason := range []domain.Reason{
 			domain.ReasonAllResolved, domain.ReasonFired, "", "a", "ab",
 		} {
@@ -88,7 +88,7 @@ func TestIdempotencyKeyAgreesWithTheKernel(t *testing.T) {
 func TestIdempotencyKeyIsInjective(t *testing.T) {
 	t.Parallel()
 
-	kinds := []domain.SubjectKind{"", "a", "ab", "alert_group", "a\x00b", "occurrence"}
+	kinds := []domain.SubjectKind{"", "a", "ab", "alert_group", "a\x00b", "case"}
 	reasons := []domain.Reason{"", "a", "ab", "b", "1", "12", "a\x00b", "all_resolved"}
 	versions := []int{0, 1, 2, 12, 120, 7}
 
@@ -123,7 +123,7 @@ func TestIdempotencyKeyEveryInputParticipates(t *testing.T) {
 	require.True(t, domain.ValidIdempotencyKey(base))
 
 	assert.NotEqual(t, base, domain.IdempotencyKey(idemOther, domain.SubjectAlertGroup, idemSubject, domain.ReasonAllResolved, 7))
-	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, "occurrence", idemSubject, domain.ReasonAllResolved, 7))
+	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, "case", idemSubject, domain.ReasonAllResolved, 7))
 	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlertGroup, idemOther, domain.ReasonAllResolved, 7))
 	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlertGroup, idemSubject, domain.ReasonFired, 7))
 	assert.NotEqual(t, base, domain.IdempotencyKey(idemOrg, domain.SubjectAlertGroup, idemSubject, domain.ReasonAllResolved, 8))

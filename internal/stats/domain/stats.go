@@ -21,8 +21,8 @@ type Sort string
 
 // The five sort keys (openapi.yaml `getAlertQualityStats`).
 const (
-	// SortOccurrencesDesc finds the noisiest rules. It is the default.
-	SortOccurrencesDesc Sort = "-occurrences"
+	// SortCasesDesc finds the noisiest rules. It is the default.
+	SortCasesDesc Sort = "-cases"
 	// SortNotificationsDesc finds the ones that cost the most interruptions.
 	SortNotificationsDesc Sort = "-notifications"
 	// SortAckRateAsc finds the ones nobody ever acknowledges — the rules whose
@@ -37,14 +37,14 @@ const (
 // NewSort parses a sort key.
 func NewSort(s string) (Sort, error) {
 	switch Sort(s) {
-	case SortOccurrencesDesc, SortNotificationsDesc, SortAckRateAsc,
+	case SortCasesDesc, SortNotificationsDesc, SortAckRateAsc,
 		SortFlapTransitionsDesc, SortFiringSecondsDesc:
 		return Sort(s), nil
 	case "":
-		return SortOccurrencesDesc, nil
+		return SortCasesDesc, nil
 	default:
 		return "", errs.New(errs.KindValidation, "enum",
-			"sort must be one of: -occurrences, -notifications, ack_rate, -flap_transitions, -total_firing_seconds")
+			"sort must be one of: -cases, -notifications, ack_rate, -flap_transitions, -total_firing_seconds")
 	}
 }
 
@@ -57,13 +57,13 @@ func (s Sort) String() string { return string(s) }
 // notifications, and was acknowledged 0 times"* — which does more good than any
 // enrichment, because the best alert is the one that no longer exists.
 type AlertQuality struct {
-	AlertName        string
-	ClusterKey       string
-	Occurrences      int
-	Notifications    int
-	Deliveries       int
-	AckedOccurrences int
-	AutoResolved     int
+	AlertName     string
+	ClusterKey    string
+	Cases         int
+	Notifications int
+	Deliveries    int
+	AckedCases    int
+	AutoResolved  int
 	// Expired is counted apart from AutoResolved, always. Losing sight of an
 	// alert is not the alert going away, and summing the two into one "closed"
 	// bucket is exactly the lie oto exists to prevent.
@@ -73,20 +73,20 @@ type AlertQuality struct {
 	FlapTransitions    int
 }
 
-// AckRate is AckedOccurrences / Occurrences, or 0 when there were none.
+// AckRate is AckedCases / Cases, or 0 when there were none.
 func (q AlertQuality) AckRate() float32 {
-	if q.Occurrences <= 0 {
+	if q.Cases <= 0 {
 		return 0
 	}
-	return float32(q.AckedOccurrences) / float32(q.Occurrences)
+	return float32(q.AckedCases) / float32(q.Cases)
 }
 
-// FlapScore is transitions per occurrence, the noisiness signal for the report.
+// FlapScore is transitions per case, the noisiness signal for the report.
 func (q AlertQuality) FlapScore() float32 {
-	if q.Occurrences <= 0 {
+	if q.Cases <= 0 {
 		return 0
 	}
-	return float32(q.FlapTransitions) / float32(q.Occurrences)
+	return float32(q.FlapTransitions) / float32(q.Cases)
 }
 
 // SortValue is the number this row is ordered by, which is also the keyset
@@ -102,7 +102,7 @@ func (q AlertQuality) SortValue(s Sort) float64 {
 	case SortFiringSecondsDesc:
 		return float64(q.TotalFiringSeconds)
 	default:
-		return float64(q.Occurrences)
+		return float64(q.Cases)
 	}
 }
 
@@ -141,7 +141,7 @@ type DeliveryCounts struct {
 }
 
 // SourceCounts is the source-health half. It gates the reaper: while a source is
-// anything other than healthy, occurrences are held rather than expired.
+// anything other than healthy, cases are held rather than expired.
 type SourceCounts struct {
 	Healthy         int
 	Degraded        int

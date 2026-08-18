@@ -35,11 +35,11 @@ func TestAllEventTypes_IsAClosedWellShapedSet(t *testing.T) {
 		assert.False(t, ty.IsZero())
 	}
 
-	// The four states' terminal facts are distinct types: `occurrence.expired` is
-	// never rendered as `occurrence.resolved`.
-	assert.NotEqual(t, EventOccurrenceResolved, EventOccurrenceExpired)
-	assert.Contains(t, seen, "occurrence.resolved")
-	assert.Contains(t, seen, "occurrence.expired")
+	// The four states' terminal facts are distinct types: `case.expired` is
+	// never rendered as `case.resolved`.
+	assert.NotEqual(t, EventCaseResolved, EventCaseExpired)
+	assert.Contains(t, seen, "case.resolved")
+	assert.Contains(t, seen, "case.expired")
 
 	// Nothing in the vocabulary names a scope-banned concept (CONTEXT.md §3).
 	for s := range seen {
@@ -55,7 +55,7 @@ func TestAllEventTypes_IsAClosedWellShapedSet(t *testing.T) {
 	// `close`, `merge` and `dismiss` are banned OF AN ALERT specifically —
 	// "group.closed" is a legitimate generation fact (§D.4.1).
 	for s := range seen {
-		if !strings.HasPrefix(s, "alert.") && !strings.HasPrefix(s, "occurrence.") {
+		if !strings.HasPrefix(s, "alert.") && !strings.HasPrefix(s, "case.") {
 			continue
 		}
 		for _, banned := range []string{"close", "merge", "dismiss", "reopen_by", "resolve_by"} {
@@ -98,7 +98,7 @@ func TestNewEventType_RejectsInventedTypes(t *testing.T) {
 	for _, in := range []string{
 		"",
 		"alert.invented",
-		"occurrence.closed",
+		"case.closed",
 		"incident.created",
 		"Alert.Created",
 		"alert_created",
@@ -115,20 +115,20 @@ func TestNewEventType_RejectsInventedTypes(t *testing.T) {
 
 func validEventParams() EventParams {
 	return EventParams{
-		ID:           eventIDFix,
-		OrgID:        orgA,
-		AlertID:      alertID,
-		OccurrenceID: occID,
-		GroupID:      groupIDFix,
-		Type:         EventOccurrenceOpened,
+		ID:      eventIDFix,
+		OrgID:   orgA,
+		AlertID: alertID,
+		CaseID:  caseID,
+		GroupID: groupIDFix,
+		Type:    EventCaseOpened,
 		At: ObservationTime{
 			occurredAt: t0,
 			recordedAt: t0.Add(time.Second),
 		},
 		Actor:     Actor{kind: ActorIngest},
-		Summary:   "Occurrence opened",
+		Summary:   "Case opened",
 		Payload:   map[string]any{"k": "v"},
-		DedupeKey: "occ:x:opened",
+		DedupeKey: "case:x:opened",
 	}
 }
 
@@ -145,7 +145,7 @@ func TestNewEvent_RequiredFields(t *testing.T) {
 		{
 			name: "no subject at all",
 			mut: func(p *EventParams) {
-				p.AlertID, p.OccurrenceID, p.GroupID = uuid.Nil, uuid.Nil, uuid.Nil
+				p.AlertID, p.CaseID, p.GroupID = uuid.Nil, uuid.Nil, uuid.Nil
 			},
 			kind: errs.KindValidation, code: "required",
 		},
@@ -180,15 +180,15 @@ func TestNewEvent_RequiredFields(t *testing.T) {
 }
 
 func TestNewEvent_AnyOneSubjectIsEnough(t *testing.T) {
-	for _, name := range []string{"alert", "occurrence", "group"} {
+	for _, name := range []string{"alert", "case", "group"} {
 		t.Run("only "+name, func(t *testing.T) {
 			p := validEventParams()
-			p.AlertID, p.OccurrenceID, p.GroupID = uuid.Nil, uuid.Nil, uuid.Nil
+			p.AlertID, p.CaseID, p.GroupID = uuid.Nil, uuid.Nil, uuid.Nil
 			switch name {
 			case "alert":
 				p.AlertID = alertID
-			case "occurrence":
-				p.OccurrenceID = occID
+			case "case":
+				p.CaseID = caseID
 			case "group":
 				p.GroupID = groupIDFix
 			}
@@ -200,7 +200,7 @@ func TestNewEvent_AnyOneSubjectIsEnough(t *testing.T) {
 
 func TestNewEvent_HappyPath(t *testing.T) {
 	p := validEventParams()
-	p.Summary = "  Occurrence opened  "
+	p.Summary = "  Case opened  "
 
 	ev, err := NewEvent(p)
 	require.NoError(t, err)
@@ -208,11 +208,11 @@ func TestNewEvent_HappyPath(t *testing.T) {
 	assert.Equal(t, eventIDFix, ev.ID())
 	assert.Equal(t, orgA, ev.OrgID())
 	assert.Equal(t, alertID, ev.AlertID())
-	assert.Equal(t, occID, ev.OccurrenceID())
+	assert.Equal(t, caseID, ev.CaseID())
 	assert.Equal(t, groupIDFix, ev.GroupID())
-	assert.Equal(t, EventOccurrenceOpened, ev.Type())
-	assert.Equal(t, "Occurrence opened", ev.Summary(), "the summary is trimmed")
-	assert.Equal(t, "occ:x:opened", ev.DedupeKey())
+	assert.Equal(t, EventCaseOpened, ev.Type())
+	assert.Equal(t, "Case opened", ev.Summary(), "the summary is trimmed")
+	assert.Equal(t, "case:x:opened", ev.DedupeKey())
 
 	// ⭐ C12: two clocks, never conflated. Display OccurredAt; order by RecordedAt.
 	assert.Equal(t, t0, ev.OccurredAt())

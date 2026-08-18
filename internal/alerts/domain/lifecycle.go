@@ -29,15 +29,15 @@ import (
 // The derivation for each is stated there.
 const (
 	// DefaultRefireGrace decides T7 from T8: a re-fire inside this window reopens
-	// the existing AlertOccurrence, a re-fire after it opens a new one. The number
+	// the existing AlertCase, a re-fire after it opens a new one. The number
 	// is derived rather than chosen — `for + group_interval` for the modal real
-	// rule, 15m + 5m — because the clock starts at the occurrence's `ended_at`,
+	// rule, 15m + 5m — because the clock starts at the case's `ended_at`,
 	// which T5 below takes from the UPSTREAM `EndsAt`, so the re-fire has to pay
 	// the rule's whole `for:` dwell again before oto can observe it at all. See
 	// ADR 0026 and docs/setup/tuning.md.
 	DefaultRefireGrace = tuning.DefaultRefireGrace
 	// DefaultResolveGrace is how long past `source_ends_at` the reaper waits
-	// before an occurrence may expire.
+	// before a case may expire.
 	DefaultResolveGrace = tuning.DefaultResolveGrace
 )
 
@@ -52,15 +52,15 @@ var (
 	// suppressed. It drives T1, T2, T4, T7 and T8.
 	TriggerObserveFiring = Trigger{"observe_firing"}
 	// TriggerObserveSuppressed is the reconciler seeing status.state ==
-	// "suppressed". It drives T3 and is the ONLY way an occurrence becomes
+	// "suppressed". It drives T3 and is the ONLY way a case becomes
 	// suppressed: Alertmanager's MuteStage drops suppressed alerts before the
 	// webhook, so ingest can never see this (C1).
 	TriggerObserveSuppressed = Trigger{"observe_suppressed"}
 	// TriggerObserveResolved is an explicit per-alert status == "resolved". It
-	// drives T5 and is the ONLY way an occurrence becomes resolved (C2).
+	// drives T5 and is the ONLY way a case becomes resolved (C2).
 	TriggerObserveResolved = Trigger{"observe_resolved"}
-	// TriggerReap is the occurrence.reap job finding an occurrence oto has
-	// stopped hearing about. It drives T6 and is the ONLY way an occurrence
+	// TriggerReap is the case.reap job finding a case oto has
+	// stopped hearing about. It drives T6 and is the ONLY way a case
 	// becomes expired.
 	TriggerReap = Trigger{"reap"}
 )
@@ -86,29 +86,29 @@ func (t Trigger) IsZero() bool { return t.s == "" }
 // the result so that a caller, a log line and a test can all say which edge ran.
 type TransitionID struct{ s string }
 
-// The rows of SPEC §B.3 that the occurrence state machine owns. T9–T14 are ack,
+// The rows of SPEC §B.3 that the case state machine owns. T9–T14 are ack,
 // enrichment, rule, notification and comment facts; T9 and T10 are implemented as
 // Acknowledge and Unacknowledge, the rest are not state transitions at all.
 var (
-	// TransitionT1 opens the first occurrence of an alert_key.
+	// TransitionT1 opens the first case of an alert_key.
 	TransitionT1 = TransitionID{"T1"}
-	// TransitionT2 is a repeat observation of an already-firing occurrence.
+	// TransitionT2 is a repeat observation of an already-firing case.
 	TransitionT2 = TransitionID{"T2"}
-	// TransitionT3 suppresses a firing occurrence. RECONCILER ONLY, and that
+	// TransitionT3 suppresses a firing case. RECONCILER ONLY, and that
 	// asymmetry with T4 is deliberate — see the note on the transition table.
 	TransitionT3 = TransitionID{"T3"}
-	// TransitionT4 unsuppresses a suppressed occurrence. Reconciler OR ingest —
+	// TransitionT4 unsuppresses a suppressed case. Reconciler OR ingest —
 	// see the asymmetry note on the transition table (§B.3.1).
 	TransitionT4 = TransitionID{"T4"}
-	// TransitionT5 resolves an occurrence on an explicit upstream observation.
+	// TransitionT5 resolves a case on an explicit upstream observation.
 	TransitionT5 = TransitionID{"T5"}
-	// TransitionT6 expires an occurrence oto has stopped hearing about.
+	// TransitionT6 expires a case oto has stopped hearing about.
 	TransitionT6 = TransitionID{"T6"}
-	// TransitionT7 opens a NEW occurrence after a re-fire beyond refire_grace.
+	// TransitionT7 opens a NEW case after a re-fire beyond refire_grace.
 	TransitionT7 = TransitionID{"T7"}
-	// TransitionT8 reopens the SAME occurrence after a re-fire inside refire_grace.
+	// TransitionT8 reopens the SAME case after a re-fire inside refire_grace.
 	TransitionT8 = TransitionID{"T8"}
-	// TransitionT9 acknowledges an occurrence.
+	// TransitionT9 acknowledges a case.
 	TransitionT9 = TransitionID{"T9"}
 	// TransitionT10 drops an acknowledgement.
 	TransitionT10 = TransitionID{"T10"}
@@ -140,12 +140,12 @@ type transitionRule struct {
 	// event is the AlertEvent this edge appends; the zero EventType means the
 	// edge appends nothing unless something material changed.
 	event EventType
-	// opensNewOccurrence marks the two rows that OPEN an episode rather than move
-	// one: T1, where there is no occurrence to move, and T7, where the terminal
+	// opensNewCase marks the two rows that OPEN an episode rather than move
+	// one: T1, where there is no case to move, and T7, where the terminal
 	// one is left exactly as it is. `Decide` reads this column and nothing else to
 	// route an observation, which is what keeps "which rows open an episode?" a
 	// fact of the table rather than an `if` at a call site.
-	opensNewOccurrence bool
+	opensNewCase bool
 }
 
 // transitionTable IS SPEC §B.3. Adding an edge means editing this table and the
@@ -154,11 +154,11 @@ var transitionTable = []transitionRule{
 	{
 		from: StateNone, to: StateFiring, trigger: TriggerObserveFiring,
 		id: TransitionT1, actors: []ActorKind{ActorIngest, ActorReconciler},
-		event: EventOccurrenceOpened,
+		event: EventCaseOpened,
 		// T1 opens the FIRST episode, so it opens one exactly as T7 does — the
 		// column says so here rather than being re-derived from the id anywhere
-		// else. Apply still refuses this row: opening is OpenNewOccurrence's job.
-		opensNewOccurrence: true,
+		// else. Apply still refuses this row: opening is OpenNewCase's job.
+		opensNewCase: true,
 	},
 	{
 		from: StateFiring, to: StateFiring, trigger: TriggerObserveFiring,
@@ -168,7 +168,7 @@ var transitionTable = []transitionRule{
 	{
 		from: StateFiring, to: StateSuppressed, trigger: TriggerObserveSuppressed,
 		id: TransitionT3, actors: []ActorKind{ActorReconciler},
-		event: EventOccurrenceSuppressed,
+		event: EventCaseSuppressed,
 	},
 	// ⭐ T4 IS ASYMMETRIC WITH T3 AND THAT IS DELIBERATE (§B.3.1). Do not "fix" it.
 	//
@@ -183,7 +183,7 @@ var transitionTable = []transitionRule{
 	// sent. Ingest cannot see suppression begin, but arrival IS the evidence that
 	// it ended.
 	//
-	// Making T4 reconciler-only left an occurrence stuck in `suppressed` for up to
+	// Making T4 reconciler-only left a case stuck in `suppressed` for up to
 	// a full reconcile interval after a silence expired, even though a webhook had
 	// already proved it was firing again — and when group_interval is shorter than
 	// the reconcile interval (the common case) oto rendered a live firing alert as
@@ -192,47 +192,47 @@ var transitionTable = []transitionRule{
 	{
 		from: StateSuppressed, to: StateFiring, trigger: TriggerObserveFiring,
 		id: TransitionT4, actors: []ActorKind{ActorReconciler, ActorIngest},
-		event: EventOccurrenceUnsuppressed,
+		event: EventCaseUnsuppressed,
 	},
 	{
 		from: StateFiring, to: StateResolved, trigger: TriggerObserveResolved,
 		id: TransitionT5, actors: []ActorKind{ActorIngest},
-		event: EventOccurrenceResolved,
+		event: EventCaseResolved,
 	},
 	{
 		from: StateSuppressed, to: StateResolved, trigger: TriggerObserveResolved,
 		id: TransitionT5, actors: []ActorKind{ActorIngest},
-		event: EventOccurrenceResolved,
+		event: EventCaseResolved,
 	},
 	{
 		from: StateFiring, to: StateExpired, trigger: TriggerReap,
 		id: TransitionT6, actors: []ActorKind{ActorReaper},
-		event: EventOccurrenceExpired,
+		event: EventCaseExpired,
 	},
 	{
 		from: StateSuppressed, to: StateExpired, trigger: TriggerReap,
 		id: TransitionT6, actors: []ActorKind{ActorReaper},
-		event: EventOccurrenceExpired,
+		event: EventCaseExpired,
 	},
 	{
 		from: StateResolved, to: StateFiring, trigger: TriggerObserveFiring,
 		id: TransitionT8, refire: refireWithinGrace, actors: []ActorKind{ActorIngest},
-		event: EventOccurrenceReopened,
+		event: EventCaseReopened,
 	},
 	{
 		from: StateExpired, to: StateFiring, trigger: TriggerObserveFiring,
 		id: TransitionT8, refire: refireWithinGrace, actors: []ActorKind{ActorIngest},
-		event: EventOccurrenceReopened,
+		event: EventCaseReopened,
 	},
 	{
 		from: StateResolved, to: StateFiring, trigger: TriggerObserveFiring,
 		id: TransitionT7, refire: refireAfterGrace, actors: []ActorKind{ActorIngest},
-		opensNewOccurrence: true,
+		opensNewCase: true,
 	},
 	{
 		from: StateExpired, to: StateFiring, trigger: TriggerObserveFiring,
 		id: TransitionT7, refire: refireAfterGrace, actors: []ActorKind{ActorIngest},
-		opensNewOccurrence: true,
+		opensNewCase: true,
 	},
 }
 
@@ -301,7 +301,7 @@ type TransitionCommand struct {
 
 	// SourceHealthy gates T6 and nothing else. THE REAPER GUARD (§B.4) IS THE
 	// HIGHEST-VALUE CORRECTNESS RULE IN THE SYSTEM: losing sight of an alert is
-	// not the same as the alert resolving, so an occurrence whose AlertSource is
+	// not the same as the alert resolving, so a case whose AlertSource is
 	// not healthy is held in its current state and never expired.
 	SourceHealthy bool
 
@@ -326,36 +326,36 @@ type TransitionCommand struct {
 type TransitionResult struct {
 	// ID names the SPEC §B.3 row that ran.
 	ID TransitionID
-	// From and To are the occurrence states either side of the edge.
+	// From and To are the case states either side of the edge.
 	From State
 	To   State
-	// Occurrence is the updated AlertOccurrence. On T7 it is the UNCHANGED
-	// terminal occurrence: T7 opens a new episode, it does not revive an old one.
-	Occurrence Occurrence
-	// Before is the occurrence EXACTLY AS THE MACHINE READ IT — the pre-image this
+	// Case is the updated AlertCase. On T7 it is the UNCHANGED
+	// terminal case: T7 opens a new episode, it does not revive an old one.
+	Case Case
+	// Before is the case EXACTLY AS THE MACHINE READ IT — the pre-image this
 	// verdict was reached against.
 	//
 	// It exists so a caller can persist the edge as a compare-and-set without
 	// having to carry the pre-image alongside the result and hope the two stay in
 	// step. `PreconditionFor(r.Before)` is the guard, and it cannot name a row
 	// other than the one the decision was made from.
-	Before Occurrence
-	// OpensNewOccurrence marks T7. The caller must open a new occurrence with
-	// seq+1 and ReopenOf set to Occurrence.ID(), which appends its own
-	// `occurrence.opened` event.
-	OpensNewOccurrence bool
+	Before Case
+	// OpensNewCase marks T7. The caller must open a new case with
+	// seq+1 and ReopenOf set to Case.ID(), which appends its own
+	// `case.opened` event.
+	OpensNewCase bool
 	// Events are the AlertEvents to append, in order. At most one edge appends
 	// more than nothing, so this is empty or a single event.
 	Events []Event
 
 	// DetectedBy names the witness: "webhook" for ingest, "reconciler" for the
-	// reconciler. It is what T4's `occurrence.unsuppressed` payload carries
+	// reconciler. It is what T4's `case.unsuppressed` payload carries
 	// (§B.3.1), and it is set on every edge so a caller never has to re-derive it.
 	DetectedBy string
 
 	// Clamped reports that §B.3.2 fired: the upstream clock ran backwards and
 	// `ended_at` was pulled forward to `started_at` rather than violating
-	// occ_order_ck and aborting the ingest transaction.
+	// case_order_ck and aborting the ingest transaction.
 	Clamped bool
 	// ClampSkew is how far backwards the upstream clock was, and is zero unless
 	// Clamped. THE CALLER MUST ACCUMULATE IT into source_health.clock_skew_ms and
@@ -364,7 +364,7 @@ type TransitionResult struct {
 	ClampSkew time.Duration
 }
 
-// Apply runs the SPEC §B.3 state machine over one AlertOccurrence.
+// Apply runs the SPEC §B.3 state machine over one AlertCase.
 //
 // It is a total function: every input either produces a result or an error, never
 // a panic and never a silent no-op. An edge that does not exist in the table is
@@ -372,7 +372,7 @@ type TransitionResult struct {
 // state. An edge driven by the wrong actor is errs.KindInternal — `suppressed`
 // set by ingest, or `expired` set by anything but the reaper, is a programming
 // bug, not a caller error (§L.4 invariant 2).
-func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
+func Apply(o Case, cmd TransitionCommand) (TransitionResult, error) {
 	if cmd.Trigger.IsZero() {
 		return TransitionResult{}, errs.New(errs.KindValidation, "required", "trigger is required")
 	}
@@ -403,8 +403,8 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 	var clampDelta time.Duration
 	switch rule.id {
 	case TransitionT1:
-		return TransitionResult{}, errs.New(errs.KindPrecondition, "no_open_occurrence",
-			"T1 opens the first occurrence; call OpenOccurrence")
+		return TransitionResult{}, errs.New(errs.KindPrecondition, "no_open_case",
+			"T1 opens the first case; call OpenCase")
 
 	case TransitionT2:
 		next.lastObservedAt = cmd.At.RecordedAt()
@@ -413,7 +413,7 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 	case TransitionT3:
 		if cmd.SuppressionReason.IsZero() {
 			return TransitionResult{}, errs.New(errs.KindValidation, "required",
-				"suppression_reason is required to suppress an occurrence")
+				"suppression_reason is required to suppress a case")
 		}
 		next.state = StateSuppressed
 		next.suppressionReason = cmd.SuppressionReason
@@ -437,7 +437,7 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 
 	case TransitionT5:
 		// T5 sets ended_at from the UPSTREAM claim. A skewed upstream clock could
-		// place it before started_at, which occ_order_ck forbids, so it is
+		// place it before started_at, which case_order_ck forbids, so it is
 		// clamped: skew is measured, never a reason to lose the resolution (C12).
 		next.state = StateResolved
 		next.resolveReason = ResolveUpstream
@@ -450,11 +450,11 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 	case TransitionT6:
 		if !cmd.SourceHealthy {
 			return TransitionResult{}, errs.New(errs.KindPrecondition, "source_not_healthy",
-				"an occurrence is held, never expired, while its AlertSource is not healthy")
+				"a case is held, never expired, while its AlertSource is not healthy")
 		}
 		if o.sourceEndsAt.IsZero() {
 			return TransitionResult{}, errs.New(errs.KindPrecondition, "no_source_ends_at",
-				"an occurrence with no upstream end time cannot expire")
+				"a case with no upstream end time cannot expire")
 		}
 		if !cmd.At.RecordedAt().After(o.sourceEndsAt.Add(resolveGrace(cmd))) {
 			return TransitionResult{}, errs.New(errs.KindPrecondition, "resolve_grace_not_elapsed",
@@ -467,7 +467,7 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		recordClamp(extra, cmd.At.RecordedAt(), clampDelta)
 
 	case TransitionT7:
-		// The terminal occurrence is untouched. The caller opens a new episode.
+		// The terminal case is untouched. The caller opens a new episode.
 		//
 		// DetectedBy is set here even though T7's only permitted actor is ingest:
 		// the early return skips the common construction below, and a caller that
@@ -476,17 +476,17 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 		// becomes permitted on this edge.
 		return TransitionResult{
 			ID: rule.id, From: from, To: rule.to,
-			Occurrence:         o,
-			Before:             o,
-			DetectedBy:         detectedBy(cmd.Actor.Kind()),
-			OpensNewOccurrence: true,
+			Case:         o,
+			Before:       o,
+			DetectedBy:   detectedBy(cmd.Actor.Kind()),
+			OpensNewCase: true,
 		}, nil
 
 	case TransitionT8:
 		// §B.3.2 names T8 alongside T5 and T6, but a reopen CLEARS ended_at rather
 		// than setting it, so there is nothing to clamp here: the invariant
-		// occ_order_ck guards (ended_at >= started_at) is vacuously true while
-		// ended_at is NULL. The clamp reappears when this occurrence next ends.
+		// case_order_ck guards (ended_at >= started_at) is vacuously true while
+		// ended_at is NULL. The clamp reappears when this case next ends.
 		next.state = StateFiring
 		next.resolveReason = ResolveReason{}
 		next.suppressionReason = SuppressionReason{}
@@ -505,7 +505,7 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 	}
 
 	res := TransitionResult{
-		ID: rule.id, From: from, To: next.state, Occurrence: next, Before: o,
+		ID: rule.id, From: from, To: next.state, Case: next, Before: o,
 		DetectedBy: detectedBy(cmd.Actor.Kind()),
 		Clamped:    clampDelta > 0,
 		ClampSkew:  clampDelta,
@@ -523,17 +523,17 @@ func Apply(o Occurrence, cmd TransitionCommand) (TransitionResult, error) {
 	}
 
 	ev, err := NewEvent(EventParams{
-		ID:           cmd.EventID,
-		OrgID:        next.orgID,
-		AlertID:      next.alertID,
-		OccurrenceID: next.id,
-		GroupID:      next.groupID,
-		Type:         eventType,
-		At:           cmd.At,
-		Actor:        cmd.Actor,
-		Summary:      summaryOr(cmd.Summary, defaultSummary(rule.id, from, next.state)),
-		Payload:      mergePayload(cmd.Payload, extra),
-		DedupeKey:    dedupeKeyFor(rule.id, next),
+		ID:        cmd.EventID,
+		OrgID:     next.orgID,
+		AlertID:   next.alertID,
+		CaseID:    next.id,
+		GroupID:   next.groupID,
+		Type:      eventType,
+		At:        cmd.At,
+		Actor:     cmd.Actor,
+		Summary:   summaryOr(cmd.Summary, defaultSummary(rule.id, from, next.state)),
+		Payload:   mergePayload(cmd.Payload, extra),
+		DedupeKey: dedupeKeyFor(rule.id, next),
 	})
 	if err != nil {
 		return TransitionResult{}, err
@@ -556,7 +556,7 @@ type Decision struct {
 	// there is no state to come from.
 	From State
 
-	// OpensEpisode is true for exactly the rows that do not move the occurrence
+	// OpensEpisode is true for exactly the rows that do not move the case
 	// they were decided against — T1, where there is none, and T7, where the
 	// terminal one is left exactly as it is (§B.5). The caller opens the new
 	// episode with Seq and ReopenOf; every other row is applied with Apply.
@@ -565,7 +565,7 @@ type Decision struct {
 	Seq int
 	// ReopenOf is the episode the new one succeeds, and is uuid.Nil for T1.
 	ReopenOf uuid.UUID
-	// DropsAck is T10 by the `new_occurrence` road: the episode being succeeded
+	// DropsAck is T10 by the `new_case` road: the episode being succeeded
 	// was ACKED, and an acknowledgement does not survive into a new one. The
 	// caller records that on the NEW episode and leaves the old one exactly as it
 	// is — see autoUnackEvent.
@@ -575,10 +575,10 @@ type Decision struct {
 // Decide names the one §B.3 row an observation runs, and is the ONLY place that
 // question is answered.
 //
-// ⭐ AN ALERT WITH NO EPISODE IS THE ZERO Occurrence, whose state is StateNone —
-// the state T1's row already comes from. That is why this takes an Occurrence and
+// ⭐ AN ALERT WITH NO EPISODE IS THE ZERO Case, whose state is StateNone —
+// the state T1's row already comes from. That is why this takes a Case and
 // no "is there one?" flag: the absence of an episode is a state the table models,
-// not a case a caller special-cases around it. The zero Occurrence also carries
+// not a case a caller special-cases around it. The zero Case also carries
 // seq 0 and a nil id, so the arithmetic below yields exactly the first episode's
 // parameters without a branch.
 //
@@ -588,19 +588,19 @@ type Decision struct {
 // Apply is what validates it.
 //
 // ⛔ IT DOES NOT CHECK rule.actors, AND THAT IS NOT AN OVERSIGHT. Apply checks
-// them, because authorisation belongs to the edge that MUTATES an occurrence
+// them, because authorisation belongs to the edge that MUTATES a case
 // (§L.4 invariant 2) — `suppressed` set by ingest, `expired` set by anything but
 // the reaper. Opening an episode mutates none: the previous one is untouched. And
 // the reconciler MUST be able to open one — "present upstream, absent in oto" is
 // the recovery ADR 0006 promises, and refusing it because T7's actor column names
 // only ingest would turn oto's own repair path into an internal error.
-func Decide(current Occurrence, cmd TransitionCommand) (Decision, error) {
+func Decide(current Case, cmd TransitionCommand) (Decision, error) {
 	rule, err := selectRule(current, cmd)
 	if err != nil {
 		return Decision{}, err
 	}
 	d := Decision{ID: rule.id, From: current.state}
-	if !rule.opensNewOccurrence {
+	if !rule.opensNewCase {
 		return d, nil
 	}
 	d.OpensEpisode = true
@@ -610,9 +610,9 @@ func Decide(current Occurrence, cmd TransitionCommand) (Decision, error) {
 	return d, nil
 }
 
-// selectRule finds the one §B.3 row that matches the occurrence and the command,
+// selectRule finds the one §B.3 row that matches the case and the command,
 // resolving T7 against T8 by the re-fire grace.
-func selectRule(o Occurrence, cmd TransitionCommand) (transitionRule, error) {
+func selectRule(o Case, cmd TransitionCommand) (transitionRule, error) {
 	want := refireNotApplicable
 	if o.state.IsTerminal() && cmd.Trigger == TriggerObserveFiring {
 		if withinRefireGrace(o, cmd) {
@@ -636,10 +636,10 @@ func selectRule(o Occurrence, cmd TransitionCommand) (transitionRule, error) {
 }
 
 // withinRefireGrace decides T8 from T7: a re-fire whose observation lands within
-// refire_grace of the occurrence ending REOPENS that occurrence and reuses its
+// refire_grace of the case ending REOPENS that case and reuses its
 // Slack thread; a later one opens a new episode and a new AlertGroup generation
 // (§B.5).
-func withinRefireGrace(o Occurrence, cmd TransitionCommand) bool {
+func withinRefireGrace(o Case, cmd TransitionCommand) bool {
 	if o.endedAt.IsZero() {
 		return false
 	}
@@ -666,14 +666,14 @@ func permits(actors []ActorKind, actor ActorKind) bool {
 	return false
 }
 
-// observe folds the upstream fields of an observation into the occurrence.
+// observe folds the upstream fields of an observation into the case.
 //
 // A field the observation did not supply is PRESERVED, never cleared. §L.3.1
 // says a zero `endsAt` means "no end time known" for that payload — it does not
 // mean "forget the end time you already had", and clearing it would silently
-// disable the reaper for that occurrence (occ_reap_idx only sees rows with a
+// disable the reaper for that case (case_reap_idx only sees rows with a
 // non-null source_ends_at).
-func (o *Occurrence) observe(cmd TransitionCommand) {
+func (o *Case) observe(cmd TransitionCommand) {
 	if !cmd.SourceEndsAt.IsZero() {
 		o.sourceEndsAt = cmd.SourceEndsAt.UTC()
 	}
@@ -697,8 +697,8 @@ func notBefore(t, floor time.Time) time.Time {
 // clampEnd implements ⭐ SPEC §B.3.2: `ended_at = max(occurred_at, started_at)`.
 //
 // Upstream clocks skew, sometimes backwards. A `resolved` observation whose
-// `occurred_at` precedes the occurrence's `started_at` would violate
-// occ_order_ck and ABORT THE INGEST TRANSACTION — turning a customer's NTP
+// `occurred_at` precedes the case's `started_at` would violate
+// case_order_ck and ABORT THE INGEST TRANSACTION — turning a customer's NTP
 // problem into oto dropping a whole batch. So the value is pulled forward to the
 // floor and the distance is returned, to be recorded on the event payload and
 // accumulated into source_health.clock_skew_ms. Measure the skew; never reject.
@@ -722,7 +722,7 @@ func recordClamp(payload map[string]any, raw time.Time, delta time.Duration) {
 	payload["clock_skew_ms"] = delta.Milliseconds()
 }
 
-// Detection witnesses for `occurrence.unsuppressed` (§B.3.1, T4).
+// Detection witnesses for `case.unsuppressed` (§B.3.1, T4).
 const (
 	// DetectedByWebhook means ingest saw the alert arrive, which is positive
 	// proof of non-suppression: Alertmanager would never have sent a suppressed
@@ -767,43 +767,43 @@ func summaryOr(s, fallback string) string {
 func defaultSummary(id TransitionID, from, to State) string {
 	switch id {
 	case TransitionT1, TransitionT7:
-		return "Occurrence opened"
+		return "Case opened"
 	case TransitionT2:
 		return "Alert details changed"
 	case TransitionT3:
-		return "Occurrence suppressed"
+		return "Case suppressed"
 	case TransitionT4:
-		return "Occurrence no longer suppressed"
+		return "Case no longer suppressed"
 	case TransitionT5:
-		return "Occurrence resolved upstream"
+		return "Case resolved upstream"
 	case TransitionT6:
-		return "Occurrence expired: oto stopped hearing about it"
+		return "Case expired: oto stopped hearing about it"
 	case TransitionT8:
-		return "Occurrence reopened"
+		return "Case reopened"
 	default:
-		return "Occurrence moved from " + from.String() + " to " + to.String()
+		return "Case moved from " + from.String() + " to " + to.String()
 	}
 }
 
 // dedupeKeyFor renders the C.8 idempotency key for an event, so that a job
 // replayed at least once appends the fact exactly once.
-func dedupeKeyFor(id TransitionID, o Occurrence) string {
+func dedupeKeyFor(id TransitionID, o Case) string {
 	switch id {
 	case TransitionT1, TransitionT7:
-		return "occ:" + o.id.String() + ":opened"
+		return "case:" + o.id.String() + ":opened"
 	case TransitionT3:
-		return "occ:" + o.id.String() + ":suppressed:" + strconv.Itoa(o.suppressCount)
+		return "case:" + o.id.String() + ":suppressed:" + strconv.Itoa(o.suppressCount)
 	case TransitionT4:
 		// The count of the suppression this edge is ENDING, which T4 leaves
 		// untouched — so the pair of keys for one suppression cycle carry the same
 		// ordinal and read as the two halves of one episode of silence.
-		return "occ:" + o.id.String() + ":unsuppressed:" + strconv.Itoa(o.suppressCount)
+		return "case:" + o.id.String() + ":unsuppressed:" + strconv.Itoa(o.suppressCount)
 	case TransitionT5:
-		return "occ:" + o.id.String() + ":resolved"
+		return "case:" + o.id.String() + ":resolved"
 	case TransitionT6:
-		return "occ:" + o.id.String() + ":expired"
+		return "case:" + o.id.String() + ":expired"
 	case TransitionT8:
-		return "occ:" + o.id.String() + ":reopened:" + strconv.Itoa(o.reopenCount)
+		return "case:" + o.id.String() + ":reopened:" + strconv.Itoa(o.reopenCount)
 	default:
 		return ""
 	}
@@ -813,8 +813,8 @@ func dedupeKeyFor(id TransitionID, o Occurrence) string {
 //
 // They used to be built from `lastObservedAt`, which Apply sets to
 // `cmd.At.RecordedAt()` — the instant oto happened to process the observation.
-// Two concurrent reconciler passes over one occurrence therefore minted two
-// different keys and appended TWO `occurrence.suppressed` events for ONE
+// Two concurrent reconciler passes over one case therefore minted two
+// different keys and appended TWO `case.suppressed` events for ONE
 // suppression, so §C.8's "a job replayed at least once appends the fact exactly
 // once" did not hold for the only two edges in the table that can repeat inside
 // an episode. An interim fix keyed off `sourceUpdatedAt`, which was stable across
@@ -825,14 +825,14 @@ func dedupeKeyFor(id TransitionID, o Occurrence) string {
 // compute the same ordinal, and a genuine T3 -> T4 -> T3 inside one episode
 // produces 1 then 2 and records both facts.
 
-// OpenOccurrenceParams opens a new AlertOccurrence — SPEC §B.3 T1 (the first
-// sighting of an alert_key, or a firing observation with no open occurrence) and
+// OpenCaseParams opens a new AlertCase — SPEC §B.3 T1 (the first
+// sighting of an alert_key, or a firing observation with no open case) and
 // T7 (a re-fire beyond refire_grace).
-type OpenOccurrenceParams struct {
+type OpenCaseParams struct {
 	ID      uuid.UUID
 	OrgID   uuid.UUID
 	AlertID uuid.UUID
-	// GroupID is the AlertGroup generation this occurrence joins, or uuid.Nil
+	// GroupID is the AlertGroup generation this case joins, or uuid.Nil
 	// until grouping resolves it.
 	GroupID uuid.UUID
 	// Seq is prev+1, or 1 for the first episode.
@@ -845,37 +845,37 @@ type OpenOccurrenceParams struct {
 	SourceEndsAt    time.Time
 	SourceUpdatedAt time.Time
 
-	// ReopenOf is the previous, terminal occurrence when this open follows a T7
+	// ReopenOf is the previous, terminal case when this open follows a T7
 	// re-fire. It is uuid.Nil for T1.
 	ReopenOf uuid.UUID
 
 	Value        *float64
 	ObservedSkew time.Duration
 
-	// EventID is the uuidv7 for the `occurrence.opened` event.
+	// EventID is the uuidv7 for the `case.opened` event.
 	EventID uuid.UUID
 	Summary string
 	Payload map[string]any
 }
 
-// OpenNewOccurrence opens a new firing episode and returns it with the
-// `occurrence.opened` event to append. A new occurrence always starts unacked:
+// OpenNewCase opens a new firing episode and returns it with the
+// `case.opened` event to append. A new case always starts unacked:
 // T10 says an ack does not survive into a new episode.
 //
 // The name carries the "New" because SPEC §F.5.2 gives the identifier
-// `OpenOccurrence` to the repository PARAMETER STRUCT of the same name, and Go
+// `OpenCase` to the repository PARAMETER STRUCT of the same name, and Go
 // has one namespace for both.
-func OpenNewOccurrence(p OpenOccurrenceParams) (Occurrence, []Event, error) {
+func OpenNewCase(p OpenCaseParams) (Case, []Event, error) {
 	if p.Actor.IsZero() {
-		return Occurrence{}, nil, errs.New(errs.KindValidation, "required", "actor is required")
+		return Case{}, nil, errs.New(errs.KindValidation, "required", "actor is required")
 	}
 	if !permits([]ActorKind{ActorIngest, ActorReconciler}, p.Actor.Kind()) {
-		return Occurrence{}, nil, errs.Newf(errs.KindInternal, "wrong_actor",
-			"%s may not open an occurrence", p.Actor.Kind())
+		return Case{}, nil, errs.Newf(errs.KindInternal, "wrong_actor",
+			"%s may not open a case", p.Actor.Kind())
 	}
 	if p.At.IsZero() {
-		return Occurrence{}, nil, errs.New(errs.KindValidation, "required",
-			"opening an occurrence carries both occurred_at and recorded_at")
+		return Case{}, nil, errs.New(errs.KindValidation, "required",
+			"opening a case carries both occurred_at and recorded_at")
 	}
 
 	starts := p.SourceStartsAt
@@ -883,7 +883,7 @@ func OpenNewOccurrence(p OpenOccurrenceParams) (Occurrence, []Event, error) {
 		starts = p.At.OccurredAt()
 	}
 
-	o, err := NewOccurrence(OccurrenceParams{
+	o, err := NewCase(CaseParams{
 		ID:              p.ID,
 		OrgID:           p.OrgID,
 		AlertID:         p.AlertID,
@@ -901,7 +901,7 @@ func OpenNewOccurrence(p OpenOccurrenceParams) (Occurrence, []Event, error) {
 		ObservedSkew:    p.ObservedSkew,
 	})
 	if err != nil {
-		return Occurrence{}, nil, err
+		return Case{}, nil, err
 	}
 
 	id := TransitionT1
@@ -909,25 +909,25 @@ func OpenNewOccurrence(p OpenOccurrenceParams) (Occurrence, []Event, error) {
 		id = TransitionT7
 	}
 	ev, err := NewEvent(EventParams{
-		ID:           p.EventID,
-		OrgID:        o.orgID,
-		AlertID:      o.alertID,
-		OccurrenceID: o.id,
-		GroupID:      o.groupID,
-		Type:         EventOccurrenceOpened,
-		At:           p.At,
-		Actor:        p.Actor,
-		Summary:      summaryOr(p.Summary, defaultSummary(id, StateNone, StateFiring)),
-		Payload:      p.Payload,
-		DedupeKey:    dedupeKeyFor(id, o),
+		ID:        p.EventID,
+		OrgID:     o.orgID,
+		AlertID:   o.alertID,
+		CaseID:    o.id,
+		GroupID:   o.groupID,
+		Type:      EventCaseOpened,
+		At:        p.At,
+		Actor:     p.Actor,
+		Summary:   summaryOr(p.Summary, defaultSummary(id, StateNone, StateFiring)),
+		Payload:   p.Payload,
+		DedupeKey: dedupeKeyFor(id, o),
 	})
 	if err != nil {
-		return Occurrence{}, nil, err
+		return Case{}, nil, err
 	}
 	return o, []Event{ev}, nil
 }
 
-// AckCommand acknowledges or un-acknowledges an AlertOccurrence (§B.3 T9, T10).
+// AckCommand acknowledges or un-acknowledges an AlertCase (§B.3 T9, T10).
 // Acknowledgement is orthogonal to state: an acked alert is still firing.
 type AckCommand struct {
 	Actor Actor
@@ -938,13 +938,13 @@ type AckCommand struct {
 	// un-acknowledgement, at most MaxAckNoteBytes.
 	//
 	// The two land in different places, and that is not an accident. An ack note
-	// is a property of the acknowledgement, so it is stored on the occurrence
+	// is a property of the acknowledgement, so it is stored on the case
 	// (`ack_note`) and cleared when the ack is dropped. An unack note describes a
 	// withdrawal that leaves nothing behind to hang it on, so it lands in the
-	// `occurrence.unacknowledged` event payload — the timeline, which is the only
+	// `case.unacknowledged` event payload — the timeline, which is the only
 	// record that keeps a fact after the state it described is gone.
 	Note string
-	// Reason explains an un-acknowledgement: "manual" or "new_occurrence".
+	// Reason explains an un-acknowledgement: "manual" or "new_case".
 	Reason  string
 	Payload map[string]any
 }
@@ -953,35 +953,35 @@ type AckCommand struct {
 const (
 	// UnackReasonManual is a human dropping their own acknowledgement.
 	UnackReasonManual = "manual"
-	// UnackReasonNewOccurrence is an ack being dropped because a new episode opened.
-	UnackReasonNewOccurrence = "new_occurrence"
+	// UnackReasonNewCase is an ack being dropped because a new episode opened.
+	UnackReasonNewCase = "new_case"
 )
 
-// Acknowledge records that a human took this occurrence (T9).
+// Acknowledge records that a human took this case (T9).
 //
-// Acknowledging a terminal occurrence is errs.KindPrecondition: the request is
+// Acknowledging a terminal case is errs.KindPrecondition: the request is
 // well-formed, the entity is simply in the wrong state. Acknowledgement identity
 // IS stored — it is operationally necessary — but oto exposes no per-person
 // response-time metric anywhere (R8).
-func (o Occurrence) Acknowledge(cmd AckCommand) (Occurrence, []Event, error) {
+func (o Case) Acknowledge(cmd AckCommand) (Case, []Event, error) {
 	if cmd.Actor.IsZero() || !cmd.Actor.Kind().IsHuman() {
-		return Occurrence{}, nil, errs.New(errs.KindValidation, "required",
+		return Case{}, nil, errs.New(errs.KindValidation, "required",
 			"an acknowledgement requires a human actor")
 	}
 	if cmd.At.IsZero() {
-		return Occurrence{}, nil, errs.New(errs.KindValidation, "required",
+		return Case{}, nil, errs.New(errs.KindValidation, "required",
 			"an acknowledgement carries both occurred_at and recorded_at")
 	}
 	if o.state.IsTerminal() {
-		return Occurrence{}, nil, errs.Newf(errs.KindPrecondition, "occurrence_terminal",
-			"a %s occurrence cannot be acknowledged", o.state)
+		return Case{}, nil, errs.Newf(errs.KindPrecondition, "case_terminal",
+			"a %s case cannot be acknowledged", o.state)
 	}
 	if o.ackState.IsAcked() {
-		return Occurrence{}, nil, errs.New(errs.KindPrecondition, "already_acked",
-			"this occurrence is already acknowledged")
+		return Case{}, nil, errs.New(errs.KindPrecondition, "already_acked",
+			"this case is already acknowledged")
 	}
 	if len(cmd.Note) > MaxAckNoteBytes {
-		return Occurrence{}, nil, errs.Newf(errs.KindValidation, "max_length",
+		return Case{}, nil, errs.Newf(errs.KindValidation, "max_length",
 			"ack note must have at most %d characters", MaxAckNoteBytes)
 	}
 
@@ -994,53 +994,53 @@ func (o Occurrence) Acknowledge(cmd AckCommand) (Occurrence, []Event, error) {
 		next.ackedBy = id
 	}
 	if err := next.check(); err != nil {
-		return Occurrence{}, nil, err
+		return Case{}, nil, err
 	}
 
 	ev, err := NewEvent(EventParams{
-		ID:           cmd.EventID,
-		OrgID:        next.orgID,
-		AlertID:      next.alertID,
-		OccurrenceID: next.id,
-		GroupID:      next.groupID,
-		Type:         EventOccurrenceAcknowledged,
-		At:           cmd.At,
-		Actor:        cmd.Actor,
-		Summary:      "Acknowledged by " + cmd.Actor.Label(),
-		Payload:      cmd.Payload,
-		DedupeKey:    "occ:" + next.id.String() + ":acknowledged:" + next.ackedAt.Format(time.RFC3339Nano),
+		ID:        cmd.EventID,
+		OrgID:     next.orgID,
+		AlertID:   next.alertID,
+		CaseID:    next.id,
+		GroupID:   next.groupID,
+		Type:      EventCaseAcknowledged,
+		At:        cmd.At,
+		Actor:     cmd.Actor,
+		Summary:   "Acknowledged by " + cmd.Actor.Label(),
+		Payload:   cmd.Payload,
+		DedupeKey: "case:" + next.id.String() + ":acknowledged:" + next.ackedAt.Format(time.RFC3339Nano),
 	})
 	if err != nil {
-		return Occurrence{}, nil, err
+		return Case{}, nil, err
 	}
 	return next, []Event{ev}, nil
 }
 
 // Unacknowledge drops an acknowledgement (T10), either because a human said so or
-// because a new occurrence opened.
-func (o Occurrence) Unacknowledge(cmd AckCommand) (Occurrence, []Event, error) {
+// because a new case opened.
+func (o Case) Unacknowledge(cmd AckCommand) (Case, []Event, error) {
 	if cmd.Actor.IsZero() {
-		return Occurrence{}, nil, errs.New(errs.KindValidation, "required", "actor is required")
+		return Case{}, nil, errs.New(errs.KindValidation, "required", "actor is required")
 	}
 	if cmd.At.IsZero() {
-		return Occurrence{}, nil, errs.New(errs.KindValidation, "required",
+		return Case{}, nil, errs.New(errs.KindValidation, "required",
 			"an un-acknowledgement carries both occurred_at and recorded_at")
 	}
 	if !o.ackState.IsAcked() {
-		return Occurrence{}, nil, errs.New(errs.KindPrecondition, "not_acked",
-			"this occurrence is not acknowledged")
+		return Case{}, nil, errs.New(errs.KindPrecondition, "not_acked",
+			"this case is not acknowledged")
 	}
 	reason := cmd.Reason
 	switch reason {
-	case UnackReasonManual, UnackReasonNewOccurrence:
+	case UnackReasonManual, UnackReasonNewCase:
 	case "":
 		reason = UnackReasonManual
 	default:
-		return Occurrence{}, nil, errs.Newf(errs.KindValidation, "enum",
-			"unack reason must be one of: manual, new_occurrence (got %q)", reason)
+		return Case{}, nil, errs.Newf(errs.KindValidation, "enum",
+			"unack reason must be one of: manual, new_case (got %q)", reason)
 	}
 	if len(cmd.Note) > MaxAckNoteBytes {
-		return Occurrence{}, nil, errs.Newf(errs.KindValidation, "max_length",
+		return Case{}, nil, errs.Newf(errs.KindValidation, "max_length",
 			"unack note must have at most %d characters", MaxAckNoteBytes)
 	}
 
@@ -1051,11 +1051,11 @@ func (o Occurrence) Unacknowledge(cmd AckCommand) (Occurrence, []Event, error) {
 	next.ackedByLabel = ""
 	next.ackNote = ""
 	if err := next.check(); err != nil {
-		return Occurrence{}, nil, err
+		return Case{}, nil, err
 	}
 
 	payload := map[string]any{"reason": reason}
-	// ⭐ The withdrawal note goes ON THE TIMELINE, because the occurrence has
+	// ⭐ The withdrawal note goes ON THE TIMELINE, because the case has
 	// nowhere left to keep it: `ack_note` describes the acknowledgement that is
 	// being removed and is cleared four lines above. "Un-acking, it's back" is
 	// the most useful sentence anybody types at 3am, and it used to be bound,
@@ -1068,20 +1068,20 @@ func (o Occurrence) Unacknowledge(cmd AckCommand) (Occurrence, []Event, error) {
 	}
 
 	ev, err := NewEvent(EventParams{
-		ID:           cmd.EventID,
-		OrgID:        next.orgID,
-		AlertID:      next.alertID,
-		OccurrenceID: next.id,
-		GroupID:      next.groupID,
-		Type:         EventOccurrenceUnacknowledged,
-		At:           cmd.At,
-		Actor:        cmd.Actor,
-		Summary:      "Acknowledgement removed (" + reason + ")",
-		Payload:      payload,
-		DedupeKey:    "occ:" + next.id.String() + ":unacknowledged:" + cmd.At.RecordedAt().Format(time.RFC3339Nano),
+		ID:        cmd.EventID,
+		OrgID:     next.orgID,
+		AlertID:   next.alertID,
+		CaseID:    next.id,
+		GroupID:   next.groupID,
+		Type:      EventCaseUnacknowledged,
+		At:        cmd.At,
+		Actor:     cmd.Actor,
+		Summary:   "Acknowledgement removed (" + reason + ")",
+		Payload:   payload,
+		DedupeKey: "case:" + next.id.String() + ":unacknowledged:" + cmd.At.RecordedAt().Format(time.RFC3339Nano),
 	})
 	if err != nil {
-		return Occurrence{}, nil, err
+		return Case{}, nil, err
 	}
 	return next, []Event{ev}, nil
 }

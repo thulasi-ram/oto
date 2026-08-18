@@ -100,16 +100,16 @@ func (f fakeAlerts) Get(context.Context, db.TenantScope, uuid.UUID) (alerts.Aler
 	return alerts.AlertDetail{}, nil
 }
 
-func (f fakeAlerts) GetOccurrence(context.Context, db.TenantScope, uuid.UUID) (alertdomain.Occurrence, error) {
+func (f fakeAlerts) GetCase(context.Context, db.TenantScope, uuid.UUID) (alertdomain.Case, error) {
 	f.t.Fatal("the snapshot batch read reached into alerts; it takes snapshot ids and nothing else")
-	return alertdomain.Occurrence{}, nil
+	return alertdomain.Case{}, nil
 }
 
-func (f fakeAlerts) PreviousOccurrenceWithRule(
+func (f fakeAlerts) PreviousCaseWithRule(
 	context.Context, db.TenantScope, uuid.UUID, int,
-) (alertdomain.Occurrence, bool, error) {
+) (alertdomain.Case, bool, error) {
 	f.t.Fatal("the snapshot batch read reached into alerts; it takes snapshot ids and nothing else")
-	return alertdomain.Occurrence{}, false, nil
+	return alertdomain.Case{}, false, nil
 }
 
 /* -------------------------------------------------------------------------- */

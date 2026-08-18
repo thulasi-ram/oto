@@ -297,7 +297,7 @@ type report struct {
 	// ---- what landed ----------------------------------------------------
 	BatchStatus       map[string]int `json:"ingest_batch_status"`
 	AlertRows         int            `json:"alert_rows"`
-	OccurrenceRows    int            `json:"occurrence_rows"`
+	CaseRows          int            `json:"case_rows"`
 	GroupMemberRows   int            `json:"group_member_rows"`
 	GroupRows         int            `json:"group_rows"`
 	RejectionsByReasn map[string]int `json:"ingest_rejections_by_reason"`
@@ -378,8 +378,9 @@ func (e *env) measure(name string, d *driver, push, drainFor time.Duration) *rep
 
 	r.BatchStatus = e.countBy(`SELECT status, count(*) FROM ingest_batches WHERE org_id = $1 GROUP BY 1`)
 	r.AlertRows = e.queryInt(`SELECT count(*) FROM alerts WHERE org_id = $1`, e.orgID)
-	r.OccurrenceRows = e.queryInt(`SELECT count(*) FROM alert_occurrences WHERE org_id = $1`, e.orgID)
-	r.GroupMemberRows = e.queryInt(`SELECT count(*) FROM alert_group_members WHERE org_id = $1`, e.orgID)
+	r.CaseRows = e.queryInt(`SELECT count(*) FROM alert_cases WHERE org_id = $1`, e.orgID)
+	r.GroupMemberRows = e.queryInt(
+		`SELECT count(*) FROM alert_cases WHERE org_id = $1 AND group_id IS NOT NULL`, e.orgID)
 	r.GroupRows = e.queryInt(`SELECT count(*) FROM alert_groups WHERE org_id = $1`, e.orgID)
 	r.Groups = r.GroupRows
 	r.RejectionsByReasn = e.countBy(
@@ -390,7 +391,8 @@ func (e *env) measure(name string, d *driver, push, drainFor time.Duration) *rep
 		`SELECT coalesce(max(state_version), 0) FROM alert_groups WHERE org_id = $1`, e.orgID)
 	r.AlertsPerLargeGrp = e.queryInt(
 		`SELECT coalesce(max(n), 0) FROM (
-		   SELECT count(*) AS n FROM alert_group_members WHERE org_id = $1 GROUP BY group_id
+		   SELECT count(*) AS n FROM alert_cases
+		    WHERE org_id = $1 AND group_id IS NOT NULL GROUP BY group_id
 		 ) t`, e.orgID)
 	if r.AlertsPerLargeGrp > 0 {
 		worst := 0
@@ -646,14 +648,17 @@ func assertStormInvariants(t *testing.T, e *env, r *report, want invariantSpec) 
 		t.Errorf("alert_groups = %d, want %d — a group generation was split or duplicated",
 			r.GroupRows, want.Groups)
 	}
+	// Membership is `alert_cases.group_id` since 00051, so this counts
+	// grouped EPISODES. One alert opens one episode in this driver, so the two
+	// numbers still have to agree.
 	if r.GroupMemberRows != r.AlertRows {
-		t.Errorf("alert_group_members = %d but alerts = %d — an alert landed with no membership, "+
+		t.Errorf("grouped episodes = %d but alerts = %d — an alert landed with no membership, "+
 			"so the card it belongs to under-counts the incident", r.GroupMemberRows, r.AlertRows)
 	}
 
-	// 3. ⭐ THE O(groups) PROPERTY, END TO END. `JoinMany` exists so that one batch
-	//    performs ONE rollup and ONE storm evaluation per affected group rather
-	//    than one per alert. Two statements, because one alone is weak: the ratio
+	// 3. ⭐ THE O(groups) PROPERTY, END TO END. `Recompute` is called once per
+	//    affected group per batch, so one batch performs ONE rollup and ONE storm
+	//    evaluation per group rather than one per alert. Two statements, because one alone is weak: the ratio
 	//    catches the regression, the absolute bound catches drift.
 	for title, n := range r.RollupPublishes {
 		if n > want.MaxRollupsPerGroup {

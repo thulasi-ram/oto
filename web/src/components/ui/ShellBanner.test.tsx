@@ -74,7 +74,6 @@ function activeSnooze(id: string, alertname: string, by = "Ada Lovelace"): Activ
       alertname,
       cluster_key: "prod-eu",
       state: "firing",
-      ack_state: "unacked",
     },
     remaining_seconds: 3600,
   };
@@ -212,7 +211,7 @@ describe("a healthy org", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("an unreachable source", () => {
-  it("names it, says the occurrences are held, and cannot be dismissed", async () => {
+  it("names it, says the cases are held, and cannot be dismissed", async () => {
     const { stub } = mount({
       sources: [unreachable("prod-eu alertmanager", "src-1", "dial tcp: i/o timeout")],
     });

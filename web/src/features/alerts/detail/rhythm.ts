@@ -10,7 +10,7 @@
  * `PANEL_HEADER` and `PANEL_BODY` are settings' rhythm too, so both live in
  * `~/components/ui/panel-rhythm.ts` and are re-exported below rather than
  * kept as two verbatim copies. `PANEL_ROW` is genuinely specific to this
- * screen's panels (delivery, enrichment, occurrence lists) and stays local.
+ * screen's panels (delivery, enrichment, case lists) and stays local.
  *
  * Written as oto's own spacing names (`px-lg`, `py-md`) rather than Tailwind
  * numerics: `~/lib/cn`'s `cn()` teaches `tailwind-merge` oto's named spacing

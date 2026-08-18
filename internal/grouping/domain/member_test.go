@@ -13,11 +13,11 @@ import (
 
 func validMemberParams() domain.MemberParams {
 	return domain.MemberParams{
-		GroupID:      uuid.New(),
-		OccurrenceID: uuid.New(),
-		OrgID:        uuid.New(),
-		AlertID:      uuid.New(),
-		JoinedAt:     baseTime,
+		GroupID:  uuid.New(),
+		CaseID:   uuid.New(),
+		OrgID:    uuid.New(),
+		AlertID:  uuid.New(),
+		JoinedAt: baseTime,
 	}
 }
 
@@ -35,8 +35,8 @@ func TestNewMemberRejections(t *testing.T) {
 			code:   "required",
 		},
 		{
-			name:   "nil occurrence_id",
-			mutate: func(p *domain.MemberParams) { p.OccurrenceID = uuid.Nil },
+			name:   "nil case_id",
+			mutate: func(p *domain.MemberParams) { p.CaseID = uuid.Nil },
 			code:   "required",
 		},
 		{
@@ -55,7 +55,7 @@ func TestNewMemberRejections(t *testing.T) {
 			code:   "required",
 		},
 		{
-			name: "left_at one nanosecond before joined_at (gm_order_ck)",
+			name: "left_at one nanosecond before joined_at (case_order_ck)",
 			mutate: func(p *domain.MemberParams) {
 				p.LeftAt = baseTime.Add(-time.Nanosecond)
 			},
@@ -211,7 +211,7 @@ func TestMemberAccessorsRoundTripTheConstructor(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, p.GroupID, m.GroupID())
-	assert.Equal(t, p.OccurrenceID, m.OccurrenceID())
+	assert.Equal(t, p.CaseID, m.CaseID())
 	assert.Equal(t, p.OrgID, m.OrgID())
 	assert.Equal(t, p.AlertID, m.AlertID())
 	assert.True(t, m.JoinedAt().Equal(p.JoinedAt))

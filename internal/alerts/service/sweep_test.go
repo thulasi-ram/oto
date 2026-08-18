@@ -19,15 +19,15 @@ import (
 	"github.com/thulasiram/oto/test/harness"
 )
 
-// These are the sweep tests: the §B.4 batch health guard of `occurrence.reap`
+// These are the sweep tests: the §B.4 batch health guard of `case.reap`
 // and the steady-state write elision of `flap.score`. They run against the same
 // real Postgres as the race tests above them, because the properties under test
 // end in rows — what expired, what was held, and above all what was NOT written.
 
 // ------------------------------------------------------------------ reap fakes
 
-// fakeOccSources maps occurrences onto sources from a fixed table, standing in
-// for the group-membership join the production resolver walks. An occurrence
+// fakeOccSources maps cases onto sources from a fixed table, standing in
+// for the group-membership join the production resolver walks. A case
 // absent from the table is absent from the answer, which the sweep must read as
 // "cannot prove healthy".
 type fakeOccSources struct {
@@ -35,12 +35,12 @@ type fakeOccSources struct {
 }
 
 func (f fakeOccSources) SourceIDs(
-	_ context.Context, _ db.TenantScope, occurrenceIDs []uuid.UUID,
+	_ context.Context, _ db.TenantScope, caseIDs []uuid.UUID,
 ) (map[uuid.UUID]uuid.UUID, error) {
-	out := make(map[uuid.UUID]uuid.UUID, len(occurrenceIDs))
-	for _, occID := range occurrenceIDs {
-		if src, ok := f.bySource[occID]; ok {
-			out[occID] = src
+	out := make(map[uuid.UUID]uuid.UUID, len(caseIDs))
+	for _, caseID := range caseIDs {
+		if src, ok := f.bySource[caseID]; ok {
+			out[caseID] = src
 		}
 	}
 	return out, nil
@@ -69,16 +69,16 @@ func (f *fakeHealth) HealthyFor(
 // sweepService builds a service over the fixture's pool with the ports the
 // sweeps use: the reaper's resolver and health guard, and the flap scorer's
 // event counter. The nil-port degradations are covered by using nil here too.
-func (f *fixture) sweepService(occSources OccurrenceSourceResolver, health SourceHealth) *Service {
+func (f *fixture) sweepService(occSources CaseSourceResolver, health SourceHealth) *Service {
 	f.t.Helper()
 	svc, err := New(Deps{
 		Alerts:      repository.NewAlertRepository(f.pool, f.clk, false),
-		Occurrences: repository.NewOccurrenceRepository(f.pool),
+		Cases:       repository.NewCaseRepository(f.pool),
 		Events:      repository.NewEventRepository(f.pool, f.clk),
 		Snoozes:     repository.NewSnoozeRepository(f.pool, f.clk),
 		Tx:          repository.NewTxRunner(f.pool),
 		AlertBatch:  repository.NewAlertRepository(f.pool, f.clk, false),
-		OccBatch:    repository.NewOccurrenceRepository(f.pool),
+		OccBatch:    repository.NewCaseRepository(f.pool),
 		OccSources:  occSources,
 		Health:      health,
 		EventCounts: repository.NewEventRepository(f.pool, f.clk),
@@ -91,9 +91,9 @@ func (f *fixture) sweepService(occSources OccurrenceSourceResolver, health Sourc
 	return svc
 }
 
-// openSecondFiring opens an occurrence on a SECOND alert in the same tenant, so
+// openSecondFiring opens a case on a SECOND alert in the same tenant, so
 // a reap tick has two candidates to consider.
-func (f *fixture) openSecondFiring(startsAt, endsAt time.Time) domain.Occurrence {
+func (f *fixture) openSecondFiring(startsAt, endsAt time.Time) domain.Case {
 	f.t.Helper()
 	labels := harness.Labels(f.t, map[string]string{
 		"alertname": "SecondAlert",
@@ -116,45 +116,45 @@ func (f *fixture) openSecondFiring(startsAt, endsAt time.Time) domain.Occurrence
 	}
 	if _, err := f.svc.ObserveBatch(f.t.Context(), f.scope, []domain.Observation{obs},
 		ObserveOptions{}); err != nil {
-		f.t.Fatalf("open second firing occurrence: %v", err)
+		f.t.Fatalf("open second firing case: %v", err)
 	}
-	occ, err := f.occurrences.GetByID(f.t.Context(), f.scope, f.occurrenceIDOf(obs.AlertKey))
+	ac, err := f.cases.GetByID(f.t.Context(), f.scope, f.caseIDOf(obs.AlertKey))
 	if err != nil {
-		f.t.Fatalf("read second occurrence: %v", err)
+		f.t.Fatalf("read second case: %v", err)
 	}
-	return occ
+	return ac
 }
 
-// occurrenceIDOf resolves an alert key to its current occurrence id.
-func (f *fixture) occurrenceIDOf(key domain.AlertKey) uuid.UUID {
+// caseIDOf resolves an alert key to its current case id.
+func (f *fixture) caseIDOf(key domain.AlertKey) uuid.UUID {
 	f.t.Helper()
-	var occID uuid.UUID
+	var caseID uuid.UUID
 	if err := f.pool.QueryRow(f.t.Context(),
-		`SELECT current_occurrence_id FROM alerts WHERE org_id = $1 AND alert_key = $2`,
-		f.orgID, key.String()).Scan(&occID); err != nil {
-		f.t.Fatalf("resolve occurrence of %s: %v", key, err)
+		`SELECT current_case_id FROM alerts WHERE org_id = $1 AND alert_key = $2`,
+		f.orgID, key.String()).Scan(&caseID); err != nil {
+		f.t.Fatalf("resolve case of %s: %v", key, err)
 	}
-	return occID
+	return caseID
 }
 
-// stateOf reads one occurrence's state letter straight from the row.
-func (f *fixture) stateOf(occID uuid.UUID) string {
+// stateOf reads one case's state letter straight from the row.
+func (f *fixture) stateOf(caseID uuid.UUID) string {
 	f.t.Helper()
 	var state string
 	if err := f.pool.QueryRow(f.t.Context(),
-		`SELECT state FROM alert_occurrences WHERE org_id = $1 AND id = $2`,
-		f.orgID, occID).Scan(&state); err != nil {
-		f.t.Fatalf("read occurrence state: %v", err)
+		`SELECT state FROM alert_cases WHERE org_id = $1 AND id = $2`,
+		f.orgID, caseID).Scan(&state); err != nil {
+		f.t.Fatalf("read case state: %v", err)
 	}
 	return state
 }
 
 // -------------------------------------------------------------------- reaping
 
-// TestReapAsksForHealthOncePerTickNotPerOccurrence pins the round-trip shape of
+// TestReapAsksForHealthOncePerTickNotPerCase pins the round-trip shape of
 // the §B.4 guard: the guard is per SOURCE, so a tick with two candidates over
 // one source asks the health port exactly once, with exactly that source.
-func TestReapAsksForHealthOncePerTickNotPerOccurrence(t *testing.T) {
+func TestReapAsksForHealthOncePerTickNotPerCase(t *testing.T) {
 	now := harness.Epoch
 	f := newFixture(t, now)
 	ctx := t.Context()
@@ -177,7 +177,7 @@ func TestReapAsksForHealthOncePerTickNotPerOccurrence(t *testing.T) {
 	assert.Zero(t, res.Held)
 
 	require.Equal(t, 1, health.calls,
-		"health is resolved ONCE per tick: per-occurrence lookups made a source outage cost "+
+		"health is resolved ONCE per tick: per-case lookups made a source outage cost "+
 			"two queries per candidate per minute, worst exactly when the source was down")
 	require.Equal(t, []uuid.UUID{srcID}, health.asked[0],
 		"two candidates over one source must ask about that one source, deduped")
@@ -188,7 +188,7 @@ func TestReapAsksForHealthOncePerTickNotPerOccurrence(t *testing.T) {
 
 // TestReapHoldsWhatTheBatchCannotVouchFor is §B.4 over the batch result: a
 // source ABSENT from the returned map is not proven healthy, and every
-// occurrence it owns is held in place — absence and false are the same verdict.
+// case it owns is held in place — absence and false are the same verdict.
 func TestReapHoldsWhatTheBatchCannotVouchFor(t *testing.T) {
 	now := harness.Epoch
 	f := newFixture(t, now)
@@ -216,7 +216,7 @@ func TestReapHoldsWhatTheBatchCannotVouchFor(t *testing.T) {
 
 	assert.Equal(t, domain.StateExpired.String(), f.stateOf(occ1.ID()))
 	assert.Equal(t, domain.StateFiring.String(), f.stateOf(occ2.ID()),
-		"the held occurrence must be left exactly as it was")
+		"the held case must be left exactly as it was")
 }
 
 // TestReapHoldsEveryCandidateWhenTheHealthLookupFails: a failed batch lookup is
@@ -314,7 +314,7 @@ func TestScoreFlapsSkipsTheSteadyStateWrite(t *testing.T) {
 			"pure WAL churn on the hottest table in the system")
 	require.Equal(t, score1, f.flapScore())
 
-	// The occurrence resolves, adding a second transition to the window: the
+	// The case resolves, adding a second transition to the window: the
 	// score CHANGES, so the elision must not suppress this write.
 	resolved := f.observation(domain.ObservedByIngest, "resolved",
 		f.clk.Now(), now.Add(-2*time.Hour), f.clk.Now())

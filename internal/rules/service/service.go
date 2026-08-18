@@ -99,9 +99,9 @@ func New(o Options) (*Service, error) {
 type CaptureRequest struct {
 	// SourceID is the AlertSource the alert arrived from. Required.
 	SourceID uuid.UUID
-	// AlertID and OccurrenceID scope the timeline events. Optional.
-	AlertID      uuid.UUID
-	OccurrenceID uuid.UUID
+	// AlertID and CaseID scope the timeline events. Optional.
+	AlertID uuid.UUID
+	CaseID  uuid.UUID
 	// Labels are the alert's rendered labels; alertname is required.
 	Labels map[string]string
 	// Annotations are the alert's rendered annotations.
@@ -277,7 +277,7 @@ func (s *Service) narrate(
 	if s.events == nil {
 		return
 	}
-	if req.AlertID == uuid.Nil && req.OccurrenceID == uuid.Nil {
+	if req.AlertID == uuid.Nil && req.CaseID == uuid.Nil {
 		return
 	}
 
@@ -288,13 +288,13 @@ func (s *Service) narrate(
 
 	emit := func(typ kernel.EventType, summary string, payload map[string]any, dedupe string) {
 		if err := s.events.RecordRuleEvent(ctx, scope, RuleEvent{
-			Type:         typ,
-			AlertID:      req.AlertID,
-			OccurrenceID: req.OccurrenceID,
-			SnapshotID:   snapID,
-			Summary:      clampSummary(summary),
-			Payload:      payload,
-			DedupeKey:    dedupe,
+			Type:       typ,
+			AlertID:    req.AlertID,
+			CaseID:     req.CaseID,
+			SnapshotID: snapID,
+			Summary:    clampSummary(summary),
+			Payload:    payload,
+			DedupeKey:  dedupe,
 		}); err != nil {
 			s.log.WarnContext(ctx, "rules: could not record rule event",
 				"type", typ, "error", err)
@@ -315,14 +315,14 @@ func (s *Service) narrate(
 	if !c.Recovered() {
 		emit(kernel.EventRuleLookupFailed,
 			fmt.Sprintf("rule %q could not be recovered", c.Snapshot.Key.Name),
-			base, dedupeKey("rule_lookup_failed", req.OccurrenceID, c.Snapshot.Fingerprint))
+			base, dedupeKey("rule_lookup_failed", req.CaseID, c.Snapshot.Fingerprint))
 		return
 	}
 
 	emit(kernel.EventRuleSnapshotCaptured,
 		fmt.Sprintf("captured rule %q (%s, %s match)",
 			c.Snapshot.Key.Name, c.Snapshot.Origin, c.Snapshot.Confidence),
-		base, dedupeKey("rule_captured", req.OccurrenceID, c.Snapshot.Fingerprint))
+		base, dedupeKey("rule_captured", req.CaseID, c.Snapshot.Fingerprint))
 
 	if c.Drifted {
 		diff := driftPayload(drift)
@@ -340,7 +340,7 @@ func (s *Service) narrate(
 		payload["previous_fingerprint"] = c.PreviousFingerprint
 		emit(kernel.EventRuleDefinitionChanged,
 			fmt.Sprintf("rule %q changed since the previous fire", c.Snapshot.Key.Name),
-			payload, dedupeKey("rule_changed", req.OccurrenceID, c.Snapshot.Fingerprint))
+			payload, dedupeKey("rule_changed", req.CaseID, c.Snapshot.Fingerprint))
 	}
 }
 
@@ -398,12 +398,12 @@ func mapChangePayload(cs []domain.MapChange) map[string]any {
 	return out
 }
 
-func dedupeKey(prefix string, occurrenceID uuid.UUID, fingerprint string) string {
+func dedupeKey(prefix string, caseID uuid.UUID, fingerprint string) string {
 	fp := fingerprint
 	if len(fp) > 16 {
 		fp = fp[:16]
 	}
-	return fmt.Sprintf("%s:%s:%s", prefix, occurrenceID, fp)
+	return fmt.Sprintf("%s:%s:%s", prefix, caseID, fp)
 }
 
 // clampSummary enforces ev_summary_ck (1..500 bytes).

@@ -94,8 +94,8 @@ func TestTheFanOutReachesEveryTenantAcrossContinuations(t *testing.T) {
 			"the continuation chain did not terminate; a full page that does not advance the cursor is an infinite fan-out")
 
 		enq.reset()
-		out, err := jobs.FanOutTenants(h.Ctx, jobs.KindOccurrenceReap, enq, lister, nil, after,
-			func(f jobs.TenantFanOut) db.JobArgs { return jobs.OccurrenceReapArgs{TenantFanOut: f} })
+		out, err := jobs.FanOutTenants(h.Ctx, jobs.KindCaseReap, enq, lister, nil, after,
+			func(f jobs.TenantFanOut) db.JobArgs { return jobs.CaseReapArgs{TenantFanOut: f} })
 		require.NoError(t, err)
 
 		orgs, cont := enq.split(t)
@@ -190,12 +190,12 @@ func TestAPerTenantJobResolvesItsTenantAgainstTheTable(t *testing.T) {
 		return nil
 	}
 
-	require.NoError(t, jobs.ForTenant(h.Ctx, jobs.KindOccurrenceReap, lister, live.ID, record))
+	require.NoError(t, jobs.ForTenant(h.Ctx, jobs.KindCaseReap, lister, live.ID, record))
 	require.Equal(t, []uuid.UUID{live.ID}, swept, "a live tenant's job did not run under its own scope")
 
-	require.NoError(t, jobs.ForTenant(h.Ctx, jobs.KindOccurrenceReap, lister, gone.ID, record),
+	require.NoError(t, jobs.ForTenant(h.Ctx, jobs.KindCaseReap, lister, gone.ID, record),
 		"a departed tenant must not fail the job; there is nothing to retry")
-	require.NoError(t, jobs.ForTenant(h.Ctx, jobs.KindOccurrenceReap, lister, uuid.New(), record),
+	require.NoError(t, jobs.ForTenant(h.Ctx, jobs.KindCaseReap, lister, uuid.New(), record),
 		"an org id naming nothing at all must not fail the job either")
 	require.Equal(t, []uuid.UUID{live.ID}, swept,
 		"a soft-deleted or unknown tenant was swept from a job payload")
@@ -293,7 +293,7 @@ func (e *recordingEnqueuer) split(t *testing.T) (orgIDs, continuations []uuid.UU
 // the only test that runs the walk against a real tenant table.
 func tenantFanOutOf(args db.JobArgs) (jobs.TenantFanOut, bool) {
 	switch a := args.(type) {
-	case jobs.OccurrenceReapArgs:
+	case jobs.CaseReapArgs:
 		return a.TenantFanOut, true
 	case jobs.SourceReconcileArgs:
 		return a.TenantFanOut, true

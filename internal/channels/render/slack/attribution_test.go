@@ -53,7 +53,7 @@ func humanVerbView(reason string) *domain.NotificationView {
 			FirstSeenAt:    attributionAt.Add(-10 * time.Minute),
 			LastActivityAt: attributionAt,
 		},
-		Occurrence: &domain.OccurrenceView{
+		Case: &domain.CaseView{
 			ID: "occ1", Seq: 1, State: "firing", AckState: "acked",
 			StartedAt:    attributionAt.Add(-10 * time.Minute),
 			AckedAt:      &attributionAt,
@@ -101,10 +101,10 @@ func TestASystemTransitionSaysItWasAutomaticInsteadOfNamingNobody(t *testing.T) 
 
 	v := humanVerbView("unacked")
 	v.Group.AckedCount = 0
-	v.Occurrence.AckState = "unacked"
-	v.Occurrence.AckedAt = nil
-	v.Occurrence.AckedByLabel = ""
-	v.Occurrence.ReopenCount = 1
+	v.Case.AckState = "unacked"
+	v.Case.AckedAt = nil
+	v.Case.AckedByLabel = ""
+	v.Case.ReopenCount = 1
 	// No id and no label: only a human actor is guaranteed either (ev_actor_ck).
 	v.Actor = &domain.ActorView{Kind: "system"}
 
@@ -125,9 +125,9 @@ func TestAnUnknownCauseIsLeftUnattributedRatherThanInvented(t *testing.T) {
 
 	v := humanVerbView("unacked")
 	v.Group.AckedCount = 0
-	v.Occurrence.AckState = "unacked"
-	v.Occurrence.AckedAt = nil
-	v.Occurrence.AckedByLabel = ""
+	v.Case.AckState = "unacked"
+	v.Case.AckedAt = nil
+	v.Case.AckedByLabel = ""
 
 	body := string(renderView(t, v, domain.ModeThreadReply).Payload)
 
@@ -190,8 +190,8 @@ func TestACommentDoesNotCreditTheAcknowledgementToWhoeverSpokeLast(t *testing.T)
 	v.Actor = &domain.ActorView{Kind: "slack_user", ID: "U09ZZZZZZZZ", Label: "someone-else"}
 	v.Group.FiringCount = 0
 	v.Group.ResolvedCount = 1
-	v.Occurrence.State = "resolved"
-	v.Occurrence.EndedAt = &attributionAt
+	v.Case.State = "resolved"
+	v.Case.EndedAt = &attributionAt
 
 	acknowledged := fieldValue(t, renderView(t, v, domain.ModeUpdateRoot).Payload, "Acknowledged")
 
@@ -222,10 +222,10 @@ func TestACommentDoesNotTurnAHumanAcknowledgementIntoAnAutomaticOne(t *testing.T
 	v.Group.SuppressedCount = 1
 	v.Group.TotalCount = 3
 	// The focus is the SILENCED member, which nobody acknowledged.
-	v.Occurrence.State = "suppressed"
-	v.Occurrence.AckState = "unacked"
-	v.Occurrence.AckedAt = nil
-	v.Occurrence.AckedByLabel = ""
+	v.Case.State = "suppressed"
+	v.Case.AckState = "unacked"
+	v.Case.AckedAt = nil
+	v.Case.AckedByLabel = ""
 
 	status := fieldValue(t, renderView(t, v, domain.ModeUpdateRoot).Payload, "Status")
 
@@ -254,10 +254,10 @@ func TestASilenceIsAttributedUpstreamWhenNoHumanIsNamed(t *testing.T) {
 	v.Group.FiringCount = 0
 	v.Group.AckedCount = 0
 	v.Group.SuppressedCount = 1
-	v.Occurrence.State = "suppressed"
-	v.Occurrence.AckState = "unacked"
-	v.Occurrence.AckedAt = nil
-	v.Occurrence.AckedByLabel = ""
+	v.Case.State = "suppressed"
+	v.Case.AckState = "unacked"
+	v.Case.AckedAt = nil
+	v.Case.AckedByLabel = ""
 	v.Actor = &domain.ActorView{Kind: "reconciler"}
 
 	body := string(renderView(t, v, domain.ModeThreadReply).Payload)

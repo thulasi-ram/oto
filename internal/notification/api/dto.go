@@ -95,12 +95,12 @@ type DeliverySummaryDTO struct {
 // idempotency hash is deliberately not exposed: it is a write-path mechanism, not
 // a client-facing identifier.
 type NotificationDTO struct {
-	ID           uuid.UUID  `json:"id"`
-	SubjectKind  string     `json:"subject_kind"`
-	SubjectID    uuid.UUID  `json:"subject_id"`
-	GroupID      uuid.UUID  `json:"group_id"`
-	AlertID      *uuid.UUID `json:"alert_id"`
-	OccurrenceID *uuid.UUID `json:"occurrence_id"`
+	ID          uuid.UUID  `json:"id"`
+	SubjectKind string     `json:"subject_kind"`
+	SubjectID   uuid.UUID  `json:"subject_id"`
+	GroupID     uuid.UUID  `json:"group_id"`
+	AlertID     *uuid.UUID `json:"alert_id"`
+	CaseID      *uuid.UUID `json:"case_id"`
 
 	Reason       string     `json:"reason"`
 	PolicyID     *uuid.UUID `json:"policy_id"`
@@ -311,9 +311,9 @@ func (r UpdatePolicyRequest) IsEmpty() bool {
 // form answer "who would this reach?" before anything is saved — and is the
 // difference between a preview and a post-mortem.
 type PolicyPreviewRequest struct {
-	AlertID      *uuid.UUID `json:"alert_id,omitempty"`
-	OccurrenceID *uuid.UUID `json:"occurrence_id,omitempty"`
-	GroupID      *uuid.UUID `json:"group_id,omitempty"`
+	AlertID *uuid.UUID `json:"alert_id,omitempty"`
+	CaseID  *uuid.UUID `json:"case_id,omitempty"`
+	GroupID *uuid.UUID `json:"group_id,omitempty"`
 	// Reason defaults to `fired`.
 	Reason string               `json:"reason,omitempty"`
 	Policy *CreatePolicyRequest `json:"policy,omitempty"`

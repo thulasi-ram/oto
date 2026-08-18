@@ -61,9 +61,17 @@ type ListResult struct {
 // against a DIFFERENT filter is rejected rather than quietly producing a wrong
 // page (§E.1) — the caller maps this to `400 cursor_filter_mismatch`.
 //
-// Note what this method does NOT do: it never hides snoozed alerts. §B.8.6 is
-// explicit that the default list includes them, because hiding a snoozed alert
-// is how an incident is lost. `?snoozed=` is an explicit, visible filter chip.
+// ⭐ `?snoozed=` IS NOW A TAB SELECTOR, AND ITS ABSENCE STILL MEANS "BOTH".
+// `false` is the main tab and `true` is **Quiet**; a caller that sends neither
+// gets every alert, because a caller that asked no question must not be handed a
+// filtered answer. Either way the question is put to `alert_snoozes`, never to a
+// column on `alerts`.
+//
+// §B.8.6 refused to hide snoozed alerts from the default list because a snooze
+// badge on row 400 of a scrolling list is already invisible, so hiding the row
+// loses the incident. The Quiet tab is what makes hiding safe: it is present even
+// at zero, and its badge carries the worst state inside it, so something live
+// being held back is legible in a way the badge never was.
 func (s *Service) List(ctx context.Context, scope db.TenantScope, q ListQuery) (ListResult, error) {
 	if !q.Page.Cursor.IsZero() && q.Page.Cursor.Hash != q.Filter.FilterHash {
 		return ListResult{}, errs.Malformed("cursor_filter_mismatch",
@@ -103,28 +111,30 @@ func (s *Service) List(ctx context.Context, scope db.TenantScope, q ListQuery) (
 
 // activeSnoozes batch-loads the §B.8 snooze rows behind one page of alerts.
 //
-// ⭐ IT IS ONE QUERY OR NONE, NEVER ONE PER ROW. `alerts.snoozed_until` is the
-// projection of the active snooze, so an alert with no projection provably has no
-// snooze row to read: the id list is narrowed by that before the query is issued,
-// and a page with nothing snoozed — which is the overwhelmingly common case —
-// costs nothing at all.
+// ⭐ IT IS ONE QUERY, NEVER ONE PER ROW, and it is one query rather than
+// sometimes none because the Alert no longer carries a hint about whether to ask.
+// It used to skip the round trip for a page whose alerts all had an empty
+// `alerts.snoozed_until`; that projection is gone (00048), and reading it to
+// decide whether to read the truth was the shape of the defect, not an
+// optimisation worth rebuilding.
 //
-// The projection is read as a fact about the ROW rather than about the clock. A
-// projection that is set but has already passed belongs to a snooze the
-// 60-second `snooze.expire` job has not swept yet; it is still fetched, and the
-// mapper decides how to render it, because the alternative is a list that
-// silently disagrees with the detail page for up to a minute.
+// The cost of asking anyway is small and bounded: `alert_snoozes_active_idx` is
+// UNIQUE (alert_id) WHERE ended_at IS NULL, so this is one indexed probe per page
+// over the snoozes CURRENTLY IN FORCE — dozens of rows for a whole tenant.
+//
+// A snooze whose clock has run out but which the 60-second `snooze.expire` job
+// has not swept yet is still returned: `ended_at` is still null, so it is still a
+// row, and the mapper decides how to render it. Filtering it here would make the
+// list and the detail page disagree for up to a minute.
 func (s *Service) activeSnoozes(
 	ctx context.Context, scope db.TenantScope, alerts []domain.Alert,
 ) (map[uuid.UUID]domain.Snooze, error) {
+	if len(alerts) == 0 {
+		return map[uuid.UUID]domain.Snooze{}, nil
+	}
 	ids := make([]uuid.UUID, 0, len(alerts))
 	for _, a := range alerts {
-		if !a.SnoozedUntil().IsZero() {
-			ids = append(ids, a.ID())
-		}
-	}
-	if len(ids) == 0 {
-		return map[uuid.UUID]domain.Snooze{}, nil
+		ids = append(ids, a.ID())
 	}
 	return s.snoozes.ActiveByAlerts(ctx, scope, ids)
 }
@@ -195,11 +205,11 @@ func (s *Service) ActiveSnoozes(
 // and whether oto is notifying.
 type AlertDetail struct {
 	Alert domain.Alert
-	// CurrentOccurrence is the open episode, or nil when none is running.
-	CurrentOccurrence *domain.Occurrence
-	// LatestOccurrence is the most recent episode, open or ended. It is what the
+	// CurrentCase is the open episode, or nil when none is running.
+	CurrentCase *domain.Case
+	// LatestCase is the most recent episode, open or ended. It is what the
 	// UI shows when nothing is running.
-	LatestOccurrence *domain.Occurrence
+	LatestCase *domain.Case
 	// Snooze is the ACTIVE snooze row, or nil when the alert is awake.
 	Snooze *domain.Snooze
 	// SnoozedNow answers "is oto holding its tongue right now", evaluated against
@@ -213,24 +223,28 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, alertID uuid.UU
 	if err != nil {
 		return AlertDetail{}, err
 	}
-	out := AlertDetail{Alert: alert, SnoozedNow: alert.IsSnoozedAt(s.Now())}
+	out := AlertDetail{Alert: alert}
 
-	if latest, ok, err := s.occurrences.GetLatestByAlert(ctx, scope, alertID); err != nil {
+	if latest, ok, err := s.cases.GetLatestByAlert(ctx, scope, alertID); err != nil {
 		return AlertDetail{}, err
 	} else if ok {
 		o := latest
-		out.LatestOccurrence = &o
+		out.LatestCase = &o
 		if o.IsOpen() {
 			cur := o
-			out.CurrentOccurrence = &cur
+			out.CurrentCase = &cur
 		}
 	}
 
+	// ⭐ `SnoozedNow` IS DECIDED FROM THE ROW THAT WAS JUST READ. It used to be
+	// `alert.IsSnoozedAt(now)` — the mirrored timestamp — two lines away from the
+	// authoritative record, which is how the two could ever disagree.
 	if snz, ok, err := s.snoozes.GetActive(ctx, scope, alertID); err != nil {
 		return AlertDetail{}, err
 	} else if ok {
 		v := snz
 		out.Snooze = &v
+		out.SnoozedNow = v.IsActiveAt(s.Now())
 	}
 	return out, nil
 }
@@ -239,10 +253,10 @@ func (s *Service) Get(ctx context.Context, scope db.TenantScope, alertID uuid.UU
 // none of the detail page's companion reads.
 //
 // It exists for MACHINE callers. `Get` above is the detail PAGE: beside the
-// alert it re-reads the latest occurrence and the active snooze, because a
+// alert it re-reads the latest case and the active snooze, because a
 // human opening the page is owed all three §B.1 axes at once. The enrichment
 // pipeline needs only the frozen identity of the subject it is enriching — it
-// already holds the occurrence it was dispatched for — and a worker that
+// already holds the case it was dispatched for — and a worker that
 // consumed the page paid two extra reads per run whose results were discarded.
 // A machine that wants one fact asks for one fact.
 func (s *Service) GetAlert(ctx context.Context, scope db.TenantScope, alertID uuid.UUID) (domain.Alert, error) {
@@ -259,32 +273,32 @@ func (s *Service) GetByKey(ctx context.Context, scope db.TenantScope, alertKey s
 	return s.Get(ctx, scope, alert.ID())
 }
 
-// OccurrenceResult is one page of episode history.
-type OccurrenceResult struct {
-	Occurrences []domain.Occurrence
-	Cursor      db.Cursor
+// CaseResult is one page of episode history.
+type CaseResult struct {
+	Cases  []domain.Case
+	Cursor db.Cursor
 }
 
-// Occurrences serves `GET /api/v1/alerts/{id}/occurrences` — the episode
+// Cases serves `GET /api/v1/alerts/{id}/cases` — the episode
 // history, newest first.
-func (s *Service) Occurrences(
+func (s *Service) Cases(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, p db.Keyset,
-) (OccurrenceResult, error) {
-	occs, cur, err := s.occurrences.ListByAlert(ctx, scope, alertID, p)
+) (CaseResult, error) {
+	acs, cur, err := s.cases.ListByAlert(ctx, scope, alertID, p)
 	if err != nil {
-		return OccurrenceResult{}, err
+		return CaseResult{}, err
 	}
-	return OccurrenceResult{Occurrences: occs, Cursor: cur}, nil
+	return CaseResult{Cases: acs, Cursor: cur}, nil
 }
 
-// GetOccurrence serves `GET /api/v1/occurrences/{id}`.
-func (s *Service) GetOccurrence(
-	ctx context.Context, scope db.TenantScope, occurrenceID uuid.UUID,
-) (domain.Occurrence, error) {
-	return s.occurrences.GetByID(ctx, scope, occurrenceID)
+// GetCase serves `GET /api/v1/cases/{id}`.
+func (s *Service) GetCase(
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID,
+) (domain.Case, error) {
+	return s.cases.GetByID(ctx, scope, caseID)
 }
 
-// PreviousOccurrenceWithRule resolves the episode that fired BEFORE the given
+// PreviousCaseWithRule resolves the episode that fired BEFORE the given
 // one and had a rule snapshot bound to it.
 //
 // ⭐ IT EXISTS SO THAT DRIFT CAN BE MEASURED BETWEEN TWO EPISODES. "What changed
@@ -298,15 +312,15 @@ func (s *Service) GetOccurrence(
 // The episode is addressed by `seq`, the ordinal the state machine mints, and an
 // episode with no snapshot is stepped over rather than stopped at — see
 // `repository.PreviousWithRuleSnapshot`, which is where both choices are argued.
-func (s *Service) PreviousOccurrenceWithRule(
+func (s *Service) PreviousCaseWithRule(
 	ctx context.Context, scope db.TenantScope, alertID uuid.UUID, beforeSeq int,
-) (domain.Occurrence, bool, error) {
+) (domain.Case, bool, error) {
 	// The first episode of an alert has no predecessor, and asking the database
 	// to prove that on every rule panel read is a query with a known answer.
 	if beforeSeq <= 1 {
-		return domain.Occurrence{}, false, nil
+		return domain.Case{}, false, nil
 	}
-	return s.occurrences.PreviousWithRuleSnapshot(ctx, scope, alertID, beforeSeq)
+	return s.cases.PreviousWithRuleSnapshot(ctx, scope, alertID, beforeSeq)
 }
 
 // TimelineResult is one page of the append-only timeline.
@@ -326,11 +340,11 @@ func (s *Service) AlertTimeline(
 	return TimelineResult{Events: evs, Cursor: cur}, nil
 }
 
-// OccurrenceTimeline serves `GET /api/v1/occurrences/{id}/events`.
-func (s *Service) OccurrenceTimeline(
-	ctx context.Context, scope db.TenantScope, occurrenceID uuid.UUID, w db.TimeWindow, p db.Keyset,
+// CaseTimeline serves `GET /api/v1/cases/{id}/events`.
+func (s *Service) CaseTimeline(
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID, w db.TimeWindow, p db.Keyset,
 ) (TimelineResult, error) {
-	evs, cur, err := s.events.ListByOccurrence(ctx, scope, occurrenceID, s.window(w), p)
+	evs, cur, err := s.events.ListByCase(ctx, scope, caseID, s.window(w), p)
 	if err != nil {
 		return TimelineResult{}, err
 	}
@@ -383,11 +397,11 @@ func (s *Service) Enrichments(
 	if err != nil {
 		return nil, err
 	}
-	var occID *uuid.UUID
-	if alert.HasOpenOccurrence() {
-		occID = ptr(alert.CurrentOccurrenceID())
+	var caseID *uuid.UUID
+	if alert.HasOpenCase() {
+		caseID = ptr(alert.CurrentCaseID())
 	}
-	return s.enrichments.ListForAlert(ctx, scope, alertID, occID)
+	return s.enrichments.ListForAlert(ctx, scope, alertID, caseID)
 }
 
 // NotificationResult is one page of notification intents for an Alert.
@@ -440,15 +454,15 @@ func (s *Service) DeliveryRollupForAlert(
 	return s.notifications.DeliveryRollupForAlert(ctx, scope, alertID)
 }
 
-// DeliveryRollupForOccurrence serves the `delivery_summary` of
-// `GET /occurrences/{id}` — the same question narrowed to one firing episode.
-func (s *Service) DeliveryRollupForOccurrence(
-	ctx context.Context, scope db.TenantScope, occurrenceID uuid.UUID,
+// DeliveryRollupForCase serves the `delivery_summary` of
+// `GET /cases/{id}` — the same question narrowed to one firing episode.
+func (s *Service) DeliveryRollupForCase(
+	ctx context.Context, scope db.TenantScope, caseID uuid.UUID,
 ) (DeliveryRollup, error) {
 	if s.notifications == nil {
 		return DeliveryRollup{}, nil
 	}
-	return s.notifications.DeliveryRollupForOccurrence(ctx, scope, occurrenceID)
+	return s.notifications.DeliveryRollupForCase(ctx, scope, caseID)
 }
 
 // SnoozeHistory serves the §B.8.6 snooze history for one Alert. Membership of a
@@ -533,9 +547,9 @@ func (s *Service) Rollups(
 // declares. What the rule SAID at that moment is the differentiator, and the
 // binding is what makes drift decidable later.
 func (s *Service) BindRuleSnapshot(
-	ctx context.Context, scope db.TenantScope, occurrenceID, snapshotID uuid.UUID,
+	ctx context.Context, scope db.TenantScope, caseID, snapshotID uuid.UUID,
 ) error {
 	return s.tx.InTx(ctx, func(ctx context.Context) error {
-		return s.occurrences.BindRuleSnapshot(ctx, scope, occurrenceID, snapshotID)
+		return s.cases.BindRuleSnapshot(ctx, scope, caseID, snapshotID)
 	})
 }

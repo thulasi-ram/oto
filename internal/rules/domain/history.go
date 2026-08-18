@@ -64,7 +64,7 @@ func (h History) At(number int) (Version, bool) {
 }
 
 // ByFingerprint finds the version carrying a content address, which is how an
-// occurrence's bound snapshot is located within the history.
+// case's bound snapshot is located within the history.
 func (h History) ByFingerprint(fp string) (Version, bool) {
 	for _, v := range h.Versions {
 		if v.Snapshot.Fingerprint == fp {
@@ -75,7 +75,7 @@ func (h History) ByFingerprint(fp string) (Version, bool) {
 }
 
 // Drifted reports whether the rule has been EDITED since the version carrying
-// fp — that is, whether the newest text an occurrence could be compared against
+// fp — that is, whether the newest text a case could be compared against
 // differs from the one it was bound to. This is SPEC §C.6's definition of drift,
 // evaluated over the history rather than with a second query.
 //

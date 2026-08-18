@@ -30,7 +30,7 @@ import type {
   Enrichment,
   LabelNameRow,
   Notification,
-  Occurrence,
+  Case,
   RuleHistory,
   RuleSnapshot,
   Snooze,
@@ -174,11 +174,10 @@ const BASE: Alert = {
   },
   annotations: { summary: "Error rate above 5% for 15 minutes" },
   state: "firing",
-  ack_state: "unacked",
   first_seen_at: DAY_2,
   last_seen_at: MIN_2,
   last_state_change_at: MIN_21,
-  total_occurrences: 3,
+  total_cases: 3,
   flap_score: 0,
   is_flapping: false,
   synthetic: false,
@@ -213,12 +212,12 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "2 of 5 replicas have been unavailable for 40 minutes" },
     is_flapping: true,
     flap_score: 7.4,
-    total_occurrences: 19,
+    total_cases: 19,
     first_seen_at: DAY_16,
     last_seen_at: NOW,
     last_state_change_at: MIN_9,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289504",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3801",
       seq: 19,
@@ -236,8 +235,8 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     alert_key: "b3f1c2d4e5a60702",
     alertname: "HighErrorRate",
     last_seen_at: MIN_2,
-    total_occurrences: 4,
-    current_occurrence: {
+    total_cases: 4,
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289505",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3802",
       seq: 4,
@@ -257,7 +256,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     severity: "critical",
     namespace: "payments",
     service: "auth-gateway",
-    ack_state: "acked",
     labels: {
       alertname: "PaymentAuthorisationGatewayCircuitBreakerOpenForMoreThanFiveMinutes",
       severity: "critical",
@@ -269,8 +267,8 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Circuit breaker open — every authorisation is failing fast" },
     last_seen_at: MIN_2,
     last_state_change_at: MIN_47,
-    total_occurrences: 2,
-    current_occurrence: {
+    total_cases: 2,
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289506",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3803",
       seq: 2,
@@ -301,9 +299,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     snooze: snoozeUntil({}),
     last_seen_at: MIN_9,
     last_state_change_at: HOUR_2,
-    total_occurrences: 6,
+    total_cases: 6,
     rule: { id: RULE_LATENCY },
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289507",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3804",
       seq: 6,
@@ -336,10 +334,10 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     flap_score: 11.8,
     last_seen_at: MIN_9,
     last_state_change_at: MIN_9,
-    total_occurrences: 214,
+    total_cases: 214,
     first_seen_at: DAY_40,
     rule: { id: RULE_CRASHLOOP },
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289508",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3805",
       seq: 214,
@@ -369,9 +367,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     last_seen_at: MIN_21,
     last_state_change_at: DAY_2,
     first_seen_at: DAY_2,
-    total_occurrences: 1,
+    total_cases: 1,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289509",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3806",
       seq: 1,
@@ -401,9 +399,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Replica pg-replica-3 is 412 seconds behind" },
     last_seen_at: MIN_21,
     last_state_change_at: HOUR_5,
-    total_occurrences: 8,
+    total_cases: 8,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289510",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3807",
       seq: 8,
@@ -429,9 +427,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     last_seen_at: MIN_47,
     last_state_change_at: MIN_47,
     first_seen_at: MIN_47,
-    total_occurrences: 1,
+    total_cases: 1,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289511",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3808",
       seq: 1,
@@ -451,7 +449,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     severity: "critical",
     namespace: "infra",
     service: "node-exporter",
-    ack_state: "acked",
     cluster_key: "prod-us",
     labels: {
       alertname: "DiskWillFillIn4Hours",
@@ -464,15 +461,15 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Projected to reach 100% at 16:10" },
     snooze: snoozeUntil({
       id: "9d4e0a1b-8c2f-4d5e-6a7b-8c9d0e1f2a02",
-      snoozed_by_label: "ops-oncall@example.com",
+      snoozed_by_label: "dana@example.com",
       snoozed_until: "2026-08-16T18:00:00.000Z",
       note: "disk expansion scheduled",
     }),
     last_seen_at: MIN_47,
     last_state_change_at: HOUR_2,
-    total_occurrences: 2,
+    total_cases: 2,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289512",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3809",
       seq: 2,
@@ -502,9 +499,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Two of three members disagree on the routing tree" },
     last_seen_at: HOUR_2,
     last_state_change_at: HOUR_2,
-    total_occurrences: 3,
+    total_cases: 3,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289513",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d380a",
       seq: 3,
@@ -525,7 +522,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     namespace: "notifications",
     service: "fanout-worker",
     state: "suppressed",
-    ack_state: "acked",
     labels: {
       alertname: "QueueDepthGrowing",
       severity: "warning",
@@ -536,9 +532,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Depth 84,000 and rising for 25 minutes" },
     last_seen_at: HOUR_2,
     last_state_change_at: HOUR_5,
-    total_occurrences: 12,
+    total_cases: 12,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289514",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d380b",
       seq: 12,
@@ -568,7 +564,7 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Error rate above 5% for 15 minutes" },
     last_seen_at: HOUR_2,
     last_state_change_at: HOUR_5,
-    total_occurrences: 7,
+    total_cases: 7,
   }),
   mk({
     id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d380d",
@@ -577,7 +573,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     severity: "critical",
     namespace: "search",
     service: "indexer",
-    ack_state: "acked",
     is_flapping: true,
     flap_score: 6.1,
     labels: {
@@ -591,10 +586,10 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Container killed for exceeding its memory limit" },
     last_seen_at: HOUR_5,
     last_state_change_at: HOUR_5,
-    total_occurrences: 23,
+    total_cases: 23,
     first_seen_at: DAY_8,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289515",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d380d",
       seq: 23,
@@ -624,7 +619,7 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Probe has failed for 12 minutes" },
     last_seen_at: HOUR_5,
     last_state_change_at: HOUR_9,
-    total_occurrences: 5,
+    total_cases: 5,
     rule: null,
   }),
   mk({
@@ -650,9 +645,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     }),
     last_seen_at: HOUR_9,
     last_state_change_at: HOUR_19,
-    total_occurrences: 9,
+    total_cases: 9,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289516",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d380f",
       seq: 9,
@@ -682,9 +677,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     last_seen_at: HOUR_9,
     last_state_change_at: DAY_4,
     first_seen_at: DAY_16,
-    total_occurrences: 1,
+    total_cases: 1,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289517",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3810",
       seq: 1,
@@ -705,7 +700,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     namespace: "checkout",
     service: "checkout-api",
     state: "resolved",
-    ack_state: "acked",
     labels: {
       alertname: "CheckoutLatencyP99Degraded",
       severity: "warning",
@@ -716,9 +710,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "p99 recovered below 1.5s" },
     last_seen_at: HOUR_9,
     last_state_change_at: HOUR_9,
-    total_occurrences: 4,
+    total_cases: 4,
     rule: { id: RULE_LATENCY },
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289518",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3811",
       seq: 4,
@@ -740,15 +734,14 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     namespace: null,
     service: null,
     state: "resolved",
-    ack_state: "acked",
     cluster_key: "prod-us",
     labels: { alertname: "NodeNotReady", severity: "critical", node: "ip-10-42-3-77" },
     annotations: { summary: "Node returned to Ready after 6 minutes" },
     last_seen_at: HOUR_19,
     last_state_change_at: HOUR_19,
-    total_occurrences: 2,
+    total_cases: 2,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289519",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3812",
       seq: 2,
@@ -778,9 +771,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Error rate returned below 5%" },
     last_seen_at: HOUR_19,
     last_state_change_at: HOUR_19,
-    total_occurrences: 11,
+    total_cases: 11,
     first_seen_at: DAY_40,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289520",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3813",
       seq: 11,
@@ -812,9 +805,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "oto stopped hearing about this — nobody said it ended" },
     last_seen_at: DAY_2,
     last_state_change_at: DAY_2,
-    total_occurrences: 6,
+    total_cases: 6,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289521",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3814",
       seq: 6,
@@ -836,7 +829,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     namespace: "billing",
     service: "invoice-renderer",
     state: "expired",
-    ack_state: "acked",
     labels: {
       alertname: "KubePodCrashLooping",
       severity: "warning",
@@ -847,10 +839,10 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Last seen restarting 2 days ago" },
     last_seen_at: DAY_2,
     last_state_change_at: DAY_2,
-    total_occurrences: 14,
+    total_cases: 14,
     first_seen_at: DAY_16,
     rule: { id: RULE_CRASHLOOP },
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289522",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3815",
       seq: 14,
@@ -881,9 +873,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "92% of the file-descriptor limit in use" },
     last_seen_at: DAY_2,
     last_state_change_at: DAY_4,
-    total_occurrences: 3,
+    total_cases: 3,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289523",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3816",
       seq: 3,
@@ -912,10 +904,10 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "No successful backup in 36 hours" },
     last_seen_at: DAY_4,
     last_state_change_at: DAY_4,
-    total_occurrences: 1,
+    total_cases: 1,
     first_seen_at: DAY_4,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289524",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3817",
       seq: 1,
@@ -935,7 +927,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     severity: "P1",
     namespace: "monitoring",
     service: "thanos-compact",
-    ack_state: "acked",
     labels: {
       alertname: "ThanosCompactHalted",
       severity: "P1",
@@ -945,9 +936,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Compaction halted on an overlapping block" },
     last_seen_at: DAY_4,
     last_state_change_at: DAY_8,
-    total_occurrences: 2,
+    total_cases: 2,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289525",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3818",
       seq: 2,
@@ -972,9 +963,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Token revoked three days ago" },
     last_seen_at: DAY_4,
     last_state_change_at: DAY_8,
-    total_occurrences: 4,
+    total_cases: 4,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289526",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3819",
       seq: 4,
@@ -1003,9 +994,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "1.8s of skew, measured rather than corrected away" },
     last_seen_at: DAY_8,
     last_state_change_at: DAY_8,
-    total_occurrences: 2,
+    total_cases: 2,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289527",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d381a",
       seq: 2,
@@ -1026,7 +1017,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     namespace: "kube-system",
     service: "etcd",
     state: "resolved",
-    ack_state: "acked",
     cluster_key: "staging-eu",
     labels: {
       alertname: "EtcdMembersDown",
@@ -1037,9 +1027,9 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Quorum restored" },
     last_seen_at: DAY_8,
     last_state_change_at: DAY_8,
-    total_occurrences: 3,
+    total_cases: 3,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289528",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d381b",
       seq: 3,
@@ -1070,10 +1060,10 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: {},
     last_seen_at: DAY_16,
     last_state_change_at: DAY_16,
-    total_occurrences: 5,
+    total_cases: 5,
     first_seen_at: DAY_40,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289529",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d381c",
       seq: 5,
@@ -1103,10 +1093,10 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "412 elements refused in one batch" },
     last_seen_at: DAY_16,
     last_state_change_at: DAY_16,
-    total_occurrences: 1,
+    total_cases: 1,
     first_seen_at: DAY_16,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289530",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d381d",
       seq: 1,
@@ -1128,7 +1118,6 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     namespace: "monitoring",
     service: "grafana",
     state: "expired",
-    ack_state: "acked",
     cluster_key: "staging-eu",
     labels: {
       alertname: "GrafanaDatasourceUnreachable",
@@ -1139,10 +1128,10 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: {},
     last_seen_at: DAY_40,
     last_state_change_at: DAY_40,
-    total_occurrences: 2,
+    total_cases: 2,
     first_seen_at: DAY_95,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289531",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d381e",
       seq: 2,
@@ -1169,10 +1158,10 @@ export const PREVIEW_ALERTS: readonly Alert[] = [
     annotations: { summary: "Retired importer, kept for the archive" },
     last_seen_at: DAY_95,
     last_state_change_at: DAY_95,
-    total_occurrences: 1,
+    total_cases: 1,
     first_seen_at: DAY_95,
     rule: null,
-    current_occurrence: {
+    current_case: {
       id: "0f8fad5b-d9cb-469f-a165-708677289532",
       alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d381f",
       seq: 1,
@@ -1202,10 +1191,7 @@ function bucket(patch: Partial<AlertRollup>): AlertRollup {
     suppressed_count: 6,
     resolved_count: 8,
     expired_count: 2,
-    acked_count: 19,
-    unacked_count: 28,
     flapping_count: 3,
-    snoozed_count: 1,
     severity_counts: { critical: 31, warning: 16 },
     first_seen_at: DAY_40,
     last_seen_at: MIN_2,
@@ -1223,10 +1209,7 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
     suppressed_count: 12,
     resolved_count: 14,
     expired_count: 6,
-    acked_count: 30,
-    unacked_count: 98,
     flapping_count: 27,
-    snoozed_count: 4,
     severity_counts: { warning: 118, info: 10 },
     first_seen_at: DAY_95,
     last_seen_at: MIN_9,
@@ -1238,10 +1221,7 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
     suppressed_count: 0,
     resolved_count: 0,
     expired_count: 0,
-    acked_count: 1,
-    unacked_count: 2,
     flapping_count: 0,
-    snoozed_count: 0,
     severity_counts: { critical: 3 },
     first_seen_at: DAY_2,
     last_seen_at: MIN_2,
@@ -1254,10 +1234,7 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
     suppressed_count: 14,
     resolved_count: 8,
     expired_count: 0,
-    acked_count: 20,
-    unacked_count: 2,
     flapping_count: 1,
-    snoozed_count: 6,
     severity_counts: { warning: 22 },
     first_seen_at: DAY_16,
     last_seen_at: MIN_21,
@@ -1269,10 +1246,7 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
     suppressed_count: 1,
     resolved_count: 3,
     expired_count: 1,
-    acked_count: 5,
-    unacked_count: 4,
     flapping_count: 0,
-    snoozed_count: 0,
     severity_counts: { sev1: 6, P1: 3 },
     first_seen_at: DAY_8,
     last_seen_at: MIN_47,
@@ -1284,10 +1258,7 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
     suppressed_count: 0,
     resolved_count: 0,
     expired_count: 0,
-    acked_count: 0,
-    unacked_count: 61,
     flapping_count: 0,
-    snoozed_count: 0,
     severity_counts: { info: 61 },
     first_seen_at: DAY_16,
     last_seen_at: HOUR_2,
@@ -1300,10 +1271,7 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
     suppressed_count: 0,
     resolved_count: 2,
     expired_count: 5,
-    acked_count: 3,
-    unacked_count: 4,
     flapping_count: 0,
-    snoozed_count: 0,
     severity_counts: { warning: 7 },
     first_seen_at: DAY_40,
     last_seen_at: DAY_2,
@@ -1316,10 +1284,7 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
     suppressed_count: 0,
     resolved_count: 4,
     expired_count: 0,
-    acked_count: 4,
-    unacked_count: 0,
     flapping_count: 0,
-    snoozed_count: 0,
     severity_counts: { critical: 4 },
     first_seen_at: DAY_95,
     last_seen_at: DAY_8,
@@ -1331,7 +1296,7 @@ export const PREVIEW_ROLLUPS: readonly AlertRollup[] = [
 /* -------------------------------------------------------------------------- */
 
 const DETAIL_ID = "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d3801";
-const OCCURRENCE_ID = "0f8fad5b-d9cb-469f-a165-708677289501";
+const CASE_ID = "0f8fad5b-d9cb-469f-a165-708677289501";
 const GROUP_ID = "5e2b8c1d-4a6f-4b8c-9d0e-1f2a3b4c5d6e";
 
 /**
@@ -1366,17 +1331,16 @@ export const PREVIEW_DETAIL: AlertDetail = {
   generator_url:
     "https://prometheus.example.com/graph?g0.expr=kube_statefulset_status_replicas_ready&g0.tab=1",
   state: "firing",
-  ack_state: "unacked",
   first_seen_at: DAY_16,
   last_seen_at: NOW,
   last_state_change_at: MIN_9,
-  total_occurrences: 19,
+  total_cases: 19,
   flap_score: 7.4,
   is_flapping: true,
   synthetic: false,
   snooze: null,
-  current_occurrence: {
-    id: OCCURRENCE_ID,
+  current_case: {
+    id: CASE_ID,
     alert_id: DETAIL_ID,
     group_id: GROUP_ID,
     seq: 19,
@@ -1435,7 +1399,7 @@ export const PREVIEW_EVENTS: readonly AlertEvent[] = [
   {
     id: "a1000000-0000-4000-8000-000000000001",
     alert_id: DETAIL_ID,
-    occurrence_id: OCCURRENCE_ID,
+    case_id: CASE_ID,
     type: "alert.flapping_started",
     occurred_at: MIN_9,
     recorded_at: MIN_9,
@@ -1446,7 +1410,7 @@ export const PREVIEW_EVENTS: readonly AlertEvent[] = [
   {
     id: "a1000000-0000-4000-8000-000000000002",
     alert_id: DETAIL_ID,
-    occurrence_id: OCCURRENCE_ID,
+    case_id: CASE_ID,
     type: "delivery.failed",
     occurred_at: MIN_21,
     recorded_at: MIN_21,
@@ -1457,7 +1421,7 @@ export const PREVIEW_EVENTS: readonly AlertEvent[] = [
   {
     id: "a1000000-0000-4000-8000-000000000003",
     alert_id: DETAIL_ID,
-    occurrence_id: OCCURRENCE_ID,
+    case_id: CASE_ID,
     type: "delivery.sent",
     occurred_at: MIN_47,
     recorded_at: MIN_47,
@@ -1468,7 +1432,7 @@ export const PREVIEW_EVENTS: readonly AlertEvent[] = [
   {
     id: "a1000000-0000-4000-8000-000000000004",
     alert_id: DETAIL_ID,
-    occurrence_id: OCCURRENCE_ID,
+    case_id: CASE_ID,
     type: "enrichment.completed",
     occurred_at: MIN_47,
     recorded_at: MIN_47,
@@ -1479,12 +1443,12 @@ export const PREVIEW_EVENTS: readonly AlertEvent[] = [
   {
     id: "a1000000-0000-4000-8000-000000000005",
     alert_id: DETAIL_ID,
-    occurrence_id: OCCURRENCE_ID,
-    type: "occurrence.reopened",
+    case_id: CASE_ID,
+    type: "case.reopened",
     occurred_at: MIN_47,
     recorded_at: MIN_47,
     actor_kind: "ingest",
-    summary: "Occurrence #19 reopened — 2 instances firing",
+    summary: "Case #19 reopened — 2 instances firing",
     payload: { seq: 19, reopen_count: 2 },
   },
   {
@@ -1502,11 +1466,11 @@ export const PREVIEW_EVENTS: readonly AlertEvent[] = [
   {
     id: "a1000000-0000-4000-8000-000000000007",
     alert_id: DETAIL_ID,
-    type: "occurrence.resolved",
+    type: "case.resolved",
     occurred_at: HOUR_5,
     recorded_at: HOUR_5,
     actor_kind: "ingest",
-    summary: "Occurrence #18 resolved by the upstream",
+    summary: "Case #18 resolved by the upstream",
     payload: { seq: 18, reason: "upstream_resolved" },
   },
   {
@@ -1531,9 +1495,9 @@ export const PREVIEW_EVENTS: readonly AlertEvent[] = [
   },
 ];
 
-export const PREVIEW_OCCURRENCES: readonly Occurrence[] = [
+export const PREVIEW_CASES: readonly Case[] = [
   {
-    id: OCCURRENCE_ID,
+    id: CASE_ID,
     alert_id: DETAIL_ID,
     group_id: GROUP_ID,
     seq: 19,
@@ -1577,8 +1541,8 @@ export const PREVIEW_OCCURRENCES: readonly Occurrence[] = [
 export const PREVIEW_ENRICHMENTS: readonly Enrichment[] = [
   {
     id: "e1000000-0000-4000-8000-000000000001",
-    subject_kind: "occurrence",
-    subject_id: OCCURRENCE_ID,
+    subject_kind: "case",
+    subject_id: CASE_ID,
     enricher: "alert.history",
     enricher_version: 2,
     phase: 1,
@@ -1591,8 +1555,8 @@ export const PREVIEW_ENRICHMENTS: readonly Enrichment[] = [
   },
   {
     id: "e1000000-0000-4000-8000-000000000002",
-    subject_kind: "occurrence",
-    subject_id: OCCURRENCE_ID,
+    subject_kind: "case",
+    subject_id: CASE_ID,
     enricher: "runbook",
     enricher_version: 1,
     phase: 1,
@@ -1604,8 +1568,8 @@ export const PREVIEW_ENRICHMENTS: readonly Enrichment[] = [
   },
   {
     id: "e1000000-0000-4000-8000-000000000003",
-    subject_kind: "occurrence",
-    subject_id: OCCURRENCE_ID,
+    subject_kind: "case",
+    subject_id: CASE_ID,
     enricher: "silence.match",
     enricher_version: 1,
     phase: 2,
@@ -1651,7 +1615,7 @@ export const PREVIEW_NOTIFICATIONS: readonly Notification[] = [
     subject_id: GROUP_ID,
     group_id: GROUP_ID,
     alert_id: DETAIL_ID,
-    occurrence_id: OCCURRENCE_ID,
+    case_id: CASE_ID,
     reason: "refired",
     policy_id: "5a1b7d8e-6f9c-4a1b-2d3e-4f5061728394",
     state_version: 9,

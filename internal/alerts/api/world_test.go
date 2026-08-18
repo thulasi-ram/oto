@@ -32,7 +32,7 @@ import (
 // shape out itself is a second copy of the contract, and a second copy drifts.
 //
 // The fixtures below are deliberately RICH — timestamps, uuids, enums, an
-// ended occurrence, a suppressed one, a failed enrichment, a suppressed
+// ended case, a suppressed one, a failed enrichment, a suppressed
 // notification, an active snooze and an expired one — because `format:` and the
 // closed enums are asserted, and a fixture full of zero values proves only that
 // the empty case validates.
@@ -57,15 +57,15 @@ type fakeAlertsService struct {
 	now time.Time
 
 	// The three ids this tenant owns. Anything else is a stranger.
-	alertID      uuid.UUID
-	alertKey     string
-	occurrenceID uuid.UUID
+	alertID  uuid.UUID
+	alertKey string
+	caseID   uuid.UUID
 
 	detail        service.AlertDetail
 	list          service.ListResult
 	rollups       service.RollupResult
-	occurrences   service.OccurrenceResult
-	occurrence    domain.Occurrence
+	cases         service.CaseResult
+	alertCase     domain.Case
 	timelineRes   service.TimelineResult
 	enrichments   []service.EnrichmentSummary
 	notifications service.NotificationResult
@@ -74,14 +74,14 @@ type fakeAlertsService struct {
 	activeSnoozes service.ActiveSnoozeResult
 	labelNames    []domain.LabelCount
 	labelValues   []domain.LabelCount
-	ackedOcc      domain.Occurrence
+	ackedCase     domain.Case
 	commentEvent  domain.Event
 	snoozeRow     domain.Snooze
 
 	// Injected failures, for the branches where oto's silence must stay
 	// distinguishable from an answer.
-	failEnrichments      error
-	failOccurrenceRollup error
+	failEnrichments error
+	failCaseRollup  error
 	// failVerb is what every human verb answers once the subject has been
 	// resolved — the service's way of saying "this alert is in the wrong state
 	// for that", which is a PRECONDITION failure and not a conflict.
@@ -116,8 +116,8 @@ func (f *fakeAlertsService) note(name string, s db.TenantScope) {
 // alert id. It is a 404 and never a 403: a 403 would confirm the row exists.
 func strangerAlert() error { return errs.NotFound("alert_not_found", "no such alert") }
 
-func strangerOccurrence() error {
-	return errs.NotFound("occurrence_not_found", "no such occurrence")
+func strangerCase() error {
+	return errs.NotFound("case_not_found", "no such case")
 }
 
 func (f *fakeAlertsService) ownsAlert(id uuid.UUID) error {
@@ -127,9 +127,9 @@ func (f *fakeAlertsService) ownsAlert(id uuid.UUID) error {
 	return nil
 }
 
-func (f *fakeAlertsService) ownsOccurrence(id uuid.UUID) error {
-	if id != f.occurrenceID {
-		return strangerOccurrence()
+func (f *fakeAlertsService) ownsCase(id uuid.UUID) error {
+	if id != f.caseID {
+		return strangerCase()
 	}
 	return nil
 }
@@ -170,25 +170,25 @@ func (f *fakeAlertsService) GetByKey(
 	return f.detail, nil
 }
 
-func (f *fakeAlertsService) Occurrences(
+func (f *fakeAlertsService) Cases(
 	_ context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset,
-) (service.OccurrenceResult, error) {
-	f.note("Occurrences", s)
+) (service.CaseResult, error) {
+	f.note("Cases", s)
 	f.lastKeyset = p
 	if err := f.ownsAlert(alertID); err != nil {
-		return service.OccurrenceResult{}, err
+		return service.CaseResult{}, err
 	}
-	return f.occurrences, nil
+	return f.cases, nil
 }
 
-func (f *fakeAlertsService) GetOccurrence(
-	_ context.Context, s db.TenantScope, occurrenceID uuid.UUID,
-) (domain.Occurrence, error) {
-	f.note("GetOccurrence", s)
-	if err := f.ownsOccurrence(occurrenceID); err != nil {
-		return domain.Occurrence{}, err
+func (f *fakeAlertsService) GetCase(
+	_ context.Context, s db.TenantScope, caseID uuid.UUID,
+) (domain.Case, error) {
+	f.note("GetCase", s)
+	if err := f.ownsCase(caseID); err != nil {
+		return domain.Case{}, err
 	}
-	return f.occurrence, nil
+	return f.alertCase, nil
 }
 
 func (f *fakeAlertsService) AlertTimeline(
@@ -202,12 +202,12 @@ func (f *fakeAlertsService) AlertTimeline(
 	return f.timelineRes, nil
 }
 
-func (f *fakeAlertsService) OccurrenceTimeline(
-	_ context.Context, s db.TenantScope, occurrenceID uuid.UUID, w db.TimeWindow, p db.Keyset,
+func (f *fakeAlertsService) CaseTimeline(
+	_ context.Context, s db.TenantScope, caseID uuid.UUID, w db.TimeWindow, p db.Keyset,
 ) (service.TimelineResult, error) {
-	f.note("OccurrenceTimeline", s)
+	f.note("CaseTimeline", s)
 	f.lastWindow, f.lastKeyset = w, p
-	if err := f.ownsOccurrence(occurrenceID); err != nil {
+	if err := f.ownsCase(caseID); err != nil {
 		return service.TimelineResult{}, err
 	}
 	return f.timelineRes, nil
@@ -247,14 +247,14 @@ func (f *fakeAlertsService) DeliveryRollupForAlert(
 	return f.delivery, nil
 }
 
-func (f *fakeAlertsService) DeliveryRollupForOccurrence(
-	_ context.Context, s db.TenantScope, occurrenceID uuid.UUID,
+func (f *fakeAlertsService) DeliveryRollupForCase(
+	_ context.Context, s db.TenantScope, caseID uuid.UUID,
 ) (service.DeliveryRollup, error) {
-	f.note("DeliveryRollupForOccurrence", s)
-	if f.failOccurrenceRollup != nil {
-		return service.DeliveryRollup{}, f.failOccurrenceRollup
+	f.note("DeliveryRollupForCase", s)
+	if f.failCaseRollup != nil {
+		return service.DeliveryRollup{}, f.failCaseRollup
 	}
-	if err := f.ownsOccurrence(occurrenceID); err != nil {
+	if err := f.ownsCase(caseID); err != nil {
 		return service.DeliveryRollup{}, err
 	}
 	return f.delivery, nil
@@ -278,30 +278,30 @@ func (f *fakeAlertsService) LabelValues(
 
 func (f *fakeAlertsService) Acknowledge(
 	_ context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
-) (domain.Occurrence, error) {
+) (domain.Case, error) {
 	f.note("Acknowledge", s)
 	f.lastActor, f.lastAckNote = actor, note
 	if err := f.ownsAlert(alertID); err != nil {
-		return domain.Occurrence{}, err
+		return domain.Case{}, err
 	}
 	if f.failVerb != nil {
-		return domain.Occurrence{}, f.failVerb
+		return domain.Case{}, f.failVerb
 	}
-	return f.ackedOcc, nil
+	return f.ackedCase, nil
 }
 
 func (f *fakeAlertsService) Unacknowledge(
 	_ context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string,
-) (domain.Occurrence, error) {
+) (domain.Case, error) {
 	f.note("Unacknowledge", s)
 	f.lastActor, f.lastAckNote = actor, note
 	if err := f.ownsAlert(alertID); err != nil {
-		return domain.Occurrence{}, err
+		return domain.Case{}, err
 	}
 	if f.failVerb != nil {
-		return domain.Occurrence{}, f.failVerb
+		return domain.Case{}, f.failVerb
 	}
-	return f.occurrence, nil
+	return f.alertCase, nil
 }
 
 func (f *fakeAlertsService) Comment(
@@ -378,7 +378,7 @@ var _ AlertService = (*fakeAlertsService)(nil)
 var (
 	fxAlertID     = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b77")
 	fxClusterID   = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b78")
-	fxOccurrence  = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b79")
+	fxCase        = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b79")
 	fxPrevOccID   = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b7a")
 	fxEndedOccID  = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b7b")
 	fxSuppOccID   = uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b7c")
@@ -452,25 +452,23 @@ func fxAlert(t *testing.T, id uuid.UUID, alertname string, now time.Time) domain
 	ls := fxLabels(t, alertname)
 	ck := fxClusterKey(t)
 	a, err := domain.NewAlert(domain.AlertParams{
-		ID:                  id,
-		OrgID:               apitest.OrgID,
-		ClusterID:           fxClusterID,
-		Key:                 domain.ComputeAlertKey(apitest.OrgID, ck, ls, nil),
-		Fingerprint:         domain.ComputeSourceFingerprint(ls),
-		ClusterKey:          ck,
-		Labels:              ls,
-		Annotations:         fxAnnotations(t),
-		GeneratorURL:        "https://prometheus.example.com/graph?g0.expr=up%3D%3D0&g0.tab=1",
-		State:               domain.StateFiring,
-		AckState:            domain.AckStateAcked,
-		CurrentOccurrenceID: fxOccurrence,
-		SnoozedUntil:        now.Add(3 * time.Hour),
-		FirstSeenAt:         now.Add(-72 * time.Hour),
-		LastSeenAt:          now.Add(-5 * time.Minute),
-		LastStateChangeAt:   now.Add(-2 * time.Hour),
-		TotalOccurrences:    7,
-		FlapScore:           1.4,
-		IsFlapping:          false,
+		ID:                id,
+		OrgID:             apitest.OrgID,
+		ClusterID:         fxClusterID,
+		Key:               domain.ComputeAlertKey(apitest.OrgID, ck, ls, nil),
+		Fingerprint:       domain.ComputeSourceFingerprint(ls),
+		ClusterKey:        ck,
+		Labels:            ls,
+		Annotations:       fxAnnotations(t),
+		GeneratorURL:      "https://prometheus.example.com/graph?g0.expr=up%3D%3D0&g0.tab=1",
+		State:             domain.StateFiring,
+		CurrentCaseID:     fxCase,
+		FirstSeenAt:       now.Add(-72 * time.Hour),
+		LastSeenAt:        now.Add(-5 * time.Minute),
+		LastStateChangeAt: now.Add(-2 * time.Hour),
+		TotalCases:        7,
+		FlapScore:         1.4,
+		IsFlapping:        false,
 	})
 	if err != nil {
 		t.Fatalf("build the fixture alert: %v", err)
@@ -478,14 +476,14 @@ func fxAlert(t *testing.T, id uuid.UUID, alertname string, now time.Time) domain
 	return a
 }
 
-// fxOpenOccurrence is the episode currently running: acked, re-fired once, with
+// fxOpenCase is the episode currently running: acked, re-fired once, with
 // a sample value and a measured clock skew.
-func fxOpenOccurrence(t *testing.T, now time.Time) domain.Occurrence {
+func fxOpenCase(t *testing.T, now time.Time) domain.Case {
 	t.Helper()
 
 	value := 12.4
-	o, err := domain.NewOccurrence(domain.OccurrenceParams{
-		ID:              fxOccurrence,
+	o, err := domain.NewCase(domain.CaseParams{
+		ID:              fxCase,
 		OrgID:           apitest.OrgID,
 		AlertID:         fxAlertID,
 		GroupID:         fxGroupID,
@@ -508,17 +506,17 @@ func fxOpenOccurrence(t *testing.T, now time.Time) domain.Occurrence {
 		ObservedSkew:    412 * time.Millisecond,
 	})
 	if err != nil {
-		t.Fatalf("build the open fixture occurrence: %v", err)
+		t.Fatalf("build the open fixture case: %v", err)
 	}
 	return o
 }
 
-// fxEndedOccurrence is a closed episode, so `ended_at`, `resolve_reason` and
+// fxEndedCase is a closed episode, so `ended_at`, `resolve_reason` and
 // `source_ends_at` are exercised rather than always rendering as null.
-func fxEndedOccurrence(t *testing.T, now time.Time) domain.Occurrence {
+func fxEndedCase(t *testing.T, now time.Time) domain.Case {
 	t.Helper()
 
-	o, err := domain.NewOccurrence(domain.OccurrenceParams{
+	o, err := domain.NewCase(domain.CaseParams{
 		ID:             fxEndedOccID,
 		OrgID:          apitest.OrgID,
 		AlertID:        fxAlertID,
@@ -534,18 +532,18 @@ func fxEndedOccurrence(t *testing.T, now time.Time) domain.Occurrence {
 		StateVersion:   9,
 	})
 	if err != nil {
-		t.Fatalf("build the ended fixture occurrence: %v", err)
+		t.Fatalf("build the ended fixture case: %v", err)
 	}
 	return o
 }
 
-// fxSuppressedOccurrence exercises the two members that exist only while an
+// fxSuppressedCase exercises the two members that exist only while an
 // episode is suppressed: `suppression_reason` and the upstream witnesses that
 // say WHICH silence is muting it.
-func fxSuppressedOccurrence(t *testing.T, now time.Time) domain.Occurrence {
+func fxSuppressedCase(t *testing.T, now time.Time) domain.Case {
 	t.Helper()
 
-	o, err := domain.NewOccurrence(domain.OccurrenceParams{
+	o, err := domain.NewCase(domain.CaseParams{
 		ID:                fxSuppOccID,
 		OrgID:             apitest.OrgID,
 		AlertID:           fxAlertID,
@@ -563,7 +561,7 @@ func fxSuppressedOccurrence(t *testing.T, now time.Time) domain.Occurrence {
 		SuppressCount:  1,
 	})
 	if err != nil {
-		t.Fatalf("build the suppressed fixture occurrence: %v", err)
+		t.Fatalf("build the suppressed fixture case: %v", err)
 	}
 	return o
 }
@@ -580,16 +578,16 @@ func fxMachineEvent(t *testing.T, id uuid.UUID, typ domain.EventType, summary st
 		t.Fatalf("build the fixture observation time: %v", err)
 	}
 	e, err := domain.NewEvent(domain.EventParams{
-		ID:           id,
-		OrgID:        apitest.OrgID,
-		AlertID:      fxAlertID,
-		OccurrenceID: fxOccurrence,
-		GroupID:      fxGroupID,
-		Type:         typ,
-		At:           at,
-		Actor:        actor,
-		Summary:      summary,
-		Payload:      map[string]any{"instances": 4},
+		ID:      id,
+		OrgID:   apitest.OrgID,
+		AlertID: fxAlertID,
+		CaseID:  fxCase,
+		GroupID: fxGroupID,
+		Type:    typ,
+		At:      at,
+		Actor:   actor,
+		Summary: summary,
+		Payload: map[string]any{"instances": 4},
 	})
 	if err != nil {
 		t.Fatalf("build the fixture event: %v", err)
@@ -611,15 +609,15 @@ func fxHumanEvent(t *testing.T, now time.Time) domain.Event {
 		t.Fatalf("build the fixture observation time: %v", err)
 	}
 	e, err := domain.NewEvent(domain.EventParams{
-		ID:           fxEventNote,
-		OrgID:        apitest.OrgID,
-		AlertID:      fxAlertID,
-		OccurrenceID: fxOccurrence,
-		Type:         domain.EventCommentAdded,
-		At:           at,
-		Actor:        actor,
-		Summary:      "Ada Lovelace commented",
-		Payload:      map[string]any{"body": "Confirmed upstream provider incident."},
+		ID:      fxEventNote,
+		OrgID:   apitest.OrgID,
+		AlertID: fxAlertID,
+		CaseID:  fxCase,
+		Type:    domain.EventCommentAdded,
+		At:      at,
+		Actor:   actor,
+		Summary: "Ada Lovelace commented",
+		Payload: map[string]any{"body": "Confirmed upstream provider incident."},
 	})
 	if err != nil {
 		t.Fatalf("build the fixture comment event: %v", err)
@@ -677,7 +675,7 @@ func fxEndedSnooze(t *testing.T, key domain.AlertKey, now time.Time) domain.Snoo
 	return s
 }
 
-// newAlertsWorld assembles one tenant's alerts, occurrences, events,
+// newAlertsWorld assembles one tenant's alerts, cases, events,
 // enrichments, notifications and snoozes.
 func newAlertsWorld(t *testing.T) *fakeAlertsService {
 	t.Helper()
@@ -689,9 +687,9 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 
 	alert := fxAlert(t, fxAlertID, "HighErrorRate", now)
 	other := fxAlert(t, fxOtherAlert, "KubePodCrashLooping", now)
-	open := fxOpenOccurrence(t, now)
-	ended := fxEndedOccurrence(t, now)
-	suppressed := fxSuppressedOccurrence(t, now)
+	open := fxOpenCase(t, now)
+	ended := fxEndedCase(t, now)
+	suppressed := fxSuppressedCase(t, now)
 	snooze := fxActiveSnooze(t, fxSnoozeID, fxAlertID, alert.Key(), now)
 
 	lastSent := now.Add(-9 * time.Minute)
@@ -701,17 +699,17 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 	cursor := db.Cursor{SortKey: now.Add(-time.Hour), ID: fxCursorID, HasMore: true}
 
 	f := &fakeAlertsService{
-		now:          now,
-		alertID:      fxAlertID,
-		alertKey:     alert.Key().String(),
-		occurrenceID: fxOccurrence,
+		now:      now,
+		alertID:  fxAlertID,
+		alertKey: alert.Key().String(),
+		caseID:   fxCase,
 
 		detail: service.AlertDetail{
-			Alert:             alert,
-			CurrentOccurrence: &open,
-			LatestOccurrence:  &open,
-			Snooze:            &snooze,
-			SnoozedNow:        true,
+			Alert:       alert,
+			CurrentCase: &open,
+			LatestCase:  &open,
+			Snooze:      &snooze,
+			SnoozedNow:  true,
 		},
 		list: service.ListResult{
 			Alerts:  []domain.Alert{alert, other},
@@ -726,25 +724,23 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 				Suppressed:     4,
 				Resolved:       8,
 				Expired:        4,
-				Acked:          12,
 				Flapping:       3,
-				Snoozed:        2,
 				SeverityCounts: map[string]int{"critical": 31, "warning": 16},
 				FirstSeenAt:    now.Add(-96 * time.Hour),
 				LastSeenAt:     now.Add(-3 * time.Minute),
 			}},
 			HasMore: true,
 		},
-		occurrences: service.OccurrenceResult{
-			Occurrences: []domain.Occurrence{open, ended, suppressed},
-			Cursor:      cursor,
+		cases: service.CaseResult{
+			Cases:  []domain.Case{open, ended, suppressed},
+			Cursor: cursor,
 		},
-		occurrence: open,
+		alertCase: open,
 		timelineRes: service.TimelineResult{
 			Events: []domain.Event{
-				fxMachineEvent(t, fxEventOpened, domain.EventOccurrenceOpened,
-					"Occurrence #3 opened — 4 instances firing", now),
-				fxMachineEvent(t, fxEventAcked, domain.EventOccurrenceAcknowledged,
+				fxMachineEvent(t, fxEventOpened, domain.EventCaseOpened,
+					"Case #3 opened — 4 instances firing", now),
+				fxMachineEvent(t, fxEventAcked, domain.EventCaseAcknowledged,
 					"Acknowledged by Ada Lovelace", now),
 				fxHumanEvent(t, now),
 			},
@@ -753,8 +749,8 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 		enrichments: []service.EnrichmentSummary{
 			{
 				ID:              fxEnrichOK,
-				SubjectKind:     "occurrence",
-				SubjectID:       fxOccurrence,
+				SubjectKind:     "case",
+				SubjectID:       fxCase,
 				Enricher:        "alert.history",
 				EnricherVersion: 2,
 				Phase:           1,
@@ -773,8 +769,8 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 				// A FAILED enrichment is recorded, never discarded — which is why
 				// `status` exists and why `error` is non-null exactly here.
 				ID:              fxEnrichFail,
-				SubjectKind:     "occurrence",
-				SubjectID:       fxOccurrence,
+				SubjectKind:     "case",
+				SubjectID:       fxCase,
 				Enricher:        "silence.match",
 				EnricherVersion: 1,
 				Phase:           2,
@@ -792,7 +788,7 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 					ID:                fxNotifSent,
 					GroupID:           fxGroupID,
 					AlertID:           &fxAlertID,
-					OccurrenceID:      &fxOccurrence,
+					CaseID:            &fxCase,
 					PolicyID:          &fxPolicyID,
 					Reason:            "fired",
 					Status:            "delivered",
@@ -849,7 +845,7 @@ func newAlertsWorld(t *testing.T) *fakeAlertsService {
 			{Value: "payments", Count: 42},
 			{Value: "checkout", Count: 7},
 		},
-		ackedOcc:     open,
+		ackedCase:    open,
 		commentEvent: fxHumanEvent(t, now),
 		snoozeRow:    snooze,
 	}

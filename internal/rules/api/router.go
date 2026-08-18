@@ -32,15 +32,15 @@ type RuleService interface {
 	ListSnapshots(ctx context.Context, s db.TenantScope, key domain.Key, p db.Keyset) (service.SnapshotPage, error)
 }
 
-// AlertReader is the cross-domain port that resolves an alert or an occurrence to
+// AlertReader is the cross-domain port that resolves an alert or a case to
 // the rule snapshot bound to it.
 //
 // It is declared HERE, by the consumer (CONTEXT.md §5.4), and is satisfied by
 // `alerts/service`. `rules` never reaches into the alerts repository.
 type AlertReader interface {
 	Get(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (alerts.AlertDetail, error)
-	GetOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (alertdomain.Occurrence, error)
-	// PreviousOccurrenceWithRule is the episode BEFORE this one that had a rule
+	GetCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (alertdomain.Case, error)
+	// PreviousCaseWithRule is the episode BEFORE this one that had a rule
 	// bound to it — the OLDER side of `RuleHistoryDTO.change`.
 	//
 	// ⛔ IT IS THE READ THIS PORT WAS MISSING. With only the current and latest
@@ -48,9 +48,9 @@ type AlertReader interface {
 	// episode's text against the newest text upstream" — which names this
 	// episode's own row as `previous_*` and goes null exactly when a rule was
 	// edited and then fired. An episode's predecessor is a fact about
-	// `alert_occurrences`, so it is asked for here rather than guessed from the
+	// `alert_cases`, so it is asked for here rather than guessed from the
 	// snapshot history, which is per RULE KEY and knows nothing about episodes.
-	PreviousOccurrenceWithRule(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (alertdomain.Occurrence, bool, error)
+	PreviousCaseWithRule(ctx context.Context, s db.TenantScope, alertID uuid.UUID, beforeSeq int) (alertdomain.Case, bool, error)
 }
 
 // Compile-time proof that the services satisfy the ports this layer declares.
@@ -60,7 +60,7 @@ var (
 )
 
 // Router serves the Rules tag plus the two rule reads the contract files under
-// Alerts and Occurrences.
+// Alerts and Cases.
 type Router struct {
 	svc    RuleService
 	alerts AlertReader
@@ -78,7 +78,7 @@ func NewRouter(svc RuleService, alertReader AlertReader, clk clock.Clock) *Route
 // Register mounts every route this package owns onto r, already rooted at
 // /api/v1.
 //
-// `/alerts/{id}/rule` and `/occurrences/{id}/rule` are registered HERE rather
+// `/alerts/{id}/rule` and `/cases/{id}/rule` are registered HERE rather
 // than by `alerts/api`, because rendering a `RuleSnapshotDTO` means naming
 // `rules/domain` and only this package may (CONTEXT.md §5.4). The contract cares
 // about the path and the payload, not about which Go package produced them.
@@ -96,7 +96,7 @@ func (rt *Router) Register(r chi.Router) {
 		r.Get("/{id}", rt.getRuleSnapshot)
 	})
 	r.Get("/alerts/{id}/rule", rt.getAlertRuleHistory)
-	r.Get("/occurrences/{id}/rule", rt.getOccurrenceRule)
+	r.Get("/cases/{id}/rule", rt.getCaseRule)
 }
 
 // Mount is Register under the name the other domain routers use.
@@ -191,7 +191,7 @@ func parseBatchSnapshots(r *http.Request) ([]uuid.UUID, error) {
 	return out, nil
 }
 
-// notFound is the one shape a missing rule read takes. A `404` on the occurrence
+// notFound is the one shape a missing rule read takes. A `404` on the case
 // rule endpoint means NO SNAPSHOT COULD BE CAPTURED AT ALL — which is a different
 // fact from a stored snapshot whose `origin` is `unavailable`, and the two must
 // stay distinguishable.

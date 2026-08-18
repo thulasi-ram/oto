@@ -12,7 +12,7 @@ package api
 // validator in the building.
 //
 // The fixtures come from world_test.go, which builds one tenant's alerts,
-// occurrences, events, enrichments, notifications and snoozes through the real
+// cases, events, enrichments, notifications and snoozes through the real
 // domain constructors, and which answers a NOT-FOUND for every id that tenant
 // does not own — exactly as the repository does under `db.TenantScope`, where the
 // predicate is `WHERE org_id = $scope AND id = $id` and another tenant's row does
@@ -42,8 +42,8 @@ import (
 // alertPath is the fixture alert's collection path, spelled once.
 func alertPath(suffix string) string { return "/alerts/" + fxAlertID.String() + suffix }
 
-// occurrencePath is the fixture occurrence's path.
-func occurrencePath(suffix string) string { return "/occurrences/" + fxOccurrence.String() + suffix }
+// casePath is the fixture case's path.
+func casePath(suffix string) string { return "/cases/" + fxCase.String() + suffix }
 
 // sendJSON posts a body the CONTRACT would accept.
 //
@@ -63,7 +63,7 @@ func sendJSON(t *testing.T, c *apitest.Client, op, method, target, body string) 
 // TestGetAlertAnswersTheDetailTheContractDeclares.
 //
 // The promise: `GET /api/v1/alerts/{id}` answers an `AlertDetailDTO` — the alert,
-// its current occurrence, the snooze in force, the enrichment summary and the
+// its current case, the snooze in force, the enrichment summary and the
 // delivery roll-up — under BOTH spellings of the id, the UUID and the §C.2
 // alert_key.
 //
@@ -122,28 +122,28 @@ func TestAnAlertPageThatCannotReadItsEnrichmentsFailsRatherThanRenderWithoutThem
 	schema.AssertProblem(t, "getAlert", http.StatusInternalServerError, resp.Body())
 }
 
-// TestListAlertOccurrencesAnswersThePageTheContractDeclares.
+// TestListAlertCasesAnswersThePageTheContractDeclares.
 //
-// The promise: the episode list is a keyset page of `OccurrenceDTO`, and it
+// The promise: the episode list is a keyset page of `CaseDTO`, and it
 // renders an OPEN, an ENDED and a SUPPRESSED episode with the same schema.
 //
 // What broke: `ended_at`, `resolve_reason` and `suppression_reason` only exist on
-// some rows. A test over a single open occurrence proves that `null` validates
+// some rows. A test over a single open case proves that `null` validates
 // and nothing else.
-func TestListAlertOccurrencesAnswersThePageTheContractDeclares(t *testing.T) {
+func TestListAlertCasesAnswersThePageTheContractDeclares(t *testing.T) {
 	t.Parallel()
 
 	c, svc := newAlertsProbe(t)
-	resp := c.GET(alertPath("/occurrences")).MustStatus(t, http.StatusOK)
-	schema.Assert(t, "listAlertOccurrences", http.StatusOK, resp.Body())
+	resp := c.GET(alertPath("/cases")).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "listAlertCases", http.StatusOK, resp.Body())
 
 	rows, ok := resp.JSON(t)["data"].([]any)
 	if !ok || len(rows) != 3 {
 		t.Fatalf("data = %v, want the open, ended and suppressed episodes: %s",
 			resp.JSON(t)["data"], resp)
 	}
-	if svc.calls["Occurrences"] != 1 {
-		t.Fatalf("the service was consulted %d time(s), want 1", svc.calls["Occurrences"])
+	if svc.calls["Cases"] != 1 {
+		t.Fatalf("the service was consulted %d time(s), want 1", svc.calls["Cases"])
 	}
 }
 
@@ -275,20 +275,20 @@ func TestListActiveSnoozesStillListsASnoozeWhoseAlertCouldNotBeRead(t *testing.T
 	}
 }
 
-// TestGetOccurrenceAnswersTheEpisodeDetailTheContractDeclares.
+// TestGetCaseAnswersTheEpisodeDetailTheContractDeclares.
 //
-// The promise: `GET /api/v1/occurrences/{id}` answers the episode, the alert it
+// The promise: `GET /api/v1/cases/{id}` answers the episode, the alert it
 // belongs to, its enrichments and the episode-scoped delivery roll-up.
-func TestGetOccurrenceAnswersTheEpisodeDetailTheContractDeclares(t *testing.T) {
+func TestGetCaseAnswersTheEpisodeDetailTheContractDeclares(t *testing.T) {
 	t.Parallel()
 
 	c, svc := newAlertsProbe(t)
-	resp := c.GET(occurrencePath("")).MustStatus(t, http.StatusOK)
-	schema.Assert(t, "getOccurrence", http.StatusOK, resp.Body())
+	resp := c.GET(casePath("")).MustStatus(t, http.StatusOK)
+	schema.Assert(t, "getCase", http.StatusOK, resp.Body())
 
-	if svc.calls["DeliveryRollupForOccurrence"] != 1 {
+	if svc.calls["DeliveryRollupForCase"] != 1 {
 		t.Fatalf("the episode-scoped delivery roll-up was read %d time(s), want 1",
-			svc.calls["DeliveryRollupForOccurrence"])
+			svc.calls["DeliveryRollupForCase"])
 	}
 }
 
@@ -304,16 +304,16 @@ func TestAnEpisodePageThatCannotReadItsDeliveryRollupFails(t *testing.T) {
 	t.Parallel()
 
 	c, svc := newAlertsProbe(t)
-	svc.failOccurrenceRollup = errs.Internal("delivery_rollup_failed", errs.ErrInternal)
+	svc.failCaseRollup = errs.Internal("delivery_rollup_failed", errs.ErrInternal)
 
-	resp := c.GET(occurrencePath("")).MustStatus(t, http.StatusInternalServerError)
-	schema.AssertProblem(t, "getOccurrence", http.StatusInternalServerError, resp.Body())
+	resp := c.GET(casePath("")).MustStatus(t, http.StatusInternalServerError)
+	schema.AssertProblem(t, "getCase", http.StatusInternalServerError, resp.Body())
 }
 
 // ⭐ TestTheTwoTimelinesDefaultToTheOrderTheirQuestionIsAskedIn.
 //
 // The promise: `/alerts/{id}/events` defaults to `desc` and
-// `/occurrences/{id}/events` to `asc`, and both answer a page of `AlertEventDTO`
+// `/cases/{id}/events` to `asc`, and both answer a page of `AlertEventDTO`
 // ordered by oto's OWN clock.
 //
 // What broke when it did not hold: they answer different questions — "what has
@@ -329,7 +329,7 @@ func TestTheTwoTimelinesDefaultToTheOrderTheirQuestionIsAskedIn(t *testing.T) {
 		op, path, defaultOrder string
 	}{
 		{"listAlertEvents", alertPath("/events"), "desc"},
-		{"listOccurrenceEvents", occurrencePath("/events"), "asc"},
+		{"listCaseEvents", casePath("/events"), "asc"},
 	}
 
 	for _, tc := range cases {
@@ -495,7 +495,7 @@ func humanVerbs() []humanVerb {
 
 // TestEveryHumanVerbAnswersTheShapeTheContractDeclares.
 //
-// The promise: ack and unack answer the occurrence, a comment answers 201 with
+// The promise: ack and unack answer the case, a comment answers 201 with
 // the appended event, and the two snooze verbs answer the ALERT DETAIL — the same
 // schema `GET /alerts/{id}` returns, delivery roll-up included.
 //
@@ -585,7 +585,7 @@ func TestANonHumanPrincipalCannotSignAHumanVerb(t *testing.T) {
 
 // ⛔ TestAVerbTheAlertIsInTheWrongStateForIsA412AndNotA409.
 //
-// The promise: acking an occurrence that has already ended, or waking an alert
+// The promise: acking a case that has already ended, or waking an alert
 // nobody put to sleep, is a PRECONDITION failure. The request is well-formed and
 // the caller is entitled to make it; the entity is simply in the wrong state.
 //
@@ -605,14 +605,14 @@ func TestAVerbTheAlertIsInTheWrongStateForIsA412AndNotA409(t *testing.T) {
 			t.Parallel()
 
 			c, svc := newAlertsProbe(t)
-			svc.failVerb = errs.Precondition("occurrence_ended",
-				"this occurrence has already ended")
+			svc.failVerb = errs.Precondition("case_ended",
+				"this case has already ended")
 
 			resp := c.Raw(http.MethodPost, alertPath(v.path), apitest.ContentTypeJSON, v.body).
 				MustStatus(t, http.StatusPreconditionFailed)
 			schema.AssertProblem(t, v.op, http.StatusPreconditionFailed, resp.Body())
 
-			if code := resp.Problem(t).Code; code != "occurrence_ended" {
+			if code := resp.Problem(t).Code; code != "case_ended" {
 				t.Fatalf("code = %q; the service's own machine code must survive the "+
 					"trip through the problem writer", code)
 			}
@@ -742,7 +742,7 @@ func TestACommentMustCarryABody(t *testing.T) {
 func idAddressedOperations(id string) []apitest.Route {
 	return []apitest.Route{
 		{Op: "getAlert", Method: http.MethodGet, Path: "/alerts/" + id},
-		{Op: "listAlertOccurrences", Method: http.MethodGet, Path: "/alerts/" + id + "/occurrences"},
+		{Op: "listAlertCases", Method: http.MethodGet, Path: "/alerts/" + id + "/cases"},
 		{Op: "listAlertEvents", Method: http.MethodGet, Path: "/alerts/" + id + "/events"},
 		{Op: "listAlertEnrichments", Method: http.MethodGet, Path: "/alerts/" + id + "/enrichments"},
 		{Op: "listAlertNotifications", Method: http.MethodGet, Path: "/alerts/" + id + "/notifications"},
@@ -752,8 +752,8 @@ func idAddressedOperations(id string) []apitest.Route {
 		{Op: "commentOnAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/comments", Body: `{"body":"who owns this?"}`},
 		{Op: "snoozeAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/snooze", Body: `{"duration_seconds":3600}`},
 		{Op: "unsnoozeAlert", Method: http.MethodPost, Path: "/alerts/" + id + "/unsnooze", Body: `{"note":"awake"}`},
-		{Op: "getOccurrence", Method: http.MethodGet, Path: "/occurrences/" + id},
-		{Op: "listOccurrenceEvents", Method: http.MethodGet, Path: "/occurrences/" + id + "/events"},
+		{Op: "getCase", Method: http.MethodGet, Path: "/cases/" + id},
+		{Op: "listCaseEvents", Method: http.MethodGet, Path: "/cases/" + id + "/events"},
 	}
 }
 
@@ -779,7 +779,7 @@ func TestAnIdOutsideTheCallersTenantIsANotFoundOnEveryOperation(t *testing.T) {
 
 // TestAnIdThatIsNotAUUIDIsTheSameNotFound.
 //
-// The promise: `/occurrences/banana` and `/occurrences/00000000-…` answer the same
+// The promise: `/cases/banana` and `/cases/00000000-…` answer the same
 // 404 as a stranger's id.
 //
 // What broke: telling an unauthenticated scanner that a segment was "well-formed
@@ -793,8 +793,8 @@ func TestAnIdThatIsNotAUUIDIsTheSameNotFound(t *testing.T) {
 			t.Parallel()
 
 			c, _ := newAlertsProbe(t)
-			resp := c.GET("/occurrences/"+id).MustStatus(t, http.StatusNotFound)
-			schema.AssertProblem(t, "getOccurrence", http.StatusNotFound, resp.Body())
+			resp := c.GET("/cases/"+id).MustStatus(t, http.StatusNotFound)
+			schema.AssertProblem(t, "getCase", http.StatusNotFound, resp.Body())
 		})
 	}
 }
@@ -933,4 +933,131 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+/* -------------------------------------------------------------------------- */
+/* Ack is a fact about an episode, and this transport says so                 */
+/* -------------------------------------------------------------------------- */
+
+// TestTheAlertListRefusesAnAckFilterRatherThanIgnoringIt — §E.3, and the reason
+// `alerts.ack_state` is gone.
+//
+// The promise: `?ack=` is not a parameter of `listAlerts` or `listAlertRollups`
+// any more, so it is `400 unknown_parameter` with `ack` named in `violations[]`.
+//
+// ⭐ REFUSAL, NOT SILENT REMOVAL, IS THE WHOLE POINT. A dropped `?ack=unacked`
+// returns the unfiltered page and looks exactly like a filtered one — an operator
+// reading "47 unacknowledged" would be reading 47 alerts, full stop. §E.3 already
+// requires this of every unknown parameter; what it buys HERE is that a client
+// still sending the old filter finds out at once instead of triaging a list that
+// silently stopped narrowing.
+//
+// ⛔ AND THE FILTER IS GONE FOR A REASON, not merely moved. It read
+// `alerts.ack_state`, a projection of the CURRENT episode's receipt onto an
+// entity that outlives every episode it has: between a resolution and the next
+// firing the column asserted `acked` about a firing that had ended, so
+// `?ack=unacked` hid an alert nobody had ever looked at. The ack facet is served
+// where its subject still exists — the group list's own `?ack=`, which reads each
+// member's episode, and `include=current_case` on this list.
+func TestTheAlertListRefusesAnAckFilterRatherThanIgnoringIt(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, target string }{
+		{"list", "/alerts?ack=unacked"},
+		{"roll-up", "/alerts/rollups?group_by=alertname&ack=acked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c, svc := newAlertsProbe(t)
+			resp := c.GET(tc.target).MustStatus(t, http.StatusBadRequest)
+
+			p := resp.MustViolate(t, "ack")
+			if p.Code != "unknown_parameter" {
+				t.Fatalf("code = %q, want unknown_parameter\n%s", p.Code, resp)
+			}
+			if svc.calls["List"] != 0 || svc.calls["Rollups"] != 0 {
+				t.Fatal("a refused ack filter still reached the service, so the page it " +
+					"would have served was the unfiltered one")
+			}
+		})
+	}
+}
+
+// TestNoAlertShapedResponseCarriesAnAckState is the read-side half.
+//
+// The promise: `ack_state` appears on an episode and nowhere else. `AlertDTO`,
+// `AlertDetailDTO`, `AlertRefDTO` and every roll-up bucket are silent about ack;
+// `CaseDTO` — including the one embedded as `current_case` — carries
+// it, with its actor and its timestamp.
+//
+// ⭐ IT WALKS THE BYTES THE HANDLER WROTE rather than the structs, because the
+// failure this guards against is a field re-added at the DTO layer for a screen
+// that "just needs the letter". The schema assertions elsewhere in this file
+// cannot catch that: an ADDITIVE property is not a schema violation.
+func TestNoAlertShapedResponseCarriesAnAckState(t *testing.T) {
+	t.Parallel()
+
+	c, _ := newAlertsProbe(t)
+
+	// The detail, which is the shape with the most places to hide one.
+	detail := c.GET(alertPath("")).MustStatus(t, http.StatusOK).JSON(t)
+	alert, ok := detail["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("data is not an object: %v", detail["data"])
+	}
+	if _, present := alert["ack_state"]; present {
+		t.Error("`AlertDTO` carries `ack_state` again.\n\n" +
+			"An acknowledgement is a receipt for ONE firing episode and stops being true " +
+			"when that episode ends; an Alert outlives every episode it has. Read it from " +
+			"`current_case`, which the list already expands for exactly this.")
+	}
+
+	// …and the episode inside it still has one, or ack has been deleted rather
+	// than moved.
+	ac, ok := alert["current_case"].(map[string]any)
+	if !ok {
+		t.Fatalf("current_case is not an object: %v", alert["current_case"])
+	}
+	if _, present := ac["ack_state"]; !present {
+		t.Error("`CaseDTO.ack_state` is missing. Ack moved to the episode; it did " +
+			"not leave the product.")
+	}
+
+	// The roll-up: every counter on a bucket is a property of the Alert, and the
+	// ack pair was the one that was not.
+	buckets := c.GET("/alerts/rollups?group_by=alertname").
+		MustStatus(t, http.StatusOK).JSON(t)["data"].([]any)
+	if len(buckets) == 0 {
+		t.Fatal("the roll-up answered no buckets, so this assertion checked nothing")
+	}
+	for _, b := range buckets {
+		bucket, isObj := b.(map[string]any)
+		if !isObj {
+			t.Fatalf("a bucket is not an object: %v", b)
+		}
+		// ⭐ ALL THREE REMOVED COUNTERS, NOT TWO. The generated client would notice
+		// any of them reappearing, but this is the gate that states the REASON, and
+		// a reason nobody wrote down is the one that gets argued away.
+		for _, banned := range []struct{ key, why string }{
+			{"acked_count", "An ack is a property of one of the Alert's FIRINGS, so this " +
+				"number counted receipts for episodes that had ended. The acked count is a " +
+				"case-surface number."},
+			{"unacked_count", "Same defect, arrived at from the other side: it counted " +
+				"alerts as unacknowledged on the strength of a column that outlived the " +
+				"firing it described."},
+			{"snoozed_count", "The roll-up shares the alert list's filter, and the list is " +
+				"now on one tab or the other — so this would read 0 on the main tab and " +
+				"`total_count` on Quiet. That is a restatement of which tab the caller is " +
+				"on, not a fact about the bucket."},
+		} {
+			if _, present := bucket[banned.key]; present {
+				t.Errorf("a roll-up bucket carries `%s` again.\n\n"+
+					"`firing_count`/`suppressed_count`/`resolved_count`/`expired_count` are "+
+					"the current episode's state and `flapping_count` is alert-scoped — every "+
+					"counter here is a property of the Alert, answerable from `alerts` alone.\n\n"+
+					"%s", banned.key, banned.why)
+			}
+		}
+	}
 }

@@ -59,16 +59,16 @@ func (c *countingStream) kinds() []string {
 func (f *fixture) streamedService(stream StreamAppender) *Service {
 	f.t.Helper()
 	svc, err := New(Deps{
-		Alerts:      repository.NewAlertRepository(f.pool, f.clk, false),
-		Occurrences: repository.NewOccurrenceRepository(f.pool),
-		Events:      repository.NewEventRepository(f.pool, f.clk),
-		Snoozes:     repository.NewSnoozeRepository(f.pool, f.clk),
-		Tx:          repository.NewTxRunner(f.pool),
-		AlertBatch:  repository.NewAlertRepository(f.pool, f.clk, false),
-		OccBatch:    repository.NewOccurrenceRepository(f.pool),
-		Stream:      stream,
-		Clock:       f.clk,
-		Logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Alerts:     repository.NewAlertRepository(f.pool, f.clk, false),
+		Cases:      repository.NewCaseRepository(f.pool),
+		Events:     repository.NewEventRepository(f.pool, f.clk),
+		Snoozes:    repository.NewSnoozeRepository(f.pool, f.clk),
+		Tx:         repository.NewTxRunner(f.pool),
+		AlertBatch: repository.NewAlertRepository(f.pool, f.clk, false),
+		OccBatch:   repository.NewCaseRepository(f.pool),
+		Stream:     stream,
+		Clock:      f.clk,
+		Logger:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	})
 	if err != nil {
 		f.t.Fatalf("build service: %v", err)
@@ -101,7 +101,7 @@ func (f *fixture) observationFor(
 // TestObserveBatchPublishesEveryFrameInOneRoundTrip is the flush-count claim:
 // a batch of N observations queues its frames and hands them to the spine ONCE,
 // through AppendBatch, never through per-item Append — and in the order the
-// per-item appends used to produce: occurrence and alert frames per observation
+// per-item appends used to produce: case and alert frames per observation
 // in batch order first, event frames after.
 func TestObserveBatchPublishesEveryFrameInOneRoundTrip(t *testing.T) {
 	now := harness.Epoch
@@ -123,18 +123,18 @@ func TestObserveBatchPublishesEveryFrameInOneRoundTrip(t *testing.T) {
 	assert.Equal(t, 1, stream.batchCalls, "one batch, one flush")
 	assert.Zero(t, stream.appendCalls, "the observe path must not publish per item")
 
-	// Two first sightings: each queues its occurrence and alert frames in the
-	// loop, and each appends `alert.created` + `occurrence.opened`, whose frames
+	// Two first sightings: each queues its case and alert frames in the
+	// loop, and each appends `alert.created` + `case.opened`, whose frames
 	// follow the loop's — the same order N sequential appends produced.
 	assert.Equal(t, []string{
-		StreamOccurrenceUpserted, StreamAlertUpserted,
-		StreamOccurrenceUpserted, StreamAlertUpserted,
+		StreamCaseUpserted, StreamAlertUpserted,
+		StreamCaseUpserted, StreamAlertUpserted,
 		StreamEventAppended, StreamEventAppended,
 		StreamEventAppended, StreamEventAppended,
 	}, stream.kinds())
-	assert.Equal(t, res.Outcomes[0].OccurrenceID, stream.frames[0].ResourceID)
+	assert.Equal(t, res.Outcomes[0].CaseID, stream.frames[0].ResourceID)
 	assert.Equal(t, res.Outcomes[0].AlertID, stream.frames[1].ResourceID)
-	assert.Equal(t, res.Outcomes[1].OccurrenceID, stream.frames[2].ResourceID)
+	assert.Equal(t, res.Outcomes[1].CaseID, stream.frames[2].ResourceID)
 	assert.Equal(t, res.Outcomes[1].AlertID, stream.frames[3].ResourceID)
 	assert.Equal(t, 4, res.EventsWritten)
 }
@@ -160,18 +160,18 @@ func TestObserveBatchProjectsAnAlertOnceWithTheLastWrite(t *testing.T) {
 	require.Equal(t, domain.TransitionT5.String(), res.Outcomes[1].Transition)
 
 	var (
-		state      string
-		currentOcc *uuid.UUID
-		lastSeen   time.Time
-		total      int
+		state       string
+		currentCase *uuid.UUID
+		lastSeen    time.Time
+		total       int
 	)
 	require.NoError(t, f.pool.QueryRow(t.Context(), `
-		SELECT state, current_occurrence_id, last_seen_at, total_occurrences
+		SELECT state, current_case_id, last_seen_at, total_cases
 		  FROM alerts WHERE org_id = $1 AND alert_key = $2`,
-		f.orgID, f.alertKey.String()).Scan(&state, &currentOcc, &lastSeen, &total))
+		f.orgID, f.alertKey.String()).Scan(&state, &currentCase, &lastSeen, &total))
 
 	assert.Equal(t, domain.StateResolved.String(), state, "the LAST observation's verdict")
-	assert.Nil(t, currentOcc, "a resolved episode is nobody's current occurrence")
+	assert.Nil(t, currentCase, "a resolved episode is nobody's current case")
 	assert.Equal(t, 1, total, "one episode opened, counted once")
 	assert.True(t, lastSeen.Equal(now), "last_seen_at is the newest recorded_at, got %v", lastSeen)
 }
@@ -189,11 +189,11 @@ func TestStageProjectionKeepsTheNewestLastSeen(t *testing.T) {
 	acc := &observeAccum{}
 	acc.stageProjection(alertID, domain.AlertProjection{
 		State: domain.StateFiring, LastSeenAt: newer, LastStateChangeAt: newer,
-		TotalOccurrences: 1,
+		TotalCases: 1,
 	})
 	acc.stageProjection(alertID, domain.AlertProjection{
 		State: domain.StateResolved, LastSeenAt: older, LastStateChangeAt: older,
-		TotalOccurrences: 1,
+		TotalCases: 1,
 	})
 
 	require.Len(t, acc.projectionOrder, 1, "M stages of one alert flush once")

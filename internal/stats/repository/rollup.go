@@ -31,9 +31,9 @@ import (
 //
 // The four sources, and the joins that attribute each to a `(cluster, alertname)`:
 //
-//   - occ    — `alert_occurrences` that STARTED on this day. Everything about an
+//   - ac    — `alert_cases` that STARTED on this day. Everything about an
 //     episode is attributed to the day it opened, which is what makes
-//     `acked_occurrences <= occurrences` true by construction and therefore what
+//     `acked_cases <= cases` true by construction and therefore what
 //     satisfies `alert_quality_acked_ck` without an application check.
 //   - notif  — `notifications` minted on this day, attributed through the group's
 //     membership. A notification is about a GROUP, so it is counted once per
@@ -48,7 +48,7 @@ import (
 // ⛔⛔ ALL THREE CTEs EXCLUDE `a.synthetic`, AND ALL THREE MUST. A synthetic
 // Alert is one oto manufactured for a DELIVERY DRILL — an operator pressing a
 // button to prove the notification path works. Nothing fired in any cluster.
-// Counting one here would inflate an org's occurrence count, its notification
+// Counting one here would inflate an org's case count, its notification
 // count and its flap count with oto's own plumbing, in the exact table the
 // hygiene report is sold from, permanently — this is an upsert of a day, so the
 // wrong number would survive every recompute. Every CTE already joins `alerts`,
@@ -74,17 +74,17 @@ WITH bounds AS (
          $2::date::timestamptz                                AS day_start,
          ($2::date + 1)::timestamptz                           AS day_end,
          LEAST($3::timestamptz, ($2::date + 1)::timestamptz)   AS as_of
-), occ AS (
+), ac AS (
   SELECT a.cluster_key,
          a.alertname,
-         count(*)                                              AS occurrences,
-         count(*) FILTER (WHERE o.ack_state = 'acked')         AS acked_occurrences,
+         count(*)                                              AS cases,
+         count(*) FILTER (WHERE o.ack_state = 'acked')         AS acked_cases,
          count(*) FILTER (WHERE o.state = 'resolved')          AS auto_resolved,
          count(*) FILTER (WHERE o.state = 'expired')           AS expired,
          COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM
              (COALESCE(o.ended_at, b.as_of) - o.started_at))))::bigint, 0)
                                                                AS total_firing_seconds
-    FROM alert_occurrences o
+    FROM alert_cases o
     JOIN alerts a  ON a.id = o.alert_id AND a.org_id = o.org_id
    CROSS JOIN bounds b
    WHERE o.org_id = $1
@@ -93,14 +93,19 @@ WITH bounds AS (
      AND o.started_at <  b.day_end
    GROUP BY a.cluster_key, a.alertname
 ), notif AS (
+  -- The membership fan-out reads alert_cases.group_id, which IS the
+  -- membership since 00051 (case_group_idx leads with org_id, group_id). It can
+  -- produce more rows than the old join table did, because one alert can hold
+  -- several episodes in one generation; the two count(DISTINCT ...) aggregates
+  -- are why that changes no number.
   SELECT a.cluster_key,
          a.alertname,
          count(DISTINCT n.id) AS notifications,
          count(DISTINCT d.id) AS deliveries
     FROM notifications n
    CROSS JOIN bounds b
-    JOIN alert_group_members m ON m.group_id = n.group_id AND m.org_id = n.org_id
-    JOIN alerts a              ON a.id = m.alert_id       AND a.org_id = n.org_id
+    JOIN alert_cases o   ON o.group_id = n.group_id AND o.org_id = n.org_id
+    JOIN alerts a              ON a.id = o.alert_id       AND a.org_id = n.org_id
     LEFT JOIN notification_deliveries d
                                ON d.notification_id = n.id AND d.org_id = n.org_id
    WHERE n.org_id = $1
@@ -119,37 +124,40 @@ WITH bounds AS (
      AND NOT a.synthetic
      AND e.recorded_at >= b.day_start
      AND e.recorded_at <  b.day_end
-     AND e.type IN ('occurrence.opened','occurrence.reopened','occurrence.suppressed',
+     AND e.type IN ('case.opened','case.reopened','case.suppressed',
+                    'case.unsuppressed','case.resolved','case.expired',
+                    -- vocab:allow -- pre-ADR-0036 spellings of the same six facts, still on disk for thirteen months (alerts/domain.legacySpellings, migration 00052). Dropping them here would make a re-run of any pre-rename day report zero flap transitions.
+                    'occurrence.opened','occurrence.reopened','occurrence.suppressed',
                     'occurrence.unsuppressed','occurrence.resolved','occurrence.expired')
    GROUP BY a.cluster_key, a.alertname
 ), keys AS (
-  SELECT cluster_key, alertname FROM occ
+  SELECT cluster_key, alertname FROM ac
   UNION
   SELECT cluster_key, alertname FROM notif
   UNION
   SELECT cluster_key, alertname FROM flaps
 )
 INSERT INTO alert_quality_daily (
-    org_id, day, cluster_key, alertname, occurrences, notifications, deliveries,
-    acked_occurrences, auto_resolved, expired, total_firing_seconds, flap_transitions)
+    org_id, day, cluster_key, alertname, cases, notifications, deliveries,
+    acked_cases, auto_resolved, expired, total_firing_seconds, flap_transitions)
 SELECT $1, (SELECT day FROM bounds), k.cluster_key, k.alertname,
-       COALESCE(o.occurrences, 0),
+       COALESCE(o.cases, 0),
        COALESCE(n.notifications, 0),
        COALESCE(n.deliveries, 0),
-       COALESCE(o.acked_occurrences, 0),
+       COALESCE(o.acked_cases, 0),
        COALESCE(o.auto_resolved, 0),
        COALESCE(o.expired, 0),
        COALESCE(o.total_firing_seconds, 0),
        COALESCE(f.flap_transitions, 0)
   FROM keys k
-  LEFT JOIN occ   o USING (cluster_key, alertname)
+  LEFT JOIN ac   o USING (cluster_key, alertname)
   LEFT JOIN notif n USING (cluster_key, alertname)
   LEFT JOIN flaps f USING (cluster_key, alertname)
 ON CONFLICT (org_id, day, cluster_key, alertname) DO UPDATE SET
-    occurrences          = EXCLUDED.occurrences,
+    cases          = EXCLUDED.cases,
     notifications        = EXCLUDED.notifications,
     deliveries           = EXCLUDED.deliveries,
-    acked_occurrences    = EXCLUDED.acked_occurrences,
+    acked_cases    = EXCLUDED.acked_cases,
     auto_resolved        = EXCLUDED.auto_resolved,
     expired              = EXCLUDED.expired,
     total_firing_seconds = EXCLUDED.total_firing_seconds,

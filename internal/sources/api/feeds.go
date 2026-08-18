@@ -20,7 +20,8 @@ import (
 // click from the reason.
 //
 // Both endpoints are keyset pages over PARTITIONED tables whose retention is
-// `raw_retention_days` (14 by default). There is deliberately NO time-window
+// `raw_retention_days` (30 by default since 00036; ADR 0024 derives the 30 from
+// the `alert_event_keys` idempotency horizon). There is deliberately NO time-window
 // parameter: the operator arriving here does not know when their alert went
 // missing, and a defaulted window would answer "no rejections" to a question
 // about one that is older than the default.

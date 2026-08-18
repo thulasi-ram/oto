@@ -34,7 +34,7 @@ type causeFixture struct {
 	cluster harness.Cluster
 	group   harness.Group
 	alert   harness.Alert
-	occ     harness.Occurrence
+	ac      harness.Case
 }
 
 func newCauseFixture(t *testing.T) causeFixture {
@@ -46,9 +46,9 @@ func newCauseFixture(t *testing.T) causeFixture {
 	source := h.Source(org, cluster)
 	group := h.Group(org, source, cluster)
 	alert := h.Alert(org, cluster)
-	occ := h.Occurrence(alert, group)
+	ac := h.Case(alert, group)
 
-	return causeFixture{h: h, org: org, cluster: cluster, group: group, alert: alert, occ: occ}
+	return causeFixture{h: h, org: org, cluster: cluster, group: group, alert: alert, ac: ac}
 }
 
 // appendEvent writes one timeline row the way `alerts` writes it.
@@ -59,14 +59,14 @@ func newCauseFixture(t *testing.T) causeFixture {
 // has nowhere to land.
 func (f causeFixture) appendEvent(eventType, actorKind, actorID, actorLabel, body string) {
 	f.h.T.Helper()
-	f.appendEventFor(f.alert.ID, f.occ.ID, eventType, actorKind, actorID, actorLabel, body)
+	f.appendEventFor(f.alert.ID, f.ac.ID, eventType, actorKind, actorID, actorLabel, body)
 }
 
 // appendEventFor writes the same row against ANY member of the group, which is
 // what makes a sibling's action expressible: every event carries the group id, so
 // a read scoped to the group sees every member's timeline at once.
 func (f causeFixture) appendEventFor(
-	alertID, occID uuid.UUID, eventType, actorKind, actorID, actorLabel, body string,
+	alertID, caseID uuid.UUID, eventType, actorKind, actorID, actorLabel, body string,
 ) {
 	f.h.T.Helper()
 
@@ -75,23 +75,23 @@ func (f causeFixture) appendEventFor(
 		payload = `{"body": ` + quoteJSON(body) + `}`
 	}
 	f.h.Exec(`INSERT INTO alert_events
-	            (id, org_id, alert_id, occurrence_id, group_id, type, occurred_at,
+	            (id, org_id, alert_id, case_id, group_id, type, occurred_at,
 	             recorded_at, actor_kind, actor_id, actor_label, summary, payload)
 	          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now(), now(), $6,
 	                  nullif($7,''), nullif($8,''), $9, $10::jsonb)`,
-		f.org.ID, alertID, occID, f.group.ID, eventType,
+		f.org.ID, alertID, caseID, f.group.ID, eventType,
 		actorKind, actorID, actorLabel, "a harness event: "+eventType, payload)
 }
 
 // sibling is a second member of the same group: another alert, another open
 // episode, acted on by somebody else.
-func (f causeFixture) sibling() (harness.Alert, harness.Occurrence) {
+func (f causeFixture) sibling() (harness.Alert, harness.Case) {
 	f.h.T.Helper()
 
 	alert := f.h.AlertWith(f.org, f.cluster, map[string]string{
 		"alertname": "HighErrorRate", "severity": "critical", "service": "payments",
 	})
-	return alert, f.h.Occurrence(alert, f.group)
+	return alert, f.h.Case(alert, f.group)
 }
 
 // quoteJSON is enough JSON quoting for a test literal.
@@ -112,15 +112,15 @@ func quoteJSON(s string) string {
 func (f causeFixture) view(t *testing.T, reason domain.Reason) *service.NotificationView {
 	t.Helper()
 
-	alertID, occID := f.alert.ID, f.occ.ID
+	alertID, caseID := f.alert.ID, f.ac.ID
 	return f.build(t, domain.Notification{
-		GroupID: f.group.ID, AlertID: &alertID, OccurrenceID: &occID, Reason: reason,
+		GroupID: f.group.ID, AlertID: &alertID, CaseID: &caseID, Reason: reason,
 	})
 }
 
 // viewByAlert is the same projection for a notification that names an ALERT and
 // nothing narrower — the shape the policy-preview endpoint mints, since it takes
-// exactly one of alert_id / occurrence_id / group_id plus any reason. The read
+// exactly one of alert_id / case_id / group_id plus any reason. The read
 // model resolves the episode from the alert; the cause has to narrow the same
 // way or the card names one person for another person's action.
 func (f causeFixture) viewByAlert(t *testing.T, reason domain.Reason) *service.NotificationView {
@@ -155,7 +155,7 @@ func TestTheAckedCardCarriesTheHumanWhoPressedTheButton(t *testing.T) {
 	t.Parallel()
 
 	f := newCauseFixture(t)
-	f.appendEvent("occurrence.acknowledged", "slack", "U0123456789", "@ram", "")
+	f.appendEvent("case.acknowledged", "slack", "U0123456789", "@ram", "")
 
 	v := f.view(t, domain.ReasonAcked)
 
@@ -193,7 +193,7 @@ func TestASystemTransitionCarriesItsMachineActorAndNoName(t *testing.T) {
 	t.Parallel()
 
 	f := newCauseFixture(t)
-	f.appendEvent("occurrence.unacknowledged", "system", "", "", "")
+	f.appendEvent("case.unacknowledged", "system", "", "", "")
 
 	v := f.view(t, domain.ReasonUnacked)
 
@@ -211,7 +211,7 @@ func TestAFactNobodyCausedIsNotAttributedToTheLastPersonWhoActed(t *testing.T) {
 	t.Parallel()
 
 	f := newCauseFixture(t)
-	f.appendEvent("occurrence.acknowledged", "slack", "U0123456789", "@ram", "")
+	f.appendEvent("case.acknowledged", "slack", "U0123456789", "@ram", "")
 
 	v := f.view(t, domain.ReasonFired)
 
@@ -226,11 +226,11 @@ func TestTheActorComesFromTheEpisodeTheCardIsAboutAndNotFromASibling(t *testing.
 	t.Parallel()
 
 	f := newCauseFixture(t)
-	f.appendEvent("occurrence.acknowledged", "user", uuid.NewString(), "ada@example.com", "")
+	f.appendEvent("case.acknowledged", "user", uuid.NewString(), "ada@example.com", "")
 
 	// A second member of the same group, acknowledged afterwards by somebody else.
-	sibling, siblingOcc := f.sibling()
-	f.appendEventFor(sibling.ID, siblingOcc.ID, "occurrence.acknowledged",
+	sibling, siblingCase := f.sibling()
+	f.appendEventFor(sibling.ID, siblingCase.ID, "case.acknowledged",
 		"user", uuid.NewString(), "grace@example.com", "")
 
 	v := f.view(t, domain.ReasonAcked)
@@ -238,11 +238,11 @@ func TestTheActorComesFromTheEpisodeTheCardIsAboutAndNotFromASibling(t *testing.
 	require.NotNil(t, v.Actor)
 	require.Equal(t, "ada@example.com", v.Actor.Label,
 		"the card named the sibling episode's acker: the lookup is not scoped to the "+
-			"occurrence this notification is about")
+			"case this notification is about")
 }
 
-// ⛔ THE SAME SCOPING, FOR A NOTIFICATION THAT NAMES AN ALERT AND NO OCCURRENCE.
-// `POST /policies/preview` accepts exactly one of alert_id / occurrence_id /
+// ⛔ THE SAME SCOPING, FOR A NOTIFICATION THAT NAMES AN ALERT AND NO CASE.
+// `POST /policies/preview` accepts exactly one of alert_id / case_id /
 // group_id and any reason, so `alert_id` + `reason=acked` is a shape an operator
 // can ask for at any time. The episode is resolved from the alert; if the cause
 // falls back to the GROUP instead, the card pairs Ada's episode with the newest
@@ -252,13 +252,13 @@ func TestAPreviewByAlertReadsTheCauseFromThatAlertAndNotFromTheGroup(t *testing.
 	t.Parallel()
 
 	f := newCauseFixture(t)
-	f.appendEvent("occurrence.acknowledged", "user", uuid.NewString(), "ada@example.com", "")
+	f.appendEvent("case.acknowledged", "user", uuid.NewString(), "ada@example.com", "")
 
 	// The sibling acts LAST, so a group-scoped read returns it every time.
-	sibling, siblingOcc := f.sibling()
-	f.appendEventFor(sibling.ID, siblingOcc.ID, "occurrence.acknowledged",
+	sibling, siblingCase := f.sibling()
+	f.appendEventFor(sibling.ID, siblingCase.ID, "case.acknowledged",
 		"user", uuid.NewString(), "grace@example.com", "")
-	f.appendEventFor(sibling.ID, siblingOcc.ID, "comment.added",
+	f.appendEventFor(sibling.ID, siblingCase.ID, "comment.added",
 		"user", uuid.NewString(), "grace@example.com", "on the payments alert, not this one")
 
 	v := f.viewByAlert(t, domain.ReasonAcked)

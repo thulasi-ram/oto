@@ -10,7 +10,7 @@ import (
 )
 
 // Phase names as they travel in a job payload (SPEC §G.3:
-// `enrich.run {occurrence_id, phase, enrichers[]}`).
+// `enrich.run {case_id, phase, enrichers[]}`).
 const (
 	// PhaseNameInline is the pre-notification phase.
 	PhaseNameInline = "inline"
@@ -185,7 +185,7 @@ func NewEnrichment(p EnrichmentParams) (Enrichment, error) {
 			"an enrichment must name its subject")
 	case !validSubjectKind(p.SubjectKind):
 		return Enrichment{}, errs.New(errs.KindValidation, "enrichment_bad_subject_kind",
-			"subject_kind must be alert, occurrence or group")
+			"subject_kind must be alert, case or group")
 	case !ValidEnricherName(p.Enricher):
 		return Enrichment{}, errs.Newf(errs.KindValidation, "enrichment_bad_enricher_name",
 			"enricher %q must match ^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$", p.Enricher)
@@ -245,7 +245,7 @@ func (e Enrichment) ID() string { return e.id }
 // OrgID is the tenant this result belongs to.
 func (e Enrichment) OrgID() string { return e.orgID }
 
-// SubjectKind is what was enriched: alert, occurrence or group.
+// SubjectKind is what was enriched: alert, case or group.
 func (e Enrichment) SubjectKind() string { return e.subjectKind }
 
 // SubjectID is the subject row id. It is polymorphic, so SubjectKind names the
@@ -321,16 +321,16 @@ func (e Enrichment) Reusable(version int, now time.Time) bool {
 const (
 	// SubjectAlert is the Alert identity.
 	SubjectAlert = "alert"
-	// SubjectOccurrence is one firing episode. This is the v1 default: an
+	// SubjectCase is one firing episode. This is the v1 default: an
 	// enrichment is a fact about a FIRE, not about an identity.
-	SubjectOccurrence = "occurrence"
+	SubjectCase = "case"
 	// SubjectGroup is a notification group generation.
 	SubjectGroup = "group"
 )
 
 func validSubjectKind(k string) bool {
 	switch k {
-	case SubjectAlert, SubjectOccurrence, SubjectGroup:
+	case SubjectAlert, SubjectCase, SubjectGroup:
 		return true
 	default:
 		return false

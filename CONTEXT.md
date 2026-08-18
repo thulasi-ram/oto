@@ -30,7 +30,7 @@ accident report — and it is trusted precisely *because* it does none of those 
 
 > ### FR-1, the Flight Recorder Test
 > Complete this sentence about the row your feature writes: **"This row is a fact about ______."**
-> - A **signal** — Alert, AlertOccurrence, AlertGroup, RuleSnapshot, Notification, Delivery,
+> - A **signal** — Alert, AlertCase, AlertGroup, RuleSnapshot, Notification, Delivery,
 >   AlertSource, or an aggregate over those → **IN**.
 > - A **person, team, rota, responsibility, response effort, ticket, or customer-facing
 >   statement** → **OUT**.
@@ -38,8 +38,8 @@ accident report — and it is trusted precisely *because* it does none of those 
 > Human actions are IN **only** as timestamped annotations on a signal's timeline, carrying an actor
 > as *metadata*. In one line: **ACTOR, NEVER SUBJECT.**
 
-`occurrence.acked_by = alice` is a fact about the occurrence — *it was acknowledged, by whom*.
-`occurrence.assigned_to = alice` is a fact about Alice — *she owes work*. **Identical columns;
+`case.acked_by = alice` is a fact about the case — *it was acknowledged, by whom*.
+`case.assigned_to = alice` is a fact about Alice — *she owes work*. **Identical columns;
 opposite products.** That is the whole line.
 
 Secondary heuristics, in order, when FR-1 does not decide cleanly:
@@ -80,9 +80,9 @@ Permanently out of scope, with hand-offs: SPEC §I.1.1.
 | Term | Means |
 |---|---|
 | **Alert** | The **identity of a label set** within `(org, cluster)`. Created on first sight, survives resolution forever. oto's answer to Sentry's *Issue*. |
-| **AlertOccurrence** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). |
+| **AlertCase** | One **contiguous firing episode** of an Alert, `(alert_id, seq)`. What you ack; whose FIRING DURATION is measured. Never "MTTR" — banned (§A.1). |
 | **AlertEvent** | One **immutable thing that happened at one instant**. The timeline. Append-only. |
-| **AlertGroup** | One **generation of one Alertmanager notification group**, from `(source, receiver, groupLabels)`. **Owns exactly one Slack thread.** |
+| **AlertGroup** | One **generation of a correlation**, keyed by `(org, cluster, alertname, namespace-or-∅)` derived from the alert's OWN labels (ADR 0038). `receiver`/`source_group_key` survive as provenance, not identity. **Owns exactly one Slack thread.** |
 | **RuleSnapshot** | A content-addressed capture of a Prometheus alerting rule at a point in time. The differentiator. |
 | **AlertSource** | One configured Alertmanager (+ optional Prometheus). HA replicas share a Cluster. |
 | **Cluster** | Identity/failure domain. `cluster_key` participates in alert identity. |
@@ -94,7 +94,7 @@ Permanently out of scope, with hand-offs: SPEC §I.1.1.
 | **Silence** | A **read-only mirror** of an Alertmanager silence. |
 
 **Ambiguity bans:** unqualified `event`; `issue`; "notification" meaning a Slack message (that is a
-Delivery); "group" meaning a UI grouping (that is a *view*); "alert" meaning an occurrence or a
+Delivery); "group" meaning a UI grouping (that is a *view*); "alert" meaning a case or a
 Slack message.
 
 **Scope bans** — these MUST NOT appear in a Go identifier, a table or column name, a JSON field, an
@@ -116,7 +116,7 @@ alert is still firing and must still be rendered as firing** — colouring it ca
 **Snooze** suppresses *oto's own notifications* for one `alert_key` until T. It is stored only in
 oto (`alert_snoozes`), auto-expires (5 min…30 days, never indefinite), is attributed and visible,
 and touches nothing in the cluster. It is nearer to `channels.verbosity` than to a silence.
-**`snoozed` is NOT a `suppression_reason` and NOT a `state`** — `alert_occurrences.suppression_reason`
+**`snoozed` is NOT a `suppression_reason` and NOT a `state`** — `alert_cases.suppression_reason`
 mirrors Alertmanager's four reasons and nothing else. Snooze records itself as
 `notifications.suppressed_reason='snoozed'`. A snoozed *and* silenced alert shows **both** facts.
 
@@ -143,7 +143,7 @@ Rules you must not get wrong:
 | `identity` | CORE | Orgs, users, sessions, PATs and ingest tokens → `Principal` + `TenantScope`. |
 | `sources` | CORE | Alertmanager/Prometheus registry, credentials, health; owns the AM v2 + Prom v1 clients. |
 | `ingestion` | CORE | Durably accept raw batches and normalise them to Observations. Nothing else — and **not** the reconciler: SPEC §I.2's tree draws `ingestion/worker/reconcile_source`, but it is implemented in `sources` (`internal/sources/service/reconcile.go`, which says so), because every collaborator it needs is owned there. |
-| `alerts` | CORE | Identity/dedup, the occurrence state machine, the append-only timeline. The heart. |
+| `alerts` | CORE | Identity/dedup, the case state machine, the append-only timeline. The heart. |
 | `grouping` | CORE | Durable groups, generations, membership, storm detection. |
 | `rules` | CORE | Fetch, content-address, version and diff rule definitions at fire time. |
 | `enrichment` | CORE | The `Enricher` port, the budgeted pipeline, caching, provenanced results. |
@@ -152,7 +152,7 @@ Rules you must not get wrong:
 | `streaming` | CORE | `ui_events`, LISTEN/NOTIFY bridge, SSE hub with resume. |
 | `silences` | PERIPHERAL | Read-only mirror of AM silences. **No write path.** |
 | `stats` | PERIPHERAL | Alert-hygiene accounting. **Never per-person.** |
-| `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches six of them — `alerts`, `grouping`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_occurrences`, `alert_events`, `alert_groups`, `alert_group_members`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Those thirteen, plus its own `delivery_drills`, are DECLARED in `test/arch/sqltables_test.go` with their owner and how far the drill may go against each. The reads stay SQL on purpose — a port satisfied by the owning module's service would have the drill ask the code under test whether the code under test worked. |
+| `drill` | PERIPHERAL | Synthetic end-to-end delivery drills. It imports **no** other module: it reaches six of them — `alerts`, `grouping`, `ingestion`, `notification`, `channels`, `rules` — by writing their table names into SQL (`alerts`, `alert_cases`, `alert_events`, `alert_groups`, `ingest_batches`, `ingest_rejections`, `notifications`, `notification_deliveries`, `notification_policies`, `channels`, `channel_threads`, `rule_snapshots`). Those twelve, plus its own `delivery_drills`, are DECLARED in `test/arch/sqltables_test.go` with their owner and how far the drill may go against each. The reads stay SQL on purpose — a port satisfied by the owning module's service would have the drill ask the code under test whether the code under test worked. |
 | `app` | WIRING | The composition root. Constructs every concrete, satisfies every port, registers the workers and routes. THE one place allowed to know every module, and deliberately outside every cross-domain rule. Not a domain. |
 | `correlation` (was `incidents`), `k8scontext`, `changefeed`, `views`, `audit` (config changes only), `authz`, extra channel providers, anything AI | DEFERRED-POST-V1 | Do not build. Do not stub beyond the ports that already exist. |
 | `incidents`, `oncall`, assignment, multi-stage escalation, paging, status pages, postmortems, SLA/MTTA, manual resolve/merge/close, watchers | **PERMANENTLY OUT** | There is no version of oto containing these. Adding one needs an ADR arguing **against FR-1 by name**. See SPEC §I.1.1 for the hand-offs. |
@@ -428,7 +428,7 @@ text. Tokens and **measured** contrast ratios: SPEC §M.4–M.5.
   leaderboards or aggregates.** A feature you do not build cannot be misused.
 - Label redaction runs **before** the raw payload is persisted. Never log full payloads at info
   level. Retention: raw 30 days, events 13 months, configurable — and it deletes the
-  **narrative**, never the **record** (ADR 0024). `alerts`, `alert_occurrences`,
+  **narrative**, never the **record** (ADR 0024). `alerts`, `alert_cases`,
   `rule_snapshots`, `notifications`, `notification_deliveries` and `channel_threads`
   have no reaper. What dies at 13 months is the timeline, including human comments,
   which live nowhere else.

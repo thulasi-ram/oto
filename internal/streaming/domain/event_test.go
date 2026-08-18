@@ -26,7 +26,7 @@ var (
 // than a CHECK constraint at 3 a.m.
 var persistedKinds = []domain.Kind{
 	domain.KindAlertUpserted,
-	domain.KindOccurrenceUpserted,
+	domain.KindCaseUpserted,
 	domain.KindGroupUpserted,
 	domain.KindEventAppended,
 	domain.KindDeliveryUpdated,
@@ -50,7 +50,7 @@ func TestResourceForEveryPersistedKind(t *testing.T) {
 		want domain.Resource
 	}{
 		{domain.KindAlertUpserted, domain.ResourceAlert},
-		{domain.KindOccurrenceUpserted, domain.ResourceOccurrence},
+		{domain.KindCaseUpserted, domain.ResourceCase},
 		{domain.KindGroupUpserted, domain.ResourceGroup},
 		{domain.KindEventAppended, domain.ResourceAlertEvent},
 		{domain.KindDeliveryUpdated, domain.ResourceDelivery},
@@ -91,7 +91,7 @@ func TestKindResourcePairingIsTotalAndInjective(t *testing.T) {
 	// And every declared Resource is reachable — a resource no kind produces is
 	// an endpoint a client would never be told to re-read.
 	for _, r := range []domain.Resource{
-		domain.ResourceAlert, domain.ResourceOccurrence, domain.ResourceGroup,
+		domain.ResourceAlert, domain.ResourceCase, domain.ResourceGroup,
 		domain.ResourceAlertEvent, domain.ResourceDelivery, domain.ResourceSource,
 	} {
 		_, ok := seen[r]
@@ -341,14 +341,14 @@ func TestScopeOf(t *testing.T) {
 			wantGroup: &other,
 		},
 		{
-			// The resource_id of an occurrence frame is the OCCURRENCE id.
+			// The resource_id of a case frame is the CASE id.
 			// Inferring it as an alert id would narrow to the wrong thing.
-			name: "occurrence.upserted infers nothing from its resource id",
-			kind: domain.KindOccurrenceUpserted, resID: resourceID, payload: `{}`,
+			name: "case.upserted infers nothing from its resource id",
+			kind: domain.KindCaseUpserted, resID: resourceID, payload: `{}`,
 		},
 		{
-			name: "occurrence.upserted takes the alert id the payload carries",
-			kind: domain.KindOccurrenceUpserted, resID: resourceID, payload: `{"alert_id":"` + alertID.String() + `"}`,
+			name: "case.upserted takes the alert id the payload carries",
+			kind: domain.KindCaseUpserted, resID: resourceID, payload: `{"alert_id":"` + alertID.String() + `"}`,
 			wantAlert: &alertID,
 		},
 		{

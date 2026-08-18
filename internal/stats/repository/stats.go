@@ -52,10 +52,10 @@ const alertQualitySQL = `
 WITH rollup AS (
   SELECT cluster_key,
          alertname,
-         SUM(occurrences)::bigint          AS occurrences,
+         SUM(cases)::bigint          AS cases,
          SUM(notifications)::bigint        AS notifications,
          SUM(deliveries)::bigint           AS deliveries,
-         SUM(acked_occurrences)::bigint    AS acked_occurrences,
+         SUM(acked_cases)::bigint    AS acked_cases,
          SUM(auto_resolved)::bigint        AS auto_resolved,
          SUM(expired)::bigint              AS expired,
          SUM(total_firing_seconds)::bigint AS total_firing_seconds,
@@ -72,17 +72,17 @@ WITH rollup AS (
          cluster_key || E'\x1f' || alertname AS keyset_key,
          CASE $6::text
            WHEN '-notifications'        THEN notifications::double precision
-           WHEN 'ack_rate'              THEN CASE WHEN occurrences > 0
-                                                  THEN acked_occurrences::double precision / occurrences
+           WHEN 'ack_rate'              THEN CASE WHEN cases > 0
+                                                  THEN acked_cases::double precision / cases
                                                   ELSE 0 END
            WHEN '-flap_transitions'     THEN flap_transitions::double precision
            WHEN '-total_firing_seconds' THEN total_firing_seconds::double precision
-           ELSE occurrences::double precision
+           ELSE cases::double precision
          END AS sort_value
     FROM rollup
 )
-SELECT cluster_key, alertname, occurrences, notifications, deliveries,
-       acked_occurrences, auto_resolved, expired, total_firing_seconds,
+SELECT cluster_key, alertname, cases, notifications, deliveries,
+       acked_cases, auto_resolved, expired, total_firing_seconds,
        flap_transitions, sort_value, keyset_key
   FROM scored
  WHERE $7::double precision IS NULL
@@ -139,13 +139,13 @@ func (r *StatsRepository) AlertQuality(
 	for rows.Next() {
 		var (
 			q                      domain.AlertQuality
-			occ, notif, del        int64
+			ac, notif, del         int64
 			acked, auto, exp, flap int64
 			firing                 int64
 			sortValue              float64
 			keysetKey              string
 		)
-		if err := rows.Scan(&q.ClusterKey, &q.AlertName, &occ, &notif, &del,
+		if err := rows.Scan(&q.ClusterKey, &q.AlertName, &ac, &notif, &del,
 			&acked, &auto, &exp, &firing, &flap, &sortValue, &keysetKey); err != nil {
 			return nil, false, mapErr(err, "stats_quality_scan_failed",
 				"could not read the alert-hygiene rollup")
@@ -155,10 +155,10 @@ func (r *StatsRepository) AlertQuality(
 			hasMore = true
 			break
 		}
-		q.Occurrences = int(occ)
+		q.Cases = int(ac)
 		q.Notifications = int(notif)
 		q.Deliveries = int(del)
-		q.AckedOccurrences = int(acked)
+		q.AckedCases = int(acked)
 		q.AutoResolved = int(auto)
 		q.Expired = int(exp)
 		q.TotalFiringSeconds = firing
@@ -218,21 +218,29 @@ func (r *StatsRepository) AlertQuality(
 // (org_id, status)` still serves the org filter. The redundant `org_id` equality
 // is deliberate — `source_health.org_id` is denormalised with no FK (§D.2), so
 // joining on it is what asserts the two rows agree about the tenant.
+//
+// ⭐ THE ACK COUNTS COME FROM THE CASE, NOT FROM `alerts`. An ack is a receipt
+// for ONE firing episode, so `alerts` carries no ack column: the CTE reaches the
+// alert's current case by primary key — `current_case_id` is the
+// FK — and asks it. `IS DISTINCT FROM 'acked'` rather than `= 'unacked'` because
+// an alert with no case at all has nobody's receipt on it, and the honest
+// bucket for "no receipt" is unacked.
 const overviewSQL = `
 WITH a AS (
   SELECT
-    COUNT(*) FILTER (WHERE state = 'firing')       AS firing,
-    COUNT(*) FILTER (WHERE state = 'suppressed')   AS suppressed,
-    COUNT(*) FILTER (WHERE state = 'resolved')     AS resolved,
-    COUNT(*) FILTER (WHERE state = 'expired')      AS expired,
-    COUNT(*) FILTER (WHERE ack_state = 'acked')    AS acked,
-    COUNT(*) FILTER (WHERE ack_state = 'unacked')  AS unacked,
-    COUNT(*) FILTER (WHERE is_flapping)            AS flapping
-  FROM alerts
- WHERE org_id = $1
-   AND NOT synthetic
-   AND ($2::text[] IS NULL OR cluster_key = ANY($2))
-   AND last_seen_at >= $3 AND last_seen_at <= $4
+    COUNT(*) FILTER (WHERE al.state = 'firing')       AS firing,
+    COUNT(*) FILTER (WHERE al.state = 'suppressed')   AS suppressed,
+    COUNT(*) FILTER (WHERE al.state = 'resolved')     AS resolved,
+    COUNT(*) FILTER (WHERE al.state = 'expired')      AS expired,
+    COUNT(*) FILTER (WHERE o.ack_state = 'acked')     AS acked,
+    COUNT(*) FILTER (WHERE o.ack_state IS DISTINCT FROM 'acked') AS unacked,
+    COUNT(*) FILTER (WHERE al.is_flapping)            AS flapping
+  FROM alerts al
+  LEFT JOIN alert_cases o ON o.id = al.current_case_id
+ WHERE al.org_id = $1
+   AND NOT al.synthetic
+   AND ($2::text[] IS NULL OR al.cluster_key = ANY($2))
+   AND al.last_seen_at >= $3 AND al.last_seen_at <= $4
 ), g AS (
   SELECT
     COUNT(*) FILTER (WHERE state = 'open')   AS open,

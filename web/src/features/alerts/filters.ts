@@ -66,20 +66,69 @@ export type SortKey = NonNullable<AlertListQuery["sort"]>;
 /** Every lifecycle state the contract publishes, in the contract's own order. */
 export const ALL_STATES: readonly State[] = StateSchema.options;
 
+/**
+ * Which tab of the alert list is being read.
+ *
+ * ⭐⭐ THIS IS THE ONE PLACE THE PRODUCT REVERSED ITSELF, AND THE REVERSAL IS
+ * RECORDED HERE BECAUSE THIS IS WHERE THE OLD RULE WAS WRITTEN. What stood a few
+ * lines down was: *"`null` includes both, and that is the default on purpose …
+ * hiding snoozed alerts from the default list is how an incident is lost."* That
+ * was right about the danger and wrong about the remedy.
+ *
+ * The remedy it chose was a badge on the row. A badge on row 400 of a scrolling
+ * list is already invisible — nobody scrolls to row 400 — and it can only ever
+ * say "this one is quiet", never "twelve are, and two of them are firing". So the
+ * list carried every snoozed alert in order to protect an operator with a mark
+ * they would never reach.
+ *
+ * A **Quiet** tab is the opposite trade and it is strictly safer:
+ *
+ *   - it is present at zero, so the surface never disappears and cannot be
+ *     forgotten — which is what the 30-day snooze maximum requires, because a
+ *     quiet period nobody is reminded of becomes permanent by forgetfulness;
+ *   - its count is a total, legible at a glance, which the badge could not be;
+ *   - **its badge carries the worst state inside it** — `Quiet (12 · 2 firing)`,
+ *     never `Quiet (12)`. That clause is load-bearing: it is the only thing that
+ *     says something LIVE is being held back, and without it this reversal would
+ *     not be safe.
+ *
+ * `active` is the default and is omitted from the URL. The server still accepts
+ * "both" (`?snoozed` absent) and this UI never asks for it: a list that is on
+ * neither tab has no honest heading.
+ */
+export type AlertTab = "active" | "quiet";
+
 export interface AlertFilters {
   readonly state: readonly State[];
   readonly severity: readonly string[];
   readonly cluster: readonly string[];
   readonly namespace: readonly string[];
   readonly alertname: readonly string[];
-  readonly ack: "acked" | "unacked" | null;
+  /**
+   * ⛔ THERE IS NO `ack` FILTER, AND ITS ABSENCE IS THE POINT.
+   *
+   * `?ack=` filtered `alerts.ack_state`, a column that no longer exists. An
+   * acknowledgement is a receipt for **one firing episode**: it stops being true
+   * when that episode ends, so a filter over it answered "was some earlier
+   * firing of this alert acknowledged?" while looking like it answered "has
+   * anyone seen this?". The list of unacknowledged things is the surface people
+   * work from, and its trustworthiness is the whole value of ack.
+   *
+   * The ack facet lives on the case surface, where its subject still exists —
+   * the group list's `?ack=`, which reads each member's own episode, and the
+   * episode a row already expands via `include=current_case`. Sending
+   * `ack=` to `GET /alerts` is now `400 unknown_parameter`.
+   */
   readonly flapping: boolean | null;
   /**
-   * `null` includes both, and that is the default **on purpose**. A snooze is a
-   * fact about oto's notification behaviour, never about the signal: hiding
-   * snoozed alerts from the default list is how an incident is lost.
+   * Which tab, not which filter — see `AlertTab` for why the old rule here was
+   * reversed. It lives in `AlertFilters` because it changes the request and
+   * therefore invalidates the keyset cursor, and everything that does that has to
+   * travel in this one object. It is deliberately absent from
+   * `activeFilterCount` and `nothingElseFilters`: "you are on the Quiet tab" is
+   * not a filter somebody forgot to clear.
    */
-  readonly snoozed: boolean | null;
+  readonly tab: AlertTab;
   readonly since: string | null;
   readonly q: string;
   readonly sort: SortKey;
@@ -94,9 +143,8 @@ export const DEFAULT_FILTERS: AlertFilters = {
   cluster: [],
   namespace: [],
   alertname: [],
-  ack: null,
   flapping: null,
-  snoozed: null,
+  tab: "active",
   since: null,
   q: "",
   sort: "-last_seen_at",
@@ -134,9 +182,7 @@ function nothingElseFilters(f: AlertFilters): boolean {
     f.cluster.length === 0 &&
     f.namespace.length === 0 &&
     f.alertname.length === 0 &&
-    f.ack === null &&
     f.flapping === null &&
-    f.snoozed === null &&
     f.since === null &&
     f.q.trim() === "" &&
     f.matcherText.trim() === ""
@@ -151,9 +197,7 @@ export function activeFilterCount(f: AlertFilters): number {
   if (f.cluster.length > 0) n += 1;
   if (f.namespace.length > 0) n += 1;
   if (f.alertname.length > 0) n += 1;
-  if (f.ack !== null) n += 1;
   if (f.flapping !== null) n += 1;
-  if (f.snoozed !== null) n += 1;
   if (f.since !== null) n += 1;
   if (f.q.trim() !== "") n += 1;
   if (f.matcherText.trim() !== "") n += 1;
@@ -197,14 +241,12 @@ export function filtersFromSearch(search: string): AlertFilters {
   const sortRaw = p.get("sort");
   const sort: SortKey = sortRaw === "-first_seen_at" ? "-first_seen_at" : "-last_seen_at";
 
-  const ackRaw = p.get("ack");
-  const ack = ackRaw === "acked" || ackRaw === "unacked" ? ackRaw : null;
-
   const flapRaw = p.get("flapping");
   const flapping = flapRaw === "true" ? true : flapRaw === "false" ? false : null;
 
-  const snoozeRaw = p.get("snoozed");
-  const snoozed = snoozeRaw === "true" ? true : snoozeRaw === "false" ? false : null;
+  // An unrecognised `tab=` degrades to the main list rather than to an error
+  // page, exactly as an unrecognised `state=` is dropped.
+  const tab: AlertTab = p.get("tab") === "quiet" ? "quiet" : "active";
 
   return {
     state: csv(p.get("state")).filter(isState),
@@ -212,9 +254,8 @@ export function filtersFromSearch(search: string): AlertFilters {
     cluster: csv(p.get("cluster")),
     namespace: csv(p.get("namespace")),
     alertname: csv(p.get("alertname")),
-    ack,
     flapping,
-    snoozed,
+    tab,
     since: p.get("since"),
     q: p.get("q") ?? "",
     sort,
@@ -236,9 +277,8 @@ export function searchFromFilters(f: AlertFilters): string {
   if (f.cluster.length > 0) p.set("cluster", f.cluster.join(","));
   if (f.namespace.length > 0) p.set("namespace", f.namespace.join(","));
   if (f.alertname.length > 0) p.set("alertname", f.alertname.join(","));
-  if (f.ack !== null) p.set("ack", f.ack);
   if (f.flapping !== null) p.set("flapping", String(f.flapping));
-  if (f.snoozed !== null) p.set("snoozed", String(f.snoozed));
+  if (f.tab !== "active") p.set("tab", f.tab);
   if (f.since !== null && f.since !== "") p.set("since", f.since);
   if (f.q.trim() !== "") p.set("q", f.q.trim());
   if (f.sort !== "-last_seen_at") p.set("sort", f.sort);
@@ -290,9 +330,13 @@ function sharedFilters(f: AlertFilters): {
   if (f.cluster.length > 0) query["cluster"] = [...f.cluster];
   if (f.namespace.length > 0) query["namespace"] = [...f.namespace];
   if (f.alertname.length > 0) query["alertname"] = [...f.alertname];
-  if (f.ack !== null) query["ack"] = f.ack;
   if (f.flapping !== null) query["flapping"] = f.flapping;
-  if (f.snoozed !== null) query["snoozed"] = f.snoozed;
+  // ⛔ ALWAYS SENT, NEVER OMITTED. Omitting it asks the server for both tabs at
+  // once — a list with no honest heading, and on the main tab the exact behaviour
+  // this change replaced. The server answers both spellings from `alert_snoozes`:
+  // `false` is a left anti-join, `true` drives from the snoozes currently in
+  // force into `alerts` by primary key.
+  query["snoozed"] = f.tab === "quiet";
   if (f.since !== null && f.since !== "") query["since"] = f.since;
   if (f.q.trim() !== "") query["q"] = f.q.trim();
   // The whole label selector, in Alertmanager syntax, exactly as the contract's
@@ -315,14 +359,16 @@ export function compileFilters(f: AlertFilters, limit: number, cursor: string | 
   const { query, compiled, parsed } = sharedFilters(f);
   query["limit"] = limit;
   query["sort"] = f.sort;
-  // `current_occurrence` is what makes the row show ack state, firing
-  // duration and the suppression reason without an N+1.
+  // `current_case` is what makes the row show ack state, firing
+  // duration and the suppression reason without an N+1. It is now the ONLY
+  // source of ack on this screen: `alerts` carries no ack column, because a
+  // receipt for one firing must not outlive that firing.
   //
   // `rule` costs NOTHING on top of it — the server resolves both from the same
-  // occurrence read — and it is what carries the snapshot id the row needs to
+  // case read — and it is what carries the snapshot id the row needs to
   // show what the rule said. The id alone is not the rule text; the list resolves
   // a page of them in one further call via `batchGetRuleSnapshots` (ADR 0025).
-  query["include"] = ["current_occurrence", "rule"];
+  query["include"] = ["current_case", "rule"];
   if (cursor !== null) query["cursor"] = cursor;
 
   return {
@@ -410,4 +456,36 @@ export function matcherTextFromSelector(selector: LabelSelector): string {
 /** Toggle one value inside a comma-OR-ed array filter. */
 export function toggleIn<T extends string>(list: readonly T[], value: T): readonly T[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+}
+
+/**
+ * True when the list is showing the Quiet tab.
+ *
+ * It exists so the empty states can tell three different facts apart: nothing has
+ * ever fired, nothing matches these filters, and **nothing is currently quiet** —
+ * which is the good version of this screen and reads nothing like the other two.
+ */
+export function isQuietTab(f: AlertFilters): boolean {
+  return f.tab === "quiet";
+}
+
+/** Move to a tab, keeping every filter the operator had set. */
+export function withTab(f: AlertFilters, tab: AlertTab): AlertFilters {
+  return f.tab === tab ? f : { ...f, tab };
+}
+
+/**
+ * The filter set the **Quiet** badge is counted under.
+ *
+ * ⭐ IT IS THE OPERATOR'S OWN FILTERS, NOT AN UNFILTERED COUNT, and that is the
+ * only version of the badge that can be trusted. A count of every quiet alert in
+ * the org, sitting beside a list narrowed to one namespace, would send somebody
+ * to a tab that then showed them nothing — worse than no count at all, because it
+ * looks like a fault. The badge promises exactly what the tab will contain.
+ *
+ * `groupBy` is forced off: the badge counts alerts, and the roll-up answers in
+ * buckets.
+ */
+export function quietBadgeFilters(f: AlertFilters): AlertFilters {
+  return { ...f, tab: "quiet", groupBy: "none" };
 }

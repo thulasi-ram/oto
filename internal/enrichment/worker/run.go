@@ -25,14 +25,14 @@ type Runner interface {
 // enrichment does that, it is a port so the derivation stays with `identity`,
 // and it is why no other code in this module ever calls db.NewTenantScope.
 type ScopeResolver interface {
-	// ScopeForOccurrence returns the tenant that owns an occurrence.
-	ScopeForOccurrence(ctx context.Context, occurrenceID uuid.UUID) (db.TenantScope, error)
+	// ScopeForCase returns the tenant that owns a case.
+	ScopeForCase(ctx context.Context, caseID uuid.UUID) (db.TenantScope, error)
 }
 
 // EnrichRun is the `enrich.run` handler (SPEC §G.3), replacing the registered
 // stub. Wire it into jobs.Handlers.EnrichRun from internal/app.
 //
-// IDEMPOTENCY, on (OccurrenceID, Phase):
+// IDEMPOTENCY, on (CaseID, Phase):
 //
 //   - Results upsert on enrichments_subject_uniq (subject_kind, subject_id,
 //     enricher), so a re-run of a phase overwrites ITS OWN rows and can never
@@ -49,11 +49,11 @@ type ScopeResolver interface {
 func EnrichRun(svc Runner, scopes ScopeResolver) jobs.Handler[jobs.EnrichRunArgs] {
 	return func(ctx context.Context, job *jobs.Job[jobs.EnrichRunArgs]) error {
 		args := job.Args
-		if args.OccurrenceID == uuid.Nil {
-			// A payload naming no occurrence can never succeed, so retrying it
+		if args.CaseID == uuid.Nil {
+			// A payload naming no case can never succeed, so retrying it
 			// twelve times is twelve wasted executions. Terminal by class.
-			return errs.New(errs.KindValidation, "enrichment_job_no_occurrence",
-				"enrich.run requires an occurrence_id")
+			return errs.New(errs.KindValidation, "enrichment_job_no_case",
+				"enrich.run requires a case_id")
 		}
 
 		phase, err := domain.ParsePhase(args.Phase)
@@ -63,22 +63,22 @@ func EnrichRun(svc Runner, scopes ScopeResolver) jobs.Handler[jobs.EnrichRunArgs
 			return err
 		}
 
-		scope, err := scopes.ScopeForOccurrence(ctx, args.OccurrenceID)
+		scope, err := scopes.ScopeForCase(ctx, args.CaseID)
 		if err != nil {
 			return err
 		}
 
 		res, err := svc.Run(ctx, scope, service.RunRequest{
-			OccurrenceID: args.OccurrenceID,
-			Phase:        phase,
-			Enrichers:    args.Enrichers,
+			CaseID:    args.CaseID,
+			Phase:     phase,
+			Enrichers: args.Enrichers,
 		})
 		if err != nil {
 			return err
 		}
 
 		log.From(ctx).DebugContext(ctx, "enrich.run complete",
-			"occurrence_id", args.OccurrenceID,
+			"case_id", args.CaseID,
 			"phase", phase.String(),
 			"results", len(res.Results),
 			"succeeded", res.Succeeded(),

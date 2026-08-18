@@ -35,7 +35,7 @@ func resultParams(orgID, subjectID string) domain.EnrichmentParams {
 	return domain.EnrichmentParams{
 		ID:          id.NewString(),
 		OrgID:       orgID,
-		SubjectKind: domain.SubjectOccurrence,
+		SubjectKind: domain.SubjectCase,
 		SubjectID:   subjectID,
 		Enricher:    "prom.rule",
 		Version:     1,
@@ -75,7 +75,7 @@ func TestAProvenancedResultRoundTrips(t *testing.T) {
 	in := result(t, p)
 	require.NoError(t, repo.UpsertMany(h.Ctx, org.Scope, []domain.Enrichment{in}))
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID)
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 
@@ -129,7 +129,7 @@ func TestAFailedResultIsStoredWithTheReasonAttached(t *testing.T) {
 
 	require.NoError(t, repo.UpsertMany(h.Ctx, org.Scope, []domain.Enrichment{failed, timedOut}))
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID)
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
@@ -144,7 +144,7 @@ func TestAFailedResultIsStoredWithTheReasonAttached(t *testing.T) {
 }
 
 // TestReRunningAPhaseOverwritesItsOwnRows is what makes `enrich.run` idempotent
-// on (occurrence_id, phase): the conflict target omits the version, so a version
+// on (case_id, phase): the conflict target omits the version, so a version
 // bump REPLACES the old answer rather than accumulating beside it.
 func TestReRunningAPhaseOverwritesItsOwnRows(t *testing.T) {
 	t.Parallel()
@@ -166,7 +166,7 @@ func TestReRunningAPhaseOverwritesItsOwnRows(t *testing.T) {
 	secondParams.Version = 2
 	require.NoError(t, repo.UpsertMany(h.Ctx, org.Scope, []domain.Enrichment{result(t, secondParams)}))
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID)
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	require.Len(t, got, 1, "a retry converges; it never double-counts a failure")
 	assert.Equal(t, domain.StatusOK, got[0].Status())
@@ -201,7 +201,7 @@ func TestAWholePhaseIsWrittenInOneBatch(t *testing.T) {
 	}
 	require.NoError(t, repo.UpsertMany(h.Ctx, org.Scope, batch))
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID)
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	assert.Len(t, got, 4, "the inline phase has 2 000 ms for everything including its own writes")
 }
@@ -225,7 +225,7 @@ func TestANonObjectPayloadIsWrappedRatherThanDropped(t *testing.T) {
 		p.Payload = payload
 		require.NoError(t, repo.UpsertMany(h.Ctx, org.Scope, []domain.Enrichment{result(t, p)}), name)
 
-		got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID)
+		got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		raw, ok := got[0].Payload().(json.RawMessage)
@@ -247,7 +247,7 @@ func TestANilPayloadBecomesAnEmptyObject(t *testing.T) {
 	p.Payload = nil
 	require.NoError(t, repo.UpsertMany(h.Ctx, org.Scope, []domain.Enrichment{result(t, p)}))
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID)
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.JSONEq(t, `{}`, string(got[0].Payload().(json.RawMessage)),
@@ -265,7 +265,7 @@ func TestNilWarningsAreStoredAsAnEmptyArray(t *testing.T) {
 	require.NoError(t, repo.UpsertMany(h.Ctx, org.Scope,
 		[]domain.Enrichment{result(t, resultParams(org.ID.String(), subjectID))}))
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID)
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Empty(t, got[0].Warnings(), "warnings NOT NULL DEFAULT '{}'")
@@ -294,7 +294,7 @@ func TestOneBadRowRefusesTheWholeBatch(t *testing.T) {
 
 	good := result(t, resultParams(org.ID.String(), subjectID))
 
-	badParams := resultParams(org.ID.String(), "occurrence-42")
+	badParams := resultParams(org.ID.String(), "case-42")
 	badParams.Enricher = "alert.history"
 	bad := result(t, badParams)
 
@@ -303,7 +303,7 @@ func TestOneBadRowRefusesTheWholeBatch(t *testing.T) {
 	assert.Equal(t, errs.KindValidation, errs.KindOf(err))
 	assert.Equal(t, "enrichment_bad_subject_id", errs.CodeOf(err))
 
-	got, listErr := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID)
+	got, listErr := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, listErr)
 	assert.Empty(t, got, "a phase never lands half-written")
 }
@@ -344,10 +344,10 @@ func TestARowTheDomainCannotInterpretIsAbsentRatherThanFatal(t *testing.T) {
 		INSERT INTO enrichments (
 		  id, org_id, subject_kind, subject_id, enricher, enricher_version,
 		  phase, status, payload, warnings, error, duration_ms, from_cache, computed_at)
-		VALUES ($1,$2,'occurrence',$3,'prom.rule',1,1,'failed','{}'::jsonb,'{}','',0,false,$4)`,
+		VALUES ($1,$2,'case',$3,'prom.rule',1,1,'failed','{}'::jsonb,'{}','',0,false,$4)`,
 		rowID, org.ID, subjectID, harness.Epoch)
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID.String())
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID.String())
 	require.NoError(t, err,
 		"a stored row the domain cannot interpret must not fail the read that would repair it")
 	assert.Empty(t, got, "it is absent, not fatal: absent is what makes the caller recompute it")
@@ -358,7 +358,7 @@ func TestARowTheDomainCannotInterpretIsAbsentRatherThanFatal(t *testing.T) {
 	line := logs.String()
 	assert.Contains(t, line, `"level":"ERROR"`)
 	for _, want := range []string{
-		rowID.String(), org.ID.String(), subjectID.String(), "prom.rule", "occurrence",
+		rowID.String(), org.ID.String(), subjectID.String(), "prom.rule", "case",
 	} {
 		assert.Contains(t, line, want, "the log must carry enough identity to find the row")
 	}
@@ -368,7 +368,7 @@ func TestARowTheDomainCannotInterpretIsAbsentRatherThanFatal(t *testing.T) {
 	repaired := resultParams(org.ID.String(), subjectID.String())
 	require.NoError(t, repo.UpsertMany(h.Ctx, org.Scope, []domain.Enrichment{result(t, repaired)}))
 
-	got, err = repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID.String())
+	got, err = repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID.String())
 	require.NoError(t, err)
 	require.Len(t, got, 1, "the row that could not be read has been overwritten by one that can")
 	assert.Equal(t, domain.StatusOK, got[0].Status())
@@ -393,10 +393,10 @@ func TestOneUnreadableRowDoesNotHideItsSiblings(t *testing.T) {
 		INSERT INTO enrichments (
 		  id, org_id, subject_kind, subject_id, enricher, enricher_version,
 		  phase, status, payload, warnings, error, duration_ms, from_cache, computed_at)
-		VALUES ($1,$2,'occurrence',$3,'prom.rule',1,1,'timeout','{}'::jsonb,'{}','',0,false,$4)`,
+		VALUES ($1,$2,'case',$3,'prom.rule',1,1,'timeout','{}'::jsonb,'{}','',0,false,$4)`,
 		id.New(), org.ID, subjectID, harness.Epoch)
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, subjectID.String())
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, subjectID.String())
 	require.NoError(t, err)
 	require.Len(t, got, 1, "one damaged row must not take the subject's whole context down with it")
 	assert.Equal(t, "alert.history", got[0].Enricher())
@@ -409,12 +409,12 @@ func TestASubjectIDThatIsNotAUUIDIsRefused(t *testing.T) {
 	org := h.Org()
 	repo := repository.NewEnrichmentRepository(h.Pool)
 
-	bad := result(t, resultParams(org.ID.String(), "occurrence-42"))
+	bad := result(t, resultParams(org.ID.String(), "case-42"))
 	err := repo.UpsertMany(h.Ctx, org.Scope, []domain.Enrichment{bad})
 	require.Error(t, err)
 	assert.Equal(t, "enrichment_bad_subject_id", errs.CodeOf(err))
 
-	_, err = repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, "occurrence-42")
+	_, err = repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, "case-42")
 	require.Error(t, err)
 	assert.Equal(t, "enrichment_bad_subject_id", errs.CodeOf(err))
 }
@@ -435,11 +435,11 @@ func TestOneOrgNeverReadsAnotherOrgsEnrichments(t *testing.T) {
 	require.NoError(t, repo.UpsertMany(h.Ctx, alice.Scope,
 		[]domain.Enrichment{result(t, resultParams(alice.ID.String(), subjectID))}))
 
-	got, err := repo.ListBySubject(h.Ctx, bob.Scope, domain.SubjectOccurrence, subjectID)
+	got, err := repo.ListBySubject(h.Ctx, bob.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	assert.Empty(t, got, "the same subject id read as another tenant returns nothing")
 
-	got, err = repo.ListBySubject(h.Ctx, alice.Scope, domain.SubjectOccurrence, subjectID)
+	got, err = repo.ListBySubject(h.Ctx, alice.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	assert.Len(t, got, 1)
 }
@@ -458,13 +458,13 @@ func TestTheScopeOwnsTheOrgColumnNotThePayload(t *testing.T) {
 	claiming := result(t, resultParams(bob.ID.String(), subjectID))
 	require.NoError(t, repo.UpsertMany(h.Ctx, alice.Scope, []domain.Enrichment{claiming}))
 
-	got, err := repo.ListBySubject(h.Ctx, alice.Scope, domain.SubjectOccurrence, subjectID)
+	got, err := repo.ListBySubject(h.Ctx, alice.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, alice.ID.String(), got[0].OrgID(),
 		"the Subject carries OrgID as a string for display; it is not, and must never be, authorisation")
 
-	got, err = repo.ListBySubject(h.Ctx, bob.Scope, domain.SubjectOccurrence, subjectID)
+	got, err = repo.ListBySubject(h.Ctx, bob.Scope, domain.SubjectCase, subjectID)
 	require.NoError(t, err)
 	assert.Empty(t, got)
 }
@@ -476,7 +476,7 @@ func TestAnUnknownSubjectIsAnEmptyListAndNotAnError(t *testing.T) {
 	org := h.Org()
 	repo := repository.NewEnrichmentRepository(h.Pool)
 
-	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectOccurrence, id.NewString())
+	got, err := repo.ListBySubject(h.Ctx, org.Scope, domain.SubjectCase, id.NewString())
 	require.NoError(t, err, "an un-enriched subject is the normal case on a first fire")
 	assert.Empty(t, got)
 }

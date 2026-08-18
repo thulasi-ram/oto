@@ -31,7 +31,7 @@ import {
   UnackRequestSchema,
 } from "~/api/generated/validators";
 import { qk } from "~/api/keys";
-import type { AlertDetail, Occurrence, SnoozeRequest } from "~/api/types";
+import type { AlertDetail, Case, SnoozeRequest } from "~/api/types";
 import { Button } from "~/components/ui/Button";
 import {
   Modal,
@@ -138,7 +138,7 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
   const [commentOpen, setCommentOpen] = createSignal(false);
   const [snoozeOpen, setSnoozeOpen] = createSignal(false);
 
-  const acked = (): boolean => props.alert.ack_state === "acked";
+  const acked = (): boolean => (props.alert.current_case?.ack_state ?? null) === "acked";
 
   /** Snooze is a third orthogonal axis, so this is read beside state, not from it. */
   const snoozed = (): boolean => (props.alert.snooze ?? null) !== null;
@@ -153,13 +153,13 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
   }));
 
   /**
-   * Acking an occurrence that has already ended is a `412` by contract — the
+   * Acking a case that has already ended is a `412` by contract — the
    * request is valid, the entity is simply in the wrong state. Saying so up
    * front is kinder than letting someone discover it by being refused.
    */
-  const occurrenceOpen = (): boolean => {
-    const occ = props.alert.current_occurrence;
-    return occ !== null && occ !== undefined && (occ.ended_at ?? null) === null;
+  const caseOpen = (): boolean => {
+    const ac = props.alert.current_case;
+    return ac !== null && ac !== undefined && (ac.ended_at ?? null) === null;
   };
 
   return (
@@ -183,9 +183,9 @@ export const AlertActions: Component<AlertActionsProps> = (props) => {
         <Show when={!acked()}>
           <Button
             variant="default"
-            disabled={!occurrenceOpen()}
+            disabled={!caseOpen()}
             title={
-              occurrenceOpen()
+              caseOpen()
                 ? "Record that a human has seen this. It stays firing."
                 : "This episode has already ended, so there is nothing to acknowledge."
             }
@@ -307,7 +307,7 @@ const AckDialog: Component<{
     props.withdrawing ? UnackFormSchema : AckFormSchema;
 
   const mutation = useMutation(() => ({
-    mutationFn: (body: NoteBody): Promise<Occurrence> => {
+    mutationFn: (body: NoteBody): Promise<Case> => {
       // One key per gesture. The server's idempotency promise only holds if the
       // client stops re-minting the key on every retry.
       const key = idempotencyKey();

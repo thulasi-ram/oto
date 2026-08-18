@@ -15,7 +15,7 @@ import type {
   Cluster,
   DeliveryDrill,
   Notification,
-  Occurrence,
+  Case,
   OrgSettingsView,
   Policy,
   RuleSnapshot,
@@ -29,7 +29,7 @@ import type { Bound } from "~/test/contract";
 
 const T0 = "2026-08-09T09:00:00.000Z";
 
-export function occurrence(patch: Partial<Occurrence> = {}): Occurrence {
+export function alertCase(patch: Partial<Case> = {}): Case {
   return {
     id: "0f8fad5b-d9cb-469f-a165-70867728950e",
     alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
@@ -78,11 +78,10 @@ export function alert(patch: Partial<Alert> = {}): Alert {
     labels: { alertname: "HighErrorRate", severity: "critical", namespace: "payments", pod: "api-7" },
     annotations: { summary: "Error rate above 5% for 15 minutes" },
     state: "firing",
-    ack_state: "unacked",
     first_seen_at: T0,
     last_seen_at: T0,
     last_state_change_at: T0,
-    total_occurrences: 3,
+    total_cases: 3,
     flap_score: 0,
     is_flapping: false,
     synthetic: false,
@@ -110,7 +109,7 @@ export function snooze(patch: Partial<Snooze> = {}): Snooze {
 export function alertDetail(patch: Partial<AlertDetail> = {}): AlertDetail {
   return {
     ...alert(),
-    current_occurrence: occurrence(),
+    current_case: alertCase(),
     delivery_summary: { total: 0, sent: 0, failed: 0, pending: 0, suppressed: 0 },
     ...patch,
   } as AlertDetail;
@@ -196,7 +195,7 @@ export function notification(patch: Partial<Notification> = {}): Notification {
     subject_id: "9d4e0a1b-9c2f-4d4e-5061-728394051627",
     group_id: "9d4e0a1b-9c2f-4d4e-5061-728394051627",
     alert_id: "8b1f0d38-6ae4-4f2d-9d3f-1f6b1f0d38ae",
-    occurrence_id: null,
+    case_id: null,
     reason: "fired",
     policy_id: "5a1b7d8e-6f9c-4a1b-2d3e-4f5061728394",
     state_version: 1,

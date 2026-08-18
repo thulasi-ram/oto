@@ -107,9 +107,16 @@ export const StateChip: Component<StateChipProps> = (props) => (
  * subject of one. So this never says "owned by", never says "assigned to", and
  * an acknowledged alert is still firing.
  */
-export const AckChip: Component<{ readonly ackState: AckState; readonly class?: string }> = (
-  props,
-) =>
+/**
+ * `ackState` is nullable because the ack now comes from an EPISODE, not from the
+ * alert row — `current_case?.ack_state` — and an alert that has never
+ * fired, or a caller that did not ask for the include, has no episode to read.
+ * Absent renders as nothing, which is the same thing `unacked` renders as.
+ */
+export const AckChip: Component<{
+  readonly ackState: AckState | null | undefined;
+  readonly class?: string;
+}> = (props) =>
   props.ackState === "acked" ? (
     <span
       class={cn(

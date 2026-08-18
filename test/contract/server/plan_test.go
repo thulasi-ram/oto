@@ -266,7 +266,7 @@ func plan() []probe {
 			want: http.StatusNotFound,
 		},
 		{
-			method: http.MethodGet, tmpl: "/api/v1/alerts/{id}/occurrences", url: "/api/v1/alerts/{{alert}}/occurrences",
+			method: http.MethodGet, tmpl: "/api/v1/alerts/{id}/cases", url: "/api/v1/alerts/{{alert}}/cases",
 			want: http.StatusOK,
 		},
 		{
@@ -328,21 +328,21 @@ func plan() []probe {
 			want: http.StatusOK,
 		},
 
-		/* --------------------------------------------------------- occurrences */
+		/* --------------------------------------------------------- cases */
 		{
-			method: http.MethodGet, tmpl: "/api/v1/occurrences/{id}", url: "/api/v1/occurrences/{{occurrence}}",
+			method: http.MethodGet, tmpl: "/api/v1/cases/{id}", url: "/api/v1/cases/{{case}}",
 			want: http.StatusOK,
 		},
 		{
-			method: http.MethodGet, tmpl: "/api/v1/occurrences/{id}", url: "/api/v1/occurrences/{{stranger}}",
+			method: http.MethodGet, tmpl: "/api/v1/cases/{id}", url: "/api/v1/cases/{{stranger}}",
 			want: http.StatusNotFound,
 		},
 		{
-			method: http.MethodGet, tmpl: "/api/v1/occurrences/{id}/events", url: "/api/v1/occurrences/{{occurrence}}/events",
+			method: http.MethodGet, tmpl: "/api/v1/cases/{id}/events", url: "/api/v1/cases/{{case}}/events",
 			want: http.StatusOK,
 		},
 		{
-			method: http.MethodGet, tmpl: "/api/v1/occurrences/{id}/rule", url: "/api/v1/occurrences/{{occurrence}}/rule",
+			method: http.MethodGet, tmpl: "/api/v1/cases/{id}/rule", url: "/api/v1/cases/{{case}}/rule",
 			want: http.StatusNotFound,
 			why:  "no rule snapshot was ever captured for this episode, which is the ordinary answer for an alert that arrived without one",
 		},

@@ -70,7 +70,7 @@ export const ClockTime: Component<{ readonly value: string; readonly class?: str
   </time>
 );
 
-/** A live-updating elapsed span, e.g. how long an occurrence has been firing. */
+/** A live-updating elapsed span, e.g. how long a case has been firing. */
 export const Elapsed: Component<{
   readonly from: string | null | undefined;
   readonly to?: string | null | undefined;

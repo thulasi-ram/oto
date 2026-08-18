@@ -339,12 +339,12 @@ func newRig(t *testing.T, fn func(service.LookupRequest) (domain.Recovery, error
 	return r
 }
 
-func (r *rig) capture(t *testing.T, alertID, occurrenceID uuid.UUID) service.Capture {
+func (r *rig) capture(t *testing.T, alertID, caseID uuid.UUID) service.Capture {
 	t.Helper()
 	c, err := r.svc.Capture(context.Background(), r.scope, service.CaptureRequest{
-		SourceID:     r.source,
-		AlertID:      alertID,
-		OccurrenceID: occurrenceID,
+		SourceID: r.source,
+		AlertID:  alertID,
+		CaseID:   caseID,
 		Labels: map[string]string{
 			"alertname": "HighErrorRate",
 			"severity":  "critical",
@@ -429,9 +429,9 @@ func TestCaptureStoresWhatTheRuleSaid(t *testing.T) {
 	r := newRig(t, func(service.LookupRequest) (domain.Recovery, error) {
 		return recoveredRule("rate(errors[5m]) > 0.05", 300), nil
 	})
-	alertID, occID := id.New(), id.New()
+	alertID, caseID := id.New(), id.New()
 
-	c := r.capture(t, alertID, occID)
+	c := r.capture(t, alertID, caseID)
 
 	require.True(t, c.Recovered())
 	assert.True(t, c.NewVersion, "the first capture of a rule text is a new version")
@@ -966,7 +966,7 @@ func TestCaptureSurvivesATimelineThatWillNotWrite(t *testing.T) {
 }
 
 // TestCaptureNarratesOnlyWhatItCanScope: an event must hang off an alert or an
-// occurrence, so an unscoped capture is stored and simply not narrated.
+// case, so an unscoped capture is stored and simply not narrated.
 func TestCaptureNarratesOnlyWhatItCanScope(t *testing.T) {
 	t.Parallel()
 

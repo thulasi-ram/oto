@@ -112,7 +112,7 @@ describe("frames become invalidations", () => {
     // exists for; the log absorbs the rate at the cache entry instead
     // (`notificationActivityQuery`), not by being told about less.
     { kind: "alert.upserted", expects: [["alerts"], ["notifications"]] },
-    { kind: "occurrence.upserted", expects: [["alerts"], ["groups"]] },
+    { kind: "case.upserted", expects: [["alerts"], ["groups"]] },
     { kind: "group.upserted", expects: [["groups"]] },
     { kind: "event.appended", expects: [["alerts"], ["groups"], ["notifications"]] },
     // `["alerts"]` because a delivery is read as part of an alert

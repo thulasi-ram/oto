@@ -127,7 +127,7 @@ type SourceConfigs interface {
 //
 //   - ObserveBatch is IDEMPOTENT. It is called inside the caller's transaction
 //     (`db.FromContext`), and re-applying the same Observations must produce no
-//     second occurrence and no second event. §G.5 already requires exactly that of
+//     second case and no second event. §G.5 already requires exactly that of
 //     the alert upsert (ON CONFLICT (org_id, alert_key)) and the event append
 //     (`alert_event_keys`), so this is a restatement, not a new demand.
 //   - It runs the §B.3 state machine, resolves the AlertGroup generation, appends
@@ -150,12 +150,12 @@ type AlertObserver interface {
 
 // AlertState is what a replay needs to know about ONE alert key before it is
 // allowed to re-enqueue the batch that touches it. It is a READ model owned by
-// ingestion, deliberately not `alerts/domain.Occurrence`.
+// ingestion, deliberately not `alerts/domain.Case`.
 //
 // ⛔ THE NARROWNESS IS THE POINT. `alerts/domain.Observation` is the single
 // sanctioned cross-domain `domain` import (§C.1, CONTEXT.md §5.2b), and it stays
 // single: ingestion asks the supersession question in its own words and the
-// composition root translates. Handing this port an Occurrence would make every
+// composition root translates. Handing this port a Case would make every
 // field of the alerts aggregate reachable from the ingest path, and the next
 // person would use one.
 type AlertState struct {
@@ -165,20 +165,20 @@ type AlertState struct {
 	// Identity is the alert rendered for a human, e.g. `HighErrorRate{service=checkout}`.
 	// It is for the refusal message and nothing branches on it.
 	Identity string
-	// State is the latest occurrence's state, rendered. "" when there is no
-	// occurrence yet.
+	// State is the latest case's state, rendered. "" when there is no
+	// case yet.
 	State string
 	// Terminal is that state's IsTerminal — `resolved` or `expired`.
 	Terminal bool
-	// SourceUpdatedAt is the latest occurrence's `source_updated_at`: the receipt
+	// SourceUpdatedAt is the latest case's `source_updated_at`: the receipt
 	// of the BATCH that last moved it. Comparing it to the replayed batch's own
 	// `received_at` is how "a later batch overtook this one" is asked.
 	SourceUpdatedAt time.Time
-	// MovedAt is the most recent instant the occurrence is known to have moved.
+	// MovedAt is the most recent instant the case is known to have moved.
 	//
 	// ⛔ IT IS NOT SourceUpdatedAt, and the difference is the whole of the second
-	// refusal limb: the reaper expires an occurrence without any upstream saying
-	// so, and expiry NEVER touches `source_updated_at`. An expired occurrence can
+	// refusal limb: the reaper expires a case without any upstream saying
+	// so, and expiry NEVER touches `source_updated_at`. An expired case can
 	// therefore look untouched on the timestamp axis while being very much closed.
 	MovedAt time.Time
 }

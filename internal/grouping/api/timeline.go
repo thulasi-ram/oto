@@ -55,15 +55,24 @@ func parseTimeline(r *http.Request) (timelineRequest, error) {
 		return timelineRequest{}, err
 	}
 
+	// The filter is the PERSISTED spellings, with the caveat `alerts/api.parseTimeline`
+	// sets out at length: the events this map is applied to have already been
+	// canonicalised by `alerts/repository`'s row mapper, so the pre-rename keys are
+	// never matched HERE. It expands anyway so the map is correct for the column
+	// rather than for the wire — the failure it guards against is a filter that
+	// moves into SQL and quietly stops matching at the rename.
 	types := map[string]bool{}
 	for _, t := range q.Type {
-		if _, err := alertdomain.NewEventType(t); err != nil {
+		et, err := alertdomain.NewEventType(t)
+		if err != nil {
 			return timelineRequest{}, errs.Validation("validation_failed",
 				"1 field failed validation.", errs.Violation{
 					Field: "type", Code: "enum", Message: "unknown event type: " + t,
 				})
 		}
-		types[t] = true
+		for _, s := range et.PersistedSpellings() {
+			types[s] = true
+		}
 	}
 
 	hash := httpx.FilterHash("type="+joinSorted(q.Type), "order="+q.Order)

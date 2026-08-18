@@ -68,7 +68,7 @@ func DefaultBroadcastPolicy() BroadcastPolicy { return BroadcastPolicy{Resolved:
 //     is precisely the wrong audience. This is the case
 //     `reply_broadcast` was put in oto for.
 //   - `refired`           — a re-fire INSIDE `refire_grace` reopens the existing
-//     occurrence: an update plus a thread reply, no new root.
+//     case: an update plus a thread reply, no new root.
 //     The thread said "resolved" and people stopped following
 //     it. A re-fire AFTER the grace window opens a new
 //     generation and a new root message, which is already

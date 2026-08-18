@@ -59,7 +59,7 @@ export interface paths {
          *
          *     A clustered Alertmanager is at-least-once by design, and a network partition guarantees
          *     duplicates. oto derives a dedup key from the batch content, so a replay returns `202` with the
-         *     original `batch_id` and `duplicate: true`, and produces exactly one alert, one occurrence and
+         *     original `batch_id` and `duplicate: true`, and produces exactly one alert, one case and
          *     one chat message.
          *
          *     ### Redaction happens before persistence
@@ -104,10 +104,12 @@ export interface paths {
          *     `GET /api/v1/rule-snapshots/batch` resolves a whole page of those refs in one further call, so
          *     showing `expr` on the list costs two requests rather than one per row (ADR 0025).
          *
-         *     **Snoozed alerts are in this list by default and that is deliberate.** A snooze suppresses oto's
-         *     own *notifications*; it says nothing about the signal. A snoozed alert is still firing, still
-         *     whatever severity it was, and hiding it from the default list is how an incident is lost. Use
-         *     `snoozed=true|false` to filter explicitly.
+         *     **`snoozed` is the tab selector, and omitting it still returns both.** A snooze suppresses
+         *     oto's own *notifications*; it says nothing about the signal, so a snoozed alert is still
+         *     firing and still whatever severity it was. `snoozed=false` is the main tab and `snoozed=true`
+         *     is the **Quiet** tab — the same list and the same filters over what oto is being quiet about.
+         *     Splitting them is safe only because the Quiet tab is always present and its count carries the
+         *     worst state inside it; a snooze badge on row 400 of a scrolling list was not.
          *
          *     **To group these results, use `GET /api/v1/alerts/rollups`**, which applies every filter below
          *     and aggregates server-side. Do not roll up a page client-side: the counts are then computed over
@@ -149,8 +151,9 @@ export interface paths {
          *
          *     ### ⛔ This is not `/alert-groups`, and the two must not be confused
          *
-         *     An **AlertGroup** is one generation of one *Alertmanager notification group*, derived from
-         *     `(source, receiver, groupLabels)`. It has a row, a generation and it owns exactly one chat
+         *     An **AlertGroup** is one generation of one *machine-derived grouping*, keyed by
+         *     `(org, cluster, alertname, namespace-or-∅)` from the alert's own labels. It has a row, a
+         *     generation and it owns exactly one chat
          *     thread. A **roll-up** is a view over the alert list: it has no row, no generation, no thread,
          *     and it exists for the duration of one query.
          *
@@ -177,9 +180,9 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get one alert with its current occurrence and enrichment summary
-         * @description The alert detail view: the identity, the current (or most recent) occurrence, the rule as it was
-         *     at that occurrence's fire time, the enrichment summary, and a delivery roll-up so the page can
+         * Get one alert with its current case and enrichment summary
+         * @description The alert detail view: the identity, the current (or most recent) case, the rule as it was
+         *     at that case's fire time, the enrichment summary, and a delivery roll-up so the page can
          *     show whether anyone was actually told.
          */
         get: operations["getAlert"];
@@ -191,7 +194,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/alerts/{id}/occurrences": {
+    "/api/v1/alerts/{id}/cases": {
         parameters: {
             query?: never;
             header?: never;
@@ -203,7 +206,7 @@ export interface paths {
          * @description Every episode of this identity, newest first. An alert that has fired forty times has forty rows
          *     here — which is exactly the history Alertmanager does not keep.
          */
-        get: operations["listAlertOccurrences"];
+        get: operations["listAlertCases"];
         put?: never;
         post?: never;
         delete?: never;
@@ -243,7 +246,7 @@ export interface paths {
         };
         /**
          * All enrichment results for an alert, with provenance
-         * @description Every enricher result recorded against this alert and its current occurrence, each stamped with
+         * @description Every enricher result recorded against this alert and its current case, each stamped with
          *     the enricher name, its version, its phase, how long it took and whether it came from cache — so
          *     a wrong answer is always traceable to its producer.
          */
@@ -264,8 +267,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The rule bound to the current occurrence, plus its full version history
-         * @description **The differentiator.** Returns the rule snapshot bound to this alert's current occurrence —
+         * The rule bound to the current case, plus its full version history
+         * @description **The differentiator.** Returns the rule snapshot bound to this alert's current case —
          *     `expr`, `for`, `keep_firing_for`, labels and annotations **as they were when that episode
          *     fired** — along with every version oto has ever captured for the same RuleKey, each with its
          *     capture timestamp, and a structured diff when the definition changed between episodes.
@@ -314,18 +317,18 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Acknowledge an alert's current occurrence
-         * @description Acknowledge the currently open occurrence. **An acked alert is still firing** — acknowledgement
+         * Acknowledge an alert's current case
+         * @description Acknowledge the currently open case. **An acked alert is still firing** — acknowledgement
          *     is an orthogonal axis that says "a human has seen this", not "this is over".
          *
          *     This is the same service method the Slack acknowledge button calls, so acking from chat and
-         *     acking from the API produce byte-identical state. It appends an `occurrence.acknowledged` event
+         *     acking from the API produce byte-identical state. It appends an `case.acknowledged` event
          *     with the actor, and triggers an in-place update of the chat card.
          *
          *     Acknowledgement identity **is** stored, because it is operationally necessary. It is never
          *     aggregated into a per-person metric.
          *
-         *     Acking an occurrence that has already ended is a `412`, not a `409`: the request is valid, the
+         *     Acking a case that has already ended is a `412`, not a `409`: the request is valid, the
          *     entity is simply in the wrong state.
          */
         post: operations["ackAlert"];
@@ -346,9 +349,9 @@ export interface paths {
         put?: never;
         /**
          * Withdraw an acknowledgement
-         * @description Return the current occurrence to `unacked`, appending an `occurrence.unacknowledged` event with
+         * @description Return the current case to `unacked`, appending an `case.unacknowledged` event with
          *     `reason: manual` — distinguishing a deliberate withdrawal from the automatic unack that happens
-         *     when a new occurrence opens.
+         *     when a new case opens.
          */
         post: operations["unackAlert"];
         delete?: never;
@@ -398,9 +401,10 @@ export interface paths {
          *     >
          *     > Snooze is not a state. It is a third orthogonal axis alongside `state` and `ack_state`. A
          *     > snoozed critical alert is **still critical and still firing**; colouring it calm would be
-         *     > exactly the lie that "no human writes a signal's state" exists to prevent. It is also **not**
-         *     > hidden from the default alert list — `snoozed` is an explicit filter and its default includes
-         *     > both.
+         *     > exactly the lie that "no human writes a signal's state" exists to prevent. The alert list's
+         *     > **Quiet** tab is where a snoozed alert goes — never nowhere: the tab is present even when it
+         *     > is empty, and its badge carries the worst state inside it, so an operator can always see that
+         *     > something live is being held back.
          *
          *     ### It always ends, and it is always attributed
          *
@@ -540,7 +544,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/occurrences/{id}": {
+    "/api/v1/cases/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -552,7 +556,7 @@ export interface paths {
          * @description One episode with its alert, its group generation, the rule snapshot bound to it, its enrichment
          *     results and its delivery roll-up.
          */
-        get: operations["getOccurrence"];
+        get: operations["getCase"];
         put?: never;
         post?: never;
         delete?: never;
@@ -561,7 +565,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/occurrences/{id}/events": {
+    "/api/v1/cases/{id}/events": {
         parameters: {
             query?: never;
             header?: never;
@@ -573,7 +577,7 @@ export interface paths {
          * @description Events scoped to a single episode rather than to the whole alert identity — the view you want
          *     when asking "what happened during *this* outage", not "what has this rule ever done".
          */
-        get: operations["listOccurrenceEvents"];
+        get: operations["listCaseEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -582,7 +586,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/occurrences/{id}/rule": {
+    "/api/v1/cases/{id}/rule": {
         parameters: {
             query?: never;
             header?: never;
@@ -599,7 +603,7 @@ export interface paths {
          *     configured and no usable `generatorURL`); a snapshot with `origin: unavailable` means the capture
          *     was attempted and honestly recorded as empty.
          */
-        get: operations["getOccurrenceRule"];
+        get: operations["getCaseRule"];
         put?: never;
         post?: never;
         delete?: never;
@@ -617,11 +621,12 @@ export interface paths {
         };
         /**
          * List notification-group generations
-         * @description **The default UI landing view.** A group is one generation of one Alertmanager notification
-         *     group, and it is the unit humans actually respond to: forty pods crash-looping is one thing
+         * @description **The default UI landing view.** A group is one generation of one machine-derived grouping of
+         *     alerts, and it is the unit humans actually respond to: forty pods crash-looping is one thing
          *     happening, not forty.
          *
-         *     Because a group's identity is oto's own durable hash rather than Alertmanager's route-derived
+         *     Because a group's identity is derived from the alert's own labels —
+         *     `(org, cluster, alertname, namespace-or-∅)` — rather than from Alertmanager's route-derived
          *     `groupKey`, editing `alertmanager.yml` — adding a route, changing `group_by` — does not orphan an
          *     open thread. The group keeps its key and the same conversation continues.
          *
@@ -673,7 +678,7 @@ export interface paths {
         };
         /**
          * List a group's member alerts
-         * @description The alerts whose occurrences belong to this group generation, newest first.
+         * @description The alerts whose cases belong to this group generation, newest first.
          */
         get: operations["listAlertGroupAlerts"];
         put?: never;
@@ -693,7 +698,7 @@ export interface paths {
         };
         /**
          * The merged, ordered lifecycle timeline for a group
-         * @description **The signature view.** Every event from every member alert, every occurrence, every notification
+         * @description **The signature view.** Every event from every member alert, every case, every notification
          *     and every delivery, merged into one continuous ordered list: opened → notified → delivered →
          *     enriched → rule-changed → acked → re-fired → resolved.
          *
@@ -720,12 +725,12 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Acknowledge every open member occurrence
+         * Acknowledge every open member case
          * @description Acknowledge the whole group in one action — the realistic response to a storm, where acking
          *     forty alerts individually is not a workflow anyone will follow.
          *
-         *     Every open member occurrence gets the same acknowledgement, each appending its own
-         *     `occurrence.acknowledged` event, and the chat card updates in place. Member occurrences that
+         *     Every open member case gets the same acknowledgement, each appending its own
+         *     `case.acknowledged` event, and the chat card updates in place. Member cases that
          *     have already ended are skipped rather than failing the request; a group with **no** open members
          *     at all is a `412`.
          */
@@ -787,7 +792,7 @@ export interface paths {
          *     members' actual state.
          *
          *     A group with no currently-joined member is a `412`. A member that cannot be snoozed is skipped
-         *     rather than failing the request, for the same reason the group ack skips ended occurrences.
+         *     rather than failing the request, for the same reason the group ack skips ended cases.
          */
         post: operations["snoozeAlertGroup"];
         delete?: never;
@@ -914,7 +919,7 @@ export interface paths {
         /**
          * Get one captured rule definition
          * @description One content-addressed snapshot. Snapshots are immutable and deduplicated by content, so two
-         *     occurrences that fired under an identical definition point at the same row.
+         *     cases that fired under an identical definition point at the same row.
          */
         get: operations["getRuleSnapshot"];
         put?: never;
@@ -1076,7 +1081,7 @@ export interface paths {
         /**
          * Health, lag, clock skew, divergence and warnings for one source
          * @description Health is not decoration here: **it gates the reaper.** While a source is anything other than
-         *     healthy, its occurrences are held in place and cannot be expired, so killing Alertmanager can
+         *     healthy, its cases are held in place and cannot be expired, so killing Alertmanager can
          *     never cause oto to conclude that every alert went away.
          */
         get: operations["getSourceHealth"];
@@ -1110,7 +1115,7 @@ export interface paths {
          *     `too_many_alerts` is about the payload rather than about any one alert in it. Those rows carry
          *     an **empty** `labels`, and `reason` plus `detail` are the whole answer.
          *
-         *     Records age out with `raw_retention_days` (14 by default). A rejection older than that is gone,
+         *     Records age out with `raw_retention_days` (30 by default). A rejection older than that is gone,
          *     which is a retention decision rather than a filter.
          */
         get: operations["listSourceRejections"];
@@ -1661,7 +1666,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a drill's synthetic alert now
-         * @description Delete the synthetic Alert, occurrence, group, notification, delivery and thread rows this
+         * @description Delete the synthetic Alert, case, group, notification, delivery and thread rows this
          *     drill created, without waiting for the automatic sweep.
          *
          *     **The receipt survives.** This answers `200` with the drill and its frozen result rather than
@@ -1707,7 +1712,7 @@ export interface paths {
         };
         /**
          * Alert hygiene per alertname
-         * @description Per alertname per cluster: occurrences, notifications sent, acknowledgement rate and flap score.
+         * @description Per alertname per cluster: cases, notifications sent, acknowledgement rate and flap score.
          *
          *     This answers *"this rule fired 47 times this month, cost 47 notifications, and was acknowledged
          *     0 times"* — which does more good than any enrichment, because **the best alert is the one that
@@ -1743,7 +1748,7 @@ export interface paths {
          *     ```
          *     id: 918274
          *     event: alert.upserted
-         *     data: {"seq":918274,"kind":"alert.upserted","resource":"alert","id":"0198f3c1-…","org_id":"0198f3b0-…","at":"2026-08-07T09:20:12.443Z","data":{"state":"firing","ack_state":"unacked","severity":"critical","alertname":"HighErrorRate","last_seen_at":"2026-08-07T09:20:12.443Z"}}
+         *     data: {"seq":918274,"kind":"alert.upserted","resource":"alert","id":"0198f3c1-…","org_id":"0198f3b0-…","at":"2026-08-07T09:20:12.443Z","data":{"state":"firing","severity":"critical","alertname":"HighErrorRate","last_seen_at":"2026-08-07T09:20:12.443Z"}}
          *     ```
          *
          *     The SSE `event:` field carries the same value as the payload's `kind`, so a client may attach
@@ -2177,15 +2182,18 @@ export interface components {
          */
         SourceFingerprint: string;
         /**
-         * @description oto's durable notification-group identity, hashed from `(org, source, receiver, groupLabels)`.
-         *     **Stable across `alertmanager.yml` route edits**, unlike Alertmanager's own `groupKey`.
+         * @description oto's durable notification-group identity, hashed from
+         *     `(org, cluster_key, alertname, namespace-or-∅)` — the alert's own labels, never Alertmanager's
+         *     grouping (ADR 0038). **Fixed, not configurable**, and computed identically on the webhook and
+         *     the reconciler paths, so it is unaffected by `alertmanager.yml` route edits — unlike
+         *     Alertmanager's own `groupKey`. An absent `namespace` is its own partition, not an error.
          * @example gk_4b7n2p9v1c6d3f0h8j5k2m0q7s
          */
         GroupKey: string;
         /**
          * @description Content address of a rule definition: SHA-256 over `expr`, `for`, `keep_firing_for` and the
          *     canonical rule labels and annotations. Two snapshots with the same fingerprint are the same
-         *     rule; a change between occurrences is what `rule.definition_changed` reports.
+         *     rule; a change between cases is what `rule.definition_changed` reports.
          * @example c1f0a9b8e7d6c5b4a3928170f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c4b
          */
         RuleFingerprint: string;
@@ -2252,13 +2260,13 @@ export interface components {
         State: "firing" | "suppressed" | "resolved" | "expired";
         /**
          * @description What humans have done. Orthogonal to `state`: an acked alert is still firing. Reset to `unacked`
-         *     automatically when a new occurrence opens.
+         *     automatically when a new case opens.
          * @example unacked
          * @enum {string}
          */
         AckState: "unacked" | "acked";
         /**
-         * @description Why an occurrence is suppressed. Non-null **if and only if** `state == "suppressed"`.
+         * @description Why a case is suppressed. Non-null **if and only if** `state == "suppressed"`.
          *
          *     > ### ⛔ These are **Alertmanager's four reasons and nothing else**
          *     >
@@ -2273,14 +2281,14 @@ export interface components {
          */
         SuppressionReason: "silence" | "inhibition" | "mute_time_interval" | "active_time_interval" | null;
         /**
-         * @description Why an occurrence ended. Non-null **if and only if** the state is terminal, and the two agree:
+         * @description Why a case ended. Non-null **if and only if** the state is terminal, and the two agree:
          *     `resolved` always pairs with `upstream`, `expired` always pairs with `timeout`.
          * @example upstream
          * @enum {string|null}
          */
         ResolveReason: "upstream" | "timeout" | null;
         /**
-         * @description `open` while at least one member occurrence is `firing` or `suppressed`; `closed` after
+         * @description `open` while at least one member case is `firing` or `suppressed`; `closed` after
          *     `group_close_delay` (default 5 minutes) with no live members. A closed group that re-opens
          *     starts a **new generation** and therefore a new root chat message.
          * @example open
@@ -2307,10 +2315,10 @@ export interface components {
          *
          *     Both are valid values of the `type=` filter on every timeline endpoint, which is how "show me
          *     every quiet period on this alert" is asked for.
-         * @example occurrence.opened
+         * @example case.opened
          * @enum {string}
          */
-        AlertEventType: "alert.created" | "alert.mutated" | "alert.flapping_started" | "alert.flapping_ended" | "occurrence.opened" | "occurrence.reopened" | "occurrence.suppressed" | "occurrence.unsuppressed" | "occurrence.resolved" | "occurrence.expired" | "occurrence.acknowledged" | "occurrence.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "group.storm_started" | "group.storm_ended" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew";
+        AlertEventType: "alert.created" | "alert.mutated" | "alert.flapping_started" | "alert.flapping_ended" | "case.opened" | "case.reopened" | "case.suppressed" | "case.unsuppressed" | "case.resolved" | "case.expired" | "case.acknowledged" | "case.unacknowledged" | "alert.snoozed" | "alert.unsnoozed" | "group.opened" | "group.closed" | "group.member_joined" | "group.member_left" | "group.storm_started" | "group.storm_ended" | "rule.snapshot_captured" | "rule.definition_changed" | "rule.lookup_failed" | "enrichment.completed" | "enrichment.failed" | "notification.created" | "notification.suppressed" | "delivery.sent" | "delivery.updated" | "delivery.failed" | "delivery.skipped" | "delivery.dead" | "comment.added" | "source.unreachable" | "source.recovered" | "source.clock_skew";
         /**
          * @description Why a Notification exists. Distinct from Alertmanager's wire `notification_reason` string, which
          *     is mapped onto this enum on ingest.
@@ -2357,7 +2365,7 @@ export interface components {
          *     facts about different systems and are deliberately two enums:
          *
          *     - `SuppressionReason` mirrors **Alertmanager's four** reasons — `silence`, `inhibition`,
-         *       `mute_time_interval`, `active_time_interval` — and lives on the *occurrence*. It means
+         *       `mute_time_interval`, `active_time_interval` — and lives on the *case*. It means
          *       *Alertmanager is not delivering this*.
          *     - This enum lives on the *notification* and means *oto chose not to send*.
          *
@@ -2480,7 +2488,7 @@ export interface components {
          */
         SourceKind: "alertmanager" | "grafana";
         /**
-         * @description Gates the reaper. While this is anything other than `healthy`, occurrences are **held in their
+         * @description Gates the reaper. While this is anything other than `healthy`, cases are **held in their
          *     current state** and can never be expired — losing sight of an alert is not the alert resolving.
          * @example healthy
          * @enum {string}
@@ -2547,10 +2555,10 @@ export interface components {
          */
         EnrichmentPhase: 1 | 2;
         /**
-         * @example occurrence
+         * @example case
          * @enum {string}
          */
-        EnrichmentSubjectKind: "alert" | "occurrence" | "group";
+        EnrichmentSubjectKind: "alert" | "case" | "group";
         /**
          * @example active
          * @enum {string}
@@ -2667,7 +2675,7 @@ export interface components {
              *     (403), `not_found` (404), `conflict` (409), `precondition_failed` (412),
              *     `payload_too_large` (413), `unsupported_media_type` (415), `rate_limited` (429),
              *     `internal_error` (500), `upstream_unavailable` (502), `unavailable` (503),
-             *     `upstream_timeout` (504). More specific codes (`alert_not_found`, `occurrence_terminal`,
+             *     `upstream_timeout` (504). More specific codes (`alert_not_found`, `case_terminal`,
              *     `cursor_filter_mismatch`, `unknown_parameter`, `idempotency_key_reuse`) refine these
              *     without changing the status.
              * @example validation_failed
@@ -2703,8 +2711,14 @@ export interface components {
         };
         /**
          * @description An Alert — the **identity of a label set** within an org and cluster, not a single firing. It is
-         *     created on first sight and survives every resolution; `state` and `ack_state` here are
-         *     projections of the current (or most recent) occurrence.
+         *     created on first sight and survives every resolution; `state` here is a projection of the
+         *     current (or most recent) case.
+         *
+         *     **There is no `ack_state` on an Alert.** An acknowledgement is a receipt for **one firing
+         *     episode** and stops being true the moment that episode ends — an Alert-scoped ack would let a
+         *     March acknowledgement pre-acknowledge a September firing, so that firing would never reach
+         *     anybody's queue. Ask `include=current_case` and read `ack_state` there; it is the same
+         *     case read, so it costs no extra query.
          */
         AlertDTO: {
             id: components["schemas"]["Uuid"];
@@ -2733,7 +2747,6 @@ export interface components {
              */
             generator_url?: string | null;
             state: components["schemas"]["State"];
-            ack_state: components["schemas"]["AckState"];
             first_seen_at: components["schemas"]["Timestamp"];
             last_seen_at: components["schemas"]["Timestamp"];
             last_state_change_at: components["schemas"]["Timestamp"];
@@ -2742,7 +2755,7 @@ export interface components {
              * @description How many episodes this identity has had since it was first seen.
              * @example 7
              */
-            total_occurrences: number;
+            total_cases: number;
             /**
              * Format: float
              * @description EWMA of state transitions per hour. **A derived signal, never a state.**
@@ -2777,8 +2790,8 @@ export interface components {
              *     including on list rows — `null` means *awake*, an absent key would mean *unknown*, and
              *     those are different answers.
              *
-             *     It sits **beside** `state` and `ack_state` and never inside them: the three are orthogonal
-             *     axes. A non-null `snooze` on a `firing` alert means *oto is holding its tongue about
+             *     It sits **beside** `state` and the episode's `ack_state` and never inside them: the three
+             *     are orthogonal axes. A non-null `snooze` on a `firing` alert means *oto is holding its tongue about
              *     something that is still happening* — render the alert as firing, at whatever severity it
              *     has, and the snooze as a separate `:zzz:` badge with a countdown to `snoozed_until`.
              *
@@ -2788,8 +2801,8 @@ export interface components {
              *     missed incident. The server batch-loads it for the whole page; it costs no `include=`.
              */
             snooze?: components["schemas"]["SnoozeDTO"] | null;
-            /** @description Present only when the request asked for `include=current_occurrence`. */
-            current_occurrence?: components["schemas"]["OccurrenceDTO"] | null;
+            /** @description Present only when the request asked for `include=current_case`. */
+            current_case?: components["schemas"]["CaseDTO"] | null;
             /** @description Present only when the request asked for `include=enrichments`. */
             enrichments?: components["schemas"]["EnrichmentDTO"][] | null;
             /**
@@ -2801,25 +2814,25 @@ export interface components {
             rule?: components["schemas"]["RuleSnapshotRefDTO"] | null;
         };
         /**
-         * @description One Alert expanded with its current occurrence, its enrichment summary, the rule as it was at
+         * @description One Alert expanded with its current case, its enrichment summary, the rule as it was at
          *     fire time, a delivery roll-up, and the snooze in force if any. The delivery roll-up is not
          *     decoration: **oto's silence must never be indistinguishable from "no alert"**, so every alert
          *     can show whether its notifications actually landed.
          */
         AlertDetailDTO: components["schemas"]["AlertDTO"] & {
-            /** @description The open occurrence, or the most recent one if none is open. */
-            current_occurrence?: components["schemas"]["OccurrenceDTO"] | null;
-            /** @description One row per enricher that has run against the current occurrence. */
+            /** @description The open case, or the most recent one if none is open. */
+            current_case?: components["schemas"]["CaseDTO"] | null;
+            /** @description One row per enricher that has run against the current case. */
             enrichment_summary: components["schemas"]["EnrichmentSummaryDTO"][];
             /**
-             * @description A REFERENCE to the rule snapshot bound to the current occurrence, exactly as on
+             * @description A REFERENCE to the rule snapshot bound to the current case, exactly as on
              *     `AlertDTO` — ADR 0025 makes it a join key, not a dead end. `GET
              *     /api/v1/alerts/{id}/rule` serves the snapshot whole, with its history, and
              *     `GET /api/v1/rule-snapshots/batch` resolves a page of ids in one call.
              */
             rule?: components["schemas"]["RuleSnapshotRefDTO"] | null;
             source?: components["schemas"]["SourceRefDTO"] | null;
-            /** @description The group generation the current occurrence belongs to. */
+            /** @description The group generation the current case belongs to. */
             group?: components["schemas"]["GroupRefDTO"] | null;
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
@@ -2827,7 +2840,7 @@ export interface components {
          * @description One **contiguous firing episode** of an Alert. This is what you acknowledge and whose firing
          *     duration is measured.
          */
-        OccurrenceDTO: {
+        CaseDTO: {
             id: components["schemas"]["Uuid"];
             alert_id: components["schemas"]["Uuid"];
             /** @description The AlertGroup generation this episode joined. */
@@ -2879,11 +2892,11 @@ export interface components {
             /**
              * Format: int32
              * @description How many times this same episode was reopened by a re-fire inside `refire_grace`
-             *     (default 20 minutes). A re-fire *after* the grace period opens a new occurrence instead.
+             *     (default 20 minutes). A re-fire *after* the grace period opens a new case instead.
              * @example 1
              */
             reopen_count: number;
-            /** @description The previous occurrence, when this one opened as a re-fire after a close. */
+            /** @description The previous case, when this one opened as a re-fire after a close. */
             reopen_of?: components["schemas"]["Uuid"] | null;
             /** @description The rule definition as it was **at this episode's fire time**. */
             rule_snapshot_id?: components["schemas"]["Uuid"] | null;
@@ -2903,14 +2916,18 @@ export interface components {
             observed_skew_ms: number;
         };
         /** @description One episode expanded with its alert, group, rule snapshot and enrichment results. */
-        OccurrenceDetailDTO: components["schemas"]["OccurrenceDTO"] & {
+        CaseDetailDTO: components["schemas"]["CaseDTO"] & {
             alert?: components["schemas"]["AlertRefDTO"];
             group?: components["schemas"]["GroupRefDTO"] | null;
             rule?: components["schemas"]["RuleSnapshotDTO"] | null;
             enrichments: components["schemas"]["EnrichmentDTO"][];
             delivery_summary: components["schemas"]["DeliverySummaryDTO"];
         };
-        /** @description A compact Alert reference, embedded where a full `AlertDTO` would be wasteful. */
+        /**
+         * @description A compact Alert reference, embedded where a full `AlertDTO` would be wasteful. It carries no
+         *     `ack_state` for the same reason `AlertDTO` does not: an ack belongs to the firing it was given
+         *     for, and an Alert outlives its firings.
+         */
         AlertRefDTO: {
             id: components["schemas"]["Uuid"];
             alert_key: components["schemas"]["AlertKey"];
@@ -2919,7 +2936,6 @@ export interface components {
             namespace?: string | null;
             cluster_key: components["schemas"]["ClusterKey"];
             state: components["schemas"]["State"];
-            ack_state: components["schemas"]["AckState"];
         };
         /**
          * @description One **immutable record of one thing that happened at one instant**. Never updated, never
@@ -2928,7 +2944,7 @@ export interface components {
         AlertEventDTO: {
             id: components["schemas"]["Uuid"];
             alert_id?: components["schemas"]["Uuid"] | null;
-            occurrence_id?: components["schemas"]["Uuid"] | null;
+            case_id?: components["schemas"]["Uuid"] | null;
             group_id?: components["schemas"]["Uuid"] | null;
             type: components["schemas"]["AlertEventType"];
             /**
@@ -2953,14 +2969,14 @@ export interface components {
             /**
              * @description A pre-rendered one-line description, computed at write time. Clients may render this
              *     verbatim for any event type they do not specifically understand.
-             * @example Occurrence #3 opened — 4 instances firing
+             * @example Case #3 opened — 4 instances firing
              */
             summary: string;
             /**
              * @description Type-specific structured detail. The shape varies by `type` — for example
              *     `rule.definition_changed` carries a `RuleChangeDTO`-shaped diff, `delivery.failed` carries
-             *     the provider error code and class, and `occurrence.unacknowledged` carries
-             *     `{"reason":"manual"|"new_occurrence"}`. Treat unknown keys as forward-compatible.
+             *     the provider error code and class, and `case.unacknowledged` carries
+             *     `{"reason":"manual"|"new_case"}`. Treat unknown keys as forward-compatible.
              */
             payload?: {
                 [key: string]: unknown;
@@ -2982,7 +2998,7 @@ export interface components {
             enricher: string;
             /**
              * Format: int32
-             * @description Bumping this invalidates the cache and forces a re-run on the next occurrence.
+             * @description Bumping this invalidates the cache and forces a re-run on the next case.
              * @example 2
              */
             enricher_version: number;
@@ -3171,21 +3187,9 @@ export interface components {
             expired_count: number;
             /**
              * Format: int32
-             * @description Members carrying a human receipt. Orthogonal to `state` — an acked alert is still firing.
-             */
-            acked_count: number;
-            /** Format: int32 */
-            unacked_count: number;
-            /**
-             * Format: int32
              * @description Members oto has damped as flapping. A visible state, never a silent drop.
              */
             flapping_count: number;
-            /**
-             * Format: int32
-             * @description Members whose notifications are currently snoozed. They are still counted as firing.
-             */
-            snoozed_count: number;
             /**
              * @description Raw severity label to member count. **Raw, and deliberately unranked:** operators choose
              *     their own vocabulary (`sev1`, `P1`, `page`), so oto reports what the label says and leaves
@@ -3207,7 +3211,7 @@ export interface components {
          * @description Delivery roll-up for one subject, so the UI can show **per alert** whether anyone was actually
          *     told. A non-zero `dead` count is a product signal, not a footnote.
          *
-         *     ⛔ **It is required on all four detail responses** — `GET /alerts/{id}`, `GET /occurrences/{id}`,
+         *     ⛔ **It is required on all four detail responses** — `GET /alerts/{id}`, `GET /cases/{id}`,
          *     `GET /alert-groups/{id}` and `GET /notifications/{id}` — and an **all-zero roll-up is an answer,
          *     never an omission**. "Nobody has been told anything about this" is the single most important thing
          *     this object says: it is what a suppressed notification looks like, and what an alert no policy
@@ -3218,7 +3222,7 @@ export interface components {
          *     Scope, per subject: an **alert's** roll-up covers the intents that name the alert *and* the
          *     intents about every group generation it has been a member of, because oto notifies about
          *     generations and counting only the alert-scoped reasons would report zero for almost every alert
-         *     that fired. An **occurrence's** is the same, narrowed to one episode. A **group's** is the
+         *     that fired. An **case's** is the same, narrowed to one episode. A **group's** is the
          *     generation's own fan-out. A **notification's** is its own deliveries and nothing else.
          */
         DeliverySummaryDTO: {
@@ -3253,10 +3257,14 @@ export interface components {
             last_sent_at?: components["schemas"]["Timestamp"] | null;
         };
         /**
-         * @description One **generation of one Alertmanager notification group**, derived from
-         *     `(source, receiver, groupLabels)` — not from any oto-side grouping rule. It owns exactly one
-         *     chat thread, and its `group_key` survives route-config edits so an open thread is never orphaned
-         *     by an `alertmanager.yml` reload.
+         * @description One **generation of one machine-derived grouping of alerts**, keyed by
+         *     `(org, cluster, alertname, namespace-or-∅)` from the alert's own labels — never from
+         *     Alertmanager's grouping, and not from any configurable oto-side grouping rule (ADR 0038). It
+         *     owns exactly one chat thread, and its `group_key` is unaffected by route-config edits so an
+         *     open thread is never orphaned by an `alertmanager.yml` reload.
+         *
+         *     `group_labels` carries oto's own split axes, which is what every notification matcher is fed.
+         *     `receiver` and `source_group_key` are **provenance only** and are part of no identity.
          */
         GroupDTO: {
             id: components["schemas"]["Uuid"];
@@ -3273,12 +3281,15 @@ export interface components {
             /**
              * @description Alertmanager's own `groupKey`, stored verbatim **for observability only**. It embeds the
              *     route path and changes whenever `alertmanager.yml` is reloaded, so it is opaque here and
-             *     **must never be parsed**. Display it; do not key anything on it.
+             *     **must never be parsed**. Display it; do not key anything on it. Since ADR 0038 it is
+             *     **provenance only** and an input to nothing at all.
              * @example {}/{severity="critical"}:{alertname="HighErrorRate", cluster="prod-eu"}
              */
             source_group_key?: string | null;
             /**
-             * @description The Alertmanager receiver name this group was routed to. Empty for reconciler-sourced groups.
+             * @description The Alertmanager receiver that first delivered into this generation, empty for a
+             *     reconciler-sourced one. **Provenance only** — since ADR 0038 it is no part of `group_key`,
+             *     so two receivers fed by `continue: true` now share one group rather than opening two.
              * @example oto-webhook
              */
             receiver: string;
@@ -3489,8 +3500,8 @@ export interface components {
             captured_at: components["schemas"]["Timestamp"];
         };
         /**
-         * @description A structured diff between the rule snapshot bound to this occurrence and the one bound to the
-         *     previous occurrence of the same RuleKey. Emitted as a `rule.definition_changed` timeline event
+         * @description A structured diff between the rule snapshot bound to this case and the one bound to the
+         *     previous case of the same RuleKey. Emitted as a `rule.definition_changed` timeline event
          *     and always delivered to chat, regardless of channel verbosity — a threshold changing under you
          *     is never noise.
          */
@@ -3632,7 +3643,7 @@ export interface components {
             new_value: number;
         };
         /**
-         * @description The rule bound to an alert's current occurrence plus every version oto has ever captured for the
+         * @description The rule bound to an alert's current case plus every version oto has ever captured for the
          *     same RuleKey.
          */
         RuleHistoryDTO: {
@@ -3643,9 +3654,9 @@ export interface components {
                 rule_group?: string;
                 rule_name: string;
             };
-            /** @description The snapshot bound to the alert's **current occurrence** — not the newest one upstream. */
+            /** @description The snapshot bound to the alert's **current case** — not the newest one upstream. */
             current: components["schemas"]["RuleSnapshotDTO"] | null;
-            /** @description The diff against the previous occurrence's snapshot, when the definition changed. */
+            /** @description The diff against the previous case's snapshot, when the definition changed. */
             change?: components["schemas"]["RuleChangeDTO"] | null;
             /** @description Full version history for this RuleKey, newest first, each with its capture timestamp. */
             versions: components["schemas"]["RuleSnapshotDTO"][];
@@ -3784,7 +3795,7 @@ export interface components {
         };
         /**
          * @description Liveness, lag, skew and divergence for one source. This is not decoration: **health gates the
-         *     reaper**, so an unreachable Alertmanager holds every occurrence in place rather than letting oto
+         *     reaper**, so an unreachable Alertmanager holds every case in place rather than letting oto
          *     conclude the alerts went away.
          */
         SourceHealthDTO: {
@@ -3823,7 +3834,7 @@ export interface components {
             clock_skew_ms: number;
             /**
              * Format: int32
-             * @description How many occurrences the last reconcile pass disagreed about. **This number is the canary
+             * @description How many cases the last reconcile pass disagreed about. **This number is the canary
              *     for every correctness bug in the system**; a healthy deployment holds it near zero.
              * @example 0
              */
@@ -4445,7 +4456,7 @@ export interface components {
              *     and `rule_changed`.
              */
             alert_id?: components["schemas"]["Uuid"] | null;
-            occurrence_id?: components["schemas"]["Uuid"] | null;
+            case_id?: components["schemas"]["Uuid"] | null;
             reason: components["schemas"]["NotificationReason"];
             /** @description Which policy matched. `null` once the policy has been deleted. */
             policy_id?: components["schemas"]["Uuid"] | null;
@@ -4798,7 +4809,7 @@ export interface components {
              * Format: int32
              * @example 47
              */
-            occurrences: number;
+            cases: number;
             /**
              * Format: int32
              * @example 47
@@ -4808,13 +4819,13 @@ export interface components {
             deliveries: number;
             /**
              * Format: int32
-             * @description Never exceeds `occurrences`.
+             * @description Never exceeds `cases`.
              * @example 0
              */
-            acked_occurrences: number;
+            acked_cases: number;
             /**
              * Format: float
-             * @description `acked_occurrences / occurrences`, or 0 when there were none.
+             * @description `acked_cases / cases`, or 0 when there were none.
              * @example 0
              */
             ack_rate: number;
@@ -4838,7 +4849,7 @@ export interface components {
             flap_transitions: number;
             /**
              * Format: float
-             * @description **`flap_transitions / occurrences`, and `0` when `occurrences` is `0`.** Transitions per
+             * @description **`flap_transitions / cases`, and `0` when `cases` is `0`.** Transitions per
              *     episode — how much state-churn one firing of this rule costs on average.
              *
              *     The derivation is stated here because the daily rollup stores no `flap_score` column, and an
@@ -4875,10 +4886,10 @@ export interface components {
         OrgSettingsDTO: {
             /**
              * Format: int32
-             * @description A re-fire inside this window reopens the existing occurrence instead of opening a new one.
+             * @description A re-fire inside this window reopens the existing case instead of opening a new one.
              *
              *     **The default is 1200 and it is derived from real rules (ADR 0026): `for` + `group_interval`
-             *     for the modal rule in the wild.** The clock starts at the occurrence's `ended_at`, which is
+             *     for the modal rule in the wild.** The clock starts at the case's `ended_at`, which is
              *     taken from the UPSTREAM `EndsAt` — when Prometheus stopped considering the rule firing, not
              *     when oto heard about it — so the same alert must hold its condition for the rule's whole
              *     `for:` all over again before it can fire, and Alertmanager then batches the notification.
@@ -4888,7 +4899,7 @@ export interface components {
              *     of 600 was unreachable for 76% of those rules.
              *
              *     **Keep `group_close_delay_s` at or above this value.** A closed generation freezes its Slack
-             *     thread, so a shorter close delay reopens the occurrence and posts a new root card anyway.
+             *     thread, so a shorter close delay reopens the case and posts a new root card anyway.
              *
              *     **The floor is 600, and it is derived rather than chosen: it is twice oto's ingest replay
              *     window.** A replayed webhook batch — an HA Alertmanager sibling, a retry after a 5xx — is
@@ -4904,7 +4915,7 @@ export interface components {
             refire_grace_s: number;
             /**
              * Format: int32
-             * @description How long past its upstream end time an occurrence is held before the reaper may expire it.
+             * @description How long past its upstream end time a case is held before the reaper may expire it.
              *     Must exceed the `EndsAt` lease Prometheus refreshes (typically 3–4 minutes), or a single
              *     missed scrape looks like an expiry.
              * @default 300
@@ -4986,10 +4997,10 @@ export interface components {
              * @description How long `alert_events` are kept. Monthly partitions are dropped whole and permanently.
              *
              *     **This is the only setting here that destroys something oto cannot rebuild.** Past the
-             *     boundary `GET /alerts/{id}/events`, `GET /occurrences/{id}/events` and the group timeline
+             *     boundary `GET /alerts/{id}/events`, `GET /cases/{id}/events` and the group timeline
              *     return nothing — including every human comment and unack note, which live nowhere else.
              *
-             *     What survives at any value: the alert and its labels, every occurrence with its ack and
+             *     What survives at any value: the alert and its labels, every case with its ack and
              *     outcome, the rule snapshot bound at fire time, the notification and delivery record, and
              *     the daily rollups. None of those are ever reaped.
              *
@@ -5263,12 +5274,12 @@ export interface components {
          * @example alert.upserted
          * @enum {string}
          */
-        UiEventKind: "alert.upserted" | "occurrence.upserted" | "group.upserted" | "event.appended" | "delivery.updated" | "source.health" | "resync";
+        UiEventKind: "alert.upserted" | "case.upserted" | "group.upserted" | "event.appended" | "delivery.updated" | "source.health" | "resync";
         /**
          * @example alert
          * @enum {string}
          */
-        UiEventResource: "alert" | "occurrence" | "group" | "alert_event" | "delivery" | "source";
+        UiEventResource: "alert" | "case" | "group" | "alert_event" | "delivery" | "source";
         /**
          * @description One frame on the SSE stream, serialised as the `data:` line. The SSE `event:` field carries the
          *     same value as `kind`, so a client may either add typed listeners per event name or attach one
@@ -5295,23 +5306,22 @@ export interface components {
              *     resource. Clients re-read the relevant endpoint for full detail, which keeps frames well
              *     under the 4 KiB cap and keeps the stream cheap.
              */
-            data: components["schemas"]["AlertUpsertedData"] | components["schemas"]["OccurrenceUpsertedData"] | components["schemas"]["GroupUpsertedData"] | components["schemas"]["EventAppendedData"] | components["schemas"]["DeliveryUpdatedData"] | components["schemas"]["SourceHealthData"] | components["schemas"]["ResyncData"];
+            data: components["schemas"]["AlertUpsertedData"] | components["schemas"]["CaseUpsertedData"] | components["schemas"]["GroupUpsertedData"] | components["schemas"]["EventAppendedData"] | components["schemas"]["DeliveryUpdatedData"] | components["schemas"]["SourceHealthData"] | components["schemas"]["ResyncData"];
         };
         /** @description Payload of an `alert.upserted` frame. An alert was created or its projection changed. */
         AlertUpsertedData: {
             state: components["schemas"]["State"];
-            ack_state: components["schemas"]["AckState"];
             severity?: string | null;
             alertname: string;
             namespace?: string | null;
             cluster_key?: components["schemas"]["ClusterKey"];
             last_seen_at: components["schemas"]["Timestamp"];
             /** Format: int32 */
-            total_occurrences?: number;
+            total_cases?: number;
             is_flapping?: boolean;
         };
-        /** @description Payload of an `occurrence.upserted` frame. */
-        OccurrenceUpsertedData: {
+        /** @description Payload of an `case.upserted` frame. */
+        CaseUpsertedData: {
             alert_id: components["schemas"]["Uuid"];
             group_id?: components["schemas"]["Uuid"] | null;
             /** Format: int32 */
@@ -5340,7 +5350,7 @@ export interface components {
          */
         EventAppendedData: {
             alert_id?: components["schemas"]["Uuid"] | null;
-            occurrence_id?: components["schemas"]["Uuid"] | null;
+            case_id?: components["schemas"]["Uuid"] | null;
             group_id?: components["schemas"]["Uuid"] | null;
             type: components["schemas"]["AlertEventType"];
             occurred_at: components["schemas"]["Timestamp"];
@@ -5423,7 +5433,7 @@ export interface components {
          *     told — so a stage that stops writing its row is a stage the drill notices.
          * @enum {string}
          */
-        DrillStageName: "accept" | "process" | "identity" | "occurrence" | "group" | "rule_snapshot" | "policy" | "thread" | "ordering" | "delivery";
+        DrillStageName: "accept" | "process" | "identity" | "case" | "group" | "rule_snapshot" | "policy" | "thread" | "ordering" | "delivery";
         /**
          * @description `skipped` is not a failure and never sets `failed_stage`. Only `rule_snapshot` uses it: a
          *     drill's alert matches no Prometheus rule, because oto did not write one in anybody's cluster,
@@ -5497,7 +5507,7 @@ export interface components {
             destinations: components["schemas"]["DrillDestinationDTO"][];
             /** @description The synthetic Alert, once identity resolved. Fetch it with `?synthetic=true`. */
             alert_id?: components["schemas"]["Uuid"] | null;
-            occurrence_id?: components["schemas"]["Uuid"] | null;
+            case_id?: components["schemas"]["Uuid"] | null;
             group_id?: components["schemas"]["Uuid"] | null;
             notification_id?: components["schemas"]["Uuid"] | null;
             batch_id?: components["schemas"]["Uuid"] | null;
@@ -5539,19 +5549,19 @@ export interface components {
             severity?: string;
         };
         /**
-         * @description Acknowledge the current occurrence. **An acked alert is still firing** — acknowledgement is
+         * @description Acknowledge the current case. **An acked alert is still firing** — acknowledgement is
          *     orthogonal to state, and it says "a human has seen this", not "this is over".
          */
         AckRequest: {
             /**
-             * @description An optional note recorded on the occurrence and shown on the timeline and the chat card.
+             * @description An optional note recorded on the case and shown on the timeline and the chat card.
              * @example Known deploy, rolling back
              */
             note?: string;
         };
         /**
          * @description Withdraw an acknowledgement. Recorded on the timeline with `reason: manual`, to distinguish it
-         *     from the automatic unack that happens when a new occurrence opens.
+         *     from the automatic unack that happens when a new case opens.
          */
         UnackRequest: {
             note?: string;
@@ -5753,7 +5763,7 @@ export interface components {
             unacked_reminder_after_seconds?: number | null;
         };
         /**
-         * @description Describe the fact to dry-run. Supply exactly one subject — `alert_id`, `occurrence_id` or
+         * @description Describe the fact to dry-run. Supply exactly one subject — `alert_id`, `case_id` or
          *     `group_id` — plus the `reason` to simulate; omitting `reason` defaults to `fired`. Supplying an
          *     inline `policy` evaluates that unsaved draft **in addition to** the stored policies, which is
          *     what lets the settings form answer "who would this reach?" before anything is saved.
@@ -5762,7 +5772,7 @@ export interface components {
          */
         PolicyPreviewRequest: {
             alert_id?: components["schemas"]["Uuid"];
-            occurrence_id?: components["schemas"]["Uuid"];
+            case_id?: components["schemas"]["Uuid"];
             group_id?: components["schemas"]["Uuid"];
             reason?: components["schemas"]["NotificationReason"];
             policy?: components["schemas"]["CreatePolicyRequest"];
@@ -5824,17 +5834,17 @@ export interface components {
             page: components["schemas"]["PageInfo"];
             meta: components["schemas"]["Meta"];
         };
-        OccurrenceListResponse: {
-            data: components["schemas"]["OccurrenceDTO"][];
+        CaseListResponse: {
+            data: components["schemas"]["CaseDTO"][];
             page: components["schemas"]["PageInfo"];
             meta: components["schemas"]["Meta"];
         };
-        OccurrenceResponse: {
-            data: components["schemas"]["OccurrenceDTO"];
+        CaseResponse: {
+            data: components["schemas"]["CaseDTO"];
             meta: components["schemas"]["Meta"];
         };
-        OccurrenceDetailResponse: {
-            data: components["schemas"]["OccurrenceDetailDTO"];
+        CaseDetailResponse: {
+            data: components["schemas"]["CaseDetailDTO"];
             meta: components["schemas"]["Meta"];
         };
         AlertEventListResponse: {
@@ -6287,7 +6297,7 @@ export interface components {
         };
         /**
          * @description `412 precondition_failed` — the request is well-formed and the caller has permission, but the
-         *     entity is in the wrong state for it (acking a `resolved` occurrence, retrying a delivery that is
+         *     entity is in the wrong state for it (acking a `resolved` case, retrying a delivery that is
          *     not `dead`, commenting on a purged timeline).
          */
         PreconditionFailed: {
@@ -6410,7 +6420,7 @@ export interface components {
          *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
          *     same list endpoint instead.
          *
-         *     > **Not accepted on the Alerts, Occurrences, Groups or Rules lists.** It was published there,
+         *     > **Not accepted on the Alerts, Cases, Groups or Rules lists.** It was published there,
          *     > validated there, and then never applied: the alerts read model has no `ui_events` predicate,
          *     > so a client polling with it received the unfiltered list and had no way to tell. A parameter
          *     > that is documented and ignored is worse than one that does not exist, so it is gone from
@@ -6468,20 +6478,25 @@ export interface components {
         /**
          * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
          *
-         *     **Omitting it includes both, and that is the default on purpose.** A snooze is a fact about
-         *     oto's notification behaviour, never about the signal: a snoozed alert is still firing, still
-         *     whatever severity it was, and every surface must keep rendering it that way. Hiding snoozed
-         *     alerts from the default list is how an incident is lost.
+         *     **This is the tab selector.** `false` is the main alert list; `true` is the **Quiet** tab,
+         *     which is the same list, the same filters and the same three roll-up axes over the alerts oto
+         *     is currently holding its tongue about. **Omitting it still includes both**, because a caller
+         *     that asked no question must not be handed a filtered answer.
+         *
+         *     Either way the question is put to the `alert_snoozes` row that is currently in force, never to
+         *     a column on the alert. A snooze is a fact about oto's notification behaviour, never about the
+         *     signal: a snoozed alert is still firing, still whatever severity it was, and every surface
+         *     must keep rendering it that way.
          */
         SnoozedParam: boolean;
         /**
          * @description Restrict to alerts oto manufactured for a **delivery drill**, or exclude them.
          *
-         *     **Omitting it EXCLUDES them, which is the opposite default from `snoozed` and is deliberate.**
-         *     A snoozed alert is a real thing happening in a real cluster, so hiding it by default is how an
-         *     incident is lost. A synthetic alert is a rehearsal: nothing fired anywhere, and letting one
-         *     into a default list would put oto's own plumbing into the customer's history and into every
-         *     number derived from it.
+         *     **Omitting it EXCLUDES them, and that is not the same kind of default as `snoozed`.** A
+         *     snoozed alert is a real thing happening in a real cluster: it is not dropped from the product,
+         *     it is moved to a tab that names it and counts it. A synthetic alert is a rehearsal: nothing
+         *     fired anywhere, and letting one into a default list would put oto's own plumbing into the
+         *     customer's history and into every number derived from it.
          *
          *     `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
          */
@@ -6732,30 +6747,30 @@ export interface operations {
                  *     For a substring search use `q=`, which is backed by a full-text index.
                  */
                 matcher?: components["parameters"]["MatcherParam"];
-                /**
-                 * @description Acknowledgement filter. Orthogonal to `state` — `ack=acked` still returns firing alerts,
-                 *     because acknowledging one does not end it.
-                 */
-                ack?: components["schemas"]["AckState"];
                 /** @description Restrict to alerts oto has damped as flapping, or exclude them. */
                 flapping?: boolean;
                 /**
                  * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
                  *
-                 *     **Omitting it includes both, and that is the default on purpose.** A snooze is a fact about
-                 *     oto's notification behaviour, never about the signal: a snoozed alert is still firing, still
-                 *     whatever severity it was, and every surface must keep rendering it that way. Hiding snoozed
-                 *     alerts from the default list is how an incident is lost.
+                 *     **This is the tab selector.** `false` is the main alert list; `true` is the **Quiet** tab,
+                 *     which is the same list, the same filters and the same three roll-up axes over the alerts oto
+                 *     is currently holding its tongue about. **Omitting it still includes both**, because a caller
+                 *     that asked no question must not be handed a filtered answer.
+                 *
+                 *     Either way the question is put to the `alert_snoozes` row that is currently in force, never to
+                 *     a column on the alert. A snooze is a fact about oto's notification behaviour, never about the
+                 *     signal: a snoozed alert is still firing, still whatever severity it was, and every surface
+                 *     must keep rendering it that way.
                  */
                 snoozed?: components["parameters"]["SnoozedParam"];
                 /**
                  * @description Restrict to alerts oto manufactured for a **delivery drill**, or exclude them.
                  *
-                 *     **Omitting it EXCLUDES them, which is the opposite default from `snoozed` and is deliberate.**
-                 *     A snoozed alert is a real thing happening in a real cluster, so hiding it by default is how an
-                 *     incident is lost. A synthetic alert is a rehearsal: nothing fired anywhere, and letting one
-                 *     into a default list would put oto's own plumbing into the customer's history and into every
-                 *     number derived from it.
+                 *     **Omitting it EXCLUDES them, and that is not the same kind of default as `snoozed`.** A
+                 *     snoozed alert is a real thing happening in a real cluster: it is not dropped from the product,
+                 *     it is moved to a tab that names it and counts it. A synthetic alert is a rehearsal: nothing
+                 *     fired anywhere, and letting one into a default list would put oto's own plumbing into the
+                 *     customer's history and into every number derived from it.
                  *
                  *     `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
                  */
@@ -6780,7 +6795,7 @@ export interface operations {
                  * @description Bounded whitelist of sub-resources to embed, batch-loaded to avoid an N+1. Anything outside
                  *     this set is a `422`.
                  */
-                include?: ("current_occurrence" | "enrichments" | "rule")[];
+                include?: ("current_case" | "enrichments" | "rule")[];
                 /** @description Maximum items to return in one page. */
                 limit?: components["parameters"]["LimitParam"];
                 /**
@@ -6890,27 +6905,30 @@ export interface operations {
                  *     For a substring search use `q=`, which is backed by a full-text index.
                  */
                 matcher?: components["parameters"]["MatcherParam"];
-                /** @description Acknowledgement filter, applied before aggregation. */
-                ack?: components["schemas"]["AckState"];
                 /** @description Restrict to alerts oto has damped as flapping, or exclude them. */
                 flapping?: boolean;
                 /**
                  * @description Restrict to alerts whose notifications are currently snoozed, or exclude them.
                  *
-                 *     **Omitting it includes both, and that is the default on purpose.** A snooze is a fact about
-                 *     oto's notification behaviour, never about the signal: a snoozed alert is still firing, still
-                 *     whatever severity it was, and every surface must keep rendering it that way. Hiding snoozed
-                 *     alerts from the default list is how an incident is lost.
+                 *     **This is the tab selector.** `false` is the main alert list; `true` is the **Quiet** tab,
+                 *     which is the same list, the same filters and the same three roll-up axes over the alerts oto
+                 *     is currently holding its tongue about. **Omitting it still includes both**, because a caller
+                 *     that asked no question must not be handed a filtered answer.
+                 *
+                 *     Either way the question is put to the `alert_snoozes` row that is currently in force, never to
+                 *     a column on the alert. A snooze is a fact about oto's notification behaviour, never about the
+                 *     signal: a snoozed alert is still firing, still whatever severity it was, and every surface
+                 *     must keep rendering it that way.
                  */
                 snoozed?: components["parameters"]["SnoozedParam"];
                 /**
                  * @description Restrict to alerts oto manufactured for a **delivery drill**, or exclude them.
                  *
-                 *     **Omitting it EXCLUDES them, which is the opposite default from `snoozed` and is deliberate.**
-                 *     A snoozed alert is a real thing happening in a real cluster, so hiding it by default is how an
-                 *     incident is lost. A synthetic alert is a rehearsal: nothing fired anywhere, and letting one
-                 *     into a default list would put oto's own plumbing into the customer's history and into every
-                 *     number derived from it.
+                 *     **Omitting it EXCLUDES them, and that is not the same kind of default as `snoozed`.** A
+                 *     snoozed alert is a real thing happening in a real cluster: it is not dropped from the product,
+                 *     it is moved to a tab that names it and counts it. A synthetic alert is a rehearsal: nothing
+                 *     fired anywhere, and letting one into a default list would put oto's own plumbing into the
+                 *     customer's history and into every number derived from it.
                  *
                  *     `synthetic=true` is normally reached from a drill's own result screen, not from the filter bar.
                  */
@@ -6982,7 +7000,7 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
-    listAlertOccurrences: {
+    listAlertCases: {
         parameters: {
             query?: {
                 /** @description Maximum items to return in one page. */
@@ -7003,13 +7021,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A page of occurrences, newest first. */
+            /** @description A page of cases, newest first. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OccurrenceListResponse"];
+                    "application/json": components["schemas"]["CaseListResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -7246,13 +7264,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The updated occurrence. */
+            /** @description The updated case. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OccurrenceResponse"];
+                    "application/json": components["schemas"]["CaseResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -7343,13 +7361,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The updated occurrence. */
+            /** @description The updated case. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OccurrenceResponse"];
+                    "application/json": components["schemas"]["CaseResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -7737,7 +7755,7 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
-    getOccurrence: {
+    getCase: {
         parameters: {
             query?: never;
             header?: never;
@@ -7749,13 +7767,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The occurrence. */
+            /** @description The case. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OccurrenceDetailResponse"];
+                    "application/json": components["schemas"]["CaseDetailResponse"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -7766,7 +7784,7 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
-    listOccurrenceEvents: {
+    listCaseEvents: {
         parameters: {
             query?: {
                 /** @description Comma-separated event types to include. Omit for all. */
@@ -7813,7 +7831,7 @@ export interface operations {
             503: components["responses"]["ServiceUnavailable"];
         };
     };
-    getOccurrenceRule: {
+    getCaseRule: {
         parameters: {
             query?: never;
             header?: never;
@@ -7854,7 +7872,11 @@ export interface operations {
                 cluster?: components["schemas"]["ClusterKey"][];
                 /** @description Restrict to groups originating from one source. */
                 source_id?: components["schemas"]["Uuid"];
-                /** @description Restrict to one Alertmanager receiver name. */
+                /**
+                 * @description Restrict to one Alertmanager receiver name. This filters on recorded **provenance** — the
+                 *     receiver that first delivered into the generation — not on group identity, which since
+                 *     ADR 0038 is derived from the alert's own labels.
+                 */
                 receiver?: string;
                 /** @description Restrict to groups currently collapsed into storm mode, or exclude them. */
                 storm?: boolean;
@@ -8535,7 +8557,7 @@ export interface operations {
                  *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
                  *     same list endpoint instead.
                  *
-                 *     > **Not accepted on the Alerts, Occurrences, Groups or Rules lists.** It was published there,
+                 *     > **Not accepted on the Alerts, Cases, Groups or Rules lists.** It was published there,
                  *     > validated there, and then never applied: the alerts read model has no `ui_events` predicate,
                  *     > so a client polling with it received the unfiltered list and had no way to tell. A parameter
                  *     > that is documented and ignored is worse than one that does not exist, so it is gone from
@@ -10385,7 +10407,7 @@ export interface operations {
                  *     `ui_events.seq` is greater than `N`, so a client that cannot hold a stream open can poll the
                  *     same list endpoint instead.
                  *
-                 *     > **Not accepted on the Alerts, Occurrences, Groups or Rules lists.** It was published there,
+                 *     > **Not accepted on the Alerts, Cases, Groups or Rules lists.** It was published there,
                  *     > validated there, and then never applied: the alerts read model has no `ui_events` predicate,
                  *     > so a client polling with it received the unfiltered list and had no way to tell. A parameter
                  *     > that is documented and ignored is worse than one that does not exist, so it is gone from
@@ -10868,10 +10890,10 @@ export interface operations {
                 /** @description Comma-separated alert names to restrict to. */
                 alertname?: string[];
                 /**
-                 * @description Which hygiene problem to surface first. `-occurrences` finds the noisiest rules; `ack_rate`
+                 * @description Which hygiene problem to surface first. `-cases` finds the noisiest rules; `ack_rate`
                  *     finds the ones nobody ever acknowledges; `-flap_transitions` finds the unstable ones.
                  */
-                sort?: "-occurrences" | "-notifications" | "ack_rate" | "-flap_transitions" | "-total_firing_seconds";
+                sort?: "-cases" | "-notifications" | "ack_rate" | "-flap_transitions" | "-total_firing_seconds";
                 /** @description Maximum items to return in one page. */
                 limit?: components["parameters"]["LimitParam"];
                 /**
@@ -10909,7 +10931,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description Comma-separated interest set. Omit for all of them. */
-                resources?: ("alerts" | "groups" | "occurrences" | "events" | "deliveries" | "sources")[];
+                resources?: ("alerts" | "groups" | "cases" | "events" | "deliveries" | "sources")[];
                 /** @description Narrow to one group generation — for a group detail page. */
                 group_id?: components["schemas"]["Uuid"];
                 /** @description Narrow to one alert — for an alert detail page. */

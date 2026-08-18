@@ -2,6 +2,7 @@ package domain
 
 import (
 	"maps"
+	"sort"
 	"strings"
 	"time"
 
@@ -62,22 +63,22 @@ var (
 	// EventAlertFlappingEnded records the Alert settling.
 	EventAlertFlappingEnded = EventType{"alert.flapping_ended"}
 
-	// EventOccurrenceOpened records a new firing episode (T1, T7).
-	EventOccurrenceOpened = EventType{"occurrence.opened"}
-	// EventOccurrenceReopened records a re-fire inside refire_grace (T8).
-	EventOccurrenceReopened = EventType{"occurrence.reopened"}
-	// EventOccurrenceSuppressed records the reconciler seeing suppression (T3).
-	EventOccurrenceSuppressed = EventType{"occurrence.suppressed"}
-	// EventOccurrenceUnsuppressed records suppression lifting (T4).
-	EventOccurrenceUnsuppressed = EventType{"occurrence.unsuppressed"}
-	// EventOccurrenceResolved records an explicit upstream resolution (T5).
-	EventOccurrenceResolved = EventType{"occurrence.resolved"}
-	// EventOccurrenceExpired records the reaper sweeping an occurrence (T6).
-	EventOccurrenceExpired = EventType{"occurrence.expired"}
-	// EventOccurrenceAcknowledged records a human taking the occurrence (T9).
-	EventOccurrenceAcknowledged = EventType{"occurrence.acknowledged"}
-	// EventOccurrenceUnacknowledged records an ack being dropped (T10).
-	EventOccurrenceUnacknowledged = EventType{"occurrence.unacknowledged"}
+	// EventCaseOpened records a new firing episode (T1, T7).
+	EventCaseOpened = EventType{"case.opened"}
+	// EventCaseReopened records a re-fire inside refire_grace (T8).
+	EventCaseReopened = EventType{"case.reopened"}
+	// EventCaseSuppressed records the reconciler seeing suppression (T3).
+	EventCaseSuppressed = EventType{"case.suppressed"}
+	// EventCaseUnsuppressed records suppression lifting (T4).
+	EventCaseUnsuppressed = EventType{"case.unsuppressed"}
+	// EventCaseResolved records an explicit upstream resolution (T5).
+	EventCaseResolved = EventType{"case.resolved"}
+	// EventCaseExpired records the reaper sweeping a case (T6).
+	EventCaseExpired = EventType{"case.expired"}
+	// EventCaseAcknowledged records a human taking the case (T9).
+	EventCaseAcknowledged = EventType{"case.acknowledged"}
+	// EventCaseUnacknowledged records an ack being dropped (T10).
+	EventCaseUnacknowledged = EventType{"case.unacknowledged"}
 
 	// EventAlertSnoozed records a human asking oto to be quiet about this Alert
 	// until a fixed time (§B.8.5, T15). Payload: snooze_id, until, note,
@@ -93,16 +94,21 @@ var (
 	EventGroupOpened = EventType{"group.opened"}
 	// EventGroupClosed records a generation closing after group_close_delay.
 	EventGroupClosed = EventType{"group.closed"}
-	// EventGroupMemberJoined records an occurrence joining a generation.
+	// EventGroupMemberJoined recorded a case joining a generation.
+	// ⛔ RETIRED — see `retiredEventTypes`. Nothing appends it.
 	EventGroupMemberJoined = EventType{"group.member_joined"}
-	// EventGroupMemberLeft records an occurrence leaving a generation.
+	// EventGroupMemberLeft recorded a case leaving a generation.
+	// ⛔ RETIRED — see `retiredEventTypes`. Nothing appends it, and nothing ever
+	// did in production: `Leave` was implemented at three layers and called from
+	// nowhere, so this type was declared, validated, and absent from every
+	// timeline oto has ever rendered.
 	EventGroupMemberLeft = EventType{"group.member_left"}
 	// EventGroupStormStarted records a generation entering storm mode.
 	EventGroupStormStarted = EventType{"group.storm_started"}
 	// EventGroupStormEnded records storm mode ending after storm_cooldown.
 	EventGroupStormEnded = EventType{"group.storm_ended"}
 
-	// EventRuleSnapshotCaptured records a RuleSnapshot being bound to an occurrence.
+	// EventRuleSnapshotCaptured records a RuleSnapshot being bound to a case.
 	EventRuleSnapshotCaptured = EventType{"rule.snapshot_captured"}
 	// EventRuleDefinitionChanged records rule drift — the headline differentiator.
 	EventRuleDefinitionChanged = EventType{"rule.definition_changed"}
@@ -151,6 +157,134 @@ func init() {
 	}
 }
 
+// retiredEventTypes are values `alert_events` still CONTAINS but which nothing
+// may append any more.
+//
+// ⭐⭐ RETIRED IS NOT DELETED, AND THE DIFFERENCE IS THIRTEEN MONTHS LONG.
+// Membership stopped being an event when the group key became derived (ADR 0038,
+// migration 00051): `group.member_joined` is implied by `case.opened` and
+// `group.member_left` by `case.resolved`/`.expired`, and both were facts
+// about the EPISODE phrased as if the group were the actor. But `alert_events` is
+// append-only, partitioned, and retained thirteen months, and rows carrying these
+// two values already exist. Removing them from the closed set would mean
+// `NewEventType` REJECTING HISTORY the moment it is read back — a timeline that
+// errors rather than renders — so they stay parseable, and they stay in
+// `AllEventTypes` and therefore in `components.schemas.AlertEventType`, because a
+// value oto can still put on the wire must be a value its own generated client
+// can accept.
+//
+// ⛔ WHAT MAKES "NEVER AGAIN" MECHANICAL RATHER THAN A COMMENT: `alerts/service`
+// refuses a retired type at `AppendTimelineEvent`. A comment saying "do not emit
+// this" is advice; a refusal at the write path is a guarantee.
+//
+// ⚠️ AND THE GUARANTEE IS EXACTLY AS WIDE AS THAT SEAM, WHICH IS WIDE ENOUGH FOR
+// THESE TWO AND NOT FOR AN ARBITRARY VALUE. Both are `group.*`, and grouping is
+// a different module, so every caller that could emit one has to come through
+// `AppendTimelineEvent`. `alert_events` has two other writers — `alerts`' own
+// `appendEvents`, which takes built `domain.Event`s from the lifecycle, and
+// `notification/repository`, which INSERTs its own `notification.*`/`delivery.*`
+// rows — and neither passes the check. `alerts/service/seam.go` says the same
+// thing from the other side.
+//
+// They leave this file when the last partition holding them is dropped, and not
+// before.
+var retiredEventTypes = map[string]struct{}{
+	EventGroupMemberJoined.s: {},
+	EventGroupMemberLeft.s:   {},
+}
+
+// Retired reports whether this type may still be READ but no longer WRITTEN.
+func (t EventType) Retired() bool {
+	_, ok := retiredEventTypes[t.s]
+	return ok
+}
+
+// legacySpellings maps the eight strings `alert_events.type` held before ADR 0036
+// onto the value that fact has now. It is a translation table, not a vocabulary.
+//
+// ⭐⭐ A RENAME IS NOT A RETIREMENT, AND THE TWO NEED OPPOSITE TREATMENT.
+// `group.member_joined` and `group.member_left` above named a fact that STOPPED
+// EXISTING, so they stay on the contract as themselves — a client asking for the
+// timeline of a generation from last spring must be able to name what it will get.
+// These eight name the SAME fact under a new word: `occurrence.opened` and
+// `case.opened` are one transition, T1, spelled twice. So they are canonicalised
+// on the way in and never leave the process: `AllEventTypes` — and therefore
+// `components.schemas.AlertEventType` — lists thirty-six values, all `case.*`, and
+// a client is never asked to learn two names for one thing.
+//
+// ⛔ WHY THE ROWS WERE NOT REWRITTEN INSTEAD. `alert_events` is monthly-partitioned,
+// append-only and retained thirteen months; an `UPDATE` across it inside a goose
+// transaction rewrites every lifecycle row oto has, doubles the table under MVCC,
+// and still cannot reach a partition detached for cold storage. Migration 00052
+// sets that argument out in full and rewrites only the bounded tables.
+//
+// ⚠️ THE READ IS ONLY HALF OF IT. A predicate — `type IN (…)` — is planned with the
+// statement and cannot call this map, so the three filters registered in
+// `test/arch.eventTypeSQLSites` spell BOTH forms out, and that gate now judges a
+// literal against `AllPersistedEventTypes` rather than `AllEventTypes` because the
+// question it asks is "can this string be in the column", not "is it on the wire".
+// `?type=` expands through `PersistedSpellings` for the same reason: a filter for
+// `case.opened` that quietly stopped matching last year's rows would be the exact
+// failure `TestEventTypeSQLNamesLiveValues` exists to prevent, one layer down.
+var legacySpellings = map[string]EventType{
+	// vocab:allow — strings ON DISK, not vocabulary. This map and the three registered SQL filters are the only places in `internal/` the pre-rename word survives, and it survives as data rather than as a name. The marker reaches two lines, which is why there are three of them rather than one.
+	"occurrence.opened": EventCaseOpened, "occurrence.reopened": EventCaseReopened,
+	"occurrence.suppressed": EventCaseSuppressed, "occurrence.unsuppressed": EventCaseUnsuppressed,
+	// vocab:allow — as above.
+	"occurrence.resolved": EventCaseResolved, "occurrence.expired": EventCaseExpired,
+	"occurrence.acknowledged": EventCaseAcknowledged, "occurrence.unacknowledged": EventCaseUnacknowledged,
+}
+
+// spellingsByType is legacySpellings inverted: canonical value to the strings a
+// persisted row may hold for it, canonical first.
+var spellingsByType = map[string][]string{}
+
+func init() {
+	for legacy, t := range legacySpellings {
+		if _, ok := spellingsByType[t.s]; !ok {
+			spellingsByType[t.s] = []string{t.s}
+		}
+		spellingsByType[t.s] = append(spellingsByType[t.s], legacy)
+	}
+	for _, v := range spellingsByType {
+		sort.Strings(v[1:])
+	}
+}
+
+// PersistedSpellings returns every string `alert_events.type` may hold for this
+// fact: the canonical value first, then any pre-rename spelling still on disk.
+//
+// ⛔ USE IT FOR EVERY PREDICATE ON `alert_events.type`, never `String()`. A filter
+// built from the canonical value alone is valid SQL that silently stops matching
+// everything written before ADR 0036 — and a read that returns no rows is
+// indistinguishable from a fact that never happened.
+func (t EventType) PersistedSpellings() []string {
+	if all, ok := spellingsByType[t.s]; ok {
+		return append([]string(nil), all...)
+	}
+	return []string{t.s}
+}
+
+// AllPersistedEventTypes is every string that may legally appear in
+// `alert_events.type`: the closed contract enum plus the pre-rename spellings.
+//
+// ⚠️ IT IS DELIBERATELY LARGER THAN `AllEventTypes`, and the two answer different
+// questions. `AllEventTypes` is what oto PUTS ON THE WIRE and what its generated
+// clients must accept. This is what oto may READ OFF DISK, which is what a SQL
+// filter has to cover and what `test/arch`'s event-type gate has to judge a
+// literal against.
+func AllPersistedEventTypes() []string {
+	out := make([]string, 0, len(eventTypes)+len(legacySpellings))
+	for _, t := range AllEventTypes() {
+		out = append(out, t.s)
+	}
+	for legacy := range legacySpellings {
+		out = append(out, legacy)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // AllEventTypes returns the closed enum in declaration order.
 //
 // ⛔ THE DDL IS NOT A SECOND COPY OF THIS LIST, AND MUST NOT BE MISTAKEN FOR
@@ -167,12 +301,18 @@ func init() {
 // of this set. `TestContractEnumsMatchTheirDomainEnum` in `test/contract` is
 // what fails if the two lists drift; without it the first thing to notice is
 // somebody else's generated client refusing a value oto already writes.
+//
+// ⚠️ IT IS THE SET THAT MAY BE READ, WHICH IS LARGER THAN THE SET THAT MAY BE
+// WRITTEN. Two entries — `group.member_joined` and `group.member_left` — are
+// RETIRED: nothing appends them, and `AppendTimelineEvent` refuses them, but they
+// stay here because thirteen months of `alert_events` still contain them. See
+// `retiredEventTypes`.
 func AllEventTypes() []EventType {
 	return []EventType{
 		EventAlertCreated, EventAlertMutated, EventAlertFlappingStarted, EventAlertFlappingEnded,
-		EventOccurrenceOpened, EventOccurrenceReopened, EventOccurrenceSuppressed,
-		EventOccurrenceUnsuppressed, EventOccurrenceResolved, EventOccurrenceExpired,
-		EventOccurrenceAcknowledged, EventOccurrenceUnacknowledged,
+		EventCaseOpened, EventCaseReopened, EventCaseSuppressed,
+		EventCaseUnsuppressed, EventCaseResolved, EventCaseExpired,
+		EventCaseAcknowledged, EventCaseUnacknowledged,
 		EventAlertSnoozed, EventAlertUnsnoozed,
 		EventGroupOpened, EventGroupClosed, EventGroupMemberJoined, EventGroupMemberLeft,
 		EventGroupStormStarted, EventGroupStormEnded,
@@ -187,12 +327,20 @@ func AllEventTypes() []EventType {
 }
 
 // NewEventType parses a persisted event type against the closed set.
+//
+// ⚠️ IT CANONICALISES. A row written before ADR 0036 spells the eight lifecycle
+// facts `occurrence.*`; this returns the `case.*` value that IS that fact, so no
+// caller — and no client — ever sees the earlier word. Rejecting those strings
+// instead would make oto error on thirteen months of its own timeline.
 func NewEventType(s string) (EventType, error) {
-	if _, ok := eventTypes[s]; !ok {
-		return EventType{}, errs.Newf(errs.KindValidation, "enum",
-			"%q is not a known alert_events.type; adding one requires a SPEC amendment", s)
+	if _, ok := eventTypes[s]; ok {
+		return EventType{s: s}, nil
 	}
-	return EventType{s: s}, nil
+	if t, ok := legacySpellings[s]; ok {
+		return t, nil
+	}
+	return EventType{}, errs.Newf(errs.KindValidation, "enum",
+		"%q is not a known alert_events.type; adding one requires a SPEC amendment", s)
 }
 
 // String renders the event type.
@@ -232,36 +380,36 @@ func (t EventType) IsZero() bool { return t.s == "" }
 // partition. This is the timeline, and it is what makes oto's history honest:
 // current state is a projection, never the only record.
 type Event struct {
-	id           uuid.UUID
-	orgID        uuid.UUID
-	alertID      uuid.UUID
-	occurrenceID uuid.UUID
-	groupID      uuid.UUID
-	typ          EventType
-	at           ObservationTime
-	actor        Actor
-	summary      string
-	payload      map[string]any
-	dedupeKey    string
+	id        uuid.UUID
+	orgID     uuid.UUID
+	alertID   uuid.UUID
+	caseID    uuid.UUID
+	groupID   uuid.UUID
+	typ       EventType
+	at        ObservationTime
+	actor     Actor
+	summary   string
+	payload   map[string]any
+	dedupeKey string
 }
 
 // EventParams is the full constructor input for an AlertEvent. A zero UUID in
-// AlertID, OccurrenceID or GroupID means "not about that subject"; at least one
+// AlertID, CaseID or GroupID means "not about that subject"; at least one
 // must be set (ev_subject_ck).
 type EventParams struct {
-	ID           uuid.UUID
-	OrgID        uuid.UUID
-	AlertID      uuid.UUID
-	OccurrenceID uuid.UUID
-	GroupID      uuid.UUID
-	Type         EventType
-	At           ObservationTime
-	Actor        Actor
-	Summary      string
-	Payload      map[string]any
+	ID      uuid.UUID
+	OrgID   uuid.UUID
+	AlertID uuid.UUID
+	CaseID  uuid.UUID
+	GroupID uuid.UUID
+	Type    EventType
+	At      ObservationTime
+	Actor   Actor
+	Summary string
+	Payload map[string]any
 
 	// DedupeKey makes an append idempotent through the unpartitioned
-	// alert_event_keys table (C.8) — for example "occ:{occurrence_id}:opened".
+	// alert_event_keys table (C.8) — for example "case:{case_id}:opened".
 	// It is optional; an empty key means "always append".
 	DedupeKey string
 }
@@ -277,9 +425,9 @@ func NewEvent(p EventParams) (Event, error) {
 	if p.Type.IsZero() {
 		return Event{}, errs.New(errs.KindValidation, "required", "event type is required")
 	}
-	if p.AlertID == uuid.Nil && p.OccurrenceID == uuid.Nil && p.GroupID == uuid.Nil {
+	if p.AlertID == uuid.Nil && p.CaseID == uuid.Nil && p.GroupID == uuid.Nil {
 		return Event{}, errs.New(errs.KindValidation, "required",
-			"an event must name at least one of alert, occurrence or group")
+			"an event must name at least one of alert, case or group")
 	}
 	if p.At.IsZero() {
 		return Event{}, errs.New(errs.KindValidation, "required",
@@ -307,17 +455,17 @@ func NewEvent(p EventParams) (Event, error) {
 	}
 
 	return Event{
-		id:           p.ID,
-		orgID:        p.OrgID,
-		alertID:      p.AlertID,
-		occurrenceID: p.OccurrenceID,
-		groupID:      p.GroupID,
-		typ:          p.Type,
-		at:           p.At,
-		actor:        p.Actor,
-		summary:      summary,
-		payload:      maps.Clone(p.Payload),
-		dedupeKey:    p.DedupeKey,
+		id:        p.ID,
+		orgID:     p.OrgID,
+		alertID:   p.AlertID,
+		caseID:    p.CaseID,
+		groupID:   p.GroupID,
+		typ:       p.Type,
+		at:        p.At,
+		actor:     p.Actor,
+		summary:   summary,
+		payload:   maps.Clone(p.Payload),
+		dedupeKey: p.DedupeKey,
 	}, nil
 }
 
@@ -330,8 +478,8 @@ func (e Event) OrgID() uuid.UUID { return e.orgID }
 // AlertID is the Alert this event is about, or uuid.Nil.
 func (e Event) AlertID() uuid.UUID { return e.alertID }
 
-// OccurrenceID is the AlertOccurrence this event is about, or uuid.Nil.
-func (e Event) OccurrenceID() uuid.UUID { return e.occurrenceID }
+// CaseID is the AlertCase this event is about, or uuid.Nil.
+func (e Event) CaseID() uuid.UUID { return e.caseID }
 
 // GroupID is the AlertGroup generation this event is about, or uuid.Nil.
 func (e Event) GroupID() uuid.UUID { return e.groupID }

@@ -27,7 +27,7 @@ import (
 func subject(annotations map[string]string) *domain.Subject {
 	return &domain.Subject{
 		OrgID:       "0198c0de-0000-7000-8000-0000000000aa",
-		SubjectKind: domain.SubjectOccurrence,
+		SubjectKind: domain.SubjectCase,
 		SubjectID:   "0198c0de-0000-7000-8000-0000000000bb",
 		Alert: domain.AlertSnapshot{
 			ID:          "0198c0de-0000-7000-8000-0000000000cc",

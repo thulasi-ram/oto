@@ -58,7 +58,7 @@ func (rt *Router) listRuleSnapshots(w http.ResponseWriter, r *http.Request) {
 
 // getRuleSnapshot is `GET /api/v1/rule-snapshots/{id}`.
 //
-// Snapshots are immutable and deduplicated by content, so two occurrences that
+// Snapshots are immutable and deduplicated by content, so two cases that
 // fired under an identical definition point at the same row.
 func (rt *Router) getRuleSnapshot(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
@@ -206,7 +206,7 @@ func (rt *Router) getAlertRuleHistory(w http.ResponseWriter, r *http.Request) {
 	// as a plain em-dash. A 404 was the alternative and is wrong here: this
 	// operation already spends its 404 on "no such alert", and collapsing "the
 	// alert is not there" into "the alert has no rule" would make a page that
-	// plainly exists look deleted. `/occurrences/{id}/rule` answers a single
+	// plainly exists look deleted. `/cases/{id}/rule` answers a single
 	// snapshot and has no 200 spelling for absence, which is why IT is a 404 —
 	// different shape, different answer, both honest.
 	if service.Addressable(bound.Key) {
@@ -256,9 +256,9 @@ func (rt *Router) getAlertRuleHistory(w http.ResponseWriter, r *http.Request) {
 // failed request. This is one panel of the rule tab; a predecessor that cannot be
 // read must not take "the rule as it was when this fired" off the screen with it.
 func (rt *Router) changeSincePreviousEpisode(
-	r *http.Request, scope db.TenantScope, episode alertdomain.Occurrence, bound domain.Snapshot,
+	r *http.Request, scope db.TenantScope, episode alertdomain.Case, bound domain.Snapshot,
 ) (domain.Diff, bool) {
-	previous, ok, err := rt.alerts.PreviousOccurrenceWithRule(
+	previous, ok, err := rt.alerts.PreviousCaseWithRule(
 		r.Context(), scope, episode.AlertID(), episode.Seq())
 	if err != nil || !ok {
 		return domain.Diff{}, false
@@ -283,13 +283,13 @@ func (rt *Router) changeSincePreviousEpisode(
 	return domain.Compare(snap, bound), true
 }
 
-// getOccurrenceRule is `GET /api/v1/occurrences/{id}/rule`.
+// getCaseRule is `GET /api/v1/cases/{id}/rule`.
 //
 // A `404` here means no snapshot could be captured for this episode at all — no
 // Prometheus URL configured and no usable `generatorURL`. A snapshot whose
 // `origin` is `unavailable` is a DIFFERENT fact: the capture was attempted and
 // honestly recorded as empty, and it is returned with a 200.
-func (rt *Router) getOccurrenceRule(w http.ResponseWriter, r *http.Request) {
+func (rt *Router) getCaseRule(w http.ResponseWriter, r *http.Request) {
 	started := rt.now()
 
 	scope, err := scopeOf(r)
@@ -311,12 +311,12 @@ func (rt *Router) getOccurrenceRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	occ, err := rt.alerts.GetOccurrence(r.Context(), scope, id)
+	ac, err := rt.alerts.GetCase(r.Context(), scope, id)
 	if err != nil {
 		httpx.WriteProblem(w, r, err)
 		return
 	}
-	snapID := occ.RuleSnapshotID()
+	snapID := ac.RuleSnapshotID()
 	if snapID == uuid.Nil {
 		httpx.WriteProblem(w, r, notFound("rule snapshot"))
 		return
@@ -333,7 +333,7 @@ func (rt *Router) getOccurrenceRule(w http.ResponseWriter, r *http.Request) {
 // boundSnapshot resolves the snapshot bound to an alert's current episode, and
 // the episode it is bound to.
 //
-// It is the CURRENT occurrence's snapshot and never the newest one upstream: the
+// It is the CURRENT case's snapshot and never the newest one upstream: the
 // whole point is what the rule said when this alert fired.
 //
 // The EPISODE comes back beside the snapshot because the diff needs to know which
@@ -342,7 +342,7 @@ func (rt *Router) getOccurrenceRule(w http.ResponseWriter, r *http.Request) {
 // It is nil only when this alert has never had one.
 func (rt *Router) boundSnapshot(
 	r *http.Request, scope db.TenantScope, alertID uuid.UUID,
-) (domain.Snapshot, *alertdomain.Occurrence, error) {
+) (domain.Snapshot, *alertdomain.Case, error) {
 	if rt.alerts == nil {
 		return domain.Snapshot{}, nil, notFound("alert")
 	}
@@ -351,11 +351,11 @@ func (rt *Router) boundSnapshot(
 		return domain.Snapshot{}, nil, err
 	}
 
-	occ := detail.CurrentOccurrence
-	if occ == nil {
-		occ = detail.LatestOccurrence
+	ac := detail.CurrentCase
+	if ac == nil {
+		ac = detail.LatestCase
 	}
-	if occ == nil || occ.RuleSnapshotID() == uuid.Nil {
+	if ac == nil || ac.RuleSnapshotID() == uuid.Nil {
 		// No snapshot was ever bound. The key is still NAMEABLE from the alert
 		// itself, so the caller gets an empty history rather than a 404 — "we
 		// have never captured this rule" is a fact worth returning.
@@ -365,16 +365,16 @@ func (rt *Router) boundSnapshot(
 		// queried; the caller must check `service.Addressable` before handing it
 		// to a read, which is the whole of the fix described in
 		// getAlertRuleHistory.
-		return domain.Snapshot{Key: keyOf(detail.Alert)}, occ, nil
+		return domain.Snapshot{Key: keyOf(detail.Alert)}, ac, nil
 	}
 
-	snap, err := rt.svc.Get(r.Context(), scope, occ.RuleSnapshotID())
+	snap, err := rt.svc.Get(r.Context(), scope, ac.RuleSnapshotID())
 	if err != nil {
 		// Same fallback, same caveat: the key that comes back is nameable and
 		// not addressable.
-		return domain.Snapshot{Key: keyOf(detail.Alert)}, occ, nil //nolint:nilerr // a missing snapshot is an empty history, not an error
+		return domain.Snapshot{Key: keyOf(detail.Alert)}, ac, nil //nolint:nilerr // a missing snapshot is an empty history, not an error
 	}
-	return snap, occ, nil
+	return snap, ac, nil
 }
 
 // keyOf derives the RuleKey oto can name from the alert alone: the alertname is

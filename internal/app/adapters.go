@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
@@ -174,7 +173,7 @@ func recoveryOf(m rulematch.Match) rulesdomain.Recovery {
 //
 // ⭐ WHY IT IS ONE TYPE AND NOT TWO. The two ports differ only in the name of
 // their method and the name of their struct; both describe the same act, which is
-// "append one closed-enum fact about this occurrence to the timeline". Two
+// "append one closed-enum fact about this case to the timeline". Two
 // adapters would be two places for the actor, the dedupe key and the subject rules
 // to drift apart in. So the translation lives once and the two methods are the
 // two doors onto it.
@@ -226,8 +225,8 @@ const (
 // RecordRuleEvent appends one of the three `rule.*` facts (§D.4.1, T12).
 //
 // SnapshotID travels in the PAYLOAD and not in a column: `alert_events` has no
-// snapshot column, and the occurrence's binding to its snapshot is
-// `alert_occurrences.rule_snapshot_id`, written by the enricher. What the timeline
+// snapshot column, and the case's binding to its snapshot is
+// `alert_cases.rule_snapshot_id`, written by the enricher. What the timeline
 // carries is which snapshot the sentence is about.
 func (r *timelineRecorder) RecordRuleEvent(
 	ctx context.Context, s db.TenantScope, ev rulesservice.RuleEvent,
@@ -240,15 +239,15 @@ func (r *timelineRecorder) RecordRuleEvent(
 		payload = withKey(payload, "snapshot_id", ev.SnapshotID.String())
 	}
 	return r.svc.AppendTimelineEvent(ctx, s, alertsservice.TimelineEventRequest{
-		Type:         ev.Type,
-		AlertID:      ev.AlertID,
-		OccurrenceID: ev.OccurrenceID,
-		Summary:      ev.Summary,
-		Payload:      payload,
-		DedupeKey:    ev.DedupeKey,
-		ActorKind:    alertsdomain.ActorEnricher.String(),
-		ActorID:      timelineActorRules,
-		ActorLabel:   timelineActorRulesLabel,
+		Type:       ev.Type,
+		AlertID:    ev.AlertID,
+		CaseID:     ev.CaseID,
+		Summary:    ev.Summary,
+		Payload:    payload,
+		DedupeKey:  ev.DedupeKey,
+		ActorKind:  alertsdomain.ActorEnricher.String(),
+		ActorID:    timelineActorRules,
+		ActorLabel: timelineActorRulesLabel,
 	})
 }
 
@@ -262,15 +261,15 @@ func (r *timelineRecorder) RecordEnrichmentEvent(
 		return nil
 	}
 	return r.svc.AppendTimelineEvent(ctx, s, alertsservice.TimelineEventRequest{
-		Type:         ev.Type,
-		AlertID:      ev.AlertID,
-		OccurrenceID: ev.OccurrenceID,
-		Summary:      ev.Summary,
-		Payload:      ev.Payload,
-		DedupeKey:    ev.DedupeKey,
-		ActorKind:    alertsdomain.ActorEnricher.String(),
-		ActorID:      timelineActorEnrich,
-		ActorLabel:   timelineActorEnrichLbl,
+		Type:       ev.Type,
+		AlertID:    ev.AlertID,
+		CaseID:     ev.CaseID,
+		Summary:    ev.Summary,
+		Payload:    ev.Payload,
+		DedupeKey:  ev.DedupeKey,
+		ActorKind:  alertsdomain.ActorEnricher.String(),
+		ActorID:    timelineActorEnrich,
+		ActorLabel: timelineActorEnrichLbl,
 	})
 }
 
@@ -318,7 +317,7 @@ func (r notificationReader) ListForAlert(
 			ID:               n.ID,
 			GroupID:          n.GroupID,
 			AlertID:          n.AlertID,
-			OccurrenceID:     n.OccurrenceID,
+			CaseID:           n.CaseID,
 			Reason:           n.Reason,
 			Status:           n.Status,
 			SuppressedReason: n.SuppressedReason,
@@ -350,11 +349,11 @@ func (r notificationReader) DeliveryRollupForAlert(
 	return r.rollup(ctx, s, notifrepo.RollupAlert, alertID)
 }
 
-// DeliveryRollupForOccurrence is the same question narrowed to one episode.
-func (r notificationReader) DeliveryRollupForOccurrence(
-	ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID,
+// DeliveryRollupForCase is the same question narrowed to one episode.
+func (r notificationReader) DeliveryRollupForCase(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
 ) (alertsservice.DeliveryRollup, error) {
-	return r.rollup(ctx, s, notifrepo.RollupOccurrence, occurrenceID)
+	return r.rollup(ctx, s, notifrepo.RollupCase, caseID)
 }
 
 func (r notificationReader) rollup(
@@ -398,7 +397,7 @@ func (g groupDeliveryRollups) DeliveryRollupForGroup(
 }
 
 // subjectResolver is `notification/api.SubjectResolver`: it maps an alert or an
-// occurrence onto the group generation whose card would carry the fact.
+// case onto the group generation whose card would carry the fact.
 //
 // Routing is about the GROUP — routing two members of one group to two channels
 // would split one conversation across two rooms — so a preview asked about an
@@ -425,28 +424,28 @@ func (r subjectResolver) GroupIDForAlert(
 	return members[0].GroupID(), nil
 }
 
-func (r subjectResolver) GroupIDForOccurrence(
-	ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID,
+func (r subjectResolver) GroupIDForCase(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
 ) (uuid.UUID, error) {
 	if r.alerts == nil {
 		return uuid.Nil, errs.Unavailable("alerts_unavailable",
-			"occurrence resolution is not wired in this deployment", 0)
+			"case resolution is not wired in this deployment", 0)
 	}
-	occ, err := r.alerts.GetOccurrence(ctx, s, occurrenceID)
+	ac, err := r.alerts.GetCase(ctx, s, caseID)
 	if err != nil {
 		return uuid.Nil, err
 	}
-	if occ.GroupID() == uuid.Nil {
-		return uuid.Nil, errs.NotFound("group_not_found", "this occurrence is not in any group")
+	if ac.GroupID() == uuid.Nil {
+		return uuid.Nil, errs.NotFound("group_not_found", "this case is not in any group")
 	}
-	return occ.GroupID(), nil
+	return ac.GroupID(), nil
 }
 
 // ---------------------------------------------------------------- enrichment
 
 // subjectLoader is `enrichment/service.SubjectLoader`.
 //
-// It denormalises one occurrence into the frozen Subject an Enricher sees, plus
+// It denormalises one case into the frozen Subject an Enricher sees, plus
 // the notification coordinates the async phase must quote back. Every read goes
 // through a SERVICE — never another module's repository — which is why this
 // lives here and not in `enrichment/repository`.
@@ -454,37 +453,37 @@ type subjectLoader struct {
 	alerts   *alertsservice.Service
 	grouping *groupingservice.Service
 	sources  *sourcesservice.Service
-	occSrc   *occurrenceSourceReader
+	occSrc   *caseSourceReader
 }
 
 func (l subjectLoader) LoadSubject(
-	ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID,
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
 ) (enrichservice.Loaded, error) {
 	if l.alerts == nil {
 		return enrichservice.Loaded{}, errs.Unavailable("alerts_unavailable",
 			"the alerts service is not wired in this deployment", 0)
 	}
 
-	occ, err := l.alerts.GetOccurrence(ctx, s, occurrenceID)
+	ac, err := l.alerts.GetCase(ctx, s, caseID)
 	if err != nil {
 		return enrichservice.Loaded{}, err
 	}
 	// The Alert row alone, never the UI detail read: the enricher needs the
-	// subject's frozen identity, and it already holds the occurrence — `Get`'s
-	// latest-occurrence and active-snooze re-reads would be paid on every run
+	// subject's frozen identity, and it already holds the case — `Get`'s
+	// latest-case and active-snooze re-reads would be paid on every run
 	// and discarded.
-	alert, err := l.alerts.GetAlert(ctx, s, occ.AlertID())
+	alert, err := l.alerts.GetAlert(ctx, s, ac.AlertID())
 	if err != nil {
 		return enrichservice.Loaded{}, err
 	}
 
 	out := enrichservice.Loaded{
 		AlertID: alert.ID(),
-		GroupID: occ.GroupID(),
+		GroupID: ac.GroupID(),
 		Subject: enrichdomain.Subject{
 			OrgID:       s.OrgID().String(),
-			SubjectKind: "occurrence",
-			SubjectID:   occurrenceID.String(),
+			SubjectKind: "case",
+			SubjectID:   caseID.String(),
 			Alert: enrichdomain.AlertSnapshot{
 				ID:                alert.ID().String(),
 				AlertKey:          alert.Key().String(),
@@ -498,12 +497,12 @@ func (l subjectLoader) LoadSubject(
 				Annotations:       alert.Annotations().Map(),
 				GeneratorURL:      alert.GeneratorURL(),
 			},
-			Occurrence: enrichdomain.OccurrenceSnapshot{
-				ID:             occ.ID().String(),
-				Seq:            occ.Seq(),
-				State:          occ.State().String(),
-				StartedAt:      occ.StartedAt(),
-				SourceStartsAt: occ.SourceStartsAt(),
+			Case: enrichdomain.CaseSnapshot{
+				ID:             ac.ID().String(),
+				Seq:            ac.Seq(),
+				State:          ac.State().String(),
+				StartedAt:      ac.StartedAt(),
+				SourceStartsAt: ac.SourceStartsAt(),
 			},
 		},
 	}
@@ -521,7 +520,7 @@ func (l subjectLoader) LoadSubject(
 	// resolve it must not fail the run: a missing SourceRef degrades promrule to
 	// its generatorURL-only path, which is the documented behaviour.
 	if l.occSrc != nil {
-		if sourceID, ok := l.occSrc.SourceID(ctx, s, occurrenceID); ok {
+		if sourceID, ok := l.occSrc.SourceID(ctx, s, caseID); ok {
 			out.SourceID = sourceID
 			out.Subject.Source.ID = sourceID.String()
 			if l.sources != nil {
@@ -538,23 +537,23 @@ func (l subjectLoader) LoadSubject(
 	return out, nil
 }
 
-// occurrenceSourceReader answers "which AlertSource did this episode come from",
+// caseSourceReader answers "which AlertSource did this episode come from",
 // through the batch port `alerts/service` already declares for the reaper guard.
-type occurrenceSourceReader struct {
-	resolver alertsservice.OccurrenceSourceResolver
+type caseSourceReader struct {
+	resolver alertsservice.CaseSourceResolver
 }
 
-func (r *occurrenceSourceReader) SourceID(
-	ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID,
+func (r *caseSourceReader) SourceID(
+	ctx context.Context, s db.TenantScope, caseID uuid.UUID,
 ) (uuid.UUID, bool) {
 	if r == nil || r.resolver == nil {
 		return uuid.Nil, false
 	}
-	m, err := r.resolver.SourceIDs(ctx, s, []uuid.UUID{occurrenceID})
+	m, err := r.resolver.SourceIDs(ctx, s, []uuid.UUID{caseID})
 	if err != nil {
 		return uuid.Nil, false
 	}
-	src, ok := m[occurrenceID]
+	src, ok := m[caseID]
 	return src, ok && src != uuid.Nil
 }
 
@@ -569,15 +568,15 @@ type enrichmentReader struct {
 }
 
 func (r enrichmentReader) ListForAlert(
-	ctx context.Context, s db.TenantScope, alertID uuid.UUID, occurrenceID *uuid.UUID,
+	ctx context.Context, s db.TenantScope, alertID uuid.UUID, caseID *uuid.UUID,
 ) ([]alertsservice.EnrichmentSummary, error) {
 	if r.repo == nil {
 		return nil, nil
 	}
 
 	kind, subject := "alert", alertID
-	if occurrenceID != nil && *occurrenceID != uuid.Nil {
-		kind, subject = "occurrence", *occurrenceID
+	if caseID != nil && *caseID != uuid.Nil {
+		kind, subject = "case", *caseID
 	}
 
 	rows, err := r.repo.ListBySubject(ctx, s, kind, subject.String())
@@ -807,26 +806,26 @@ func (g *groupVersions) StateVersion(ctx context.Context, s db.TenantScope, grou
 
 // ---------------------------------------------------------------- job scopes
 
-// occurrenceScopes resolves the tenant that owns an occurrence, for the
+// caseScopes resolves the tenant that owns a case, for the
 // `enrich.run` worker.
 //
 // ⚠ It is one of the few unscoped queries in the process, and it is unscoped
 // because it is the query that PRODUCES the scope: `EnrichRunArgs` names an
-// occurrence and no org (§G.3). A worker must not take the tenant on trust from
+// case and no org (§G.3). A worker must not take the tenant on trust from
 // a job payload — a job row is data, and data that decided its own authorisation
 // would undo the tenancy boundary — so the org comes from the SUBJECT.
-type occurrenceScopes struct {
+type caseScopes struct {
 	pool *pgxpool.Pool
 }
 
-const orgOfOccurrenceSQL = `SELECT org_id FROM alert_occurrences WHERE id = $1`
+const orgOfCaseSQL = `SELECT org_id FROM alert_cases WHERE id = $1`
 
-func (r occurrenceScopes) ScopeForOccurrence(
-	ctx context.Context, occurrenceID uuid.UUID,
+func (r caseScopes) ScopeForCase(
+	ctx context.Context, caseID uuid.UUID,
 ) (db.TenantScope, error) {
 	var orgID uuid.UUID
-	if err := r.pool.QueryRow(ctx, orgOfOccurrenceSQL, occurrenceID).Scan(&orgID); err != nil {
-		return db.TenantScope{}, errs.NotFound("occurrence_not_found", "no such occurrence")
+	if err := r.pool.QueryRow(ctx, orgOfCaseSQL, caseID).Scan(&orgID); err != nil {
+		return db.TenantScope{}, errs.NotFound("case_not_found", "no such case")
 	}
 	return db.NewTenantScope(orgID)
 }
@@ -974,7 +973,7 @@ func (l orgLister) LiveScope(ctx context.Context, orgID uuid.UUID) (db.TenantSco
 // a generation and hands the id back in through `ObserveOptions.GroupID`.
 //
 // ⭐ IT IS ALL ONE TRANSACTION. `ingestion` has already opened one on the ingest
-// pool before calling, and `db.Tx` nests, so the group, the occurrence, its
+// pool before calling, and `db.Tx` nests, so the group, the case, its
 // membership, the events and the `notify.evaluate` job commit together or not at
 // all. An alert whose group rolled back would own a Slack thread nobody could
 // find.
@@ -1005,7 +1004,7 @@ func (o alertObserver) ObserveBatch(
 			return applied, err
 		}
 		applied += len(res.Outcomes)
-		if err := o.joinMembers(ctx, s, groupID, part[0], res.Outcomes); err != nil {
+		if err := o.settleGroup(ctx, s, groupID, part[0], res.Outcomes); err != nil {
 			return applied, err
 		}
 	}
@@ -1051,9 +1050,12 @@ func (o alertObserver) resolveGroup(
 	g, err := o.grouping.Resolve(ctx, s, groupingservice.ResolveRequest{
 		SourceID:  sample.SourceID,
 		ClusterID: sample.ClusterID,
-		Receiver:  sample.Receiver,
+		// ⭐ THE TWO KEY INPUTS, and they are the alert's OWN facts. Everything else
+		// on this request is provenance recorded on the generation (ADR 0038).
+		ClusterKey: sample.ClusterKey,
+		Labels:     sample.Labels,
+		Receiver:   sample.Receiver,
 		// ⛔ SourceGroupKey is stored verbatim and NEVER parsed (§C.4).
-		GroupLabels:        sample.GroupLabels,
 		SourceGroupKey:     sample.SourceGroupKey,
 		NotificationReason: sample.NotificationReason,
 		At:                 sample.ObservedAt,
@@ -1074,65 +1076,62 @@ func (o alertObserver) resolveGroup(
 	return &id, nil
 }
 
-// joinMembers records the group membership of every episode this batch OPENED.
+// settleGroup re-derives the generation this batch landed on, ONCE.
 //
-// Membership is what makes the generation's rollup — its counts, its severity,
-// its `state_version` — mean anything, and a card rendered over a group with no
-// members says "0 alerts" about an incident. Only a NEWLY OPENED occurrence
-// joins: a repeat observation of an episode that is already a member adds no
-// membership, and re-deriving the rollup for it once per scrape would be work
-// nobody reads.
+// ⛔ IT NO LONGER RECORDS MEMBERSHIP, BECAUSE NOTHING DOES. `ObserveBatch` was
+// already handed `GroupID` above and writes it onto every episode it opens, so by
+// the time this runs the membership is on disk — `alert_cases.group_id` is
+// the record, and migration 00051 removed the join table that used to duplicate
+// it. What is left is the derivation: the generation's counts, its state, its
+// severity and its §B.6 storm mode are all projections of its members, and
+// `grouping.Recompute` is where they are refreshed.
 //
-// A batch that changed states without opening anything still re-derives the
-// rollup once, because a resolve moves a member out of `firing` and the group's
-// own state is a projection of exactly that.
-//
-// ⭐ IT JOINS THE WHOLE PARTITION IN ONE CALL. `partitionByGroup` has already
-// established that every outcome here belongs to ONE generation, so handing them
-// over one at a time would ask `grouping` to re-derive the same rollup once per
-// occurrence — 500 full aggregates and 500 compare-and-set writes to one
+// ⭐ ONE CALL FOR THE WHOLE PARTITION. `partitionByGroup` has already established
+// that every outcome here belongs to ONE generation, so recomputing per outcome
+// would be 500 full aggregates and 500 compare-and-set writes to one
 // `alert_groups` row for one 500-alert Alertmanager batch, all but the last of
-// them discarded. `JoinMany` joins them all and projects once.
-func (o alertObserver) joinMembers(
+// them discarded.
+//
+// ⭐ A BATCH THAT MOVED NOTHING IS NOT RECOMPUTED. A repeat observation of an
+// episode that is already open changes no count, so the aggregate would return
+// what the row already says. That guard is the difference between one query per
+// scrape and none, on the most frequent shape of request oto receives.
+func (o alertObserver) settleGroup(
 	ctx context.Context, s db.TenantScope, groupID *uuid.UUID,
 	sample alertsdomain.Observation, outcomes []alertsservice.ObserveOutcome,
 ) error {
 	if o.grouping == nil || groupID == nil {
 		return nil
 	}
-	at := sample.ObservedAt
-
-	members := make([]groupingservice.JoinMember, 0, len(outcomes))
+	moved := false
 	for _, out := range outcomes {
-		if !out.OccurrenceOpened || out.OccurrenceID == uuid.Nil {
+		if out.CaseID == uuid.Nil {
 			continue
 		}
-		members = append(members, groupingservice.JoinMember{
-			AlertID:      out.AlertID,
-			OccurrenceID: out.OccurrenceID,
-		})
-	}
-	if len(members) > 0 {
-		_, err := o.grouping.JoinMany(ctx, s, *groupID, members, at)
-		return err
-	}
-	for _, out := range outcomes {
-		if out.OccurrenceID != uuid.Nil && out.Transition != "" {
-			_, err := o.grouping.Recompute(ctx, s, *groupID, at)
-			return err
+		if out.CaseOpened || out.Transition != "" {
+			moved = true
+			break
 		}
 	}
-	return nil
+	if !moved {
+		return nil
+	}
+	_, err := o.grouping.Recompute(ctx, s, *groupID, sample.ObservedAt)
+	return err
 }
 
 // partitionByGroup splits a batch into runs that share one §C.4 group identity,
 // preserving first-seen order so two runs of the same batch resolve in the same
 // order.
 //
-// The key is built from the same inputs the §C.4 hash is built from — source,
-// receiver and the group labels — rather than from the hash itself, so that a
-// label set which will not pass its bounds still partitions cleanly and fails
-// once, in Resolve, where the failure can be described.
+// ⭐ ONE WEBHOOK IS NO LONGER ONE PARTITION, AND THAT IS THE POINT. While the key
+// hashed Alertmanager's own grouping, every alert in one envelope shared it by
+// construction and this loop found exactly one run. Since ADR 0038 the key is
+// derived per alert from `(cluster, alertname, namespace-or-∅)`, so a single
+// `group_by: [cluster]` envelope carrying six alertnames now resolves six
+// generations and six threads — which is the routing precision the derivation
+// was for, and the reason this function was written to handle many runs in the
+// first place (the reconciler already fed it many).
 func partitionByGroup(obs []alertsdomain.Observation) [][]alertsdomain.Observation {
 	if len(obs) <= 1 {
 		if len(obs) == 0 {
@@ -1157,24 +1156,19 @@ func partitionByGroup(obs []alertsdomain.Observation) [][]alertsdomain.Observati
 	return parts
 }
 
-// groupingKey renders the §C.4 inputs of one Observation as a comparable string.
+// groupingKey renders the §C.4 axes of one Observation as a comparable string.
+//
+// It writes the axes rather than the hash for one reason: `org_id` is not on the
+// Observation and is constant across a batch anyway, so hashing here would mean
+// either threading the scope in or hashing under a fake org. The axes ARE the
+// identity up to that constant, and canon()'s length prefixes make the rendering
+// injective — which matters, because two alerts that partition together are then
+// resolved from `part[0]` alone.
 func groupingKey(o alertsdomain.Observation) string {
-	names := make([]string, 0, len(o.GroupLabels))
-	for name := range o.GroupLabels {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
 	var b strings.Builder
-	b.WriteString(o.SourceID.String())
+	b.WriteString(o.ClusterKey.String())
 	b.WriteByte(0)
-	b.WriteString(o.Receiver)
-	for _, name := range names {
-		b.WriteByte(0)
-		b.WriteString(name)
-		b.WriteByte(0)
-		b.WriteString(o.GroupLabels[name])
-	}
+	b.Write(alertsdomain.SplitLabels(o.Labels).Canonical(nil))
 	return b.String()
 }
 

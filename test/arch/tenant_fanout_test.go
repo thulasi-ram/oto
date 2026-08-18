@@ -231,7 +231,7 @@ func fanOutViolation(kind string, argsT reflect.Type) string {
 		"its own periodic ladder and dead-letters under its own payload, and "+
 		"jobs.ForTenant answers a departed tenant with nil instead of work nobody will read.\n"+
 		"Either embed jobs.TenantFanOut beside Payload and dispatch through "+
-		"jobs.FanOutTenants / jobs.ForTenant (read `occurrence.reap` or `stats.rollup` "+
+		"jobs.FanOutTenants / jobs.ForTenant (read `case.reap` or `stats.rollup` "+
 		"end-to-end first), or — if this kind genuinely has no per-tenant unit of work — "+
 		"add it to notPerTenantPeriodic in this file WITH ITS REASON.",
 		kind, argsT)

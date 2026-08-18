@@ -1,0 +1,23 @@
+[
+  {
+    "_note": "group_by: [cluster] — the coarsest realistic config, and the one the derived key splits hardest. One upstream group, three derived groups: two alertnames, and one of them in two namespaces.",
+    "id": "018f3a4b-0000-7000-8000-000000000f01",
+    "org_id": "018f3a4b-0000-7000-8000-000000000001",
+    "source_id": "018f3a4b-0000-7000-8000-0000000000a1",
+    "cluster_key": "prod-eu",
+    "payload": {
+      "version": "4",
+      "receiver": "sre-slack",
+      "groupKey": "{}:{cluster=\"prod-eu\"}",
+      "truncatedAlerts": 0,
+      "groupLabels": { "cluster": "prod-eu" },
+      "alerts": [
+        { "labels": { "alertname": "KubePodCrashLooping", "namespace": "payments", "pod": "checkout-7f9c-2x4k", "severity": "critical" } },
+        { "labels": { "alertname": "KubePodCrashLooping", "namespace": "payments", "pod": "checkout-7f9c-9b1m", "severity": "warning" } },
+        { "labels": { "alertname": "KubePodCrashLooping", "namespace": "search", "pod": "indexer-0", "severity": "critical" } },
+        { "labels": { "alertname": "NodeDiskPressure", "instance": "10.0.0.4:9100", "severity": "warning" } },
+        { "labels": { "alertname": "NodeDiskPressure", "instance": "10.0.0.9:9100", "severity": "critical" } }
+      ]
+    }
+  }
+]

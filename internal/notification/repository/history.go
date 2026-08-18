@@ -18,12 +18,12 @@ import (
 // only way to make that true is for the counts to be readable next to the alert
 // itself rather than buried in an operator dashboard.
 type Summary struct {
-	ID           uuid.UUID
-	GroupID      uuid.UUID
-	AlertID      *uuid.UUID
-	OccurrenceID *uuid.UUID
-	Reason       string
-	Status       string
+	ID      uuid.UUID
+	GroupID uuid.UUID
+	AlertID *uuid.UUID
+	CaseID  *uuid.UUID
+	Reason  string
+	Status  string
 	// SuppressedReason is oto's OWN vocabulary and never Alertmanager's four
 	// suppression reasons (§B.8.2).
 	SuppressedReason string
@@ -43,7 +43,7 @@ const DefaultHistoryLimit = 50
 const maxHistoryLimit = 200
 
 const listForAlertSQL = `
-SELECT n.id, n.group_id, n.alert_id, n.occurrence_id, n.reason, n.status,
+SELECT n.id, n.group_id, n.alert_id, n.case_id, n.reason, n.status,
        coalesce(n.suppressed_reason,''), n.state_version, n.created_at,
        count(d.id),
        count(d.id) FILTER (WHERE d.status IN ('sent','skipped')),
@@ -99,7 +99,7 @@ func (r *NotificationRepository) ListForAlert(
 	for rows.Next() {
 		var v Summary
 		if err := rows.Scan(
-			&v.ID, &v.GroupID, &v.AlertID, &v.OccurrenceID, &v.Reason, &v.Status,
+			&v.ID, &v.GroupID, &v.AlertID, &v.CaseID, &v.Reason, &v.Status,
 			&v.SuppressedReason, &v.StateVersion, &v.CreatedAt,
 			&v.DeliveriesTotal, &v.DeliveriesSent, &v.DeliveriesFailed, &v.DeliveriesDead,
 		); err != nil {

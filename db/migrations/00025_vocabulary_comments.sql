@@ -20,7 +20,7 @@
 
 -- +goose Up
 
-COMMENT ON TABLE alert_occurrences IS
+COMMENT ON TABLE alert_occurrences IS  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   'One CONTIGUOUS FIRING EPISODE of an Alert, identified by (alert_id, seq). This is what you acknowledge and whose firing duration is measured -- the duration belongs to the SIGNAL and no per-person timing is stored anywhere (SPEC §A.1, R8). At most one may be open per Alert, enforced by occ_one_open_idx.';
 
 COMMENT ON COLUMN alert_quality_daily.total_firing_seconds IS

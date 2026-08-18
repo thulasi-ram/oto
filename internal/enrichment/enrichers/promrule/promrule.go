@@ -17,7 +17,7 @@ import (
 const Name = "prom.rule"
 
 // Version is bumped when the payload shape or the capture semantics change.
-// Bumping it invalidates every cached result and re-runs on the next occurrence
+// Bumping it invalidates every cached result and re-runs on the next case
 // (SPEC §F.3).
 const Version = 1
 
@@ -48,14 +48,14 @@ type Snapshotter interface {
 	Capture(ctx context.Context, s db.TenantScope, req rulesservice.CaptureRequest) (rulesservice.Capture, error)
 }
 
-// OccurrenceBinder writes the captured snapshot onto the occurrence.
+// CaseBinder writes the captured snapshot onto the case.
 //
-// `alert_occurrences.rule_snapshot_id` exists for exactly this (SPEC §D.6), and
+// `alert_cases.rule_snapshot_id` exists for exactly this (SPEC §D.6), and
 // it is what makes "show me the rule as it was when THIS fired" a single join
 // rather than a time-travel query. Optional: a nil binder means the snapshot is
 // still captured, versioned and reported, it is merely not pinned to the row.
-type OccurrenceBinder interface {
-	BindRuleSnapshot(ctx context.Context, s db.TenantScope, occurrenceID, snapshotID uuid.UUID) error
+type CaseBinder interface {
+	BindRuleSnapshot(ctx context.Context, s db.TenantScope, caseID, snapshotID uuid.UUID) error
 }
 
 // Payload is the enricher's typed output, as stored in `enrichments.payload`.
@@ -99,7 +99,7 @@ type Payload struct {
 	Notes []string `json:"notes,omitempty"`
 }
 
-// Enricher captures the alerting rule behind an occurrence.
+// Enricher captures the alerting rule behind a case.
 //
 // It is the reason this module exists. Every other alerting product shows you
 // the alert; this one shows you the RULE THAT PRODUCED IT, as it was written at
@@ -107,14 +107,14 @@ type Payload struct {
 // threshold.
 type Enricher struct {
 	rules  Snapshotter
-	binder OccurrenceBinder
+	binder CaseBinder
 }
 
 // Enricher satisfies the port.
 var _ enrichdomain.Enricher = (*Enricher)(nil)
 
-// New builds the enricher. A nil binder disables occurrence binding.
-func New(rules Snapshotter, binder OccurrenceBinder) *Enricher {
+// New builds the enricher. A nil binder disables case binding.
+func New(rules Snapshotter, binder CaseBinder) *Enricher {
 	return &Enricher{rules: rules, binder: binder}
 }
 
@@ -144,7 +144,7 @@ func (*Enricher) Applicable(s *enrichdomain.Subject) bool {
 // The seed is the alert key plus the generatorURL, because those two together
 // determine the answer: the key fixes which rule is being asked about, and the
 // generatorURL is the primary path's entire input. It deliberately does NOT
-// include the occurrence id — a cache keyed by occurrence would never hit.
+// include the case id — a cache keyed by case would never hit.
 func (*Enricher) CacheSeed(s *enrichdomain.Subject) string {
 	if s == nil {
 		return ""
@@ -171,12 +171,12 @@ func (e *Enricher) Enrich(ctx context.Context, s *enrichdomain.Subject) (enrichd
 			Warnings: []string{"no_alert_source"},
 		}, nil
 	}
-	occurrenceID, _ := uuid.Parse(s.Occurrence.ID)
+	caseID, _ := uuid.Parse(s.Case.ID)
 
 	capture, err := e.rules.Capture(ctx, scope, rulesservice.CaptureRequest{
 		SourceID:     sourceID,
 		AlertID:      parseOrNil(s.Alert.ID),
-		OccurrenceID: occurrenceID,
+		CaseID:       caseID,
 		Labels:       s.Alert.Labels,
 		Annotations:  s.Alert.Annotations,
 		GeneratorURL: s.Alert.GeneratorURL,
@@ -191,9 +191,9 @@ func (e *Enricher) Enrich(ctx context.Context, s *enrichdomain.Subject) (enrichd
 	// pinned still answers "what did this rule say"; a capture refused because
 	// the pin failed answers nothing.
 	warnings := append([]string{}, capture.Warnings...)
-	if e.binder != nil && occurrenceID != uuid.Nil && capture.Snapshot.Available() {
+	if e.binder != nil && caseID != uuid.Nil && capture.Snapshot.Available() {
 		if snapID, perr := uuid.Parse(capture.Snapshot.ID); perr == nil {
-			if berr := e.binder.BindRuleSnapshot(ctx, scope, occurrenceID, snapID); berr != nil {
+			if berr := e.binder.BindRuleSnapshot(ctx, scope, caseID, snapID); berr != nil {
 				warnings = append(warnings, "snapshot_not_bound")
 			}
 		}

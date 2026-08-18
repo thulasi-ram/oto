@@ -145,7 +145,7 @@ func runningResult() domain.Result {
 func settledDrill() domain.Drill {
 	d := runningDrill()
 	d.AlertID = uuid.MustParse("88888888-8888-4888-8888-888888888888")
-	d.OccurrenceID = uuid.MustParse("99999999-9999-4999-8999-999999999999")
+	d.CaseID = uuid.MustParse("99999999-9999-4999-8999-999999999999")
 	d.GroupID = uuid.MustParse("aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
 	d.NotificationID = uuid.MustParse("bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbb1")
 	d.FinishedAt = contractEpoch.Add(9 * time.Second)

@@ -34,7 +34,7 @@ import { qk } from "~/api/keys";
 import type { AlertEvent, DeliverySummary, SnoozeRequest, TimelineQuery } from "~/api/types";
 import { SnoozeDialog } from "~/features/alerts/SnoozeDialog";
 import { RelativeTime } from "~/components/Time";
-import { AckChip, SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
+import { SeverityMark, STATE_BAR, StateChip, StormChip } from "~/components/StateChip";
 import { Button } from "~/components/ui/Button";
 import { Chip, DataRow, PageHeading, Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import { ApiError } from "~/api/client";
@@ -298,7 +298,12 @@ export default function GroupDetailRoute() {
                                   {alert.alertname}
                                 </span>
                                 <StateChip state={alert.state} size="sm" />
-                                <AckChip ackState={alert.ack_state} />
+                                {/* ⛔ NO ACK CHIP HERE. An ack belongs to one
+                                    firing episode and this row is an Alert, which
+                                    outlives its episodes. The generation's own
+                                    acked count above IS case-scoped — it counts
+                                    acknowledged cases — and the alert page
+                                    one click away shows the episode's receipt. */}
                               </A>
                             </li>
                           )}

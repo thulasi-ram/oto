@@ -19,7 +19,7 @@ import (
 // package can hit is absorbed before Go sees it: `enrichments`' minted `id`
 // PRIMARY KEY and `enrichments_subject_uniq` are UpsertMany's ON CONFLICT
 // target, and `enrichment_cache`'s `cache_key` PRIMARY KEY is Put's. The one
-// foreign key a write can violate, `occ_rule_fk` on BindRuleSnapshot, points at
+// foreign key a write can violate, `case_rule_fk` on BindRuleSnapshot, points at
 // an append-only table whose id the enricher resolved moments earlier. A
 // `23505` or `23503` reaching Go is a statement that drifted from the schema —
 // §L.9 row 2's oto bug — never something the pipeline could fix by changing

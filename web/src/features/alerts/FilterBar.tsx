@@ -143,25 +143,23 @@ const SORT_LABEL: Record<SortKey, string> = {
 const SORT_OPTIONS: readonly SortKey[] = ["-last_seen_at", "-first_seen_at"];
 
 /**
- * Ack, Snoozed and Flapping are all the same shape underneath: a nullable
- * boolean (or, for Ack, a nullable two-member enum) stood in for as a string
- * tri-state — `""` for "unset" — because that is the value type both a native
- * `<select>` and the Kobalte listbox key that replaces it need.
+ * Flapping is a nullable boolean stood in for as a string tri-state — `""` for
+ * "unset" — because that is the value type both a native `<select>` and the
+ * Kobalte listbox key that replaces it need.
+ *
+ * ⛔ THERE IS NO ACK CONTROL, AND THERE MUST NOT BE ONE HERE. `?ack=` read
+ * `alerts.ack_state`, a column that no longer exists: an acknowledgement is a
+ * receipt for one firing episode and the Alert outlives its episodes, so the
+ * filter answered a question about some earlier firing while reading as a
+ * question about this one. The ack facet belongs to the case surface.
+ *
+ * ⛔ AND THERE IS NO SNOOZED CONTROL, FOR A DIFFERENT REASON. Snooze did not
+ * lose its home, it got a better one: it is a TAB, not a facet. A tri-state
+ * buried three levels into a popover could not do the one job that makes hiding
+ * snoozed alerts safe — say, permanently and at rest, how many are being held
+ * back and whether any of them is still firing. `AlertTabs` does that, and two
+ * controls for one axis would let the toolbar and the tab bar disagree.
  */
-const ACK_OPTIONS = ["", "unacked", "acked"] as const;
-const ACK_LABEL: Record<(typeof ACK_OPTIONS)[number], string> = {
-  "": "Any",
-  unacked: "Not yet seen",
-  acked: "Seen by someone",
-};
-
-const SNOOZED_OPTIONS = ["", "true", "false"] as const;
-const SNOOZED_LABEL: Record<(typeof SNOOZED_OPTIONS)[number], string> = {
-  "": "Any (default — includes both)",
-  true: "Notifications held",
-  false: "Notifications flowing",
-};
-
 const FLAPPING_OPTIONS = ["", "true", "false"] as const;
 const FLAPPING_LABEL: Record<(typeof FLAPPING_OPTIONS)[number], string> = {
   "": "Any",
@@ -858,28 +856,19 @@ const VIEW_PRESETS: readonly ViewPreset[] = [
   {
     id: "all",
     label: "All",
-    matches: (f) => f.state.length === 0 && f.ack === null && f.snoozed === null,
-    apply: (f) => ({ ...f, state: [], ack: null, snoozed: null }),
+    matches: (f) => f.state.length === 0,
+    apply: (f) => ({ ...f, state: [] }),
   },
   {
     id: "firing",
     label: "Firing",
-    matches: (f) =>
-      f.state.length === 1 && f.state[0] === "firing" && f.ack === null && f.snoozed === null,
-    apply: (f) => ({ ...f, state: ["firing"], ack: null, snoozed: null }),
+    matches: (f) => f.state.length === 1 && f.state[0] === "firing",
+    apply: (f) => ({ ...f, state: ["firing"] }),
   },
-  {
-    id: "acked",
-    label: "Acked",
-    matches: (f) => f.state.length === 0 && f.ack === "acked" && f.snoozed === null,
-    apply: (f) => ({ ...f, state: [], ack: "acked", snoozed: null }),
-  },
-  {
-    id: "snoozed",
-    label: "Snoozed",
-    matches: (f) => f.state.length === 0 && f.ack === null && f.snoozed === true,
-    apply: (f) => ({ ...f, state: [], ack: null, snoozed: true }),
-  },
+  // ⛔ THE `Snoozed` VIEW IS GONE AND IS NOT COMING BACK HERE. It set
+  // `snoozed: true` on the same list, which is now a TAB — and a preset that
+  // silently moved the operator to a different tab while the tab bar carried on
+  // showing the other one is the disagreement `AlertTabs` exists to prevent.
 ];
 
 /**
@@ -1034,8 +1023,6 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
    * name rather than repeating it. One visible label per axis, one accessible
    * name per control, and no second copy to drift.
    */
-  const ackLabelId = createUniqueId();
-  const snoozedLabelId = createUniqueId();
   const flappingLabelId = createUniqueId();
 
   const clusterOptions = createMemo<readonly ClusterOption[]>(() => [
@@ -1078,8 +1065,6 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
     const f = props.filters;
     const out: string[] = [];
     for (const s of f.state) out.push(STATE_LABEL[s]);
-    if (f.ack !== null) out.push(f.ack === "acked" ? "Acked" : "Unacked");
-    if (f.snoozed !== null) out.push(f.snoozed ? "Snoozed" : "Not snoozed");
     if (f.flapping !== null) out.push(f.flapping ? "Flapping" : "Steady");
     return out;
   });
@@ -1250,73 +1235,6 @@ export const AlertFilterToolbar: Component<FilterBarProps> = (props) => {
                   )}
                 </For>
               </ToggleGroup>
-            </MenuSection>
-
-            {/* Acknowledgement is orthogonal to state (§B): `acked` still returns
-                firing alerts, because acknowledging one does not end it. */}
-            <MenuSection label="Ack" labelId={ackLabelId}>
-              {/* `id`/`title` go on Kobalte's own `SelectTrigger` — the real,
-                  accessible, interactive surface — same as Snoozed/Flapping.
-                  `SelectHiddenSelect` stays unlabelled: it is a separate,
-                  genuinely `aria-hidden` native `<select>` Kobalte renders only
-                  for native form-submission/autofill, not a stand-in for the
-                  trigger. */}
-              <Select<(typeof ACK_OPTIONS)[number]>
-                options={[...ACK_OPTIONS]}
-                optionTextValue={(v) => ACK_LABEL[v]}
-                value={props.filters.ack ?? ""}
-                onChange={(v) => {
-                  if (v === null) return;
-                  patch({ ack: v === "acked" || v === "unacked" ? v : null });
-                }}
-                itemComponent={(itemProps) => (
-                  <SelectItem item={itemProps.item}>{ACK_LABEL[itemProps.item.rawValue]}</SelectItem>
-                )}
-              >
-                <SelectTrigger
-                  id="alert-ack"
-                  aria-labelledby={ackLabelId}
-                  title="A receipt on a signal. An acknowledged alert is still firing."
-                >
-                  <span class="min-w-0 truncate text-left">
-                    {ACK_LABEL[props.filters.ack ?? ""]}
-                  </span>
-                </SelectTrigger>
-                <SelectHiddenSelect />
-                <SelectContent />
-              </Select>
-            </MenuSection>
-
-            {/* Snooze is a third orthogonal axis, never a state (§B.8): the default
-                includes both, because hiding snoozed alerts is how an incident is
-                lost. A snoozed alert still reads at its true severity. */}
-            <MenuSection label="Snoozed" labelId={snoozedLabelId}>
-              <Select<(typeof SNOOZED_OPTIONS)[number]>
-                options={[...SNOOZED_OPTIONS]}
-                optionTextValue={(v) => SNOOZED_LABEL[v]}
-                value={TRI_STATE_KEY(props.filters.snoozed)}
-                onChange={(v) => {
-                  if (v === null) return;
-                  patch({ snoozed: v === "" ? null : v === "true" });
-                }}
-                itemComponent={(itemProps) => (
-                  <SelectItem item={itemProps.item}>
-                    {SNOOZED_LABEL[itemProps.item.rawValue]}
-                  </SelectItem>
-                )}
-              >
-                <SelectTrigger
-                  id="alert-snoozed"
-                  aria-labelledby={snoozedLabelId}
-                  title="Whether oto is currently holding its notifications for the alert. It says nothing about the signal — a snoozed alert is still firing and still whatever severity it was."
-                >
-                  <span class="min-w-0 truncate text-left">
-                    {SNOOZED_LABEL[TRI_STATE_KEY(props.filters.snoozed)]}
-                  </span>
-                </SelectTrigger>
-                <SelectHiddenSelect />
-                <SelectContent />
-              </Select>
             </MenuSection>
 
             {/* The square wave is the §0.3 mark for flapping, and it is not in

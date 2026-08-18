@@ -37,7 +37,7 @@ func TestPostgresAndBuildersProduceAUsableTenant(t *testing.T) {
 	source := h.Source(org, cluster)
 	group := h.Group(org, source, cluster)
 	alert := h.AlertWith(org, cluster, harness.DefaultLabels())
-	occ := h.Occurrence(alert, group)
+	ac := h.Case(alert, group)
 
 	if !org.Scope.Valid() || org.Scope.OrgID() != org.ID {
 		t.Fatalf("the scope does not authorise its own org: %v", org.Scope)
@@ -61,15 +61,15 @@ func TestPostgresAndBuildersProduceAUsableTenant(t *testing.T) {
 		t.Fatalf("group_key %q != %q", storedGroupKey, group.Key)
 	}
 
-	// The occurrence is the alert's current one, which is the projection every
+	// The case is the alert's current one, which is the projection every
 	// read path trusts.
 	var current string
 	if err := h.Pool.QueryRow(h.Ctx,
-		`SELECT current_occurrence_id FROM alerts WHERE id = $1`, alert.ID).Scan(&current); err != nil {
-		t.Fatalf("read current_occurrence_id: %v", err)
+		`SELECT current_case_id FROM alerts WHERE id = $1`, alert.ID).Scan(&current); err != nil {
+		t.Fatalf("read current_case_id: %v", err)
 	}
-	if current != occ.ID.String() {
-		t.Fatalf("current_occurrence_id = %s, want %s", current, occ.ID)
+	if current != ac.ID.String() {
+		t.Fatalf("current_case_id = %s, want %s", current, ac.ID)
 	}
 
 	// alert_events is partitioned with no default partition. If
@@ -77,11 +77,11 @@ func TestPostgresAndBuildersProduceAUsableTenant(t *testing.T) {
 	// append in every harness test would fail with it. It is stamped at h.Now(),
 	// not now(), because that is the instant every test writes at: see
 	// TestEpochHasAPartitionEverywhere below.
-	h.Exec(`INSERT INTO alert_events (id, org_id, alert_id, occurrence_id, type, actor_kind,
+	h.Exec(`INSERT INTO alert_events (id, org_id, alert_id, case_id, type, actor_kind,
 	                                  summary, occurred_at, recorded_at, payload)
 	        VALUES (gen_random_uuid(), $1, $2, $3, 'alert.observed', 'ingest',
 	                'observed by a harness test', $4, $4, '{}'::jsonb)`,
-		org.ID, alert.ID, occ.ID, h.Now())
+		org.ID, alert.ID, ac.ID, h.Now())
 
 	var users int
 	if err := h.Pool.QueryRow(h.Ctx,

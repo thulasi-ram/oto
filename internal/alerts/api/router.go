@@ -28,23 +28,23 @@ type AlertService interface {
 	Rollups(ctx context.Context, s db.TenantScope, q service.RollupQuery) (service.RollupResult, error)
 	Get(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (service.AlertDetail, error)
 	GetByKey(ctx context.Context, s db.TenantScope, alertKey string) (service.AlertDetail, error)
-	Occurrences(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) (service.OccurrenceResult, error)
-	GetOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (domain.Occurrence, error)
+	Cases(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) (service.CaseResult, error)
+	GetCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (domain.Case, error)
 	AlertTimeline(ctx context.Context, s db.TenantScope, alertID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
-	OccurrenceTimeline(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
+	CaseTimeline(ctx context.Context, s db.TenantScope, caseID uuid.UUID, w db.TimeWindow, p db.Keyset) (service.TimelineResult, error)
 	Enrichments(ctx context.Context, s db.TenantScope, alertID uuid.UUID) ([]service.EnrichmentSummary, error)
 	Notifications(ctx context.Context, s db.TenantScope, alertID uuid.UUID, p db.Keyset) (service.NotificationResult, error)
 	// The two delivery roll-ups behind `delivery_summary` on the alert and
-	// occurrence detail views. They are on this interface — rather than being
+	// case detail views. They are on this interface — rather than being
 	// derived from `Notifications` in the handler — because the roll-up covers
 	// the GROUP generations an alert has been part of as well as the intents that
 	// name it, and paging a list to add up its rows would be both wrong and N+1.
 	DeliveryRollupForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (service.DeliveryRollup, error)
-	DeliveryRollupForOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (service.DeliveryRollup, error)
+	DeliveryRollupForCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (service.DeliveryRollup, error)
 	LabelNames(ctx context.Context, s db.TenantScope, prefix string, limit int) ([]domain.LabelCount, error)
 	LabelValues(ctx context.Context, s db.TenantScope, name, prefix string, limit int) ([]domain.LabelCount, error)
-	Acknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Occurrence, error)
-	Unacknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Occurrence, error)
+	Acknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Case, error)
+	Unacknowledge(ctx context.Context, s db.TenantScope, alertID uuid.UUID, actor domain.Actor, note string) (domain.Case, error)
 	// ⭐ COMMENT AND SNOOZE CARRY THE CALLER'S `Idempotency-Key` INTENT AND ACK AND
 	// UNACK DO NOT, and that asymmetry is the ruling rather than an oversight. Ack
 	// and unack are idempotent by state machine — the state after N calls equals
@@ -70,7 +70,7 @@ type AlertService interface {
 // Compile-time proof that the service satisfies the port this layer declares.
 var _ AlertService = (*service.Service)(nil)
 
-// Router serves the Alerts, Occurrences and Discovery tags.
+// Router serves the Alerts, Cases and Discovery tags.
 type Router struct {
 	svc AlertService
 	clk clock.Clock
@@ -95,7 +95,7 @@ func (rt *Router) Register(r chi.Router) {
 		r.Get("/rollups", rt.listAlertRollups)
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/", rt.getAlert)
-			r.Get("/occurrences", rt.listAlertOccurrences)
+			r.Get("/cases", rt.listAlertCases)
 			r.Get("/events", rt.listAlertEvents)
 			r.Get("/enrichments", rt.listAlertEnrichments)
 			r.Get("/notifications", rt.listAlertNotifications)
@@ -114,9 +114,9 @@ func (rt *Router) Register(r chi.Router) {
 	// `last_seen_at`.
 	r.Get("/snoozes", rt.listSnoozes)
 
-	r.Route("/occurrences/{id}", func(r chi.Router) {
-		r.Get("/", rt.getOccurrence)
-		r.Get("/events", rt.listOccurrenceEvents)
+	r.Route("/cases/{id}", func(r chi.Router) {
+		r.Get("/", rt.getCase)
+		r.Get("/events", rt.listCaseEvents)
 	})
 
 	r.Get("/labels", rt.listLabelNames)

@@ -140,7 +140,7 @@ func TestTheReasonCeilingIsTheSizeOfTheReasonEnum(t *testing.T) {
 
 // The rule is a SET, not an ORDER: [fired, acked] and [acked, fired] are both
 // legal and both mean the same thing. 00046's fold relies on this — it keeps
-// first-occurrence order rather than sorting, precisely because neither order is
+// first-case order rather than sorting, precisely because neither order is
 // more correct than the other and an operator should find the list they wrote.
 func TestDistinctReasonsAreAcceptedInAnyOrder(t *testing.T) {
 	t.Parallel()

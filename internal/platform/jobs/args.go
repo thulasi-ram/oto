@@ -82,18 +82,18 @@ func (IngestProcessBatchArgs) InsertOpts() river.InsertOpts {
 // amends a card somebody has already read.
 const PreNotificationBudget = 2000 * time.Millisecond
 
-// EnrichRunArgs runs the budgeted enrichment pipeline for one occurrence.
+// EnrichRunArgs runs the budgeted enrichment pipeline for one case.
 //
 // Queue: enrich · Priority: normal · Retry: retryable (12) · Payload v1
 //
-// IDEMPOTENCY KEY: (OccurrenceID, Phase).
-// Enrichment results are upserted on `(occurrence_id, enricher, enricher_version)`,
+// IDEMPOTENCY KEY: (CaseID, Phase).
+// Enrichment results are upserted on `(case_id, enricher, enricher_version)`,
 // so re-running a phase overwrites its own rows and never accumulates duplicates.
 // Phase is part of the key because the inline (T1) and async passes are different
-// budgets over the same occurrence and must both be allowed to run.
+// budgets over the same case and must both be allowed to run.
 type EnrichRunArgs struct {
 	Payload
-	OccurrenceID uuid.UUID `json:"occurrence_id"`
+	CaseID uuid.UUID `json:"case_id"`
 	// Phase is "inline" or "async" (SPEC §G.3: re-enqueued on inline timeout).
 	Phase string `json:"phase"`
 	// Enrichers narrows the run to named enrichers. Empty means the policy's set.
@@ -139,8 +139,8 @@ type NotifyEvaluateArgs struct {
 	// alert-scoped reasons (acked, unacked, refired, rule_changed) — see
 	// notifications_focus_ck.
 	AlertID *uuid.UUID `json:"alert_id,omitempty"`
-	// OccurrenceID narrows to one episode when the fact is about one.
-	OccurrenceID *uuid.UUID `json:"occurrence_id,omitempty"`
+	// CaseID narrows to one episode when the fact is about one.
+	CaseID *uuid.UUID `json:"case_id,omitempty"`
 	// Actor labels the human or system that caused this, for the rendered card.
 	Actor string `json:"actor,omitempty"`
 }
@@ -209,7 +209,7 @@ func DeliverQueueFor(channelType string) string {
 	return QueueDeliverWebhook
 }
 
-// NotifyUnackedReminderArgs sweeps for open groups whose oldest member occurrence
+// NotifyUnackedReminderArgs sweeps for open groups whose oldest member case
 // has been firing and unacked past the policy's `unacked_reminder_after_s`
 // (SPEC §G.9). Periodic, 60 s, zero payload.
 //
@@ -260,7 +260,7 @@ func (NotifyUnackedReminderArgs) InsertOpts() river.InsertOpts {
 // what the envelope may do.
 //
 // IDEMPOTENCY KEY: none of its own, deliberately. The acknowledgement itself is
-// idempotent in the domain — `Occurrence.Acknowledge` refuses an already-acked
+// idempotent in the domain — `Case.Acknowledge` refuses an already-acked
 // episode with `already_acked` — so a replayed payload, a double-click and a
 // retried job all converge on the same row. The uniqueness window the producer
 // applies is a convenience that collapses a byte-identical replay while the
@@ -409,7 +409,7 @@ func (SilencesSyncArgs) InsertOpts() river.InsertOpts {
 
 // ---------------------------------------------------------------- lifecycle
 
-// OccurrenceReapArgs expires occurrences oto has stopped hearing about
+// CaseReapArgs expires cases oto has stopped hearing about
 // (SPEC §B.4). Periodic, 60 s, zero payload.
 //
 // Queue: lifecycle · Priority: normal · Retry: periodic (3) · Payload v1
@@ -424,16 +424,16 @@ func (SilencesSyncArgs) InsertOpts() river.InsertOpts {
 //
 // THE REAPER IS BLOCKED while `source_health.status != 'healthy'`. Losing sight
 // of an alert is not the alert resolving, and `expired` is never `resolved`.
-type OccurrenceReapArgs struct {
+type CaseReapArgs struct {
 	Payload
 	TenantFanOut
 }
 
 // Kind implements db.JobArgs and river.JobArgs.
-func (OccurrenceReapArgs) Kind() string { return KindOccurrenceReap }
+func (CaseReapArgs) Kind() string { return KindCaseReap }
 
 // InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
-func (OccurrenceReapArgs) InsertOpts() river.InsertOpts {
+func (CaseReapArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
 }
 

@@ -73,9 +73,9 @@ func (n *QueueNotifier) NotifyEnriched(ctx context.Context, _ db.TenantScope, no
 		alertID := notice.AlertID
 		args.AlertID = &alertID
 	}
-	if notice.OccurrenceID != uuid.Nil {
-		occurrenceID := notice.OccurrenceID
-		args.OccurrenceID = &occurrenceID
+	if notice.CaseID != uuid.Nil {
+		caseID := notice.CaseID
+		args.CaseID = &caseID
 	}
 
 	_, err := n.enqueuer.Enqueue(ctx, args, db.WithUniquePeriod(n.debounce))
@@ -115,9 +115,9 @@ func (n *QueueNotifier) NotifyPreNotificationReady(
 		alertID := notice.AlertID
 		args.AlertID = &alertID
 	}
-	if notice.OccurrenceID != uuid.Nil {
-		occurrenceID := notice.OccurrenceID
-		args.OccurrenceID = &occurrenceID
+	if notice.CaseID != uuid.Nil {
+		caseID := notice.CaseID
+		args.CaseID = &caseID
 	}
 
 	_, err := n.enqueuer.Enqueue(ctx, args)

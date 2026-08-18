@@ -118,7 +118,7 @@ CREATE TABLE delivery_drills (
   -- MANIFEST, not the source of truth: the staged result is always recomputed
   -- from the live rows while the drill is running.
   alert_id          UUID,
-  occurrence_id     UUID,
+  occurrence_id     UUID,  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   group_id          UUID,
   notification_id   UUID,
 

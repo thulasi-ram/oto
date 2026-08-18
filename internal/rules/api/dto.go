@@ -7,7 +7,7 @@ import (
 )
 
 // The wire DTOs of the Rules tag, plus the two rule reads the contract files
-// under Alerts and Occurrences (`getAlertRuleHistory`, `getOccurrenceRule`).
+// under Alerts and Cases (`getAlertRuleHistory`, `getCaseRule`).
 //
 // They live here because this is the only package permitted to name
 // `rules/domain` (CONTEXT.md §5.4). Every json tag is byte-identical to
@@ -38,7 +38,7 @@ type RuleSnapshotDTO struct {
 }
 
 // RuleChangeDTO renders `RuleChangeDTO`: the structured diff between the snapshot
-// bound to this occurrence and the one bound to the previous occurrence.
+// bound to this case and the one bound to the previous case.
 //
 // A threshold changing under you is never noise, which is why this is delivered
 // to chat regardless of channel verbosity.

@@ -67,7 +67,7 @@ var (
 	_ notifservice.SettingsReader      = orgSettings{}
 	_ rulesservice.RuleLookup          = ruleLookup{}
 	_ enrichservice.SubjectLoader      = subjectLoader{}
-	_ enrichworker.ScopeResolver       = occurrenceScopes{}
+	_ enrichworker.ScopeResolver       = caseScopes{}
 	_ ingestservice.AlertObserver      = alertObserver{}
 	// The ingest-token mint moved INTO identity (relocation, not a merge with the
 	// PAT mint): the identity service satisfies the sources-side port directly,

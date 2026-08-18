@@ -46,11 +46,11 @@
 
 -- +goose Up
 
-CREATE INDEX notif_occurrence_idx ON notifications (org_id, occurrence_id)
-  WHERE occurrence_id IS NOT NULL;
+CREATE INDEX notif_occurrence_idx ON notifications (org_id, occurrence_id)  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+  WHERE occurrence_id IS NOT NULL;  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 
-COMMENT ON INDEX notif_occurrence_idx IS
-  'Serves the delivery roll-up of one firing episode: was anybody told about THIS outage, and did it land. Partial because occurrence_id is NULL on every group-scoped intent, which is most of them.';
+COMMENT ON INDEX notif_occurrence_idx IS  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+  'Serves the delivery roll-up of one firing episode: was anybody told about THIS outage, and did it land. Partial because occurrence_id is NULL on every group-scoped intent, which is most of them.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 
 COMMENT ON COLUMN source_health.am_group_wait_ms IS
   'The TOP-LEVEL route group_wait this Alertmanager reports in config.original, in milliseconds. NULL means THE CONFIGURATION STATED NOTHING, and it is never backfilled: Alertmanager omits an unset value, applies its documented 30s later in dispatch.NewRoute, and the status endpoint cannot see it. What that NULL MEANS is decided on read -- with am_route_timings_at set it is reported as the documented default, labelled as derived rather than observed; with am_route_timings_at NULL it is reported as unknown. Read from the source, never typed in by a human (docs/setup/tuning.md).';

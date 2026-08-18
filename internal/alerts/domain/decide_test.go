@@ -21,7 +21,7 @@ import (
 // edge of SPEC §B.3.
 
 // refireGraceFix is the window that resolves T7 against T8 in these tests.
-// `occurrenceIn` ends a terminal episode at t0+1m, so `withinGrace` reopens and
+// `caseIn` ends a terminal episode at t0+1m, so `withinGrace` reopens and
 // `beyondGrace` opens a new episode.
 const refireGraceFix = 15 * time.Minute
 
@@ -33,7 +33,7 @@ var (
 // decideCase is one row of §B.3 as seen from the routing question.
 type decideCase struct {
 	name    string
-	current Occurrence
+	current Case
 	trigger Trigger
 	// actor is the one the row permits. Decide never reads it; Apply does, and
 	// the agreement test below needs the edge to be authorised.
@@ -66,26 +66,26 @@ func (c decideCase) cmd(t *testing.T) TransitionCommand {
 func decideCases(t *testing.T) []decideCase {
 	t.Helper()
 
-	// `acked_at` travels with the state: NewOccurrence refuses a params whose
+	// `acked_at` travels with the state: NewCase refuses a params whose
 	// ack state and timestamp disagree, which is the invariant that makes an
 	// acknowledgement a fact somebody took at a moment rather than a flag.
-	acked := func(p *OccurrenceParams) {
+	acked := func(p *CaseParams) {
 		p.AckState = AckStateAcked
 		p.AckedAt = t0.Add(30 * time.Second)
 		p.AckedByLabel = "ada@example.com"
 	}
-	seq := func(n int) func(*OccurrenceParams) {
-		return func(p *OccurrenceParams) { p.Seq = n }
+	seq := func(n int) func(*CaseParams) {
+		return func(p *CaseParams) { p.Seq = n }
 	}
-	reapable := func(p *OccurrenceParams) { p.SourceEndsAt = t0.Add(time.Minute) }
+	reapable := func(p *CaseParams) { p.SourceEndsAt = t0.Add(time.Minute) }
 
 	return []decideCase{
 		// ---------------------------------------------------- no episode at all
 		{
-			// ⭐ THE ZERO Occurrence IS "this Alert has no episode". Its state is
+			// ⭐ THE ZERO Case IS "this Alert has no episode". Its state is
 			// StateNone, which is the state T1's row comes from.
 			name:     "a first sighting opens the first episode (T1)",
-			current:  Occurrence{},
+			current:  Case{},
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: t0,
@@ -97,7 +97,7 @@ func decideCases(t *testing.T) []decideCase {
 		{
 			// Inventing an episode to close would be fabricating history.
 			name:     "a resolved for an Alert never seen firing transitions nothing",
-			current:  Occurrence{},
+			current:  Case{},
 			trigger:  TriggerObserveResolved,
 			actor:    ActorIngest,
 			recorded: t0,
@@ -105,7 +105,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:     "a suppressed for an Alert never seen firing transitions nothing",
-			current:  Occurrence{},
+			current:  Case{},
 			trigger:  TriggerObserveSuppressed,
 			actor:    ActorReconciler,
 			recorded: t0,
@@ -115,7 +115,7 @@ func decideCases(t *testing.T) []decideCase {
 		// ------------------------------------------------- edges on a live episode
 		{
 			name:     "a repeat observation is T2",
-			current:  occurrenceIn(t, StateFiring),
+			current:  caseIn(t, StateFiring),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: withinGrace,
@@ -123,7 +123,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:              "suppression begins (T3)",
-			current:           occurrenceIn(t, StateFiring),
+			current:           caseIn(t, StateFiring),
 			trigger:           TriggerObserveSuppressed,
 			actor:             ActorReconciler,
 			recorded:          withinGrace,
@@ -132,7 +132,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:     "suppression ends (T4)",
-			current:  occurrenceIn(t, StateSuppressed),
+			current:  caseIn(t, StateSuppressed),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: withinGrace,
@@ -140,7 +140,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:     "an explicit upstream resolution (T5)",
-			current:  occurrenceIn(t, StateFiring),
+			current:  caseIn(t, StateFiring),
 			trigger:  TriggerObserveResolved,
 			actor:    ActorIngest,
 			recorded: withinGrace,
@@ -148,7 +148,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:     "a suppressed episode resolves (T5)",
-			current:  occurrenceIn(t, StateSuppressed),
+			current:  caseIn(t, StateSuppressed),
 			trigger:  TriggerObserveResolved,
 			actor:    ActorIngest,
 			recorded: withinGrace,
@@ -156,7 +156,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:          "the reaper expires an episode it has stopped hearing about (T6)",
-			current:       occurrenceIn(t, StateFiring, reapable),
+			current:       caseIn(t, StateFiring, reapable),
 			trigger:       TriggerReap,
 			actor:         ActorReaper,
 			recorded:      beyondGrace,
@@ -167,7 +167,7 @@ func decideCases(t *testing.T) []decideCase {
 		// ------------------------------------------------------------ the re-fire
 		{
 			name:     "a re-fire inside refire_grace reopens the SAME episode (T8)",
-			current:  occurrenceIn(t, StateResolved),
+			current:  caseIn(t, StateResolved),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: withinGrace,
@@ -175,7 +175,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:     "a re-fire inside refire_grace out of an ACKED episode keeps the ack",
-			current:  occurrenceIn(t, StateResolved, acked),
+			current:  caseIn(t, StateResolved, acked),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: withinGrace,
@@ -185,45 +185,45 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:     "a re-fire beyond refire_grace opens a NEW episode (T7)",
-			current:  occurrenceIn(t, StateResolved, seq(3)),
+			current:  caseIn(t, StateResolved, seq(3)),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: beyondGrace,
 			want: Decision{
 				ID: TransitionT7, From: StateResolved,
-				OpensEpisode: true, Seq: 4, ReopenOf: occID,
+				OpensEpisode: true, Seq: 4, ReopenOf: caseID,
 			},
 		},
 		{
 			name:     "an EXPIRED episode re-fires beyond refire_grace (T7)",
-			current:  occurrenceIn(t, StateExpired),
+			current:  caseIn(t, StateExpired),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: beyondGrace,
 			want: Decision{
 				ID: TransitionT7, From: StateExpired,
-				OpensEpisode: true, Seq: 2, ReopenOf: occID,
+				OpensEpisode: true, Seq: 2, ReopenOf: caseID,
 			},
 		},
 		{
-			// T10 by the `new_occurrence` road. It is decided HERE, once, for both
+			// T10 by the `new_case` road. It is decided HERE, once, for both
 			// rows that open an episode — the two call sites that used to decide it
 			// separately had already drifted apart on what to do about it.
 			name:     "T7 out of an ACKED episode drops the acknowledgement",
-			current:  occurrenceIn(t, StateResolved, acked),
+			current:  caseIn(t, StateResolved, acked),
 			trigger:  TriggerObserveFiring,
 			actor:    ActorIngest,
 			recorded: beyondGrace,
 			want: Decision{
 				ID: TransitionT7, From: StateResolved,
-				OpensEpisode: true, Seq: 2, ReopenOf: occID, DropsAck: true,
+				OpensEpisode: true, Seq: 2, ReopenOf: caseID, DropsAck: true,
 			},
 		},
 
 		// ------------------------------------------------------- nothing to do
 		{
 			name:     "a duplicate resolved on a resolved episode transitions nothing",
-			current:  occurrenceIn(t, StateResolved),
+			current:  caseIn(t, StateResolved),
 			trigger:  TriggerObserveResolved,
 			actor:    ActorIngest,
 			recorded: withinGrace,
@@ -231,7 +231,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:     "the reaper does not expire an episode that has already ended",
-			current:  occurrenceIn(t, StateResolved),
+			current:  caseIn(t, StateResolved),
 			trigger:  TriggerReap,
 			actor:    ActorReaper,
 			recorded: beyondGrace,
@@ -239,7 +239,7 @@ func decideCases(t *testing.T) []decideCase {
 		},
 		{
 			name:     "an expired episode is not suppressible",
-			current:  occurrenceIn(t, StateExpired),
+			current:  caseIn(t, StateExpired),
 			trigger:  TriggerObserveSuppressed,
 			actor:    ActorReconciler,
 			recorded: withinGrace,
@@ -272,8 +272,8 @@ func TestDecide_OpensAnEpisodeExactlyForT1AndT7(t *testing.T) {
 	opening := map[TransitionID]bool{TransitionT1: true, TransitionT7: true}
 
 	for _, r := range transitionTable {
-		assert.Equal(t, opening[r.id], r.opensNewOccurrence,
-			"%s: the table's opensNewOccurrence column disagrees with §B.3", r.id)
+		assert.Equal(t, opening[r.id], r.opensNewCase,
+			"%s: the table's opensNewCase column disagrees with §B.3", r.id)
 	}
 
 	for _, c := range decideCases(t) {
@@ -328,17 +328,17 @@ func TestDecide_AndApply_NeverDisagreeAboutWhichRowRuns(t *testing.T) {
 				if d.ID == TransitionT1 {
 					// Apply refuses to open the first episode, which is the same
 					// verdict said the other way round: opening is the caller's job.
-					requireKind(t, aerr, errs.KindPrecondition, "no_open_occurrence")
+					requireKind(t, aerr, errs.KindPrecondition, "no_open_case")
 					return
 				}
 				require.NoError(t, aerr)
-				assert.True(t, r.OpensNewOccurrence)
+				assert.True(t, r.OpensNewCase)
 				assert.Equal(t, d.ID, r.ID)
 				assert.Equal(t, d.From, r.From)
 				return
 			}
 			require.NoError(t, aerr)
-			assert.False(t, r.OpensNewOccurrence)
+			assert.False(t, r.OpensNewCase)
 			assert.Equal(t, d.ID, r.ID)
 			assert.Equal(t, d.From, r.From)
 		})

@@ -11,7 +11,7 @@
 ## What it observes
 
 `ingest.process_batch`: the asynchronous half, after the 202. This is where alerts become
-occurrences, groups are formed and notifications are minted.
+cases, groups are formed and notifications are minted.
 
 ## What a rise means
 
@@ -30,7 +30,7 @@ crash between commit and completion) and needs no response.
    which is the same work seen by the job runtime and carries the outcome split.
 3. Batch size (see [`oto_ingest_alerts_total`](oto_ingest_alerts_total.md)). A 5 000-alert storm
    batch is *expected* to take seconds.
-4. Postgres contention on `alerts`, `occurrences` and `alert_groups`.
+4. Postgres contention on `alerts`, `cases` and `alert_groups`.
 
 ## What to do
 

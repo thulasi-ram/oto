@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	occID       = uuid.MustParse("018f3a4b-0000-7000-8000-000000000101")
+	caseID      = uuid.MustParse("018f3a4b-0000-7000-8000-000000000101")
 	alertID     = uuid.MustParse("018f3a4b-0000-7000-8000-000000000102")
 	groupIDFix  = uuid.MustParse("018f3a4b-0000-7000-8000-000000000103")
 	eventIDFix  = uuid.MustParse("018f3a4b-0000-7000-8000-000000000104")
@@ -32,10 +32,10 @@ func allTriggers() []Trigger {
 	return []Trigger{TriggerObserveFiring, TriggerObserveSuppressed, TriggerObserveResolved, TriggerReap}
 }
 
-func occurrenceIn(t *testing.T, state State, mut ...func(*OccurrenceParams)) Occurrence {
+func caseIn(t *testing.T, state State, mut ...func(*CaseParams)) Case {
 	t.Helper()
-	p := OccurrenceParams{
-		ID:             occID,
+	p := CaseParams{
+		ID:             caseID,
 		OrgID:          orgA,
 		AlertID:        alertID,
 		GroupID:        groupIDFix,
@@ -60,7 +60,7 @@ func occurrenceIn(t *testing.T, state State, mut ...func(*OccurrenceParams)) Occ
 	for _, m := range mut {
 		m(&p)
 	}
-	o, err := NewOccurrence(p)
+	o, err := NewCase(p)
 	require.NoError(t, err)
 	return o
 }
@@ -148,7 +148,7 @@ func TestNeverFabricateAResolution(t *testing.T) {
 				"only an explicit upstream observation may resolve (%q under %q)", from, tr)
 		}
 	}
-	// And only from an OPEN state: a terminal occurrence cannot be re-resolved.
+	// And only from an OPEN state: a terminal case cannot be re-resolved.
 	assert.False(t, CanTransition(StateResolved, StateResolved, TriggerObserveResolved))
 	assert.False(t, CanTransition(StateExpired, StateResolved, TriggerObserveResolved))
 }
@@ -159,9 +159,9 @@ func TestNeverFabricateAResolution(t *testing.T) {
 func TestExpiredIsNotResolved_NoEdgeBetweenThem(t *testing.T) {
 	for _, tr := range allTriggers() {
 		assert.False(t, CanTransition(StateExpired, StateResolved, tr),
-			"an expired occurrence must never become resolved")
+			"an expired case must never become resolved")
 		assert.False(t, CanTransition(StateResolved, StateExpired, tr),
-			"a resolved occurrence must never become expired")
+			"a resolved case must never become expired")
 	}
 	// `expired` is reachable ONLY by the reaper's trigger.
 	for _, from := range allStates() {
@@ -187,7 +187,7 @@ func TestSuppressedIsOnlyEnteredUnderItsOwnTrigger(t *testing.T) {
 		}
 	}
 	assert.True(t, CanTransition(StateFiring, StateSuppressed, TriggerObserveSuppressed))
-	// Only from firing: a terminal occurrence cannot be suppressed.
+	// Only from firing: a terminal case cannot be suppressed.
 	assert.False(t, CanTransition(StateResolved, StateSuppressed, TriggerObserveSuppressed))
 	assert.False(t, CanTransition(StateExpired, StateSuppressed, TriggerObserveSuppressed))
 	assert.False(t, CanTransition(StateSuppressed, StateSuppressed, TriggerObserveSuppressed))
@@ -197,7 +197,7 @@ func TestNoEdgeReturnsToStateNone(t *testing.T) {
 	for _, from := range allStates() {
 		for _, tr := range allTriggers() {
 			assert.False(t, CanTransition(from, StateNone, tr),
-				"an occurrence never un-happens")
+				"a case never un-happens")
 		}
 	}
 }
@@ -246,7 +246,7 @@ func TestNewTrigger(t *testing.T) {
 // ------------------------------------------------------------- Apply validation
 
 func TestApply_RequiresACompleteCommand(t *testing.T) {
-	o := occurrenceIn(t, StateFiring)
+	o := caseIn(t, StateFiring)
 	good := TransitionCommand{
 		Trigger: TriggerObserveFiring,
 		Actor:   actor(t, ActorIngest),
@@ -279,19 +279,19 @@ func TestApply_IllegalEdgeIsPrecondition(t *testing.T) {
 		trigger Trigger
 		actor   ActorKind
 	}{
-		{name: "suppress a resolved occurrence", state: StateResolved, trigger: TriggerObserveSuppressed, actor: ActorReconciler},
-		{name: "resolve an expired occurrence", state: StateExpired, trigger: TriggerObserveResolved, actor: ActorIngest},
-		{name: "resolve an already resolved occurrence", state: StateResolved, trigger: TriggerObserveResolved, actor: ActorIngest},
-		{name: "reap a resolved occurrence", state: StateResolved, trigger: TriggerReap, actor: ActorReaper},
-		{name: "reap an expired occurrence", state: StateExpired, trigger: TriggerReap, actor: ActorReaper},
-		{name: "suppress an already suppressed occurrence", state: StateSuppressed, trigger: TriggerObserveSuppressed, actor: ActorReconciler},
-		{name: "reap a never-opened occurrence", state: StateNone, trigger: TriggerReap, actor: ActorReaper},
+		{name: "suppress a resolved case", state: StateResolved, trigger: TriggerObserveSuppressed, actor: ActorReconciler},
+		{name: "resolve an expired case", state: StateExpired, trigger: TriggerObserveResolved, actor: ActorIngest},
+		{name: "resolve an already resolved case", state: StateResolved, trigger: TriggerObserveResolved, actor: ActorIngest},
+		{name: "reap a resolved case", state: StateResolved, trigger: TriggerReap, actor: ActorReaper},
+		{name: "reap an expired case", state: StateExpired, trigger: TriggerReap, actor: ActorReaper},
+		{name: "suppress an already suppressed case", state: StateSuppressed, trigger: TriggerObserveSuppressed, actor: ActorReconciler},
+		{name: "reap a never-opened case", state: StateNone, trigger: TriggerReap, actor: ActorReaper},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			o := occurrenceIn(t, tc.state, func(p *OccurrenceParams) {
+			o := caseIn(t, tc.state, func(p *CaseParams) {
 				if tc.state == StateNone {
-					p.State = StateFiring // NewOccurrence requires a real state
+					p.State = StateFiring // NewCase requires a real state
 				}
 			})
 			if tc.state == StateNone {
@@ -338,7 +338,7 @@ func TestApply_WrongActorIsInternal(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			o := occurrenceIn(t, tc.state)
+			o := caseIn(t, tc.state)
 			cmd := TransitionCommand{
 				Trigger: tc.trigger,
 				Actor:   actorOfKind(t, tc.actor),
@@ -364,8 +364,8 @@ func actorOfKind(t *testing.T, k ActorKind) Actor {
 
 // -------------------------------------------------------------------- T1 and T7
 
-func TestApply_T1IsNotAnEdgeOnAnExistingOccurrence(t *testing.T) {
-	o := occurrenceIn(t, StateFiring)
+func TestApply_T1IsNotAnEdgeOnAnExistingCase(t *testing.T) {
+	o := caseIn(t, StateFiring)
 	o.state = StateNone
 
 	_, err := Apply(o, TransitionCommand{
@@ -373,14 +373,14 @@ func TestApply_T1IsNotAnEdgeOnAnExistingOccurrence(t *testing.T) {
 		Actor:   actor(t, ActorIngest),
 		At:      at(t, t0, t0),
 	})
-	requireKind(t, err, errs.KindPrecondition, "no_open_occurrence")
-	assert.Contains(t, err.Error(), "OpenOccurrence")
+	requireKind(t, err, errs.KindPrecondition, "no_open_case")
+	assert.Contains(t, err.Error(), "OpenCase")
 }
 
 // ---------------------------------------------------------------------------- T2
 
 func TestApply_T2_SilentUnlessSomethingMaterialChanged(t *testing.T) {
-	o := occurrenceIn(t, StateFiring)
+	o := caseIn(t, StateFiring)
 	later := t0.Add(30 * time.Second)
 
 	res, err := Apply(o, TransitionCommand{
@@ -395,7 +395,7 @@ func TestApply_T2_SilentUnlessSomethingMaterialChanged(t *testing.T) {
 	assert.Equal(t, StateFiring, res.From)
 	assert.Equal(t, StateFiring, res.To)
 	assert.Empty(t, res.Events, "a repeat observation that changed nothing is silent")
-	assert.Equal(t, later, res.Occurrence.LastObservedAt())
+	assert.Equal(t, later, res.Case.LastObservedAt())
 	assert.Equal(t, DetectedByWebhook, res.DetectedBy)
 	assert.False(t, res.Clamped)
 	assert.Equal(t, o, res.Before, "Before is the pre-image the verdict was reached against")
@@ -403,7 +403,7 @@ func TestApply_T2_SilentUnlessSomethingMaterialChanged(t *testing.T) {
 }
 
 func TestApply_T2_MaterialChangeEmitsAlertMutated(t *testing.T) {
-	o := occurrenceIn(t, StateFiring)
+	o := caseIn(t, StateFiring)
 	later := t0.Add(30 * time.Second)
 
 	res, err := Apply(o, TransitionCommand{
@@ -421,14 +421,14 @@ func TestApply_T2_MaterialChangeEmitsAlertMutated(t *testing.T) {
 	assert.Equal(t, "Alert details changed", ev.Summary())
 	assert.Equal(t, eventIDFix, ev.ID())
 	assert.Equal(t, alertID, ev.AlertID())
-	assert.Equal(t, occID, ev.OccurrenceID())
+	assert.Equal(t, caseID, ev.CaseID())
 	assert.Empty(t, ev.DedupeKey(), "T2 has no §C.8 dedupe key")
 	assert.Equal(t, DetectedByReconciler, res.DetectedBy)
 }
 
 func TestApply_T2_ObservationFieldsAreFoldedInNeverCleared(t *testing.T) {
 	endsAt := t0.Add(10 * time.Minute)
-	o := occurrenceIn(t, StateFiring, func(p *OccurrenceParams) {
+	o := caseIn(t, StateFiring, func(p *CaseParams) {
 		p.SourceEndsAt = endsAt
 		p.SourceUpdatedAt = t0
 	})
@@ -443,9 +443,9 @@ func TestApply_T2_ObservationFieldsAreFoldedInNeverCleared(t *testing.T) {
 		At:      at(t, later, later),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, endsAt, res.Occurrence.SourceEndsAt(), "a zero endsAt means 'unknown', never 'forget'")
-	assert.Equal(t, t0, res.Occurrence.SourceUpdatedAt())
-	assert.Nil(t, res.Occurrence.Value())
+	assert.Equal(t, endsAt, res.Case.SourceEndsAt(), "a zero endsAt means 'unknown', never 'forget'")
+	assert.Equal(t, t0, res.Case.SourceUpdatedAt())
+	assert.Nil(t, res.Case.Value())
 
 	// A payload that DOES supply them moves them.
 	newEnds := t0.Add(20 * time.Minute)
@@ -459,20 +459,20 @@ func TestApply_T2_ObservationFieldsAreFoldedInNeverCleared(t *testing.T) {
 		ObservedSkew:    3 * time.Second,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, newEnds, res.Occurrence.SourceEndsAt())
-	assert.Equal(t, later, res.Occurrence.SourceUpdatedAt())
-	require.NotNil(t, res.Occurrence.Value())
-	assert.Equal(t, 42.5, *res.Occurrence.Value())
-	assert.Equal(t, 3*time.Second, res.Occurrence.ObservedSkew())
+	assert.Equal(t, newEnds, res.Case.SourceEndsAt())
+	assert.Equal(t, later, res.Case.SourceUpdatedAt())
+	require.NotNil(t, res.Case.Value())
+	assert.Equal(t, 42.5, *res.Case.Value())
+	assert.Equal(t, 3*time.Second, res.Case.ObservedSkew())
 }
 
 // ---------------------------------------------------------------------------- T3
 
 func TestApply_T3_SuppressRequiresAReasonAndCountsTheEpisode(t *testing.T) {
-	o := occurrenceIn(t, StateFiring)
+	o := caseIn(t, StateFiring)
 	later := t0.Add(time.Minute)
 
-	// A reason is required: occ_suppress_ck ties it to the state.
+	// A reason is required: case_suppress_ck ties it to the state.
 	_, err := Apply(o, TransitionCommand{
 		Trigger: TriggerObserveSuppressed,
 		Actor:   actor(t, ActorReconciler),
@@ -497,13 +497,13 @@ func TestApply_T3_SuppressRequiresAReasonAndCountsTheEpisode(t *testing.T) {
 
 			assert.Equal(t, TransitionT3, res.ID)
 			assert.Equal(t, StateSuppressed, res.To)
-			assert.Equal(t, reason, res.Occurrence.SuppressionReason())
-			assert.Equal(t, 1, res.Occurrence.SuppressCount(), "a suppression is a COUNTED fact")
-			assert.True(t, res.Occurrence.IsOpen(), "suppressed is an OPEN state, not a terminal one")
+			assert.Equal(t, reason, res.Case.SuppressionReason())
+			assert.Equal(t, 1, res.Case.SuppressCount(), "a suppression is a COUNTED fact")
+			assert.True(t, res.Case.IsOpen(), "suppressed is an OPEN state, not a terminal one")
 
 			require.Len(t, res.Events, 1)
-			assert.Equal(t, EventOccurrenceSuppressed, res.Events[0].Type())
-			assert.Equal(t, "occ:"+occID.String()+":suppressed:1", res.Events[0].DedupeKey(),
+			assert.Equal(t, EventCaseSuppressed, res.Events[0].Type())
+			assert.Equal(t, "case:"+caseID.String()+":suppressed:1", res.Events[0].DedupeKey(),
 				"⛔ T3's dedupe key is a COUNTER, never a clock: two concurrent reconciler passes must mint the same key")
 		})
 	}
@@ -512,7 +512,7 @@ func TestApply_T3_SuppressRequiresAReasonAndCountsTheEpisode(t *testing.T) {
 func TestApply_T3andT4_DedupeKeysPairPerEpisode(t *testing.T) {
 	// One suppression episode: T3 then T4 carry the SAME ordinal, so they read as
 	// the two halves of one period of silence.
-	firing := occurrenceIn(t, StateFiring)
+	firing := caseIn(t, StateFiring)
 	t1 := t0.Add(time.Minute)
 
 	suppressed, err := Apply(firing, TransitionCommand{
@@ -520,26 +520,26 @@ func TestApply_T3andT4_DedupeKeysPairPerEpisode(t *testing.T) {
 		At: at(t, t1, t1), EventID: eventIDFix, SuppressionReason: SuppressionSilence,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "occ:"+occID.String()+":suppressed:1", suppressed.Events[0].DedupeKey())
+	assert.Equal(t, "case:"+caseID.String()+":suppressed:1", suppressed.Events[0].DedupeKey())
 
 	t2 := t0.Add(2 * time.Minute)
-	unsuppressed, err := Apply(suppressed.Occurrence, TransitionCommand{
+	unsuppressed, err := Apply(suppressed.Case, TransitionCommand{
 		Trigger: TriggerObserveFiring, Actor: actor(t, ActorReconciler),
 		At: at(t, t2, t2), EventID: eventIDFix,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "occ:"+occID.String()+":unsuppressed:1", unsuppressed.Events[0].DedupeKey())
-	assert.Equal(t, 1, unsuppressed.Occurrence.SuppressCount(), "T4 leaves the counter alone")
+	assert.Equal(t, "case:"+caseID.String()+":unsuppressed:1", unsuppressed.Events[0].DedupeKey())
+	assert.Equal(t, 1, unsuppressed.Case.SuppressCount(), "T4 leaves the counter alone")
 
 	// A genuine second suppression inside the same episode produces 2, so both
 	// facts are recorded rather than collapsed.
 	t3 := t0.Add(3 * time.Minute)
-	again, err := Apply(unsuppressed.Occurrence, TransitionCommand{
+	again, err := Apply(unsuppressed.Case, TransitionCommand{
 		Trigger: TriggerObserveSuppressed, Actor: actor(t, ActorReconciler),
 		At: at(t, t3, t3), EventID: eventIDFix, SuppressionReason: SuppressionInhibition,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "occ:"+occID.String()+":suppressed:2", again.Events[0].DedupeKey())
+	assert.Equal(t, "case:"+caseID.String()+":suppressed:2", again.Events[0].DedupeKey())
 }
 
 // ---------------------------------------------------------------------------- T4
@@ -557,7 +557,7 @@ func TestApply_T4_IsAsymmetricWithT3(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.actor.String(), func(t *testing.T) {
-			o := occurrenceIn(t, StateSuppressed, func(p *OccurrenceParams) {
+			o := caseIn(t, StateSuppressed, func(p *CaseParams) {
 				p.SuppressCount = 4
 				p.SuppressedBy = SuppressedBy{SilencedBy: []string{"sil-1"}}
 			})
@@ -574,24 +574,24 @@ func TestApply_T4_IsAsymmetricWithT3(t *testing.T) {
 			assert.Equal(t, TransitionT4, res.ID)
 			assert.Equal(t, StateSuppressed, res.From)
 			assert.Equal(t, StateFiring, res.To)
-			assert.True(t, res.Occurrence.SuppressionReason().IsZero(),
+			assert.True(t, res.Case.SuppressionReason().IsZero(),
 				"suppression_reason exists only while suppressed")
-			assert.True(t, res.Occurrence.SuppressedBy().IsZero(),
+			assert.True(t, res.Case.SuppressedBy().IsZero(),
 				"the witnesses are not left behind on an alert that is demonstrably firing")
 			assert.Equal(t, tc.detectedBy, res.DetectedBy)
 
 			require.Len(t, res.Events, 1)
 			ev := res.Events[0]
-			assert.Equal(t, EventOccurrenceUnsuppressed, ev.Type())
+			assert.Equal(t, EventCaseUnsuppressed, ev.Type())
 			assert.Equal(t, tc.detectedBy, ev.Payload()["detected_by"],
 				"the event records WHICH witness proved suppression had ended")
-			assert.Equal(t, "occ:"+occID.String()+":unsuppressed:4", ev.DedupeKey())
+			assert.Equal(t, "case:"+caseID.String()+":unsuppressed:4", ev.DedupeKey())
 		})
 	}
 }
 
 func TestApply_T4_MachineComputedPayloadKeysWinOverTheCallers(t *testing.T) {
-	o := occurrenceIn(t, StateSuppressed)
+	o := caseIn(t, StateSuppressed)
 	later := t0.Add(time.Minute)
 
 	res, err := Apply(o, TransitionCommand{
@@ -614,7 +614,7 @@ func TestApply_T4_MachineComputedPayloadKeysWinOverTheCallers(t *testing.T) {
 func TestApply_T5_ResolvedOnlyFromAnExplicitUpstreamObservation(t *testing.T) {
 	for _, from := range []State{StateFiring, StateSuppressed} {
 		t.Run("from "+from.String(), func(t *testing.T) {
-			o := occurrenceIn(t, from)
+			o := caseIn(t, from)
 			endedAt := t0.Add(5 * time.Minute)
 
 			res, err := Apply(o, TransitionCommand{
@@ -627,17 +627,17 @@ func TestApply_T5_ResolvedOnlyFromAnExplicitUpstreamObservation(t *testing.T) {
 
 			assert.Equal(t, TransitionT5, res.ID)
 			assert.Equal(t, StateResolved, res.To)
-			assert.Equal(t, ResolveUpstream, res.Occurrence.ResolveReason(),
+			assert.Equal(t, ResolveUpstream, res.Case.ResolveReason(),
 				"resolved is bound one-to-one to resolve_reason=upstream")
-			assert.Equal(t, endedAt, res.Occurrence.EndedAt(), "ended_at comes from the UPSTREAM claim")
-			assert.True(t, res.Occurrence.SuppressionReason().IsZero())
-			assert.False(t, res.Occurrence.IsOpen())
+			assert.Equal(t, endedAt, res.Case.EndedAt(), "ended_at comes from the UPSTREAM claim")
+			assert.True(t, res.Case.SuppressionReason().IsZero())
+			assert.False(t, res.Case.IsOpen())
 			assert.False(t, res.Clamped)
 
 			require.Len(t, res.Events, 1)
-			assert.Equal(t, EventOccurrenceResolved, res.Events[0].Type())
-			assert.Equal(t, "Occurrence resolved upstream", res.Events[0].Summary())
-			assert.Equal(t, "occ:"+occID.String()+":resolved", res.Events[0].DedupeKey())
+			assert.Equal(t, EventCaseResolved, res.Events[0].Type())
+			assert.Equal(t, "Case resolved upstream", res.Events[0].Summary())
+			assert.Equal(t, "case:"+caseID.String()+":resolved", res.Events[0].DedupeKey())
 		})
 	}
 }
@@ -646,7 +646,7 @@ func TestApply_T5_ResolvedOnlyFromAnExplicitUpstreamObservation(t *testing.T) {
 // backward-skewed upstream clock is clamped and MEASURED, never a reason to
 // abort the ingest transaction.
 func TestApply_T5_ClampNeverReject(t *testing.T) {
-	o := occurrenceIn(t, StateFiring)
+	o := caseIn(t, StateFiring)
 	skewed := t0.Add(-90 * time.Second) // upstream claims it ended before it started
 
 	res, err := Apply(o, TransitionCommand{
@@ -658,7 +658,7 @@ func TestApply_T5_ClampNeverReject(t *testing.T) {
 	require.NoError(t, err, "a customer's NTP problem must never drop a batch")
 
 	assert.Equal(t, StateResolved, res.To)
-	assert.Equal(t, t0, res.Occurrence.EndedAt(), "ended_at = max(occurred_at, started_at)")
+	assert.Equal(t, t0, res.Case.EndedAt(), "ended_at = max(occurred_at, started_at)")
 	assert.True(t, res.Clamped)
 	assert.Equal(t, 90*time.Second, res.ClampSkew)
 
@@ -677,10 +677,10 @@ func TestApply_T6_ReaperGuard(t *testing.T) {
 	endsAt := t0.Add(time.Minute)
 	reapAt := t0.Add(30 * time.Minute)
 
-	base := func(p *OccurrenceParams) { p.SourceEndsAt = endsAt }
+	base := func(p *CaseParams) { p.SourceEndsAt = endsAt }
 
 	t.Run("blocked while the AlertSource is not healthy", func(t *testing.T) {
-		o := occurrenceIn(t, StateFiring, base)
+		o := caseIn(t, StateFiring, base)
 		_, err := Apply(o, TransitionCommand{
 			Trigger:       TriggerReap,
 			Actor:         actor(t, ActorReaper),
@@ -692,8 +692,8 @@ func TestApply_T6_ReaperGuard(t *testing.T) {
 		assert.Contains(t, err.Error(), "held, never expired")
 	})
 
-	t.Run("an occurrence with no upstream end time cannot expire", func(t *testing.T) {
-		o := occurrenceIn(t, StateFiring)
+	t.Run("a case with no upstream end time cannot expire", func(t *testing.T) {
+		o := caseIn(t, StateFiring)
 		_, err := Apply(o, TransitionCommand{
 			Trigger: TriggerReap, Actor: actor(t, ActorReaper),
 			At: at(t, reapAt, reapAt), EventID: eventIDFix, SourceHealthy: true,
@@ -702,7 +702,7 @@ func TestApply_T6_ReaperGuard(t *testing.T) {
 	})
 
 	t.Run("resolve_grace must have elapsed", func(t *testing.T) {
-		o := occurrenceIn(t, StateFiring, base)
+		o := caseIn(t, StateFiring, base)
 		// endsAt + default 5m grace = t0+6m. Exactly at the boundary is NOT after.
 		boundary := endsAt.Add(DefaultResolveGrace)
 		_, err := Apply(o, TransitionCommand{
@@ -721,7 +721,7 @@ func TestApply_T6_ReaperGuard(t *testing.T) {
 	})
 
 	t.Run("a configured resolve_grace overrides the default", func(t *testing.T) {
-		o := occurrenceIn(t, StateFiring, base)
+		o := caseIn(t, StateFiring, base)
 		when := endsAt.Add(20 * time.Minute)
 		_, err := Apply(o, TransitionCommand{
 			Trigger: TriggerReap, Actor: actor(t, ActorReaper),
@@ -733,7 +733,7 @@ func TestApply_T6_ReaperGuard(t *testing.T) {
 
 	for _, from := range []State{StateFiring, StateSuppressed} {
 		t.Run("expires from "+from.String(), func(t *testing.T) {
-			o := occurrenceIn(t, from, base)
+			o := caseIn(t, from, base)
 			res, err := Apply(o, TransitionCommand{
 				Trigger: TriggerReap, Actor: actor(t, ActorReaper),
 				At: at(t, reapAt, reapAt), EventID: eventIDFix, SourceHealthy: true,
@@ -742,18 +742,18 @@ func TestApply_T6_ReaperGuard(t *testing.T) {
 
 			assert.Equal(t, TransitionT6, res.ID)
 			assert.Equal(t, StateExpired, res.To)
-			assert.Equal(t, ResolveTimeout, res.Occurrence.ResolveReason(),
+			assert.Equal(t, ResolveTimeout, res.Case.ResolveReason(),
 				"expired is bound one-to-one to resolve_reason=timeout — never `upstream`")
-			assert.NotEqual(t, ResolveUpstream, res.Occurrence.ResolveReason())
-			assert.Equal(t, reapAt, res.Occurrence.EndedAt(), "expiry is stamped with OTO's clock")
-			assert.True(t, res.Occurrence.SuppressionReason().IsZero())
+			assert.NotEqual(t, ResolveUpstream, res.Case.ResolveReason())
+			assert.Equal(t, reapAt, res.Case.EndedAt(), "expiry is stamped with OTO's clock")
+			assert.True(t, res.Case.SuppressionReason().IsZero())
 
 			require.Len(t, res.Events, 1)
-			assert.Equal(t, EventOccurrenceExpired, res.Events[0].Type())
-			assert.Equal(t, "Occurrence expired: oto stopped hearing about it", res.Events[0].Summary(),
+			assert.Equal(t, EventCaseExpired, res.Events[0].Type())
+			assert.Equal(t, "Case expired: oto stopped hearing about it", res.Events[0].Summary(),
 				"the timeline never claims a resolution it did not observe")
 			assert.NotContains(t, strings.ToLower(res.Events[0].Summary()), "resolved")
-			assert.Equal(t, "occ:"+occID.String()+":expired", res.Events[0].DedupeKey())
+			assert.Equal(t, "case:"+caseID.String()+":expired", res.Events[0].DedupeKey())
 		})
 	}
 }
@@ -782,7 +782,7 @@ func TestApply_T7vsT8_RefireGrace(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			o := occurrenceIn(t, tc.from, func(p *OccurrenceParams) { p.EndedAt = endedAt })
+			o := caseIn(t, tc.from, func(p *CaseParams) { p.EndedAt = endedAt })
 
 			res, err := Apply(o, TransitionCommand{
 				Trigger:     TriggerObserveFiring,
@@ -795,27 +795,27 @@ func TestApply_T7vsT8_RefireGrace(t *testing.T) {
 
 			assert.Equal(t, tc.wantID, res.ID)
 			assert.Equal(t, StateFiring, res.To)
-			assert.Equal(t, tc.wantNew, res.OpensNewOccurrence)
+			assert.Equal(t, tc.wantNew, res.OpensNewCase)
 
 			if tc.wantNew {
-				// T7 leaves the terminal occurrence UNTOUCHED: it opens a new
+				// T7 leaves the terminal case UNTOUCHED: it opens a new
 				// episode, it does not revive an old one.
-				assert.Equal(t, o, res.Occurrence)
-				assert.Equal(t, tc.from, res.Occurrence.State())
-				assert.Equal(t, endedAt, res.Occurrence.EndedAt())
-				assert.Empty(t, res.Events, "the `occurrence.opened` event comes from OpenNewOccurrence")
+				assert.Equal(t, o, res.Case)
+				assert.Equal(t, tc.from, res.Case.State())
+				assert.Equal(t, endedAt, res.Case.EndedAt())
+				assert.Empty(t, res.Events, "the `case.opened` event comes from OpenNewCase")
 				return
 			}
 
-			assert.Equal(t, StateFiring, res.Occurrence.State())
-			assert.True(t, res.Occurrence.EndedAt().IsZero(), "a reopen CLEARS ended_at")
-			assert.True(t, res.Occurrence.ResolveReason().IsZero())
-			assert.Equal(t, 1, res.Occurrence.ReopenCount())
-			assert.Equal(t, occID, res.Occurrence.ID(), "T8 reuses the SAME occurrence and its Slack thread")
+			assert.Equal(t, StateFiring, res.Case.State())
+			assert.True(t, res.Case.EndedAt().IsZero(), "a reopen CLEARS ended_at")
+			assert.True(t, res.Case.ResolveReason().IsZero())
+			assert.Equal(t, 1, res.Case.ReopenCount())
+			assert.Equal(t, caseID, res.Case.ID(), "T8 reuses the SAME case and its Slack thread")
 
 			require.Len(t, res.Events, 1)
-			assert.Equal(t, EventOccurrenceReopened, res.Events[0].Type())
-			assert.Equal(t, "occ:"+occID.String()+":reopened:1", res.Events[0].DedupeKey())
+			assert.Equal(t, EventCaseReopened, res.Events[0].Type())
+			assert.Equal(t, "case:"+caseID.String()+":reopened:1", res.Events[0].DedupeKey())
 		})
 	}
 }
@@ -832,7 +832,7 @@ func TestApply_T7_SetsDetectedBy_BUG(t *testing.T) {
 	// Regression: T7 returned early from Apply without DetectedBy, leaving the
 	// field empty on the one edge that opens a new episode.
 
-	o := occurrenceIn(t, StateResolved, func(p *OccurrenceParams) { p.EndedAt = t0.Add(time.Minute) })
+	o := caseIn(t, StateResolved, func(p *CaseParams) { p.EndedAt = t0.Add(time.Minute) })
 	refire := t0.Add(2 * time.Hour)
 
 	res, err := Apply(o, TransitionCommand{
@@ -846,11 +846,11 @@ func TestApply_T7_SetsDetectedBy_BUG(t *testing.T) {
 	assert.Equal(t, DetectedByWebhook, res.DetectedBy)
 }
 
-// -------------------------------------------------------------- OpenNewOccurrence
+// -------------------------------------------------------------- OpenNewCase
 
-func TestOpenNewOccurrence(t *testing.T) {
-	p := OpenOccurrenceParams{
-		ID:      occID,
+func TestOpenNewCase(t *testing.T) {
+	p := OpenCaseParams{
+		ID:      caseID,
 		OrgID:   orgA,
 		AlertID: alertID,
 		GroupID: groupIDFix,
@@ -860,11 +860,11 @@ func TestOpenNewOccurrence(t *testing.T) {
 		EventID: eventIDFix,
 	}
 
-	o, events, err := OpenNewOccurrence(p)
+	o, events, err := OpenNewCase(p)
 	require.NoError(t, err)
 
 	assert.Equal(t, StateFiring, o.State())
-	assert.Equal(t, AckStateUnacked, o.AckState(), "a new occurrence always starts unacked (T10)")
+	assert.Equal(t, AckStateUnacked, o.AckState(), "a new case always starts unacked (T10)")
 	assert.Equal(t, t0, o.StartedAt(), "started_at is OTO's clock")
 	assert.Equal(t, t0, o.LastObservedAt())
 	assert.Equal(t, t0.Add(-time.Minute), o.SourceStartsAt(),
@@ -874,14 +874,14 @@ func TestOpenNewOccurrence(t *testing.T) {
 	assert.Equal(t, 1, o.StateVersion())
 
 	require.Len(t, events, 1)
-	assert.Equal(t, EventOccurrenceOpened, events[0].Type())
-	assert.Equal(t, "Occurrence opened", events[0].Summary())
-	assert.Equal(t, "occ:"+occID.String()+":opened", events[0].DedupeKey())
+	assert.Equal(t, EventCaseOpened, events[0].Type())
+	assert.Equal(t, "Case opened", events[0].Summary())
+	assert.Equal(t, "case:"+caseID.String()+":opened", events[0].DedupeKey())
 }
 
-func TestOpenNewOccurrence_T7CarriesReopenOf(t *testing.T) {
-	o, events, err := OpenNewOccurrence(OpenOccurrenceParams{
-		ID: occID, OrgID: orgA, AlertID: alertID, Seq: 2,
+func TestOpenNewCase_T7CarriesReopenOf(t *testing.T) {
+	o, events, err := OpenNewCase(OpenCaseParams{
+		ID: caseID, OrgID: orgA, AlertID: alertID, Seq: 2,
 		Actor: actor(t, ActorIngest), At: at(t, t0, t0), EventID: eventIDFix,
 		ReopenOf: prevOccID,
 	})
@@ -890,35 +890,35 @@ func TestOpenNewOccurrence_T7CarriesReopenOf(t *testing.T) {
 	assert.Equal(t, prevOccID, o.ReopenOf())
 	assert.Equal(t, 2, o.Seq())
 	require.Len(t, events, 1)
-	assert.Equal(t, EventOccurrenceOpened, events[0].Type(), "T7 still appends `occurrence.opened`")
-	assert.Equal(t, "Occurrence opened", events[0].Summary())
+	assert.Equal(t, EventCaseOpened, events[0].Type(), "T7 still appends `case.opened`")
+	assert.Equal(t, "Case opened", events[0].Summary())
 }
 
-func TestOpenNewOccurrence_Rejects(t *testing.T) {
-	good := OpenOccurrenceParams{
-		ID: occID, OrgID: orgA, AlertID: alertID, Seq: 1,
+func TestOpenNewCase_Rejects(t *testing.T) {
+	good := OpenCaseParams{
+		ID: caseID, OrgID: orgA, AlertID: alertID, Seq: 1,
 		Actor: actor(t, ActorIngest), At: at(t, t0, t0), EventID: eventIDFix,
 	}
 
 	tests := []struct {
 		name string
-		mut  func(*OpenOccurrenceParams)
+		mut  func(*OpenCaseParams)
 		kind errs.Kind
 		code string
 	}{
-		{name: "no actor", mut: func(p *OpenOccurrenceParams) { p.Actor = Actor{} }, kind: errs.KindValidation, code: "required"},
-		{name: "no observation time", mut: func(p *OpenOccurrenceParams) { p.At = ObservationTime{} }, kind: errs.KindValidation, code: "required"},
-		{name: "the reaper may not open", mut: func(p *OpenOccurrenceParams) { p.Actor = actor(t, ActorReaper) }, kind: errs.KindInternal, code: "wrong_actor"},
-		{name: "a human may not open", mut: func(p *OpenOccurrenceParams) { p.Actor = humanActor(t, uuid.New().String(), "Ram") }, kind: errs.KindInternal, code: "wrong_actor"},
-		{name: "the notifier may not open", mut: func(p *OpenOccurrenceParams) { p.Actor = actor(t, ActorNotifier) }, kind: errs.KindInternal, code: "wrong_actor"},
-		{name: "seq below 1", mut: func(p *OpenOccurrenceParams) { p.Seq = 0 }, kind: errs.KindValidation, code: "min"},
-		{name: "cannot reopen itself", mut: func(p *OpenOccurrenceParams) { p.ReopenOf = occID }, kind: errs.KindValidation, code: "field_order"},
+		{name: "no actor", mut: func(p *OpenCaseParams) { p.Actor = Actor{} }, kind: errs.KindValidation, code: "required"},
+		{name: "no observation time", mut: func(p *OpenCaseParams) { p.At = ObservationTime{} }, kind: errs.KindValidation, code: "required"},
+		{name: "the reaper may not open", mut: func(p *OpenCaseParams) { p.Actor = actor(t, ActorReaper) }, kind: errs.KindInternal, code: "wrong_actor"},
+		{name: "a human may not open", mut: func(p *OpenCaseParams) { p.Actor = humanActor(t, uuid.New().String(), "Ram") }, kind: errs.KindInternal, code: "wrong_actor"},
+		{name: "the notifier may not open", mut: func(p *OpenCaseParams) { p.Actor = actor(t, ActorNotifier) }, kind: errs.KindInternal, code: "wrong_actor"},
+		{name: "seq below 1", mut: func(p *OpenCaseParams) { p.Seq = 0 }, kind: errs.KindValidation, code: "min"},
+		{name: "cannot reopen itself", mut: func(p *OpenCaseParams) { p.ReopenOf = caseID }, kind: errs.KindValidation, code: "field_order"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p := good
 			tc.mut(&p)
-			_, _, err := OpenNewOccurrence(p)
+			_, _, err := OpenNewCase(p)
 			requireKind(t, err, tc.kind, tc.code)
 		})
 	}
@@ -931,7 +931,7 @@ func TestOpenNewOccurrence_Rejects(t *testing.T) {
 func TestAcknowledge_AnAckedAlertIsStillFiring(t *testing.T) {
 	for _, from := range []State{StateFiring, StateSuppressed} {
 		t.Run("from "+from.String(), func(t *testing.T) {
-			o := occurrenceIn(t, from)
+			o := caseIn(t, from)
 			ackAt := t0.Add(time.Minute)
 			userID := uuid.New()
 
@@ -955,7 +955,7 @@ func TestAcknowledge_AnAckedAlertIsStillFiring(t *testing.T) {
 				"ack never touches the suppression axis")
 
 			require.Len(t, events, 1)
-			assert.Equal(t, EventOccurrenceAcknowledged, events[0].Type())
+			assert.Equal(t, EventCaseAcknowledged, events[0].Type())
 			assert.Equal(t, "Acknowledged by Ram", events[0].Summary())
 			assert.Contains(t, events[0].DedupeKey(), ":acknowledged:")
 		})
@@ -966,7 +966,7 @@ func TestAcknowledge_Rejects(t *testing.T) {
 	tests := []struct {
 		name  string
 		state State
-		mut   func(*OccurrenceParams)
+		mut   func(*CaseParams)
 		cmd   func(*AckCommand)
 		kind  errs.Kind
 		code  string
@@ -987,16 +987,16 @@ func TestAcknowledge_Rejects(t *testing.T) {
 			kind: errs.KindValidation, code: "required",
 		},
 		{
-			name: "a resolved occurrence cannot be acknowledged", state: StateResolved,
-			kind: errs.KindPrecondition, code: "occurrence_terminal",
+			name: "a resolved case cannot be acknowledged", state: StateResolved,
+			kind: errs.KindPrecondition, code: "case_terminal",
 		},
 		{
-			name: "an expired occurrence cannot be acknowledged", state: StateExpired,
-			kind: errs.KindPrecondition, code: "occurrence_terminal",
+			name: "an expired case cannot be acknowledged", state: StateExpired,
+			kind: errs.KindPrecondition, code: "case_terminal",
 		},
 		{
 			name: "already acked", state: StateFiring,
-			mut: func(p *OccurrenceParams) {
+			mut: func(p *CaseParams) {
 				p.AckState = AckStateAcked
 				p.AckedAt = t0
 				p.AckedByLabel = "Someone"
@@ -1011,11 +1011,11 @@ func TestAcknowledge_Rejects(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var muts []func(*OccurrenceParams)
+			var muts []func(*CaseParams)
 			if tc.mut != nil {
 				muts = append(muts, tc.mut)
 			}
-			o := occurrenceIn(t, tc.state, muts...)
+			o := caseIn(t, tc.state, muts...)
 			cmd := AckCommand{
 				Actor:   humanActor(t, uuid.New().String(), "Ram"),
 				At:      at(t, t0.Add(time.Minute), t0.Add(time.Minute)),
@@ -1031,20 +1031,20 @@ func TestAcknowledge_Rejects(t *testing.T) {
 }
 
 func TestAcknowledge_AckedAtIsClampedToStartedAt(t *testing.T) {
-	o := occurrenceIn(t, StateFiring)
+	o := caseIn(t, StateFiring)
 	next, _, err := o.Acknowledge(AckCommand{
 		Actor:   humanActor(t, uuid.New().String(), "Ram"),
 		At:      at(t, t0.Add(-time.Hour), t0.Add(-time.Hour)),
 		EventID: eventIDFix,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, t0, next.AckedAt(), "occ_ackorder_ck: acked_at >= started_at")
+	assert.Equal(t, t0, next.AckedAt(), "case_ackorder_ck: acked_at >= started_at")
 }
 
 func TestAcknowledge_NonUUIDActorIDLeavesAckedByNil(t *testing.T) {
-	// A Slack user id is carried on the event's actor_id, not on the occurrence's
+	// A Slack user id is carried on the event's actor_id, not on the case's
 	// FK column.
-	o := occurrenceIn(t, StateFiring)
+	o := caseIn(t, StateFiring)
 	slack, err := NewActor(ActorSlack, "U012ABCDEF", "ram")
 	require.NoError(t, err)
 
@@ -1058,8 +1058,8 @@ func TestAcknowledge_NonUUIDActorIDLeavesAckedByNil(t *testing.T) {
 }
 
 func TestUnacknowledge(t *testing.T) {
-	acked := func(t *testing.T) Occurrence {
-		return occurrenceIn(t, StateFiring, func(p *OccurrenceParams) {
+	acked := func(t *testing.T) Case {
+		return caseIn(t, StateFiring, func(p *CaseParams) {
 			p.AckState = AckStateAcked
 			p.AckedAt = t0
 			p.AckedBy = uuid.New()
@@ -1085,7 +1085,7 @@ func TestUnacknowledge(t *testing.T) {
 		assert.Equal(t, StateFiring, next.State(), "un-acking does not move the state either")
 
 		require.Len(t, events, 1)
-		assert.Equal(t, EventOccurrenceUnacknowledged, events[0].Type())
+		assert.Equal(t, EventCaseUnacknowledged, events[0].Type())
 		assert.Equal(t, UnackReasonManual, events[0].Payload()["reason"])
 		assert.Equal(t, "Acknowledgement removed (manual)", events[0].Summary())
 	})
@@ -1100,30 +1100,30 @@ func TestUnacknowledge(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "Un-acking, it's back", events[0].Payload()["note"],
-			"the occurrence has nowhere left to keep it: ack_note is cleared")
+			"the case has nowhere left to keep it: ack_note is cleared")
 	})
 
-	t.Run("new_occurrence is machine-driven", func(t *testing.T) {
+	t.Run("new_case is machine-driven", func(t *testing.T) {
 		o := acked(t)
 		_, events, err := o.Unacknowledge(AckCommand{
 			Actor:   actor(t, ActorSystem),
 			At:      at(t, t0, t0),
 			EventID: eventIDFix,
-			Reason:  UnackReasonNewOccurrence,
+			Reason:  UnackReasonNewCase,
 		})
 		require.NoError(t, err)
-		assert.Equal(t, UnackReasonNewOccurrence, events[0].Payload()["reason"])
+		assert.Equal(t, UnackReasonNewCase, events[0].Payload()["reason"])
 	})
 
 	t.Run("rejects", func(t *testing.T) {
 		for _, tc := range []struct {
 			name string
-			o    func(*testing.T) Occurrence
+			o    func(*testing.T) Case
 			cmd  func(*AckCommand)
 			kind errs.Kind
 			code string
 		}{
-			{name: "not acked", o: func(t *testing.T) Occurrence { return occurrenceIn(t, StateFiring) },
+			{name: "not acked", o: func(t *testing.T) Case { return caseIn(t, StateFiring) },
 				kind: errs.KindPrecondition, code: "not_acked"},
 			{name: "no actor", o: acked, cmd: func(c *AckCommand) { c.Actor = Actor{} },
 				kind: errs.KindValidation, code: "required"},
@@ -1167,7 +1167,7 @@ func TestApply_NeverLeavesTheClosedStateSet(t *testing.T) {
 	for _, from := range []State{StateFiring, StateSuppressed, StateResolved, StateExpired} {
 		for _, tr := range allTriggers() {
 			for _, ak := range actors {
-				o := occurrenceIn(t, from, func(p *OccurrenceParams) {
+				o := caseIn(t, from, func(p *CaseParams) {
 					p.SourceEndsAt = t0.Add(time.Minute)
 				})
 				when := t0.Add(time.Hour)
@@ -1192,13 +1192,13 @@ func TestApply_NeverLeavesTheClosedStateSet(t *testing.T) {
 				assert.True(t, ok, "Apply produced state %q from %q under %q/%q", res.To, from, tr, ak)
 				assert.Equal(t, from, res.From)
 				assert.Equal(t, o, res.Before)
-				if res.OpensNewOccurrence {
-					// T7 leaves the terminal occurrence alone; `To` describes the
+				if res.OpensNewCase {
+					// T7 leaves the terminal case alone; `To` describes the
 					// NEW episode the caller must open.
-					assert.Equal(t, from, res.Occurrence.State())
+					assert.Equal(t, from, res.Case.State())
 					continue
 				}
-				assert.Equal(t, res.To, res.Occurrence.State())
+				assert.Equal(t, res.To, res.Case.State())
 			}
 		}
 	}
@@ -1269,7 +1269,7 @@ func TestLifecycleDefaults(t *testing.T) {
 	//
 	// 20m, not the 10m this test used to transcribe: `refire_grace` is
 	// `for + group_interval` for the MODAL real rule, 15m + 5m (ADR 0026). The
-	// clock starts at the occurrence's `ended_at`, which T5 takes from the
+	// clock starts at the case's `ended_at`, which T5 takes from the
 	// UPSTREAM `EndsAt`, so a re-fire has to pay the rule's whole `for:` dwell
 	// again INSIDE the window and Alertmanager then batches on top. At 10m the T8
 	// reopen was unreachable for 76% of a 155-rule corpus: every re-fire took T7
@@ -1277,7 +1277,7 @@ func TestLifecycleDefaults(t *testing.T) {
 	assert.Equal(t, 20*time.Minute, DefaultRefireGrace)
 	// `resolve_grace` was NOT part of that derivation and did not move. It answers
 	// a different question — how long past `source_ends_at` the reaper waits
-	// before an occurrence may expire (§B.4) — and shares no arithmetic with the
+	// before a case may expire (§B.4) — and shares no arithmetic with the
 	// re-fire window.
 	assert.Equal(t, 5*time.Minute, DefaultResolveGrace)
 }

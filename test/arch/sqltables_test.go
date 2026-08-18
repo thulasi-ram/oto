@@ -26,7 +26,7 @@ import (
 // `platform` internal packages and both are its own. Every guard oto has —
 // depguard's per-module blocks, `arch_test.go`'s direction check, §4's arrows —
 // reads the Go import graph, so all of them are blind to `drill` by construction,
-// while its repository reads thirteen tables belonging to six other modules and
+// while its repository reads twelve tables belonging to six other modules and
 // deletes rows from four of them.
 //
 // ⛔ THE PORTS ARE THE WRONG FIX HERE, AND THAT IS A DECISION, NOT AN OMISSION.
@@ -109,7 +109,7 @@ type tableClaim struct {
 
 // drillTableClaims IS the table list in CONTEXT.md §4's `drill` row.
 //
-// Thirteen tables across six modules, plus the one `drill` owns. The reads are
+// Twelve tables across six modules, plus the one `drill` owns. The reads are
 // ordered as `Artifacts` walks them, which is the order of the pipeline itself:
 // accept, identify, group, notify, deliver.
 var drillTableClaims = []tableClaim{
@@ -132,8 +132,8 @@ var drillTableClaims = []tableClaim{
 			"the drill recorded, `AND synthetic` (ADR 0024 carve-out).",
 	},
 	{
-		table: "alert_occurrences", owner: "alerts", access: tableRead,
-		why: "stage 3 is the occurrence the Alert opened. Not deleted directly — the " +
+		table: "alert_cases", owner: "alerts", access: tableRead,
+		why: "stage 3 is the case the Alert opened. Not deleted directly — the " +
 			"`alerts` delete CASCADEs to it.",
 	},
 	{
@@ -144,20 +144,16 @@ var drillTableClaims = []tableClaim{
 	},
 	{
 		table: "rule_snapshots", owner: "rules", access: tableRead,
-		why: "LEFT JOINed onto the occurrence for the rule name, so a drill can tell " +
+		why: "LEFT JOINed onto the case for the rule name, so a drill can tell " +
 			"`no rule matched` from `the source has no Prometheus to look one up in`.",
 	},
 	{
 		table: "alert_groups", owner: "grouping", access: tableDelete,
 		why: "stage 4 is the group the Alert landed in. Deleted on disposal by id, " +
-			"`AND synthetic`; the CASCADE from here is what removes `alert_group_members`, " +
-			"`notifications` and `notification_deliveries`.",
-	},
-	{
-		table: "alert_group_members", owner: "grouping", access: tableRead,
-		why: "membership IS how the group is found, so the join proves the group " +
-			"resolved AND that the Alert joined it — two stages a drill must not merge. " +
-			"Removed by the `alert_groups` CASCADE, never by hand.",
+			"`AND synthetic`; the CASCADE from here is what removes `notifications` and " +
+			"`notification_deliveries`. Membership is NOT removed by it: since 00051 " +
+			"membership is `alert_cases.group_id`, whose FK is ON DELETE SET NULL, " +
+			"and the episodes go with the alert one step later.",
 	},
 	{
 		table: "notifications", owner: "notification", access: tableRead,
@@ -217,7 +213,7 @@ type sqlTableRef struct {
 // `"channels"` the error code and `"orgs"` the log field, which is noise in the
 // thousands and would get the gate deleted. Requiring FROM/JOIN/INTO/UPDATE in front
 // of the name, and requiring the name to be a table the migrations actually create,
-// found `drill`'s fourteen and nothing else.
+// found `drill`'s thirteen and nothing else.
 //
 // The two-word forms come first because Go's regexp prefers the earliest alternative
 // at the leftmost match, so `DELETE FROM alerts` classifies as a delete rather than
@@ -464,7 +460,7 @@ func TestSQLTableGateFires(t *testing.T) {
 	// THE NEW TABLE: a module reaching for something nobody declared.
 	write("drill/repository/new.go", "SELECT * FROM alert_snoozes WHERE org_id = $1")
 	// THE WIDENED DELETE: the table IS declared, for reads. The delete is not.
-	write("drill/repository/widen.go", "DELETE FROM alert_occurrences WHERE org_id = $1 AND id = $2")
+	write("drill/repository/widen.go", "DELETE FROM alert_cases WHERE org_id = $1 AND id = $2")
 	// Declared and within its claim — the negative case that catches an over-broad fix.
 	write("drill/repository/ok.go", "SELECT id FROM alerts WHERE org_id = $1")
 	// Not SQL position. A schema table name in a route or an error code is not a
@@ -474,7 +470,7 @@ func TestSQLTableGateFires(t *testing.T) {
 	write("drill/repository/x_test.go", "DELETE FROM notification_policies WHERE org_id = $1")
 
 	schema := map[string]bool{
-		"alerts": true, "alert_occurrences": true, "alert_snoozes": true,
+		"alerts": true, "alert_cases": true, "alert_snoozes": true,
 		"notification_policies": true, "orgs": true, "channels": true,
 	}
 	refs := scanSQLTableRefs(t, root, schema)
@@ -488,13 +484,13 @@ func TestSQLTableGateFires(t *testing.T) {
 	}
 
 	if len(refs) != 3 {
-		t.Fatalf("expected 3 refs (alert_snoozes, alert_occurrences, alerts), got %d: %v",
+		t.Fatalf("expected 3 refs (alert_snoozes, alert_cases, alerts), got %d: %v",
 			len(refs), refs)
 	}
 	for table, want := range map[string]sqlTableAccess{
-		"alert_snoozes":     tableRead,
-		"alert_occurrences": tableDelete,
-		"alerts":            tableRead,
+		"alert_snoozes": tableRead,
+		"alert_cases":   tableDelete,
+		"alerts":        tableRead,
 	} {
 		r, ok := got[table]
 		if !ok {
@@ -519,8 +515,8 @@ func TestSQLTableGateFires(t *testing.T) {
 	if _, ok := claims["alert_snoozes"]; ok {
 		t.Error("alert_snoozes is claimed; pick a table the real list does not carry")
 	}
-	if c := claims["alert_occurrences"]; c.access >= tableDelete {
-		t.Error("alert_occurrences is claimed for delete; the widened-delete case proves nothing")
+	if c := claims["alert_cases"]; c.access >= tableDelete {
+		t.Error("alert_cases is claimed for delete; the widened-delete case proves nothing")
 	}
 }
 

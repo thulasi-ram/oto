@@ -78,11 +78,10 @@ func alertDTO(a alertdomain.Alert, snooze *alertdomain.Snooze) AlertDTO {
 		Annotations:       emptyMap(a.Annotations().Map()),
 		GeneratorURL:      strPtr(a.GeneratorURL()),
 		State:             a.State().String(),
-		AckState:          a.AckState().String(),
 		FirstSeenAt:       utc(a.FirstSeenAt()),
 		LastSeenAt:        utc(a.LastSeenAt()),
 		LastStateChangeAt: utc(a.LastStateChangeAt()),
-		TotalOccurrences:  int32(a.TotalOccurrences()),
+		TotalCases:        int32(a.TotalCases()),
 		FlapScore:         a.FlapScore(),
 		IsFlapping:        a.IsFlapping(),
 		Synthetic:         a.Synthetic(),
@@ -109,25 +108,24 @@ func alertRefDTO(a alertdomain.Alert) AlertRefDTO {
 		Namespace:  strPtr(a.Namespace()),
 		ClusterKey: a.ClusterKey().String(),
 		State:      a.State().String(),
-		AckState:   a.AckState().String(),
 	}
 }
 
 func eventDTO(e alertdomain.Event) AlertEventDTO {
 	actor := e.Actor()
 	return AlertEventDTO{
-		ID:           e.ID(),
-		AlertID:      idPtr(e.AlertID()),
-		OccurrenceID: idPtr(e.OccurrenceID()),
-		GroupID:      idPtr(e.GroupID()),
-		Type:         e.Type().String(),
-		OccurredAt:   utc(e.OccurredAt()),
-		RecordedAt:   utc(e.RecordedAt()),
-		ActorKind:    actor.Kind().String(),
-		ActorID:      strPtr(actor.ID()),
-		ActorLabel:   strPtr(actor.Label()),
-		Summary:      e.Summary(),
-		Payload:      e.Payload(),
+		ID:         e.ID(),
+		AlertID:    idPtr(e.AlertID()),
+		CaseID:     idPtr(e.CaseID()),
+		GroupID:    idPtr(e.GroupID()),
+		Type:       e.Type().String(),
+		OccurredAt: utc(e.OccurredAt()),
+		RecordedAt: utc(e.RecordedAt()),
+		ActorKind:  actor.Kind().String(),
+		ActorID:    strPtr(actor.ID()),
+		ActorLabel: strPtr(actor.Label()),
+		Summary:    e.Summary(),
+		Payload:    e.Payload(),
 	}
 }
 

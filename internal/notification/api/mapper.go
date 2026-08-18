@@ -62,7 +62,7 @@ func notificationDTO(n domain.Notification, summary *DeliverySummaryDTO) Notific
 		SubjectID:       n.SubjectID,
 		GroupID:         n.GroupID,
 		AlertID:         n.AlertID,
-		OccurrenceID:    n.OccurrenceID,
+		CaseID:          n.CaseID,
 		Reason:          string(n.Reason),
 		PolicyID:        n.PolicyID,
 		StateVersion:    int32(n.StateVersion), //nolint:gosec // bounded by notifications_sver_ck

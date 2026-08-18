@@ -81,7 +81,7 @@ type SlackCard struct {
 // card is posted, replied to, amended, broadcast, and finally closed.
 //
 // ⛔ THERE IS NO "SNOOZED" CARD, AND ITS ABSENCE IS THE ANSWER TO A QUESTION.
-// oto has snoozes (`alerts.snoozed_until`, the expiry sweep in
+// oto has snoozes (the `alert_snoozes` row, the expiry sweep in
 // `internal/app/workers.go`) but the Slack renderer has no `snoozed` Reason and
 // no `snoozed` CardState. What reaches a channel when a signal is quietened is
 // the SUPPRESSED card — `CardSuppressed`, "Silenced", `#dddddd` — which is
@@ -207,8 +207,8 @@ func baseView() *chdomain.NotificationView {
 				GeneratorURL: "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1",
 				State:        "firing", AckState: "unacked",
 				FirstSeenAt: cardOtoFirstSeen, LastSeenAt: cardUpstreamStart.Add(80 * time.Second),
-				TotalOccurrences: 1,
-				Value:            f64(0.114),
+				TotalCases: 1,
+				Value:      f64(0.114),
 			},
 			{
 				ID: "a2", AlertKey: "ak_2", AlertName: "CheckoutErrorRateHigh",
@@ -219,11 +219,11 @@ func baseView() *chdomain.NotificationView {
 				},
 				State: "firing", AckState: "unacked",
 				FirstSeenAt: cardOtoFirstSeen, LastSeenAt: cardUpstreamStart.Add(80 * time.Second),
-				TotalOccurrences: 1,
-				Value:            f64(0.092),
+				TotalCases: 1,
+				Value:      f64(0.092),
 			},
 		},
-		Occurrence: &chdomain.OccurrenceView{
+		Case: &chdomain.CaseView{
 			ID: "occ1", Seq: 1, State: "firing", AckState: "unacked",
 			StartedAt: cardUpstreamStart,
 		},
@@ -274,10 +274,10 @@ func ackedView() *chdomain.NotificationView {
 	v.Group.AckedCount = 2
 	v.Group.LastActivityAt = cardAckedAt
 	v.Actor = &chdomain.ActorView{Kind: "slack_user", ID: "U0123456789", Label: "ram"}
-	v.Occurrence.AckState = "acked"
-	v.Occurrence.AckedAt = tp(cardAckedAt)
-	v.Occurrence.AckedByLabel = "ram@example.com"
-	v.Occurrence.AckNote = "Looking at it — provider side, escalating to their support."
+	v.Case.AckState = "acked"
+	v.Case.AckedAt = tp(cardAckedAt)
+	v.Case.AckedByLabel = "ram@example.com"
+	v.Case.AckNote = "Looking at it — provider side, escalating to their support."
 	v.Alerts[0].AckState = "acked"
 	v.Alerts[1].AckState = "acked"
 	v.Previous = &chdomain.PreviousState{State: "firing", AckState: "unacked"}
@@ -309,7 +309,7 @@ func resolvedCardView() *chdomain.NotificationView {
 	// nobody resolves an alert in oto — the signal stopped, which is the whole of
 	// §B.2. Inheriting the ack's actor here modelled a card production cannot
 	// produce, and it hid the very confusion this corpus exists to expose: the
-	// receipt's Acknowledged field must name the acker from the occurrence's own
+	// receipt's Acknowledged field must name the acker from the case's own
 	// frozen label, which is the only attribution a terminal card still has.
 	//
 	// ⚠️ WHAT THAT COSTS THE CORPUS, STATED SO NOBODY HAS TO REDISCOVER IT. This
@@ -318,7 +318,7 @@ func resolvedCardView() *chdomain.NotificationView {
 	// people, which is where every attribution defect in this area has lived. No
 	// capture exercises it now. The card that would is a `comment` posted on a
 	// resolved incident: the commenter is `v.Actor`, the acker is
-	// `Occurrence.AckedByLabel`, and the receipt must name the second while the
+	// `Case.AckedByLabel`, and the receipt must name the second while the
 	// balloon names the first.
 	//
 	// ⭐ THE CORPUS CAN HOST IT — it is the colour budget, not the colour rule,
@@ -341,9 +341,9 @@ func resolvedCardView() *chdomain.NotificationView {
 	v.Group.LastActivityAt = cardEndedAt
 	v.Alerts[0].State = "resolved"
 	v.Alerts[1].State = "resolved"
-	v.Occurrence.State = "resolved"
-	v.Occurrence.EndedAt = tp(cardEndedAt)
-	v.Occurrence.Duration = cardEndedAt.Sub(cardUpstreamStart)
+	v.Case.State = "resolved"
+	v.Case.EndedAt = tp(cardEndedAt)
+	v.Case.Duration = cardEndedAt.Sub(cardUpstreamStart)
 	v.Notifications = 4
 	v.Previous = &chdomain.PreviousState{State: "firing", AckState: "acked"}
 	v.Trail = append(v.Trail, chdomain.TrailEntry{Kind: "resolved", At: cardEndedAt})
@@ -362,9 +362,9 @@ func silencedView() *chdomain.NotificationView {
 	v.Group.LastActivityAt = cardUpstreamStart.Add(10 * time.Minute)
 	v.Alerts[0].State = "suppressed"
 	v.Alerts[1].State = "suppressed"
-	v.Occurrence.State = "suppressed"
-	v.Occurrence.SuppressionReason = "provider incident — silenced until their ETA"
-	v.Occurrence.EndedAt = tp(until)
+	v.Case.State = "suppressed"
+	v.Case.SuppressionReason = "provider incident — silenced until their ETA"
+	v.Case.EndedAt = tp(until)
 	v.Actor = &chdomain.ActorView{Kind: "slack_user", ID: "U0123456789", Label: "ram"}
 	v.Previous = &chdomain.PreviousState{State: "firing", AckState: "unacked"}
 	v.Trail = append(v.Trail, chdomain.TrailEntry{

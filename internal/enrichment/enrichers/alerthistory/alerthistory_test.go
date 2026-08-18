@@ -60,14 +60,14 @@ var alertID = id.New()
 func subject() *domain.Subject {
 	return &domain.Subject{
 		OrgID:       id.NewString(),
-		SubjectKind: domain.SubjectOccurrence,
+		SubjectKind: domain.SubjectCase,
 		SubjectID:   id.NewString(),
 		Alert: domain.AlertSnapshot{
 			ID:        alertID.String(),
 			AlertName: "HighErrorRate",
 			Severity:  "critical",
 		},
-		Occurrence: domain.OccurrenceSnapshot{ID: id.NewString(), StartedAt: baseTime},
+		Case: domain.CaseSnapshot{ID: id.NewString(), StartedAt: baseTime},
 	}
 }
 
@@ -127,7 +127,7 @@ func TestApplicableRequiresAnAlertIdentityToCountAgainst(t *testing.T) {
 		"an enricher with no store cannot answer and must not be dispatched")
 }
 
-// TestCacheSeedIsTheAlertIdentity: the result is shared across every occurrence
+// TestCacheSeedIsTheAlertIdentity: the result is shared across every case
 // of the same alert within the TTL, which is exactly what a storm produces.
 func TestCacheSeedIsTheAlertIdentity(t *testing.T) {
 	t.Parallel()
@@ -137,9 +137,9 @@ func TestCacheSeedIsTheAlertIdentity(t *testing.T) {
 	assert.Equal(t, alertID.String(), e.CacheSeed(subject()))
 	assert.Empty(t, e.CacheSeed(nil))
 
-	// The seed carries no occurrence, so two fires of the same alert hit.
+	// The seed carries no case, so two fires of the same alert hit.
 	first, second := subject(), subject()
-	second.Occurrence.ID = id.NewString()
+	second.Case.ID = id.NewString()
 	assert.Equal(t, e.CacheSeed(first), e.CacheSeed(second))
 }
 
@@ -152,7 +152,7 @@ func TestAFullHistoryIsSummarised(t *testing.T) {
 		Count24h:               4,
 		Count7d:                11,
 		Count30d:               19,
-		TotalOccurrences:       57,
+		TotalCases:             57,
 		FlapScore:              0.42,
 		IsFlapping:             true,
 		FirstSeenAt:            baseTime.Add(-30 * 24 * time.Hour),
@@ -172,7 +172,7 @@ func TestAFullHistoryIsSummarised(t *testing.T) {
 	assert.Equal(t, 4, p.Count24h)
 	assert.Equal(t, 11, p.Count7d)
 	assert.Equal(t, 19, p.Count30d)
-	assert.Equal(t, 57, p.TotalOccurrences)
+	assert.Equal(t, 57, p.TotalCases)
 	assert.InDelta(t, 0.42, p.FlapScore, 1e-9)
 	assert.True(t, p.IsFlapping)
 	assert.False(t, p.Noisy, "19 in thirty days is under the threshold")
@@ -296,10 +296,10 @@ func TestAFirstFireIsPartialRatherThanARowOfZeroes(t *testing.T) {
 	t.Parallel()
 
 	st := &store{stats: alerthistory.Stats{
-		Count24h:         1,
-		TotalOccurrences: 1,
-		FirstSeenAt:      baseTime,
-		LastSeenAt:       baseTime,
+		Count24h:    1,
+		TotalCases:  1,
+		FirstSeenAt: baseTime,
+		LastSeenAt:  baseTime,
 	}}
 
 	res, err := alerthistory.New(st, clock.NewFake(baseTime)).Enrich(scoped(t), subject())

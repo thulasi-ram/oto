@@ -18,9 +18,17 @@ const MaxGeneratorURLBytes = 8192
 // same Alert; the same label set in `prod-eu` and in `prod-us` are DIFFERENT
 // Alerts, because they have different blast radii (C.2).
 //
-// The state and ack_state carried here are PROJECTIONS of the current open
-// AlertOccurrence — or of the most recent one, when none is open. The
-// authoritative machine runs on the Occurrence.
+// The state carried here is a PROJECTION of the current open AlertCase —
+// or of the most recent one, when none is open. The authoritative machine runs
+// on the Case.
+//
+// ⛔ THERE IS NO ACK HERE, AND THERE MUST NOT BE ONE. An ack is a statement about
+// ONE firing episode: `case_ackorder_ck` already says an ack cannot exist without
+// an episode to belong to. Projecting it onto the Alert makes it outlive its own
+// subject — a March acknowledgement pre-acknowledging a September firing, which
+// then never enters anybody's queue. `state` is projected and this is not because
+// `state` is the one axis that still has an honest answer when nothing is firing;
+// ack has none. Ask the Case.
 type Alert struct {
 	id        uuid.UUID
 	orgID     uuid.UUID
@@ -34,18 +42,24 @@ type Alert struct {
 	annotations  Annotations
 	generatorURL string
 
-	state               State
-	ackState            AckState
-	currentOccurrenceID uuid.UUID
-	// snoozedUntil is the §B.8 projection of the active alert_snoozes row. It is
-	// the THIRD ORTHOGONAL AXIS and it is NOT a state: a snoozed alert is still
-	// firing, still whatever severity it was, and is still rendered that way.
-	snoozedUntil time.Time
+	state         State
+	currentCaseID uuid.UUID
+
+	// ⛔ THERE IS NO `snoozedUntil` HERE ANY MORE, AND THAT IS THE POINT. Snooze
+	// is the THIRD ORTHOGONAL AXIS (§B.1) and its authoritative home is
+	// `alert_snoozes` — the row that also knows who asked for quiet, what they
+	// wrote and how the quiet period ended. A bare timestamp mirrored onto the
+	// signal row could answer none of those, and the notification path was
+	// deciding whether oto speaks by reading the mirror.
+	//
+	// Whether oto is quiet about an Alert is therefore never a question this
+	// entity can answer alone: ask `SnoozeRepository.GetActive` (one alert) or
+	// `ActiveByAlerts` (a page), and see `service.AlertDetail.SnoozedNow`.
 
 	firstSeenAt       time.Time
 	lastSeenAt        time.Time
 	lastStateChangeAt time.Time
-	totalOccurrences  int
+	totalCases        int
 	flapScore         float32
 	isFlapping        bool
 	// synthetic marks an Alert oto manufactured for a delivery drill. It is
@@ -71,18 +85,14 @@ type AlertParams struct {
 	// GeneratorURL is the upstream link back to the expression that fired.
 	GeneratorURL string
 
-	State    State
-	AckState AckState
-	// CurrentOccurrenceID is the open occurrence, or uuid.Nil when none is open.
-	CurrentOccurrenceID uuid.UUID
-	// SnoozedUntil is the projection of the active alert_snoozes row, or the zero
-	// time when the Alert is awake (§B.8).
-	SnoozedUntil time.Time
+	State State
+	// CurrentCaseID is the open case, or uuid.Nil when none is open.
+	CurrentCaseID uuid.UUID
 
 	FirstSeenAt       time.Time
 	LastSeenAt        time.Time
 	LastStateChangeAt time.Time
-	TotalOccurrences  int
+	TotalCases        int
 	// FlapScore is an EWMA of state transitions per hour. It is a derived signal,
 	// NEVER a state (§B.1).
 	FlapScore  float32
@@ -124,8 +134,8 @@ func NewAlert(p AlertParams) (Alert, error) {
 		return Alert{}, errs.Newf(errs.KindValidation, "max_length",
 			"generator_url must have at most %d characters", MaxGeneratorURLBytes)
 	}
-	if p.TotalOccurrences < 0 {
-		return Alert{}, errs.New(errs.KindValidation, "min", "total_occurrences must be >= 0")
+	if p.TotalCases < 0 {
+		return Alert{}, errs.New(errs.KindValidation, "min", "total_cases must be >= 0")
 	}
 	if p.FlapScore < 0 {
 		return Alert{}, errs.New(errs.KindValidation, "min", "flap_score must be >= 0")
@@ -142,32 +152,25 @@ func NewAlert(p AlertParams) (Alert, error) {
 			"last_state_change_at must be >= first_seen_at")
 	}
 
-	ackState := p.AckState
-	if ackState.IsZero() {
-		ackState = AckStateUnacked
-	}
-
 	return Alert{
-		id:                  p.ID,
-		orgID:               p.OrgID,
-		clusterID:           p.ClusterID,
-		key:                 p.Key,
-		fingerprint:         p.Fingerprint,
-		clusterKey:          p.ClusterKey,
-		labels:              p.Labels,
-		annotations:         p.Annotations,
-		generatorURL:        p.GeneratorURL,
-		state:               p.State,
-		ackState:            ackState,
-		currentOccurrenceID: p.CurrentOccurrenceID,
-		snoozedUntil:        utcOrZero(p.SnoozedUntil),
-		firstSeenAt:         p.FirstSeenAt.UTC(),
-		lastSeenAt:          p.LastSeenAt.UTC(),
-		lastStateChangeAt:   p.LastStateChangeAt.UTC(),
-		totalOccurrences:    p.TotalOccurrences,
-		flapScore:           p.FlapScore,
-		isFlapping:          p.IsFlapping,
-		synthetic:           p.Synthetic,
+		id:                p.ID,
+		orgID:             p.OrgID,
+		clusterID:         p.ClusterID,
+		key:               p.Key,
+		fingerprint:       p.Fingerprint,
+		clusterKey:        p.ClusterKey,
+		labels:            p.Labels,
+		annotations:       p.Annotations,
+		generatorURL:      p.GeneratorURL,
+		state:             p.State,
+		currentCaseID:     p.CurrentCaseID,
+		firstSeenAt:       p.FirstSeenAt.UTC(),
+		lastSeenAt:        p.LastSeenAt.UTC(),
+		lastStateChangeAt: p.LastStateChangeAt.UTC(),
+		totalCases:        p.TotalCases,
+		flapScore:         p.FlapScore,
+		isFlapping:        p.IsFlapping,
+		synthetic:         p.Synthetic,
 	}, nil
 }
 
@@ -211,15 +214,12 @@ func (a Alert) Namespace() string { return a.labels.Namespace() }
 // Service is the promoted `service` label.
 func (a Alert) Service() string { return a.labels.Service() }
 
-// State is the projection of the current occurrence's state, or of the most
-// recent occurrence when none is open.
+// State is the projection of the current case's state, or of the most
+// recent case when none is open.
 func (a Alert) State() State { return a.state }
 
-// AckState is the projection of the current occurrence's ack state.
-func (a Alert) AckState() AckState { return a.ackState }
-
-// CurrentOccurrenceID is the open AlertOccurrence, or uuid.Nil when none is open.
-func (a Alert) CurrentOccurrenceID() uuid.UUID { return a.currentOccurrenceID }
+// CurrentCaseID is the open AlertCase, or uuid.Nil when none is open.
+func (a Alert) CurrentCaseID() uuid.UUID { return a.currentCaseID }
 
 // FirstSeenAt is when oto first saw this label set. It never moves.
 func (a Alert) FirstSeenAt() time.Time { return a.firstSeenAt }
@@ -230,8 +230,8 @@ func (a Alert) LastSeenAt() time.Time { return a.lastSeenAt }
 // LastStateChangeAt is when the projected state last changed.
 func (a Alert) LastStateChangeAt() time.Time { return a.lastStateChangeAt }
 
-// TotalOccurrences is how many firing episodes this Alert has had.
-func (a Alert) TotalOccurrences() int { return a.totalOccurrences }
+// TotalCases is how many firing episodes this Alert has had.
+func (a Alert) TotalCases() int { return a.totalCases }
 
 // FlapScore is an EWMA of state transitions per hour — a derived signal, never a
 // state.
@@ -250,47 +250,38 @@ func (a Alert) IsFlapping() bool { return a.isFlapping }
 // reach for.
 func (a Alert) Synthetic() bool { return a.synthetic }
 
-// HasOpenOccurrence reports whether an episode is currently running.
-func (a Alert) HasOpenOccurrence() bool { return a.currentOccurrenceID != uuid.Nil }
+// HasOpenCase reports whether an episode is currently running.
+func (a Alert) HasOpenCase() bool { return a.currentCaseID != uuid.Nil }
 
-// SnoozedUntil is when oto's notifications about this Alert resume, or the zero
-// time when it is awake. See IsSnoozedAt for the question you almost always mean.
-func (a Alert) SnoozedUntil() time.Time { return a.snoozedUntil }
-
-// IsSnoozedAt reports whether oto is holding its tongue about this Alert at the
-// given instant. The instant is a PARAMETER: the domain never calls time.Now().
-//
-// This answers "is oto notifying?", never "what is the world doing?". The alert
-// is still firing, still whatever severity it was, and every surface MUST keep
-// rendering it that way (§B.8.1, §B.8.6).
-func (a Alert) IsSnoozedAt(now time.Time) bool {
-	return !a.snoozedUntil.IsZero() && a.snoozedUntil.After(now.UTC())
-}
+// ⛔ THERE IS NO `SnoozedUntil()` AND NO `IsSnoozedAt()`. "Is oto holding its
+// tongue about this Alert?" is a question about `alert_snoozes`, and the row
+// there is the only thing that can also say who asked and why. Answering it from
+// a mirrored timestamp is what let the notification path decide whether to speak
+// without ever reading the authoritative record. `Snooze.IsActiveAt` is the
+// predicate; the repository is where the row comes from.
 
 // Project returns the Alert with a new projection applied. It re-proves the
 // Alert's invariants, so a projection can never make an Alert the database would
 // refuse.
 func (a Alert) Project(p AlertProjection) (Alert, error) {
 	return NewAlert(AlertParams{
-		ID:                  a.id,
-		OrgID:               a.orgID,
-		ClusterID:           a.clusterID,
-		Key:                 a.key,
-		Fingerprint:         a.fingerprint,
-		ClusterKey:          a.clusterKey,
-		Labels:              a.labels,
-		Annotations:         a.annotations,
-		GeneratorURL:        a.generatorURL,
-		State:               p.State,
-		AckState:            p.AckState,
-		CurrentOccurrenceID: derefID(p.CurrentOccurrenceID),
-		SnoozedUntil:        derefTime(p.SnoozedUntil),
-		FirstSeenAt:         a.firstSeenAt,
-		LastSeenAt:          p.LastSeenAt,
-		LastStateChangeAt:   p.LastStateChangeAt,
-		TotalOccurrences:    p.TotalOccurrences,
-		FlapScore:           a.flapScore,
-		IsFlapping:          a.isFlapping,
+		ID:                a.id,
+		OrgID:             a.orgID,
+		ClusterID:         a.clusterID,
+		Key:               a.key,
+		Fingerprint:       a.fingerprint,
+		ClusterKey:        a.clusterKey,
+		Labels:            a.labels,
+		Annotations:       a.annotations,
+		GeneratorURL:      a.generatorURL,
+		State:             p.State,
+		CurrentCaseID:     derefID(p.CurrentCaseID),
+		FirstSeenAt:       a.firstSeenAt,
+		LastSeenAt:        p.LastSeenAt,
+		LastStateChangeAt: p.LastStateChangeAt,
+		TotalCases:        p.TotalCases,
+		FlapScore:         a.flapScore,
+		IsFlapping:        a.isFlapping,
 	})
 }
 

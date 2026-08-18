@@ -77,11 +77,11 @@ type (
 	GroupView = chdomain.GroupView
 	// AlertView is one Alert as a renderer sees it.
 	AlertView = chdomain.AlertView
-	// OccurrenceView is one firing episode as a renderer sees it.
-	OccurrenceView = chdomain.OccurrenceView
-	// RuleView is what the alerting rule said when the occurrence fired.
+	// CaseView is one firing episode as a renderer sees it.
+	CaseView = chdomain.CaseView
+	// RuleView is what the alerting rule said when the case fired.
 	RuleView = chdomain.RuleView
-	// RuleChangeView is what changed in the rule since the previous occurrence.
+	// RuleChangeView is what changed in the rule since the previous case.
 	RuleChangeView = chdomain.RuleChangeView
 	// EnrichmentView is one Enricher's provenanced result.
 	EnrichmentView = chdomain.EnrichmentView

@@ -25,12 +25,12 @@ func TestMain(m *testing.M) { harness.Main(m) }
 
 // TestTheRollupReachesBothTablesByIndex is the verification behind 00042.
 //
-// ⭐ THE CLAIM BEING TESTED. `rollupDaySQL`'s `occ` CTE filters
-// `alert_occurrences` on `(org_id, started_at BETWEEN …)` and its `notif` CTE
+// ⭐ THE CLAIM BEING TESTED. `rollupDaySQL`'s `ac` CTE filters
+// `alert_cases` on `(org_id, started_at BETWEEN …)` and its `notif` CTE
 // filters `notifications` on `(org_id, created_at BETWEEN …)`. Until 00042 there
 // was no index on either table that could lead with that pair — every candidate
 // demanded a second equality (alert_id, group_id, ack_state, subject_id,
-// occurrence_id) the rollup does not supply — so both CTEs were full scans, run
+// case_id) the rollup does not supply — so both CTEs were full scans, run
 // `2 × orgs` times every fifteen minutes over two tables ADR 0024 never reaps.
 //
 // ⛔ AND A PLAN TEST THAT WOULD PASS WITHOUT THE INDEX PROVES NOTHING, so the
@@ -63,7 +63,7 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 
 	// Eight alerts and eight groups. The rollup GROUPs BY `(cluster_key,
 	// alertname)`, and the `notif` CTE reaches `alerts` through
-	// `alert_group_members`, so both need a fan-out that is real but small: the
+	// `alert_cases.group_id`, so both need a fan-out that is real but small: the
 	// volume under test is on the two tables being scanned, not on their join
 	// partners.
 	const fanout = 8
@@ -75,23 +75,25 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 			"severity":  "critical",
 			"service":   "checkout",
 		})
+		// `shard` is not an axis (ADR 0038), so it cannot separate generations any
+		// more; the alertname is what makes these N distinct groups instead of one.
 		g := h.GroupWith(org, source, cluster, map[string]string{
-			"severity": "critical",
-			"shard":    fmt.Sprintf("%02d", i),
+			"alertname": fmt.Sprintf("RollupShard%02d", i),
+			"severity":  "critical",
 		})
 		alertIDs = append(alertIDs, a.ID)
 		groupIDs = append(groupIDs, g.ID)
 	}
 
 	// Two months of history at one episode every four minutes. Every episode is
-	// CLOSED — `occ_one_open_idx` permits one open episode per alert, and closed
+	// CLOSED — `case_one_open_idx` permits one open episode per alert, and closed
 	// is what the rollup counts anyway (`state = 'resolved'`, `state =
 	// 'expired'`), so an open-episode seed would be seeding rows the CTE's own
 	// FILTERs discard.
 	const rows = 20000
 	base := harness.Epoch
 	h.Exec(`
-		INSERT INTO alert_occurrences
+		INSERT INTO alert_cases
 		  (id, org_id, alert_id, group_id, seq, state, resolve_reason,
 		   started_at, ended_at, last_observed_at, source_starts_at)
 		SELECT gen_random_uuid(),
@@ -108,15 +110,12 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 		  FROM generate_series(1, $6) AS i`,
 		org.ID, alertIDs, groupIDs, fanout, base, rows)
 
-	// One membership row per group, which is all the `notif` CTE's join needs to
-	// attribute a notification to an alertname. Membership is not the thing under
-	// test and a row per notification would only distort the join estimate.
-	h.Exec(`
-		INSERT INTO alert_group_members (group_id, occurrence_id, org_id, alert_id, joined_at)
-		SELECT DISTINCT ON (o.group_id) o.group_id, o.id, o.org_id, o.alert_id, o.started_at
-		  FROM alert_occurrences o
-		 WHERE o.org_id = $1
-		 ORDER BY o.group_id, o.started_at`, org.ID)
+	// ⭐ NO MEMBERSHIP SEED. Since 00051 the episodes above ARE the membership —
+	// each carries the `group_id` the `notif` CTE joins on — so the row that used
+	// to be inserted here would have been a copy of one already written. It also
+	// means the CTE's join now fans out over every episode of a generation rather
+	// than one per generation, which is why it counts DISTINCT notification and
+	// delivery ids.
 
 	// The same two months of notifications. `idempotency_key` is 64 hex
 	// characters by `notifications_idem_ck` and unique per org by
@@ -144,21 +143,21 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 	// pages and picks a sequential scan for both plans — with the index and
 	// without it — and the control would agree with the assertion for the wrong
 	// reason.
-	h.Exec(`ANALYZE alert_occurrences, notifications, alerts, alert_group_members`)
+	h.Exec(`ANALYZE alert_cases, notifications, alerts`)
 
 	day := base.Add(30 * 24 * time.Hour).UTC().Truncate(24 * time.Hour)
 	asOf := day.Add(24 * time.Hour)
 
 	withIndexes := explainRollup(t, h, org.ID, day, asOf)
 
-	occ := scanOf(t, withIndexes, "alert_occurrences")
-	if occ.NodeType == "Seq Scan" {
-		t.Fatalf("the occ CTE still scans alert_occurrences sequentially:\n%s", withIndexes.pretty())
+	ac := scanOfCTE(t, withIndexes, "ac", "alert_cases")
+	if ac.NodeType == "Seq Scan" {
+		t.Fatalf("the ac CTE still scans alert_cases sequentially:\n%s", withIndexes.pretty())
 	}
-	if !indexesUnder(occ)["occ_started_idx"] {
-		t.Fatalf("the occ CTE reaches alert_occurrences by %q without naming occ_started_idx, so "+
+	if !indexesUnder(ac)["case_started_idx"] {
+		t.Fatalf("the ac CTE reaches alert_cases by %q without naming case_started_idx, so "+
 			"00042's index is not what is serving `org_id = $1 AND started_at >= … AND started_at "+
-			"< …`:\n%s", occ.NodeType, withIndexes.pretty())
+			"< …`:\n%s", ac.NodeType, withIndexes.pretty())
 	}
 
 	notif := scanOf(t, withIndexes, "notifications")
@@ -176,8 +175,8 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 	// borrowed is handed back exactly as it was found.
 	without := explainWithoutTheIndexes(t, h, org.ID, day, asOf)
 
-	if node := scanOf(t, without, "alert_occurrences"); node.NodeType != "Seq Scan" {
-		t.Fatalf("alert_occurrences is reached by %q even with occ_started_idx dropped, so the "+
+	if node := scanOfCTE(t, without, "ac", "alert_cases"); node.NodeType != "Seq Scan" {
+		t.Fatalf("alert_cases is reached by %q even with case_started_idx dropped, so the "+
 			"assertion above was not evidence that 00042 changed anything:\n%s",
 			node.NodeType, without.pretty())
 	}
@@ -220,7 +219,7 @@ func explainWithoutTheIndexes(t *testing.T, h *harness.H, org uuid.UUID, day, as
 		}
 	}()
 
-	for _, index := range []string{"occ_started_idx", "notif_created_idx"} {
+	for _, index := range []string{"case_started_idx", "notif_created_idx"} {
 		if _, err := tx.Exec(h.Ctx, "DROP INDEX "+index); err != nil {
 			t.Fatalf("drop %s inside the control transaction: %v — 00042 is what creates it, so "+
 				"a missing index here means the migration did not run", index, err)
@@ -244,6 +243,7 @@ type node struct {
 	NodeType  string `json:"Node Type"`
 	Relation  string `json:"Relation Name"`
 	IndexName string `json:"Index Name"`
+	Subplan   string `json:"Subplan Name"`
 	Plans     []node `json:"Plans"`
 }
 
@@ -275,6 +275,37 @@ func parsePlan(t *testing.T, raw []byte) plan {
 // Bitmap Heap Scan of a bitmap pair all carry `Relation Name`; the Bitmap Index
 // Scan underneath does not, which is why the index name is looked for
 // separately.
+// scanOfCTE is scanOf narrowed to one CTE's subtree.
+//
+// ⭐ `alert_cases` IS READ TWICE SINCE 00051. The `ac` CTE reads the episodes that
+// started on the day; the membership fan-out reads the same table again, because
+// `alert_group_members` is gone and `alert_cases.group_id` IS the membership. A
+// plain relation-name walk therefore finds two nodes and cannot say which one the
+// assertion is about. EXPLAIN labels a CTE's own subtree with `Subplan Name`, so
+// naming the CTE is how the right scan is picked.
+func scanOfCTE(t *testing.T, p plan, cte, table string) node {
+	t.Helper()
+
+	var sub *node
+	var find func(n node)
+	find = func(n node) {
+		if n.Subplan == "CTE "+cte {
+			c := n
+			sub = &c
+			return
+		}
+		for _, child := range n.Plans {
+			find(child)
+		}
+	}
+	find(p.root)
+	if sub == nil {
+		t.Fatalf("the plan carries no CTE %q, so rollupDaySQL no longer has the shape this "+
+			"test asserts about:\n%s", cte, p.pretty())
+	}
+	return scanOf(t, plan{root: *sub, raw: p.raw}, table)
+}
+
 func scanOf(t *testing.T, p plan, table string) node {
 	t.Helper()
 
@@ -297,7 +328,7 @@ func scanOf(t *testing.T, p plan, table string) node {
 		t.Fatalf("no node in the plan reads %s, so this test is asserting about a query that no "+
 			"longer touches it:\n%s", table, p.pretty())
 	default:
-		t.Fatalf("%d nodes read %s; rollupDaySQL scans it once, so the assertion below would be "+
+		t.Fatalf("%d nodes read %s in this subtree; the assertion below would be "+
 			"ambiguous:\n%s", len(found), table, p.pretty())
 	}
 	return node{}

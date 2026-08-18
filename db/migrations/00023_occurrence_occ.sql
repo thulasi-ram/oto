@@ -12,24 +12,24 @@
 -- The fix in code compares a four-column pre-image (state, ended_at,
 -- source_ends_at, reopen_count). state_version collapses that into a single
 -- predicate: cheaper, and it cannot be partially specified by a future call site.
-ALTER TABLE alert_occurrences
+ALTER TABLE alert_occurrences  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
     ADD COLUMN state_version INT NOT NULL DEFAULT 1;
 
-ALTER TABLE alert_occurrences
+ALTER TABLE alert_occurrences  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
     ADD CONSTRAINT occ_sver_ck CHECK (state_version >= 1);
 
 -- Re-suppression inside one episode was collapsing: T3 -> T4 -> T3 within a
 -- single occurrence was indistinguishable from a single suppression, because
 -- nothing counted it. This is the reopen_count analogue for the suppressed path.
-ALTER TABLE alert_occurrences
+ALTER TABLE alert_occurrences  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
     ADD COLUMN suppress_count INT NOT NULL DEFAULT 0;
 
-ALTER TABLE alert_occurrences
+ALTER TABLE alert_occurrences  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
     ADD CONSTRAINT occ_supcount_ck CHECK (suppress_count >= 0);
 
-COMMENT ON COLUMN alert_occurrences.state_version IS
+COMMENT ON COLUMN alert_occurrences.state_version IS  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
     'Optimistic lock. Every state transition is a compare-and-set on this value; a lost CAS is a conflict, never a silent overwrite.';
-COMMENT ON COLUMN alert_occurrences.suppress_count IS
+COMMENT ON COLUMN alert_occurrences.suppress_count IS  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
     'How many times this episode has entered suppressed. Distinguishes repeated silencing from a single suppression.';
 
 -- +goose StatementEnd

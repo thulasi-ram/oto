@@ -396,10 +396,10 @@ type env struct {
 	clk      *clock.Fake
 	scope    db.TenantScope
 
-	occurrenceID uuid.UUID
-	alertID      uuid.UUID
-	groupID      uuid.UUID
-	orgID        uuid.UUID
+	caseID  uuid.UUID
+	alertID uuid.UUID
+	groupID uuid.UUID
+	orgID   uuid.UUID
 }
 
 // newEnv builds a Service over the given enrichers with every optional port
@@ -411,16 +411,16 @@ func newEnv(t *testing.T, tune func(*service.Options), enrichers ...domain.Enric
 	require.NoError(t, err, "the registry must accept the test's enrichers")
 
 	e := &env{
-		repo:         &fakeRepo{},
-		cache:        newFakeCache(),
-		notifier:     &fakeNotifier{},
-		events:       &fakeEvents{},
-		enqueuer:     &fakeEnqueuer{},
-		clk:          clock.NewFake(baseTime),
-		occurrenceID: id.New(),
-		alertID:      id.New(),
-		groupID:      id.New(),
-		orgID:        id.New(),
+		repo:     &fakeRepo{},
+		cache:    newFakeCache(),
+		notifier: &fakeNotifier{},
+		events:   &fakeEvents{},
+		enqueuer: &fakeEnqueuer{},
+		clk:      clock.NewFake(baseTime),
+		caseID:   id.New(),
+		alertID:  id.New(),
+		groupID:  id.New(),
+		orgID:    id.New(),
 	}
 	e.scope, err = db.NewTenantScope(e.orgID)
 	require.NoError(t, err)
@@ -428,15 +428,15 @@ func newEnv(t *testing.T, tune func(*service.Options), enrichers ...domain.Enric
 	e.subjects = &fakeSubjects{loaded: service.Loaded{
 		Subject: domain.Subject{
 			OrgID:       e.orgID.String(),
-			SubjectKind: domain.SubjectOccurrence,
-			SubjectID:   e.occurrenceID.String(),
+			SubjectKind: domain.SubjectCase,
+			SubjectID:   e.caseID.String(),
 			Alert: domain.AlertSnapshot{
 				ID:        e.alertID.String(),
 				AlertName: "HighErrorRate",
 				Severity:  "critical",
 			},
-			Occurrence: domain.OccurrenceSnapshot{
-				ID:        e.occurrenceID.String(),
+			Case: domain.CaseSnapshot{
+				ID:        e.caseID.String(),
 				Seq:       1,
 				State:     "firing",
 				StartedAt: baseTime,
@@ -471,9 +471,9 @@ func newEnv(t *testing.T, tune func(*service.Options), enrichers ...domain.Enric
 func (e *env) run(t *testing.T, phase domain.Phase, names ...string) service.RunResult {
 	t.Helper()
 	out, err := e.svc.Run(context.Background(), e.scope, service.RunRequest{
-		OccurrenceID: e.occurrenceID,
-		Phase:        phase,
-		Enrichers:    names,
+		CaseID:    e.caseID,
+		Phase:     phase,
+		Enrichers: names,
 	})
 	require.NoError(t, err, "an enrichment failure is never a run failure")
 	return out
@@ -497,8 +497,8 @@ func (e *env) priorResult(t *testing.T, with func(p *domain.EnrichmentParams)) d
 	p := domain.EnrichmentParams{
 		ID:          id.NewString(),
 		OrgID:       e.orgID.String(),
-		SubjectKind: domain.SubjectOccurrence,
-		SubjectID:   e.occurrenceID.String(),
+		SubjectKind: domain.SubjectCase,
+		SubjectID:   e.caseID.String(),
 		Enricher:    "test.alpha",
 		Version:     1,
 		Phase:       domain.PhaseInline,

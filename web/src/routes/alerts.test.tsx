@@ -48,10 +48,7 @@ function bucket(patch: Partial<AlertRollup> = {}): AlertRollup {
     suppressed_count: 0,
     resolved_count: 0,
     expired_count: 0,
-    acked_count: 0,
-    unacked_count: 4,
     flapping_count: 0,
-    snoozed_count: 0,
     severity_counts: { critical: 4 },
     first_seen_at: "2026-08-09T09:00:00.000Z",
     last_seen_at: "2026-08-09T09:00:00.000Z",
@@ -109,8 +106,34 @@ function mount(path: string): FetchStub {
   return http;
 }
 
+/**
+ * The alert-list requests — the ones that fetch ROWS.
+ *
+ * ⭐ TWO DIFFERENT QUESTIONS SHARE ONE ENDPOINT NOW. `/alerts` is asked twice on
+ * this screen: once for the rows the table renders (keyset-paged, `limit=100`),
+ * and once for the number in the **Quiet** tab's badge (`limit=200`, never
+ * paged, always `snoozed=true`). Every assertion in this file is about the
+ * cursor the ROWS request carries; the badge request has no cursor and never
+ * will, so counting it would make "the request after the filter change" mean
+ * whichever of the two happened to arrive last.
+ *
+ * The two are told apart by `limit` because that is the only thing about them
+ * that cannot coincide: on the Quiet tab both carry `snoozed=true`, and both
+ * carry the same filters by design — the badge promises exactly what the tab
+ * will contain.
+ */
+const ROWS_PAGE_SIZE = "100";
+
 const listCalls = (http: FetchStub): readonly RecordedCall[] =>
-  http.calls.filter((c) => c.path === "/api/v1/alerts");
+  http.calls.filter(
+    (c) => c.path === "/api/v1/alerts" && c.search.get("limit") === ROWS_PAGE_SIZE,
+  );
+
+/** The Quiet badge's own bounded count request. */
+const quietBadgeCalls = (http: FetchStub): readonly RecordedCall[] =>
+  http.calls.filter(
+    (c) => c.path === "/api/v1/alerts" && c.search.get("limit") !== ROWS_PAGE_SIZE,
+  );
 const rollupCalls = (http: FetchStub): readonly RecordedCall[] =>
   http.calls.filter((c) => c.path === "/api/v1/alerts/rollups");
 
@@ -234,5 +257,67 @@ describe("paging itself", () => {
     await until(() => {
       expect(document.body.textContent).toMatch(/2 loaded across 2 pages/);
     });
+  });
+});
+
+/**
+ * The **Quiet** tab, from the route's side.
+ *
+ * ⛔ WHAT MAKES SPLITTING THE LIST SAFE IS THAT NOTHING FALLS BETWEEN THE TABS.
+ * `filters.ts` used to refuse to hide snoozed alerts at all, because *"hiding
+ * snoozed alerts from the default list is how an incident is lost"*. The
+ * reversal holds only while the main list says explicitly that it is the
+ * unsnoozed half and the other half is one always-present click away.
+ */
+describe("the Quiet tab", () => {
+  it("asks the server for the unsnoozed half by default, never for both", async () => {
+    const http = mount("/alerts");
+    await until(() => expect(listCalls(http).length).toBeGreaterThan(0));
+
+    // ⛔ An absent `snoozed` means "both tabs at once" — a list with no honest
+    // heading, and the behaviour this change replaced.
+    expect(listCalls(http)[0]!.search.get("snoozed")).toBe("false");
+  });
+
+  it("counts its badge with its own bounded request, carrying the same filters", async () => {
+    const http = mount("/alerts?namespace=payments");
+    await until(() => expect(quietBadgeCalls(http).length).toBeGreaterThan(0));
+
+    const badge = quietBadgeCalls(http)[0]!;
+    expect(badge.search.get("snoozed")).toBe("true");
+    expect(badge.search.get("cursor")).toBeNull();
+    // The badge promises exactly what the tab will contain, so it is counted
+    // under the operator's own filters rather than over the whole org.
+    expect(badge.search.get("namespace")).toBe("payments");
+  });
+
+  it("switches the rows to the quiet half, keeping every filter", async () => {
+    const http = mount("/alerts?namespace=payments");
+    await until(() => expect(listCalls(http).length).toBeGreaterThan(0));
+    const mark = listCalls(http).length;
+
+    fireEvent.click(screen.getByRole("tab", { name: /Quiet/ }));
+
+    await until(() => {
+      expect(listCalls(http).slice(mark).some((c) => c.search.get("snoozed") === "true")).toBe(
+        true,
+      );
+    });
+    for (const call of listCalls(http).slice(mark)) {
+      // A tab change invalidates the keyset cursor exactly as a filter change
+      // does: the two tabs are different sets, so a cursor minted on one is a
+      // `400 cursor_filter_mismatch` on the other.
+      expect(call.search.get("cursor")).toBeNull();
+      expect(call.search.get("namespace")).toBe("payments");
+    }
+  });
+
+  it("is on screen even when nothing is quiet", async () => {
+    // ⛔ THE SURFACE THE 30-DAY MAXIMUM REQUIRES. Without a list of what you are
+    // currently not being told, a snooze becomes permanent by forgetfulness — and
+    // a tab that disappears at zero is one nobody ever discovers.
+    const http = mount("/alerts");
+    await until(() => expect(quietBadgeCalls(http).length).toBeGreaterThan(0));
+    expect(screen.getByRole("tab", { name: /Quiet/ })).toBeTruthy();
   });
 });

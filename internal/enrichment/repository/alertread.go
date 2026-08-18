@@ -17,8 +17,8 @@ import (
 // AlertReadModel is a READ-ONLY projection over the `alerts` module's tables,
 // serving the two enrichers whose whole job is to summarise alert history.
 //
-// It reads `alerts`, `alert_occurrences` and `alert_group_members`, and it
-// writes exactly one column that exists for it: `alert_occurrences
+// It reads `alerts` and `alert_cases`, and it
+// writes exactly one column that exists for it: `alert_cases
 // .rule_snapshot_id` (SPEC §D.6). Nothing here touches the state machine, the
 // timeline or a lifecycle column.
 //
@@ -45,20 +45,20 @@ func NewAlertReadModel(q db.Querier) *AlertReadModel { return &AlertReadModel{q:
 func (r *AlertReadModel) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
 const alertProjectionSQL = `
-SELECT total_occurrences, flap_score, is_flapping, first_seen_at, last_seen_at
+SELECT total_cases, flap_score, is_flapping, first_seen_at, last_seen_at
   FROM alerts
  WHERE org_id = $1 AND id = $2`
 
-// occurrenceCountsSQL counts episodes in three rolling windows with ONE scan.
+// caseCountsSQL counts episodes in three rolling windows with ONE scan.
 //
 // Three FILTERed aggregates over one range predicate, not three queries: the
-// 30-day bound rides alerts_list_idx's sibling occ_alert_idx (org_id, alert_id,
+// 30-day bound rides alerts_list_idx's sibling case_alert_idx (org_id, alert_id,
 // seq DESC) and the two tighter windows are then free.
-const occurrenceCountsSQL = `
+const caseCountsSQL = `
 SELECT count(*) FILTER (WHERE started_at >= $3) AS c24h,
        count(*) FILTER (WHERE started_at >= $4) AS c7d,
        count(*)                                 AS c30d
-  FROM alert_occurrences
+  FROM alert_cases
  WHERE org_id = $1 AND alert_id = $2 AND started_at >= $5`
 
 // firingDurationsSQL samples the CLOSED episodes, newest first.
@@ -72,7 +72,7 @@ SELECT count(*) FILTER (WHERE started_at >= $3) AS c24h,
 // down whenever something is currently broken.
 const firingDurationsSQL = `
 SELECT EXTRACT(EPOCH FROM (ended_at - started_at))::float8
-  FROM alert_occurrences
+  FROM alert_cases
  WHERE org_id = $1 AND alert_id = $2 AND ended_at IS NOT NULL AND started_at >= $3
  ORDER BY started_at DESC
  LIMIT $4`
@@ -88,7 +88,7 @@ func (r *AlertReadModel) AlertHistory(
 
 	batch := &pgx.Batch{}
 	batch.Queue(alertProjectionSQL, s.OrgID(), alertID)
-	batch.Queue(occurrenceCountsSQL, s.OrgID(), alertID, from24h, from7d, from30d)
+	batch.Queue(caseCountsSQL, s.OrgID(), alertID, from24h, from7d, from30d)
 	batch.Queue(firingDurationsSQL, s.OrgID(), alertID, from30d, alerthistory.SampleLimit)
 
 	results := r.db(ctx).SendBatch(ctx, batch)
@@ -97,7 +97,7 @@ func (r *AlertReadModel) AlertHistory(
 	var out alerthistory.Stats
 
 	err := results.QueryRow().Scan(
-		&out.TotalOccurrences, &out.FlapScore, &out.IsFlapping, &out.FirstSeenAt, &out.LastSeenAt)
+		&out.TotalCases, &out.FlapScore, &out.IsFlapping, &out.FirstSeenAt, &out.LastSeenAt)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		// An alert that vanished between the fire and the enrichment is not an
@@ -110,7 +110,7 @@ func (r *AlertReadModel) AlertHistory(
 
 	if err := results.QueryRow().Scan(&out.Count24h, &out.Count7d, &out.Count30d); err != nil {
 		return alerthistory.Stats{}, mapErr(err, CodeQueryFailed,
-			"could not count the alert's occurrences")
+			"could not count the alert's cases")
 	}
 
 	rows, err := results.Query()
@@ -151,10 +151,10 @@ func (r *AlertReadModel) AlertHistory(
 // to its newest, so a flapping neighbour contributes one line rather than forty.
 const relatedAlertsSQL = `
 WITH subject AS (
-  SELECT group_id FROM alert_occurrences WHERE org_id = $1 AND id = $2
+  SELECT group_id FROM alert_cases WHERE org_id = $1 AND id = $2
 ),
 candidates AS (
-  SELECT o.id           AS occurrence_id,
+  SELECT o.id           AS case_id,
          o.alert_id     AS alert_id,
          o.state        AS state,
          o.started_at   AS started_at,
@@ -169,7 +169,7 @@ candidates AS (
            WHEN $5 <> ''  AND a.alertname = $5                  THEN 'same_alertname'
            WHEN $6 <> ''  AND a.namespace = $6                  THEN 'same_namespace'
          END AS relation
-    FROM alert_occurrences o
+    FROM alert_cases o
     JOIN alerts a ON a.id = o.alert_id AND a.org_id = o.org_id
    WHERE o.org_id = $1
      -- A DELIVERY DRILL is never "what else was firing". Nothing fired: oto
@@ -193,12 +193,12 @@ ranked AS (
     FROM deduped d
 )
 SELECT relation, alert_id, alert_key, alertname, severity, namespace, service,
-       state, occurrence_id, started_at, total
+       state, case_id, started_at, total
   FROM ranked
  WHERE rn <= $8
  ORDER BY relation, started_at DESC`
 
-// RelatedAlerts returns what else was firing around this occurrence.
+// RelatedAlerts returns what else was firing around this case.
 func (r *AlertReadModel) RelatedAlerts(
 	ctx context.Context, s db.TenantScope, q relatedalerts.Query,
 ) ([]relatedalerts.Related, map[string]int, error) {
@@ -208,7 +208,7 @@ func (r *AlertReadModel) RelatedAlerts(
 	}
 
 	rows, err := r.db(ctx).Query(ctx, relatedAlertsSQL,
-		s.OrgID(), q.OccurrenceID, q.AlertID,
+		s.OrgID(), q.CaseID, q.AlertID,
 		q.From.UTC(), q.AlertName, q.Namespace, q.To.UTC(), limit)
 	if err != nil {
 		return nil, nil, mapErr(err, CodeQueryFailed, "could not read the related alerts")
@@ -222,19 +222,19 @@ func (r *AlertReadModel) RelatedAlerts(
 	for rows.Next() {
 		var (
 			rel                          relatedalerts.Related
-			alertID, occurrenceID        uuid.UUID
+			alertID, caseID              uuid.UUID
 			severity, namespace, service *string
 			total                        int64
 		)
 		if err := rows.Scan(
 			&rel.Relation, &alertID, &rel.AlertKey, &rel.AlertName,
 			&severity, &namespace, &service,
-			&rel.State, &occurrenceID, &rel.StartedAt, &total,
+			&rel.State, &caseID, &rel.StartedAt, &total,
 		); err != nil {
 			return nil, nil, mapErr(err, CodeQueryFailed, "could not read the related alerts")
 		}
 		rel.AlertID = alertID.String()
-		rel.OccurrenceID = occurrenceID.String()
+		rel.CaseID = caseID.String()
 		rel.Severity = deref(severity)
 		rel.Namespace = deref(namespace)
 		rel.Service = deref(service)
@@ -252,25 +252,25 @@ func (r *AlertReadModel) RelatedAlerts(
 // bindRuleSnapshotSQL pins the captured rule to the episode it explains.
 //
 // It is guarded by `rule_snapshot_id IS NULL` so the binding is WRITE-ONCE: the
-// snapshot bound to an occurrence is the rule as it was WHEN THAT OCCURRENCE
+// snapshot bound to a case is the rule as it was WHEN THAT CASE
 // FIRED, and a re-run of the enricher hours later must never quietly replace it
 // with a newer capture. Overwriting it would destroy the one fact the whole
 // feature exists to preserve.
 const bindRuleSnapshotSQL = `
-UPDATE alert_occurrences
+UPDATE alert_cases
    SET rule_snapshot_id = $3, updated_at = now()
  WHERE org_id = $1 AND id = $2 AND rule_snapshot_id IS NULL`
 
-// BindRuleSnapshot pins a snapshot to an occurrence, once.
+// BindRuleSnapshot pins a snapshot to a case, once.
 func (r *AlertReadModel) BindRuleSnapshot(
-	ctx context.Context, s db.TenantScope, occurrenceID, snapshotID uuid.UUID,
+	ctx context.Context, s db.TenantScope, caseID, snapshotID uuid.UUID,
 ) error {
-	if occurrenceID == uuid.Nil || snapshotID == uuid.Nil {
+	if caseID == uuid.Nil || snapshotID == uuid.Nil {
 		return errs.New(errs.KindValidation, "enrichment_bad_binding",
-			"binding a rule snapshot needs both an occurrence and a snapshot")
+			"binding a rule snapshot needs both a case and a snapshot")
 	}
-	if _, err := r.db(ctx).Exec(ctx, bindRuleSnapshotSQL, s.OrgID(), occurrenceID, snapshotID); err != nil {
-		return mapErr(err, CodeWriteFailed, "could not bind the rule snapshot to the occurrence")
+	if _, err := r.db(ctx).Exec(ctx, bindRuleSnapshotSQL, s.OrgID(), caseID, snapshotID); err != nil {
+		return mapErr(err, CodeWriteFailed, "could not bind the rule snapshot to the case")
 	}
 	return nil
 }

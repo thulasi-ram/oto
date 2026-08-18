@@ -77,7 +77,7 @@ func (c *Container) handlers() jobs.Handlers {
 		// enrich.run — the budgeted, two-phase pipeline.
 		EnrichRun: enrichworker.EnrichRun(
 			c.Enrichment,
-			occurrenceScopes{pool: c.Pools.General},
+			caseScopes{pool: c.Pools.General},
 		),
 
 		// The periodic lifecycle and maintenance sweeps. Each is a per-tenant
@@ -93,7 +93,7 @@ func (c *Container) handlers() jobs.Handlers {
 		// TABLE rather than of a row — and the window it drops at is a REDUCE over
 		// every tenant rather than a map. See effectiveRetention for why that one
 		// cannot take this shape.
-		OccurrenceReap:   c.reapOccurrences,
+		CaseReap:         c.reapCases,
 		GroupClose:       c.closeGroups,
 		FlapScore:        c.scoreFlaps,
 		PartitionsManage: c.managePartitions,
@@ -220,9 +220,9 @@ func (c *Container) perTenantSweep(
 	return nil
 }
 
-// reapOccurrences is `occurrence.reap` (§B.4, T6).
+// reapCases is `case.reap` (§B.4, T6).
 //
-// ⭐ THE REAPER GUARD lives in the service, not here: an occurrence whose
+// ⭐ THE REAPER GUARD lives in the service, not here: a case whose
 // AlertSource cannot be proven healthy is HELD. Losing sight of an alert is not
 // the alert resolving, and `expired` is never `resolved`.
 //
@@ -230,13 +230,13 @@ func (c *Container) perTenantSweep(
 // there is no indefinite snooze — and it needs a clock somebody reads; there is
 // no separate job kind for it, so it belongs on the one sweep that already runs
 // every minute over the same tenants.
-func (c *Container) reapOccurrences(ctx context.Context, job *jobs.Job[jobs.OccurrenceReapArgs]) error {
-	return c.perTenantSweep(ctx, jobs.KindOccurrenceReap, job.Args.TenantFanOut,
-		func(f jobs.TenantFanOut) db.JobArgs { return jobs.OccurrenceReapArgs{TenantFanOut: f} },
+func (c *Container) reapCases(ctx context.Context, job *jobs.Job[jobs.CaseReapArgs]) error {
+	return c.perTenantSweep(ctx, jobs.KindCaseReap, job.Args.TenantFanOut,
+		func(f jobs.TenantFanOut) db.JobArgs { return jobs.CaseReapArgs{TenantFanOut: f} },
 		c.reapOneTenant)
 }
 
-// reapOneTenant is `occurrence.reap` for exactly one org — the whole of a job
+// reapOneTenant is `case.reap` for exactly one org — the whole of a job
 // execution and the whole of its two-minute budget.
 func (c *Container) reapOneTenant(ctx context.Context, scope db.TenantScope) error {
 	res, err := c.Alerts.Reap(ctx, scope, sweepLimit)
@@ -244,7 +244,7 @@ func (c *Container) reapOneTenant(ctx context.Context, scope db.TenantScope) err
 		return err
 	}
 	if res.Expired > 0 || res.Held > 0 {
-		c.Logger.InfoContext(ctx, "occurrence.reap",
+		c.Logger.InfoContext(ctx, "case.reap",
 			slog.String("org_id", scope.OrgID().String()),
 			slog.Int("considered", res.Considered),
 			slog.Int("expired", res.Expired),
@@ -661,7 +661,7 @@ func (c *Container) pruneGlobal(ctx context.Context) error {
 // and `LiveScope` applies the same filter on the way in, so a soft-deleted org
 // gets no drill sweep from either end. Its open drills are never finalised and
 // `Dispose` — by its own comment "the ONLY function in oto that deletes a signal
-// row" — never runs for them, so the alert, group, occurrence, thread and
+// row" — never runs for them, so the alert, group, case, thread and
 // notification rows a drill MANUFACTURED persist indefinitely: ADR 0024 lists
 // every one of those tables as never reaped by anything at any setting, and the
 // one exception, `alert_events`, is dropped by `partitions.manage` on its own

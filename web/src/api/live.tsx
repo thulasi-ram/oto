@@ -64,7 +64,7 @@ export function LiveProvider(props: LiveProviderProps): JSX.Element {
         // this file's half of the bargain.
         void queryClient.invalidateQueries({ queryKey: qk.notifications.all() });
         break;
-      case "occurrence.upserted":
+      case "case.upserted":
         void queryClient.invalidateQueries({ queryKey: qk.alerts.all() });
         void queryClient.invalidateQueries({ queryKey: qk.groups.all() });
         break;

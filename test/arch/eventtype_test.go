@@ -73,7 +73,7 @@ var eventTypeTrees = []string{"internal", "cmd", "tools", "api", "db"}
 // ⚠️ `streaming/domain` IS NOT A LOOPHOLE, IT IS A DIFFERENT ENUM THAT SHARES ONE
 // SPELLING. `streaming/domain.Kind` is `ui_events.kind` — the SSE `event:` field,
 // bounded by `ui_events_kind_ck`, whose members are `alert.upserted`,
-// `occurrence.upserted`, `group.upserted`, `event.appended`, `source.health` and
+// `case.upserted`, `group.upserted`, `event.appended`, `source.health` and
 // `delivery.updated`. Only the last collides with an `alert_events.type`, and the
 // collision is coincidence: one says "a delivery row changed, re-read it", the
 // other says "oto amended a card in a channel". They are separate columns with
@@ -105,6 +105,18 @@ func eventTypeExempt(pkg string) string {
 //
 // A fourth entry is a decision, not paperwork: it is one more place a SPEC
 // amendment has to reach.
+//
+// ⛔⛔ THIS GATE IS BLIND TO A BOUND PARAMETER, AND THAT BLIND SPOT HAS ALREADY COST
+// ONE DEFECT. It reads SQL string LITERALS (`sqlQuoted`), so a predicate whose value
+// arrives as `$n` is invisible to it however wrong the value is —
+// `notification/repository.readCause` shipped `type = $3` bound from
+// `EventType.String()`, which matched none of the thirteen months of pre-ADR-0036
+// rows 00052 deliberately left on disk, and every gate in the tree stayed green.
+// Binding a value gates the TYPO (a constant that left the enum is a compile error);
+// it does not gate the RENAME. The rule that does is on
+// `alerts/domain.EventType.PersistedSpellings`: every predicate on
+// `alert_events.type`, literal or parameter, spells BOTH forms. Nothing here can
+// prove it — a reviewer grepping `type = $` and `type = ANY(` can.
 var eventTypeSQLSites = map[string]string{
 	"internal/notification/repository": "groupTrailSQL: the 12 lifecycle types a card's state trail shows",
 	"internal/alerts/repository":       "stateChangeCountsSQL: the 6 transitions `flap.score` counts",
@@ -122,10 +134,10 @@ var sqlQuoted = regexp.MustCompile(`'([^']*)'`)
 // notTokenChar splits a literal into the words a value could be spelled as.
 //
 // ⚠️ TOKENISED AND NOT SUBSTRING, AND THE DIFFERENCE IS WHAT THE GATE CAN CONCLUDE.
-// A substring search sees `occurrence.opened` inside `occurrence.opened_at` and
+// A substring search sees `case.opened` inside `case.opened_at` and
 // inside `oto.notification.v1`, so it fires on column names and message ids; worse,
 // it can only ever answer "this text appears", which says nothing about the
-// literal `'occurrence.renamed'` left behind by a rename. Splitting on everything
+// literal `'case.renamed'` left behind by a rename. Splitting on everything
 // that cannot be part of a value — the dot and the underscore stay in — yields
 // whole tokens, so the gate can ask both questions: is this token a member (a
 // second spelling), and is this event-type-shaped token NOT a member (a filter
@@ -135,10 +147,21 @@ var notTokenChar = regexp.MustCompile(`[^a-z0-9_.]+`)
 // eventTypeValues is the closed set as a lookup, taken from the enum rather than
 // restated here: a gate with its own copy of the vocabulary is the bug it is
 // gating.
+//
+// ⚠️ IT IS `AllPersistedEventTypes` AND NOT `AllEventTypes`, AND THE DIFFERENCE IS
+// THE ONE THIS GATE IS ABOUT. `AllEventTypes` is what oto puts ON THE WIRE — the
+// thirty-six values `components.schemas.AlertEventType` publishes. This gate reads
+// SQL predicates, and a predicate is judged against what the COLUMN may hold, which
+// since ADR 0036 is eight strings larger: the pre-rename `occurrence.*` spellings
+// that migration 00052 deliberately left in thirteen months of `alert_events`.
+// Judging a filter against the wire set would report every one of those as a value
+// that "matches zero rows forever" — the exact opposite of the truth, since they
+// are the only thing that still matches the old rows.
 func eventTypeValues() map[string]bool {
-	out := make(map[string]bool, len(domain.AllEventTypes()))
-	for _, v := range domain.AllEventTypes() {
-		out[v.String()] = true
+	persisted := domain.AllPersistedEventTypes()
+	out := make(map[string]bool, len(persisted))
+	for _, v := range persisted {
+		out[v] = true
 	}
 	return out
 }
@@ -223,12 +246,18 @@ func eventTypeMembersIn(s string, values map[string]bool) []string {
 	return out
 }
 
-// TestEventTypeIsSpelledOnce refuses a second Go spelling of any of the 36
-// `alert_events.type` values.
+// TestEventTypeIsSpelledOnce refuses a second Go spelling of any of the 44
+// strings `alert_events.type` may hold — the 36 on the contract plus the 8
+// pre-rename spellings ADR 0036 left on disk.
 func TestEventTypeIsSpelledOnce(t *testing.T) {
-	if n := len(eventTypeValues()); n != 36 {
+	if n := len(domain.AllEventTypes()); n != 36 {
 		t.Fatalf("AllEventTypes has %d distinct values, expected 36 — "+
 			"if the SPEC amended the enum, this number moves with it", n)
+	}
+	if n := len(eventTypeValues()); n != 44 {
+		t.Fatalf("AllPersistedEventTypes has %d distinct values, expected 44 — "+
+			"36 on the wire plus the 8 pre-ADR-0036 spellings. This number falls to 36 "+
+			"when the last `alert_events` partition holding them is dropped, and not before", n)
 	}
 
 	for _, f := range eventTypeFindings(scanEventTypeLiterals(t, repoRoot(t), eventTypeTrees)) {
@@ -395,16 +424,16 @@ func TestEventTypeGateFires(t *testing.T) {
 	// package is not registered to hold one.
 	write("internal/drill/repository/trail.go",
 		"package repository\n\nconst trailSQL = `SELECT type FROM alert_events\n"+
-			" WHERE type IN ('occurrence.opened','occurrence.expired')`\n")
+			" WHERE type IN ('case.opened','case.expired')`\n")
 	// A REGISTERED SQL site whose values are all still members: allowed, silent.
 	write("internal/stats/repository/rollup.go",
 		"package repository\n\nconst rollupSQL = `SELECT count(*) FROM alert_events\n"+
-			" WHERE type IN ('occurrence.opened','occurrence.resolved')`\n")
+			" WHERE type IN ('case.opened','case.resolved')`\n")
 	// The same site after a rename nobody carried into the SQL: the filter now
 	// matches zero rows, and this is the only thing in the repo that can say so.
 	write("internal/alerts/repository/stale.go",
 		"package repository\n\nconst staleSQL = `SELECT count(*) FROM alert_events\n"+
-			" WHERE type IN ('occurrence.opened','occurrence.renamed')`\n")
+			" WHERE type IN ('case.opened','case.renamed')`\n")
 	// The enum's home, which must not report itself.
 	write("internal/alerts/domain/event.go",
 		"package domain\n\nvar EventGroupClosed = EventType{\"group.closed\"}\n")
@@ -416,7 +445,7 @@ func TestEventTypeGateFires(t *testing.T) {
 	// all `ev_type_ck` checks, so a shape-matching gate would report it. Outside a
 	// timeline query, where the shape means nothing.
 	write("internal/platform/jobs/kinds.go",
-		"package jobs\n\nconst KindOccurrenceReap = \"occurrence.reap\"\n")
+		"package jobs\n\nconst KindCaseReap = \"case.reap\"\n")
 
 	type want struct {
 		pkg   string
@@ -425,8 +454,8 @@ func TestEventTypeGateFires(t *testing.T) {
 	}
 	wants := []want{
 		{"cmd/otoctl", faultSecondSpelling, "alert.created"},
-		{"internal/alerts/repository", faultStaleSQLValue, "occurrence.renamed"},
-		{"internal/drill/repository", faultUnregisteredSQL, "occurrence.opened"},
+		{"internal/alerts/repository", faultStaleSQLValue, "case.renamed"},
+		{"internal/drill/repository", faultUnregisteredSQL, "case.opened"},
 		{"internal/grouping/service", faultSecondSpelling, "group.opened"},
 	}
 

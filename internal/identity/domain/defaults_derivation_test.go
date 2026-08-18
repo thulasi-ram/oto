@@ -74,7 +74,7 @@ const FastCaptureGroupInterval = 30 * time.Second
 
 // observableCycle is how long one fire → resolve → fire cycle takes to be
 // OBSERVED, and it yields exactly two counted transitions
-// (`occurrence.opened|reopened` plus `occurrence.resolved|expired`).
+// (`case.opened|reopened` plus `case.resolved|expired`).
 //
 // ⛔ THE `max` IS THE TERM THE OLD ARITHMETIC MISSED. A cycle pays the larger of
 // two independent floors: the RULE floor (the condition must hold for `for:` all
@@ -115,7 +115,7 @@ func TestTheDerivationUsesTheSameAlertmanagerDefaultsOtoServes(t *testing.T) {
 
 // ------------------------------------------------------------- refire_grace
 
-// ⭐ THE HEADLINE RESULT. `refire_grace`'s clock starts at the occurrence's
+// ⭐ THE HEADLINE RESULT. `refire_grace`'s clock starts at the case's
 // `ended_at`, which T5 takes from the UPSTREAM `EndsAt` — when Prometheus stopped
 // considering the rule firing, not when oto heard about it. So a re-fire must pay
 // the rule's whole `for:` dwell again INSIDE the grace window, and Alertmanager
@@ -174,12 +174,12 @@ func TestTheOldRefireGraceCouldNotReachTheModalRule(t *testing.T) {
 // ⛔⛔ THE DEFECT THE TWO DEFAULTS HAD *BETWEEN* THEM, AND THE ONE A PER-KNOB TEST
 // WOULD NEVER HAVE CAUGHT.
 //
-// Reopening an occurrence only avoids a new Slack root message while the group
+// Reopening a case only avoids a new Slack root message while the group
 // GENERATION is still open: closing a generation freezes its thread and the next
 // observation opens N+1 with a brand-new root (ADR 0005, §B.5). oto shipped
 // `group_close_delay: 300s` against `refire_grace: 600s`, so the generation closed
 // five minutes into a ten-minute grace and the whole second half of the grace
-// bought an occurrence reopen that posted a new card anyway. oto's own tuning page
+// bought a case reopen that posted a new card anyway. oto's own tuning page
 // already stated the rule; its own defaults broke it.
 func TestGroupCloseDelayDoesNotDefeatTheRefireGrace(t *testing.T) {
 	t.Parallel()

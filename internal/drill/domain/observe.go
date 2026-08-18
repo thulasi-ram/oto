@@ -18,7 +18,7 @@ import (
 type Artifacts struct {
 	Batch        BatchFact
 	Alert        AlertFact
-	Occurrence   OccurrenceFact
+	Case         CaseFact
 	Group        GroupFact
 	Notification NotificationFact
 	Threads      []ThreadFact
@@ -52,8 +52,8 @@ type AlertFact struct {
 	State     string
 }
 
-// OccurrenceFact is the firing episode.
-type OccurrenceFact struct {
+// CaseFact is the firing episode.
+type CaseFact struct {
 	Found          bool
 	ID             uuid.UUID
 	Seq            int
@@ -148,7 +148,7 @@ func Observe(a Artifacts, timedOut bool) Result {
 		acceptStage(a),
 		processStage(a),
 		identityStage(a),
-		occurrenceStage(a),
+		caseStage(a),
 		groupStage(a),
 		ruleStage(a),
 		policyStage(a),
@@ -219,17 +219,17 @@ func identityStage(a Artifacts) Stage {
 		Facts:  map[string]string{"alert_key": a.Alert.Key, "alert_id": a.Alert.ID.String()}}
 }
 
-func occurrenceStage(a Artifacts) Stage {
-	if !a.Occurrence.Found {
-		return Stage{Name: StageOccurrence, Status: StatusPending,
+func caseStage(a Artifacts) Stage {
+	if !a.Case.Found {
+		return Stage{Name: StageCase, Status: StatusPending,
 			Detail: "waiting for a firing episode to open"}
 	}
-	return Stage{Name: StageOccurrence, Status: StatusPassed,
+	return Stage{Name: StageCase, Status: StatusPassed,
 		Detail: "a firing episode opened — this is the row an operator would acknowledge",
 		Facts: map[string]string{
-			"occurrence_id": a.Occurrence.ID.String(),
-			"seq":           strconv.Itoa(a.Occurrence.Seq),
-			"state":         a.Occurrence.State,
+			"case_id": a.Case.ID.String(),
+			"seq":     strconv.Itoa(a.Case.Seq),
+			"state":   a.Case.State,
 		}}
 }
 
@@ -258,16 +258,16 @@ func groupStage(a Artifacts) Stage {
 }
 
 func ruleStage(a Artifacts) Stage {
-	if !a.Occurrence.Found {
+	if !a.Case.Found {
 		return Stage{Name: StageRuleSnapshot, Status: StatusPending}
 	}
-	if a.Occurrence.RuleSnapshotID != uuid.Nil {
+	if a.Case.RuleSnapshotID != uuid.Nil {
 		return Stage{Name: StageRuleSnapshot, Status: StatusPassed,
 			Detail: "a rule snapshot was captured and bound to the episode — this is what oto shows " +
 				"as “what the rule said at that moment”",
 			Facts: map[string]string{
-				"rule_snapshot_id": a.Occurrence.RuleSnapshotID.String(),
-				"rule_name":        a.Occurrence.RuleName,
+				"rule_snapshot_id": a.Case.RuleSnapshotID.String(),
+				"rule_name":        a.Case.RuleName,
 			}}
 	}
 	// ⭐ SKIPPED, NOT FAILED, AND THE DISTINCTION IS THE HONEST ONE. A drill's

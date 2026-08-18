@@ -42,19 +42,19 @@ type ObserveOptions struct {
 type ObserveOutcome struct {
 	AlertID  uuid.UUID
 	AlertKey string
-	// OccurrenceID is the episode the observation landed on, or uuid.Nil when it
+	// CaseID is the episode the observation landed on, or uuid.Nil when it
 	// landed on none — a `resolved` observation for an Alert with no open episode
 	// resolves nothing.
-	OccurrenceID uuid.UUID
+	CaseID uuid.UUID
 	// Transition names the §B.3 row that ran, or "" when none did.
 	Transition string
-	// From and To are the occurrence states either side of the edge.
+	// From and To are the case states either side of the edge.
 	From string
 	To   string
 	// AlertCreated is true on the first ever sighting of this alert_key.
 	AlertCreated bool
-	// OccurrenceOpened is true for T1 and T7.
-	OccurrenceOpened bool
+	// CaseOpened is true for T1 and T7.
+	CaseOpened bool
 	// Clamped records that §B.3.2 pulled `ended_at` forward because the upstream
 	// clock ran backwards. THE CALLER MUST accumulate ClampSkew into
 	// source_health.clock_skew_ms: the skew is measured and surfaced, never
@@ -94,7 +94,7 @@ func (s *Service) ObserveBatch(
 
 	// ⭐ RE-READ AND RE-DECIDE is this path's answer to a lost compare-and-set.
 	//
-	// A conflict means the occurrence moved between the batch's read and its
+	// A conflict means the case moved between the batch's read and its
 	// write, so the verdict was reached against a row that no longer exists. The
 	// whole attempt has already rolled back — every write in `observe` is inside
 	// the transaction, the events carry §C.8 dedupe keys and the alert upsert is
@@ -133,14 +133,14 @@ func (s *Service) ObserveBatch(
 // conflict is returned and the job's own retry budget takes over.
 const observeMaxAttempts = 3
 
-// ⚠️ LOCK ORDER: THIS TRANSACTION TAKES `alerts` BEFORE `alert_occurrences`.
-// Step 2's `UpsertBatch` locks the alert row, and the occurrence is only read and
+// ⚠️ LOCK ORDER: THIS TRANSACTION TAKES `alerts` BEFORE `alert_cases`.
+// Step 2's `UpsertBatch` locks the alert row, and the case is only read and
 // written afterwards. `Service.expire` (sweep.go) takes them the OTHER WAY ROUND.
 // The two orders form a cycle; see the longer note at `expire` before adding any
 // explicit lock to either site.
 //
 // The accidental upside of locking `alerts` first is that two ObserveBatch calls
-// touching one alert serialise here, so neither can read a stale occurrence — the
+// touching one alert serialise here, so neither can read a stale case — the
 // compare-and-set below is contended almost exclusively by the reaper.
 //
 // The §B.3 decision itself is NOT here. `domain.Decide` names the row and
@@ -179,7 +179,7 @@ func (s *Service) observe(
 	}
 
 	// 3. The latest episode of every alert in the batch, in one round trip.
-	latest, err := s.latestOccurrences(ctx, scope, alertIDs)
+	latest, err := s.latestCases(ctx, scope, alertIDs)
 	if err != nil {
 		return ObserveResult{}, err
 	}
@@ -212,7 +212,7 @@ func (s *Service) observe(
 
 	// 4. The batch's writes, ONE round trip each, mirroring the reads above
 	//    (§G.4): the projections collapsed to the last write per alert, the
-	//    timeline entries, then every UI frame the loop queued — occurrence and
+	//    timeline entries, then every UI frame the loop queued — case and
 	//    alert frames in observation order first, event frames after, which is
 	//    the order the per-item appends used to produce.
 	if err := s.flushProjections(ctx, scope, acc); err != nil {
@@ -237,8 +237,8 @@ func (s *Service) observe(
 	// enqueueNotify.
 	deferred := map[uuid.UUID]struct{}{}
 	if enrichN > 0 {
-		for _, occID := range acc.enrichIDs {
-			deferred[occID] = struct{}{}
+		for _, caseID := range acc.enrichIDs {
+			deferred[caseID] = struct{}{}
 		}
 	}
 	notifyN, err := s.enqueueNotify(ctx, scope, acc.notifies, deferred)
@@ -265,9 +265,9 @@ type observeAccum struct {
 	// one round trip in step 3 and is UPDATED IN PLACE, so a second observation of
 	// the same alert inside one batch decides against what the first one did
 	// rather than against a stale read.
-	latest map[uuid.UUID]domain.Occurrence
+	latest map[uuid.UUID]domain.Case
 	// newEpisode counts the episodes opened per Alert IN THIS BATCH, which is what
-	// the projection adds to total_occurrences.
+	// the projection adds to total_cases.
 	newEpisode map[uuid.UUID]int
 
 	// projections is the batch's pending `alerts` summary per alert, and
@@ -349,7 +349,7 @@ func (s *Service) observeOne(
 		acc.events = append(acc.events, ev)
 	}
 
-	// The Alert's latest episode, or the ZERO Occurrence when it has none — which
+	// The Alert's latest episode, or the ZERO Case when it has none — which
 	// is StateNone, the state T1's row comes from. `Decide` needs no second
 	// argument to be told the difference.
 	current := acc.latest[alert.ID()]
@@ -365,12 +365,12 @@ func (s *Service) observeOne(
 	}
 
 	var (
-		occ          domain.Occurrence
+		ac           domain.Case
 		stateChanged bool
 	)
 	if d.OpensEpisode {
 		// A new episode is always a state change: there was no state before it.
-		occ, err = s.applyOpen(ctx, scope, alert, o, at, actor, opt, d, &out, acc)
+		ac, err = s.applyOpen(ctx, scope, alert, o, at, actor, opt, d, &out, acc)
 		if err != nil {
 			return err
 		}
@@ -397,7 +397,7 @@ func (s *Service) observeOne(
 			}
 			return err
 		}
-		occ, stateChanged, err = s.applyEdge(ctx, scope, alert, o, r, actor, opt, &out, acc)
+		ac, stateChanged, err = s.applyEdge(ctx, scope, alert, o, r, actor, opt, &out, acc)
 		if err != nil {
 			return err
 		}
@@ -414,15 +414,15 @@ func (s *Service) observeOne(
 	// the finding; `test/integration/alert_identity_test.go` proves it against a
 	// real database.
 
-	acc.latest[alert.ID()] = occ
-	out.OccurrenceID = occ.ID()
+	acc.latest[alert.ID()] = ac
+	out.CaseID = ac.ID()
 	// The projection and the two frames are STAGED, not written: the batch
 	// flushes them once at the end (§G.4), inside the same transaction, so an
 	// event and its projection still commit together or not at all.
-	acc.stageProjection(alert.ID(), projectionFor(alert, occ, at, stateChanged,
+	acc.stageProjection(alert.ID(), projectionFor(alert, ac, at, stateChanged,
 		acc.newEpisode[alert.ID()]))
-	if err := s.queueFrame(acc, StreamOccurrenceUpserted, occ.ID(),
-		occurrenceFramePayload(occ)); err != nil {
+	if err := s.queueFrame(acc, StreamCaseUpserted, ac.ID(),
+		caseFramePayload(ac)); err != nil {
 		return err
 	}
 	if err := s.queueFrame(acc, StreamAlertUpserted, alert.ID(), map[string]any{
@@ -440,13 +440,13 @@ func (s *Service) observeOne(
 // The Alert row and its `alert.created` event are already in the transaction, so
 // the identity is never lost; what does not happen is a projection write and a
 // stream frame. ⛔ THAT IS THIS PATH'S LONG-STANDING BEHAVIOUR AND IT IS NOT THIS
-// REFACTOR'S TO CHANGE: the branch that used to sit under the loop's `haveOcc`
+// REFACTOR'S TO CHANGE: the branch that used to sit under the loop's `haveCase`
 // test to project such an Alert was unreachable, because both give-up paths
 // `continue`d above it. It is also very nearly harmless — the upsert's INSERT
 // already writes `state`, `last_seen_at` and `last_state_change_at` for a
 // first-ever sighting, which is exactly what that branch re-wrote.
 func (s *Service) noTransition(
-	ctx context.Context, alert domain.Alert, current domain.Occurrence,
+	ctx context.Context, alert domain.Alert, current domain.Case,
 	trigger domain.Trigger, out ObserveOutcome, acc *observeAccum,
 ) {
 	s.log.DebugContext(ctx, "alerts: observation makes no legal transition",
@@ -466,16 +466,16 @@ func (s *Service) applyOpen(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
 	at domain.ObservationTime, actor domain.Actor, opt ObserveOptions, d domain.Decision,
 	out *ObserveOutcome, acc *observeAccum,
-) (domain.Occurrence, error) {
+) (domain.Case, error) {
 	opened, evs, err := s.openEpisode(ctx, scope, alert, o, at, actor, opt, d.Seq, d.ReopenOf)
 	if err != nil {
-		return domain.Occurrence{}, err
+		return domain.Case{}, err
 	}
 	acc.events = append(acc.events, evs...)
 	acc.enrichIDs = append(acc.enrichIDs, opened.ID())
 	acc.newEpisode[alert.ID()]++
 
-	out.OccurrenceOpened = true
+	out.CaseOpened = true
 	out.Transition = d.ID.String()
 	// ⭐ `From` IS THE STATE THE EPISODE CAME FROM, and for T7 that is `resolved`
 	// or `expired`, never the empty string. It is empty for T1 alone, where
@@ -485,37 +485,37 @@ func (s *Service) applyOpen(
 	out.From, out.To = d.From.String(), opened.State().String()
 
 	// T10: an acknowledgement does NOT survive into a new episode. The previous
-	// occurrence keeps its ack in the record — rewriting a terminal episode's
+	// case keeps its ack in the record — rewriting a terminal episode's
 	// attribution would be rewriting history — and the fact that the ack no longer
 	// applies is recorded on the NEW episode.
 	if d.DropsAck {
 		ev, err := autoUnackEvent(opened, at)
 		if err != nil {
-			return domain.Occurrence{}, err
+			return domain.Case{}, err
 		}
 		acc.events = append(acc.events, ev)
 		// ⭐ AND IT NOTIFIES, which is the half the two branches disagreed about.
-		// SPEC §B.3 T10 is explicit — "Emit `occurrence.unacknowledged` … enqueue
+		// SPEC §B.3 T10 is explicit — "Emit `case.unacknowledged` … enqueue
 		// `notify.evaluate(reason=unacked)`" — and §H.5's `unack` block has a
-		// rendering for precisely this road: "*Un-acknowledged* — new occurrence
+		// rendering for precisely this road: "*Un-acknowledged* — new case
 		// opened". `unacked` is a root UPDATE with no reply (§H.6), so it costs a
 		// card edit and never a repost, and without it the only witness that a
 		// human's acknowledgement stopped applying is a timeline entry nobody is
 		// told about.
 		acc.notifies = append(acc.notifies, notifyRequest{
-			groupID:      groupOf(opt, opened),
-			reason:       reasonUnacked,
-			alertID:      ptr(alert.ID()),
-			occurrenceID: ptr(opened.ID()),
-			actor:        actor.Kind().String(),
+			groupID: groupOf(opt, opened),
+			reason:  reasonUnacked,
+			alertID: ptr(alert.ID()),
+			caseID:  ptr(opened.ID()),
+			actor:   actor.Kind().String(),
 		})
 	}
 	acc.notifies = append(acc.notifies, notifyRequest{
-		groupID:      groupOf(opt, opened),
-		reason:       reasonFired,
-		alertID:      ptr(alert.ID()),
-		occurrenceID: ptr(opened.ID()),
-		actor:        actor.Kind().String(),
+		groupID: groupOf(opt, opened),
+		reason:  reasonFired,
+		alertID: ptr(alert.ID()),
+		caseID:  ptr(opened.ID()),
+		actor:   actor.Kind().String(),
 	})
 	return opened, nil
 }
@@ -530,40 +530,40 @@ func (s *Service) applyEdge(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
 	r domain.TransitionResult, actor domain.Actor, opt ObserveOptions,
 	out *ObserveOutcome, acc *observeAccum,
-) (domain.Occurrence, bool, error) {
+) (domain.Case, bool, error) {
 	if err := s.persistTransition(ctx, scope, r, o); err != nil {
-		return domain.Occurrence{}, false, err
+		return domain.Case{}, false, err
 	}
-	occ := r.Occurrence
+	ac := r.Case
 	acc.events = append(acc.events, r.Events...)
 	out.Transition = r.ID.String()
 	out.From, out.To = r.From.String(), r.To.String()
 	out.Clamped, out.ClampSkew = r.Clamped, r.ClampSkew
 	if reason := reasonFor(r.ID); reason != "" {
 		acc.notifies = append(acc.notifies, notifyRequest{
-			groupID:      groupOf(opt, occ),
-			reason:       reason,
-			alertID:      ptr(alert.ID()),
-			occurrenceID: ptr(occ.ID()),
-			actor:        actor.Kind().String(),
+			groupID: groupOf(opt, ac),
+			reason:  reason,
+			alertID: ptr(alert.ID()),
+			caseID:  ptr(ac.ID()),
+			actor:   actor.Kind().String(),
 		})
 	}
-	return occ, r.From != r.To, nil
+	return ac, r.From != r.To, nil
 }
 
-// openEpisode opens a new AlertOccurrence and returns it with its
-// `occurrence.opened` event. A new episode ALWAYS starts unacked (T10).
+// openEpisode opens a new AlertCase and returns it with its
+// `case.opened` event. A new episode ALWAYS starts unacked (T10).
 func (s *Service) openEpisode(
 	ctx context.Context, scope db.TenantScope, alert domain.Alert, o domain.Observation,
 	at domain.ObservationTime, actor domain.Actor, opt ObserveOptions, seq int, reopenOf uuid.UUID,
-) (domain.Occurrence, []domain.Event, error) {
-	occID := id.New()
+) (domain.Case, []domain.Event, error) {
+	caseID := id.New()
 
 	// The domain factory proves the invariants and mints the event; the
 	// repository writes the row. Both must describe the same episode, so the id
 	// is minted once, here.
-	draft, evs, err := domain.OpenNewOccurrence(domain.OpenOccurrenceParams{
-		ID:              occID,
+	draft, evs, err := domain.OpenNewCase(domain.OpenCaseParams{
+		ID:              caseID,
 		OrgID:           scope.OrgID(),
 		AlertID:         alert.ID(),
 		GroupID:         idOrNil(opt.GroupID),
@@ -579,10 +579,10 @@ func (s *Service) openEpisode(
 		EventID:         id.New(),
 	})
 	if err != nil {
-		return domain.Occurrence{}, nil, err
+		return domain.Case{}, nil, err
 	}
 
-	persisted, err := s.occurrences.OpenOccurrence(ctx, scope, domain.OpenOccurrence{
+	persisted, err := s.cases.OpenCase(ctx, scope, domain.OpenCase{
 		ID:              draft.ID(),
 		AlertID:         draft.AlertID(),
 		GroupID:         opt.GroupID,
@@ -596,7 +596,7 @@ func (s *Service) openEpisode(
 		SkewMS:          o.SkewMS,
 	})
 	if err != nil {
-		return domain.Occurrence{}, nil, err
+		return domain.Case{}, nil, err
 	}
 	return persisted, evs, nil
 }
@@ -608,16 +608,16 @@ func (s *Service) persistTransition(
 	ctx context.Context, scope db.TenantScope, r domain.TransitionResult, o domain.Observation,
 ) error {
 	if r.ID == domain.TransitionT2 {
-		return s.occurrences.Observe(ctx, scope, r.Occurrence.ID(), o)
+		return s.cases.Observe(ctx, scope, r.Case.ID(), o)
 	}
 	// The observation's witnesses travel with the edge. They are the ONLY place
 	// Alertmanager names which silence, inhibition or mute interval is muting this
-	// alert, and `alert_occurrences.suppressed_by` is the column every read path
+	// alert, and `alert_cases.suppressed_by` is the column every read path
 	// answers "what is suppressing this?" from.
-	return s.occurrences.Transition(ctx, scope, r.Occurrence.ID(), transitionOf(r, o.SuppressedBy))
+	return s.cases.Transition(ctx, scope, r.Case.ID(), transitionOf(r, o.SuppressedBy))
 }
 
-// transitionOf reads the persisted effect straight off the occurrence the domain
+// transitionOf reads the persisted effect straight off the case the domain
 // machine produced. Nothing here re-derives a value — in particular `ended_at`,
 // which §B.3.2 has already clamped.
 //
@@ -626,7 +626,7 @@ func (s *Service) persistTransition(
 // `status` object. A caller with no observation (the reaper) passes the zero
 // value, which is correct: an expiry names no suppressor.
 func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) domain.Transition {
-	o := r.Occurrence
+	o := r.Case
 	t := domain.Transition{
 		Kind:           kindOf(r.ID),
 		ToState:        o.State(),
@@ -652,22 +652,22 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 		t.ResolveReason = &v
 	}
 	// ⭐ suppressed_by is written on EVERY edge, not only T3 — but it is written
-	// with the OBSERVED witnesses when the occurrence lands in `suppressed`, and
+	// with the OBSERVED witnesses when the case lands in `suppressed`, and
 	// cleared on every other edge.
 	//
 	// It used to be hard-coded to the empty struct on all of them. The clearing
 	// half of that was right and is kept: leaving Alertmanager's witnesses behind
-	// on an unsuppressed occurrence would make oto keep saying "silenced by
+	// on an unsuppressed case would make oto keep saying "silenced by
 	// <id>" about an alert that is demonstrably firing, and T4's whole meaning is
 	// that the suppression is over. The other half silently dropped the ids on
 	// the floor: T3 fired correctly, the real silence ids arrived on the
-	// observation, and `alert_occurrences.suppressed_by` was written `{}` anyway.
+	// observation, and `alert_cases.suppressed_by` was written `{}` anyway.
 	// They survived only in the `alert.suppressed` event payload, so the column
 	// every API consumer and the UI read to answer "which silence is muting
 	// this?" was permanently empty.
 	//
 	// The gate is the RESULTING STATE and not the edge id, because
-	// occ_suppress_ck ties `suppression_reason` to `state = 'suppressed'` and the
+	// case_suppress_ck ties `suppression_reason` to `state = 'suppressed'` and the
 	// domain re-proves the same invariant: the witnesses are meaningful in
 	// exactly the states the reason is, and in no others.
 	//
@@ -677,7 +677,7 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 	//
 	// ⛔ This is Alertmanager's vocabulary and nothing else. A snooze never
 	// appears here: it is a `notifications.suppressed_reason`, oto's own enum, and
-	// writing it onto the occurrence would claim Alertmanager is suppressing
+	// writing it onto the case would claim Alertmanager is suppressing
 	// something it has never heard of (§B.8.2).
 	sb := domain.SuppressedBy{}
 	if o.State() == domain.StateSuppressed {
@@ -698,43 +698,43 @@ func transitionOf(r domain.TransitionResult, witnesses domain.SuppressedBy) doma
 	return t
 }
 
-// projectFromOccurrence writes `alerts`' denormalised summary in the SAME
+// projectFromCase writes `alerts`' denormalised summary in the SAME
 // transaction as the transition that caused it. The observe path does not come
 // through here — it stages projectionFor's result and flushes the batch in one
 // statement — this is the per-item write the sweep still makes.
-func (s *Service) projectFromOccurrence(
-	ctx context.Context, scope db.TenantScope, alert domain.Alert, occ domain.Occurrence,
+func (s *Service) projectFromCase(
+	ctx context.Context, scope db.TenantScope, alert domain.Alert, ac domain.Case,
 	at domain.ObservationTime, stateChanged bool, newEpisodes int,
 ) error {
 	return s.alerts.SetProjection(ctx, scope, alert.ID(),
-		projectionFor(alert, occ, at, stateChanged, newEpisodes))
+		projectionFor(alert, ac, at, stateChanged, newEpisodes))
 }
 
-// projectionFor derives the `alerts` summary one occurrence state implies.
+// projectionFor derives the `alerts` summary one case state implies.
 //
-// SnoozedUntil is carried through UNCHANGED. Snooze is the third orthogonal axis
-// (§B.1): a state transition must never wake an alert up, and this is the line of
-// code where that would otherwise quietly happen.
+// ⭐ IT CANNOT WAKE A SNOOZED ALERT UP ANY MORE, BECAUSE IT CANNOT REACH THE
+// SNOOZE. Snooze is the third orthogonal axis (§B.1) and lives entirely on
+// `alert_snoozes`; this function used to carry a mirrored `SnoozedUntil` through
+// every state transition, which meant one forgotten field here would silently
+// end a quiet period a human had asked for.
 func projectionFor(
-	alert domain.Alert, occ domain.Occurrence, at domain.ObservationTime,
+	alert domain.Alert, ac domain.Case, at domain.ObservationTime,
 	stateChanged bool, newEpisodes int,
 ) domain.AlertProjection {
 	lastChange := alert.LastStateChangeAt()
 	if stateChanged || lastChange.IsZero() {
 		lastChange = at.RecordedAt()
 	}
-	var currentOcc *uuid.UUID
-	if occ.IsOpen() {
-		currentOcc = ptr(occ.ID())
+	var currentCase *uuid.UUID
+	if ac.IsOpen() {
+		currentCase = ptr(ac.ID())
 	}
 	return domain.AlertProjection{
-		State:               occ.State(),
-		CurrentOccurrenceID: currentOcc,
-		AckState:            occ.AckState(),
-		SnoozedUntil:        nilTime(alert.SnoozedUntil()),
-		LastSeenAt:          at.RecordedAt(),
-		LastStateChangeAt:   lastChange,
-		TotalOccurrences:    alert.TotalOccurrences() + newEpisodes,
+		State:             ac.State(),
+		CurrentCaseID:     currentCase,
+		LastSeenAt:        at.RecordedAt(),
+		LastStateChangeAt: lastChange,
+		TotalCases:        alert.TotalCases() + newEpisodes,
 	}
 }
 
@@ -742,7 +742,7 @@ func projectionFor(
 //
 // It runs inside the batch's transaction, whose UpsertBatch already holds every
 // target row's lock, so the batched UPDATE re-locks rows this transaction owns
-// and the `alerts`-before-`alert_occurrences` lock order documented on `observe`
+// and the `alerts`-before-`alert_cases` lock order documented on `observe`
 // is unchanged. A missing alert fails the transaction exactly as the per-item
 // SetProjection's NotFound did.
 func (s *Service) flushProjections(ctx context.Context, scope db.TenantScope, acc *observeAccum) error {
@@ -794,15 +794,15 @@ func (s *Service) priorAlerts(
 	return out, nil
 }
 
-func (s *Service) latestOccurrences(
+func (s *Service) latestCases(
 	ctx context.Context, scope db.TenantScope, alertIDs []uuid.UUID,
-) (map[uuid.UUID]domain.Occurrence, error) {
+) (map[uuid.UUID]domain.Case, error) {
 	if s.occBatch != nil {
 		return s.occBatch.LatestByAlerts(ctx, scope, alertIDs)
 	}
-	out := make(map[uuid.UUID]domain.Occurrence, len(alertIDs))
+	out := make(map[uuid.UUID]domain.Case, len(alertIDs))
 	for _, aid := range alertIDs {
-		o, ok, err := s.occurrences.GetLatestByAlert(ctx, scope, aid)
+		o, ok, err := s.cases.GetLatestByAlert(ctx, scope, aid)
 		if err != nil {
 			return nil, err
 		}
@@ -995,7 +995,7 @@ func kindOf(t domain.TransitionID) domain.TransitionKind {
 	}
 }
 
-func groupOf(opt ObserveOptions, o domain.Occurrence) uuid.UUID {
+func groupOf(opt ObserveOptions, o domain.Case) uuid.UUID {
 	if opt.GroupID != nil && *opt.GroupID != uuid.Nil {
 		return *opt.GroupID
 	}
@@ -1017,29 +1017,29 @@ func alertCreatedEvent(a domain.Alert, at domain.ObservationTime, actor domain.A
 }
 
 // autoUnackEvent records that an acknowledgement did not survive into a new
-// episode (T10, reason `new_occurrence`).
+// episode (T10, reason `new_case`).
 //
-// It is written against the NEW occurrence and the previous one is left exactly
+// It is written against the NEW case and the previous one is left exactly
 // as it was. The alternative — clearing the old row's acked_by and acked_at —
 // would erase who took a closed episode, and `acked_by_label` is denormalised
 // precisely so that the timeline reads the same in a year.
-func autoUnackEvent(o domain.Occurrence, at domain.ObservationTime) (domain.Event, error) {
+func autoUnackEvent(o domain.Case, at domain.ObservationTime) (domain.Event, error) {
 	actor, err := domain.SystemActor(domain.ActorSystem)
 	if err != nil {
 		return domain.Event{}, err
 	}
 	return domain.NewEvent(domain.EventParams{
-		ID:           id.New(),
-		OrgID:        o.OrgID(),
-		AlertID:      o.AlertID(),
-		OccurrenceID: o.ID(),
-		GroupID:      o.GroupID(),
-		Type:         domain.EventOccurrenceUnacknowledged,
-		At:           at,
-		Actor:        actor,
-		Summary:      "Acknowledgement did not carry into the new occurrence",
-		Payload:      map[string]any{"reason": domain.UnackReasonNewOccurrence},
-		DedupeKey:    "occ:" + o.ID().String() + ":unacknowledged:new_occurrence",
+		ID:        id.New(),
+		OrgID:     o.OrgID(),
+		AlertID:   o.AlertID(),
+		CaseID:    o.ID(),
+		GroupID:   o.GroupID(),
+		Type:      domain.EventCaseUnacknowledged,
+		At:        at,
+		Actor:     actor,
+		Summary:   "Acknowledgement did not carry into the new case",
+		Payload:   map[string]any{"reason": domain.UnackReasonNewCase},
+		DedupeKey: "case:" + o.ID().String() + ":unacknowledged:new_case",
 	})
 }
 

@@ -13,8 +13,16 @@ import (
 	"github.com/thulasiram/oto/internal/platform/validate"
 )
 
-// An AlertGroup is ONE GENERATION of ONE Alertmanager notification group, derived
-// from (source, receiver, groupLabels). It OWNS EXACTLY ONE Slack thread.
+// An AlertGroup is ONE GENERATION of one machine-derived grouping of alerts,
+// keyed by `(org, cluster, alertname, namespace-or-∅)`. It OWNS EXACTLY ONE
+// Slack thread.
+//
+// ⭐ IT IS NO LONGER A MIRROR OF AN ALERTMANAGER NOTIFICATION GROUP. It was, and
+// that put the identity of oto's most visible output under the control of a file
+// oto can neither read back nor validate: `group_by` decided how many threads oto
+// posted, and `continue: true` gave one alert two of them at once. ADR 0038
+// records the change; `receiver` and `source_group_key` survive on the row as
+// PROVENANCE and are no part of its identity.
 //
 // ⛔ "Group" here NEVER means a UI grouping. A UI grouping is a VIEW (§A.1), it
 // has no row, no thread and no generation.
@@ -28,13 +36,13 @@ import (
 const MaxTitleBytes = 500
 
 // State is what an AlertGroup generation is doing. It is a PROJECTION of its
-// members' occurrence states: `open` while at least one member is firing or
+// members' case states: `open` while at least one member is firing or
 // suppressed, `closed` once none is and group_close_delay has elapsed (§B.2).
 type State struct{ s string }
 
 // The closed State set (groups_state_ck).
 var (
-	// StateOpen means at least one member occurrence is still live, or the
+	// StateOpen means at least one member case is still live, or the
 	// generation is inside its close delay.
 	StateOpen = State{"open"}
 	// StateClosed means the generation is finished and its thread is frozen.
@@ -86,7 +94,7 @@ func (k GroupKey) IsZero() bool { return k.s == "" }
 
 // Counts is the membership rollup carried on a generation.
 //
-// It is a PROJECTION of the member occurrences and is recomputed rather than
+// It is a PROJECTION of the member cases and is recomputed rather than
 // incremented: an increment that misses one transition is wrong forever, while a
 // recomputation is wrong until the next one.
 type Counts struct {
@@ -349,13 +357,28 @@ func (g Group) Key() GroupKey { return g.key }
 // re-opened group starts a fresh Slack thread.
 func (g Group) Generation() int { return g.generation }
 
-// SourceGroupKey is Alertmanager's raw groupKey. OPAQUE — never parse it.
+// SourceGroupKey is Alertmanager's raw groupKey. OPAQUE — never parse it, and
+// since ADR 0038 it is not even an input to anything: pure provenance.
 func (g Group) SourceGroupKey() string { return g.sourceGroupKey }
 
-// Receiver is the Alertmanager receiver name, "" for a reconciler-sourced group.
+// Receiver is the Alertmanager receiver that first delivered into this
+// generation, "" for a reconciler-sourced group.
+//
+// ⛔ IT IS PROVENANCE, NOT IDENTITY. While it was hashed into the §C.4 key, one
+// alert routed to two receivers by `continue: true` occupied two groups and two
+// threads at once — and a thing cannot be identical to two different things.
+// Dropping it MERGES routes that deliberately separated the same alerts;
+// `cluster_key` is what must distinguish them (ADR 0038).
 func (g Group) Receiver() string { return g.receiver }
 
-// GroupLabels is a copy of the labels Alertmanager grouped by.
+// GroupLabels is a copy of the group's OWN labels — `SplitLabels` of a member's
+// label set, which is to say the axes oto grouped by and never the ones
+// Alertmanager did.
+//
+// ⭐ EVERY MATCHER IN oto IS FED THIS MAP. That is why it had to stop being
+// Alertmanager's `groupLabels`: a notification policy matching `namespace`
+// matched nothing unless the operator happened to put `namespace` in `group_by`,
+// and it failed quietly as a `no_policy` suppression rather than as an error.
 func (g Group) GroupLabels() map[string]string {
 	out := make(map[string]string, len(g.groupLabels))
 	for k, v := range g.groupLabels {
@@ -367,7 +390,7 @@ func (g Group) GroupLabels() map[string]string {
 // Title is the pre-rendered group title for the Slack card and the UI.
 func (g Group) Title() string { return g.title }
 
-// State is open or closed — a projection of the members' occurrence states.
+// State is open or closed — a projection of the members' case states.
 func (g Group) State() State { return g.state }
 
 // Severity is the highest member severity, raw as upstream wrote it.
@@ -486,15 +509,17 @@ func (g Group) Touch(now time.Time) Group {
 // scanning a channel at 03:00 reads the first two words of a title; spending them
 // on the string "alertname=" is spending them on nothing.
 //
-// So: when the group is grouped by `alertname` — which is Alertmanager's own
-// default `group_by` and therefore the overwhelming case — the title IS the
-// alertname, and the two labels the card renders elsewhere (`cluster` as the
-// title chip, `namespace`/`service` as fields) are dropped from it rather than
-// repeated. Anything LEFT OVER is genuinely distinguishing (two groups of one
-// alertname must not share a title), so it is appended as `k=v`.
+// So: the title IS the alertname, and the labels the card renders elsewhere
+// (`cluster` as the title chip, `namespace`/`service` as fields) are dropped from
+// it rather than repeated. Anything LEFT OVER is genuinely distinguishing (two
+// groups of one alertname must not share a title), so it is appended as `k=v`.
 //
-// Without an `alertname` there is no name to use and the `k=v` rendering is the
-// honest fallback: it is ugly, and it is what the group actually is.
+// ⭐ SINCE ADR 0038 THE LEFTOVER SET IS EMPTY BY CONSTRUCTION. Every group's
+// labels are `SplitLabels` — `alertname` and at most `namespace` — and both are
+// elided, so the title is the alertname alone and the two branches below are
+// unreachable from the ingest path. They stay because Title is a total function
+// over a map, and a renderer that assumes its input can only be well-formed is a
+// renderer that panics the day it is not.
 func Title(groupLabels map[string]string, fallback string) string {
 	if len(groupLabels) == 0 {
 		return truncateTitle(fallbackTitle(fallback))

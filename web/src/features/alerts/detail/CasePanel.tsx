@@ -8,7 +8,7 @@
  */
 import { For, Match, Show, Switch, type Component } from "solid-js";
 
-import type { Occurrence, ResolveReason, SuppressionReason } from "~/api/types";
+import type { Case, ResolveReason, SuppressionReason } from "~/api/types";
 import { RelativeTime } from "~/components/Time";
 import { STATE_BAR, StateChip } from "~/components/StateChip";
 import { Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
@@ -37,7 +37,7 @@ const RESOLVE_REASON: Record<NonNullable<ResolveReason>, string> = {
  * rather than an empty array so `<Show>` treats "nobody named" as absent (an
  * empty array is truthy).
  */
-const suppressors = (by: Occurrence["suppressed_by"]): string | undefined => {
+const suppressors = (by: Case["suppressed_by"]): string | undefined => {
   const ids = [...(by?.silenced_by ?? []), ...(by?.inhibited_by ?? []), ...(by?.muted_by ?? [])];
   return ids.length > 0 ? ids.join(", ") : undefined;
 };
@@ -56,19 +56,19 @@ const SUPPRESSION_NOTE: Record<NonNullable<SuppressionReason>, string> = {
   active_time_interval: "an active time interval",
 };
 
-export interface OccurrencePanelProps {
-  readonly occurrences: readonly Occurrence[];
+export interface CasePanelProps {
+  readonly cases: readonly Case[];
   readonly loading: boolean;
   readonly error: unknown;
   readonly currentId: string | null;
 }
 
-export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
+export const CasePanel: Component<CasePanelProps> = (props) => (
   <Panel>
     <PanelHeader class={PANEL_HEADER}>
       <PanelTitle>Firing episodes</PanelTitle>
-      <Show when={props.occurrences.length > 0}>
-        <span class="shrink-0 text-meta text-ink-subtle">{props.occurrences.length} shown</span>
+      <Show when={props.cases.length > 0}>
+        <span class="shrink-0 text-meta text-ink-subtle">{props.cases.length} shown</span>
       </Show>
     </PanelHeader>
 
@@ -79,13 +79,13 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
       <Match when={props.error !== null && props.error !== undefined}>
         <ErrorState error={props.error} />
       </Match>
-      <Match when={props.occurrences.length === 0}>
+      <Match when={props.cases.length === 0}>
         <EmptyState title="No episodes recorded." />
       </Match>
       <Match when={true}>
         <ol>
-          <For each={props.occurrences}>
-            {(occ) => (
+          <For each={props.cases}>
+            {(ac) => (
               <li
                 class={cn(
                   "flex items-start gap-md border-b border-line last:border-b-0",
@@ -94,48 +94,48 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
                   // state, so it is said with a neutral tone shift rather than
                   // with the accent tint that used to sit here — the same idiom
                   // `SnoozePanel` already uses for the snooze in force.
-                  occ.id === props.currentId ? "border-l-2 border-l-ink-muted bg-sunken" : "",
+                  ac.id === props.currentId ? "border-l-2 border-l-ink-muted bg-sunken" : "",
                 )}
               >
                 <span
                   aria-hidden="true"
-                  class={cn("mt-2xs h-6 w-2xs shrink-0 rounded-full", STATE_BAR[occ.state])}
+                  class={cn("mt-2xs h-6 w-2xs shrink-0 rounded-full", STATE_BAR[ac.state])}
                 />
 
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-x-sm gap-y-2xs">
-                    <span class="font-mono text-body font-medium text-ink">#{occ.seq}</span>
-                    <StateChip state={occ.state} size="sm" />
-                    <Show when={occ.ack_state === "acked"}>
+                    <span class="font-mono text-body font-medium text-ink">#{ac.seq}</span>
+                    <StateChip state={ac.state} size="sm" />
+                    <Show when={ac.ack_state === "acked"}>
                       <span
                         class="text-meta text-ink-muted"
                         title="A receipt on the signal. It was still firing when this was recorded."
                       >
-                        seen by {occ.acked_by_label ?? "someone"}
+                        seen by {ac.acked_by_label ?? "someone"}
                       </span>
                     </Show>
-                    <span class="ml-auto text-meta text-ink-subtle" title={absoluteTime(occ.started_at)}>
-                      <RelativeTime value={occ.started_at} label="Started" /> ago
+                    <span class="ml-auto text-meta text-ink-subtle" title={absoluteTime(ac.started_at)}>
+                      <RelativeTime value={ac.started_at} label="Started" /> ago
                     </span>
                   </div>
 
                   <div class="mt-2xs flex flex-wrap items-center gap-x-md gap-y-2xs text-meta text-ink-muted">
                     <span title="How long this episode was firing. oto times the signal, not anyone's response.">
-                      fired for {duration(occ.duration_seconds)}
-                      {occ.ended_at === null || occ.ended_at === undefined ? " so far" : ""}
+                      fired for {duration(ac.duration_seconds)}
+                      {ac.ended_at === null || ac.ended_at === undefined ? " so far" : ""}
                     </span>
 
-                    <Show when={occ.resolve_reason}>
+                    <Show when={ac.resolve_reason}>
                       {(reason) => <span>ended because {RESOLVE_REASON[reason()]}</span>}
                     </Show>
 
-                    <Show when={occ.suppression_reason}>
+                    <Show when={ac.suppression_reason}>
                       {(reason) => (
                         <span>suppressed by {SUPPRESSION_NOTE[reason()] ?? reason()}</span>
                       )}
                     </Show>
 
-                    <Show when={suppressors(occ.suppressed_by)}>
+                    <Show when={suppressors(ac.suppressed_by)}>
                       {(ids) => (
                         <span
                           class="font-mono"
@@ -146,20 +146,20 @@ export const OccurrencePanel: Component<OccurrencePanelProps> = (props) => (
                       )}
                     </Show>
 
-                    <Show when={occ.reopen_count > 0}>
+                    <Show when={ac.reopen_count > 0}>
                       <span title="Re-fires inside the grace window reopen the same episode rather than starting a new one.">
-                        reopened {occ.reopen_count}×
+                        reopened {ac.reopen_count}×
                       </span>
                     </Show>
 
-                    <Show when={occ.value !== null && occ.value !== undefined}>
+                    <Show when={ac.value !== null && ac.value !== undefined}>
                       <span class="font-mono" title="The sample value upstream reported">
-                        value {occ.value}
+                        value {ac.value}
                       </span>
                     </Show>
                   </div>
 
-                  <Show when={occ.ack_note}>
+                  <Show when={ac.ack_note}>
                     {(note) => (
                       <p class="mt-sm border-l-2 border-line-strong pl-sm text-meta leading-snug text-ink-muted">
                         {note()}

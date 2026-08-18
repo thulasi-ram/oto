@@ -37,7 +37,7 @@ func TestDefaultStormPolicy(t *testing.T) {
 	// generation freezes its Slack thread, so the next observation opens N+1 with
 	// a brand-new root card (ADR 0005, §B.5). At 5m against a 10m grace the
 	// generation closed halfway through the grace and the whole second half bought
-	// an occurrence reopen that posted a new card anyway — the mismatch defeated
+	// a case reopen that posted a new card anyway — the mismatch defeated
 	// the grace. Equality is safe rather than racy because this clock runs from the
 	// group's last ACTIVITY (the resolve as oto observed it) and the grace runs
 	// from the upstream `ended_at`, which is the same instant or earlier.

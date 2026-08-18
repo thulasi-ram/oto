@@ -26,7 +26,7 @@ import { qk } from "~/api/keys";
 import { AckRequestSchema, CommentRequestSchema } from "~/api/generated/validators";
 import type { AlertDetail } from "~/api/types";
 import { requestMaxLength } from "~/test/contract";
-import { alertDetail, occurrence, snooze } from "~/test/fixtures";
+import { alertDetail, alertCase, snooze } from "~/test/fixtures";
 import {
   expectNoUndefined,
   item,
@@ -76,8 +76,18 @@ function mount(initial: AlertDetail): {
   };
 }
 
+/**
+ * ⭐ ACK IS PATCHED ON THE EPISODE, NOT ON THE ALERT. The action bar reads
+ * `current_case.ack_state`, because an acknowledgement is a receipt for
+ * one firing and `alerts` carries no ack column. Passing `acked` here is how a
+ * test says "this episode has a receipt on it".
+ */
 const firing = (patch: Partial<AlertDetail> = {}): AlertDetail =>
-  alertDetail({ id: ID, ack_state: "unacked", ...patch });
+  alertDetail({ id: ID, current_case: alertCase({ ack_state: "unacked" }), ...patch });
+
+/** `firing()` with the episode's receipt set either way. */
+const firingAcked = (ack: "acked" | "unacked"): AlertDetail =>
+  firing({ current_case: alertCase({ ack_state: ack }) });
 
 /**
  * Queries scoped to the action bar rather than to the document.
@@ -128,7 +138,7 @@ async function ackButton(): Promise<HTMLElement> {
 describe("acknowledging", () => {
   it("posts the note once, with one idempotency key, and shows the receipt afterwards", async () => {
     const net = mount(firing());
-    net.net.on(`POST ${PATH}/ack`, () => ({ json: item(occurrence({ ack_state: "acked" })) }));
+    net.net.on(`POST ${PATH}/ack`, () => ({ json: item(alertCase({ ack_state: "acked" })) }));
 
     fireEvent.click(await ackButton());
     fireEvent.input(openDialog().getByLabelText("Note (optional)"), {
@@ -136,7 +146,7 @@ describe("acknowledging", () => {
     });
     // The server agrees only because it accepted; the screen must refetch to
     // learn that, not assume it.
-    net.serve(firing({ ack_state: "acked" }));
+    net.serve(firingAcked("acked"));
     fireEvent.click(openDialog().getByRole("button", { name: "Acknowledge" }));
 
     await until(() => expect(barButtons("Withdraw acknowledgement")).toHaveLength(1));
@@ -150,7 +160,7 @@ describe("acknowledging", () => {
 
   it("sends no note at all rather than an empty one", async () => {
     const net = mount(firing());
-    net.net.on(`POST ${PATH}/ack`, () => ({ json: item(occurrence({ ack_state: "acked" })) }));
+    net.net.on(`POST ${PATH}/ack`, () => ({ json: item(alertCase({ ack_state: "acked" })) }));
 
     fireEvent.click(await ackButton());
     fireEvent.click(openDialog().getByRole("button", { name: "Acknowledge" }));
@@ -209,21 +219,21 @@ describe("acknowledging", () => {
   });
 
   it("refuses to acknowledge an episode that has already ended, and says why", async () => {
-    mount(firing({ current_occurrence: occurrence({ ended_at: "2026-08-09T09:30:00.000Z" }) }));
+    mount(firing({ current_case: alertCase({ ended_at: "2026-08-09T09:30:00.000Z" }) }));
     const button = await ackButton();
     expect(button).toBeDisabled();
     expect(button.getAttribute("title")).toMatch(/already ended/);
   });
 
   it("offers withdrawal, not a second acknowledgement, once the alert is acked", async () => {
-    const net = mount(firing({ ack_state: "acked" }));
-    net.net.on(`POST ${PATH}/unack`, () => ({ json: item(occurrence()) }));
+    const net = mount(firingAcked("acked"));
+    net.net.on(`POST ${PATH}/unack`, () => ({ json: item(alertCase()) }));
 
     await until(() => expect(barButtons("Withdraw acknowledgement")).toHaveLength(1));
     expect(barButtons("Acknowledge")).toHaveLength(0);
 
     fireEvent.click(barButton("Withdraw acknowledgement"));
-    net.serve(firing({ ack_state: "unacked" }));
+    net.serve(firingAcked("unacked"));
     fireEvent.click(openDialog().getByRole("button", { name: "Withdraw" }));
 
     await until(() => expect(net.net.to("/unack")).toHaveLength(1));

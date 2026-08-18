@@ -38,14 +38,14 @@ CREATE TABLE alerts (
 
   -- projection of the current/latest occurrence
   state                 TEXT        NOT NULL,
-  current_occurrence_id UUID,
+  current_occurrence_id UUID,  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   ack_state             TEXT        NOT NULL DEFAULT 'unacked',
 
   -- history
   first_seen_at         TIMESTAMPTZ NOT NULL,
   last_seen_at          TIMESTAMPTZ NOT NULL,
   last_state_change_at  TIMESTAMPTZ NOT NULL,
-  total_occurrences     INT         NOT NULL DEFAULT 0,
+  total_occurrences     INT         NOT NULL DEFAULT 0,  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   flap_score            REAL        NOT NULL DEFAULT 0,
   is_flapping           BOOLEAN     NOT NULL DEFAULT false,
 
@@ -61,7 +61,7 @@ CREATE TABLE alerts (
   CONSTRAINT alerts_clusterk_ck CHECK (length(btrim(cluster_key)) > 0),
   CONSTRAINT alerts_labels_ck   CHECK (jsonb_typeof(labels) = 'object'),
   CONSTRAINT alerts_annot_ck    CHECK (jsonb_typeof(annotations) = 'object'),
-  CONSTRAINT alerts_occ_ck      CHECK (total_occurrences >= 0),
+  CONSTRAINT alerts_occ_ck      CHECK (total_occurrences >= 0),  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   CONSTRAINT alerts_flap_ck     CHECK (flap_score >= 0),
   CONSTRAINT alerts_seen_ck     CHECK (last_seen_at >= first_seen_at),
   CONSTRAINT alerts_change_ck   CHECK (last_state_change_at >= first_seen_at),
@@ -96,7 +96,7 @@ CREATE INDEX alerts_text_idx   ON alerts USING GIN (
                                     || ' ' || coalesce(annotations->>'description','')));
 
 COMMENT ON TABLE  alerts IS
-  'The IDENTITY of a label set within (org, cluster_key) -- oto answer to Sentry Issue. Created on first sight and never deleted; resolution ends an Occurrence, not an Alert. Everything below first_seen_at is a PROJECTION of alert_events, kept for query speed, never the only record.';
+  'The IDENTITY of a label set within (org, cluster_key) -- oto answer to Sentry Issue. Created on first sight and never deleted; resolution ends an Occurrence, not an Alert. Everything below first_seen_at is a PROJECTION of alert_events, kept for query speed, never the only record.';  -- vocab:allow -- migration history: this file states the schema as it was at its own version, and a shipped migration is not editable. ADR 0036 renamed the entity and 00052 carries the rename.
 COMMENT ON COLUMN alerts.alert_key IS
   'The dedup identity: ak_ + 26 base32hex chars over sha256(org_id, cluster_key, canon(labels minus source.ignore_labels)) (SPEC §C.2). Dedup is enforced by alerts_key_uniq, NEVER by a read-then-write check.';
 COMMENT ON COLUMN alerts.source_fingerprint IS
@@ -107,7 +107,7 @@ COMMENT ON COLUMN alerts.service IS 'Promoted label, for the service facet. Null
 COMMENT ON COLUMN alerts.cluster_key IS 'Denormalised from clusters so the hot list query filters without a join. Part of alert_key.';
 COMMENT ON COLUMN alerts.labels IS 'The FULL label set including labels excluded from the hash. Searched via alerts_labels_gin containment (SPEC §C.9.3).';
 COMMENT ON COLUMN alerts.generator_url IS 'Prometheus link from the payload. Decoding g0.expr out of it is the zero-API-call path to a RuleSnapshot (SPEC §D.6).';
-COMMENT ON COLUMN alerts.state IS 'Projection of the current occurrence: firing | suppressed | resolved | expired. expired is NOT resolved -- resolved requires an explicit upstream status=resolved; expired means we stopped hearing about it. Never fabricate a resolution.';
+COMMENT ON COLUMN alerts.state IS 'Projection of the current occurrence: firing | suppressed | resolved | expired. expired is NOT resolved -- resolved requires an explicit upstream status=resolved; expired means we stopped hearing about it. Never fabricate a resolution.';  -- vocab:allow -- migration history: this file states the schema as it was at its own version, and a shipped migration is not editable. ADR 0036 renamed the entity and 00052 carries the rename.
 COMMENT ON COLUMN alerts.current_occurrence_id IS 'The latest AlertOccurrence. FK added below, after alert_occurrences exists.';
 COMMENT ON COLUMN alerts.ack_state IS 'ORTHOGONAL to state (SPEC §B.1). An acked alert is still firing.';
 COMMENT ON COLUMN alerts.last_state_change_at IS 'When state last changed, as opposed to last_seen_at which moves on every observation.';
@@ -116,7 +116,7 @@ COMMENT ON COLUMN alerts.is_flapping IS 'A VISIBLE UI state, never silent suppre
 
 -- --------------------------------------------------------- alert_occurrences
 
-CREATE TABLE alert_occurrences (
+CREATE TABLE alert_occurrences (  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   id                 UUID        PRIMARY KEY,
   org_id             UUID        NOT NULL,
   alert_id           UUID        NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
@@ -184,42 +184,42 @@ CREATE TABLE alert_occurrences (
 
 -- INVARIANT: at most one open occurrence per alert. Enforced in the DB, not in Go.
 -- An Occurrence is a CONTIGUOUS episode; two open at once is definitionally a bug.
-CREATE UNIQUE INDEX occ_one_open_idx ON alert_occurrences (alert_id) WHERE ended_at IS NULL;
+CREATE UNIQUE INDEX occ_one_open_idx ON alert_occurrences (alert_id) WHERE ended_at IS NULL;  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 -- Serves: the per-alert episode history, newest episode first.
-CREATE INDEX occ_alert_idx  ON alert_occurrences (org_id, alert_id, seq DESC);
+CREATE INDEX occ_alert_idx  ON alert_occurrences (org_id, alert_id, seq DESC);  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 -- Serves: group membership expansion when rendering a group card.
-CREATE INDEX occ_group_idx  ON alert_occurrences (org_id, group_id, started_at DESC);
+CREATE INDEX occ_group_idx  ON alert_occurrences (org_id, group_id, started_at DESC);  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 -- Serves: the occurrence.reap sweep -- open episodes whose upstream endsAt has
 -- passed. Partial and non-org-scoped on purpose: the reaper is a global
 -- background sweep, not a tenant query.
-CREATE INDEX occ_reap_idx   ON alert_occurrences (source_ends_at)
+CREATE INDEX occ_reap_idx   ON alert_occurrences (source_ends_at)  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
                              WHERE ended_at IS NULL AND source_ends_at IS NOT NULL;
 -- Serves: the "unacked and still open" queue, and escalation.check (SPEC §G.9).
-CREATE INDEX occ_ack_idx    ON alert_occurrences (org_id, ack_state, started_at DESC)
+CREATE INDEX occ_ack_idx    ON alert_occurrences (org_id, ack_state, started_at DESC)  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
                              WHERE ended_at IS NULL;
 
 ALTER TABLE alerts ADD CONSTRAINT alerts_current_occ_fk
-  FOREIGN KEY (current_occurrence_id) REFERENCES alert_occurrences(id) ON DELETE SET NULL;
+  FOREIGN KEY (current_occurrence_id) REFERENCES alert_occurrences(id) ON DELETE SET NULL;  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 
 -- vocab:allow — superseded by 00025_vocabulary_comments.sql, which rewrites this pg_description row. History, not intent.
 COMMENT ON TABLE  alert_occurrences IS
   'One CONTIGUOUS FIRING EPISODE of an Alert, identified by (alert_id, seq). This is what you acknowledge and what you time for MTTR. At most one may be open per Alert, enforced by occ_one_open_idx.';
-COMMENT ON COLUMN alert_occurrences.org_id IS 'Denormalised from alerts so every composite index can lead with org_id (CONTEXT.md §5 rule 7).';
-COMMENT ON COLUMN alert_occurrences.seq IS 'Episode number within the Alert, 1-based and gapless.';
-COMMENT ON COLUMN alert_occurrences.state IS 'firing | suppressed | resolved | expired. suppressed is INVISIBLE to webhooks -- Alertmanager MuteStage drops muted alerts before the webhook fires, so only the API v2 reconciler can ever set it (SPEC §B.2).';
-COMMENT ON COLUMN alert_occurrences.suppression_reason IS 'Why it is suppressed: silence | inhibition | mute_time_interval | active_time_interval. Present exactly when state=suppressed (occ_suppress_ck).';
-COMMENT ON COLUMN alert_occurrences.suppressed_by IS 'Raw upstream attribution: {silencedBy:[], inhibitedBy:[], mutedBy:[]} from GET /api/v2/alerts.';
-COMMENT ON COLUMN alert_occurrences.started_at IS 'OTO clock. Ordering and durations use this.';
-COMMENT ON COLUMN alert_occurrences.ended_at IS 'OTO clock. NULL exactly while the episode is open (occ_terminal_ended).';
-COMMENT ON COLUMN alert_occurrences.source_starts_at IS 'UPSTREAM claim (Alertmanager startsAt). Displayed, not ordered by.';
-COMMENT ON COLUMN alert_occurrences.source_ends_at IS 'UPSTREAM claim (Alertmanager endsAt). What the reaper watches -- but only while source_health.status = healthy (SPEC §B.4).';
-COMMENT ON COLUMN alert_occurrences.resolve_reason IS 'upstream (an explicit status=resolved arrived) or timeout (we stopped hearing about it). The pair state/resolve_reason is locked together by occ_resolve_map_ck so oto can never claim resolved when it means expired.';
-COMMENT ON COLUMN alert_occurrences.reopen_of IS 'The previous occurrence when this episode re-fired within the grace window (transition T7, SPEC §B.5).';
+COMMENT ON COLUMN alert_occurrences.org_id IS 'Denormalised from alerts so every composite index can lead with org_id (CONTEXT.md §5 rule 7).';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.seq IS 'Episode number within the Alert, 1-based and gapless.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.state IS 'firing | suppressed | resolved | expired. suppressed is INVISIBLE to webhooks -- Alertmanager MuteStage drops muted alerts before the webhook fires, so only the API v2 reconciler can ever set it (SPEC §B.2).';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.suppression_reason IS 'Why it is suppressed: silence | inhibition | mute_time_interval | active_time_interval. Present exactly when state=suppressed (occ_suppress_ck).';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.suppressed_by IS 'Raw upstream attribution: {silencedBy:[], inhibitedBy:[], mutedBy:[]} from GET /api/v2/alerts.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.started_at IS 'OTO clock. Ordering and durations use this.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.ended_at IS 'OTO clock. NULL exactly while the episode is open (occ_terminal_ended).';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.source_starts_at IS 'UPSTREAM claim (Alertmanager startsAt). Displayed, not ordered by.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.source_ends_at IS 'UPSTREAM claim (Alertmanager endsAt). What the reaper watches -- but only while source_health.status = healthy (SPEC §B.4).';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.resolve_reason IS 'upstream (an explicit status=resolved arrived) or timeout (we stopped hearing about it). The pair state/resolve_reason is locked together by occ_resolve_map_ck so oto can never claim resolved when it means expired.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.reopen_of IS 'The previous occurrence when this episode re-fired within the grace window (transition T7, SPEC §B.5).';  -- vocab:allow -- migration history: this file states the schema as it was at its own version, and a shipped migration is not editable. ADR 0036 renamed the entity and 00052 carries the rename.
 COMMENT ON COLUMN alert_occurrences.acked_by IS 'The user who acknowledged. Stored because it is operationally necessary; ON DELETE SET NULL because the acked_by_label keeps the timeline readable afterwards. NO per-person metrics are derived from this (SPEC R8).';
 COMMENT ON COLUMN alert_occurrences.acked_by_label IS 'Display name frozen at ack time. Immutable -- the timeline must read the same in a year.';
-COMMENT ON COLUMN alert_occurrences.rule_snapshot_id IS 'The RuleSnapshot bound at fire time: what the rule SAID at that moment. The differentiator. FK added in 00009.';
-COMMENT ON COLUMN alert_occurrences.value IS 'The evaluated sample value, when the source supplied one.';
-COMMENT ON COLUMN alert_occurrences.observed_skew_ms IS 'received_at minus upstream startsAt. Clock skew is MEASURED, not rejected (SPEC C12).';
+COMMENT ON COLUMN alert_occurrences.rule_snapshot_id IS 'The RuleSnapshot bound at fire time: what the rule SAID at that moment. The differentiator. FK added in 00009.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.value IS 'The evaluated sample value, when the source supplied one.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
+COMMENT ON COLUMN alert_occurrences.observed_skew_ms IS 'received_at minus upstream startsAt. Clock skew is MEASURED, not rejected (SPEC C12).';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 
 -- -------------------------------------------------------------- alert_events
 
@@ -227,7 +227,7 @@ CREATE TABLE alert_events (
   id            UUID        NOT NULL,               -- uuidv7 => time-sortable tiebreak
   org_id        UUID        NOT NULL,
   alert_id      UUID,
-  occurrence_id UUID,
+  occurrence_id UUID,  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   group_id      UUID,
   type          TEXT        NOT NULL,               -- SPEC §D.4.1, closed enum
   occurred_at   TIMESTAMPTZ NOT NULL,               -- UPSTREAM clock (display)
@@ -246,7 +246,7 @@ CREATE TABLE alert_events (
   CONSTRAINT ev_summary_ck CHECK (length(btrim(summary)) BETWEEN 1 AND 500),
   CONSTRAINT ev_payload_ck CHECK (jsonb_typeof(payload) = 'object'),
   CONSTRAINT ev_actor_ck   CHECK (actor_kind <> 'user' OR (actor_id IS NOT NULL AND actor_label IS NOT NULL)),
-  CONSTRAINT ev_subject_ck CHECK (alert_id IS NOT NULL OR occurrence_id IS NOT NULL OR group_id IS NOT NULL),
+  CONSTRAINT ev_subject_ck CHECK (alert_id IS NOT NULL OR occurrence_id IS NOT NULL OR group_id IS NOT NULL),  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
   -- NOTE: there is deliberately NO (recorded_at >= occurred_at) check. Upstream clock skew is
   -- real and is measured, not rejected (C12). Ordering uses recorded_at; display uses occurred_at.
   -- Do not "fix" this: adding the check would make oto reject the truth about a
@@ -257,7 +257,7 @@ CREATE TABLE alert_events (
 -- Serves: the per-alert timeline, keyset-paginated by (recorded_at DESC, id DESC).
 CREATE INDEX ev_alert_idx ON alert_events (org_id, alert_id,      recorded_at DESC, id DESC);
 -- Serves: the per-occurrence timeline.
-CREATE INDEX ev_occ_idx   ON alert_events (org_id, occurrence_id, recorded_at DESC, id DESC);
+CREATE INDEX ev_occ_idx   ON alert_events (org_id, occurrence_id, recorded_at DESC, id DESC);  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 -- Serves: §D.12(b), the GROUP TIMELINE -- the signature UI view. Always
 -- time-bounded by the caller so the planner can prune partitions; the API
 -- defaults the lower bound to group.first_seen_at.

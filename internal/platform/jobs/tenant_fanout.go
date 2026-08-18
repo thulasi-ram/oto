@@ -16,7 +16,7 @@ import (
 // periodic sweep in oto is per-tenant, because every repository method takes a
 // `db.TenantScope` by construction. Each of them bounded the rows it touched for
 // ONE tenant — `sweepLimit`, 500 — and then looped every tenant inside a SINGLE
-// job execution under a SINGLE fixed timeout. `occurrence.reap` had two minutes
+// job execution under a SINGLE fixed timeout. `case.reap` had two minutes
 // for the whole customer base; `stats.rollup` had five. Adding a tenant added
 // fixed work to every tick inside a budget nobody widened, so the thing that
 // eventually blew the timeout was the variable nobody had bounded: how many
@@ -51,7 +51,7 @@ import (
 //     after that id. See FanOutTenants for why a continuation exists at all.
 //
 // ⛔ NEITHER FIELD IS AUTHORITY. A job row is data, and data that decided its own
-// authorisation would undo the tenancy boundary — `occurrenceScopes` says the
+// authorisation would undo the tenancy boundary — `caseScopes` says the
 // same thing about the one other place a scope is produced rather than passed.
 // The org id here is a HINT about which tenant to look up; the `orgs` table is
 // what answers whether that tenant exists and is still live. `TenantScoper` is

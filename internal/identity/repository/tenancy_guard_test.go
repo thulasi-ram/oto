@@ -75,7 +75,7 @@ var (
 // not. A statement is either joined to a live org, or explained here, or a bug.
 //
 // ⚠️ THE JOB-PAYLOAD RESOLVERS ARE A DIFFERENT CATEGORY, not a laxer one. They
-// derive the org from the SUBJECT ROW a job names — an occurrence, a batch, a
+// derive the org from the SUBJECT ROW a job names — a case, a batch, a
 // group, a delivery — precisely so that a job payload cannot decide its own
 // tenancy. Nothing external chooses their input, so a deleted tenant cannot use
 // one to get a scope; the worst they can do is let a worker finish work for a
@@ -88,7 +88,7 @@ var notARequestResolver = map[string]string{
 	"notification/repository.orgFactsSQL": "the org's display facts for a card, by `id = $1` from a " +
 		"scope the caller already holds. Same shape as selectOrgSQL: a consumer, not a producer",
 
-	"app.orgOfOccurrenceSQL":             "job-payload scope for `enrich.run`: the org comes from the occurrence the job names (§G.3)",
+	"app.orgOfCaseSQL":                   "job-payload scope for `enrich.run`: the org comes from the case the job names (§G.3)",
 	"ingestion/repository.resolveOrgSQL": "job-payload scope for `ingest.process_batch`: the org comes from the batch row",
 	"ingestion/repository.locateBatchSQL": "operator scope for `oto replay`: the org comes from the batch row, the " +
 		"same category as `resolveOrgSQL` above with a different caller. An operator running the CLI has " +
@@ -100,7 +100,7 @@ var notARequestResolver = map[string]string{
 	"notification/repository.orgOfDeliverySQL": "job-payload scope for the delivery workers: the org comes from the delivery row",
 	"sources/repository.resolveSourceOrgSQL":   "job-payload scope for the source workers: the org comes from the source row",
 
-	"app.liveOrgSQL": "job-payload scope for the per-tenant periodics (`occurrence.reap`, `group.close`, " +
+	"app.liveOrgSQL": "job-payload scope for the per-tenant periodics (`case.reap`, `group.close`, " +
 		"`flap.score`, `retention.prune`'s drill sweep, `stats.rollup`). It is the same category as the " +
 		"five above — the org comes from a ROW, not from a credential — with the twist that the row IS " +
 		"the org, because a periodic sweep has no subject to derive one from. That is exactly why it " +

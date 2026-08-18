@@ -206,9 +206,14 @@ SELECT ` + snoozeColumns + `
 // ⭐ IT IS WHAT KEEPS `snooze` ON THE ALERT LIST OFF THE N+1 PATH. A list of two
 // hundred alerts that asked each one whether it was snoozed would be two hundred
 // and one queries, and the honest answer — a countdown badge on the row — would
-// have cost more than everything else the list does put together. The caller
-// passes only the ids whose `alerts.snoozed_until` projection is already
-// non-null, so on a page with nothing snoozed this query is never issued at all.
+// have cost more than everything else the list does put together.
+//
+// ⚠️ IT IS NOW ONE QUERY PER PAGE RATHER THAN SOMETIMES NONE. The caller used to
+// narrow the id list to the alerts whose `alerts.snoozed_until` projection was
+// non-null and skip the round trip entirely when none was. That mirror is gone
+// (00048): reading a projection to decide whether to read the truth was the shape
+// of the defect, not an optimisation worth rebuilding, and the index below makes
+// the unconditional read cheap.
 //
 // NOTE (planner): the driving index is alert_snoozes_active_idx, the PARTIAL
 // UNIQUE index on (alert_id) WHERE ended_at IS NULL — the same index that

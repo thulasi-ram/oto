@@ -37,7 +37,7 @@ const STAGE_TITLE: Record<DrillStageName, string> = {
   accept: "Accepted",
   process: "Processed",
   identity: "Alert identity",
-  occurrence: "Firing episode",
+  case: "Firing episode",
   group: "Grouped",
   rule_snapshot: "Rule snapshot",
   policy: "Notification policy",

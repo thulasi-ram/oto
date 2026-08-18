@@ -35,7 +35,7 @@ const MemberPreviewLimit = 20
 // two numbers are unrelated and live apart on purpose.
 //
 // ⭐ WHY THERE IS A CEILING AT ALL. A fan-out is one full write transaction per
-// member — a read of the alert, a read of the open occurrence, a compare-and-set
+// member — a read of the alert, a read of the open case, a compare-and-set
 // on the episode, a projection write, and a dedupe-key claim plus an event
 // insert — applied in series. At the storm figure this module names for itself
 // (`repository`'s member reads call it "a storm of five thousand") an unbounded
@@ -58,29 +58,44 @@ const MemberPreviewLimit = 20
 // a bound rather than a silent truncation.
 const FanOutLimit = 500
 
-// Member is the membership of ONE AlertOccurrence in ONE AlertGroup generation.
+// Member is the membership of ONE AlertCase in ONE AlertGroup generation.
 //
-// ⭐ Membership is HISTORY, NOT A BOOLEAN. `left_at` is nullable rather than a
-// row being deleted, so the group card can be replayed at any past instant —
-// "what was in this group when the thread was posted?" is a question the timeline
-// must be able to answer, and a deleted row cannot answer it.
+// ⭐ Membership is HISTORY, NOT A BOOLEAN. `LeftAt` is zero rather than the
+// membership being forgotten, so the group card can be replayed at any past
+// instant — "what was in this group when the thread was posted?" is a question the
+// timeline must be able to answer, and a forgotten membership cannot answer it.
+//
+// ⭐⭐ IT IS DERIVED, NOT RECORDED, AND THAT IS THE WHOLE OF MIGRATION 00051.
+// There was an `alert_group_members` row behind this type; there is now an
+// `alert_cases` row. Once the group key is computed from the alert's own
+// labels (ADR 0038), an episode cannot belong to two generations, so membership is
+// a FUNCTION OF THE EPISODE rather than an event that happened to it:
+//
+//	GroupID   the episode's own group_id, written once when it opens
+//	JoinedAt  the episode's started_at — an episode joins by existing
+//	LeftAt    the episode's ended_at — it leaves by ending
+//
+// The join table's `left_at` had no production writer, so `IsCurrent` was true of
+// every membership that had ever been created and `WasMemberAt` could only ever
+// show a generation growing. Both are honest now because `ended_at` is written by
+// the §B.3 state machine and constrained by `case_terminal_ended`.
 type Member struct {
-	groupID      uuid.UUID
-	occurrenceID uuid.UUID
-	orgID        uuid.UUID
-	alertID      uuid.UUID
-	joinedAt     time.Time
-	leftAt       time.Time
+	groupID  uuid.UUID
+	caseID   uuid.UUID
+	orgID    uuid.UUID
+	alertID  uuid.UUID
+	joinedAt time.Time
+	leftAt   time.Time
 }
 
 // MemberParams is the constructor and rehydration shape.
 type MemberParams struct {
-	GroupID      uuid.UUID
-	OccurrenceID uuid.UUID
-	OrgID        uuid.UUID
-	AlertID      uuid.UUID
-	JoinedAt     time.Time
-	LeftAt       time.Time
+	GroupID  uuid.UUID
+	CaseID   uuid.UUID
+	OrgID    uuid.UUID
+	AlertID  uuid.UUID
+	JoinedAt time.Time
+	LeftAt   time.Time
 }
 
 // NewMember builds a membership record, enforcing the §D.5 invariants.
@@ -88,7 +103,7 @@ func NewMember(p MemberParams) (Member, error) {
 	if err := requireID("group_id", p.GroupID); err != nil {
 		return Member{}, err
 	}
-	if err := requireID("occurrence_id", p.OccurrenceID); err != nil {
+	if err := requireID("case_id", p.CaseID); err != nil {
 		return Member{}, err
 	}
 	if err := requireID("org_id", p.OrgID); err != nil {
@@ -100,26 +115,27 @@ func NewMember(p MemberParams) (Member, error) {
 	if p.JoinedAt.IsZero() {
 		return Member{}, errs.New(errs.KindValidation, "required", "joined_at is required")
 	}
-	// gm_order_ck
+	// case_order_ck: `ended_at IS NULL OR ended_at >= started_at`. It used to be
+	// gm_order_ck on the join table, which said the same thing about the copy.
 	if !p.LeftAt.IsZero() && p.LeftAt.Before(p.JoinedAt) {
 		return Member{}, errs.New(errs.KindValidation, "field_order",
 			"left_at must be >= joined_at")
 	}
 	return Member{
-		groupID:      p.GroupID,
-		occurrenceID: p.OccurrenceID,
-		orgID:        p.OrgID,
-		alertID:      p.AlertID,
-		joinedAt:     p.JoinedAt.UTC(),
-		leftAt:       utcOrZero(p.LeftAt),
+		groupID:  p.GroupID,
+		caseID:   p.CaseID,
+		orgID:    p.OrgID,
+		alertID:  p.AlertID,
+		joinedAt: p.JoinedAt.UTC(),
+		leftAt:   utcOrZero(p.LeftAt),
 	}, nil
 }
 
 // GroupID is the generation this membership is in.
 func (m Member) GroupID() uuid.UUID { return m.groupID }
 
-// OccurrenceID is the episode that joined.
-func (m Member) OccurrenceID() uuid.UUID { return m.occurrenceID }
+// CaseID is the episode that joined.
+func (m Member) CaseID() uuid.UUID { return m.caseID }
 
 // OrgID is the tenant.
 func (m Member) OrgID() uuid.UUID { return m.orgID }

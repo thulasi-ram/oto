@@ -21,7 +21,7 @@ type UnackedGroup struct {
 	GroupID      uuid.UUID
 	StateVersion int
 	GroupLabels  map[string]string
-	// UnackedSince is the start of the OLDEST member occurrence that is still
+	// UnackedSince is the start of the OLDEST member case that is still
 	// firing and still unacknowledged.
 	UnackedSince time.Time
 }
@@ -41,11 +41,18 @@ func NewReminderRepository(q db.Querier) *ReminderRepository { return &ReminderR
 
 func (r *ReminderRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
+// unackedGroupsSQL joins the generation to its members through
+// `alert_cases.group_id`, which since migration 00051 IS the membership —
+// there is no join table and no `left_at IS NULL` to carry.
+//
+// ⭐ AND THE LIVENESS CLAUSE IS ALREADY HERE. `o.state = 'firing'` is stricter
+// than "still a member": `case_terminal_ended` makes membership `ended_at IS NULL`,
+// which is `state IN ('firing','suppressed')`, and a suppressed episode is not one
+// a reminder should be minted for. Nothing was lost when the join table went.
 const unackedGroupsSQL = `
 SELECT g.id, g.state_version, g.group_labels, min(o.started_at) AS unacked_since
   FROM alert_groups g
-  JOIN alert_group_members m ON m.group_id = g.id AND m.left_at IS NULL
-  JOIN alert_occurrences  o ON o.id = m.occurrence_id
+  JOIN alert_cases o ON o.group_id = g.id AND o.org_id = g.org_id
  WHERE g.org_id = $1
    AND g.closed_at IS NULL
    AND o.state = 'firing'

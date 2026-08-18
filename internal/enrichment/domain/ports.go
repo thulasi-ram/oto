@@ -45,7 +45,7 @@ const (
 // adding a DAG requires a SPEC amendment.
 type Enricher interface {
 	Name() string // stable id: "prom.rule", "alert.history", "silence.match", "runbook"
-	Version() int // bump => cache invalidation + re-run on next occurrence
+	Version() int // bump => cache invalidation + re-run on next case
 	Phase() Phase
 	Timeout() time.Duration
 	Applicable(s *Subject) bool
@@ -56,10 +56,10 @@ type Enricher interface {
 // Enricher never has to query oto's own database to know what it is enriching.
 type Subject struct {
 	OrgID       string
-	SubjectKind string // "alert" | "occurrence" | "group"
+	SubjectKind string // "alert" | "case" | "group"
 	SubjectID   string
 	Alert       AlertSnapshot
-	Occurrence  OccurrenceSnapshot
+	Case        CaseSnapshot
 	Source      SourceRef
 	// Prior carries results from already-completed enrichers in this run.
 	Prior map[string]Result
@@ -73,8 +73,8 @@ type AlertSnapshot struct {
 	GeneratorURL                                        string
 }
 
-// OccurrenceSnapshot is the firing episode an enrichment is about.
-type OccurrenceSnapshot struct {
+// CaseSnapshot is the firing episode an enrichment is about.
+type CaseSnapshot struct {
 	ID             string
 	Seq            int
 	State          string

@@ -1,0 +1,37 @@
+[
+  {
+    "_note": "continue:true — the same two alerts delivered to two receivers. Two upstream groups, one derived group. This is the double-threading ADR 0038 removes, so it must count as an INTENDED over-merge: the groupLabels are identical and only the receiver differs.",
+    "id": "018f3a4b-0000-7000-8000-000000000f02",
+    "org_id": "018f3a4b-0000-7000-8000-000000000001",
+    "source_id": "018f3a4b-0000-7000-8000-0000000000a1",
+    "cluster_key": "prod-eu",
+    "payload": {
+      "version": "4",
+      "receiver": "sre-slack",
+      "groupKey": "{}/{severity=\"critical\"}:{alertname=\"CheckoutErrorRateHigh\"}",
+      "truncatedAlerts": 0,
+      "groupLabels": { "alertname": "CheckoutErrorRateHigh" },
+      "alerts": [
+        { "labels": { "alertname": "CheckoutErrorRateHigh", "namespace": "payments", "instance": "checkout-1:8080", "severity": "critical" } },
+        { "labels": { "alertname": "CheckoutErrorRateHigh", "namespace": "payments", "instance": "checkout-2:8080", "severity": "critical" } }
+      ]
+    }
+  },
+  {
+    "id": "018f3a4b-0000-7000-8000-000000000f03",
+    "org_id": "018f3a4b-0000-7000-8000-000000000001",
+    "source_id": "018f3a4b-0000-7000-8000-0000000000a1",
+    "cluster_key": "prod-eu",
+    "payload": {
+      "version": "4",
+      "receiver": "payments-pager",
+      "groupKey": "{}/{team=\"payments\"}:{alertname=\"CheckoutErrorRateHigh\"}",
+      "truncatedAlerts": 0,
+      "groupLabels": { "alertname": "CheckoutErrorRateHigh" },
+      "alerts": [
+        { "labels": { "alertname": "CheckoutErrorRateHigh", "namespace": "payments", "instance": "checkout-1:8080", "severity": "critical" } },
+        { "labels": { "alertname": "CheckoutErrorRateHigh", "namespace": "payments", "instance": "checkout-2:8080", "severity": "critical" } }
+      ]
+    }
+  }
+]

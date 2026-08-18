@@ -13,51 +13,44 @@ import (
 	"github.com/thulasiram/oto/internal/grouping/repository"
 	"github.com/thulasiram/oto/internal/platform/clock"
 	"github.com/thulasiram/oto/internal/platform/db"
+	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
 // A storm is exactly when the rollup must stop being O(alerts).
 //
 // A 500-alert Alertmanager batch lands as ONE notification group, so it opens 500
-// occurrences that all join ONE generation. Re-deriving that generation once per
-// member means 500 full aggregates over `alert_group_members` and 500
+// episodes that all belong to ONE generation. Re-deriving that generation once per
+// episode means 500 full aggregates over `alert_cases` and 500
 // compare-and-set writes to a single `alert_groups` row — writes the CAS then
 // serialises, making ingestion slowest exactly while Alertmanager is retrying
 // hardest and its ~5-minute budget (ADR 0007) is running out. 499 of the 500
 // results are discarded, because a rollup is a pure projection of the settled
 // membership.
 //
+// ⭐ SINCE 00051 THE BATCH IS NOT AN ARGUMENT TO THIS SERVICE AT ALL. Membership
+// is `alert_cases.group_id`, written by `alerts` as each episode opens, so
+// there is nothing for grouping to insert and `JoinMany` is gone. What is left is
+// the derivation, and the property under test is that ONE call is ONE of
+// everything — the guard against a future caller putting it back in a loop.
+//
 // This test pins the shape rather than the timing: the work is counted through
 // fake ports, so it needs no database and cannot go green because a machine was
 // fast.
-func TestJoinManyRollsUpOncePerGroupNotOncePerAlert(t *testing.T) {
+func TestRecomputeIsOneOfEverythingPerGeneration(t *testing.T) {
 	t.Parallel()
 
-	const batch = 500
-
 	h := newJoinHarness(t)
-	members := make([]JoinMember, 0, batch)
-	for range batch {
-		members = append(members, JoinMember{AlertID: uuid.New(), OccurrenceID: uuid.New()})
-	}
+	h.members.total = 500
 
-	res, err := h.svc.JoinMany(h.ctx, h.scope, h.groupID, members, h.at)
+	g, err := h.svc.Recompute(h.ctx, h.scope, h.groupID, h.at)
 	if err != nil {
-		t.Fatalf("JoinMany: %v", err)
+		t.Fatalf("Recompute: %v", err)
+	}
+	if got := g.Counts().Total; got != 500 {
+		t.Fatalf("total = %d, want 500 — the projection did not settle over the batch", got)
 	}
 
-	if res.Joined != batch {
-		t.Fatalf("joined = %d, want %d", res.Joined, batch)
-	}
-	// Every member is still recorded: batching the projection must not batch away
-	// the membership or its timeline.
-	if got := h.members.joins; got != batch {
-		t.Errorf("members.Join calls = %d, want %d", got, batch)
-	}
-	if got := h.events.byType[kernel.EventGroupMemberJoined]; got != batch {
-		t.Errorf("group.member_joined events = %d, want %d", got, batch)
-	}
-
-	// THE POINT: the projection is O(groups), not O(alerts).
+	// THE POINT: the projection is O(generations), not O(alerts).
 	if got := h.members.rollups; got != 1 {
 		t.Errorf("members.Rollup calls = %d, want 1 for a one-group batch", got)
 	}
@@ -81,32 +74,179 @@ func TestJoinManyRollsUpOncePerGroupNotOncePerAlert(t *testing.T) {
 	}
 }
 
+// ⛔ THE TWO MEMBER EVENTS ARE RETIRED AND MUST NEVER BE APPENDED AGAIN.
+//
+// `group.member_joined` and `group.member_left` were facts about the EPISODE
+// phrased as if the group were the actor, and each is implied by one that
+// survives: `case.opened`, and `case.resolved`/`.expired`. They stay
+// in the closed EventType enum because thirteen months of `alert_events` still
+// contain the first of them — but nothing may write one, and the settling of a
+// generation is the exact place they used to come from.
+func TestSettlingAGenerationAppendsNoMembershipEvents(t *testing.T) {
+	t.Parallel()
+
+	h := newJoinHarness(t)
+	h.members.total = 12
+
+	if _, err := h.svc.Recompute(h.ctx, h.scope, h.groupID, h.at); err != nil {
+		t.Fatalf("Recompute: %v", err)
+	}
+
+	// ⚠️ NOT JUST THE TWO BY NAME. A membership event returning under a third
+	// spelling is the same defect, so what is asserted is that nothing RETIRED was
+	// appended at all.
+	for typ, n := range h.events.byType {
+		if typ.Retired() && n > 0 {
+			t.Errorf("%s events = %d, want 0 — settling a generation is where the two member "+
+				"events used to be appended, and the type is retired", typ, n)
+		}
+	}
+
+	// ⛔ AND THE COUNTER IS NOT ZERO BY CONSTRUCTION. `h.events` counts what the
+	// service asked for, so "no membership events" means nothing unless the port
+	// is demonstrably the one the service appends through. The same harness, given
+	// a batch past the storm threshold, must record the storm fact.
+	storm := newJoinHarness(t)
+	storm.members.total = 500
+	storm.members.distinctJoins = 500
+	if _, err := storm.svc.Recompute(storm.ctx, storm.scope, storm.groupID, storm.at); err != nil {
+		t.Fatalf("Recompute (storm): %v", err)
+	}
+	if got := storm.events.byType[kernel.EventGroupStormStarted]; got != 1 {
+		t.Fatalf("the events port recorded %d group.storm_started — it is not wired to the "+
+			"service, so the absence asserted above is an artefact of the harness",
+			got)
+	}
+	for typ, n := range storm.events.byType {
+		if typ.Retired() && n > 0 {
+			t.Errorf("%s events = %d on the storm path, want 0", typ, n)
+		}
+	}
+}
+
+// TestTheSeamRefusesARetiredTypeThroughThisPort is the assertion that used to be
+// `!typ.Retired()` — a lookup in a map in another package, whose failure message
+// claimed something about `AppendTimelineEvent` that it never touched.
+//
+// ⭐ IT CALLS THE REAL WRITER, THROUGH THE REAL PORT. `EventAppender` (ports.go)
+// is satisfied in production by `alerts/service.Service`, and the guarantee
+// `domain.retiredEventTypes` rests on is that THAT implementation refuses a
+// retired type — not that the type reports itself retired. So the test builds the
+// real service over stub repositories and hands it exactly the request grouping
+// would have sent.
+func TestTheSeamRefusesARetiredTypeThroughThisPort(t *testing.T) {
+	t.Parallel()
+
+	scope, err := db.NewTenantScope(uuid.New())
+	if err != nil {
+		t.Fatalf("NewTenantScope: %v", err)
+	}
+
+	for _, typ := range []kernel.EventType{
+		kernel.EventGroupMemberJoined,
+		kernel.EventGroupMemberLeft,
+	} {
+		t.Run(typ.String(), func(t *testing.T) {
+			var port EventAppender = newRealTimelineWriter(t)
+
+			err := port.AppendTimelineEvent(context.Background(), scope, alerts.TimelineEventRequest{
+				Type:    typ,
+				GroupID: uuid.New(),
+				AlertID: uuid.New(),
+				Summary: "an alert joined the generation",
+			})
+			if err == nil {
+				t.Fatalf("the real writer accepted %s. Membership stopped being an event with "+
+					"migration 00051; a future caller putting it back must fail at the write "+
+					"path, because a comment is advice and a refusal is a guarantee.", typ)
+			}
+			if got := errs.CodeOf(err); got != "event_type_retired" {
+				t.Errorf("code = %q, want \"event_type_retired\" — %s was refused for some "+
+					"other reason, so this test would keep passing after the guard was deleted",
+					got, typ)
+			}
+			if got := errs.KindOf(err); got != errs.KindInternal {
+				t.Errorf("kind = %v, want %v: no request can ask for this, so reaching it means "+
+					"code did", got, errs.KindInternal)
+			}
+		})
+	}
+
+	// ⛔ THE CONTROL. Without it the test above passes over a writer that refuses
+	// everything, which would be a far worse bug than the one it guards.
+	t.Run("a live group fact is accepted", func(t *testing.T) {
+		port := newRealTimelineWriter(t)
+		if err := port.AppendTimelineEvent(context.Background(), scope, alerts.TimelineEventRequest{
+			Type:    kernel.EventGroupStormStarted,
+			GroupID: uuid.New(),
+			Summary: "storm started",
+		}); err != nil {
+			t.Fatalf("the real writer refused a live type: %v", err)
+		}
+	})
+}
+
+// newRealTimelineWriter builds the production `alerts/service.Service` over stub
+// repositories. The retirement check runs before any of them is touched, which is
+// why stubs that panic on use are the right shape here.
+func newRealTimelineWriter(t *testing.T) *alerts.Service {
+	t.Helper()
+
+	svc, err := alerts.New(alerts.Deps{
+		Alerts:  stubAlertRepo{},
+		Cases:   stubCaseRepo{},
+		Events:  stubEventRepo{},
+		Snoozes: stubSnoozeRepo{},
+		Tx:      inlineTx{},
+		Clock:   clock.NewFake(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)),
+	})
+	if err != nil {
+		t.Fatalf("build alerts service: %v", err)
+	}
+	return svc
+}
+
+// The stubs embed their interface, so every method they do not name is a nil call
+// that panics. That is deliberate: a refused append must reach no repository, and
+// an accepted one must reach exactly `AppendBatch`.
+type (
+	stubAlertRepo  struct{ alerts.AlertRepository }
+	stubCaseRepo   struct{ alerts.CaseRepository }
+	stubSnoozeRepo struct{ alerts.SnoozeRepository }
+	stubEventRepo  struct{ alerts.EventRepository }
+	inlineTx       struct{}
+)
+
+func (stubEventRepo) AppendBatch(
+	_ context.Context, _ db.TenantScope, e []kernel.Event,
+) (int, error) {
+	return len(e), nil
+}
+
+func (inlineTx) InTx(ctx context.Context, fn func(ctx context.Context) error) error { return fn(ctx) }
+
 // Storm evaluation is a §B.6 VISIBLE state change, and it must stay exactly as
 // loud as it was: one evaluation, one transition, one timeline event, one
-// notification intent — no matter how many members arrived in the batch that
+// notification intent — no matter how many episodes arrived in the batch that
 // triggered it. The evaluation never counted its own invocations; it counts
-// DISTINCT JOINS IN A WINDOW out of the membership table, which is why moving it
-// out of the per-member loop cannot change its verdict.
-func TestJoinManyAnnouncesOneStormPerBatch(t *testing.T) {
+// DISTINCT ALERTS THAT JOINED IN A WINDOW, which is why settling once per batch
+// cannot change its verdict.
+func TestSettlingAnnouncesOneStormPerBatch(t *testing.T) {
 	t.Parallel()
 
 	const batch = 500
 
 	h := newJoinHarness(t)
+	h.members.total = batch
 	// Well past DefaultStormThreshold (25) — this batch IS the storm.
 	h.members.distinctJoins = batch
 
-	members := make([]JoinMember, 0, batch)
-	for range batch {
-		members = append(members, JoinMember{AlertID: uuid.New(), OccurrenceID: uuid.New()})
-	}
-
-	res, err := h.svc.JoinMany(h.ctx, h.scope, h.groupID, members, h.at)
+	g, err := h.svc.Recompute(h.ctx, h.scope, h.groupID, h.at)
 	if err != nil {
-		t.Fatalf("JoinMany: %v", err)
+		t.Fatalf("Recompute: %v", err)
 	}
 
-	if !res.Group.StormMode() {
+	if !g.StormMode() {
 		t.Fatal("the returned generation is not in storm mode")
 	}
 	if got := h.members.distinctJoinQueries; got != 1 {
@@ -122,33 +262,6 @@ func TestJoinManyAnnouncesOneStormPerBatch(t *testing.T) {
 	// `channels.storm_notice_at` seeing one notice, not 500.
 	if got := h.enqueuer.enqueued; got != 1 {
 		t.Errorf("notify.evaluate jobs = %d, want exactly 1", got)
-	}
-	if !res.Group.StormMode() {
-		t.Error("the returned generation is not in storm mode")
-	}
-}
-
-// A batch of one must still cost exactly one of everything. This is the case a
-// single-member caller would hit, and it is the reason the deleted single-member
-// `Join` façade is not missed: the batch form already answers it correctly.
-func TestABatchOfOneCostsOneOfEverything(t *testing.T) {
-	t.Parallel()
-
-	h := newJoinHarness(t)
-	res, err := h.svc.JoinMany(h.ctx, h.scope, h.groupID,
-		[]JoinMember{{AlertID: uuid.New(), OccurrenceID: uuid.New()}}, h.at)
-	if err != nil {
-		t.Fatalf("JoinMany: %v", err)
-	}
-	if res.Joined != 1 {
-		t.Errorf("Joined = %d, want 1 for a first join", res.Joined)
-	}
-	if h.members.joins != 1 || h.members.rollups != 1 || h.members.distinctJoinQueries != 1 {
-		t.Errorf("joins/rollups/storm evaluations = %d/%d/%d, want 1/1/1",
-			h.members.joins, h.members.rollups, h.members.distinctJoinQueries)
-	}
-	if res.Group.Counts().Total != 1 {
-		t.Errorf("total = %d, want 1", res.Group.Counts().Total)
 	}
 }
 
@@ -203,12 +316,15 @@ func newJoinHarness(t *testing.T) *joinHarness {
 	}
 
 	h := &joinHarness{
-		ctx:      context.Background(),
-		scope:    scope,
-		at:       at,
-		groupID:  g.ID(),
-		groups:   &fakeGroups{group: g},
-		members:  &fakeMembers{},
+		ctx:     context.Background(),
+		scope:   scope,
+		at:      at,
+		groupID: g.ID(),
+		groups:  &fakeGroups{group: g},
+		// lastJoinAt is the batch's own instant: the storm window's most recent
+		// join is what `EvaluateStorm` measures the cooldown from, and a zero one
+		// would make every verdict here a statement about the epoch.
+		members:  &fakeMembers{lastJoinAt: at},
 		events:   &fakeEvents{byType: map[kernel.EventType]int{}},
 		stream:   &fakeStream{},
 		settings: &fakeSettings{policy: domain.DefaultStormPolicy()},
@@ -248,6 +364,12 @@ type fakeGroups struct {
 	reads      int
 	setRollups int
 	setStorms  int
+	// candidates is what CloseCandidates hands back, and closes counts the
+	// generations actually closed. Both exist for closeidle_test.go: a sweep that
+	// is REFUSED must be distinguishable from a sweep that found nothing to do,
+	// and only the second number tells them apart.
+	candidates []domain.Group
+	closes     int
 }
 
 func (f *fakeGroups) GetByID(context.Context, db.TenantScope, uuid.UUID) (domain.Group, error) {
@@ -275,7 +397,10 @@ func (f *fakeGroups) OpenGeneration(context.Context, db.TenantScope, repository.
 	return f.group, nil
 }
 
-func (f *fakeGroups) Close(context.Context, db.TenantScope, domain.Group, int) error { return nil }
+func (f *fakeGroups) Close(context.Context, db.TenantScope, domain.Group, int) error {
+	f.closes++
+	return nil
+}
 
 func (f *fakeGroups) Touch(context.Context, db.TenantScope, uuid.UUID, time.Time) error { return nil }
 
@@ -296,42 +421,38 @@ func (f *fakeGroups) List(
 func (f *fakeGroups) CloseCandidates(
 	context.Context, db.TenantScope, time.Time, int,
 ) ([]domain.Group, error) {
-	return nil, nil
+	return f.candidates, nil
 }
 
-// fakeMembers is `alert_group_members`. Rollup is the expensive aggregate the
-// issue is about, so it is counted; it answers out of the joins it has seen, so a
-// batched projection still reports the whole batch.
+// fakeMembers is the membership read model over `alert_cases`. Rollup is
+// the expensive aggregate the issue is about, so it is counted.
+//
+// ⛔ IT HAS NO `Join` AND NO `Leave`, because the port has none: membership is
+// written by `alerts` when an episode opens, and it is not this service's to
+// record. `total` is what the generation's membership settled at.
 type fakeMembers struct {
-	joined              map[uuid.UUID]bool
-	joins               int
+	total int
+	// severity is what the rollup reports. It is settable because a rollup that
+	// MOVES the severity is a material change, and a material change bumps
+	// `last_activity_at` — which silently makes a generation un-closable for
+	// another `group_close_delay`. closeidle_test.go needs a rollup that changes
+	// nothing in order to reach the close at all.
+	severity            string
 	rollups             int
 	distinctJoinQueries int
 	distinctJoins       int
 	lastJoinAt          time.Time
 }
 
-func (f *fakeMembers) Join(
-	_ context.Context, _ db.TenantScope, _, occurrenceID, _ uuid.UUID, at time.Time,
-) (bool, error) {
-	f.joins++
-	if f.joined == nil {
-		f.joined = map[uuid.UUID]bool{}
-	}
-	if f.joined[occurrenceID] {
-		return false, nil
-	}
-	f.joined[occurrenceID] = true
-	f.lastJoinAt = at
-	return true, nil
-}
-
 func (f *fakeMembers) Rollup(
 	context.Context, db.TenantScope, uuid.UUID,
 ) (domain.Counts, string, error) {
 	f.rollups++
-	n := len(f.joined)
-	return domain.Counts{Firing: n, Total: n}, "critical", nil
+	sev := f.severity
+	if sev == "" && f.total > 0 {
+		sev = "critical"
+	}
+	return domain.Counts{Firing: f.total, Total: f.total}, sev, nil
 }
 
 func (f *fakeMembers) DistinctJoinsSince(
@@ -340,13 +461,9 @@ func (f *fakeMembers) DistinctJoinsSince(
 	f.distinctJoinQueries++
 	n := f.distinctJoins
 	if n == 0 {
-		n = len(f.joined)
+		n = f.total
 	}
 	return n, f.lastJoinAt, nil
-}
-
-func (f *fakeMembers) Leave(context.Context, db.TenantScope, uuid.UUID, uuid.UUID, time.Time) (bool, error) {
-	return false, nil
 }
 
 func (f *fakeMembers) MembersAt(

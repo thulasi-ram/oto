@@ -14,7 +14,7 @@ import (
 // ⭐⭐ THE TEST THAT WOULD HAVE CAUGHT THE ORIGINAL BUG.
 //
 // `delivery_summary` was declared on four response schemas — the alert detail,
-// the occurrence detail, the group detail and the notification detail — and
+// the case detail, the group detail and the notification detail — and
 // emitted by NONE of them. Because the field was optional, every schema
 // validator passed and the absence was invisible: nothing in the build, the
 // contract or the test suite could tell "this endpoint has no deliveries to
@@ -54,7 +54,7 @@ func (d deliverySummary) present() bool {
 type fanOut struct {
 	token          string
 	alertID        uuid.UUID
-	occurrenceID   uuid.UUID
+	caseID         uuid.UUID
 	groupID        uuid.UUID
 	notificationID uuid.UUID
 	// suppressedID is a second intent with NO deliveries at all. It is the case
@@ -83,15 +83,15 @@ func TestDeliverySummaryIsEmittedByAllFourDetailEndpoints(t *testing.T) {
 		seed.token, nil, http.StatusOK, &alertBody)
 	assertFanOut(t, "GET /alerts/{id}", alertBody.Data.DeliverySummary)
 
-	// ---- 2. GET /occurrences/{id} --------------------------------------
+	// ---- 2. GET /cases/{id} --------------------------------------
 	var occBody struct {
 		Data struct {
 			DeliverySummary *deliverySummary `json:"delivery_summary"`
 		} `json:"data"`
 	}
-	env.do(t, http.MethodGet, "/api/v1/occurrences/"+seed.occurrenceID.String(),
+	env.do(t, http.MethodGet, "/api/v1/cases/"+seed.caseID.String(),
 		seed.token, nil, http.StatusOK, &occBody)
-	assertFanOut(t, "GET /occurrences/{id}", occBody.Data.DeliverySummary)
+	assertFanOut(t, "GET /cases/{id}", occBody.Data.DeliverySummary)
 
 	// ---- 3. GET /alert-groups/{id} -------------------------------------
 	var groupBody struct {
@@ -191,7 +191,7 @@ func assertFanOut(t *testing.T, where string, got *deliverySummary) {
 	}
 }
 
-// seedFanOut writes one alert, one occurrence, one group generation, one
+// seedFanOut writes one alert, one case, one group generation, one
 // notification with five deliveries in five states, and one suppressed intent
 // with none.
 //
@@ -219,7 +219,7 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	out := fanOut{
 		token:          boot.Token,
 		alertID:        id.New(),
-		occurrenceID:   id.New(),
+		caseID:         id.New(),
 		groupID:        id.New(),
 		notificationID: id.New(),
 		suppressedID:   id.New(),
@@ -242,12 +242,12 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	      VALUES ($1,$2,$3,'am','alertmanager','http://am.test',$4,$4)`,
 		sourceID, orgID, clusterID, now)
 
-	// `current_occurrence_id` is filled in after the occurrence exists:
-	// `alerts_current_occ_fk` points forward, and the projection is written by
+	// `current_case_id` is filled in after the case exists:
+	// `alerts_current_case_fk` points forward, and the projection is written by
 	// the same transaction that opens the episode in the real write path.
 	exec(`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
 	         severity, cluster_key, labels, state,
-	         first_seen_at, last_seen_at, last_state_change_at, total_occurrences)
+	         first_seen_at, last_seen_at, last_state_change_at, total_cases)
 	      VALUES ($1,$2,$3,'ak_0123456789abcdefghijklmnop','3f8c1a2b9d4e5f60','HighErrorRate',
 	         'critical','prod','{"alertname":"HighErrorRate"}'::jsonb,'firing',$4,$4,$4,1)`,
 		out.alertID, orgID, clusterID, now)
@@ -257,16 +257,16 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	      VALUES ($1,$2,$3,$4,'gk_0123456789abcdefghijklmnop','HighErrorRate · prod','open',
 	         1,1,1,$5,$5)`, out.groupID, orgID, sourceID, clusterID, now)
 
-	exec(`INSERT INTO alert_occurrences (id, org_id, alert_id, group_id, seq, state,
+	exec(`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state,
 	         started_at, last_observed_at, source_starts_at)
 	      VALUES ($1,$2,$3,$4,1,'firing',$5,$5,$5)`,
-		out.occurrenceID, orgID, out.alertID, out.groupID, now)
+		out.caseID, orgID, out.alertID, out.groupID, now)
 
-	exec(`UPDATE alerts SET current_occurrence_id = $2 WHERE id = $1`,
-		out.alertID, out.occurrenceID)
+	exec(`UPDATE alerts SET current_case_id = $2 WHERE id = $1`,
+		out.alertID, out.caseID)
 
-	exec(`INSERT INTO alert_group_members (group_id, occurrence_id, org_id, alert_id, joined_at)
-	      VALUES ($1,$2,$3,$4,$5)`, out.groupID, out.occurrenceID, orgID, out.alertID, now)
+	// The episode's own `group_id` above IS the membership since 00051; there is no
+	// join table row to add.
 
 	// A Slack channel MUST carry a credential (`channels_cred_ck`) and the sealed
 	// blob has a 29-byte floor — a 12-byte nonce, a 16-byte tag and at least one
@@ -289,12 +289,12 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 		out.notificationID, orgID, out.groupID, now)
 
 	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, alert_id,
-	         occurrence_id, reason, state_version, idempotency_key, status, suppressed_reason,
+	         case_id, reason, state_version, idempotency_key, status, suppressed_reason,
 	         created_at, updated_at)
 	      VALUES ($1,$2,'alert_group',$3,$3,$4,$5,'acked',1,
 	         '0000000000000000000000000000000000000000000000000000000000000002','suppressed',
 	         'throttled',$6,$6)`,
-		out.suppressedID, orgID, out.groupID, out.alertID, out.occurrenceID, now)
+		out.suppressedID, orgID, out.groupID, out.alertID, out.caseID, now)
 
 	// Five channels, because `deliveries_fanout_uniq` is (notification, channel,
 	// mode) and five states need five destinations to be expressible at once.

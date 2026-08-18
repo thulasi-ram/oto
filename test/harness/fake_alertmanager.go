@@ -34,7 +34,6 @@ type Alertmanager struct {
 	config   string
 	version  string
 	alerts   []AMAlert
-	groups   []AMGroup
 	silences []AMSilence
 	failWith int
 	requests []string
@@ -62,14 +61,6 @@ type AMAlertStatus struct {
 	SilencedBy  []string `json:"silencedBy,omitempty"`
 	InhibitedBy []string `json:"inhibitedBy,omitempty"`
 	MutedBy     []string `json:"mutedBy,omitempty"`
-}
-
-// AMGroup is one notification group as GET /api/v2/alerts/groups returns it.
-type AMGroup struct {
-	Labels      map[string]string `json:"labels"`
-	RouteLabels map[string]string `json:"routeLabels,omitempty"`
-	Receiver    amReceiver        `json:"receiver"`
-	Alerts      []AMAlert         `json:"alerts"`
 }
 
 // AMSilence is one silence as GET /api/v2/silences returns it.
@@ -187,12 +178,10 @@ func (a *Alertmanager) SetAlerts(alerts ...AMAlert) {
 	a.alerts = alerts
 }
 
-// SetGroups replaces what GET /api/v2/alerts/groups returns.
-func (a *Alertmanager) SetGroups(groups ...AMGroup) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.groups = groups
-}
+// ⛔ THERE IS NO SetGroups, AND `/api/v2/alerts/groups` IS NOT SERVED. oto stopped
+// asking for Alertmanager's grouping when the §C.4 key became derived (ADR 0038);
+// a fake that still answered would let a test assert behaviour the product no
+// longer has.
 
 // SetSilences replaces what GET /api/v2/silences returns.
 func (a *Alertmanager) SetSilences(silences ...AMSilence) {
@@ -229,7 +218,7 @@ func FiringAlert(labels map[string]string, startsAt time.Time) AMAlert {
 
 // SuppressedAlert is one alert Alertmanager reports as silenced. ONLY the
 // reconciler can ever see this (C1, ADR 0006), so this constructor is the only
-// way a test can produce a `suppressed` occurrence.
+// way a test can produce a `suppressed` case.
 func SuppressedAlert(labels map[string]string, startsAt time.Time, silenceIDs ...string) AMAlert {
 	a := FiringAlert(labels, startsAt)
 	a.Status = AMAlertStatus{State: "suppressed", SilencedBy: silenceIDs}
@@ -250,11 +239,6 @@ func (a *Alertmanager) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == alertmanager.PathStatus:
 		a.writeStatus(w)
-	case r.URL.Path == alertmanager.PathAlertGroups:
-		a.mu.Lock()
-		groups := a.groups
-		a.mu.Unlock()
-		writeJSON(w, orEmpty(groups))
 	case r.URL.Path == alertmanager.PathAlerts:
 		a.mu.Lock()
 		alerts := a.alerts

@@ -15,7 +15,7 @@ import (
 // THAT HAD NEVER HEARD OF `org_id`. Those payloads are `{"v":1}` and nothing
 // else, and a worker that read them as "a job for the nil org" would sweep no
 // tenant at all — a fleet-wide silent stop, one deploy long, on the sweeps that
-// expire occurrences and close groups. An absent field decodes to the zero value,
+// expire cases and close groups. An absent field decodes to the zero value,
 // the zero value IS the fan-out tick, and the fan-out tick is exactly what those
 // rows meant. That equivalence is what makes adding the field a v1 change rather
 // than a v2 one: a field was added, no field's meaning changed.
@@ -38,7 +38,7 @@ func TestAPayloadWithNoTenantHalfIsTheFanOutTick(t *testing.T) {
 		wire string
 		into func([]byte) (TenantFanOut, int, error)
 	}{
-		{"occurrence.reap", `{"v":1}`, decodeInto[OccurrenceReapArgs]},
+		{"case.reap", `{"v":1}`, decodeInto[CaseReapArgs]},
 		{"group.close", `{"v":1}`, decodeInto[GroupCloseArgs]},
 		{"flap.score", `{}`, decodeInto[FlapScoreArgs]},
 		{"retention.prune", `{"v":1}`, decodeInto[RetentionPruneArgs]},
@@ -79,19 +79,19 @@ func TestAnOrgIDMakesItOneTenantsPass(t *testing.T) {
 // share one unique key per period and 499 of every 500 would be collapsed as
 // duplicates — a fan-out that enqueues 500 jobs and runs one.
 //
-// Two shapes is the common case and `occurrence.reap` stands for all of them.
+// Two shapes is the common case and `case.reap` stands for all of them.
 // `source.reconcile` has four, which is a strictly harder version of the same
 // question: see TestTheFourSourceReconcileShapesAreFourUniqueKeys.
 func TestTheTenantHalfSurvivesARoundTrip(t *testing.T) {
 	t.Parallel()
 
 	orgID := uuid.New()
-	wire, err := json.Marshal(OccurrenceReapArgs{TenantFanOut: TenantFanOut{OrgID: orgID}})
+	wire, err := json.Marshal(CaseReapArgs{TenantFanOut: TenantFanOut{OrgID: orgID}})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var back OccurrenceReapArgs
+	var back CaseReapArgs
 	if err := json.Unmarshal(wire, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestTheTenantHalfSurvivesARoundTrip(t *testing.T) {
 		t.Errorf("org id did not survive the payload: got %s, want %s (%s)", back.OrgID, orgID, wire)
 	}
 
-	other, err := json.Marshal(OccurrenceReapArgs{TenantFanOut: TenantFanOut{OrgID: uuid.New()}})
+	other, err := json.Marshal(CaseReapArgs{TenantFanOut: TenantFanOut{OrgID: uuid.New()}})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

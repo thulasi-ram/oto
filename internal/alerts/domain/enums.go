@@ -9,7 +9,7 @@ import (
 	"github.com/thulasiram/oto/internal/platform/errs"
 )
 
-// State is what the world is doing to one AlertOccurrence (SPEC §B.1, §B.2).
+// State is what the world is doing to one AlertCase (SPEC §B.1, §B.2).
 //
 // It is owned by ingestion and the reconciler, and it is orthogonal to AckState:
 // an acknowledged alert is still firing. The four values are a closed set and the
@@ -24,7 +24,7 @@ type State struct{ s string }
 // The closed State set. These are package-level vars because Go has no struct
 // constants; they are never reassigned.
 var (
-	// StateNone is the zero State: the Alert has no open AlertOccurrence.
+	// StateNone is the zero State: the Alert has no open AlertCase.
 	StateNone = State{}
 	// StateFiring means Alertmanager reports this label set active and not suppressed.
 	StateFiring = State{"firing"}
@@ -57,20 +57,20 @@ func (s State) String() string { return s.s }
 // IsZero reports whether this is StateNone.
 func (s State) IsZero() bool { return s.s == "" }
 
-// IsTerminal reports whether the occurrence has ended. A terminal occurrence can
+// IsTerminal reports whether the case has ended. A terminal case can
 // only be left by a re-fire (T7 or T8).
 func (s State) IsTerminal() bool { return s == StateResolved || s == StateExpired }
 
-// IsOpen reports whether the occurrence is still live.
+// IsOpen reports whether the case is still live.
 func (s State) IsOpen() bool { return s == StateFiring || s == StateSuppressed }
 
-// AckState is what humans have done about an AlertOccurrence (SPEC §B.1).
+// AckState is what humans have done about an AlertCase (SPEC §B.1).
 // It is orthogonal to State: an acked alert is still firing.
 type AckState struct{ s string }
 
 // The closed AckState set.
 var (
-	// AckStateUnacked means nobody has taken this occurrence.
+	// AckStateUnacked means nobody has taken this case.
 	AckStateUnacked = AckState{"unacked"}
 	// AckStateAcked means a human took it. Acknowledgement identity IS stored;
 	// per-person response-time aggregates are not, ever (R8).
@@ -94,7 +94,7 @@ func (a AckState) String() string { return a.s }
 // IsZero reports whether the ack state is unset.
 func (a AckState) IsZero() bool { return a.s == "" }
 
-// IsAcked reports whether a human has taken this occurrence.
+// IsAcked reports whether a human has taken this case.
 func (a AckState) IsAcked() bool { return a == AckStateAcked }
 
 // MaxRawSeverityBytes bounds the RAW `severity` label as it is persisted on
@@ -229,11 +229,11 @@ func (s Severity) IsZero() bool { return s.s == "" }
 // purpose (sorting a list, picking a card colour). Add it then, with that
 // caller — not on the theory that oto can watch one Alert get worse.
 
-// SuppressionReason says why an AlertOccurrence is suppressed. It exists ONLY
-// while the occurrence is suppressed, and only the reconciler can set it (C1).
+// SuppressionReason says why an AlertCase is suppressed. It exists ONLY
+// while the case is suppressed, and only the reconciler can set it (C1).
 type SuppressionReason struct{ s string }
 
-// The closed SuppressionReason set (SPEC §B.2, occ_suppress_ck).
+// The closed SuppressionReason set (SPEC §B.2, case_suppress_ck).
 var (
 	// SuppressionSilence means an Alertmanager silence matched.
 	SuppressionSilence = SuppressionReason{"silence"}
@@ -263,8 +263,8 @@ func (r SuppressionReason) String() string { return r.s }
 // IsZero reports whether no suppression reason is set.
 func (r SuppressionReason) IsZero() bool { return r.s == "" }
 
-// ResolveReason says how an AlertOccurrence ended, and it is bound one-to-one to
-// the terminal state (occ_resolve_map_ck). This pairing is what stops oto ever
+// ResolveReason says how an AlertCase ended, and it is bound one-to-one to
+// the terminal state (case_resolve_map_ck). This pairing is what stops oto ever
 // claiming "resolved" when it means "expired".
 type ResolveReason struct{ s string }
 
@@ -306,7 +306,7 @@ var (
 	ActorIngest = ActorKind{"ingest"}
 	// ActorReconciler is the API v2 reconciler — the ONLY producer of suppressed.
 	ActorReconciler = ActorKind{"reconciler"}
-	// ActorReaper is the occurrence.reap job — the ONLY producer of expired.
+	// ActorReaper is the case.reap job — the ONLY producer of expired.
 	ActorReaper = ActorKind{"reaper"}
 	// ActorEnricher is an Enricher completing.
 	ActorEnricher = ActorKind{"enricher"}

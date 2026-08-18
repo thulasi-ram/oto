@@ -154,13 +154,13 @@
 
 -- +goose Up
 
-CREATE INDEX occ_started_idx   ON alert_occurrences (org_id, started_at);
+CREATE INDEX occ_started_idx   ON alert_occurrences (org_id, started_at);  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 CREATE INDEX notif_created_idx ON notifications     (org_id, created_at);
 
 COMMENT ON INDEX occ_started_idx IS
   'Serves the occ CTE of stats.rollup — every episode an org OPENED on one UTC day — and the candidates CTE of relatedAlertsSQL, which asks the same shape on the request path. Two columns and no more: a third key column in front of started_at would put the range back off the leading edge, which is the exact reason the two of the five from 00007 that do carry started_at (occ_group_idx, occ_ack_idx) could not drive this. The other three carry no timestamp, or no leading org_id, at all.';
 COMMENT ON INDEX notif_created_idx IS
-  'Serves the notif CTE of stats.rollup — every notification an org minted on one UTC day. The other three indexes on this table (00011, 00029) each demand a second equality a day-scoped rollup does not have: notif_subject_idx leaves created_at fourth behind subject_kind and subject_id, notif_alert_idx leaves it third behind alert_id, and notif_occurrence_idx does not carry created_at at all.';
+  'Serves the notif CTE of stats.rollup — every notification an org minted on one UTC day. The other three indexes on this table (00011, 00029) each demand a second equality a day-scoped rollup does not have: notif_subject_idx leaves created_at fourth behind subject_kind and subject_id, notif_alert_idx leaves it third behind alert_id, and notif_occurrence_idx does not carry created_at at all.';  -- vocab:allow -- schema history: a shipped migration states the world as it was at its own version and is not editable. ADR 0036 renames this in 00052.
 
 -- +goose Down
 

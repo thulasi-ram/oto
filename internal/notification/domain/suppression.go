@@ -5,7 +5,7 @@ package domain
 // migration 00018).
 //
 // This is OTO'S OWN notification-suppression vocabulary. It is NOT
-// Alertmanager's `alert_occurrences.suppression_reason`, which mirrors the four
+// Alertmanager's `alert_cases.suppression_reason`, which mirrors the four
 // upstream suppression reasons and nothing else. Conflating them would make oto
 // report "Alertmanager is suppressing this" when the truth is "a human asked oto
 // to be quiet" (§B.8.2).

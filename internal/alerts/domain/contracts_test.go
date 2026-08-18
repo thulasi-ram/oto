@@ -86,7 +86,7 @@ func TestTransitionKind_IsNotAState(t *testing.T) {
 // TestPreconditionFor_IsTheOnlyWayToBuildOne — ⭐⭐ this is the mechanism that
 // stops a resolution being fabricated under READ COMMITTED.
 func TestPreconditionFor_IsTheOnlyWayToBuildOne(t *testing.T) {
-	o := occurrenceIn(t, StateFiring)
+	o := caseIn(t, StateFiring)
 	pre := PreconditionFor(o)
 
 	assert.Equal(t, o.StateVersion(), pre.StateVersion)
@@ -99,7 +99,7 @@ func TestPreconditionFor_IsTheOnlyWayToBuildOne(t *testing.T) {
 }
 
 func TestApply_BeforeIsTheExactPreImageTheVerdictUsed(t *testing.T) {
-	o := occurrenceIn(t, StateFiring, func(p *OccurrenceParams) {
+	o := caseIn(t, StateFiring, func(p *CaseParams) {
 		p.StateVersion = 11
 		p.SourceEndsAt = t0.Add(time.Minute)
 	})
@@ -114,7 +114,7 @@ func TestApply_BeforeIsTheExactPreImageTheVerdictUsed(t *testing.T) {
 	assert.Equal(t, o, res.Before)
 	assert.Equal(t, 11, PreconditionFor(res.Before).StateVersion,
 		"the guard cannot name a row other than the one the decision was made from")
-	assert.Equal(t, 11, res.Occurrence.StateVersion(),
+	assert.Equal(t, 11, res.Case.StateVersion(),
 		"the machine never invents a version: a version the domain invented would guard nothing")
 }
 
@@ -174,23 +174,25 @@ func TestAlertRollup_RollupState(t *testing.T) {
 	}
 }
 
-func TestAlertRollup_Unacked(t *testing.T) {
-	tests := []struct {
-		name string
-		r    AlertRollup
-		want int
-	}{
-		{name: "none acked", r: AlertRollup{Total: 5}, want: 5},
-		{name: "some acked", r: AlertRollup{Total: 5, Acked: 2}, want: 3},
-		{name: "all acked", r: AlertRollup{Total: 5, Acked: 5}},
-		{name: "never negative", r: AlertRollup{Total: 5, Acked: 9}},
-		{name: "empty", r: AlertRollup{}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, tc.r.Unacked())
-			assert.GreaterOrEqual(t, tc.r.Unacked(), 0)
-		})
+// TestAlertRollup_CountsOnlyPropertiesOfTheAlert is the shape argument the
+// dropped counter failed.
+//
+// ⭐ EVERY COUNTER ON A BUCKET IS A FACT ABOUT THE ALERT.
+// `Firing`/`Suppressed`/`Resolved`/`Expired` are its current episode's state,
+// projected onto it because `state` still has an honest answer when nothing is
+// firing; `Flapping` is a derived alert-scoped signal. `Acked` was the one that
+// was not: it counted receipts given for individual firings, so a bucket
+// reporting "12 acknowledged" was counting acknowledgements of firings that had
+// ended. It is gone, with `Unacked()` — which was only ever `Total - Acked` —
+// and with the column both read.
+func TestAlertRollup_CountsOnlyPropertiesOfTheAlert(t *testing.T) {
+	ty := reflect.TypeOf(AlertRollup{})
+	for _, name := range []string{"Acked", "Unacked", "AckState"} {
+		_, ok := ty.FieldByName(name)
+		assert.False(t, ok, "AlertRollup must not carry %q: ack is a fact about one episode", name)
+
+		_, ok = ty.MethodByName(name)
+		assert.False(t, ok, "AlertRollup must not answer %q", name)
 	}
 }
 
@@ -198,11 +200,17 @@ func TestAlertRollup_Unacked(t *testing.T) {
 // more interesting of the two.
 func TestAlertRollup_KeepsResolvedAndExpiredApart(t *testing.T) {
 	ty := reflect.TypeOf(AlertRollup{})
-	for _, name := range []string{"Firing", "Suppressed", "Resolved", "Expired", "Acked", "Flapping", "Snoozed"} {
+	for _, name := range []string{"Firing", "Suppressed", "Resolved", "Expired", "Flapping"} {
 		_, ok := ty.FieldByName(name)
 		assert.True(t, ok, "AlertRollup must count %s separately", name)
 	}
-	for _, name := range []string{"Closed", "Ended", "Done", "Terminal"} {
+	// `Acked` and `Snoozed` are DELIBERATELY absent, and the absence is the point.
+	// Within this very roll-up they were the only two counters that were not
+	// properties of the alert: ack is a receipt against the CASE (ADR 0036, and
+	// `alerts.ack_state` is dropped in 00049) and a snooze is a row in
+	// `alert_snoozes` the alert does not carry (00048). A counter that reappears
+	// here is a column creeping back onto `alerts`.
+	for _, name := range []string{"Closed", "Ended", "Done", "Terminal", "Acked", "Snoozed"} {
 		_, ok := ty.FieldByName(name)
 		assert.False(t, ok, "AlertRollup must not merge the terminal states into %q", name)
 	}
@@ -213,7 +221,6 @@ func TestAlertRollup_KeepsResolvedAndExpiredApart(t *testing.T) {
 func TestAlertFilter_DefaultNeverHidesSnoozedAlerts(t *testing.T) {
 	var f AlertFilter
 	assert.Nil(t, f.Snoozed, "the zero filter includes snoozed alerts")
-	assert.Nil(t, f.AckState)
 	assert.Nil(t, f.Flapping)
 	assert.Empty(t, f.States, "nil or empty means no constraint on this dimension")
 }
@@ -226,8 +233,8 @@ func TestAlertFilter_DefaultNeverHidesSnoozedAlerts(t *testing.T) {
 func TestDomainTypesCarryNoJSONTags(t *testing.T) {
 	types := []any{
 		Alert{}, AlertParams{}, AlertProjection{}, AlertFilter{}, AlertUpsert{},
-		AlertUpsertResult{}, AlertRollup{}, Occurrence{}, OccurrenceParams{},
-		OpenOccurrenceParams{}, OpenOccurrence{}, Event{}, EventParams{},
+		AlertUpsertResult{}, AlertRollup{}, Case{}, CaseParams{},
+		OpenCaseParams{}, OpenCase{}, Event{}, EventParams{},
 		Snooze{}, SnoozeParams{}, SnoozeCommand{}, UnsnoozeCommand{},
 		SnoozeRequest{}, SnoozeEnd{}, Observation{}, SuppressedBy{},
 		Transition{}, TransitionPrecondition{}, TransitionCommand{},
@@ -261,7 +268,7 @@ func TestNoPersonReferenceOnASignal(t *testing.T) {
 		"oncall", "rota", "scheduleid", "userids", "timeofday", "escalation", // vocab:allow the scope-boundary guard must name the words it forbids; this table IS the enforcement.
 	}
 
-	for _, v := range []any{Alert{}, AlertParams{}, Occurrence{}, OccurrenceParams{}, AlertRollup{}, AlertProjection{}} {
+	for _, v := range []any{Alert{}, AlertParams{}, Case{}, CaseParams{}, AlertRollup{}, AlertProjection{}} {
 		ty := reflect.TypeOf(v)
 		t.Run(ty.Name(), func(t *testing.T) {
 			for i := range ty.NumField() {
@@ -275,7 +282,7 @@ func TestNoPersonReferenceOnASignal(t *testing.T) {
 	}
 
 	// The one permitted exception is present and is past-tense.
-	_, ok := reflect.TypeOf(OccurrenceParams{}).FieldByName("AckedBy")
+	_, ok := reflect.TypeOf(CaseParams{}).FieldByName("AckedBy")
 	assert.True(t, ok, "acked_by IS stored: it is operationally necessary")
 }
 
@@ -285,7 +292,7 @@ func TestNoHumanWritesASignalsState(t *testing.T) {
 	for _, from := range []State{StateFiring, StateSuppressed, StateResolved, StateExpired} {
 		for _, tr := range allTriggers() {
 			for _, kind := range []ActorKind{ActorUser, ActorSlack} {
-				o := occurrenceIn(t, from, func(p *OccurrenceParams) {
+				o := caseIn(t, from, func(p *CaseParams) {
 					p.SourceEndsAt = t0.Add(time.Minute)
 				})
 				when := t0.Add(time.Hour)

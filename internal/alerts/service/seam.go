@@ -70,13 +70,13 @@ import (
 type TimelineEventRequest struct {
 	Type    domain.EventType
 	GroupID uuid.UUID
-	// AlertID and OccurrenceID name the alert or episode the fact is about; a
+	// AlertID and CaseID name the alert or episode the fact is about; a
 	// membership event names the member. At least one of the three subjects is
 	// required (ev_subject_ck).
-	AlertID      uuid.UUID
-	OccurrenceID uuid.UUID
-	Summary      string
-	Payload      map[string]any
+	AlertID uuid.UUID
+	CaseID  uuid.UUID
+	Summary string
+	Payload map[string]any
 	// DedupeKey makes the append idempotent through `alert_event_keys` (C.8).
 	DedupeKey string
 	// ActorKind defaults to `system`. A human actor additionally requires an id
@@ -92,13 +92,47 @@ type TimelineEventRequest struct {
 // AppendTimelineEvent writes one fact onto the timeline, inside the caller's
 // transaction when there is one.
 //
-// It exists so that no other module opens `alert_events` itself. One writer, one
-// idempotency mechanism, one place where an event's shape is proved.
+// It exists so that no other module opens `alert_events` itself: one CROSS-MODULE
+// writer, one idempotency mechanism, one place where an event's shape is proved.
+//
+// ⚠️ IT IS NOT THE ONLY STATEMENT THAT INSERTS INTO `alert_events`, and reading
+// it as one is how the guarantee below gets over-claimed. Two other paths write
+// that table, both deliberately:
+//
+//   - `alerts/service.appendEvents` — this module's own lifecycle (actions.go,
+//     lifecycle.go, sweep.go) hands it `domain.Event`s it BUILT, so it needs no
+//     request shape and does not pass through here;
+//   - `notification/repository/events.go` — INSERTs its own `notification.*` and
+//     `delivery.*` rows with its own §C.8 key claim, and says so on itself.
+//
+// What is true, and what the refusal below rests on, is narrower: this is the
+// only way a request-shaped event enters `alert_events` from OUTSIDE
+// `alerts`, and it is where every cross-module caller — grouping, rules,
+// enrichment — arrives.
 func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope, in TimelineEventRequest) error {
 	// No parse of in.Type: it arrives already proved. `domain.EventType` cannot be
 	// constructed outside the kernel except through `NewEventType`, so the only
 	// value that can reach here without being one of the closed 36 is the zero
 	// value, which `NewEvent` rejects as "event type is required".
+	//
+	// ⛔ BUT PROVED IS NOT THE SAME AS PERMITTED. A RETIRED type parses — it must,
+	// because rows already carry it and the timeline has to read them back — and it
+	// still may not be appended. `group.member_joined` and `group.member_left` are
+	// the two, and the reasoning is on `domain.retiredEventTypes`. It is `Internal`
+	// rather than `Validation` on purpose: no request can ask for this, so reaching
+	// it means code asked for it.
+	//
+	// ⚠️ WHAT THIS REFUSAL COVERS, EXACTLY. Both retired values are `group.*` and
+	// grouping is a different module, so every caller that could ever emit one
+	// arrives HERE — which is what makes a check at this one point sufficient for
+	// them. It is not a guarantee about the table in general: see the two other
+	// write paths named on this method. Extending it to `appendEvents` would close
+	// the in-module half, and `notification`'s INSERT would still be outside it.
+	// `test/arch`'s event-type gate is what covers the table as a whole.
+	if in.Type.Retired() {
+		return errs.Newf(errs.KindInternal, "event_type_retired",
+			"%q is a retired alert_events.type and may be read but never appended", in.Type)
+	}
 	kindName := in.ActorKind
 	if kindName == "" {
 		kindName = domain.ActorSystem.String()
@@ -123,17 +157,17 @@ func (s *Service) AppendTimelineEvent(ctx context.Context, scope db.TenantScope,
 	}
 
 	ev, err := domain.NewEvent(domain.EventParams{
-		ID:           id.New(),
-		OrgID:        scope.OrgID(),
-		AlertID:      in.AlertID,
-		OccurrenceID: in.OccurrenceID,
-		GroupID:      in.GroupID,
-		Type:         in.Type,
-		At:           at,
-		Actor:        actor,
-		Summary:      in.Summary,
-		Payload:      in.Payload,
-		DedupeKey:    in.DedupeKey,
+		ID:        id.New(),
+		OrgID:     scope.OrgID(),
+		AlertID:   in.AlertID,
+		CaseID:    in.CaseID,
+		GroupID:   in.GroupID,
+		Type:      in.Type,
+		At:        at,
+		Actor:     actor,
+		Summary:   in.Summary,
+		Payload:   in.Payload,
+		DedupeKey: in.DedupeKey,
 	})
 	if err != nil {
 		return err

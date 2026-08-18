@@ -21,7 +21,7 @@ import (
 // the shape SPEC R8 asks for: a per-person metric cannot be built from a column
 // nothing selects.
 const drillColumns = `id, source_id, drill_label, severity, batch_id, alert_id,
-       occurrence_id, group_id, notification_id, outcome,
+       case_id, group_id, notification_id, outcome,
        started_by_label, started_at, deadline_at, finished_at, disposed_at`
 
 // drillRow is the row model. Unexported, per the three-model rule.
@@ -32,7 +32,7 @@ type drillRow struct {
 	severity       string
 	batchID        *uuid.UUID
 	alertID        *uuid.UUID
-	occurrenceID   *uuid.UUID
+	caseID         *uuid.UUID
 	groupID        *uuid.UUID
 	notificationID *uuid.UUID
 	outcome        []byte
@@ -46,7 +46,7 @@ type drillRow struct {
 func (r *drillRow) scanDest() []any {
 	return []any{
 		&r.id, &r.sourceID, &r.label, &r.severity, &r.batchID, &r.alertID,
-		&r.occurrenceID, &r.groupID, &r.notificationID, &r.outcome,
+		&r.caseID, &r.groupID, &r.notificationID, &r.outcome,
 		&r.startedByLabel, &r.startedAt, &r.deadlineAt, &r.finishedAt, &r.disposedAt,
 	}
 }
@@ -59,7 +59,7 @@ func (r *drillRow) toDomain() (domain.Drill, error) {
 		Severity:       r.severity,
 		BatchID:        idOrNil(r.batchID),
 		AlertID:        idOrNil(r.alertID),
-		OccurrenceID:   idOrNil(r.occurrenceID),
+		CaseID:         idOrNil(r.caseID),
 		GroupID:        idOrNil(r.groupID),
 		NotificationID: idOrNil(r.notificationID),
 		StartedByLabel: r.startedByLabel,
@@ -158,12 +158,12 @@ func (r *DrillRepository) RecordArtefacts(
 	_, err := r.db(ctx).Exec(ctx, `
 UPDATE delivery_drills
    SET alert_id        = COALESCE(alert_id, $3),
-       occurrence_id   = COALESCE(occurrence_id, $4),
+       case_id   = COALESCE(case_id, $4),
        group_id        = COALESCE(group_id, $5),
        notification_id = COALESCE(notification_id, $6),
        updated_at      = now()
  WHERE org_id = $1 AND id = $2`,
-		s.OrgID(), id, nilID(a.Alert.ID), nilID(a.Occurrence.ID),
+		s.OrgID(), id, nilID(a.Alert.ID), nilID(a.Case.ID),
 		nilID(a.Group.ID), nilID(a.Notification.ID))
 	if err != nil {
 		return mapErr(err, "record the drill's artefacts")

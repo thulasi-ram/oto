@@ -32,7 +32,7 @@ func TestMain(m *testing.M) { harness.Main(m) }
 
 // ------------------------------------------------------------------- fixtures
 
-// fixture is one isolated tenant with one alert and one open, firing occurrence.
+// fixture is one isolated tenant with one alert and one open, firing case.
 type fixture struct {
 	t     *testing.T
 	pool  *pgxpool.Pool
@@ -41,7 +41,7 @@ type fixture struct {
 
 	svc *Service
 
-	occurrences *repository.OccurrenceRepository
+	cases *repository.CaseRepository
 
 	// h, org and cluster are kept so a test can seed the rows a §C.4 group needs
 	// without standing up a second harness over the same database.
@@ -69,19 +69,19 @@ func newFixture(t *testing.T, now time.Time) *fixture {
 
 	clk := clock.NewFake(now)
 	f := &fixture{
-		t:           t,
-		pool:        h.Pool,
-		scope:       org.Scope,
-		clk:         clk,
-		occurrences: repository.NewOccurrenceRepository(h.Pool),
-		h:           h,
-		org:         org,
-		cluster:     cluster,
-		orgID:       org.ID,
-		clusterID:   cluster.ID,
-		clusterKey:  cluster.Key,
-		alertKey:    harness.AlertKey(org.ID, cluster.Key, labels),
-		labels:      labels,
+		t:          t,
+		pool:       h.Pool,
+		scope:      org.Scope,
+		clk:        clk,
+		cases:      repository.NewCaseRepository(h.Pool),
+		h:          h,
+		org:        org,
+		cluster:    cluster,
+		orgID:      org.ID,
+		clusterID:  cluster.ID,
+		clusterKey: cluster.Key,
+		alertKey:   harness.AlertKey(org.ID, cluster.Key, labels),
+		labels:     labels,
 	}
 	f.svc = f.newService(clk)
 	return f
@@ -92,15 +92,15 @@ func newFixture(t *testing.T, now time.Time) *fixture {
 func (f *fixture) newService(clk clock.Clock) *Service {
 	f.t.Helper()
 	svc, err := New(Deps{
-		Alerts:      repository.NewAlertRepository(f.pool, clk, false),
-		Occurrences: repository.NewOccurrenceRepository(f.pool),
-		Events:      repository.NewEventRepository(f.pool, clk),
-		Snoozes:     repository.NewSnoozeRepository(f.pool, clk),
-		Tx:          repository.NewTxRunner(f.pool),
-		AlertBatch:  repository.NewAlertRepository(f.pool, clk, false),
-		OccBatch:    repository.NewOccurrenceRepository(f.pool),
-		Clock:       clk,
-		Logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Alerts:     repository.NewAlertRepository(f.pool, clk, false),
+		Cases:      repository.NewCaseRepository(f.pool),
+		Events:     repository.NewEventRepository(f.pool, clk),
+		Snoozes:    repository.NewSnoozeRepository(f.pool, clk),
+		Tx:         repository.NewTxRunner(f.pool),
+		AlertBatch: repository.NewAlertRepository(f.pool, clk, false),
+		OccBatch:   repository.NewCaseRepository(f.pool),
+		Clock:      clk,
+		Logger:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	})
 	if err != nil {
 		f.t.Fatalf("build service: %v", err)
@@ -129,20 +129,20 @@ func (f *fixture) observation(
 	}
 }
 
-// openFiring drives the real ingest path once, so the occurrence under test was
+// openFiring drives the real ingest path once, so the case under test was
 // created exactly the way production creates one.
-func (f *fixture) openFiring(startsAt, endsAt time.Time) domain.Occurrence {
+func (f *fixture) openFiring(startsAt, endsAt time.Time) domain.Case {
 	f.t.Helper()
 	obs := f.observation(domain.ObservedByIngest, "firing", f.clk.Now(), startsAt, endsAt)
 	if _, err := f.svc.ObserveBatch(f.t.Context(), f.scope, []domain.Observation{obs},
 		ObserveOptions{}); err != nil {
-		f.t.Fatalf("open firing occurrence: %v", err)
+		f.t.Fatalf("open firing case: %v", err)
 	}
-	return f.currentOccurrence()
+	return f.currentCase()
 }
 
-// currentOccurrence re-reads the one occurrence of this fixture's alert.
-func (f *fixture) currentOccurrence() domain.Occurrence {
+// currentCase re-reads the one case of this fixture's alert.
+func (f *fixture) currentCase() domain.Case {
 	f.t.Helper()
 	ctx := f.t.Context()
 
@@ -152,11 +152,11 @@ func (f *fixture) currentOccurrence() domain.Occurrence {
 		f.orgID, f.alertKey.String()).Scan(&alertID); err != nil {
 		f.t.Fatalf("read alert: %v", err)
 	}
-	occ, ok, err := f.occurrences.GetLatestByAlert(ctx, f.scope, alertID)
+	ac, ok, err := f.cases.GetLatestByAlert(ctx, f.scope, alertID)
 	if err != nil || !ok {
-		f.t.Fatalf("read occurrence: ok=%v err=%v", ok, err)
+		f.t.Fatalf("read case: ok=%v err=%v", ok, err)
 	}
-	return occ
+	return ac
 }
 
 // countEvents counts appended timeline entries of one type for this org.

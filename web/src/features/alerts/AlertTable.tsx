@@ -90,14 +90,16 @@ import { createVirtualiser, readRowHeight } from "~/lib/virtual";
 export interface AlertTableProps {
   readonly alerts: readonly Alert[];
   /**
-   * The `?snoozed=` filter the rows were fetched under, when there was one.
+   * Whether these rows came from the **Quiet** tab.
    *
-   * `AlertDTO` carries no `snooze` field, so a row's snooze state is only
-   * knowable when the query pinned it. `true` means every row here is certainly
-   * snoozed; `null` means unknown, and an unknown is left unsaid rather than
-   * guessed at.
+   * ⭐ IT IS NO LONGER A `boolean | null`, AND THE MISSING THIRD STATE IS THE
+   * IMPROVEMENT. `AlertDTO` carries no `snooze` field, so a row's snooze state is
+   * only knowable from the query that fetched it — and the list used to be able
+   * to run with `?snoozed=` unset, which made the answer "unknown" and left the
+   * chip unsaid on rows that were in fact quiet. The list is now always on one
+   * tab or the other, so the answer is always known.
    */
-  readonly snoozedKnown?: boolean | null;
+  readonly quiet?: boolean;
   /**
    * **What the rule said**, keyed by snapshot id (ADR 0025).
    *
@@ -112,6 +114,17 @@ export interface AlertTableProps {
   readonly rulesPending?: boolean;
   /** Picking a label filters by it — the fastest drill-down there is. */
   readonly onFilterLabel: (name: string, value: string) => void;
+  /**
+   * Called when a row's snooze succeeds, with the alert that went quiet.
+   *
+   * ⭐ IT EXISTS BECAUSE THE ROW LEAVES. On the main tab a snoozed alert is no
+   * longer a member of the list it was snoozed from, so the row that would have
+   * carried the confirmation is gone by the time there is anything to confirm —
+   * and an operator who watches a row vanish with nothing said has been handed a
+   * disappearance rather than a result. The sentence has to be rendered by
+   * whoever owns the screen; this is how it hears about it.
+   */
+  readonly onSnoozed?: (alert: Alert) => void;
   /** Rendered after the last row: the "load more" affordance or a total. */
   readonly footer?: JSX.Element;
 }
@@ -694,13 +707,14 @@ export const AlertTable: Component<AlertTableProps> = (props) => {
                 index={win().start + i()}
                 focused={alert.id === focusId()}
                 tabbable={win().start + i() === rovingIndex()}
-                snoozed={props.snoozedKnown === true}
+                snoozed={props.quiet === true}
                 showRule={showRule()}
                 showCount={showCount()}
                 rules={props.rules ?? NO_RULES}
                 rulesPending={props.rulesPending === true}
                 onFocus={() => setFocusId(alert.id)}
                 onFilterLabel={props.onFilterLabel}
+                onSnoozed={props.onSnoozed}
               />
             )}
           </For>
@@ -728,7 +742,7 @@ interface AlertRowProps {
   readonly focused: boolean;
   /** True on the one row whose action buttons hold the roving tab stop. */
   readonly tabbable: boolean;
-  /** Certainly snoozed, because the query pinned `?snoozed=true`. */
+  /** Certainly snoozed, because the row came from the Quiet tab. */
   readonly snoozed: boolean;
   /**
    * False when the caller cannot fill the column, or when the window is too
@@ -740,11 +754,12 @@ interface AlertRowProps {
   readonly rules: ReadonlyMap<string, RuleSnapshot>;
   readonly rulesPending: boolean;
   readonly onFocus: () => void;
+  readonly onSnoozed?: ((alert: Alert) => void) | undefined;
   readonly onFilterLabel: (name: string, value: string) => void;
 }
 
 const AlertRow: Component<AlertRowProps> = (props) => {
-  const occ = (): Alert["current_occurrence"] => props.alert.current_occurrence ?? null;
+  const ac = (): Alert["current_case"] => props.alert.current_case ?? null;
 
   /**
    * U4: the only urgency motion in the product, and it is spent on exactly one
@@ -752,7 +767,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
    */
   const urgent = (): boolean =>
     props.alert.state === "firing" &&
-    props.alert.ack_state === "unacked" &&
+    (ac()?.ack_state ?? "unacked") === "unacked" &&
     normaliseSeverity(props.alert.severity) === "critical";
 
   /** A few labels beyond the promoted ones, for orientation and drill-down. */
@@ -919,7 +934,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
             auto` every pixel they took came out of the alert name. */}
         <div class="flex min-w-0 items-center gap-2xs overflow-hidden">
           <StateChip state={props.alert.state} size="sm" urgent={urgent()} />
-          <AckChip ackState={props.alert.ack_state} />
+          <AckChip ackState={ac()?.ack_state} />
           <Show when={props.alert.is_flapping}>
             <FlappingChip />
           </Show>
@@ -941,15 +956,15 @@ const AlertRow: Component<AlertRowProps> = (props) => {
       {/* "Firing duration", never MTTR — oto measures the signal, not anyone's
           response (SCOPE-BOUNDARY). */}
       <td class={cn(td(COLUMN.firing), "text-ink-muted")}>
-        <Show when={occ()} fallback={<span class="text-ink-subtle">—</span>}>
+        <Show when={ac()} fallback={<span class="text-ink-subtle">—</span>}>
           {(o) => <Elapsed from={o().started_at} to={o().ended_at ?? null} />}
         </Show>
       </td>
 
       <Show when={props.showCount}>
         <td class={cn(td(COLUMN.count), "text-ink-muted")}>
-          <span title={`${props.alert.total_occurrences} firing episodes since first seen`}>
-            {fmtCount(props.alert.total_occurrences)}
+          <span title={`${props.alert.total_cases} firing episodes since first seen`}>
+            {fmtCount(props.alert.total_cases)}
           </span>
         </td>
       </Show>
@@ -959,7 +974,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
       </td>
 
       <td class={td(COLUMN.actions)}>
-        <RowActions alert={props.alert} tabbable={props.tabbable} />
+        <RowActions alert={props.alert} tabbable={props.tabbable} onSnoozed={props.onSnoozed} />
       </td>
     </tr>
   );
@@ -997,6 +1012,7 @@ const AlertRow: Component<AlertRowProps> = (props) => {
 const RowActions: Component<{
   readonly alert: Alert;
   readonly tabbable: boolean;
+  readonly onSnoozed?: ((alert: Alert) => void) | undefined;
 }> = (props) => {
   const client = useQueryClient();
   const [snoozeOpen, setSnoozeOpen] = createSignal(false);
@@ -1012,12 +1028,12 @@ const RowActions: Component<{
     onSuccess: invalidate,
   }));
 
-  const acked = (): boolean => props.alert.ack_state === "acked";
+  const acked = (): boolean => (props.alert.current_case?.ack_state ?? null) === "acked";
 
   /** Acking an ended episode is a 412 by contract; saying so first is kinder. */
-  const occurrenceOpen = (): boolean => {
-    const occ = props.alert.current_occurrence ?? null;
-    return occ !== null && (occ.ended_at ?? null) === null;
+  const caseOpen = (): boolean => {
+    const ac = props.alert.current_case ?? null;
+    return ac !== null && (ac.ended_at ?? null) === null;
   };
 
   const ackError = (): string | null =>
@@ -1029,7 +1045,7 @@ const RowActions: Component<{
     if (acked()) {
       return "Already acknowledged. Withdrawing is on the alert's own screen, where the note goes on the record.";
     }
-    if (!occurrenceOpen()) {
+    if (!caseOpen()) {
       return "This episode has already ended, so there is nothing to acknowledge.";
     }
     return "Record that a human has seen this. It stays firing, at the same severity.";
@@ -1044,7 +1060,7 @@ const RowActions: Component<{
         size="sm"
         class="size-6 shrink-0 px-0"
         tabindex={tabindex()}
-        disabled={acked() || !occurrenceOpen() || ack.isPending}
+        disabled={acked() || !caseOpen() || ack.isPending}
         aria-busy={ack.isPending ? "true" : undefined}
         aria-label={`Acknowledge ${props.alert.alertname}`}
         title={ackTitle()}
@@ -1062,7 +1078,7 @@ const RowActions: Component<{
         tabindex={tabindex()}
         aria-label={`Snooze notifications for ${props.alert.alertname}`}
         aria-haspopup="dialog"
-        title="Stop oto's own notifications for this alert until a fixed time. It keeps firing, keeps its severity, and stays on this list."
+        title="Stop oto's own notifications for this alert until a fixed time. It keeps firing and keeps its severity — it moves to the Quiet tab, it does not go away."
         onClick={() => setSnoozeOpen(true)}
       >
         <SnoozeGlyph />
@@ -1086,7 +1102,10 @@ const RowActions: Component<{
           onClose={() => setSnoozeOpen(false)}
           subject="alert"
           onSubmit={(body: SnoozeRequest, key: string) => snoozeAlert(props.alert.id, body, key)}
-          onSuccess={invalidate}
+          onSuccess={() => {
+            invalidate();
+            props.onSnoozed?.(props.alert);
+          }}
         />
       </Show>
     </div>

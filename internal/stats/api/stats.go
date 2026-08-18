@@ -120,7 +120,7 @@ func (rt *Router) getStatsOverview(w http.ResponseWriter, r *http.Request) {
 
 // getAlertQualityStats is `GET /api/v1/stats/alert-quality`.
 //
-// Per alertname per cluster: occurrences, notifications sent, acknowledgement
+// Per alertname per cluster: cases, notifications sent, acknowledgement
 // rate and flap score. This is the row that answers *"this rule fired 47 times
 // this month, cost 47 notifications, and was acknowledged 0 times"* — which does
 // more good than any enrichment, because the best alert is the one that no longer
@@ -142,7 +142,7 @@ func (rt *Router) getAlertQualityStats(w http.ResponseWriter, r *http.Request) {
 	q := AlertQualityQuery{
 		Cluster:   p.CSV("cluster"),
 		AlertName: p.CSV("alertname"),
-		Sort:      p.String("sort", domain.SortOccurrencesDesc.String()),
+		Sort:      p.String("sort", domain.SortCasesDesc.String()),
 		Limit:     p.Limit(),
 		Cursor:    p.Cursor(),
 	}
@@ -211,7 +211,7 @@ func (rt *Router) getAlertQualityStats(w http.ResponseWriter, r *http.Request) {
 // position is the keyset position of the hygiene report.
 //
 // It is stats-local rather than the shared time-keyed cursor, because this list
-// is ordered by a NUMBER — occurrences, notifications, an ack rate — and a
+// is ordered by a NUMBER — cases, notifications, an ack rate — and a
 // time-shaped cursor cannot name a position in it. `h` binds it to the filter set
 // exactly as the shared cursor does: a cursor minted under one window replayed
 // against another describes a position in a sequence that no longer exists.

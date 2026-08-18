@@ -349,7 +349,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "refire_grace_s",
     kind: "seconds",
     label: "Re-fire grace",
-    what: "An alert resolves, then the same alert fires again. Inside this window the existing occurrence reopens, oto reuses the existing Slack thread and the card updates in place — the one case that produces no new root message, and therefore the one oto surfaces in the channel so it is not missed. Outside the window a new occurrence opens, and once the group has closed that means a new generation: a brand-new Slack root message and a brand-new thread.",
+    what: "An alert resolves, then the same alert fires again. Inside this window the existing case reopens, oto reuses the existing Slack thread and the card updates in place — the one case that produces no new root message, and therefore the one oto surfaces in the channel so it is not missed. Outside the window a new case opens, and once the group has closed that means a new generation: a brand-new Slack root message and a brand-new thread.",
     risks: [
       {
         label: "Too short",
@@ -357,11 +357,11 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
       },
       {
         label: "Too long",
-        text: "History that lies. Two genuinely separate outages hours apart are recorded as one occurrence that reopened — one thread, one firing duration with a long gap in the middle, and this morning's thread grows a reply about tonight's incident. Occurrence counts under-report and duration statistics stop meaning anything.",
+        text: "History that lies. Two genuinely separate outages hours apart are recorded as one case that reopened — one thread, one firing duration with a long gap in the middle, and this morning's thread grows a reply about tonight's incident. Case counts under-report and duration statistics stop meaning anything.",
       },
     ],
     amRule:
-      "Two floors, and the RULE floor is usually the binding one. The grace clock starts at the occurrence's ended_at, which oto takes from the upstream EndsAt — when Prometheus stopped considering the rule firing, not when oto heard about it. So the alert must hold its condition for the rule's whole for: all over again, and Alertmanager then batches the notification: the earliest re-fire oto can observe lands at for + up to one group_interval. The transport floor is 2 x group_interval. Set the grace above whichever is larger, then check the top end against how long your incidents actually last.",
+      "Two floors, and the RULE floor is usually the binding one. The grace clock starts at the case's ended_at, which oto takes from the upstream EndsAt — when Prometheus stopped considering the rule firing, not when oto heard about it. So the alert must hold its condition for the rule's whole for: all over again, and Alertmanager then batches the notification: the earliest re-fire oto can observe lands at for + up to one group_interval. The transport floor is 2 x group_interval. Set the grace above whichever is larger, then check the top end against how long your incidents actually last.",
     // ⛔ THE `for:` TERM IS THE ONE THAT MATTERS AND IT USED TO BE ABSENT. This
     // verdict compared the value only against `group_interval`, which is the
     // smaller floor for every rule whose `for:` exceeds it — i.e. for 82% of the
@@ -454,7 +454,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "resolve_grace_s",
     kind: "seconds",
     label: "Resolve grace",
-    what: "How long past an alert's upstream end-time lease oto waits before the reaper marks the occurrence expired. Expired is not resolved: it means oto stopped hearing about this, never that the problem went away.",
+    what: "How long past an alert's upstream end-time lease oto waits before the reaper marks the case expired. Expired is not resolved: it means oto stopped hearing about this, never that the problem went away.",
     risks: [
       {
         label: "Too short",
@@ -486,7 +486,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     kind: "count",
     label: "Flap threshold",
     unit: "transitions",
-    what: "Transitions inside the flap window before oto marks an alert flapping. A flapping alert still opens and closes occurrences and its card still updates; what stops is the per-transition thread replies, replaced by one coalesced digest. Flapping is a visible state, never a silent drop.",
+    what: "Transitions inside the flap window before oto marks an alert flapping. A flapping alert still opens and closes cases and its card still updates; what stops is the per-transition thread replies, replaced by one coalesced digest. Flapping is a visible state, never a silent drop.",
     risks: [
       {
         label: "Too high",

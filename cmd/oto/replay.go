@@ -130,7 +130,7 @@ func refusalReport(res service.ReplayResult) string {
 	// ⭐ THE LIMB IS NAMED PER ROW, because the two are not the same news and an
 	// operator deciding about `--force` is deciding about the worse one. An
 	// overtaken alert has a later batch's answer already stored; a closed one
-	// refires, mints a new occurrence id past the dedupe keys, and pages somebody
+	// refires, mints a new case id past the dedupe keys, and pages somebody
 	// for an incident that ended. A single "moved after this batch" line for both
 	// would describe only the first and hide the second.
 	for _, s := range res.Superseded {
@@ -143,7 +143,7 @@ func refusalReport(res service.ReplayResult) string {
 			s.MovedAt.UTC().Format("2006-01-02T15:04Z"), reason)
 	}
 
-	b.WriteString("  Replaying would reopen occurrences that closed after this batch, and page for them.\n")
+	b.WriteString("  Replaying would reopen cases that closed after this batch, and page for them.\n")
 	if res.Forced {
 		b.WriteString("  Replaying anyway, because --force was given.\n")
 		return b.String()

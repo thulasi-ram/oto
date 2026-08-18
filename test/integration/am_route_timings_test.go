@@ -221,7 +221,59 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 // the failure this test exists to catch, and it is indistinguishable from a
 // working one at the exit code.
 //
+// ⚠️⚠️ THE VOCABULARY CHANGES PART-WAY DOWN, and getting it wrong is the one
+// mistake here that does not announce itself. 00052 renames the firing episode
+// from `alert_occurrences` to `alert_cases` and carries seven columns,
+// twenty-seven constraints and ten indexes with it, so `down(52)` is the FIRST
+// step and everything below it must be spelled the OLD way — `alert_occurrences`,
+// `occ_started_idx`, `occ_group_live_idx`, `notif_occurrence_idx`,
+// `alerts.current_occurrence_id`. A post-rename name used below `down(52)` does
+// not error: it reads "" or 0, and the assertion it belongs to passes VACUOUSLY.
+//
 // WHAT EACH DOWN HAS TO PUT BACK, newest first:
+//
+//   - ⭐⭐ 00052 is a RENAME and nothing else — one table, seven columns,
+//     twenty-seven constraints, ten indexes, plus four columns of live rows —
+//     which makes its Down a hand-written list of ninety-odd identifiers whose
+//     characteristic defect is a forgotten line. A forgotten `ALTER ... RENAME`
+//     is SILENT: only renaming onto a name already taken errors, so a half-applied
+//     Down exits 0 with the schema in two vocabularies at once. So both spellings
+//     are COUNTED and the assertion is that the totals swap, rather than any one
+//     name being spot-checked. The row rewrites are read separately, because two
+//     of the four are guarded by CHECKs the Down re-adds and two are not.
+//
+//   - ⭐⭐ 00051 DROPPED `alert_group_members` and created `occ_group_live_idx`
+//     in its place, so it is the one migration here whose Down RESTORES DATA:
+//     the table is rebuilt and repopulated with `INSERT ... SELECT ... FROM
+//     alert_occurrences`, which is exact rather than approximate because every
+//     column the table carried is a column of the episode — and that is the whole
+//     argument for dropping it. A structural check alone would miss it, so the
+//     rebuilt row count is compared against the number of grouped episodes. The
+//     partial predicate on the new index is asserted with its columns for the
+//     reason 00044's was: an index of the same name WITHOUT `WHERE ended_at IS
+//     NULL` spans every episode the generation ever held.
+//
+//   - 00050 is FIVE COMMENTS and nothing else, with deliberately no constraint, no
+//     backfill and no re-key in either direction, so the prose IS the migration:
+//     `alert_groups` goes back to describing itself as an Alertmanager
+//     notification group. The ABSENCE of `groups_axes_ck` is asserted in both
+//     directions and is not pedantry — an earlier draft added it `NOT VALID`, and
+//     `NOT VALID` skips only the validation SCAN: Postgres re-checks a CHECK
+//     against the new row version on every UPDATE, so every pre-00050 generation
+//     (`group_labels = '{}'` for every reconciler-sourced one) would have become
+//     permanently un-UPDATE-able and `group.close` — this migration's whole
+//     self-healing story — would have failed on it forever, silently, as a warning.
+//
+//   - ⭐ 00049 DROPPED `alerts.ack_state`, so its Down ADDS a column — the half
+//     that cannot fail. What is asserted is the other half: the Down rebuilds the
+//     projection from `alert_occurrences`, its authority, rather than defaulting
+//     it, and a defaulted column hands the rolled-back release a database in
+//     which nothing is acknowledged.
+//
+//   - ⭐ 00048 DROPPED `alerts.snoozed_until` and its index, and its Down has the
+//     same shape and the same trap as 00049's: the column comes back reprojected
+//     from `alert_snoozes`, and `alerts_snooze_idx` comes back WITH its partial
+//     predicate rather than merely with its name.
 //
 //   - ⭐ 00046 TIGHTENED `policies_reasons_ck` — `reasons` became a set of 1..18
 //     rather than a bag of 1..32 — so its Down is a RELAXATION, and a relaxation
@@ -252,15 +304,17 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 //     internal/alerts/repository/labels_plan_test.go.
 //
 //   - 00044 added `gm_current_idx`, the PARTIAL index the only read of a
-//     generation's current members rides, so its Down is a DROP INDEX and the
-//     property that flips is its presence in `pg_indexes`. The partial predicate
-//     is asserted with it, out of `pg_indexes.indexdef`: an index of the same
-//     name over the same columns WITHOUT `WHERE left_at IS NULL` would be green
-//     on a presence check while being a different index — one the size of the
-//     generation's whole history rather than of its living membership. Whether
-//     it is USED is a different question and not one a round trip can answer;
-//     that is asserted against a real plan, with the index dropped as the
-//     control, in internal/grouping/repository/member_plan_test.go.
+//     generation's current members rode until 00051 moved that read onto the
+//     episode itself, so its Down is a DROP INDEX and the property that flips
+//     is its presence in `pg_indexes`. It is asserted in the middle of the round
+//     trip rather than at the top of the stack, because at the top of the stack it
+//     no longer exists. The partial predicate is asserted with it, out of
+//     `pg_indexes.indexdef`: an index of the same name over the same columns
+//     WITHOUT `WHERE left_at IS NULL` would be green on a presence check while
+//     being a different index. Whether either is USED is a different question and
+//     not one a round trip can answer; that is asserted against a real plan, with
+//     the index dropped as the control, in
+//     internal/grouping/repository/member_plan_test.go.
 //
 //   - 00043 changed two COMMENTs and nothing else — `alert_event_keys` and its
 //     prune index — so its Down is two more COMMENTs and the property that flips
@@ -271,7 +325,8 @@ func TestTheHealthListReadsTheTimingsToo(t *testing.T) {
 //     while nothing on earth pruned the table.
 //
 //   - 00042 added the two range indexes `stats.rollup` filters on,
-//     `occ_started_idx` and `notif_created_idx`, so its Down is a pair of DROP
+//     `occ_started_idx` (`case_started_idx` above `down(52)`) and
+//     `notif_created_idx`, so its Down is a pair of DROP
 //     INDEXes and the property that flips is their presence in `pg_indexes`. An
 //     index is the cheapest thing in this list to roll back — nothing to
 //     backfill, no row it can make illegal — which is exactly why its Down is the
@@ -353,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 47 {
-		t.Fatalf("latest migration is %d, want 47 — this test pins the number so that a "+
+	if latest != 52 {
+		t.Fatalf("latest migration is %d, want 52 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -419,7 +474,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	keptDefaults := func() int {
 		t.Helper()
 		return clockDefaults("alerts", "created_at", "updated_at") +
-			clockDefaults("alert_occurrences", "created_at", "updated_at") +
+			clockDefaults("alert_cases", "created_at", "updated_at") +
 			clockDefaults("alert_groups", "created_at", "updated_at") +
 			clockDefaults("alert_event_keys", "created_at") +
 			clockDefaults("ui_events", "at") +
@@ -546,13 +601,21 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// 00042's two indexes, counted together because they are one migration and
 	// therefore roll back together. `pg_indexes` rather than `pg_class` so a name
 	// that came back as something other than an index would not count.
-	rollupRangeIndexes := func() int {
+	//
+	// ⛔ The index on the episode table is passed IN rather than hardcoded, because
+	// 00052 renames it and this helper is called from both sides of that rename:
+	// `case_started_idx` at the top of the stack and after the final Up,
+	// `occ_started_idx` down at 00042 where 00052's Down has already run. Hardcoding
+	// one spelling makes the reading from the other side return 0 or 1 for a reason
+	// that has nothing to do with 00042, which is the failure this whole file is
+	// arranged to avoid.
+	rollupRangeIndexes := func(startedIdx string) int {
 		t.Helper()
 		var n int
 		if err := env.pool.QueryRow(env.ctx,
 			`SELECT count(*) FROM pg_indexes
 			  WHERE indexname = ANY($1::text[])`,
-			[]string{"occ_started_idx", "notif_created_idx"}).Scan(&n); err != nil {
+			[]string{startedIdx, "notif_created_idx"}).Scan(&n); err != nil {
 			t.Fatalf("introspect the rollup range indexes: %v", err)
 		}
 		return n
@@ -571,6 +634,195 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			t.Fatalf("introspect gm_current_idx: %v", err)
 		}
 		return def
+	}
+	// Any index, read as its rendered DEFINITION rather than as a name, for the
+	// reason `currentMemberIndexDef` is: the name coming back proves an index
+	// exists, and only the definition proves it is THE index. 00051's
+	// `*_group_live_idx` is why — it is gm_current_idx's successor, same shape over
+	// the table that now HOLDS the membership, partial on `ended_at IS NULL`, which
+	// unlike the predicate it replaces something actually writes. An index of that
+	// name without the predicate spans every episode the generation ever held and
+	// is a different index. An empty string means absent.
+	//
+	// ⛔ The NAME is a parameter for the same reason `rollupRangeIndexes`' is: 00052
+	// renames `occ_group_live_idx` to `case_group_live_idx`, so it carries the old
+	// spelling everywhere below `down(52)` — including at 00051, which created it.
+	// A hardcoded `case_group_live_idx` there returns "" and the assertion that
+	// 00051's Down dropped it passes VACUOUSLY, before that Down has even run.
+	indexDef := func(name string) string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT coalesce(max(indexdef), '') FROM pg_indexes
+			  WHERE indexname = $1`, name).Scan(&def); err != nil {
+			t.Fatalf("introspect %s: %v", name, err)
+		}
+		return def
+	}
+	// Any constraint, as rendered SQL, empty when absent. `pg_get_constraintdef`
+	// rather than a bare existence count because a constraint's PREDICATE is the
+	// contract and its name is only the handle — and because `NOT VALID` shows up
+	// in the rendering, which is the whole point of 00050's.
+	constraintDef := func(name, table string) string {
+		t.Helper()
+		var def string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT coalesce((SELECT pg_get_constraintdef(oid) FROM pg_constraint
+			                   WHERE conname = $1 AND conrelid = $2::regclass), '')`,
+			name, table).Scan(&def); err != nil {
+			t.Fatalf("introspect %s on %s: %v", name, table, err)
+		}
+		return def
+	}
+	// A table's comment, as text, because text is all it is. Read for 00050 for the
+	// reason `eventKeyComments` is read for 00043: a migration whose visible output
+	// is a sentence an operator sees at `\d+` is the one whose Down is most likely
+	// to be a copy of its Up.
+	tableComment := func(table string) string {
+		t.Helper()
+		var c string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT coalesce(obj_description($1::regclass, 'pg_class'), '')`, table).Scan(&c); err != nil {
+			t.Fatalf("introspect the comment on %s: %v", table, err)
+		}
+		return c
+	}
+	// Whether `alert_group_members` exists at all. 00051 drops it; its Down
+	// rebuilds it AND repopulates it out of `alert_cases`, which is the
+	// claim that makes the drop reversible.
+	memberTableExists := func() bool {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM information_schema.tables
+			  WHERE table_name::text = 'alert_group_members'`).Scan(&n); err != nil {
+			t.Fatalf("introspect alert_group_members: %v", err)
+		}
+		return n == 1
+	}
+
+	// ⭐⭐ 00052's rename, read as two VOCABULARIES rather than as a spot-check.
+	//
+	// 00052 is the largest migration in the stack and its entire content is
+	// renaming: one table, seven columns spread over five OTHER tables,
+	// twenty-seven constraints and ten indexes, all from the `occurrence` spelling
+	// to the `case` one. Its Down is that same list backwards.
+	//
+	// ⛔ THE FAILURE MODE OF A NINETY-IDENTIFIER LIST IS A FORGOTTEN LINE, AND A
+	// FORGOTTEN RENAME IS SILENT. `ALTER ... RENAME` to a name that is already
+	// taken errors; omitting one entirely does not error anywhere, and the Down
+	// exits 0 having left the schema half in each vocabulary. What finds it is not
+	// the exit code but a count, so both spellings are counted by the same three
+	// functions and the assertion is that the totals SWAP — complete on the `case`
+	// side and zero on the `occurrence` side at the top of the stack, exactly
+	// reversed once the Down has run. A Down that renamed the table and forgot one
+	// constraint is caught by the second number rather than by nothing.
+	countTables := func(names ...string) int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_tables WHERE tablename = ANY($1::text[])`, names).Scan(&n); err != nil {
+			t.Fatalf("introspect tables %v: %v", names, err)
+		}
+		return n
+	}
+	countIndexes := func(names ...string) int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_indexes WHERE indexname = ANY($1::text[])`, names).Scan(&n); err != nil {
+			t.Fatalf("introspect indexes %v: %v", names, err)
+		}
+		return n
+	}
+	countConstraints := func(names ...string) int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT count(*) FROM pg_constraint WHERE conname = ANY($1::text[])`, names).Scan(&n); err != nil {
+			t.Fatalf("introspect constraints %v: %v", names, err)
+		}
+		return n
+	}
+	countColumns := func(table string, names ...string) int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			// Both sides cast to text for the reason `clockDefaults` casts them: the
+			// information_schema identifier columns are a domain over `name`.
+			`SELECT count(*) FROM information_schema.columns
+			  WHERE table_name::text = $1 AND column_name::text = ANY($2::text[])`,
+			table, names).Scan(&n); err != nil {
+			t.Fatalf("introspect %s columns %v: %v", table, names, err)
+		}
+		return n
+	}
+	// One spelling of the firing episode across the whole schema. The two values of
+	// this struct below are 00052's before and after, and they are written out
+	// rather than derived by string substitution because the mapping is NOT
+	// mechanical: `occurrence` shortens to `occ` in most names but not in
+	// `notif_occurrence_idx`, and `alert_quality_daily.occurrences` has no prefix at
+	// all. A substitution rule would agree with itself and with nothing else.
+	type episodeNames struct {
+		table       string
+		alertCols   []string // carried on `alerts`
+		refCol      string   // the FK column on alert_events, notifications, delivery_drills
+		qualityCols []string // carried on `alert_quality_daily`
+		constraints []string // 25 on the episode table + 2 on `alerts`
+		indexes     []string
+	}
+	caseNames := episodeNames{
+		table:       "alert_cases",
+		alertCols:   []string{"current_case_id", "total_cases"},
+		refCol:      "case_id",
+		qualityCols: []string{"cases", "acked_cases"},
+		constraints: []string{
+			"case_seq_uniq", "case_state_ck", "case_supreason_ck", "case_resreason_ck",
+			"case_ackstate_ck", "case_terminal_ended", "case_seq_ck", "case_reopen_ck",
+			"case_order_ck", "case_obs_ck", "case_src_order_ck", "case_suppress_ck",
+			"case_suppby_ck", "case_resolve_ck", "case_resolve_map_ck", "case_ack_ck",
+			"case_acklabel_ck", "case_ackorder_ck", "case_acknote_ck", "case_reopenof_ck",
+			"case_time_ck", "case_sver_ck", "case_supcount_ck", "case_group_fk", "case_rule_fk",
+			"alerts_case_ck", "alerts_current_case_fk",
+		},
+		indexes: []string{
+			"alert_cases_pkey", "case_one_open_idx", "case_alert_idx", "case_group_idx",
+			"case_reap_idx", "case_ack_idx", "case_started_idx", "case_group_live_idx",
+			"ev_case_idx", "notif_case_idx",
+		},
+	}
+	preRenameNames := episodeNames{
+		table:       "alert_occurrences",
+		alertCols:   []string{"current_occurrence_id", "total_occurrences"},
+		refCol:      "occurrence_id",
+		qualityCols: []string{"occurrences", "acked_occurrences"},
+		constraints: []string{
+			"occ_seq_uniq", "occ_state_ck", "occ_supreason_ck", "occ_resreason_ck",
+			"occ_ackstate_ck", "occ_terminal_ended", "occ_seq_ck", "occ_reopen_ck",
+			"occ_order_ck", "occ_obs_ck", "occ_src_order_ck", "occ_suppress_ck",
+			"occ_suppby_ck", "occ_resolve_ck", "occ_resolve_map_ck", "occ_ack_ck",
+			"occ_acklabel_ck", "occ_ackorder_ck", "occ_acknote_ck", "occ_reopenof_ck",
+			"occ_time_ck", "occ_sver_ck", "occ_supcount_ck", "occ_group_fk", "occ_rule_fk",
+			"alerts_occ_ck", "alerts_current_occ_fk",
+		},
+		indexes: []string{
+			"alert_occurrences_pkey", "occ_one_open_idx", "occ_alert_idx", "occ_group_idx",
+			"occ_reap_idx", "occ_ack_idx", "occ_started_idx", "occ_group_live_idx",
+			"ev_occ_idx", "notif_occurrence_idx",
+		},
+	}
+	// The four totals, so a partial rename shows up as a number rather than as an
+	// unrelated 42P01 several steps later.
+	episodeVocabulary := func(n episodeNames) (tables, columns, constraints, indexes int) {
+		t.Helper()
+		return countTables(n.table),
+			countColumns("alerts", n.alertCols...) +
+				countColumns("alert_events", n.refCol) +
+				countColumns("notifications", n.refCol) +
+				countColumns("delivery_drills", n.refCol) +
+				countColumns("alert_quality_daily", n.qualityCols...),
+			countConstraints(n.constraints...),
+			countIndexes(n.indexes...)
 	}
 	// 00043's two comments, read as text because text is all they are. The table
 	// comment is the one that carries the property: it stated a 30-day pruner as
@@ -731,20 +983,25 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"full on the filter bar of the incident view", n)
 	}
 
-	// 00044's index, asserted at the top of the stack as well as after the round
-	// trip, because "the Down dropped it" is only interesting if the Up put it
-	// there in the first place. The partial predicate is asserted with the
-	// columns: without `WHERE left_at IS NULL` this is an index over every
-	// membership row the generation has ever had, which is the shape the two
-	// bounded reads do not want and the two replay reads cannot use anyway.
-	if def := currentMemberIndexDef(); def == "" {
-		t.Fatal("gm_current_idx is absent at the top of the stack; 00044 exists to create it, " +
-			"and without it the only read of a generation's current members sorts the whole " +
+	// 00051 at the top of the stack, in both directions: the join table is GONE and
+	// its successor index is present. The partial predicate is asserted with the
+	// columns, because an index of this name without `WHERE ended_at IS NULL` spans
+	// every episode the generation ever held — the shape the two bounded reads do
+	// not want, and the shape gm_current_idx effectively had, since nothing ever
+	// wrote the `left_at` it was partial on.
+	if memberTableExists() {
+		t.Fatal("alert_group_members still exists at the top of the stack; 00051 drops it, " +
+			"and while it is there two tables answer `what is in this generation` — one of " +
+			"them a table whose `left_at` no production code has ever written")
+	}
+	if def := indexDef("case_group_live_idx"); def == "" {
+		t.Fatal("case_group_live_idx is absent at the top of the stack; 00051 exists to create " +
+			"it, and without it the only read of a generation's live members sorts the whole " +
 			"membership to return twenty rows — on the detail page and on every ack, snooze " +
 			"and unsnooze reply that re-renders it")
-	} else if !strings.Contains(def, "left_at IS NULL") {
-		t.Fatalf("gm_current_idx is not partial at the top of the stack: %s — the predicate is "+
-			"half the decision, and an index over departed members too is a different index "+
+	} else if !strings.Contains(def, "ended_at IS NULL") {
+		t.Fatalf("case_group_live_idx is not partial at the top of the stack: %s — the predicate "+
+			"is half the decision, and an index over ended episodes too is a different index "+
 			"under the same name", def)
 	}
 
@@ -767,9 +1024,9 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// 00042's two indexes. Asserted at the top of the stack as well as after the
 	// round trip because "the Down dropped them" is only interesting if the Up put
 	// them there in the first place.
-	if n := rollupRangeIndexes(); n != 2 {
+	if n := rollupRangeIndexes("case_started_idx"); n != 2 {
 		t.Fatalf("%d of 00042's two range indexes exist at the top of the stack, want 2 — "+
-			"occ_started_idx and notif_created_idx are the only indexes either table has that "+
+			"case_started_idx and notif_created_idx are the only indexes either table has that "+
 			"lead with (org_id, timestamp), and without them stats.rollup scans both tables in "+
 			"full, twice per org, every fifteen minutes", n)
 	}
@@ -876,6 +1133,148 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 	}
 
+	// ⭐⭐ THE ROWS THE FOUR DATA-BEARING DOWN-STEPS BELOW ARE ABOUT.
+	//
+	// ⛔ A COUNT COMPARED AGAINST A COUNT IS NOT AN ASSERTION WHEN BOTH ARE ZERO, and
+	// all four of them were. 00052's row rewrites, 00051's membership rebuild,
+	// 00049's ack reprojection and 00048's snooze reprojection are the ONLY reasons
+	// those steps were argued to be reversible, and each is written as "the rebuilt
+	// figure equals its authority" — which holds trivially over empty tables. The
+	// suite's other fixtures (`alerts` at 00045, the episodes behind 00040's fold)
+	// are all written BELOW `down(48)`, so at the moment those four read, every table
+	// they counted was empty and every one of them passed. These rows are what give
+	// them teeth, and they are seeded at the TOP of the stack so that they travel
+	// through all five Downs and back up again.
+	//
+	// ⚠️ THE NAMES HERE ARE THE POST-00052 ONES — `alert_cases`,
+	// `alerts.current_case_id` — because this runs ABOVE `down(52)`. That is the
+	// exact opposite of the rule that governs every assertion inside the rollback
+	// loop, which is why the seed lives here rather than beside them.
+	episodeScope, _, episodeHealth := seedSource(t, env)
+	var episodeCluster uuid.UUID
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT cluster_id FROM alert_sources WHERE id = $1`, episodeHealth.SourceID).
+		Scan(&episodeCluster); err != nil {
+		t.Fatalf("read the episode source's cluster: %v", err)
+	}
+	episodeAt := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+
+	// Two generations. `derivedGroup` is the ADR 0038 shape — `group_labels` IS the
+	// split axes — and it is the one the episodes hang off. `legacyGroup` is what
+	// every reconciler-sourced generation looked like before 00050: the empty object,
+	// which `groups_labels_ck` has always permitted and which an axes CHECK would
+	// have made permanently un-UPDATE-able. 00050's step below writes to it.
+	derivedGroup, legacyGroup := id.New(), id.New()
+	for _, g := range []struct {
+		id          uuid.UUID
+		key, labels string
+	}{
+		{derivedGroup, "gk_" + strings.Repeat("d", 26), `{"alertname":"RollbackEpisode"}`},
+		{legacyGroup, "gk_" + strings.Repeat("l", 26), `{}`},
+	} {
+		if _, err := env.pool.Exec(env.ctx,
+			`INSERT INTO alert_groups (id, org_id, source_id, cluster_id, group_key, group_labels,
+			                           title, state, first_seen_at, last_activity_at)
+			 VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'RollbackEpisode', 'open', $7, $7)`,
+			g.id, episodeScope.OrgID(), episodeHealth.SourceID, episodeCluster, g.key, g.labels,
+			episodeAt); err != nil {
+			t.Fatalf("seed a generation whose group_labels are %s: %v", g.labels, err)
+		}
+	}
+
+	// One alert with TWO episodes, both in `derivedGroup`: the first ended, the
+	// second live and ACKED. Two members for 00051's rebuild to reproduce, one of
+	// them carrying a `left_at` — the column its `INSERT ... SELECT` takes from
+	// `ended_at`, and the column the dropped table never had a production writer for.
+	// The live episode is the alert's CURRENT one, which is the authority 00049's
+	// Down reprojects `alerts.ack_state` from.
+	episodeAlert := id.New()
+	episodeKey := "ak_" + strings.Repeat("e", 26)
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
+		                     cluster_key, labels, state, first_seen_at, last_seen_at,
+		                     last_state_change_at)
+		 VALUES ($1, $2, $3, $4, 'abababababababab', 'RollbackEpisode', 'prod',
+		         '{"alertname":"RollbackEpisode"}'::jsonb, 'firing', $5, $5, $5)`,
+		episodeAlert, episodeScope.OrgID(), episodeCluster, episodeKey, episodeAt); err != nil {
+		t.Fatalf("seed the alert behind the episodes: %v", err)
+	}
+	endedCase, liveCase := id.New(), id.New()
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state, resolve_reason,
+		                          started_at, ended_at, last_observed_at, source_starts_at)
+		 VALUES ($1, $2, $3, $4, 1, 'resolved', 'upstream', $5, $6, $6, $5)`,
+		endedCase, episodeScope.OrgID(), episodeAlert, derivedGroup,
+		episodeAt, episodeAt.Add(time.Hour)); err != nil {
+		t.Fatalf("seed the ended episode: %v", err)
+	}
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alert_cases (id, org_id, alert_id, group_id, seq, state, started_at,
+		                          last_observed_at, source_starts_at, ack_state, acked_at,
+		                          acked_by_label)
+		 VALUES ($1, $2, $3, $4, 2, 'firing', $5, $5, $5, 'acked', $5, 'the rollback suite')`,
+		liveCase, episodeScope.OrgID(), episodeAlert, derivedGroup,
+		episodeAt.Add(2*time.Hour)); err != nil {
+		t.Fatalf("seed the live acked episode: %v", err)
+	}
+	if _, err := env.pool.Exec(env.ctx,
+		`UPDATE alerts SET current_case_id = $2, total_cases = 2 WHERE id = $1`,
+		episodeAlert, liveCase); err != nil {
+		t.Fatalf("point the alert at its current episode: %v", err)
+	}
+
+	// The ACTIVE snooze 00048's Down reprojects `alerts.snoozed_until` from. Written
+	// straight at the table, because what is under test is the migration's UPDATE and
+	// not the snooze service. `alert_snoozes_active_idx` is UNIQUE (alert_id) WHERE
+	// ended_at IS NULL, which is what makes that `UPDATE ... FROM` deterministic.
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alert_snoozes (id, org_id, alert_id, alert_key, snoozed_at, snoozed_until,
+		                            snoozed_by_label)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'the rollback suite')`,
+		id.New(), episodeScope.OrgID(), episodeAlert, episodeKey,
+		episodeAt, episodeAt.Add(4*time.Hour)); err != nil {
+		t.Fatalf("seed an active snooze: %v", err)
+	}
+
+	// ⛔ AND ONE ROW IN EACH OF THE FOUR TABLES 00052 REWRITES, spelled `case`. Two
+	// of the four are guarded by CHECKs its Down re-adds, so a missed rewrite there
+	// fails the migration outright; `alert_event_keys` and `delivery_drills` have no
+	// such guard, which makes them the two that can survive a Down silently — and a
+	// stray `case:` dedupe key stops de-duplicating against the `occ:` keys the
+	// rolled-back release computes, appending the same event to a timeline twice.
+	// `alert_event_keys.event_id` carries no FK: the table is a live claim, not a
+	// projection. `ui_events` is PARTITION BY RANGE (at) with hourly partitions and
+	// 00013 creates the current hour plus six, so a `now()` row lands in one that
+	// exists — it is deliberately NOT stamped `episodeAt`, which is in no partition.
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO alert_event_keys (org_id, dedupe_key, event_id) VALUES ($1, $2, $3)`,
+		episodeScope.OrgID(), "case:"+liveCase.String()+":opened", id.New()); err != nil {
+		t.Fatalf("claim a case-spelled dedupe key: %v", err)
+	}
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO enrichments (id, org_id, subject_kind, subject_id, enricher,
+		                          enricher_version, phase, status, computed_at)
+		 VALUES ($1, $2, 'case', $3, 'oto.rollback', 1, 1, 'ok', $4)`,
+		id.New(), episodeScope.OrgID(), liveCase, episodeAt); err != nil {
+		t.Fatalf("seed a case-scoped enrichment: %v", err)
+	}
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO delivery_drills (id, org_id, source_id, drill_label, severity, case_id,
+		                              status, outcome, failed_stage, started_by_label,
+		                              started_at, deadline_at, finished_at)
+		 VALUES ($1, $2, $3, $4, 'critical', $5, 'failed', '{}'::jsonb, 'case',
+		         'the rollback suite', $6, $7, $7)`,
+		id.New(), episodeScope.OrgID(), episodeHealth.SourceID, uuid.NewString(), liveCase,
+		episodeAt, episodeAt.Add(time.Minute)); err != nil {
+		t.Fatalf("seed a drill that failed at the case stage: %v", err)
+	}
+	if _, err := env.pool.Exec(env.ctx,
+		`INSERT INTO ui_events (org_id, kind, resource, resource_id, payload)
+		 VALUES ($1, 'case.upserted', 'case', $2, '{}'::jsonb)`,
+		episodeScope.OrgID(), liveCase); err != nil {
+		t.Fatalf("seed a case-spelled SSE event: %v", err)
+	}
+
 	// Migrations land concurrently, and a migration this test has never heard of
 	// must not be rolled back unasserted underneath an assertion meant for another
 	// one. So the rollback is stepped by NAME: `down` refuses to move unless the
@@ -907,6 +1306,358 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		if err := migrate.Down(env.ctx, dsn); err != nil {
 			t.Fatalf("goose down %s: %v", migrate.FormatVersion(want), err)
 		}
+	}
+
+	// ⭐⭐ 00052 down: the whole `case` vocabulary becomes the `occurrence` one
+	// again. This is the FIRST step of the rollback, and every step below it
+	// depends on it having worked — a name that did not come back is not a failed
+	// assertion here, it is a 42P01 several steps down attributed to the wrong
+	// migration.
+	//
+	// ⚠️⚠️ EVERY ASSERTION BELOW THIS LINE IS IN THE PRE-00052 VOCABULARY. That is
+	// the subtle part of this file, and it is the reason four readings further down
+	// were silently vacuous before this step existed: `alert_occurrences`, not
+	// `alert_cases`; `occ_started_idx`, not `case_started_idx`;
+	// `occ_group_live_idx`, not `case_group_live_idx`; `notif_occurrence_idx`, not
+	// `notif_case_idx`. A post-rename name below reads 0 rows or "" for a reason
+	// that has nothing to do with the migration being asserted, and passes.
+	const (
+		wantTables      = 1
+		wantColumns     = 7
+		wantConstraints = 27
+		wantIndexes     = 10
+	)
+	if tbl, col, con, idx := episodeVocabulary(caseNames); tbl != wantTables ||
+		col != wantColumns || con != wantConstraints || idx != wantIndexes {
+		t.Fatalf("the `case` vocabulary at the top of the stack is %d/%d tables, %d/%d columns, "+
+			"%d/%d constraints, %d/%d indexes — 00052's Up IS the rename and nothing else, so a "+
+			"short reading here means every name asserted below is being asserted against a "+
+			"schema that never finished renaming",
+			tbl, wantTables, col, wantColumns, con, wantConstraints, idx, wantIndexes)
+	}
+	if tbl, col, con, idx := episodeVocabulary(preRenameNames); tbl+col+con+idx != 0 {
+		t.Fatalf("%d table, %d column, %d constraint and %d index name(s) from the pre-00052 "+
+			"vocabulary still exist at the top of the stack — 00052 RENAMES rather than "+
+			"duplicates, so anything left under the old spelling is a rename its Up missed",
+			tbl, col, con, idx)
+	}
+	// The four row rewrites, counted where they are still spelled `case`. One row was
+	// seeded into each above; a reading other than four means a sub-count names a
+	// column that does not hold what this thinks it does, and the reading AFTER the
+	// Down would then be zero for a reason that has nothing to do with 00052.
+	countStrayCaseRows := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT (SELECT count(*) FROM ui_events WHERE kind = 'case.upserted' OR resource = 'case')
+			      + (SELECT count(*) FROM enrichments WHERE subject_kind = 'case')
+			      + (SELECT count(*) FROM delivery_drills WHERE failed_stage = 'case')
+			      + (SELECT count(*) FROM alert_event_keys WHERE dedupe_key LIKE 'case:%')`).
+			Scan(&n); err != nil {
+			t.Fatalf("introspect the rows 00052's Down rewrites: %v", err)
+		}
+		return n
+	}
+	if n := countStrayCaseRows(); n != 4 {
+		t.Fatalf("%d of the four `case`-spelled rows are visible at the top of the stack, want 4 "+
+			"— the assertion after 00052's Down is that this figure reaches zero, and a figure "+
+			"that was never four reaches zero without the Down doing anything at all", n)
+	}
+	down(52)
+	if tbl, col, con, idx := episodeVocabulary(preRenameNames); tbl != wantTables ||
+		col != wantColumns || con != wantConstraints || idx != wantIndexes {
+		t.Fatalf("00052's Down restored %d/%d tables, %d/%d columns, %d/%d constraints and "+
+			"%d/%d indexes of the pre-00052 vocabulary — a rename it forgot is SILENT, because "+
+			"ALTER ... RENAME only errors on a name already taken, and it leaves the release "+
+			"this rolls back to issuing DDL against a name the database does not have",
+			tbl, wantTables, col, wantColumns, con, wantConstraints, idx, wantIndexes)
+	}
+	if tbl, col, con, idx := episodeVocabulary(caseNames); tbl+col+con+idx != 0 {
+		t.Fatalf("%d table, %d column, %d constraint and %d index name(s) from the `case` "+
+			"vocabulary survived 00052's Down — the schema is now half in each vocabulary, "+
+			"which is the one state neither release can run against",
+			tbl, col, con, idx)
+	}
+	// ⛔ AND THE ROWS, which a DDL-only reading would miss entirely. 00052's Up
+	// rewrote four columns of live data into the `case` spelling and its Down
+	// rewrites them back. Two of the four are guarded by CHECKs the Down re-adds,
+	// so a missed rewrite there fails the migration outright; `alert_event_keys`
+	// and `delivery_drills` have no such guard, and a stray `case:` dedupe key
+	// silently stops de-duplicating against the `occ:` keys the rolled-back release
+	// writes — the same event appended twice to a timeline.
+	//
+	// One row was seeded into each of the four above the rollback, which is what
+	// makes this a subtraction rather than `0 != 0`. The four are counted BEFORE the
+	// Down as well: a reading of four there is what proves each sub-count is looking
+	// at the column it names, and without it a typo in any of them would leave the
+	// reading afterwards passing for the wrong reason.
+	if strayCaseRows := countStrayCaseRows(); strayCaseRows != 0 {
+		t.Fatalf("%d row(s) still spell the episode `case` after 00052's Down, want 0 — the "+
+			"rename is not only DDL, and the rolled-back release reads these values against "+
+			"enums that no longer contain them", strayCaseRows)
+	}
+
+	// ⭐ 00051 down: the join table comes back, REPOPULATED, and the successor
+	// index goes.
+	//
+	// ⛔ THIS IS THE ONE DOWN IN THIS FILE THAT RESTORES DATA, and asserting only
+	// the DDL would miss the whole claim. `alert_group_members` was dropped because
+	// every column it carried is a column of the episode, so its Down rebuilds it
+	// with `INSERT ... SELECT ... FROM alert_occurrences`. If that argument were
+	// wrong the rebuild would be empty or short, and a rolled-back release would
+	// read an empty membership for every live generation — a card saying "0 alerts"
+	// about an incident. The two counts are compared rather than a fixed number
+	// asserted, so the property holds however many episodes the seed grows to.
+	//
+	// ⛔ AND THE COMPARISON IS GUARDED BY A NON-ZERO CHECK, because for a while it
+	// was `0 == 0`. Two grouped episodes are seeded above the rollback — one ended,
+	// one live — precisely so that this reads 2 == 2 and so that `left_at` (which the
+	// rebuild takes from `ended_at`, and which the dropped table never had a
+	// production writer for) is populated on one of them. Without the guard, a Down
+	// whose INSERT selected nothing at all would be indistinguishable from a correct
+	// one, which is the state this assertion shipped in.
+	//
+	// ⚠️ THE NAMES HERE ARE PRE-00052 because `down(52)` has already run:
+	// `occ_group_live_idx` and `alert_occurrences`, which are also the names 00051
+	// itself was written against.
+	down(51)
+	if def := indexDef("occ_group_live_idx"); def != "" {
+		t.Fatalf("occ_group_live_idx survived 00051's Down: %s — a rolled-back deployment would "+
+			"carry an index for a query the release it rolled back to does not run", def)
+	}
+	if !memberTableExists() {
+		t.Fatal("alert_group_members did not come back on 00051's Down — the release this rolls " +
+			"back to reads it for every group card, every fan-out and every reminder, and a " +
+			"missing table is a 42P01 on the notification path")
+	}
+	if def := currentMemberIndexDef(); def == "" {
+		t.Fatal("gm_current_idx did not come back on 00051's Down; the rolled-back release " +
+			"sorts a storm to return twenty members without it")
+	} else if !strings.Contains(def, "left_at IS NULL") {
+		t.Fatalf("gm_current_idx came back without its partial predicate: %s — 00051's Down has "+
+			"to restore the index, not merely the name", def)
+	}
+	var rebuiltMembers, groupedEpisodes, closedMemberships int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT (SELECT count(*) FROM alert_group_members),
+		        (SELECT count(*) FROM alert_occurrences WHERE group_id IS NOT NULL),
+		        (SELECT count(*) FROM alert_group_members WHERE left_at IS NOT NULL)`).
+		Scan(&rebuiltMembers, &groupedEpisodes, &closedMemberships); err != nil {
+		t.Fatalf("introspect the rebuilt membership: %v", err)
+	}
+	if groupedEpisodes == 0 {
+		t.Fatal("no episode in the database carries a group_id when 00051's Down runs, so the " +
+			"comparison below is 0 == 0 and proves nothing — the seed above the rollback is what " +
+			"is supposed to put grouped episodes here, and this assertion exists because this " +
+			"whole step once passed on an empty table")
+	}
+	if rebuiltMembers != groupedEpisodes {
+		t.Fatalf("00051's Down rebuilt %d membership rows for %d grouped episodes — the drop is "+
+			"reversible only because every column the table carried is a column of the episode, "+
+			"and a short rebuild means that argument is wrong", rebuiltMembers, groupedEpisodes)
+	}
+	// `left_at` comes back POPULATED, which the Up never had: the dropped table's
+	// only writer never set it, so every `left_at IS NULL` predicate in the release
+	// this rolls back to matched every row ever inserted. The Down takes it from
+	// `ended_at`, and an ended episode is seeded above precisely so that a Down which
+	// selected `NULL` there instead would be caught.
+	if closedMemberships == 0 {
+		t.Fatal("every rebuilt membership row has left_at IS NULL, though an ENDED episode is " +
+			"seeded above the rollback — 00051's Down maps ended_at onto left_at, and a rebuild " +
+			"that leaves it NULL hands the rolled-back release a generation whose membership can " +
+			"only ever grow, which is the defect 00051 was written about")
+	}
+
+	// ⭐ 00050 down: the table comment goes back to describing Alertmanager's
+	// grouping, and that is the whole of it.
+	//
+	// 00050 is five comments, which makes it the migration in this range whose Down
+	// is likeliest to be a no-op nobody notices. There is deliberately NO backfill
+	// and NO re-key in either direction — the file argues at length that re-keying is
+	// neither computable from `alert_groups` alone nor safe against a live Slack
+	// thread — so the prose IS the migration and it is all there is to assert.
+	// Asserting nothing because there is no structure to introspect is how a
+	// comment-only Down ships as a copy of its Up.
+	//
+	// ⛔⛔ AND `groups_axes_ck` MUST NOT EXIST, IN EITHER DIRECTION. An earlier draft
+	// of 00050 added it as `CHECK (group_labels ->> 'alertname' IS NOT NULL) NOT
+	// VALID`, reading `NOT VALID` as "the rows already there are exempt". It is not:
+	// it skips the one-time validation SCAN, and Postgres then re-checks the
+	// constraint against the NEW ROW VERSION on every UPDATE. A pre-00050 generation
+	// carries whatever the operator's `group_by` was — `{}` for every
+	// reconciler-sourced one — so `updateRollupSQL` and `closeGroupSQL` would both
+	// have raised 23514 on it forever, `CloseIdle` would have swallowed that as a
+	// warning, and every legacy generation's Slack thread would have stayed live
+	// permanently. That is the exact opposite of the "visible, bounded and
+	// self-healing" transition the migration is justified by. The invariant is the
+	// writer's (`kernel.SplitLabels` is total over a `LabelSet` that refuses an empty
+	// `alertname`) and 00050's header says so in place of enforcing it.
+	if def := constraintDef("groups_axes_ck", "alert_groups"); def != "" {
+		t.Fatalf("groups_axes_ck exists at the top of the stack: %s — 00050 deliberately adds "+
+			"NO constraint on group_labels, because a CHECK re-runs on UPDATE and would make "+
+			"every pre-00050 generation permanently un-closeable; whoever re-added it has "+
+			"re-broken group.close for every row this migration promised would age out", def)
+	}
+	if c := tableComment("alert_groups"); !strings.Contains(c, "MACHINE-DERIVED") {
+		t.Fatalf("alert_groups describes itself as %q above 00050's Down — the sentence an "+
+			"operator reads at \\d+ is this migration's whole visible output", c)
+	}
+	// The legacy shape the constraint would have bricked, proved UPDATE-able at the
+	// top of the stack rather than argued about: `{}` is what every pre-00050
+	// reconciler-sourced generation carries, and `group.close` has to be able to
+	// write to it. This is the assertion that fails the moment anybody adds the
+	// CHECK back, whether or not they mark it NOT VALID.
+	if _, err := env.pool.Exec(env.ctx,
+		`UPDATE alert_groups SET group_labels = '{}'::jsonb, updated_at = now() WHERE id = $1`,
+		legacyGroup); err != nil {
+		t.Fatalf("a generation whose group_labels is the empty object could not be updated at "+
+			"the top of the stack: %v — that is what a CHECK on group_labels does to every row "+
+			"written before 00050, and the two UPDATEs it blocks (updateRollupSQL, "+
+			"closeGroupSQL) are the sweep that was supposed to retire them", err)
+	}
+	down(50)
+	if def := constraintDef("groups_axes_ck", "alert_groups"); def != "" {
+		t.Fatalf("groups_axes_ck exists after 00050's Down: %s — the release this rolls back to "+
+			"writes Alertmanager's groupLabels into group_labels, which has no alertname key at "+
+			"all for a reconciler-sourced group, so such a constraint refuses its inserts", def)
+	}
+	if c := tableComment("alert_groups"); !strings.Contains(c, "Alertmanager notification group") {
+		t.Fatalf("alert_groups still describes itself as %q after 00050's Down — the rolled-back "+
+			"release derives nothing, and a comment promising a machine-derived key sends an "+
+			"operator looking for axes the running code does not compute", c)
+	}
+
+	// ⭐ 00049 down: `alerts.ack_state` comes back, and it comes back REBUILT.
+	//
+	// ⛔ RESTORING THE COLUMN IS THE EASY HALF, and it is the half that cannot
+	// fail: `ADD COLUMN ... NOT NULL DEFAULT 'unacked'` always succeeds. A Down
+	// that stopped there would be green on every structural reading in this file
+	// and would hand the rolled-back release a database in which nothing is
+	// acknowledged — every acked incident back in somebody's queue, at the worst
+	// possible moment. So the projection is read against its AUTHORITY instead:
+	// `alert_occurrences.ack_state` was where the answer always lived, and after
+	// the Down no alert may disagree with its own current episode.
+	//
+	// ⚠️ THAT PROPERTY IS VACUOUS ON AN EMPTY TABLE, and for a long time it was: the
+	// suite's other alerts and episodes are written BELOW this step, so the join
+	// matched nothing and `0 != 0` passed. An ACKED live episode is now seeded above
+	// the rollback and is its alert's current one, so the projection is read here
+	// against a row that has an answer — and the answer is asserted directly as well
+	// as through the disagreement count, because a Down that defaulted the column
+	// would satisfy `o.ack_state <> a.ack_state` for every UNACKED row in the world.
+	if n := countColumns("alerts", "ack_state"); n != 0 {
+		t.Fatal("alerts.ack_state exists above 00049's Down; 00049 drops it because an ack is a " +
+			"receipt for one firing episode, and while the column is there a September firing " +
+			"can arrive pre-acknowledged because somebody acked in March")
+	}
+	down(49)
+	if n := countColumns("alerts", "ack_state"); n != 1 {
+		t.Fatal("alerts.ack_state did not come back on 00049's Down — the release this rolls " +
+			"back to filters, counts and serves it, so a missing column is a 42703 on the alert " +
+			"list rather than a degraded one")
+	}
+	if def := constraintDef("alerts_ackstate_ck", "alerts"); def == "" {
+		t.Fatal("alerts_ackstate_ck did not come back on 00049's Down; the column without its " +
+			"CHECK accepts any string at all, and the release reading it compares against two")
+	}
+	var ackDisagreements int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM alerts a
+		   JOIN alert_occurrences o ON o.id = a.current_occurrence_id
+		  WHERE o.ack_state <> a.ack_state`).Scan(&ackDisagreements); err != nil {
+		t.Fatalf("introspect the rebuilt ack projection: %v", err)
+	}
+	if ackDisagreements != 0 {
+		t.Fatalf("%d alert(s) disagree with their own current episode about ack after 00049's "+
+			"Down — the column is a PROJECTION of alert_occurrences and the Down rebuilds it "+
+			"from there on purpose, so a mismatch means it defaulted instead of rebuilding",
+			ackDisagreements)
+	}
+	// The same property stated positively. The count above now has a row to work on
+	// and would catch a defaulted column, but it reports "1 alert disagrees" — this
+	// names the value, so a failure reads as `unacked, want acked` rather than as an
+	// arithmetic result somebody has to go and reconstruct.
+	var reprojectedAck string
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT ack_state FROM alerts WHERE id = $1`, episodeAlert).Scan(&reprojectedAck); err != nil {
+		t.Fatalf("read the reprojected ack_state: %v", err)
+	}
+	if reprojectedAck != "acked" {
+		t.Fatalf("the alert whose current episode is acked reads ack_state=%q after 00049's "+
+			"Down, want acked — the Down's UPDATE is the whole migration in this direction, and "+
+			"a rolled-back release reading `unacked` puts every acknowledged incident back in "+
+			"somebody's queue at the worst possible moment", reprojectedAck)
+	}
+
+	// ⭐ 00048 down: `alerts.snoozed_until` comes back, REPROJECTED, and its index
+	// comes back with it.
+	//
+	// The same shape as 00049 and for the same reason. `ADD COLUMN` cannot fail, so
+	// a Down that stopped at the DDL hands the rolled-back release a database in
+	// which nothing is snoozed — every muted alert back in the feed at once. The
+	// projection is read against `alert_snoozes`, which was the authority all along
+	// and is the only reason dropping the column was reversible.
+	//
+	// The index is read as its DEFINITION: `alerts_snooze_idx` without
+	// `WHERE snoozed_until IS NOT NULL` is a full-width index over a column that is
+	// NULL for almost every row, which is a different index under the same name.
+	//
+	// ⚠️ It was vacuous on an empty `alert_snoozes` for the same reason 00049's was.
+	// An ACTIVE snooze is now seeded above the rollback, so the anti-join has a row,
+	// and the restored value is read directly as well — for the reason 00049's is: a
+	// Down that added the column and stopped disagrees with nothing while every
+	// alert's snoozed_until is NULL on both sides.
+	if n := countColumns("alerts", "snoozed_until"); n != 0 {
+		t.Fatal("alerts.snoozed_until exists above 00048's Down; 00048 drops it so that the " +
+			"snooze answer has exactly one home, and while the projection is there two rows " +
+			"answer `is this muted` and only one of them is written by the snooze path")
+	}
+	if def := indexDef("alerts_snooze_idx"); def != "" {
+		t.Fatalf("alerts_snooze_idx exists above 00048's Down: %s — it indexes a column 00048 "+
+			"dropped, so its presence means the Up left it behind", def)
+	}
+	down(48)
+	if n := countColumns("alerts", "snoozed_until"); n != 1 {
+		t.Fatal("alerts.snoozed_until did not come back on 00048's Down — the release this " +
+			"rolls back to reads the projection rather than alert_snoozes, and a missing column " +
+			"is a 42703 on the alert list")
+	}
+	if def := indexDef("alerts_snooze_idx"); def == "" {
+		t.Fatal("alerts_snooze_idx did not come back on 00048's Down; the rolled-back release " +
+			"filters on snoozed_until and would scan the table to do it")
+	} else if !strings.Contains(def, "snoozed_until IS NOT NULL") {
+		t.Fatalf("alerts_snooze_idx came back without its partial predicate: %s — an index over "+
+			"the NULLs too is most of the table, and 00048's Down has to restore the index "+
+			"rather than merely the name", def)
+	}
+	var snoozeDisagreements int
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM alerts a
+		   JOIN alert_snoozes s
+		     ON s.alert_id = a.id AND s.org_id = a.org_id AND s.ended_at IS NULL
+		  WHERE a.snoozed_until IS DISTINCT FROM s.snoozed_until`).Scan(&snoozeDisagreements); err != nil {
+		t.Fatalf("introspect the reprojected snoozes: %v", err)
+	}
+	if snoozeDisagreements != 0 {
+		t.Fatalf("%d alert(s) disagree with their own ACTIVE snooze after 00048's Down — the "+
+			"column is a projection of alert_snoozes and the Down rebuilds it from there, so a "+
+			"mismatch means it came back NULL and the rolled-back release un-muted them",
+			snoozeDisagreements)
+	}
+	var reprojectedSnooze *time.Time
+	if err := env.pool.QueryRow(env.ctx,
+		`SELECT snoozed_until FROM alerts WHERE id = $1`, episodeAlert).
+		Scan(&reprojectedSnooze); err != nil {
+		t.Fatalf("read the reprojected snoozed_until: %v", err)
+	}
+	// As with 00049's: the anti-join above would already have caught this now that a
+	// snooze row exists, and this is here so the failure names the state rather than
+	// a count.
+	if reprojectedSnooze == nil {
+		t.Fatal("the alert carrying an active snooze came back with snoozed_until NULL after " +
+			"00048's Down — the column is the only thing the rolled-back release reads to " +
+			"decide an alert is muted, so a NULL here puts every quiet alert back in the feed " +
+			"at once")
 	}
 
 	// ⭐ 00047 down: the natural key goes, and `ordinal` goes with it because
@@ -996,7 +1747,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 	// The row that proves the relaxation is real, and the row 00046's backfill has
 	// to meet on the way back up. `acked` sits between the two `fired`s so that the
-	// fold has to keep FIRST-occurrence order rather than sorting or keeping the
+	// fold has to keep FIRST-case order rather than sorting or keeping the
 	// last: an operator who wrote this list should recognise it afterwards.
 	foldedPolicy := id.New()
 	if err := insertPolicy(foldedPolicy, "bag-after-the-down",
@@ -1092,7 +1843,9 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 
 	down(42)
-	if n := rollupRangeIndexes(); n != 0 {
+	// `occ_started_idx`, not `case_started_idx`: 00052's Down ran ten steps ago and
+	// took the `case` vocabulary with it.
+	if n := rollupRangeIndexes("occ_started_idx"); n != 0 {
 		t.Fatalf("%d of 00042's two range indexes survived its Down, want 0", n)
 	}
 
@@ -1126,7 +1879,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// the state an operator's database is in at the moment they decide to roll
 	// back. Asserting only the constraint text after the rollback tested a DELETE
 	// against an empty table: a Down that folded on the WRONG key, or that folded
-	// nothing, or that let `occ_rule_fk` blank every occurrence's bound rule,
+	// nothing, or that let `case_rule_fk` blank every case's bound rule,
 	// would all have been green.
 	//
 	// The three snapshots are e670d5b's own scenario. Two `unavailable` captures
@@ -1182,18 +1935,18 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		}
 	}
 
-	// One occurrence bound to the row that is about to be folded away, and one
-	// bound to a row that survives. `occ_open_uniq` allows at most one open
-	// occurrence per alert, so they hang off two alerts.
+	// One case bound to the row that is about to be folded away, and one
+	// bound to a row that survives. `case_open_uniq` allows at most one open
+	// case per alert, so they hang off two alerts.
 	boundToFolded, boundToUntouched := id.New(), id.New()
-	occurrences := []struct {
-		occID, snapID uuid.UUID
-		alertname     string
+	cases := []struct {
+		caseID, snapID uuid.UUID
+		alertname      string
 	}{
 		{boundToFolded, folded, "AlertB"},
 		{boundToUntouched, untouched, "AlertA"},
 	}
-	for i, o := range occurrences {
+	for i, o := range cases {
 		alertID := id.New()
 		if _, err := env.pool.Exec(env.ctx,
 			`INSERT INTO alerts (id, org_id, cluster_id, alert_key, source_fingerprint, alertname,
@@ -1205,12 +1958,17 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			`{"alertname":"`+o.alertname+`"}`, base); err != nil {
 			t.Fatalf("seed the alert behind %s: %v", o.alertname, err)
 		}
+		// ⛔ `alert_occurrences`, not `alert_cases`: 00052's Down ran eleven steps ago
+		// and renamed the episode table back. Its own columns were never renamed —
+		// 00052 only carried `alerts`, `alert_events`, `notifications`,
+		// `delivery_drills` and `alert_quality_daily` with it — so the column list
+		// below is the same on both sides of that rename.
 		if _, err := env.pool.Exec(env.ctx,
 			`INSERT INTO alert_occurrences (id, org_id, alert_id, seq, state, started_at,
 			                                last_observed_at, source_starts_at, rule_snapshot_id)
 			 VALUES ($1, $2, $3, 1, 'firing', $4, $4, $4, $5)`,
-			o.occID, foldOrg.OrgID(), alertID, base, o.snapID); err != nil {
-			t.Fatalf("bind an occurrence of %s to its rule snapshot: %v", o.alertname, err)
+			o.caseID, foldOrg.OrgID(), alertID, base, o.snapID); err != nil {
+			t.Fatalf("bind a case of %s to its rule snapshot: %v", o.alertname, err)
 		}
 	}
 
@@ -1223,9 +1981,9 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// capture has an empty expr, so every unrecoverable rule in a source hashes
 	// identically, which is the whole of e670d5b. The Down therefore keeps the
 	// earliest row per content address, drops the rest, and REMAPS the
-	// occurrences bound to the dropped rows onto the survivor first — every
+	// cases bound to the dropped rows onto the survivor first — every
 	// folded row is byte-identical in definition to the row it folds into, so
-	// letting `occ_rule_fk` null the pointer instead would discard "what the rule
+	// letting `case_rule_fk` null the pointer instead would discard "what the rule
 	// said when this fired" for an answer sitting one row away.
 	//
 	// It is asserted here rather than trusted because a Down that DROPPED the
@@ -1268,31 +2026,32 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"on the content address, and it is destroying real captured rules")
 	}
 
-	// ⭐ AND THE OCCURRENCES STILL KNOW WHAT THE RULE SAID. This is the assertion
+	// ⭐ AND THE CASES STILL KNOW WHAT THE RULE SAID. This is the assertion
 	// the `ON DELETE SET NULL` would fail: the folded row and its survivor carry
 	// the same rule_fingerprint and therefore byte-identical text, so unbinding
 	// loses the one fact the product exists to show for no reason at all.
-	boundSnapshot := func(occID uuid.UUID) *uuid.UUID {
+	boundSnapshot := func(caseID uuid.UUID) *uuid.UUID {
 		t.Helper()
 		var out *uuid.UUID
 		if err := env.pool.QueryRow(env.ctx,
-			`SELECT rule_snapshot_id FROM alert_occurrences WHERE id = $1`, occID).Scan(&out); err != nil {
-			t.Fatalf("read the occurrence's bound snapshot: %v", err)
+			// `alert_occurrences`: below 00052's Down, same as the seed above.
+			`SELECT rule_snapshot_id FROM alert_occurrences WHERE id = $1`, caseID).Scan(&out); err != nil {
+			t.Fatalf("read the case's bound snapshot: %v", err)
 		}
 		return out
 	}
 	switch got := boundSnapshot(boundToFolded); {
 	case got == nil:
-		t.Fatal("the occurrence bound to the folded snapshot came out of 00040's Down unbound — " +
-			"occ_rule_fk is ON DELETE SET NULL, so a Down that deletes before it remaps throws " +
+		t.Fatal("the case bound to the folded snapshot came out of 00040's Down unbound — " +
+			"case_rule_fk is ON DELETE SET NULL, so a Down that deletes before it remaps throws " +
 			"away the rule text behind a fired alert while an identical copy of that text " +
 			"survives in the row it was folded into")
 	case *got != survivor:
-		t.Fatalf("the occurrence bound to the folded snapshot now points at %s, want the survivor "+
+		t.Fatalf("the case bound to the folded snapshot now points at %s, want the survivor "+
 			"%s", *got, survivor)
 	}
 	if got := boundSnapshot(boundToUntouched); got == nil || *got != untouched {
-		t.Fatalf("an occurrence bound to a snapshot that was never folded came out of the Down "+
+		t.Fatalf("a case bound to a snapshot that was never folded came out of the Down "+
 			"pointing at %v; the remap must touch only the rows being deleted", got)
 	}
 
@@ -1469,7 +2228,12 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"is a CREATE, and an unrunnable one makes the migration undeployable")
 	}
 
-	// 00029 down: the partial index behind the occurrence delivery roll-up goes.
+	// 00029 down: the partial index behind the episode delivery roll-up goes.
+	//
+	// ⛔ `notif_occurrence_idx`, not `notif_case_idx`: 00052's Down renamed it back
+	// twenty-three steps ago, and 00029 created it under the older spelling in the
+	// first place. The post-00052 name here would read 0 before this Down had run
+	// and the assertion would pass vacuously.
 	if err := migrate.Down(env.ctx, dsn); err != nil {
 		t.Fatalf("goose down 00029: %v", err)
 	}
@@ -1500,11 +2264,11 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 		t.Fatalf("goose up again: %v", err)
 	}
 	if err := env.pool.QueryRow(env.ctx,
-		`SELECT count(*) FROM pg_indexes WHERE indexname = 'notif_occurrence_idx'`).Scan(&indexes); err != nil {
+		`SELECT count(*) FROM pg_indexes WHERE indexname = 'notif_case_idx'`).Scan(&indexes); err != nil {
 		t.Fatalf("introspect indexes: %v", err)
 	}
 	if indexes != 1 {
-		t.Fatal("notif_occurrence_idx did not come back on the way up")
+		t.Fatal("notif_case_idx did not come back on the way up")
 	}
 	if buckets() != 0 {
 		t.Fatal("rate_limit_buckets survived the way back up")
@@ -1532,7 +2296,7 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 	if strings.Join(foldedReasons, ",") != "fired,acked" {
 		t.Fatalf("the duplicated policy reads %v after the way back up, want [fired acked] — "+
-			"the fold keeps each reason ONCE and in FIRST-occurrence order, because the column "+
+			"the fold keeps each reason ONCE and in FIRST-case order, because the column "+
 			"is read back verbatim into PolicyDTO.reasons and neither order is more correct "+
 			"than the other; sorting it would rearrange an operator's list under them",
 			foldedReasons)
@@ -1560,15 +2324,36 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"re-created pair that only tracks alerts observed after the rollback is a typeahead "+
 			"that has silently forgotten the estate", reprojected)
 	}
-	if def := currentMemberIndexDef(); def == "" {
-		t.Fatal("gm_current_idx did not come back on the way up — the rest of the suite runs " +
-			"against this schema, and the member plan test asserts a plan that only exists " +
-			"while it does")
-	} else if !strings.Contains(def, "left_at IS NULL") {
-		t.Fatalf("gm_current_idx came back without its partial predicate: %s — the round trip "+
-			"has to restore the index, not merely the name", def)
+	// ⭐ THE WAY BACK UP RUNS THE WHOLE STACK, not a stop at 00044. `migrate.Up`
+	// above goes to the top, so 00044's Up re-creates `gm_current_idx` and then
+	// 00051 drops it again and 00052 renames its successor. Asserting the index
+	// is BACK would assert the state of a database eight migrations stale. What
+	// must be true at the top is the successor: `case_group_live_idx`, partial on
+	// the predicate something actually writes.
+	if def := currentMemberIndexDef(); def != "" {
+		t.Fatalf("gm_current_idx is present at the top of the stack: %s — 00051 drops it and "+
+			"00052 renames its successor; an index for `alert_group_members` outliving the "+
+			"table is a rollback that only half happened", def)
 	}
-	if n := rollupRangeIndexes(); n != 2 {
+	// Its successor is asserted a few lines below, where the suite already checks
+	// the top-of-stack shape from the other direction.
+	// ⭐ AND THE TOP OF THE STACK, AGAIN, FROM THE OTHER DIRECTION. The rest of the
+	// suite runs against this schema, and the member plan test asserts a plan that
+	// only exists while case_group_live_idx does.
+	if memberTableExists() {
+		t.Fatal("alert_group_members is back after the way up — 00051's Up drops it, and a " +
+			"round trip that leaves it behind leaves two answers to `what is in this " +
+			"generation`, one of them stale from the moment the rollback ended")
+	}
+	if def := indexDef("case_group_live_idx"); def == "" {
+		t.Fatal("case_group_live_idx did not come back on the way up — the rest of the suite " +
+			"runs against this schema, and the member plan test asserts a plan that only " +
+			"exists while it does")
+	} else if !strings.Contains(def, "ended_at IS NULL") {
+		t.Fatalf("case_group_live_idx came back without its partial predicate: %s — the round "+
+			"trip has to restore the index, not merely the name", def)
+	}
+	if n := rollupRangeIndexes("case_started_idx"); n != 2 {
 		t.Fatalf("%d of 00042's two range indexes came back on the way up, want 2 — the rest of "+
 			"the suite runs against this schema, and stats.rollup is a sequential scan of two "+
 			"never-reaped tables without them", n)

@@ -246,16 +246,20 @@ func (s *Service) normalise(
 			ObservedAt: now,
 			SkewMS:     skew.Milliseconds(),
 
-			// The §C.4 grouping inputs, carried unchanged from the envelope so the
-			// orchestrator can resolve the AlertGroup generation (§G.4 step 4).
-			// Ingestion does not resolve it and must not learn how; it only refuses
-			// to throw away the four facts that make resolution possible.
+			// Envelope-level PROVENANCE, carried unchanged so the orchestrator can
+			// record it on the AlertGroup generation (§G.4 step 4). Ingestion does not
+			// resolve the group and must not learn how.
+			//
+			// ⛔ `groupLabels` IS NOT CARRIED AND MUST NOT BE. Since ADR 0038 the §C.4
+			// key is derived from the alert's own labels, and Alertmanager's grouping
+			// decides nothing about which thread this alert lands in. The raw envelope
+			// — groupLabels included — is already on disk in `ingest_batches.payload`,
+			// which is where a question about what upstream grouped by is answered.
 			//
 			// ⛔ SourceGroupKey is Alertmanager's raw `groupKey`. It is carried so it
 			// can be STORED VERBATIM for observability, and it is never parsed: it
 			// embeds the route path and does not survive an alertmanager.yml reload.
 			Receiver:           env.Receiver,
-			GroupLabels:        env.GroupLabels,
 			SourceGroupKey:     env.GroupKey,
 			NotificationReason: env.NotificationReason,
 		})
@@ -277,7 +281,7 @@ func (s *Service) normalise(
 //
 // ⭐ 500 IS A CAP, NOT A FLOOR TO BE RAISED FOR THE COMMON CASE, because the chunk
 // IS the size of a single SQL statement. ObserveBatch upserts the whole chunk in
-// one round trip (§D.12c) and reads its occurrences in another, on THE INGEST POOL,
+// one round trip (§D.12c) and reads its cases in another, on THE INGEST POOL,
 // whose `statement_timeout` is 2 s (§G.10, ADR 0007). A 2 000-row upsert that
 // crosses that timeout takes its whole transaction with it, and the retry runs the
 // same statement at the same size — a deterministic failure that spends the job's

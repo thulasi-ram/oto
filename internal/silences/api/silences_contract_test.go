@@ -233,11 +233,10 @@ func contractMatchedAlert(t *testing.T) alertdomain.Alert {
 		ClusterKey:        clusterKey,
 		Labels:            labels,
 		State:             alertdomain.StateFiring,
-		AckState:          alertdomain.AckStateUnacked,
 		FirstSeenAt:       contractEpoch,
 		LastSeenAt:        contractEpoch.Add(time.Minute),
 		LastStateChangeAt: contractEpoch,
-		TotalOccurrences:  1,
+		TotalCases:        1,
 	})
 	if err != nil {
 		t.Fatalf("build the matched alert: %v", err)

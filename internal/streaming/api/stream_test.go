@@ -257,7 +257,7 @@ func alertEvent(org uuid.UUID, seq int64) domain.Event {
 	id := uuid.MustParse("0198f3c1-6a2e-7c31-9b4d-2f5a1c8e0b77")
 	payload := `{"state":"firing","ack_state":"unacked","severity":"critical",` +
 		`"alertname":"HighErrorRate","namespace":"payments","cluster_key":"prod-eu",` +
-		`"last_seen_at":"2026-08-07T09:20:12.443Z","total_occurrences":7,"is_flapping":false}`
+		`"last_seen_at":"2026-08-07T09:20:12.443Z","total_cases":7,"is_flapping":false}`
 	return domain.Event{
 		Seq:        seq,
 		OrgID:      org,
@@ -514,7 +514,7 @@ func TestAnEventThatArrivedDuringTheReplayIsDeliveredExactlyOnce(t *testing.T) {
 // `?resources=` narrowed the LIVE feed and nothing else. Hub.Publish consults
 // Interest.Matches on the way out; the replay path consulted nothing, so a tab
 // watching `resources=alerts` saw alert frames for as long as its socket stayed
-// up and then, on the first reconnect, the entire log — occurrences, alert
+// up and then, on the first reconnect, the entire log — cases, alert
 // events, groups — arriving as `alert.upserted` listeners that never fire and
 // payloads the store has no reducer for.
 //
@@ -531,7 +531,7 @@ func TestAResumeReplaysOnlyTheResourcesTheClientSubscribedTo(t *testing.T) {
 	rg := newStreamRig(t, nil)
 	rg.svc.result = service.ReplayResult{
 		Events: []domain.Event{
-			otherEvent(t, testOrg, 11, domain.KindOccurrenceUpserted),
+			otherEvent(t, testOrg, 11, domain.KindCaseUpserted),
 			alertEvent(testOrg, 12),
 			otherEvent(t, testOrg, 13, domain.KindEventAppended),
 			otherEvent(t, testOrg, 14, domain.KindEventAppended),
@@ -604,7 +604,7 @@ func TestAResumeAdvancesTheClientsCursorPastTheEventsItFilteredOut(t *testing.T)
 	rg := newStreamRig(t, nil)
 	rg.svc.result = service.ReplayResult{
 		Events: []domain.Event{
-			otherEvent(t, testOrg, 11, domain.KindOccurrenceUpserted),
+			otherEvent(t, testOrg, 11, domain.KindCaseUpserted),
 			otherEvent(t, testOrg, 12, domain.KindEventAppended),
 			otherEvent(t, testOrg, 13, domain.KindDeliveryUpdated),
 		},

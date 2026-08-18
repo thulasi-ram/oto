@@ -43,7 +43,7 @@ type DrillDTO struct {
 	// The artefacts the drill created, for deep links. Null until the stage that
 	// produces each one has run.
 	AlertID        *uuid.UUID `json:"alert_id"`
-	OccurrenceID   *uuid.UUID `json:"occurrence_id"`
+	CaseID         *uuid.UUID `json:"case_id"`
 	GroupID        *uuid.UUID `json:"group_id"`
 	NotificationID *uuid.UUID `json:"notification_id"`
 	BatchID        *uuid.UUID `json:"batch_id"`

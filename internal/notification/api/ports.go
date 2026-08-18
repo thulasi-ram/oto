@@ -117,7 +117,7 @@ type RendererSource interface {
 	Renderer(t service.ProviderType, id service.RendererID) (service.MessageRenderer, error)
 }
 
-// SubjectResolver maps an alert or occurrence onto the group generation whose
+// SubjectResolver maps an alert or case onto the group generation whose
 // card would carry the fact.
 //
 // It exists because routing is about the GROUP: the thing being routed is the
@@ -125,12 +125,12 @@ type RendererSource interface {
 // would split one conversation across two rooms. A preview asked about an alert
 // therefore has to resolve that alert's group before it can answer.
 //
-// It is OPTIONAL. Without it, `alert_id` and `occurrence_id` are refused with a
+// It is OPTIONAL. Without it, `alert_id` and `case_id` are refused with a
 // field violation telling the caller to supply `group_id`, which is honest — far
 // better than previewing against the wrong subject.
 type SubjectResolver interface {
 	GroupIDForAlert(ctx context.Context, s db.TenantScope, alertID uuid.UUID) (uuid.UUID, error)
-	GroupIDForOccurrence(ctx context.Context, s db.TenantScope, occurrenceID uuid.UUID) (uuid.UUID, error)
+	GroupIDForCase(ctx context.Context, s db.TenantScope, caseID uuid.UUID) (uuid.UUID, error)
 }
 
 // Requeuer re-enqueues the dispatch job for a manually retried delivery.

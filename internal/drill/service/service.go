@@ -220,7 +220,7 @@ func (s *Service) resolve(
 		return domain.Drill{}, domain.Result{}, err
 	}
 	d.AlertID = firstNonNil(d.AlertID, arts.Alert.ID)
-	d.OccurrenceID = firstNonNil(d.OccurrenceID, arts.Occurrence.ID)
+	d.CaseID = firstNonNil(d.CaseID, arts.Case.ID)
 	d.GroupID = firstNonNil(d.GroupID, arts.Group.ID)
 	d.NotificationID = firstNonNil(d.NotificationID, arts.Notification.ID)
 

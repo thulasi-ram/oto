@@ -20,7 +20,7 @@ import {
   listAlertEnrichments,
   listAlertEvents,
   listAlertNotifications,
-  listAlertOccurrences,
+  listAlertCases,
   listAlertSnoozes,
 } from "~/api/endpoints";
 import { qk } from "~/api/keys";
@@ -44,7 +44,7 @@ import { createKeysetFeed, keepPrevious, type KeysetFeed } from "~/lib/keysetFee
 import { AlertActions } from "~/features/alerts/detail/Actions";
 import { DeliveryPanel } from "~/features/alerts/detail/DeliveryPanel";
 import { EnrichmentPanel } from "~/features/alerts/detail/EnrichmentPanel";
-import { OccurrencePanel } from "~/features/alerts/detail/OccurrencePanel";
+import { CasePanel } from "~/features/alerts/detail/CasePanel";
 import { PANEL_BODY, PANEL_HEADER } from "~/features/alerts/detail/rhythm";
 import { RulePanel } from "~/features/alerts/detail/RuleDrift";
 import { SnoozePanel } from "~/features/alerts/detail/SnoozePanel";
@@ -112,10 +112,10 @@ export default function AlertDetailRoute() {
       listAlertNotifications(params.id, {}, { signal }),
   }));
 
-  const occurrences = useQuery(() => ({
-    queryKey: qk.alerts.occurrences(params.id),
+  const cases = useQuery(() => ({
+    queryKey: qk.alerts.cases(params.id),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      listAlertOccurrences(params.id, { limit: 50 }, { signal }),
+      listAlertCases(params.id, { limit: 50 }, { signal }),
   }));
 
   const snoozes = useQuery(() => ({
@@ -173,11 +173,11 @@ export default function AlertDetailRoute() {
                       state={data().state}
                       urgent={
                         data().state === "firing" &&
-                        data().ack_state === "unacked" &&
+                        (data().current_case?.ack_state ?? "unacked") === "unacked" &&
                         normaliseSeverity(data().severity) === "critical"
                       }
                     />
-                    <AckChip ackState={data().ack_state} />
+                    <AckChip ackState={data().current_case?.ack_state} />
                     <Show when={data().is_flapping}>
                       <FlappingChip />
                     </Show>
@@ -227,19 +227,19 @@ export default function AlertDetailRoute() {
                       </span>
                     </span>
                     {/* "Firing duration" — never MTTR (SCOPE-BOUNDARY). */}
-                    <Show when={data().current_occurrence}>
-                      {(occ) => (
+                    <Show when={data().current_case}>
+                      {(ac) => (
                         <span>
                           firing duration{" "}
                           <span class="text-ink-muted">
-                            <Elapsed from={occ().started_at} to={occ().ended_at ?? null} />
+                            <Elapsed from={ac().started_at} to={ac().ended_at ?? null} />
                           </span>
                         </span>
                       )}
                     </Show>
                     <span title="Firing episodes since oto first saw this identity">
                       episodes{" "}
-                      <span class="text-ink-muted">{fmtCount(data().total_occurrences)}</span>
+                      <span class="text-ink-muted">{fmtCount(data().total_cases)}</span>
                     </span>
                     <Show when={data().is_flapping || data().flap_score > 0}>
                       <span title="EWMA of state transitions per hour. A derived signal, never a state.">
@@ -361,11 +361,11 @@ export default function AlertDetailRoute() {
                   <Match when={rule.data}>{(history) => <RulePanel history={history()} />}</Match>
                 </Switch>
 
-                <OccurrencePanel
-                  occurrences={occurrences.data?.data ?? []}
-                  loading={occurrences.isPending}
-                  error={occurrences.error}
-                  currentId={data().current_occurrence?.id ?? null}
+                <CasePanel
+                  cases={cases.data?.data ?? []}
+                  loading={cases.isPending}
+                  error={cases.error}
+                  currentId={data().current_case?.id ?? null}
                 />
 
                 <EnrichmentPanel

@@ -100,7 +100,7 @@ const MOTIF: Readonly<Record<EmptyMotif, { readonly size: string; readonly posit
  *
  * ⛔ THIS IS A SEPARATE COMPONENT AND NOT A PROP ON `EmptyState`, FOR ONE
  * CONCRETE REASON. `EmptyState` has eighteen call sites and six of them are
- * sub-panels on a single alert-detail page — delivery, enrichment, occurrences,
+ * sub-panels on a single alert-detail page — delivery, enrichment, cases,
  * timeline, rule drift, snoozes. A wash on the shared component renders six of
  * them on one quiet alert, and at six a gesture becomes a texture. The shared
  * component is therefore untouched, and this one is reachable only from the

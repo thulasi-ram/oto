@@ -17,11 +17,13 @@ import (
 	"github.com/thulasiram/oto/internal/platform/validate"
 )
 
+// ⛔ THERE IS NO `sourceA`. `source_id` left §C.4 with ADR 0038: two HA replicas
+// of one Alertmanager are two Sources sharing one Cluster, and keying a group by
+// the replica that happened to deliver the webhook gave the same incident two
+// Slack threads. Nothing in this file may hash a source id again.
 var (
-	orgA    = uuid.MustParse("018f3a4b-0000-7000-8000-0000000000a1")
-	orgB    = uuid.MustParse("018f3a4b-0000-7000-8000-0000000000b2")
-	sourceA = uuid.MustParse("018f3a4b-0000-7000-8000-0000000000c3")
-	sourceB = uuid.MustParse("018f3a4b-0000-7000-8000-0000000000d4")
+	orgA = uuid.MustParse("018f3a4b-0000-7000-8000-0000000000a1")
+	orgB = uuid.MustParse("018f3a4b-0000-7000-8000-0000000000b2")
 )
 
 func mustClusterKey(t *testing.T, s string) ClusterKey {
@@ -175,9 +177,52 @@ func TestNewAlertKey_Rejects(t *testing.T) {
 	}
 }
 
+// TestSplitLabels pins the AXES, which are the whole substance of ADR 0038: the
+// group is `(org, cluster, alertname, namespace-or-∅)` and nothing else.
+func TestSplitLabels(t *testing.T) {
+	// Everything oto does NOT split on, present at once. Only two survive.
+	full := mustLabelSet(t, map[string]string{
+		"alertname": "KubePodCrashLooping",
+		"namespace": "payments",
+		"severity":  "critical",
+		"service":   "checkout",
+		"pod":       "api-7f9c-2x4k",
+		"instance":  "10.0.0.4:9100",
+		"team":      "sre",
+	})
+	assert.Equal(t,
+		map[string]string{"alertname": "KubePodCrashLooping", "namespace": "payments"},
+		SplitLabels(full).Map())
+
+	// GroupSplitAxes must stay in step with what SplitLabels actually projects, or
+	// the harness and the documentation describe a rule the code does not follow.
+	names := SplitLabels(full).Names()
+	sort.Strings(names)
+	want := append([]string(nil), GroupSplitAxes...)
+	sort.Strings(want)
+	assert.Equal(t, want, names)
+
+	// ∅ is the ABSENCE of the label, not an empty value: canon()'s length prefixes
+	// make the two different byte strings, so folding them together has to be a
+	// decision and is asserted as one.
+	noNS := mustLabelSet(t, map[string]string{"alertname": "X"})
+	emptyNS := mustLabelSet(t, map[string]string{"alertname": "X", "namespace": ""})
+	assert.Equal(t, map[string]string{"alertname": "X"}, SplitLabels(noNS).Map())
+	assert.Equal(t, SplitLabels(noNS).Map(), SplitLabels(emptyNS).Map(),
+		"an empty namespace is the same partition as an absent one, as `alerts.namespace` stores NULL for both")
+
+	// Severity does not split: an escalation is the same problem getting worse.
+	warn := mustLabelSet(t, map[string]string{"alertname": "X", "severity": "warning"})
+	crit := mustLabelSet(t, map[string]string{"alertname": "X", "severity": "critical"})
+	assert.Equal(t, SplitLabels(warn).Map(), SplitLabels(crit).Map())
+}
+
 func TestComputeGroupKey(t *testing.T) {
-	gl := mustLabels(t, map[string]string{"alertname": "X", "namespace": "prod"})
-	base := ComputeGroupKey(orgA, sourceA, "sre-slack", gl)
+	ck := mustClusterKey(t, "prod-eu")
+	ls := mustLabelSet(t, map[string]string{
+		"alertname": "X", "namespace": "prod", "severity": "critical", "pod": "p-1",
+	})
+	base := ComputeGroupKey(orgA, ck, ls)
 
 	assert.True(t, strings.HasPrefix(base.String(), GroupKeyPrefix))
 	assert.Regexp(t, validate.PatternGroupKey, base.String())
@@ -185,106 +230,76 @@ func TestComputeGroupKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, base, parsed)
 
-	assert.Equal(t, base, ComputeGroupKey(orgA, sourceA, "sre-slack", gl))
-	assert.NotEqual(t, base, ComputeGroupKey(orgB, sourceA, "sre-slack", gl))
-	assert.NotEqual(t, base, ComputeGroupKey(orgA, sourceB, "sre-slack", gl))
-	assert.NotEqual(t, base, ComputeGroupKey(orgA, sourceA, "other", gl))
-	assert.NotEqual(t, base, ComputeGroupKey(orgA, sourceA, "sre-slack",
-		mustLabels(t, map[string]string{"alertname": "X"})))
+	assert.Equal(t, base, ComputeGroupKey(orgA, ck, ls))
+	assert.NotEqual(t, base, ComputeGroupKey(orgB, ck, ls))
+	assert.NotEqual(t, base, ComputeGroupKey(orgA, mustClusterKey(t, "prod-us"), ls))
+	assert.NotEqual(t, base, ComputeGroupKey(orgA, ck,
+		mustLabelSet(t, map[string]string{"alertname": "Y", "namespace": "prod"})))
+	assert.NotEqual(t, base, ComputeGroupKey(orgA, ck,
+		mustLabelSet(t, map[string]string{"alertname": "X", "namespace": "staging"})))
+	assert.NotEqual(t, base, ComputeGroupKey(orgA, ck,
+		mustLabelSet(t, map[string]string{"alertname": "X"})),
+		"an absent namespace is its own partition")
 
-	// A reconciler-sourced observation has no receiver, and empty groupLabels are
-	// legal — they hash as the empty object.
-	empty := ComputeGroupKey(orgA, sourceA, "", Labels{})
-	assert.Regexp(t, validate.PatternGroupKey, empty.String())
-	assert.Equal(t, empty, ComputeGroupKey(orgA, sourceA, "", mustLabels(t, map[string]string{})))
-	assert.NotEqual(t, empty, ComputeGroupKey(orgA, sourceA, "", gl))
+	// ⭐ THE PROPERTY THE WHOLE TICKET IS ABOUT. Two alerts that differ ONLY in the
+	// labels oto refuses to split on land in ONE group — which is what makes a
+	// group's severity an aggregate and an escalation a change inside one thread.
+	assert.Equal(t, base, ComputeGroupKey(orgA, ck, mustLabelSet(t, map[string]string{
+		"alertname": "X", "namespace": "prod", "severity": "warning", "pod": "p-2",
+		"service": "checkout", "instance": "10.0.0.9:9100",
+	})))
 
-	// The order groupLabels arrive in must not move the key.
+	// The order the labels arrive in must not move the key.
 	assert.Equal(t,
-		ComputeGroupKey(orgA, sourceA, "r", mustLabels(t, map[string]string{"a": "1", "b": "2"})),
-		ComputeGroupKey(orgA, sourceA, "r", mustLabels(t, map[string]string{"b": "2", "a": "1"})))
+		ComputeGroupKey(orgA, ck, mustLabelSet(t, map[string]string{"alertname": "X", "namespace": "n"})),
+		ComputeGroupKey(orgA, ck, mustLabelSet(t, map[string]string{"namespace": "n", "alertname": "X"})))
 
 	assert.False(t, base.IsZero())
 	assert.True(t, GroupKey{}.IsZero())
 }
 
-// forgedReceiver and forgedLabels are an EXACT collision under the framing §C used
-// before length prefixes: `field || 0x00` per field, with the canonical
-// groupLabels written raw as the tail.
+// ⭐ "THE INGEST AND RECONCILER PATHS AGREE" IS NOT ASSERTED HERE, and the reason
+// is that it cannot be: the two paths differ in what they PASS, not in what this
+// function computes, so a kernel test could only call it twice with the same
+// arguments and congratulate itself. The claim lives at the composition root,
+// where the two Observations are actually built —
+// `internal/app/grouping_partition_test.go`.
+
+// forgedReceiver is an EXACT collision under the framing §C used before length
+// prefixes: `field || 0x00` per field, with the canonical labels written raw as
+// the tail.
 //
 //	("a", {b: ""})  ->  61 | 00 | 00 00 00 01 62 00 00 00 00
 //	(forged,  {} )  ->  61 00 00 00 00 01 62 00 00 00 | 00 |
 //
-// Both are the same eleven bytes. The forgery works because canon({b: ""}) ENDS in
-// a zero length prefix, which absorbs the terminator the receiver would have
-// contributed — so the "no field contains a NUL" assumption is not even needed to
-// break it once the receiver is free-form, which it is: it comes verbatim from the
-// operator's alertmanager.yml.
-const (
-	forgedReceiver = "a\x00\x00\x00\x00\x01b\x00\x00\x00"
-	honestReceiver = "a"
-)
-
-// oldPreimage reproduces the pre-image the retired framing built, written from the
-// FORMAT and not from any surviving code, so that the test can demonstrate the
-// collision it protects against rather than assert its absence and hope.
-func oldPreimage(orgID, sourceID uuid.UUID, receiver string, groupLabels Labels) []byte {
-	var b []byte
-	b = append(append(b, orgID[:]...), 0x00)
-	b = append(append(b, sourceID[:]...), 0x00)
-	b = append(append(b, receiver...), 0x00)
-	return append(b, groupLabels.Canonical(nil)...)
-}
-
-// TestGroupKey_ReceiverAndLabelsAreSeparateFields proves the field boundary
-// between `receiver` and the canonical groupLabels is real.
+// Both are the same eleven bytes. The forgery worked because canon({b: ""}) ENDS
+// in a zero length prefix, which absorbs the terminator the free-form field would
+// have contributed.
 //
-// It is a proof and not a coincidence because it first establishes that the
-// witness IS a collision under the old framing — the two pre-images are asserted
-// byte-equal — and only then asserts that the two GroupKeys are different today.
-// A test that merely asserted the second half would have passed under the old
-// framing too, for any witness that happened to be off by a byte.
-func TestGroupKey_ReceiverAndLabelsAreSeparateFields(t *testing.T) {
-	honestLabels := mustLabels(t, map[string]string{"b": ""})
-
-	// 1. The witness is a genuine collision under the framing this replaced.
-	require.Equal(t,
-		oldPreimage(orgA, sourceA, honestReceiver, honestLabels),
-		oldPreimage(orgA, sourceA, forgedReceiver, Labels{}),
-		"the witness must actually collide under `field || 0x00`, or this test proves nothing")
-
-	// 2. And the two are different AlertGroups under the framing in force.
-	honest := ComputeGroupKey(orgA, sourceA, honestReceiver, honestLabels)
-	forged := ComputeGroupKey(orgA, sourceA, forgedReceiver, Labels{})
-	assert.NotEqual(t, honest, forged,
-		"a receiver may not forge the leading bytes of the group labels")
-
-	// The near-miss the earlier version of this test used: it also has to be
-	// distinct, but it was distinct under the old framing as well.
-	assert.NotEqual(t,
-		ComputeGroupKey(orgA, sourceA, "a", mustLabels(t, map[string]string{"b": "1"})),
-		ComputeGroupKey(orgA, sourceA, "a\x00\x00\x00\x00\x01b\x00\x00\x00\x011", Labels{}))
-}
+// `receiver` left §C.4 with ADR 0038, so this witness no longer has a §C.4 field
+// to attack — but `expr` in §C.6 is still free-form PromQL, and the corpus below
+// is what holds that key to the same standard.
+const forgedReceiver = "a\x00\x00\x00\x00\x01b\x00\x00\x00"
 
 // TestGroupKey_PreImageIsLengthPrefixed pins the framing itself rather than a
 // digest, so an edit to the pre-image cannot be mistaken for an unrelated change.
 func TestGroupKey_PreImageIsLengthPrefixed(t *testing.T) {
-	gl := mustLabels(t, map[string]string{"b": "1"})
+	ls := mustLabelSet(t, map[string]string{"alertname": "X", "namespace": "prod"})
 
 	var want []byte
 	want = append(want, 0x00, 0x00, 0x00, 0x10) // len(org_id_bytes) == 16
 	want = append(want, orgA[:]...)
-	want = append(want, 0x00, 0x00, 0x00, 0x10) // len(source_id_bytes) == 16
-	want = append(want, sourceA[:]...)
-	want = append(want, 0x00, 0x00, 0x00, 0x03) // len("rcv")
-	want = append(want, "rcv"...)
-	want = append(want, gl.Canonical(nil)...) // the tail is raw: it is the remainder
+	want = append(want, 0x00, 0x00, 0x00, 0x07) // len("prod-eu")
+	want = append(want, "prod-eu"...)
+	// The tail is raw: it is the remainder, and it is the SPLIT labels — not the
+	// alert's whole set, which would make every distinct `pod` its own thread.
+	want = append(want, SplitLabels(ls).Canonical(nil)...)
 	sum := sha256.Sum256(want)
 
 	assert.Equal(t,
 		GroupKeyPrefix+encodeIdentity(sum[:]),
-		ComputeGroupKey(orgA, sourceA, "rcv", gl).String(),
-		"the §C.4 pre-image is uint32be(len(x))||x per field, with canon(groupLabels) raw")
+		ComputeGroupKey(orgA, mustClusterKey(t, "prod-eu"), ls).String(),
+		"the §C.4 pre-image is uint32be(len(x))||x per field, with canon(SplitLabels) raw")
 }
 
 // adversarialFields is the corpus for the free-form fields of a §C key —
@@ -360,26 +375,45 @@ func labelsID(t *testing.T, in map[string]string) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-// TestGroupKey_IsInjectiveOverAdversarialReceivers is for §C.4 what
+// TestGroupKey_IsInjectiveOverClusterAndAxes is for §C.4 what
 // TestCanonical_IsInjectiveOverAdversarialValues is for §C.1: no two DISTINCT
-// (receiver, groupLabels) pairs may share a GroupKey.
+// `(cluster_key, alertname, namespace-or-∅)` triples may share a GroupKey.
 //
 // A collision is not a hash collision — SHA-256 is not being doubted — it is two
-// unrelated Alertmanager notification groups becoming one AlertGroup, with one
-// Slack thread and one generation counter between them.
-func TestGroupKey_IsInjectiveOverAdversarialReceivers(t *testing.T) {
-	sets := adversarialLabelSets(t)
+// unrelated problems becoming one AlertGroup, with one Slack thread and one
+// generation counter between them. The corpus is built to smear the boundaries
+// the framing has to keep: a cluster key that is a prefix of another, an
+// alertname that spells the neighbouring cluster's, and a namespace present and
+// absent over the same alertname.
+func TestGroupKey_IsInjectiveOverClusterAndAxes(t *testing.T) {
+	clusterKeys := []string{"a", "b", "ab", "a-b", "prod", "prod-eu", "prod-eu-1"}
+	labelSets := []map[string]string{
+		{"alertname": "X"},
+		{"alertname": "X", "namespace": ""},
+		{"alertname": "X", "namespace": "n"},
+		{"alertname": "X", "namespace": "nn"},
+		{"alertname": "Xn"},
+		{"alertname": "Xn", "namespace": ""},
+		{"alertname": "X\x01n"},
+		{"alertname": "XX", "namespace": "n"},
+		// The labels oto refuses to split on: these must collapse onto the entries
+		// above, which is asserted by the expected-count arithmetic below.
+		{"alertname": "X", "severity": "critical", "pod": "p"},
+		{"alertname": "X", "namespace": "n", "service": "s", "instance": "i"},
+	}
+	// SplitLabels folds `namespace: ""` onto absent, and drops every non-axis
+	// label, so these ten sets project onto six distinct axis pairs.
+	const distinctAxisPairs = 6
 
 	seen := map[string]string{}
 	ids := map[string]struct{}{}
-
-	for _, receiver := range adversarialFields {
-		for _, in := range sets {
-			gl := mustLabels(t, in)
-			id := fieldsID(receiver) + " " + labelsID(t, in)
+	for _, ck := range clusterKeys {
+		for _, in := range labelSets {
+			ls := mustLabelSet(t, in)
+			id := strconv.Quote(ck) + " " + labelsID(t, SplitLabels(ls).Map())
 			ids[id] = struct{}{}
 
-			key := ComputeGroupKey(orgA, sourceA, receiver, gl).String()
+			key := ComputeGroupKey(orgA, mustClusterKey(t, ck), ls).String()
 			if prev, dup := seen[key]; dup && prev != id {
 				t.Fatalf("GroupKey collision:\n  %s\n  %s\nboth key to %s", prev, id, key)
 			}
@@ -387,8 +421,9 @@ func TestGroupKey_IsInjectiveOverAdversarialReceivers(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, len(ids), len(seen), "one GroupKey per distinct (receiver, groupLabels)")
-	assert.Equal(t, len(adversarialFields)*len(sets), len(ids), "the corpus must have no duplicates")
+	assert.Equal(t, len(ids), len(seen), "one GroupKey per distinct (cluster, axes)")
+	assert.Len(t, ids, len(clusterKeys)*distinctAxisPairs,
+		"the non-axis labels must collapse and the axis pairs must not")
 }
 
 // TestRuleFingerprint_IsInjectiveOverAdversarialExprs is the same property for
@@ -655,7 +690,7 @@ func TestComputeIdempotencyKey(t *testing.T) {
 
 	assert.Equal(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 7))
 	assert.NotEqual(t, base, ComputeIdempotencyKey(orgB, "alert_group", subject, "all_resolved", 7))
-	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "occurrence", subject, "all_resolved", 7))
+	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "case", subject, "all_resolved", 7))
 	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", other, "all_resolved", 7))
 	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "firing", 7))
 	assert.NotEqual(t, base, ComputeIdempotencyKey(orgA, "alert_group", subject, "all_resolved", 8),

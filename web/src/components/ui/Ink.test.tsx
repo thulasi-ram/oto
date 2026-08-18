@@ -90,7 +90,7 @@ describe("the six-at-once trap", () => {
     expect(
       inkIn(container),
       "`EmptyState` has grown a wash. Six of its eighteen call sites are sub-panels on ONE " +
-        "alert-detail page — delivery, enrichment, occurrences, timeline, rule drift, snoozes — so " +
+        "alert-detail page — delivery, enrichment, cases, timeline, rule drift, snoozes — so " +
         "this renders six washes on one quiet alert, and at six a gesture becomes a texture. The " +
         "full-page component is `PageEmptyState`.",
     ).toBeNull();

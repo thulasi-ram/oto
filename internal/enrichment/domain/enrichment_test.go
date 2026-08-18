@@ -22,7 +22,7 @@ func validParams() domain.EnrichmentParams {
 	return domain.EnrichmentParams{
 		ID:          "0198c0de-0000-7000-8000-000000000001",
 		OrgID:       "0198c0de-0000-7000-8000-0000000000aa",
-		SubjectKind: domain.SubjectOccurrence,
+		SubjectKind: domain.SubjectCase,
 		SubjectID:   "0198c0de-0000-7000-8000-0000000000bb",
 		Enricher:    "prom.rule",
 		Version:     1,
@@ -259,7 +259,7 @@ func TestNewEnrichmentRefusesWhatTheTableWouldRefuse(t *testing.T) {
 
 		// subject_kind — enrichments_subjkind_ck.
 		{name: "subject alert", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectAlert }},
-		{name: "subject occurrence", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectOccurrence }},
+		{name: "subject case", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectCase }},
 		{name: "subject group", with: func(p *domain.EnrichmentParams) { p.SubjectKind = domain.SubjectGroup }},
 		{
 			name:     "empty subject kind",
@@ -268,7 +268,7 @@ func TestNewEnrichmentRefusesWhatTheTableWouldRefuse(t *testing.T) {
 		},
 		{
 			name:     "subject kind is case sensitive",
-			with:     func(p *domain.EnrichmentParams) { p.SubjectKind = "Occurrence" },
+			with:     func(p *domain.EnrichmentParams) { p.SubjectKind = "Case" },
 			wantCode: "enrichment_bad_subject_kind",
 		},
 		{

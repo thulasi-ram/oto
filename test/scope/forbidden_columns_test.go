@@ -16,10 +16,19 @@ import (
 // ---------------------------------------------------------------------------
 // AC-50 (SPEC.md:3901-3903, §P-19a)
 //
-//	`alerts`, `alert_occurrences` and `alert_groups` contain no column matching
-//	`assigned|owner|watcher|subscriber|incident|ticket|sla_`, asserted by a
-//	schema introspection test against the live database, not by reading the
-//	migration files (§D.4.0).
+//	`alerts`, `alert_cases` and `alert_groups` contain no column matching
+//	`assigned|owner|watcher|subscriber|incident|ticket|sla_|^case$|case_status|
+//	priority`, asserted by a schema introspection test against the live
+//	database, not by reading the migration files (§D.4.0).
+//
+// ⭐ THE LAST THREE TERMS ARE ADR 0036's ANTI-CASELOAD CLAUSE, and they are the
+// price of the word. `AlertOccurrence` became `AlertCase` on an FR-1 argument made
+// by name; the honest objection was never to the ROW, it was to the WORD, because
+// in Salesforce, Zendesk and ServiceNow a case has an owner, a queue, a human-set
+// priority and a status a human writes. Vocabulary drifts by arriving as a word,
+// then a concept, then a column, then a rota — so the ADR granted the word with
+// limits and this is where the limits are mechanical. `^case$` is ANCHORED:
+// `case_id` is the legitimate foreign key and `alert_cases` is the table.
 //
 // ⭐ THE PATTERN IS THE SPEC'S, THE SUBJECT IS NOT. `personSubject` below is
 // AC-50's alternation copied verbatim, and matching a pattern is unavoidable
@@ -51,12 +60,13 @@ import (
 
 // personSubject is AC-50's alternation, verbatim. It is applied to column names
 // the database reports, never to a file.
-var personSubject = regexp.MustCompile(`assigned|owner|watcher|subscriber|incident|ticket|sla_`)
+var personSubject = regexp.MustCompile(
+	`assigned|owner|watcher|subscriber|incident|ticket|sla_|^case$|case_status|priority`)
 
 // scopedTables are the three tables AC-50 names. They are the tables whose rows
 // are a fact about a SIGNAL; a person-subject column on any of them turns the
 // row into a fact about a human, which is the whole scope boundary.
-var scopedTables = []string{"alerts", "alert_occurrences", "alert_groups"}
+var scopedTables = []string{"alerts", "alert_cases", "alert_groups"}
 
 // querier is the read surface both a pool and a transaction offer, so the gate
 // and the planted-violation test run the SAME query against a live schema and
@@ -159,10 +169,10 @@ func forbiddenColumnFailure(bad []column) string {
 
 	return fmt.Sprintf(
 		"the live schema carries %d person-subject column(s): %s\n\n"+
-			"AC-50 (SPEC §I.1.1, ADR 0013): `alerts`, `alert_occurrences` and `alert_groups` "+
+			"AC-50 (SPEC §I.1.1, ADR 0013): `alerts`, `alert_cases` and `alert_groups` "+
 			"contain no column matching `%s`.\n\n"+
-			"CONTEXT.md: `occurrence.acked_by = alice` is a fact about the OCCURRENCE — it was "+
-			"acknowledged, by whom. `occurrence.assigned_to = alice` is a fact about ALICE — she "+
+			"CONTEXT.md: `case.acked_by = alice` is a fact about the CASE — it was "+
+			"acknowledged, by whom. `case.assigned_to = alice` is a fact about ALICE — she "+
 			"owes work. Identical columns; opposite products. A column is worse than a word: a "+
 			"word can be renamed, a column has rows, and the rows are what a migration cannot "+
 			"take back.\n\n"+
@@ -196,9 +206,9 @@ func TestNoPersonSubjectColumnOnTheAlertTables(t *testing.T) {
 // The plant is an `ALTER TABLE` inside a transaction that is rolled back. DDL is
 // transactional in Postgres and `information_schema` is an ordinary view over
 // `pg_catalog`, so the uncommitted column is visible to the SAME query the gate
-// runs — and invisible to every other session, and gone at rollback. Two columns
-// on two different tables, because a walk hard-coded to `alerts` would pass a
-// one-column plant.
+// runs — and invisible to every other session, and gone at rollback. Three
+// columns on three different tables, because a walk hard-coded to `alerts` would
+// pass a one-column plant.
 func TestPersonSubjectColumnGateFires(t *testing.T) {
 	h := harness.New(t)
 
@@ -213,10 +223,13 @@ func TestPersonSubjectColumnGateFires(t *testing.T) {
 	// THE VIOLATIONS. `assigned_to` is the column CONTEXT.md names as the one
 	// that turns a fact about a signal into a fact about a human; `sla_due_at` is
 	// a deadline on a person, on a different table, spelled with the alternation's
-	// only underscored member.
+	// only underscored member. `case_status` is ADR 0036's anti-caseload clause:
+	// the first column a caseload would grow, a status a human sets alongside the
+	// `state` Alertmanager owns, and the one the word `case` makes thinkable.
 	for _, ddl := range []string{
 		`ALTER TABLE alerts ADD COLUMN assigned_to UUID`,
 		`ALTER TABLE alert_groups ADD COLUMN sla_due_at TIMESTAMPTZ`,
+		`ALTER TABLE alert_cases ADD COLUMN case_status TEXT`,
 	} {
 		if _, err := tx.Exec(h.Ctx, ddl); err != nil {
 			t.Fatalf("planting %q: %v", ddl, err)
@@ -225,7 +238,7 @@ func TestPersonSubjectColumnGateFires(t *testing.T) {
 	// NOT a violation, and it is here to prove the gate is not simply flagging
 	// every recently added column: acknowledgement identity is stored on purpose
 	// (§B.4) and `acked_by` is the exact column the scope boundary permits.
-	if _, err := tx.Exec(h.Ctx, `ALTER TABLE alert_occurrences ADD COLUMN acked_by_deputy TEXT`); err != nil {
+	if _, err := tx.Exec(h.Ctx, `ALTER TABLE alert_cases ADD COLUMN acked_by_deputy TEXT`); err != nil {
 		t.Fatalf("planting the control column: %v", err)
 	}
 
@@ -242,7 +255,7 @@ func TestPersonSubjectColumnGateFires(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"alert_groups.sla_due_at", "alerts.assigned_to"}
+	want := []string{"alert_cases.case_status", "alert_groups.sla_due_at", "alerts.assigned_to"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("planted exactly %v, gate reported %v", want, got)
 	}

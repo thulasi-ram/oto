@@ -179,7 +179,7 @@ func instancesAffected(v *domain.NotificationView) string {
 // about the SIGNAL — that it resolved without anybody looking — which is one of
 // the more useful things a receipt can tell an operator the next morning.
 func acknowledgedValue(v *domain.NotificationView) string {
-	if v.Occurrence != nil && v.Occurrence.AckedAt != nil {
+	if v.Case != nil && v.Case.AckedAt != nil {
 		// ⛔ `ackedBy`, NOT `actorLabel`. This field is on the TERMINAL card, which
 		// is amended by whatever fact ended the episode — and a receipt that read
 		// the announcing notification's own actor would credit the ack to whoever
@@ -192,7 +192,7 @@ func acknowledgedValue(v *domain.NotificationView) string {
 		if who != "" {
 			out += " — " + who
 		}
-		return out + ", " + slackDate(*v.Occurrence.AckedAt)
+		return out + ", " + slackDate(*v.Case.AckedAt)
 	}
 	if v.Group.AckedCount > 0 {
 		return ":eyes: yes"
@@ -258,7 +258,7 @@ func (r *Renderer) membersBlock(
 	return sectionBlock(blockID("members", nonce), truncateSection(b.String(), v.Links.Group)), true
 }
 
-// ruleBlock shows what the rule said at the moment this occurrence fired. It is
+// ruleBlock shows what the rule said at the moment this case fired. It is
 // oto's defensible differentiator, and it costs one quiet context line.
 //
 // ⛔ IT SURVIVES THE CARD GOING TERMINAL, AND IT USED TO BE DROPPED. §H.4 said to
@@ -283,7 +283,7 @@ func (r *Renderer) ruleBlock(v *domain.NotificationView, state CardState, nonce 
 		text += "   " + code("for: "+humanDuration(v.Rule.For))
 	}
 	if v.RuleChange != nil {
-		text += "   :scroll: " + link(v.Links.Timeline, "the rule changed since the last occurrence")
+		text += "   :scroll: " + link(v.Links.Timeline, "the rule changed since the last case")
 	}
 	return contextBlock(blockID("rule", nonce), Text{Type: TypeMrkdwn, Text: truncateField(text, v.Links.Group)}), true
 }
@@ -549,8 +549,8 @@ func (r *Renderer) footerBlock(v *domain.NotificationView, o domain.RenderOption
 	if v.Group.Generation > 1 {
 		parts = append(parts, "generation "+strconv.Itoa(v.Group.Generation))
 	}
-	if state == CardAcknowledged && v.Occurrence != nil && v.Occurrence.AckedAt != nil {
-		parts = append(parts, "acked "+slackDate(*v.Occurrence.AckedAt))
+	if state == CardAcknowledged && v.Case != nil && v.Case.AckedAt != nil {
+		parts = append(parts, "acked "+slackDate(*v.Case.AckedAt))
 	}
 	// The `Started` field is UPSTREAM's clock. When oto heard about it materially
 	// later — `group_wait`, a retry, a backed-up queue — that gap is itself a fact
@@ -598,8 +598,8 @@ func statusValue(v *domain.NotificationView, state CardState) string {
 		current += by(who, " automatically", attributed)
 	case CardSuppressed:
 		current += silencedBy(v)
-		if v.Occurrence != nil && v.Occurrence.EndedAt != nil {
-			current += " until " + slackDate(*v.Occurrence.EndedAt)
+		if v.Case != nil && v.Case.EndedAt != nil {
+			current += " until " + slackDate(*v.Case.EndedAt)
 		}
 	case CardExpired:
 		current += " — oto stopped hearing about this"
@@ -673,8 +673,8 @@ func groupStart(v *domain.NotificationView) time.Time {
 
 // durationValue is "Firing for", and it is A FACT ABOUT THE GROUP.
 //
-// ⛔ IT IS NOT THE TRIGGERING ALERT'S OCCURRENCE DURATION, WHICH IS WHAT IT USED
-// TO BE. The root card is about a generation; the occurrence in the view is
+// ⛔ IT IS NOT THE TRIGGERING ALERT'S CASE DURATION, WHICH IS WHAT IT USED
+// TO BE. The root card is about a generation; the case in the view is
 // whichever alert's episode happened to mint this notification, and for a `fired`
 // intent that episode is milliseconds old. The first live run therefore rendered
 // "Firing for: under a second" on a group that had been firing for eighty

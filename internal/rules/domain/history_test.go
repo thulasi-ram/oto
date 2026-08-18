@@ -144,7 +144,7 @@ func TestHistoryAt(t *testing.T) {
 	}
 }
 
-// TestHistoryByFingerprint is how an occurrence's bound snapshot is located
+// TestHistoryByFingerprint is how a case's bound snapshot is located
 // within the history.
 func TestHistoryByFingerprint(t *testing.T) {
 	t.Parallel()
@@ -169,7 +169,7 @@ func TestHistoryByFingerprint(t *testing.T) {
 }
 
 // TestHistoryDrifted is SPEC §C.6's definition of drift: has the rule been
-// edited since the version an occurrence was bound to?
+// edited since the version a case was bound to?
 func TestHistoryDrifted(t *testing.T) {
 	t.Parallel()
 
@@ -183,7 +183,7 @@ func TestHistoryDrifted(t *testing.T) {
 	assert.True(t, two.Drifted(s1.Fingerprint), "an older text is drift")
 	assert.False(t, two.Drifted(s2.Fingerprint), "the newest text is not drift")
 
-	// An occurrence with no bound snapshot has nothing to have drifted from, so
+	// A case with no bound snapshot has nothing to have drifted from, so
 	// oto must not claim an edit it cannot evidence.
 	assert.False(t, two.Drifted(""))
 	assert.False(t, domain.History{}.Drifted(s1.Fingerprint))
@@ -201,7 +201,7 @@ func TestHistoryDriftedIsAboutContentNotCount(t *testing.T) {
 
 	h := domain.NewHistory(validKey(), []domain.Snapshot{s1, s2, reverted})
 	assert.False(t, h.Drifted(s1.Fingerprint),
-		"an occurrence bound to the text the rule now has again has not drifted")
+		"a case bound to the text the rule now has again has not drifted")
 	assert.True(t, h.Drifted(s2.Fingerprint))
 }
 
@@ -302,7 +302,7 @@ func TestHistoryLatestDefinitionStepsOverAnOutage(t *testing.T) {
 	assert.Equal(t, real2.Fingerprint, def.Snapshot.Fingerprint, "the newest capture that actually holds a rule")
 
 	// ⛔ And therefore the alert card does not claim an edit against an empty
-	// expression: the occurrence bound to the newest real text has not drifted,
+	// expression: the case bound to the newest real text has not drifted,
 	// and the one bound to the text before it has.
 	assert.False(t, h.Drifted(real2.Fingerprint),
 		"an outage after this alert fired is not somebody editing the rule")

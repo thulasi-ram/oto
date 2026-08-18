@@ -28,7 +28,7 @@ import (
 var listAlertsParams = []string{
 	"state", "severity", "cluster", "namespace", "alertname", "source_fingerprint",
 	"label[", "matcher",
-	"ack", "flapping", "snoozed", "synthetic", "since", "q", "sort", "include",
+	"flapping", "snoozed", "synthetic", "since", "q", "sort", "include",
 	"limit", "cursor",
 }
 
@@ -39,7 +39,7 @@ var listRollupsParams = []string{
 	"group_by",
 	"state", "severity", "cluster", "namespace", "alertname", "source_fingerprint",
 	"label[", "matcher",
-	"ack", "flapping", "snoozed", "synthetic", "since", "q",
+	"flapping", "snoozed", "synthetic", "since", "q",
 	"limit", "cursor",
 }
 
@@ -51,9 +51,9 @@ var labelParams = []string{"q", "limit"}
 
 // includeSet is the bounded whitelist of embeddable sub-resources.
 type includeSet struct {
-	CurrentOccurrence bool
-	Enrichments       bool
-	Rule              bool
+	CurrentCase bool
+	Enrichments bool
+	Rule        bool
 }
 
 // alertsListRequest is one parsed, validated `listAlerts` call.
@@ -84,7 +84,6 @@ func parseListAlerts(r *http.Request) (alertsListRequest, error) {
 		SourceFingerprint: p.CSV("source_fingerprint"),
 
 		Matcher:   p.String("matcher", ""),
-		Ack:       p.String("ack", ""),
 		Flapping:  p.Bool("flapping"),
 		Snoozed:   p.Bool("snoozed"),
 		Synthetic: p.Bool("synthetic"),
@@ -128,8 +127,8 @@ func parseListAlerts(r *http.Request) (alertsListRequest, error) {
 	inc := includeSet{}
 	for _, v := range q.Include {
 		switch v {
-		case "current_occurrence":
-			inc.CurrentOccurrence = true
+		case "current_case":
+			inc.CurrentCase = true
 		case "enrichments":
 			inc.Enrichments = true
 		case "rule":
@@ -200,7 +199,6 @@ type filterSpec struct {
 	Clusters     []string
 	AlertNames   []string
 	Fingerprints []string
-	Ack          string
 	Flapping     *bool
 	Snoozed      *bool
 	Synthetic    *bool
@@ -212,7 +210,7 @@ func (q ListAlertsQuery) spec() filterSpec {
 	return filterSpec{
 		States: q.State, Severities: q.Severity, Namespaces: q.Namespace,
 		Clusters: q.Cluster, AlertNames: q.AlertName, Fingerprints: q.SourceFingerprint,
-		Ack: q.Ack, Flapping: q.Flapping, Snoozed: q.Snoozed, Synthetic: q.Synthetic,
+		Flapping: q.Flapping, Snoozed: q.Snoozed, Synthetic: q.Synthetic,
 		Since: q.Since, Query: q.Q,
 	}
 }
@@ -221,7 +219,7 @@ func (q ListRollupsQuery) spec() filterSpec {
 	return filterSpec{
 		States: q.State, Severities: q.Severity, Namespaces: q.Namespace,
 		Clusters: q.Cluster, AlertNames: q.AlertName, Fingerprints: q.SourceFingerprint,
-		Ack: q.Ack, Flapping: q.Flapping, Snoozed: q.Snoozed, Synthetic: q.Synthetic,
+		Flapping: q.Flapping, Snoozed: q.Snoozed, Synthetic: q.Synthetic,
 		Since: q.Since, Query: q.Q,
 	}
 }
@@ -272,13 +270,6 @@ func alertFilter(in filterSpec, compiled filter.Compiled) (domain.AlertFilter, e
 		Since:      in.Since,
 		Query:      in.Query,
 	}
-	if in.Ack != "" {
-		a, err := domain.NewAckState(in.Ack)
-		if err != nil {
-			return domain.AlertFilter{}, err
-		}
-		f.AckState = &a
-	}
 	return f, nil
 }
 
@@ -309,7 +300,6 @@ func parseListRollups(r *http.Request) (rollupsRequest, error) {
 		AlertName:         p.CSV("alertname"),
 		SourceFingerprint: p.CSV("source_fingerprint"),
 		Matcher:           p.String("matcher", ""),
-		Ack:               p.String("ack", ""),
 		Flapping:          p.Bool("flapping"),
 		Snoozed:           p.Bool("snoozed"),
 		Synthetic:         p.Bool("synthetic"),
@@ -401,7 +391,6 @@ func commonFilterParts(in filterSpec, sel filter.Selector) []string {
 		"namespace=" + joinSorted(in.Namespaces),
 		"alertname=" + joinSorted(in.AlertNames),
 		"source_fingerprint=" + joinSorted(in.Fingerprints),
-		"ack=" + in.Ack,
 		"q=" + in.Query,
 		"label=" + sel.Canonical(),
 	}
@@ -485,7 +474,7 @@ type timelineRequest struct {
 // parseTimeline compiles an event-list query.
 //
 // `defaultOrder` differs by endpoint — the alert timeline defaults to `desc`,
-// the occurrence and group timelines to `asc` — because they answer different
+// the case and group timelines to `asc` — because they answer different
 // questions: "what has this rule ever done" reads newest first, "what happened
 // during this outage" reads in the order it happened.
 func parseTimeline(r *http.Request, defaultOrder string) (timelineRequest, error) {
@@ -515,15 +504,39 @@ func parseTimeline(r *http.Request, defaultOrder string) (timelineRequest, error
 		return timelineRequest{}, err
 	}
 
+	// ⚠️ THE FILTER IS THE PERSISTED SPELLINGS, NOT THE ONE THE CALLER TYPED —
+	// AND ON THIS PATH THAT IS A BELT OVER AN ALREADY-FASTENED BRACE. Stated
+	// exactly, because the obvious reading of these four lines is wrong.
+	//
+	// ADR 0036 renamed eight values and migration 00052 deliberately did NOT
+	// rewrite thirteen months of `alert_events`, so any PREDICATE on
+	// `alert_events.type` must name both spellings or it silently stops matching
+	// at the rename. This map is not that predicate: its only consumer is
+	// `filterEvents` below, a Go post-filter over `[]domain.Event` whose members
+	// came through `alerts/repository`'s row mapper — and that mapper
+	// CANONICALISES, so `e.Type().String()` is always `case.*` and the legacy keys
+	// added here are never looked up. The SQL side is covered where the SQL is:
+	// the three literal lists in `alerts/repository/event.go`,
+	// `notification/repository/snapshot.go` and `stats/repository/rollup.go`,
+	// each registered in `test/arch`'s event-type gate.
+	//
+	// The expansion stays because it makes this map correct for the COLUMN rather
+	// than for the wire, which is what a future move of this filter into SQL would
+	// need and would otherwise get wrong silently. `NewEventType` also
+	// canonicalises, so a client still asking for the old spelling gets the same
+	// page and is answered in the new vocabulary.
 	types := map[string]bool{}
 	for _, t := range q.Type {
-		if _, err := domain.NewEventType(t); err != nil {
+		et, err := domain.NewEventType(t)
+		if err != nil {
 			return timelineRequest{}, errs.Validation("validation_failed",
 				"1 field failed validation.", errs.Violation{
 					Field: "type", Code: "enum", Message: "unknown event type: " + t,
 				})
 		}
-		types[t] = true
+		for _, s := range et.PersistedSpellings() {
+			types[s] = true
+		}
 	}
 
 	hash := httpx.FilterHash("type="+joinSorted(q.Type), "order="+q.Order)

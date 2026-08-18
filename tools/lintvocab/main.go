@@ -120,6 +120,24 @@ var banned = []rule{
 		"time-to-acknowledge measures humans (§A.1)."},
 	{"MTTR", regexp.MustCompile(`\bMTTR\b`),
 		"time-to-resolve measures humans. oto measures the SIGNAL's firing duration (§A.1, R8)."},
+	// ⚠️ THE ODD ONE OUT, AND DELIBERATELY SO. Every rule above bans a concept oto
+	// refuses to have. This one bans a word oto USED TO USE for a concept it very
+	// much has: the firing episode, renamed to `Case` by ADR 0036 on the argument
+	// that a name describing storage rather than use decays into the wrong one.
+	// The ban is here because SPEC §P-5's closing condition for a rename — the one
+	// with a track record, written for `escalation` — is that the old word appears
+	// in no Go identifier, JSON field, column name or UI string afterwards, and a
+	// rename with nothing holding it finishes at ninety per cent.
+	//
+	// ⚠️ NO `\b`, UNLIKE EVERY OTHER RULE HERE, AND THAT IS THE POINT. The closing
+	// condition names COLUMN NAMES, and `alert_occurrences`, `occurrence_id`,
+	// `current_occurrence_id` and `total_occurrences` all begin the word after an
+	// underscore, which is a word character — a bounded pattern matches none of
+	// them and would have declared the rename finished with the schema untouched.
+	// It is still not a stem: `occurred_at` is `alert_events`' upstream clock, does
+	// not contain this word, and is not going anywhere.
+	{"occurrence", regexp.MustCompile(`(?i)occurrences?`),
+		"the firing episode is an AlertCase (ADR 0036). `occurrence` named its position in a data model and said nothing about what a person does with it."},
 }
 
 // columns are the person-subject columns SCOPE-BOUNDARY forbids by name. A

@@ -70,8 +70,9 @@ var groupColumnsQualified = "g." + strings.Join(groupColumnList, ", g.")
 //
 // ⭐ `alert_groups` stores only `cluster_id`, and the contract requires
 // `cluster_key`. Reading it out of `group_labels['cluster']` — which is what the
-// handler used to do — is wrong twice over: the entry exists only while
-// Alertmanager happens to group by `cluster`, and the value is whatever the
+// handler used to do — is wrong twice over: `cluster` is not one of the axes
+// `group_labels` now carries at all (ADR 0038 keeps it first-class rather than
+// inventing a label the upstream never sent), and the value would be whatever the
 // upstream labelled with rather than the identity oto keys alerts on (§C.2).
 //
 // NOTE (planner): the join is a primary-key lookup on `clusters.id`, one row per
@@ -294,7 +295,7 @@ type NewGeneration struct {
 	At             time.Time
 	// Synthetic marks a generation opened by a DELIVERY DRILL, so the dashboard
 	// group counts can exclude it with an indexed predicate rather than reaching
-	// `alerts` through `alert_group_members` for every group in the window.
+	// `alerts` through every episode of every group in the window.
 	//
 	// ⛔ IT IS WRITE-ONLY HERE AND IS DELIBERATELY NOT IN `groupColumnList`. It is
 	// a REPORTING fact about how a generation came to exist, not an invariant of

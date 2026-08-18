@@ -53,22 +53,22 @@ func (s *store) RelatedAlerts(
 }
 
 var (
-	alertID      = id.New()
-	occurrenceID = id.New()
+	alertID = id.New()
+	caseID  = id.New()
 )
 
 func subject() *domain.Subject {
 	return &domain.Subject{
 		OrgID:       id.NewString(),
-		SubjectKind: domain.SubjectOccurrence,
-		SubjectID:   occurrenceID.String(),
+		SubjectKind: domain.SubjectCase,
+		SubjectID:   caseID.String(),
 		Alert: domain.AlertSnapshot{
 			ID:        alertID.String(),
 			AlertName: "HighErrorRate",
 			Namespace: "payments",
 			Severity:  "critical",
 		},
-		Occurrence: domain.OccurrenceSnapshot{ID: occurrenceID.String(), StartedAt: baseTime},
+		Case: domain.CaseSnapshot{ID: caseID.String(), StartedAt: baseTime},
 	}
 }
 
@@ -95,13 +95,13 @@ func payloadOf(t *testing.T, res domain.Result) relatedalerts.Payload {
 
 func related(relation, name string, startedAt time.Time) relatedalerts.Related {
 	return relatedalerts.Related{
-		Relation:     relation,
-		AlertID:      id.NewString(),
-		AlertKey:     "ak_" + name,
-		AlertName:    name,
-		State:        "firing",
-		OccurrenceID: id.NewString(),
-		StartedAt:    startedAt,
+		Relation:  relation,
+		AlertID:   id.NewString(),
+		AlertKey:  "ak_" + name,
+		AlertName: name,
+		State:     "firing",
+		CaseID:    id.NewString(),
+		StartedAt: startedAt,
 	}
 }
 
@@ -147,24 +147,24 @@ func TestApplicableNeedsAnIdentityAndSomethingToSearchOn(t *testing.T) {
 	assert.False(t, relatedalerts.New(nil, clock.NewFake(baseTime)).Applicable(subject()))
 }
 
-// TestCacheSeedBucketsOnTheOccurrenceStartNotOnNow.
+// TestCacheSeedBucketsOnTheCaseStartNotOnNow.
 //
-// Two occurrences of the same alert minutes apart genuinely have different
+// Two cases of the same alert minutes apart genuinely have different
 // neighbourhoods; a seed built from `now` would make the cache either useless or
 // wrong depending on which way it rounded.
-func TestCacheSeedBucketsOnTheOccurrenceStartNotOnNow(t *testing.T) {
+func TestCacheSeedBucketsOnTheCaseStartNotOnNow(t *testing.T) {
 	t.Parallel()
 
 	clk := clock.NewFake(baseTime)
 	e := relatedalerts.New(&store{}, clk)
 
 	sameBucket := subject()
-	sameBucket.Occurrence.StartedAt = baseTime.Add(20 * time.Minute)
+	sameBucket.Case.StartedAt = baseTime.Add(20 * time.Minute)
 	assert.Equal(t, e.CacheSeed(subject()), e.CacheSeed(sameBucket),
 		"two fires inside one window share a neighbourhood, so they share a seed")
 
 	nextBucket := subject()
-	nextBucket.Occurrence.StartedAt = baseTime.Add(90 * time.Minute)
+	nextBucket.Case.StartedAt = baseTime.Add(90 * time.Minute)
 	assert.NotEqual(t, e.CacheSeed(subject()), e.CacheSeed(nextBucket),
 		"an hour later is a different neighbourhood")
 
@@ -230,7 +230,7 @@ func TestTheNeighbourhoodIsReportedStrongestRelationFirst(t *testing.T) {
 	}, p.Counts, "the count is the honest number; the list is a sample")
 }
 
-func TestTheQueryIsWindowedAroundTheOccurrenceStart(t *testing.T) {
+func TestTheQueryIsWindowedAroundTheCaseStart(t *testing.T) {
 	t.Parallel()
 
 	st := &store{found: []relatedalerts.Related{related(relatedalerts.RelationGroup, "X", baseTime)}}
@@ -242,18 +242,18 @@ func TestTheQueryIsWindowedAroundTheOccurrenceStart(t *testing.T) {
 	assert.Equal(t, baseTime.Add(time.Hour), st.sawQ.To,
 		"the window is centred on the FIRE, not on when the enricher happened to run")
 	assert.Equal(t, alertID, st.sawQ.AlertID)
-	assert.Equal(t, occurrenceID, st.sawQ.OccurrenceID, "the subject is excluded from its own results")
+	assert.Equal(t, caseID, st.sawQ.CaseID, "the subject is excluded from its own results")
 	assert.Equal(t, "HighErrorRate", st.sawQ.AlertName)
 	assert.Equal(t, "payments", st.sawQ.Namespace)
 	assert.Equal(t, relatedalerts.MaxPerRelation, st.sawQ.Limit)
 }
 
-func TestAnOccurrenceWithNoStartFallsBackToTheClock(t *testing.T) {
+func TestAnCaseWithNoStartFallsBackToTheClock(t *testing.T) {
 	t.Parallel()
 
 	st := &store{found: []relatedalerts.Related{related(relatedalerts.RelationGroup, "X", baseTime)}}
 	s := subject()
-	s.Occurrence.StartedAt = time.Time{}
+	s.Case.StartedAt = time.Time{}
 
 	_, err := relatedalerts.New(st, clock.NewFake(baseTime)).Enrich(scoped(t), s)
 	require.NoError(t, err)
@@ -451,7 +451,7 @@ func TestANilClockFallsBackToTheSystemClock(t *testing.T) {
 
 	st := &store{}
 	s := subject()
-	s.Occurrence.StartedAt = time.Time{}
+	s.Case.StartedAt = time.Time{}
 
 	_, err := relatedalerts.New(st, nil).Enrich(scoped(t), s)
 	require.NoError(t, err)

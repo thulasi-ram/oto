@@ -28,9 +28,23 @@ const DrillLabel = "oto_drill"
 
 // Receiver is the Alertmanager receiver name a drill claims.
 //
-// A distinct receiver means a distinct §C.4 `group_key`, which means each drill
-// opens its own generation and therefore its own Slack thread — so a drill can
-// never post into the thread of a real incident that happens to be open.
+// ⛔ IT NO LONGER SEPARATES A DRILL'S THREAD FROM ANYTHING. Until ADR 0038 the
+// §C.4 key hashed `receiver` and Alertmanager's groupLabels, so this constant
+// plus the per-drill nonce in `groupLabels` gave every drill its own generation.
+// The key is now `(org, cluster, alertname, namespace-or-∅)`, and neither the
+// receiver nor the nonce is an axis.
+//
+// What still holds, and is the property that mattered: a drill CANNOT post into
+// the thread of a real incident, because `AlertName` is oto's own and no real
+// rule is called `OtoDeliveryDrill`.
+//
+// ⚠️ WHAT NO LONGER HOLDS: two drills fired inside `group_close_delay` now share
+// ONE generation and one thread. Each still has its own Alert and its own case —
+// `DrillLabel` carries a nonce and labels are alert identity — but disposing the
+// first drill deletes the shared synthetic generation out from under the second,
+// which degrades its result screen. Isolating drills again means giving each one
+// its own value on an AXIS; it is not fixed here because inventing one would be a
+// grouping rule for exactly one caller, which is the thing ADR 0038 forbids.
 const Receiver = "oto-delivery-drill"
 
 // FiringFor is how long a drill's alert claims to have been firing when it
@@ -112,15 +126,18 @@ func BuildPayload(in PayloadInput) ([]byte, error) {
 		"oto_origin": "delivery-drill",
 	}
 
-	// ⭐ THE GROUP LABELS ARE WIDE ON PURPOSE, and this is a real trade-off worth
-	// knowing about. A notification policy matches the GROUP's labels, never an
-	// individual alert's, so a narrow set here would make a drill unroutable by
-	// policies that a real alert would match. A wide set maximises the chance the
-	// drill reaches the channel a real alert would — at the cost that a policy
-	// matching on, say, `namespace` will match a drill even where the operator's
-	// `alertmanager.yml` does not group by namespace and a real alert therefore
-	// never would. The result screen names the policy that matched, so an
-	// operator can see exactly which rule caught it and check their `group_by`.
+	// ⛔ oto DOES NOT READ THESE. The envelope carries `groupLabels` because a
+	// drill's payload must be byte-shaped like Alertmanager's, and this is what a
+	// real webhook would put here — but since ADR 0038 oto derives the group's
+	// labels from the alert's own set and ignores the envelope's. They are kept so
+	// the drill remains a faithful forgery of an Alertmanager delivery, and they
+	// are recorded verbatim in `ingest_batches.payload` like any other body.
+	//
+	// The trade-off they used to encode is now settled elsewhere and in oto's
+	// favour: a policy matching `namespace` matches a drill exactly when it would
+	// match a real alert, because both groups' labels are `SplitLabels` of the
+	// alert — no longer "whatever the operator put in `group_by`". The result
+	// screen still names the policy that matched.
 	groupLabels := map[string]string{
 		"alertname": AlertName,
 		"severity":  severity,
