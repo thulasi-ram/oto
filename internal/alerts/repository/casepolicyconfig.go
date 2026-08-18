@@ -72,7 +72,6 @@ func (r *casePolicyRow) scanInto() []any {
 func (r casePolicyRow) toDomain() domain.CasePolicy {
 	return domain.CasePolicy{
 		ID:              r.id,
-		OrgID:           r.orgID,
 		Namespace:       r.namespace,
 		Alertname:       r.alertname,
 		RetentionWindow: time.Duration(r.windowSec) * time.Second,

@@ -252,7 +252,6 @@ func TestAnEmptyCasePolicyPatchChangesNothing(t *testing.T) {
 func TestACasePolicyPatchIsProvedAgainstTheRowItLandsOn(t *testing.T) {
 	existing := CasePolicy{
 		ID:              uuid.MustParse("018f3a4b-0000-7000-8000-0000000001c1"),
-		OrgID:           orgA,
 		Namespace:       "",
 		Alertname:       "HighErrorRate",
 		RetentionWindow: 10 * time.Minute,

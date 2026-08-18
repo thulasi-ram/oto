@@ -38,8 +38,7 @@ import (
 // spells that partition with a value a UNIQUE index can compare. Everything that
 // reads or writes it goes through NormaliseNamespace.
 type CasePolicy struct {
-	ID    uuid.UUID
-	OrgID uuid.UUID
+	ID uuid.UUID
 
 	// Namespace is the ADR 0038 axis. The empty string is the absent-namespace
 	// partition, not a missing value.

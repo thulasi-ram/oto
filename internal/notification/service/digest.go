@@ -94,10 +94,8 @@ type DigestConfig struct {
 	// `alert_key` and a digest names no alert) and not throttled by a group cap
 	// (it lands on no group's thread). See sweepPolicy.
 	Notifier *NotificationService
-	// Limit bounds one window's fold per tenant. Zero means digestBucketLimit.
-	Limit  int
-	Clock  clock.Clock
-	Logger *slog.Logger
+	Clock    clock.Clock
+	Logger   *slog.Logger
 }
 
 // NewDigestService builds the service.
@@ -108,10 +106,7 @@ func NewDigestService(cfg DigestConfig) (*DigestService, error) {
 	}
 	s := &DigestService{
 		policies: cfg.Policies, digests: cfg.Digests, notifier: cfg.Notifier,
-		limit: cfg.Limit, clk: cfg.Clock, log: cfg.Logger,
-	}
-	if s.limit <= 0 {
-		s.limit = digestBucketLimit
+		limit: digestBucketLimit, clk: cfg.Clock, log: cfg.Logger,
 	}
 	if s.clk == nil {
 		s.clk = clock.New()
