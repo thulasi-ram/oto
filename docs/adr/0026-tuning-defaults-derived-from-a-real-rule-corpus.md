@@ -131,9 +131,9 @@ transitions in W  ≈  2 × ⌊ W / cycle ⌋
 
 ### 4. The defect the two defaults had *between* them
 
-`refire_grace` avoids a new Slack root message only while the group **generation** is still open;
-closing a generation freezes its thread and the next observation opens N+1 with a new root (ADR 0005,
-§B.5). oto shipped `group_close_delay: 300s` against `refire_grace: 600s`, so the generation closed
+`refire_grace` avoids a new Slack root message only while the group **generation** is still open; a
+closed generation is never rejoined and the next observation opens N+1, which is a new thread with a
+new root (ADR 0005, §B.5). oto shipped `group_close_delay: 300s` against `refire_grace: 600s`, so the generation closed
 five minutes into a ten-minute grace and **the entire second half of the grace bought an occurrence
 reopen that posted a new card anyway.** oto's own tuning page already stated the rule — *"keep
 `group_close_delay` at or above `refire_grace`"* — and its own shipped defaults broke it. Its worked

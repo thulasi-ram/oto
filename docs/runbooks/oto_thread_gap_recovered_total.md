@@ -43,7 +43,8 @@ people are not being told things oto decided to tell them.
 4. [`oto_jobs_dead_total`](oto_jobs_dead_total.md) for `kind="deliver.dispatch"`: the same failures
    seen from the job runtime.
 5. `channel_threads` for the thread: `last_sent_seq` versus `next_seq`, and whether the thread is
-   marked dead or frozen.
+   marked dead. (`frozen` was a fourth state and is gone — git-bug e5c060b; nothing ever wrote it,
+   so a query for it always returned nothing.)
 6. For `missing_delivery`: look for an error around the allocating transaction. A rollback after
    `next_seq++` is a bug in the write path, not an operational condition.
 

@@ -380,13 +380,14 @@ UPDATE alert_groups SET
     updated_at       = now()
 WHERE org_id = $1 AND id = $2 AND state = 'open' AND state_version = $5`
 
-// Close ends a generation and freezes its thread.
+// Close ends a generation.
 //
 // The `state = 'open'` predicate already made this a compare-and-set on the
 // state; `state_version = $5` completes it. Closing is decided from a rollup that
 // proved no member is still live, and that proof is only about the generation as
 // it was read — a member that joined in the meantime bumps the version, and
-// freezing its thread would be freezing a live incident's conversation.
+// closing it would end a live incident's generation, sending its next fact to a
+// brand-new card while the old one is still the one people are reading.
 func (r *GroupRepository) Close(ctx context.Context, s db.TenantScope, g domain.Group, fromVersion int) error {
 	if err := db.RequireScope(s); err != nil {
 		return err
@@ -596,7 +597,8 @@ var closeCandidatesSQL = selectGroups + `
 //
 // The caller still checks each candidate for LIVE members before closing it: a
 // generation with a firing member is idle in the sense that nothing has been
-// written recently, but closing it would freeze the thread of a live incident.
+// written recently, but closing it would end a live incident's generation and send
+// its next fact to a new card.
 func (r *GroupRepository) CloseCandidates(
 	ctx context.Context, s db.TenantScope, idleBefore time.Time, limit int,
 ) ([]domain.Group, error) {

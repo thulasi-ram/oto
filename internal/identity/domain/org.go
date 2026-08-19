@@ -109,8 +109,9 @@ type Settings struct {
 	// ResolveGrace is how long past `source_ends_at` the reaper waits before an
 	// case may expire (§B.4).
 	ResolveGrace time.Duration
-	// GroupCloseDelay is how long an idle generation is held open before closing,
-	// which freezes its Slack thread.
+	// GroupCloseDelay is how long an idle generation is held open before closing.
+	// A closed generation is never rejoined: the next observation opens N+1, and a
+	// new generation is a new thread.
 	GroupCloseDelay time.Duration
 
 	// FlapThreshold is the transition count above which an Alert is MARKED

@@ -407,9 +407,9 @@ across distinct incidents; shorten it toward `2 × group_interval` and accept a 
 
 ### ⛔ `group_close_delay` must be at least `refire_grace`, or none of the above is true
 
-A re-fire avoids a new Slack root message **only if the group generation is still open.** Closing a
-generation freezes its thread, and the next observation opens generation N+1 with a brand-new root
-card (§B.5). So a `group_close_delay` shorter than `refire_grace` gives you a setting on the screen
+A re-fire avoids a new Slack root message **only if the group generation is still open.** A closed
+generation is never rejoined: the next observation opens generation N+1, and a new generation is a
+new thread with a brand-new root card (§B.5). So a `group_close_delay` shorter than `refire_grace` gives you a setting on the screen
 that promises to hold the thread together for twenty minutes and a generation that let go after five.
 
 **oto used to ship exactly that**: `group_close_delay` 300s against a `refire_grace` of 600s, so the

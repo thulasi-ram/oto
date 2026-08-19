@@ -175,8 +175,9 @@ func TestTheOldRefireGraceCouldNotReachTheModalRule(t *testing.T) {
 // WOULD NEVER HAVE CAUGHT.
 //
 // Reopening a case only avoids a new Slack root message while the group
-// GENERATION is still open: closing a generation freezes its thread and the next
-// observation opens N+1 with a brand-new root (ADR 0005, §B.5). oto shipped
+// GENERATION is still open: a closed generation is never rejoined, and the next
+// observation opens N+1, which is a new thread with a brand-new root
+// (ADR 0005, §B.5). oto shipped
 // `group_close_delay: 300s` against `refire_grace: 600s`, so the generation closed
 // five minutes into a ten-minute grace and the whole second half of the grace
 // bought a case reopen that posted a new card anyway. oto's own tuning page

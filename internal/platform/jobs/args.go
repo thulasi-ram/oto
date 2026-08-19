@@ -476,8 +476,8 @@ func (CaseReapArgs) InsertOpts() river.InsertOpts {
 	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
 }
 
-// GroupCloseArgs closes group generations whose members have all ended, freezes
-// their ChannelThreads, and — critically — performs the §G.7.3 GAP RECOVERY that
+// GroupCloseArgs closes group generations whose members have all ended and —
+// critically — performs the §G.7.3 GAP RECOVERY that
 // advances `channel_threads.last_sent_seq` past a dead delivery so one poison
 // message can never wedge a thread forever. Periodic, 60 s, zero payload.
 //

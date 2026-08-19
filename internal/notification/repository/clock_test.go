@@ -336,11 +336,10 @@ func TestThreadWritesSurviveAWorkerBehindTheOneThatOpenedIt(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, threads.RecordReply(h.Ctx, fx.scope, th.ID, seq2, behind))
 	require.NoError(t, threads.AdvanceSent(h.Ctx, fx.scope, th.ID, seq2, behind))
-	require.NoError(t, threads.Freeze(h.Ctx, fx.scope, th.ID, behind))
 
 	stored, err := threads.Get(h.Ctx, fx.scope, th.ID)
 	require.NoError(t, err)
-	require.Equal(t, domain.ThreadFrozen, stored.State,
+	require.Equal(t, domain.ThreadOpen, stored.State,
 		"every state change still happened; only the timestamps were clamped")
 	require.Equal(t, 1, stored.ReplyCount)
 	require.Equal(t, stored.CreatedAt.UTC(), stored.UpdatedAt.UTC(),

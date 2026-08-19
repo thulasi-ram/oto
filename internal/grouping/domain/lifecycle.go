@@ -58,7 +58,7 @@ import (
 // value and stay readable (ADR 0041, Amendment 1).
 
 // DefaultGroupCloseDelay is how long a generation with no live member stays open
-// before it closes and freezes its thread.
+// before it closes.
 //
 // ⛔ IT IS A REFERENCE TO `platform/tuning`, NOT A LITERAL. It was a literal with a
 // ⚠️ comment saying it MIRRORS `identity/domain` — and a comment is not a mechanism:
@@ -91,8 +91,8 @@ func DefaultLifecyclePolicy() LifecyclePolicy {
 }
 
 // Normalise fills a zero field from the default, so a partially-configured org can
-// never produce a zero close delay and freeze every generation's thread on the tick
-// after it loses its last live member.
+// never produce a zero close delay and close every generation on the tick after it
+// loses its last live member.
 func (p LifecyclePolicy) Normalise() LifecyclePolicy {
 	if p.CloseDelay <= 0 {
 		p.CloseDelay = DefaultLifecyclePolicy().CloseDelay

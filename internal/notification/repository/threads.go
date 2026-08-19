@@ -313,20 +313,6 @@ func (r *ThreadRepository) ClearPointer(
 	return mapErr(err, "thread_not_found", "clear the thread pointer")
 }
 
-const freezeThreadSQL = `
-UPDATE channel_threads
-   SET state = 'frozen', updated_at = GREATEST(updated_at, $3)
- WHERE org_id = $1 AND id = $2 AND state IN ('opening','open')`
-
-// Freeze closes a thread because its group generation closed. Anything still
-// queued for it is about a state nobody will look at again.
-func (r *ThreadRepository) Freeze(
-	ctx context.Context, s db.TenantScope, threadID uuid.UUID, now time.Time,
-) error {
-	_, err := r.db(ctx).Exec(ctx, freezeThreadSQL, s.OrgID(), threadID, now)
-	return mapErr(err, "thread_not_found", "freeze the thread")
-}
-
 // ---------------------------------------------------------------- ordering.Store
 
 // OrderingStore adapts this module's two tables to the platform ordering gate.

@@ -20,7 +20,6 @@ send now". It exists to explain the other two ordering metrics, not to be paged 
 | `recover_thread` | `thread_dead` | the thread is terminal and must be recovered |
 | `recover_thread` | `root_never_landed` | the root was allocated but never sent |
 | `recover_thread` | `head_of_line_stalled` | a slot has been in flight past the §G.5 lease (120 s) |
-| `abandon` | `thread_frozen` | the thread is frozen; nothing may send |
 | `abandon` | `unsequenced` | the item carries no sequence number |
 | `out_of_order` | `already_resolved` | this slot is already finished; the head merely had not caught up |
 

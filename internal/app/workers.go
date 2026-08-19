@@ -290,7 +290,13 @@ func (c *Container) reapOneTenant(ctx context.Context, scope db.TenantScope) err
 }
 
 // closeGroups is `group.close` (§G.3): close generations whose members have all
-// ended, and freeze their threads.
+// ended.
+//
+// ⚠️ IT DOES NOT FREEZE THEIR THREADS, though this comment said so until git-bug
+// e5c060b. Nothing freezes anything — `Freeze` never had a production caller and
+// migration 00066 deleted the state. What actually stops a re-fire joining the old
+// card is that the next observation opens generation N+1, and a new generation is a
+// NEW thread (`channel_threads.subject_id` is the generation row).
 func (c *Container) closeGroups(ctx context.Context, job *jobs.Job[jobs.GroupCloseArgs]) error {
 	return c.perTenantSweep(ctx, jobs.KindGroupClose, job.Args.TenantFanOut,
 		func(f jobs.TenantFanOut) db.JobArgs { return jobs.GroupCloseArgs{TenantFanOut: f} },

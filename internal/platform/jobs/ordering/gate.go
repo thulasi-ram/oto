@@ -327,8 +327,9 @@ func (g *Gate) classifySlot(slot Slot, th Thread, now time.Time) (SkipReason, bo
 		return ReasonAlreadySent, true
 
 	case slot.Skipped:
-		// A deliberate non-send — a coalesced no-op update, or a fact that arrived
-		// after its thread was frozen.
+		// A deliberate non-send — a coalesced no-op update, or a slot the gap
+		// recovery moved past. ("A fact that arrived after its thread was frozen" was
+		// listed here and is gone: there is no frozen state — git-bug e5c060b.)
 		return ReasonSkippedDelivery, true
 
 	case slot.Resolved:

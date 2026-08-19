@@ -27,8 +27,8 @@ func TestDefaultLifecyclePolicy(t *testing.T) {
 
 	assert.Equal(t, domain.DefaultGroupCloseDelay, domain.DefaultLifecyclePolicy().CloseDelay)
 
-	// ⛔ 20m, not the 5m this assertion once transcribed. Closing a generation freezes
-	// its Slack thread, so the next observation opens N+1 with a brand-new root card
+	// ⛔ 20m, not the 5m this assertion once transcribed. A closed generation is never
+	// rejoined, so the next observation opens N+1 with a brand-new root card
 	// (ADR 0005, §B.5), and `identity/domain.DefaultGroupCloseDelay` is pinned EQUAL to
 	// `refire_grace` by ADR 0026. At 5m against a 10m grace the generation closed
 	// halfway through the grace and the whole second half bought a re-fire that posted a
@@ -43,8 +43,8 @@ func TestDefaultLifecyclePolicy(t *testing.T) {
 }
 
 // TestLifecyclePolicyNormaliseFillsAZeroCloseDelay: a partially-configured org must not
-// be able to produce a zero close delay, which would freeze every generation's thread on
-// the tick after it lost its last live member.
+// be able to produce a zero close delay, which would close every generation on the tick
+// after it lost its last live member.
 func TestLifecyclePolicyNormaliseFillsAZeroCloseDelay(t *testing.T) {
 	t.Parallel()
 

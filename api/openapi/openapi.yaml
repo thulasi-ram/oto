@@ -10017,8 +10017,9 @@ components:
             earliest re-fire oto can observe lands 15–20 minutes after `ended_at`. The previous default
             of 600 was unreachable for 76% of those rules.
 
-            **Keep `group_close_delay_s` at or above this value.** A closed generation freezes its Slack
-            thread, so a shorter close delay posts a new root card for the re-fire anyway.
+            **Keep `group_close_delay_s` at or above this value.** A closed generation is never
+            rejoined — the next observation opens generation N+1, and a new generation is a new
+            thread — so a shorter close delay posts a new root card for the re-fire anyway.
 
             **The floor is 600, and it is derived rather than chosen: it is twice oto's ingest replay
             window.** A replayed webhook batch — an HA Alertmanager sibling, a retry after a 5xx — is

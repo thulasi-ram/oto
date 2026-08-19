@@ -84,13 +84,14 @@ const (
 	// before a case may expire (§B.4).
 	DefaultResolveGrace = 300 * time.Second
 	// DefaultGroupCloseDelay is how long a generation with no live member stays
-	// open before it closes and freezes its thread. It EQUALS DefaultRefireGrace,
+	// open before it closes. It EQUALS DefaultRefireGrace,
 	// and the equality is the whole point rather than a coincidence.
 	//
 	// ⛔ IT WAS 300s WHILE `refire_grace` WAS 600s, WHICH DEFEATED `refire_grace`.
 	// Reopening a case only avoids a new Slack root message if the group
-	// GENERATION is still open — a closed generation freezes its thread and the
-	// next observation opens generation N+1 with a brand-new root (§B.5). With the
+	// GENERATION is still open — a closed generation is never rejoined, because the
+	// next observation opens generation N+1 and a new generation is a NEW thread with
+	// a brand-new root (§B.5). With the
 	// old pair the generation closed 5 minutes after the resolve and the grace ran
 	// for 10, so the whole second half of the grace bought a case reopen
 	// that still posted a new card. oto's own tuning guidance already said "keep

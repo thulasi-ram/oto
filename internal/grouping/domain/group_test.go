@@ -716,7 +716,7 @@ func TestWithRollupMateriality(t *testing.T) {
 func TestClose(t *testing.T) {
 	t.Parallel()
 
-	t.Run("closes, freezes and bumps state_version", func(t *testing.T) {
+	t.Run("closes and bumps state_version", func(t *testing.T) {
 		t.Parallel()
 		g := mustGroup(t, func(p *domain.GroupParams) {
 			p.Counts = domain.Counts{Resolved: 2, Total: 2}

@@ -1895,7 +1895,7 @@ CREATE TABLE channel_threads (
   last_sent_seq            INT         NOT NULL DEFAULT 0,   -- ordering gate
   next_seq                 INT         NOT NULL DEFAULT 1,   -- allocator
   state                    TEXT        NOT NULL DEFAULT 'opening'
-                                       CHECK (state IN ('opening','open','frozen','dead')),
+                                       CHECK (state IN ('opening','open','dead')),
   dead_reason              TEXT,                   -- channel_not_found | is_archived | message_not_found |
                                                    -- not_in_channel | token_revoked | account_inactive |
                                                    -- edit_window_closed | cannot_reply_to_message
@@ -3626,9 +3626,6 @@ mode := effectiveMode(d, th, channel)              // RE-DERIVED (§H.6); the on
 switch {
 case th.State == "dead":                           // ── TERMINAL STATES FIRST ──
     return recoverThread(ctx, d, th)               // §G.7.3 / §H.9 — never a snooze
-case th.State == "frozen":
-    return abandon(ctx, d, "thread_frozen")        // status='skipped'
-
 case d.ThreadSeq <= 0:
     return abandon(ctx, d, "unsequenced")          // it never joined the thread's order
 case d.ThreadSeq <= th.LastSentSeq:
@@ -3680,7 +3677,6 @@ The gate's verdicts, in evaluation order. The vocabulary is closed; every verdic
 | Condition | Verdict | Worker behaviour |
 |---|---|---|
 | `state='dead'` | `recover_thread` / `thread_dead` | §H.9 transition. **Never a snooze** |
-| `state='frozen'` | `abandon` / `thread_frozen` | `skipped` + `delivery.skipped` |
 | `thread_seq <= 0` | `abandon` / `unsequenced` | `skipped`; a bug in the creating transaction, not a wait |
 | `thread_seq <= last_sent_seq` | `out_of_order` / `already_resolved` | exit quietly — duplicate worker, or recovery already moved past |
 | needs a root, none landed, **and this item is the head** | `recover_thread` / `root_never_landed` | recover immediately; `MaxWait` is not waited out |

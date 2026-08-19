@@ -456,16 +456,19 @@ type CloseResult struct {
 	Considered int
 	Closed     int
 	// Held is how many idle generations still had a live member and were left
-	// open. Freezing the thread of a live incident is worse than a stale card.
+	// open. Splitting a live incident across two cards is worse than a stale one.
 	Held int
 }
 
 // CloseIdle is the `group.close` sweep (§G.3): open generations idle past
 // group_close_delay_s, with no member still firing or suppressed.
 //
-// Closing freezes the generation's Slack thread. The next observation for the
-// same group key opens generation N+1 and therefore a NEW thread — which is the
-// entire reason generations exist (§B.5).
+// ⚠️ CLOSING DOES NOT FREEZE THE THREAD, and this comment claimed it did until
+// git-bug e5c060b. Nothing freezes it: `Freeze` never had a production caller and
+// migration 00066 removed the state. The SECOND sentence was always the real
+// mechanism and is now the only one — the next observation for the same group key
+// opens generation N+1 and therefore a NEW thread, which is the entire reason
+// generations exist (§B.5).
 func (s *Service) CloseIdle(ctx context.Context, scope db.TenantScope, limit int) (CloseResult, error) {
 	if limit <= 0 {
 		limit = 200

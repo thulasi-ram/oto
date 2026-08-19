@@ -17,8 +17,10 @@ const (
 	StateOpening ThreadState = "opening"
 	// StateOpen means the provider handle is known and replies can attach.
 	StateOpen ThreadState = "open"
-	// StateFrozen means the group closed; nothing further will be sent.
-	StateFrozen ThreadState = "frozen"
+	// ⛔ THERE IS NO `frozen`. Removed with the schema vocabulary it mirrors
+	// (git-bug e5c060b, migration 00066): nothing ever wrote the state, so the
+	// `abandon`/`thread_frozen` arm below was a decision over an unreachable input.
+	//
 	// StateDead means a terminal provider error killed the thread pointer.
 	// This is a STATE TRANSITION, not a retry (SPEC §H.9).
 	StateDead ThreadState = "dead"
@@ -183,11 +185,6 @@ func Decide(item Item, th Thread, now time.Time, p Policy) Decision {
 		// channel is gone and every queued item must be skipped. Either way the
 		// caller decides, and it must decide now rather than wait.
 		return Decision{Action: ActionRecoverThread, Reason: "thread_dead"}
-	case StateFrozen:
-		// The group generation closed. Anything still queued is about a state
-		// nobody will look at again; sending it would be noise, and it must be
-		// recorded as skipped rather than silently dropped.
-		return Decision{Action: ActionAbandon, Reason: "thread_frozen"}
 	case StateOpening, StateOpen:
 	}
 

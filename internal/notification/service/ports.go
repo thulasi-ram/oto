@@ -106,7 +106,10 @@ type ThreadStore interface {
 	AdvanceSent(ctx context.Context, s db.TenantScope, threadID uuid.UUID, seq int, now time.Time) error
 	MarkDead(ctx context.Context, s db.TenantScope, threadID uuid.UUID, reason domain.DeadReason, now time.Time) error
 	ClearPointer(ctx context.Context, s db.TenantScope, threadID uuid.UUID, now time.Time) error
-	Freeze(ctx context.Context, s db.TenantScope, threadID uuid.UUID, now time.Time) error
+	// ⛔ `Freeze` WAS HERE AND IS DELETED (git-bug e5c060b, migration 00066). It set
+	// `channel_threads.state = 'frozen'` and no production code ever called it, so
+	// every implementation — including every fake — paid for a method at the seam
+	// that bought nothing. The state it wrote is gone from the schema too.
 }
 
 // ChannelStore reads destinations and records what a delivery learned about

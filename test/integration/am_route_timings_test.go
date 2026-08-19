@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 65 {
-		t.Fatalf("latest migration is %d, want 65 — this test pins the number so that a "+
+	if latest != 66 {
+		t.Fatalf("latest migration is %d, want 66 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1444,6 +1444,51 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"%s — the ceiling IS the enum size, and 00060 moved it back to 18 when it deleted "+
 			"`storm`; a ceiling of 19 over an eighteen-value vocabulary is a number no row "+
 			"could ever test", def)
+	}
+
+	// 00066 removes `frozen` from the thread state vocabulary (git-bug e5c060b).
+	// The assertion is on the CHECK rather than on a column, because a value leaving
+	// an enum is invisible everywhere else: the column still exists, still holds
+	// text, and only the constraint says which text.
+	if def := constraintDef("threads_state_ck", "channel_threads"); strings.Contains(def, "frozen") {
+		t.Fatalf("threads_state_ck still admits 'frozen' at the top of the stack: %s — "+
+			"nothing ever wrote that state (`Freeze` had no production caller), and a "+
+			"vocabulary that keeps a value no writer can produce documents a lifecycle "+
+			"stop the code does not have", def)
+	} else if !strings.Contains(def, "dead") {
+		t.Fatalf("threads_state_ck no longer admits 'dead' at the top of the stack: %s — "+
+			"00066 removes ONE value; a reading without `dead` means it rewrote the list "+
+			"rather than editing it, and `threads_dead_ck` still pairs that state with "+
+			"`dead_reason`", def)
+	}
+	if c := columnComment("channel_threads", "state"); strings.Contains(c, "frozen means the group closed") {
+		t.Fatalf("channel_threads.state still promises a frozen state at the top of the "+
+			"stack: %s — the sentence at 00011:197 IS the defect e5c060b was filed about, "+
+			"and correcting it is half of what 00066 is for", c)
+	}
+	// The other half, and it is on a DIFFERENT TABLE. 00008:89 promised that going idle
+	// closes the group "and freezes its thread" — the transition INTO the deleted state.
+	// A column comment lives in the database, so only 00066's COMMENT ON changes what an
+	// operator's `\d+ alert_groups` prints; correcting the source file would change
+	// nothing that is already deployed.
+	if c := columnComment("alert_groups", "last_activity_at"); strings.Contains(c, "freezes its thread") {
+		t.Fatalf("alert_groups.last_activity_at still promises that closing freezes the "+
+			"thread: %s — nothing ever froze anything, and this is the sentence an "+
+			"operator reads out of the schema rather than out of the code", c)
+	}
+
+	down(66)
+
+	if def := constraintDef("threads_state_ck", "channel_threads"); !strings.Contains(def, "frozen") {
+		t.Fatalf("threads_state_ck did not re-admit 'frozen' after 00066's Down: %s — the "+
+			"release this rolls back to has a `Freeze` method whose UPDATE writes exactly "+
+			"that value, so without it the rollback lands on a schema that release cannot "+
+			"write to", def)
+	}
+	if c := columnComment("alert_groups", "last_activity_at"); !strings.Contains(c, "freezes its thread") {
+		t.Fatalf("alert_groups.last_activity_at did not get its old sentence back after "+
+			"00066's Down: %s — the Down has to restore the comment it rewrote, or a "+
+			"rollback leaves the schema describing a release it is no longer running", c)
 	}
 
 	// 00065 REVERTS 00063: the owner ruled one Case per conversation, so a policy

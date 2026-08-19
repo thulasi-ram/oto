@@ -48,12 +48,6 @@ func TestDecide(t *testing.T) {
 			want:   ActionRecoverThread, reason: "thread_dead",
 		},
 		{
-			name:   "a frozen thread abandons what is still queued",
-			item:   item(3, true, 0),
-			thread: Thread{State: StateFrozen, LastSentSeq: 2, NextSeq: 4},
-			want:   ActionAbandon, reason: "thread_frozen",
-		},
-		{
 			name:   "an unsequenced delivery never joined the order",
 			item:   item(0, false, 0),
 			thread: Thread{State: StateOpen, LastSentSeq: 0, NextSeq: 1},

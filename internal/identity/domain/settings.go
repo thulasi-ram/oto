@@ -165,8 +165,9 @@ var settingBounds = map[SettingKey]Bound{
 	KeyResolveGrace: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: must exceed the EndsAt lease Prometheus refreshes (typically 3-4 minutes) or one missed scrape looks like an expiry"},
 	// The SECOND relationship, and the one the shipped defaults used to break:
-	// keep it at or above `refire_grace`. Closing a generation freezes its thread,
-	// so a re-fire that oto classified as "the same problem coming back" still gets
+	// keep it at or above `refire_grace`. A closed generation is never rejoined —
+	// the next observation opens N+1 and a new generation is a NEW thread — so a
+	// re-fire that oto classified as "the same problem coming back" still gets
 	// a brand-new root card when the generation closed first. It is not enforced as a cross-key
 	// bound because a cross-key bound would reject a legal partial PATCH that
 	// merely arrives in the wrong order; the settings screen warns instead.

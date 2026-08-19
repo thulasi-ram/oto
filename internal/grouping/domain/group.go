@@ -437,7 +437,7 @@ func (g Group) LastNotificationReason() string { return g.lastNotificationReason
 func (g Group) FirstSeenAt() time.Time { return g.firstSeenAt }
 
 // LastActivityAt drives group.close: a generation idle past group_close_delay_s
-// closes and freezes its thread.
+// closes.
 func (g Group) LastActivityAt() time.Time { return g.lastActivityAt }
 
 // ClosedAt is when the generation closed, zero while it is open.
@@ -485,7 +485,9 @@ func (g Group) WithRollup(counts Counts, severity string, now time.Time) (Group,
 	return next, material, nil
 }
 
-// Close ends the generation and freezes its thread.
+// Close ends the generation. It does NOT freeze the generation's thread — nothing
+// does, and nothing ever did (git-bug e5c060b, migration 00066). What keeps a
+// re-fire off the old card is that generation N+1 is a new thread.
 func (g Group) Close(now time.Time) (Group, error) {
 	if !g.IsOpen() {
 		return Group{}, errs.New(errs.KindPrecondition, "group_already_closed",

@@ -799,7 +799,7 @@ func (c *Container) buildNotification(
 
 	// The same `orgs.settings` adapter the alerts and grouping modules read their
 	// tuning through. One adapter means one answer: the group close delay that
-	// freezes a thread and the broadcast policy that decides how loudly a
+	// ends a generation and the broadcast policy that decides how loudly a
 	// transition lands cannot come from two different reads of the same row.
 	settings := orgSettings{svc: c.Identity}
 

@@ -314,10 +314,6 @@ func (t *digestThreads) ClearPointer(context.Context, db.TenantScope, uuid.UUID,
 	return nil
 }
 
-func (t *digestThreads) Freeze(context.Context, db.TenantScope, uuid.UUID, time.Time) error {
-	return nil
-}
-
 // digestChannels is the destination store. A digest is not routed — its policy is
 // the input — so this is the ONLY way the tick learns where to send.
 type digestChannels struct {

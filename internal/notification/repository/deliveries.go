@@ -444,8 +444,9 @@ UPDATE notification_deliveries
  WHERE org_id = $1 AND id = $2`
 
 // MarkSkipped records a delivery that was deliberately not sent: a coalesced
-// no-op update, a slot the gap recovery moved past, or a fact that arrived after
-// its thread was frozen.
+// no-op update, or a slot the gap recovery moved past. ("A fact that arrived after
+// its thread was frozen" was a third cause and is gone: there is no frozen state —
+// git-bug e5c060b, migration 00066.)
 //
 // `skipped` is NOT a failure and must never be rendered as one. It is the row
 // that lets an operator asking "why is there no message?" get an answer instead

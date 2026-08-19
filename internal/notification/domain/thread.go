@@ -16,8 +16,11 @@ const (
 	ThreadOpening ThreadState = "opening"
 	// ThreadOpen means the provider handle is known and replies can attach.
 	ThreadOpen ThreadState = "open"
-	// ThreadFrozen means the group generation closed. Nothing more is sent.
-	ThreadFrozen ThreadState = "frozen"
+	// ⛔ THERE IS NO `frozen`. It meant "the group generation closed" and nothing
+	// ever wrote it — `Freeze` had no production caller — so it was removed by
+	// git-bug e5c060b and migration 00066. The trigger it waited for is going too:
+	// a conversation holds exactly ONE Case, so there is no generation to close.
+	//
 	// ThreadDead means a terminal provider error killed the thread. THIS IS A
 	// STATE TRANSITION, NOT A RETRY (§H.9).
 	ThreadDead ThreadState = "dead"
@@ -26,7 +29,7 @@ const (
 // Valid reports whether s is in the closed set.
 func (s ThreadState) Valid() bool {
 	switch s {
-	case ThreadOpening, ThreadOpen, ThreadFrozen, ThreadDead:
+	case ThreadOpening, ThreadOpen, ThreadDead:
 		return true
 	default:
 		return false
@@ -35,7 +38,17 @@ func (s ThreadState) Valid() bool {
 
 // Terminal reports whether nothing further will be sent on this thread as it
 // stands.
-func (s ThreadState) Terminal() bool { return s == ThreadFrozen || s == ThreadDead }
+//
+// One state, since 00066 removed `frozen`. It stays a predicate rather than being
+// inlined into its ONE caller — `Sendable`, below — because `Sendable` asks "may a
+// delivery proceed", which is a different question from "did a provider error kill
+// this". Collapsing them would tie the two together the next time a terminal state
+// is added.
+//
+// ⚠️ ONE CALLER, AND THE ASYMMETRY IS REAL: the mirror in `platform/jobs/ordering`
+// tests its state inline instead. Left as it is rather than harmonised here, which
+// would be a second change riding along inside a deletion.
+func (s ThreadState) Terminal() bool { return s == ThreadDead }
 
 // DeadReason is the terminal provider error that killed a thread — the closed
 // set of `channel_threads.dead_reason` (threads_deadmap_ck).

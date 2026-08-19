@@ -169,8 +169,9 @@ being declared done, which is the standard the depguard rules were held to.
 ## Open defects found by implementers, awaiting SPEC amendment
 
 - ~~`§G.7.2` ordering switch tests "root has not landed" before "thread is dead"~~
-  **AMENDED.** `§G.7` now states the implemented order (dead → frozen →
-  sequence → root), the bounded `MaxWait` escalation and its dead-letter
+  **AMENDED.** `§G.7` now states the implemented order (dead → sequence →
+  root; the `frozen` arm was removed by git-bug e5c060b and migration 00066,
+  because nothing could ever enter that state), the bounded `MaxWait` escalation and its dead-letter
   outcome, and the three-phase send with the claim durable before the provider
   call. Reasoning is in ADR 0023.
 - `mention_on_reminder` lives in Slack channel config but neither
