@@ -170,9 +170,26 @@ func TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept(t *testing.T) {
 			// premise instead: a broadcasting reply now carries a real link because a
 			// channel reader needs one, so every capture has a `<` again on its own
 			// merits and the stronger check costs nothing.
+			// ⚠️ IF YOU ARE HERE BECAUSE A CARD YOU ADDED TRIPPED THIS, READ THIS FIRST.
+			// The check is an implicit constraint on what a capture may contain, and
+			// that constraint is deliberate but it is not obvious. Every ROOT card
+			// satisfies it by construction — `root.go` puts a `<!date^…>` token in
+			// every one — but several REPLY reasons (`new_alerts`, `some_resolved`,
+			// `unsuppressed`, a note-less `enriched`) have no guaranteed link, date or
+			// token in their body at all.
+			//
+			// There are exactly two honest ways out and inventing fixture content is
+			// NEITHER of them: either the card is missing an affordance it should have
+			// (which is what `68653ca` turned out to be — a broadcast with nothing to
+			// click), or it genuinely has no control character and the guarantee has to
+			// move back to corpus scope with the reason recorded, which is what
+			// `bd0fb1d` did and why it was defensible. Do not add a link to a card that
+			// should not have one just to make this line green.
 			if !bytes.Contains(c.Builder, []byte("<")) {
 				t.Error("this builder capture contains no mrkdwn control character, so " +
-					"the unicode-escape check above proves nothing for this card")
+					"the unicode-escape check above proves nothing for this card — see the " +
+					"comment above for the two honest ways out, neither of which is " +
+					"inventing content for the fixture")
 			}
 
 			// The wire capture is the one thing that must equal what the provider

@@ -286,9 +286,22 @@ func baseView() *chdomain.NotificationView {
 				URL: "https://am.example.com/#/silences/new?filter=%7Balertname%3D%22CheckoutErrorRateHigh%22%7D",
 			},
 		},
+		// ⛔ `/groups/`, AND NOT `/cases/` — THIS FIXTURE HAD IT WRONG. Production
+		// mints `/groups/<group id>` and `internal/notification/service/view.go:524`
+		// says why in as many words: "minting `/cases/<group id>` sent an operator to
+		// a detail page addressed by an id that names a different table". The id here
+		// IS a group id — the golden's own metadata carries it as `group_id`.
+		//
+		// It mattered little while the URL reached a capture only through a
+		// truncation suffix. `68653ca` writes it verbatim into the broadcast body, so
+		// it is now in the file a human pastes into Block Kit Builder, and a corpus
+		// whose whole claim is "the exact bytes oto would send" cannot carry a URL
+		// production refuses to produce. The sibling corpus in
+		// `internal/channels/render/slack/testdata/` always used `/groups/`; the two
+		// disagreed and this one was the wrong half.
 		Links: chdomain.Links{
-			Group:        "https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a",
-			Timeline:     "https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
+			Group:        "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a",
+			Timeline:     "https://oto.example.com/groups/019fe297-d84f-7599-b5b2-1f231749104a/timeline",
 			Runbook:      "https://runbooks.example.com/checkout-error-rate",
 			Prometheus:   "https://prometheus.example.com/graph?g0.expr=up&g0.tab=1",
 			Alertmanager: "https://am.example.com/#/alerts?filter=%7Balertname%3D%22CheckoutErrorRateHigh%22%7D",
