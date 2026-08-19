@@ -4836,6 +4836,8 @@ export interface components {
             /** @description Which facts this policy communicates. */
             reasons: components["schemas"]["NotificationReason"][];
             channel_ids: components["schemas"]["Uuid"][];
+            /** @description Labels this policy collapses its deliveries by, computed at delivery from the alert's own label set. An empty array is the default and means no policy-level collapse. Each entry must be a Prometheus label name — a letter or underscore, then letters, digits or underscores — which the server enforces on write. */
+            group_by: string[];
             throttle?: components["schemas"]["ThrottleDTO"] | null;
             /**
              * Format: int32
@@ -6242,6 +6244,8 @@ export interface components {
             matchers?: components["schemas"]["MatcherDTO"][];
             reasons: components["schemas"]["NotificationReason"][];
             channel_ids: components["schemas"]["Uuid"][];
+            /** @description Labels this policy collapses its deliveries by, computed at delivery from the alert's own label set. An empty array is the default and means no policy-level collapse. Each entry must be a Prometheus label name — a letter or underscore, then letters, digits or underscores — which the server enforces on write. */
+            group_by?: string[];
             throttle?: components["schemas"]["ThrottleDTO"];
             /** Format: int32 */
             unacked_reminder_after_seconds?: number;
@@ -6272,6 +6276,8 @@ export interface components {
             matchers?: components["schemas"]["MatcherDTO"][];
             reasons?: components["schemas"]["NotificationReason"][];
             channel_ids?: components["schemas"]["Uuid"][];
+            /** @description Labels this policy collapses its deliveries by, computed at delivery from the alert's own label set. An empty array is the default and means no policy-level collapse. Each entry must be a Prometheus label name — a letter or underscore, then letters, digits or underscores — which the server enforces on write. */
+            group_by?: string[];
             throttle?: components["schemas"]["ThrottleDTO"] | null;
             /** Format: int32 */
             unacked_reminder_after_seconds?: number | null;

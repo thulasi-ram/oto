@@ -47,6 +47,7 @@ type PolicyDTO struct {
 	Reasons  []string     `json:"reasons"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID  `json:"channel_ids"`
+	GroupBy    []string     `json:"group_by"`
 	Throttle   *ThrottleDTO `json:"throttle"`
 
 	// UnackedReminderAfterSeconds is oto's ONE reminder stage, in seconds. Wire,
@@ -304,8 +305,17 @@ type CreatePolicyRequest struct {
 	// `test/contract/dto_schema_test.go`'s enum-ceiling gate.
 	Reasons []string `json:"reasons" validate:"required,min=1,max=18,unique"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
-	ChannelIDs []uuid.UUID  `json:"channel_ids" validate:"required,min=1,max=16,unique"`
-	Throttle   *ThrottleDTO `json:"throttle,omitempty"`
+	ChannelIDs []uuid.UUID `json:"channel_ids" validate:"required,min=1,max=16,unique"`
+	// GroupBy is the labels this policy collapses its deliveries by, computed at
+	// delivery from the alert's own label set (git-bug 7570090). Empty means no
+	// policy-level collapse, which is the default and today's behaviour.
+	//
+	// ⛔ THE TAG BOUNDS CARDINALITY AND UNIQUENESS ONLY. The per-element label-name
+	// grammar lives in `domain.Policy.validateGroupBy`, because 00063's CHECK
+	// cannot express "every element matches" without a subquery — its header
+	// records the whole argument.
+	GroupBy  []string     `json:"group_by,omitempty" validate:"omitempty,max=8,unique"`
+	Throttle *ThrottleDTO `json:"throttle,omitempty"`
 
 	// UnackedReminderAfterSeconds is the ONE unacked reminder stage, in seconds.
 	// See PolicyDTO: scalar, one stage, forever.
@@ -332,6 +342,9 @@ type UpdatePolicyRequest struct {
 	Matchers   *[]MatcherDTO `json:"matchers,omitempty"    validate:"omitempty,max=32,dive"`
 	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=18,unique"`
 	ChannelIDs *[]uuid.UUID  `json:"channel_ids,omitempty" validate:"omitempty,min=1,max=16,unique"`
+	// GroupBy replaces the whole list when present. An empty array CLEARS the
+	// collapse, which is a real instruction and different from omitting the field.
+	GroupBy *[]string `json:"group_by,omitempty" validate:"omitempty,max=8,unique"`
 
 	// Throttle and UnackedReminderAfterSeconds are nullable in the contract: an
 	// explicit `null` CLEARS the damper, which is a different request from
@@ -352,7 +365,7 @@ type UpdatePolicyRequest struct {
 // IsEmpty reports whether the request asks for nothing.
 func (r UpdatePolicyRequest) IsEmpty() bool {
 	return r.Name == nil && r.Priority == nil && r.Enabled == nil &&
-		r.Matchers == nil && r.Reasons == nil && r.ChannelIDs == nil &&
+		r.Matchers == nil && r.Reasons == nil && r.ChannelIDs == nil && r.GroupBy == nil &&
 		!r.Throttle.Set && !r.UnackedReminderAfterSeconds.Set &&
 		!r.DigestWindowSeconds.Set && !r.DigestFloor.Set
 }

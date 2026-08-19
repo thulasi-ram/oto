@@ -252,6 +252,10 @@ export function policy(patch: Partial<Policy> = {}): Policy {
     matchers: [{ name: "severity", op: "=", value: "critical" }],
     reasons: ["fired", "all_resolved"],
     channel_ids: ["4f0a6c7d-5e8b-4f0a-1c2d-3e4f50617283"],
+    // Empty is the shipped default and means no policy-level collapse. It is
+    // REQUIRED on the wire rather than optional, so "no collapse" has exactly one
+    // spelling and a client never branches on a missing key (git-bug 7570090).
+    group_by: [],
     created_at: T0,
     updated_at: T0,
     ...patch,

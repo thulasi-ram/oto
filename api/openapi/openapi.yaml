@@ -9145,7 +9145,7 @@ components:
 
     PolicyDTO:
       type: object
-      required: [id, name, priority, enabled, matchers, reasons, channel_ids, created_at, updated_at]
+      required: [id, name, priority, enabled, matchers, reasons, channel_ids, group_by, created_at, updated_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -9187,6 +9187,18 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/Uuid'
+        group_by:
+          description: >-
+            Labels this policy collapses its deliveries by, computed at delivery from
+            the alert's own label set. An empty array is the default and means no
+            policy-level collapse. Each entry must be a Prometheus label name — a
+            letter or underscore, then letters, digits or underscores — which the
+            server enforces on write.
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items:
+            type: string
         throttle:
           oneOf:
             - $ref: '#/components/schemas/ThrottleDTO'
@@ -11390,6 +11402,18 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/Uuid'
+        group_by:
+          description: >-
+            Labels this policy collapses its deliveries by, computed at delivery from
+            the alert's own label set. An empty array is the default and means no
+            policy-level collapse. Each entry must be a Prometheus label name — a
+            letter or underscore, then letters, digits or underscores — which the
+            server enforces on write.
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items:
+            type: string
         throttle:
           $ref: '#/components/schemas/ThrottleDTO'
         unacked_reminder_after_seconds:
@@ -11455,6 +11479,18 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/Uuid'
+        group_by:
+          description: >-
+            Labels this policy collapses its deliveries by, computed at delivery from
+            the alert's own label set. An empty array is the default and means no
+            policy-level collapse. Each entry must be a Prometheus label name — a
+            letter or underscore, then letters, digits or underscores — which the
+            server enforces on write.
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items:
+            type: string
         throttle:
           oneOf:
             - $ref: '#/components/schemas/ThrottleDTO'

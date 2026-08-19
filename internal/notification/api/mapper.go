@@ -37,8 +37,12 @@ func policyDTO(p domain.Policy) PolicyDTO {
 		Matchers:   matchers,
 		Reasons:    reasons,
 		ChannelIDs: channels,
-		CreatedAt:  p.CreatedAt.UTC(),
-		UpdatedAt:  p.UpdatedAt.UTC(),
+		// Normalised to an empty slice for the same reason `channels` is: a JSON
+		// `null` for a list the schema declares as an array makes a client branch on
+		// a case the server never means.
+		GroupBy:   groupByOut(p.GroupBy),
+		CreatedAt: p.CreatedAt.UTC(),
+		UpdatedAt: p.UpdatedAt.UTC(),
 	}
 	if p.Throttle.Enabled() {
 		out.Throttle = &ThrottleDTO{
@@ -222,6 +226,7 @@ func (r CreatePolicyRequest) toDraft() (domain.PolicyDraft, error) {
 		Matchers:   matchers,
 		Reasons:    reasons,
 		ChannelIDs: r.ChannelIDs,
+		GroupBy:    r.GroupBy,
 	}
 	if r.Priority != nil {
 		v := int(*r.Priority)
@@ -252,6 +257,7 @@ func (r UpdatePolicyRequest) toPatch() (domain.PolicyPatch, error) {
 		Name:       r.Name,
 		Enabled:    r.Enabled,
 		ChannelIDs: r.ChannelIDs,
+		GroupBy:    r.GroupBy,
 	}
 	if r.Priority != nil {
 		v := int(*r.Priority)
@@ -396,4 +402,16 @@ func pluralise(n int) string {
 		return "1 field failed validation."
 	}
 	return itoa(n) + " fields failed validation."
+}
+
+// groupByOut renders a collapse list for the wire, never as `null`.
+//
+// The schema declares `group_by` as an array, so a nil slice would marshal to
+// JSON `null` and make every client branch on a case the server does not mean:
+// "no collapse" is the EMPTY list, and it is the default.
+func groupByOut(gb []string) []string {
+	if gb == nil {
+		return []string{}
+	}
+	return gb
 }

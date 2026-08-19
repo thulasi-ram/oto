@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 62 {
-		t.Fatalf("latest migration is %d, want 62 — this test pins the number so that a "+
+	if latest != 63 {
+		t.Fatalf("latest migration is %d, want 63 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1444,6 +1444,31 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"%s — the ceiling IS the enum size, and 00060 moved it back to 18 when it deleted "+
 			"`storm`; a ceiling of 19 over an eighteen-value vocabulary is a number no row "+
 			"could ever test", def)
+	}
+
+	// 00063 moves the grouping decision onto the policy (git-bug 7570090 stage 2).
+	// The column is NOT NULL with a `{}` default, and that pair is the assertion:
+	// a default only fires when a column is OMITTED from an INSERT, never when it
+	// is supplied as NULL, so a write path that supplies every column has to spell
+	// "no collapse" itself.
+	if nullable := columnNullability("notification_policies", "group_by"); nullable != "NO" {
+		t.Fatalf("notification_policies.group_by is is_nullable=%q at the top of the "+
+			"stack, want NO — a nullable collapse list gives 'no collapse' two "+
+			"spellings, NULL and {}, and nothing downstream could tell them apart",
+			nullable)
+	}
+	if def := constraintDef("policies_group_by_ck", "notification_policies"); !strings.Contains(def, "8") {
+		t.Fatalf("policies_group_by_ck does not bound the collapse list at the top of "+
+			"the stack: %s — without a bound a policy can name so many labels that "+
+			"every alert lands in a conversation of its own", def)
+	}
+
+	down(63)
+
+	if def := constraintDef("policies_group_by_ck", "notification_policies"); def != "" {
+		t.Fatalf("policies_group_by_ck survived 00063's Down: %s — the constraint "+
+			"names a column the Down drops, so leaving it would make the rollback "+
+			"depend on drop order rather than on the Down being right", def)
 	}
 
 	// 00062 records the flap retirement on the columns themselves. The owner ruled the

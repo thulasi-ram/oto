@@ -35,6 +35,7 @@ type policyRow struct {
 	matchers          []byte
 	reasons           []string
 	channelIDs        []uuid.UUID
+	groupBy           []string
 	throttle          []byte
 	reminderAfterSecs *int
 	digestWindowSecs  *int
@@ -56,7 +57,7 @@ type policyRow struct {
 func (r *policyRow) scanInto() []any {
 	return []any{
 		&r.id, &r.orgID, &r.name, &r.priority, &r.enabled,
-		&r.matchers, &r.reasons, &r.channelIDs, &r.throttle,
+		&r.matchers, &r.reasons, &r.channelIDs, &r.groupBy, &r.throttle,
 		&r.reminderAfterSecs, &r.digestWindowSecs, &r.digestFloor,
 		&r.createdAt, &r.updatedAt, &r.deletedAt,
 	}
@@ -70,6 +71,7 @@ func (r policyRow) toDomain() (domain.Policy, error) {
 		Priority:   r.priority,
 		Enabled:    r.enabled,
 		ChannelIDs: r.channelIDs,
+		GroupBy:    r.groupBy,
 		CreatedAt:  r.createdAt,
 		UpdatedAt:  r.updatedAt,
 		DeletedAt:  r.deletedAt,
@@ -138,7 +140,7 @@ func (r *PolicyRepository) db(ctx context.Context) db.Querier { return db.FromCo
 
 const policyColumns = `
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
-  throttle, unacked_reminder_after_s, digest_window_s, digest_floor,
+  group_by, throttle, unacked_reminder_after_s, digest_window_s, digest_floor,
   created_at, updated_at, deleted_at`
 
 const listLivePoliciesSQL = `
@@ -305,4 +307,19 @@ func (r *PolicyRepository) ListWithDigest(
 		return nil, mapErr(err, "policy_not_found", "read digest policies")
 	}
 	return out, nil
+}
+
+// groupByOrEmpty normalises a nil collapse list to an empty slice.
+//
+// ⛔ A NIL SLICE REACHES POSTGRES AS NULL, AND THE COLUMN IS `NOT NULL DEFAULT
+// '{}'`. A column default only applies when the column is OMITTED from the
+// INSERT, never when it is supplied as NULL — so a policy created with no
+// `group_by` would fail the NOT NULL rather than take the default. The write path
+// supplies every column, so the default can never fire and this is where "no
+// collapse" is spelled.
+func groupByOrEmpty(gb []string) []string {
+	if gb == nil {
+		return []string{}
+	}
+	return gb
 }

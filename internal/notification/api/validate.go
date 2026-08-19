@@ -23,11 +23,14 @@ func validateDraft(scope db.TenantScope, d domain.PolicyDraft) error {
 // request.
 func materialise(scope db.TenantScope, d domain.PolicyDraft) domain.Policy {
 	p := domain.Policy{
-		OrgID:      scope.OrgID(),
-		Name:       d.Name,
-		Priority:   domain.DefaultPolicyPriority,
-		Enabled:    true,
-		Matchers:   d.Matchers,
+		OrgID:    scope.OrgID(),
+		Name:     d.Name,
+		Priority: domain.DefaultPolicyPriority,
+		Enabled:  true,
+		Matchers: d.Matchers,
+		// Carried so `validateDraft` proves the collapse list before the write,
+		// which is where 00063 deliberately left the per-element grammar.
+		GroupBy:    d.GroupBy,
 		Reasons:    d.Reasons,
 		ChannelIDs: d.ChannelIDs,
 	}
@@ -81,6 +84,9 @@ func validateMerged(existing domain.Policy, p domain.PolicyPatch) error {
 	}
 	if p.Matchers != nil {
 		merged.Matchers = *p.Matchers
+	}
+	if p.GroupBy != nil {
+		merged.GroupBy = *p.GroupBy
 	}
 	if p.Reasons != nil {
 		merged.Reasons = *p.Reasons
