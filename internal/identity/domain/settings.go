@@ -173,11 +173,22 @@ var settingBounds = map[SettingKey]Bound{
 	KeyGroupCloseDelay: {Min: 60, Max: 86400,
 		Why: "seconds, 60..86400: keep at or above group_interval, or a generation closes between two batches of the same incident, and at or above refire_grace, or a re-fire inside the grace finds a closed generation and gets a new root message anyway"},
 
-	// Below 3, one ordinary rolling deploy looks like flapping and a healthy
-	// alert is labelled noisy in the UI. Above 100 the threshold is unreachable
-	// for any real rule and the damper is dead code that looks configured.
+	// ⛔ THE THREE FLAP KEYS ARE PERMANENTLY INERT, AND THE DECISION IS RECORDED
+	// ONCE — ADR 0042 Amendment 3, restated in SPEC §B.3 beside the `refire_grace`
+	// ruling it follows. They STAY under their own names with these bounds, on the
+	// standing rule that deleting a settings key is a contract change of its own.
+	//
+	// Do not re-argue it here. The state that amendment ends is four files each
+	// observing that the keys decide nothing and none of them being the decision;
+	// a fifth observation is the thing it was written to stop. What differs from
+	// `refire_grace` — that one still PINS two numbers and these pin nothing — is
+	// recorded there too.
+	//
+	// The bounds below are still ENFORCED, so they still have to be right: a write
+	// outside them is refused whatever the mechanism does. Their arithmetic is the
+	// retired detector's, kept because it is what put each bound where it is.
 	KeyFlapThreshold: {Min: 3, Max: 100,
-		Why: "transitions, 3..100: below 3 a single deploy is mislabelled as flapping; above 100 the damper can never engage"},
+		Why: "transitions, 3..100. ⚠️ Retired: no value changes what is delivered (ADR 0042 Amendment 3). The bound is the detector's own arithmetic — below 3 a single deploy would have been mislabelled as flapping, above 100 the threshold was unreachable for any real rule"},
 	// ⚠️ 300 IS KEPT DELIBERATELY, THOUGH IT IS INERT AT THE COMMONEST
 	// `group_interval`. One observable fire→resolve→fire cycle costs
 	// `group_interval + max(group_interval, for)` and yields two counted
@@ -189,9 +200,9 @@ var settingBounds = map[SettingKey]Bound{
 	// belongs in the settings screen, which knows that cluster's own numbers; this
 	// table only knows what is universally impossible.
 	KeyFlapWindow: {Min: 300, Max: 86400,
-		Why: "seconds, 300..86400: a window shorter than one group_interval cannot contain two transitions oto is able to observe. Whether it is long ENOUGH depends on your group_interval and your rules' for:, which this bound cannot see — the settings screen does that arithmetic against your own Alertmanager"},
+		Why: "seconds, 300..86400. ⚠️ Retired: no value changes what is delivered (ADR 0042 Amendment 3). The bound is the detector's own arithmetic — a window shorter than one group_interval could not contain two transitions oto was able to observe"},
 	KeyFlapDigestInterval: {Min: 60, Max: 86400,
-		Why: "seconds, 60..86400: a digest more often than once a minute is not a digest"},
+		Why: "seconds, 60..86400. ⚠️ Retired: no value changes what is delivered (ADR 0042 Amendment 3). There is no flap digest to pace — a digest more often than once a minute would not have been a digest"},
 
 	// ⛔⛔ `storm_threshold`, `storm_window_s` AND `storm_cooldown_s` WERE HERE AND
 	// ARE DELETED. They were kept, INERT and bounded, for exactly one reason: this

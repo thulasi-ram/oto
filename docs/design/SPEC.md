@@ -243,6 +243,31 @@ formation** rather than at the lifecycle boundary, so the knob for it would be a
 semantics rather than this one wearing a new label. Operator copy describes `refire_grace` as the
 number `group_close_delay` is tied to, and never as a window in which a case reopens.
 
+⚠️ **The three flap keys — `flap_threshold`, `flap_window_s`, `flap_digest_interval_s` — take the
+same ruling, and ADR 0042 Amendment 3 records it: they STAY, permanently inert, under their own
+names, in `orgs.settings`, with their bounds unchanged.** The flap detector they sized is retired in
+place (§B.6.2, ADR 0041 Amendment 1): nothing recomputes `flap_score` or `is_flapping`, and the
+writer refuses `flapping` as a suppression reason, so no value in these three changes what oto
+delivers. Flap noise is absorbed one layer earlier, at case formation, by the case-retention window
+W.
+
+⛔ **They differ from `refire_grace` in one way that matters, and it is recorded rather than
+glossed: `refire_grace` is inert at its own layer but still PINS two numbers, and these three pin
+nothing at all.** The argument for keeping them is therefore weaker, and rests only on the standing
+rule above — deleting a settings key is a contract change of its own. What tipped it is that the
+operator-facing cost has already been paid down: the settings screen states the retirement at every
+value, at level `inert`, and offers **no** `suggest` on any of the three, so the row now tells an
+operator the truth instead of coaching them through a dead damper (git-bug `235f347`). A key that
+announces its own inertness is a much smaller tax than one that pretends to work.
+
+⭐ **The counter-argument is real and is written down so it can be acted on rather than
+rediscovered.** oto has no installs, so a settings-contract change is cheaper today than it will
+ever be again, and a key that pins nothing and does nothing is the clearest possible candidate for
+deletion. If that trade is taken, the four surfaces move together — `AllSettingKeys`, the settings
+DTOs, `orgs.settings` (with a migration), and `tuningCopy.ts` — and the declarative layer's boot
+refusal must be handled explicitly for a deployment whose values file still names them, so an
+upgrade is not a crash loop. git-bug `27a1860` is where that decision was taken.
+
 #### B.3.1 ⭐ T4 is triggered by ingest as well as the reconciler — and why
 
 A webhook observation is **positive proof of non-suppression.** Alertmanager's `MuteStage` runs

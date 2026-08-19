@@ -386,3 +386,53 @@ amendment nor §6 is a precedent for it.
   `appendEvents` still refuse them at both writers.
 - **`refired` stays.** Nothing has written it since ADR 0040, its retirement was never made
   mechanical, and making it so is that ticket's change rather than this one's.
+
+## Amendment 3 — the three flap settings keys STAY, permanently inert
+
+**Date**: 2026-08-19 · **git-bug**: `27a1860` · **Supersedes nothing; decides what §8 left open one level down.**
+
+Amendment 1 and ADR 0041 Amendment 1 retired the flap detector. They did not say what becomes of
+the three settings keys that sized it — `flap_threshold`, `flap_window_s`, `flap_digest_interval_s`
+— and the tree was left in the state `27a1860` describes precisely: four files each explaining that
+the keys decide nothing, and none of them being the decision.
+
+**The decision: they stay.** Under their own names, in `orgs.settings`, with their bounds unchanged.
+Renaming, re-homing and removal are refused, on the same standing rule ADR 0040 §6 applied to
+`refire_grace`: **deleting or moving a settings key is a contract change of its own.**
+
+### Why this is not simply copied from §6
+
+`refire_grace` earned its keep twice over: it is inert at the case-lifecycle layer but still PINS
+two numbers outside it — its own floor at `2 × DedupTTL`, and `group_close_delay_s` at or above
+itself — each held by a named test. **These three pin nothing.** They are inert all the way down.
+So the argument for keeping them is genuinely weaker than the one for `refire_grace`, and saying so
+here is the point of this amendment: a reader who finds both rulings should not conclude the
+reasoning was identical.
+
+What tips it is that the operator-facing cost has already been paid down. `235f347` replaced three
+`guide` closures that were still computing the retired detector's arithmetic — grading the
+operator's number across three levels and offering a one-click `suggest` — with one verdict that
+names the retirement, at level `inert`, at every value, with no suggestion. The row now tells an
+operator the truth. **A key that announces its own inertness is a much smaller tax than one that
+pretends to work**, and that is the difference between a confusing screen and a lying one.
+
+### The counter-argument, recorded so it can be acted on
+
+oto has **no installs**. A settings-contract change is therefore cheaper today than it will ever be
+again, and a key that pins nothing, does nothing, and can only ever mislead is the clearest
+candidate for deletion this schema has. That argument is not refuted here — it is outweighed, today,
+by the cost of the change against a benefit already largely captured by fixing the copy.
+
+If the trade is taken later, these move **together**, and the list is the whole of it:
+`AllSettingKeys` and the `SettingKey` constants · `settingBounds` · `SettingsPatch`'s three fields
+and `intPtr` · the `Settings` fold · the settings DTOs and their mapper · `orgs.settings` (with a
+migration that strips the keys from stored JSON) · `tuningCopy.ts` and its tests · the Helm values.
+**And the declarative layer's boot refusal must be handled explicitly** for a deployment whose
+values file still names a removed key, or the upgrade is a crash loop rather than a warning.
+
+### What must not happen again
+
+The state this amendment ends is the one worth naming: **four files each explaining that the keys
+decide nothing, and none of them being the decision.** An inert control is tolerable when the tree
+says once, in one place, that it is inert on purpose. It is not tolerable as an observation repeated
+by everyone who trips over it.
