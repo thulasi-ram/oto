@@ -20,7 +20,7 @@
           "block_id": "oto_reply_1e8bc6f4ef",
           "text": {
             "type": "mrkdwn",
-            "text": ":repeat: *Re-fired* — case #1"
+            "text": ":repeat: *Re-fired* — case #1 — <https://oto.example.com/cases/019fe297-d84f-7599-b5b2-1f231749104a|open in oto>"
           }
         }
       ]

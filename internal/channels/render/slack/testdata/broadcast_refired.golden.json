@@ -20,7 +20,7 @@
           "block_id": "oto_reply_fc19a07310",
           "text": {
             "type": "mrkdwn",
-            "text": ":repeat: *Re-fired* after 3m 12s — case #4"
+            "text": ":repeat: *Re-fired* after 3m 12s — case #4 — <http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a|open in oto>"
           }
         }
       ]

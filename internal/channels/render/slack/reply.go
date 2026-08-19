@@ -279,6 +279,49 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 		body = ":information_source: *" + escape(v.Group.Title) + "* — " + statusValue(v, state)
 	}
 
+	// ⛔⛔ THE WAY BACK TO OTO, AND IT IS KEYED ON THE MODE RATHER THAN ON THE
+	// REASON (git-bug 68653ca).
+	//
+	// A broadcasting reply is the one message oto addresses to people who are NOT
+	// following the thread — that is what broadcasting means — and it was the only
+	// message with no affordance at all. A reader saw `:repeat: *Re-fired* — case #1`
+	// in the channel body and had nowhere to click.
+	//
+	// WHY A LINK IN THE BODY AND NOT IN THE TOP-LEVEL `text`, which is the ticket's
+	// first open question. Three reasons, and the third is the one that settles it:
+	//
+	//  1. ADR 0020 Amendment 4 observed in a LIVE workspace that the attachment is
+	//     returned intact by `conversations.history` and its colour bar renders, so
+	//     the block a link sits in does reach a channel reader. What Amendment 4
+	//     left unverified is BUTTONS (rule 5b) — and a mrkdwn link is not a button,
+	//     which is exactly why it is the affordance available here.
+	//  2. Rule 4 binds the top-level `text` to be a self-sufficient SENTENCE, and it
+	//     is also the push notification on a locked phone. A URL is not a sentence
+	//     and a locked phone cannot follow one.
+	//  3. ⭐ The Block Kit Builder capture is `{"blocks": […]}` — the attachment's
+	//     block list, LIFTED OUT of the payload (`test/harness/slack_cards.go:426`).
+	//     The top-level `text` is not in it. So a link in the `text` would leave the
+	//     broadcast capture with no mrkdwn control character, and
+	//     `TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept` could not
+	//     return to its per-card form — which the same ticket asks for and which is
+	//     the stronger check. Placement in the body is what makes the two halves of
+	//     the ticket satisfiable together.
+	//
+	// KEYED ON `ModeBroadcastReply`, NOT ON `refired`, for the same reason
+	// `replyText` adds its facts clause to every reply and not only to the
+	// broadcasting ones: a rule that holds only for the reasons that happen to
+	// broadcast today breaks the first time the broadcast set changes. That is also
+	// the answer to the ticket's second open question — `all_resolved` (the other
+	// member of `BroadcastPolicy.Warrants`, reachable whenever `broadcast_on_resolved`
+	// is on) HAD the identical gap, and one line closes both.
+	//
+	// The two arms that already carry a link — `degraded` and `continued` — are
+	// never broadcast, so this cannot double one up: `Warrants` returns true for
+	// `refired` and `all_resolved` alone.
+	if o.Mode == domain.ModeBroadcastReply && v.Links.Group != "" {
+		body += " — " + link(v.Links.Group, "open in oto")
+	}
+
 	return body, extra, colour
 }
 

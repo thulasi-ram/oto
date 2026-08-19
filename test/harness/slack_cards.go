@@ -150,7 +150,11 @@ func SlackCards() []SlackCard {
 				"went with the reminder (git-bug bd0fb1d) and was the corpus's only " +
 				"broadcast: `reply_broadcast` is the one Slack parameter ADR 0020 " +
 				"Amendment 4 had to CORRECT from a live workspace, so leaving the mode " +
-				"uncaptured would have been the wrong kind of tidy.",
+				"uncaptured would have been the wrong kind of tidy. ⭐ Its body " +
+				"carries the one affordance a stripped in-channel reference can still " +
+				"show — a mrkdwn link back to oto, not a button (git-bug 68653ca). " +
+				"That is why this capture has a `<` in it at all, and it is what lets " +
+				"the escaping guarantee be asserted per card instead of over the corpus.",
 			Mode:    chdomain.ModeBroadcastReply,
 			View:    refiredView(),
 			Options: cardOptions(chdomain.ModeBroadcastReply),

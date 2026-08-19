@@ -154,6 +154,27 @@ func TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept(t *testing.T) {
 					"is no longer readable by the person pasting it")
 			}
 
+			// ⭐ THE ESCAPING GUARANTEE STATED POSITIVELY, PER CARD, so the negative
+			// check above cannot pass by being vacuous: a capture with no `<` in it
+			// proves nothing about whether the escaping is disabled. `<` is the mrkdwn
+			// control character Go's encoder would have rewritten — a link, a
+			// `<!date^…>` token or a `<@U…>` mention.
+			//
+			// ⚠️ THIS IS THE PER-CARD FORM RESTORED. `bd0fb1d` weakened it to a
+			// corpus-wide assertion for one honest reason: it deleted the unacked
+			// reminder, whose body carried both a mention and an "open in oto" link,
+			// and its replacement `broadcast_refired` rendered
+			// `:repeat: *Re-fired* — case #N` with no control character at all. The
+			// choice then was to invent fixture content or drop the guarantee, and
+			// dropping it to corpus scope was the lesser harm. `68653ca` removed the
+			// premise instead: a broadcasting reply now carries a real link because a
+			// channel reader needs one, so every capture has a `<` again on its own
+			// merits and the stronger check costs nothing.
+			if !bytes.Contains(c.Builder, []byte("<")) {
+				t.Error("this builder capture contains no mrkdwn control character, so " +
+					"the unicode-escape check above proves nothing for this card")
+			}
+
 			// The wire capture is the one thing that must equal what the provider
 			// sends, so it keeps its attachment.
 			var wire map[string]json.RawMessage
@@ -168,29 +189,6 @@ func TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept(t *testing.T) {
 		})
 	}
 
-	// The escaping guarantee stated positively, so the per-card check above cannot
-	// pass by being vacuous. `<` is the mrkdwn control character Go's encoder would
-	// have rewritten — a link, a `<!date^…>` token or a `<@U…>` mention.
-	//
-	// ⚠️ IT IS ASSERTED OVER THE CORPUS, NOT PER CARD, AND THAT CHANGED AT git-bug
-	// bd0fb1d. It used to hold for every card because the corpus's broadcast was the
-	// unacked reminder, whose body carried both a mention and an "open in oto" link.
-	// That card is gone and `broadcast_refired` replaces it — and a re-fire reply
-	// renders `:repeat: *Re-fired* — case #N` with NO link, NO mention and no date
-	// token. Demanding one per card would have meant either inventing content for a
-	// fixture or dropping the guarantee; asserting it over the corpus keeps exactly
-	// what the guarantee is for, which is that the escaping check is proven SOMEWHERE
-	// rather than nowhere.
-	var withControl []string
-	for _, c := range captures {
-		if bytes.Contains(c.Builder, []byte("<")) {
-			withControl = append(withControl, c.Card.Name)
-		}
-	}
-	if len(withControl) == 0 {
-		t.Error("no capture in the corpus contains a mrkdwn control character, so the " +
-			"unicode-escape check proves nothing for any card")
-	}
 }
 
 // ⛔ THE COLOUR BAR IS THE ONE THING NO OFFLINE CHECK CAN REACH, so the corpus

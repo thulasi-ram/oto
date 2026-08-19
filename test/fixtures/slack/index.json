@@ -9,9 +9,9 @@
       "name": "broadcast_refired",
       "paste_into_builder": "broadcast_refired.blockkit.json",
       "reason": "refired",
-      "rendered_hash": "2c285ae354ed20227dff92bfd74b24c7a8c74d111cbcd0bc24922d229ec97df3",
-      "what": "A reply posted with reply_broadcast=true. Its top-level text must be self-sufficient (ADR 0020 rule 4), because the in-channel reference carries no buttons. ⭐ It replaces `broadcast_unacked_reminder`, which went with the reminder (git-bug bd0fb1d) and was the corpus's only broadcast: `reply_broadcast` is the one Slack parameter ADR 0020 Amendment 4 had to CORRECT from a live workspace, so leaving the mode uncaptured would have been the wrong kind of tidy.",
-      "wire_bytes": 615
+      "rendered_hash": "69b1efb9abe39034dc8ddc6ec983e6e0cc7a1cca665bf0c1f16c3b71a863d752",
+      "what": "A reply posted with reply_broadcast=true. Its top-level text must be self-sufficient (ADR 0020 rule 4), because the in-channel reference carries no buttons. ⭐ It replaces `broadcast_unacked_reminder`, which went with the reminder (git-bug bd0fb1d) and was the corpus's only broadcast: `reply_broadcast` is the one Slack parameter ADR 0020 Amendment 4 had to CORRECT from a live workspace, so leaving the mode uncaptured would have been the wrong kind of tidy. ⭐ Its body carries the one affordance a stripped in-channel reference can still show — a mrkdwn link back to oto, not a button (git-bug 68653ca). That is why this capture has a `<` in it at all, and it is what lets the escaping guarantee be asserted per card instead of over the corpus.",
+      "wire_bytes": 700
     },
     {
       "attachment_color": "#a30200",
