@@ -99,7 +99,6 @@ import {
 import { Panel, PanelHeader, PanelTitle } from "~/components/ui/surfaces";
 import {
   TextField,
-  TextFieldDescription,
   TextFieldErrorMessage,
   TextFieldInput,
   TextFieldLabel,
@@ -114,10 +113,6 @@ import {
   KNOBS,
   RECEIVER_BASIS_COPY,
   KNOB_GROUPS,
-  MENTION_LIST_MAX,
-  MENTION_MODE_OPTIONS,
-  MENTION_TOKEN_HINT,
-  SEVERITY_OPTIONS,
   VERBOSITY_OPTIONS,
   isNumeric,
   readValue,
@@ -230,11 +225,6 @@ function knownCount(am: AmRef): number {
  */
 type Draft = Readonly<Record<string, string>>;
 
-/** A string array served for `unacked_reminder_mention_list`, read defensively. */
-function asStringList(raw: unknown): readonly string[] {
-  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
-}
-
 /* -------------------------------------------------------------------------- */
 /* The controller handed to each row                                          */
 /* -------------------------------------------------------------------------- */
@@ -343,7 +333,6 @@ export const TuningSection: Component = () => {
     const raw = served(key);
     const knob = KNOBS[key];
     if (knob.kind === "boolean") return raw === true ? "true" : "false";
-    if (knob.kind === "mentionList") return JSON.stringify(asStringList(raw));
     return raw === undefined || raw === null ? "" : String(raw);
   };
 
@@ -370,13 +359,6 @@ export const TuningSection: Component = () => {
       return Number.parseInt(trimmed, 10);
     }
     if (knob.kind === "boolean") return raw === "true";
-    if (knob.kind === "mentionList") {
-      try {
-        return asStringList(JSON.parse(raw));
-      } catch {
-        return undefined;
-      }
-    }
     return raw;
   };
 
@@ -437,20 +419,6 @@ export const TuningSection: Component = () => {
       }
       if (n < b.min || n > b.max) {
         return `oto accepts ${b.min}–${b.max} for this. ${b.why}`;
-      }
-      return undefined;
-    }
-
-    if (knob.kind === "mentionList") {
-      const parsed = parseFor(key, raw);
-      if (parsed === undefined) return "That mention list could not be read.";
-      const list = parsed as readonly string[];
-      // The cap is the server's and it says so in its own 422; stating it here
-      // saves a round trip. The *shape* of an entry is deliberately not
-      // re-implemented — that rule lives on the server and its message lands on
-      // this field, so a copy here could only drift out of agreement with it.
-      if (list.length > MENTION_LIST_MAX) {
-        return `At most ${MENTION_LIST_MAX} entries — beyond that a reminder is a page, and oto pages nobody.`;
       }
       return undefined;
     }
@@ -1544,27 +1512,6 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
               />
             </Match>
 
-            <Match when={props.knob.kind === "mentionMode" || props.knob.kind === "severity"}>
-              <KnobSelect
-                id={id()}
-                options={props.knob.kind === "severity" ? SEVERITY_OPTIONS : MENTION_MODE_OPTIONS}
-                value={ctl().text(key())}
-                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
-                error={error()}
-                onChange={(next) => ctl().setText(key(), next)}
-              />
-            </Match>
-
-            <Match when={props.knob.kind === "mentionList"}>
-              <MentionListField
-                id={id()}
-                value={ctl().text(key())}
-                disabled={ctl().resetQueued(key()) || ctl().managed(key())}
-                error={error()}
-                onChange={(next) => ctl().setText(key(), next)}
-              />
-            </Match>
-
             <Match when={numeric()}>
               <TextField
                 class={FIELD}
@@ -1748,103 +1695,16 @@ const KnobRow: Component<{ readonly knob: KnobCopy; readonly ctl: Ctl }> = (prop
 /* Mention control                                                            */
 /* -------------------------------------------------------------------------- */
 
-/**
- * The explicit mention audience, capped at ten.
- *
- * Entries are added and removed rather than typed as a blob, so the count is
- * always visible against its cap and no operator discovers the eleventh entry
- * from a 422. The accepted *shape* of an entry is shown as a hint and validated
- * by the server: re-implementing that pattern here would be a second copy of a
- * rule that only one side enforces.
- */
-const MentionListField: Component<{
-  readonly id: string;
-  readonly value: string;
-  readonly disabled: boolean;
-  readonly error: string | undefined;
-  readonly onChange: (next: string) => void;
-}> = (props) => {
-  const list = (): readonly string[] => {
-    try {
-      return asStringList(JSON.parse(props.value));
-    } catch {
-      return [];
-    }
-  };
+/* ⛔ `MentionListField` WAS HERE AND IS DELETED (git-bug bd0fb1d). It was the
+   explicit mention audience control, capped at ten, with entries added and
+   removed one at a time so the count stayed visible against its cap and nobody
+   discovered the eleventh entry from a 422. The owner withdrew the unacked
+   reminder and ruled the mention goes with it, so there is no setting for this
+   control to edit.
 
-  const emit = (next: readonly string[]): void => props.onChange(JSON.stringify(next));
-
-  const [entry, setEntry] = createSignal("");
-  const full = (): boolean => list().length >= MENTION_LIST_MAX;
-
-  const add = (): void => {
-    const v = entry().trim();
-    if (v === "" || list().includes(v) || full()) return;
-    emit([...list(), v]);
-    setEntry("");
-  };
-
-  return (
-    <div class={FIELD}>
-      <Show when={list().length > 0}>
-        <ul class="flex flex-wrap gap-2xs">
-          <For each={list()}>
-            {(item) => (
-              <li class="inline-flex items-center gap-1 rounded-chip border border-line bg-raised px-1 py-px font-mono text-meta text-ink-muted">
-                {item}
-                <button
-                  type="button"
-                  class="rounded-chip px-0.5 text-ink-subtle hover:text-ink"
-                  aria-label={`Remove ${item}`}
-                  disabled={props.disabled}
-                  onClick={() => emit(list().filter((x) => x !== item))}
-                >
-                  ×
-                </button>
-              </li>
-            )}
-          </For>
-        </ul>
-      </Show>
-
-      <TextField
-        class={FIELD}
-        value={entry()}
-        disabled={props.disabled || full()}
-        validationState={props.error !== undefined ? "invalid" : "valid"}
-        onChange={setEntry}
-      >
-        <TextFieldLabel>Add an entry</TextFieldLabel>
-        <div class="flex items-center gap-sm">
-          <TextFieldInput
-            id={props.id}
-            class="min-w-0 font-mono"
-            placeholder="<!subteam^S01AB2CD3EF>"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                add();
-              }
-            }}
-          />
-          {/* Default size, not `sm`: this button stands beside the input on the
-              control line, and `sm`'s 28px against a 32px field left it centred
-              2px short at each end. */}
-          <Button disabled={props.disabled || full()} onClick={add}>
-            Add
-          </Button>
-        </div>
-        <TextFieldDescription class={HELP}>{MENTION_TOKEN_HINT}</TextFieldDescription>
-        <TextFieldErrorMessage role="alert">{props.error}</TextFieldErrorMessage>
-      </TextField>
-
-      <p class={HELP} aria-live="polite">
-        {list().length} of {MENTION_LIST_MAX} used
-        {full() ? " — the cap the server enforces" : ""}.
-      </p>
-    </div>
-  );
-};
+   ⭐ THE PATTERN IS WORTH COPYING IF A CAPPED LIST EVER RETURNS: the accepted
+   SHAPE of an entry was shown as a hint and validated only by the server, so
+   there was never a second copy of a rule one side enforces. */
 
 /* -------------------------------------------------------------------------- */
 /* Save bar, leave guard, skeleton                                            */

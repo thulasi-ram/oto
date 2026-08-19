@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 66 {
-		t.Fatalf("latest migration is %d, want 66 — this test pins the number so that a "+
+	if latest != 68 {
+		t.Fatalf("latest migration is %d, want 68 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1444,6 +1444,66 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"%s — the ceiling IS the enum size, and 00060 moved it back to 18 when it deleted "+
 			"`storm`; a ceiling of 19 over an eighteen-value vocabulary is a number no row "+
 			"could ever test", def)
+	}
+
+	// 00068 removes the settings that configured the reminder: the per-policy delay
+	// column with its bound, and the five `orgs.settings` keys. The COLUMN is the
+	// assertion, because `orgs.settings` is one JSONB document and a key's absence
+	// there is not introspectable the way a column's is.
+	if nullable := columnNullability("notification_policies", "unacked_reminder_after_s"); nullable != "" {
+		t.Fatalf("notification_policies.unacked_reminder_after_s is still present at the "+
+			"top of the stack (is_nullable=%q) — 00068 drops it, and a surviving column "+
+			"is a delay an operator could still set while nothing reads it", nullable)
+	}
+	if def := constraintDef("policies_reminder_ck", "notification_policies"); def != "" {
+		t.Fatalf("policies_reminder_ck survived 00068 at the top of the stack: %s — the "+
+			"constraint names the dropped column, so leaving it would make the schema "+
+			"depend on DROP COLUMN's cascade rather than on this migration being right",
+			def)
+	}
+
+	down(68)
+
+	if nullable := columnNullability("notification_policies", "unacked_reminder_after_s"); nullable != "YES" {
+		t.Fatalf("notification_policies.unacked_reminder_after_s is is_nullable=%q after "+
+			"00068's Down, want YES — NULL was 'inherit the org default', and the release "+
+			"this rolls back to needs that spelling", nullable)
+	}
+	if def := constraintDef("policies_reminder_ck", "notification_policies"); !strings.Contains(def, "60") {
+		t.Fatalf("policies_reminder_ck did not come back bounded after 00068's Down: %s — "+
+			"restoring the column without its 60..86400 range rolls back to a schema the "+
+			"release never shipped", def)
+	}
+
+	// 00067 removes `unacked_reminder` from the Reason vocabulary outright (git-bug
+	// bd0fb1d). BOTH checks move, and that pair is the assertion: the owner ruled
+	// DELETE rather than retire because oto is unreleased and the database is being
+	// reset, so there is no history to keep decodable and no reader to protect.
+	if def := constraintDef("notifications_reason_ck", "notifications"); strings.Contains(def, "unacked_reminder") {
+		t.Fatalf("notifications_reason_ck still admits 'unacked_reminder' at the top of "+
+			"the stack: %s — the value is DELETED, not retired. A vocabulary entry no "+
+			"writer can produce is one the next reader has to rule out", def)
+	} else if !strings.Contains(def, "digest") {
+		t.Fatalf("notifications_reason_ck no longer admits 'digest': %s — 00067 removes "+
+			"ONE value, so a reading without `digest` means it rewrote the list rather "+
+			"than editing it", def)
+	}
+	// The ceiling follows the enum, as it has in both directions since 00046.
+	if def := policyReasonsCheck(); !strings.Contains(def, "17") {
+		t.Fatalf("policies_reasons_ck does not bound reasons at 17 at the top of the "+
+			"stack: %s — the enum has seventeen values now, and eighteen is a "+
+			"cardinality no row can reach", def)
+	}
+
+	down(67)
+
+	if def := constraintDef("notifications_reason_ck", "notifications"); !strings.Contains(def, "unacked_reminder") {
+		t.Fatalf("notifications_reason_ck did not re-admit 'unacked_reminder' after "+
+			"00067's Down: %s — the release this rolls back to writes that value", def)
+	}
+	if def := policyReasonsCheck(); !strings.Contains(def, "18") {
+		t.Fatalf("policies_reasons_ck did not go back to 18 after 00067's Down: %s — the "+
+			"release this rolls back to still lets a policy name the reminder", def)
 	}
 
 	// 00066 removes `frozen` from the thread state vocabulary (git-bug e5c060b).

@@ -34,15 +34,11 @@ func toOrgSettingsDTO(s domain.Settings) OrgSettingsDTO {
 		// §D.1 stores a month count and oto reads a month as 30 days, uniformly.
 		EventRetentionMonth: int(s.EventRetention / (30 * 24 * time.Hour)),
 
-		UnackedReminderAfterS: int(s.UnackedReminderAfter / time.Second),
-		DefaultVerbosity:      s.DefaultVerbosity,
-		BroadcastOnResolved:   s.BroadcastOnResolved,
+		DefaultVerbosity:    s.DefaultVerbosity,
+		BroadcastOnResolved: s.BroadcastOnResolved,
 
-		UnackedReminderMention: s.UnackedReminderMention,
 		// Never null on the wire: an empty audience is `[]`, not `null`, so a
 		// client can render "nobody" without a special case.
-		UnackedReminderMentionList:        nonNilStrings(s.UnackedReminderMentionList),
-		UnackedReminderMentionMinSeverity: s.UnackedReminderMentionMinSeverity,
 	}
 }
 
@@ -168,12 +164,4 @@ func utcPtr(t *time.Time) *time.Time {
 	}
 	v := t.UTC()
 	return &v
-}
-
-// nonNilStrings renders an absent list as an empty JSON array rather than null.
-func nonNilStrings(in []string) []string {
-	if in == nil {
-		return []string{}
-	}
-	return in
 }

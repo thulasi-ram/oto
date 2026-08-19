@@ -143,13 +143,17 @@ func SlackCards() []SlackCard {
 			Options: cardOptions(chdomain.ModeUpdateRoot),
 		},
 		{
-			Name: "broadcast_unacked_reminder",
+			Name: "broadcast_refired",
 			What: "A reply posted with reply_broadcast=true. Its top-level text must be " +
-				"self-sufficient (ADR 0020 rule 4) and it carries the mention audience.",
-			Mode: chdomain.ModeBroadcastReply,
-			View: unackedReminderView(),
-			Options: withMentions(cardOptions(chdomain.ModeBroadcastReply),
-				"<@U0123456789>", "<!subteam^S01SREONCALL>"),
+				"self-sufficient (ADR 0020 rule 4), because the in-channel reference " +
+				"carries no buttons. ⭐ It replaces `broadcast_unacked_reminder`, which " +
+				"went with the reminder (git-bug bd0fb1d) and was the corpus's only " +
+				"broadcast: `reply_broadcast` is the one Slack parameter ADR 0020 " +
+				"Amendment 4 had to CORRECT from a live workspace, so leaving the mode " +
+				"uncaptured would have been the wrong kind of tidy.",
+			Mode:    chdomain.ModeBroadcastReply,
+			View:    refiredView(),
+			Options: cardOptions(chdomain.ModeBroadcastReply),
 		},
 		{
 			Name: "root_resolved",
@@ -175,9 +179,14 @@ func SlackCards() []SlackCard {
 // per-alert replies. Storm damping is removed, so there is nothing to announce
 // and no `storm` reason to render: the card, `stormNoticeView` and the two
 // checked-in captures `test/fixtures/slack/storm_notice.{message,blockkit}.json`
-// went with it. `broadcast_unacked_reminder` is now the corpus's ONLY broadcast,
-// which is the truth §H.6 states — the unacked reminder is the one transition
-// that always leaves the thread.
+// went with it. ⛔ AND `broadcast_unacked_reminder` WENT TOO (git-bug bd0fb1d): the
+// owner withdrew the reminder and, oto being unreleased with the database due for a
+// reset, ruled the value DELETED rather than retired — so no row can spell it and
+// there is nothing to render. `refired` still broadcasts (`domain/broadcast.go`), so
+// `broadcast_refired` REPLACES IT as the corpus's broadcast capture, and the swap
+// was not optional: `reply_broadcast` is the one Slack parameter whose behaviour ADR
+// 0020 Amendment 4 had to correct from a live workspace, so deleting the reminder
+// must not leave the mode uncaptured.
 
 func cardOptions(mode chdomain.Mode) chdomain.RenderOptions {
 	return chdomain.RenderOptions{
@@ -187,11 +196,6 @@ func cardOptions(mode chdomain.Mode) chdomain.RenderOptions {
 		MaxInstances:   10,
 		ShowFieldEmoji: true,
 	}
-}
-
-func withMentions(o chdomain.RenderOptions, mentions ...string) chdomain.RenderOptions {
-	o.Mentions = mentions
-	return o
 }
 
 // baseView is the incident every capture is a moment of: two instances of one
@@ -318,14 +322,15 @@ func ackedView() *chdomain.NotificationView {
 	return v
 }
 
-// unackedReminderView is the one message oto sends whose entire purpose is to
-// reach somebody who has NOT engaged. It is the only routine broadcast.
-func unackedReminderView() *chdomain.NotificationView {
+// refiredView is the one routine broadcast left (`domain/broadcast.go`): a signal
+// that resolved and came back. It reaches the channel rather than only the thread
+// because a re-fire is the case a quiet thread hides worst.
+func refiredView() *chdomain.NotificationView {
 	v := baseView()
-	v.Reason = "unacked_reminder"
-	v.Group.LastActivityAt = cardUpstreamStart.Add(15 * time.Minute)
+	v.Reason = "refired"
+	v.Group.LastActivityAt = cardUpstreamStart.Add(20 * time.Minute)
 	v.Notifications = 2
-	v.RenderedAt = cardUpstreamStart.Add(15 * time.Minute)
+	v.RenderedAt = cardUpstreamStart.Add(20 * time.Minute)
 	return v
 }
 

@@ -333,8 +333,6 @@ func reasonPhrase(reason string) string {
 		return "the rule changed"
 	case reasonComment:
 		return "comment added"
-	case reasonUnackedReminder:
-		return "still unacknowledged"
 	default:
 		return ""
 	}

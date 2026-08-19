@@ -46,10 +46,6 @@ func policyDTO(p domain.Policy) PolicyDTO {
 			WindowSeconds: int32(p.Throttle.Window / time.Second), //nolint:gosec // bounded by the DTO
 		}
 	}
-	if p.UnackedReminderAfter > 0 {
-		v := int32(p.UnackedReminderAfter / time.Second) //nolint:gosec // bounded by policies_reminder_ck
-		out.UnackedReminderAfterSeconds = &v
-	}
 	// The zero value means "no digest" in the domain and `null` on the wire; the
 	// seconds ⇄ Duration conversion happens here and nowhere else, as it does for
 	// the reminder above.
@@ -231,10 +227,6 @@ func (r CreatePolicyRequest) toDraft() (domain.PolicyDraft, error) {
 		t := toThrottle(*r.Throttle)
 		d.Throttle = &t
 	}
-	if r.UnackedReminderAfterSeconds != nil {
-		v := time.Duration(*r.UnackedReminderAfterSeconds) * time.Second
-		d.UnackedReminderAfter = &v
-	}
 	if r.DigestWindowSeconds != nil {
 		v := time.Duration(*r.DigestWindowSeconds) * time.Second
 		d.DigestWindow = &v
@@ -278,14 +270,6 @@ func (r UpdatePolicyRequest) toPatch() (domain.PolicyPatch, error) {
 			t = &v
 		}
 		p.Throttle = &t
-	}
-	if r.UnackedReminderAfterSeconds.Set {
-		var d *time.Duration
-		if r.UnackedReminderAfterSeconds.Value != nil {
-			v := time.Duration(*r.UnackedReminderAfterSeconds.Value) * time.Second
-			d = &v
-		}
-		p.UnackedReminderAfter = &d
 	}
 	if r.DigestWindowSeconds.Set {
 		var d *time.Duration

@@ -49,16 +49,6 @@ type PolicyDTO struct {
 	ChannelIDs []uuid.UUID  `json:"channel_ids"`
 	Throttle   *ThrottleDTO `json:"throttle"`
 
-	// UnackedReminderAfterSeconds is oto's ONE reminder stage, in seconds. Wire,
-	// column (`unacked_reminder_after_s`, migration 00019), domain field and
-	// contract all spell it the same way; the older spelling named a LADDER that
-	// ends at a PERSON, and this is a SCALAR that ends at a CHANNEL
-	// (CONTEXT.md §3, SPEC §P-20).
-	//
-	// ⛔ IT IS AND STAYS A SCALAR. ONE STAGE, FOREVER (SPEC §G.9.1). The moment it
-	// is an array, oto is an on-call product and FR-1 has been crossed.
-	UnackedReminderAfterSeconds *int32 `json:"unacked_reminder_after_seconds"`
-
 	// DigestWindowSeconds and DigestFloor are `digest_window_s` and
 	// `digest_floor` (migration 00058): summarise what matched me over a window,
 	// and stay silent unless at least Floor Cases OPENED inside it. `null` on
@@ -298,18 +288,15 @@ type CreatePolicyRequest struct {
 	// closed vocabulary makes an N+1'th element unreachable, and since 00046 the
 	// column agrees — it refuses a duplicate too, so 32 stopped being a number any
 	// row could reach. It moved from 18 to 19 when migration 00058 added `digest`
-	// and back to 18 when migration 00060 deleted `storm`, alongside
-	// `domain.MaxPolicyReasons` and `policies_reasons_ck`; the contract's
+	// and back to 18 when migration 00060 deleted `storm`; the contract's
 	// `maxItems` is held to the same number by
 	// `test/contract/dto_schema_test.go`'s enum-ceiling gate.
-	Reasons []string `json:"reasons" validate:"required,min=1,max=18,unique"`
+	//
+	// It moved to 17 when 00067 deleted `unacked_reminder` (git-bug bd0fb1d).
+	Reasons []string `json:"reasons" validate:"required,min=1,max=17,unique"`
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID  `json:"channel_ids" validate:"required,min=1,max=16,unique"`
 	Throttle   *ThrottleDTO `json:"throttle,omitempty"`
-
-	// UnackedReminderAfterSeconds is the ONE unacked reminder stage, in seconds.
-	// See PolicyDTO: scalar, one stage, forever.
-	UnackedReminderAfterSeconds *int32 `json:"unacked_reminder_after_seconds,omitempty" validate:"omitempty,min=60,max=86400"`
 
 	// DigestWindowSeconds and DigestFloor ask for the periodic summary. Both are
 	// OPTIONAL, so every payload written before migration 00058 stays valid — the
@@ -330,15 +317,13 @@ type UpdatePolicyRequest struct {
 	Enabled  *bool   `json:"enabled,omitempty"`
 
 	Matchers   *[]MatcherDTO `json:"matchers,omitempty"    validate:"omitempty,max=32,dive"`
-	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=18,unique"`
+	Reasons    *[]string     `json:"reasons,omitempty"     validate:"omitempty,min=1,max=17,unique"`
 	ChannelIDs *[]uuid.UUID  `json:"channel_ids,omitempty" validate:"omitempty,min=1,max=16,unique"`
 
-	// Throttle and UnackedReminderAfterSeconds are nullable in the contract: an
-	// explicit `null` CLEARS the damper, which is a different request from
-	// omitting the field. NullableThrottle and NullableInt32 keep that
-	// distinction while leaving `httpx.Bind` the only door a body comes through.
-	Throttle                    NullableThrottle `json:"throttle,omitempty"`
-	UnackedReminderAfterSeconds NullableInt32    `json:"unacked_reminder_after_seconds,omitempty"`
+	// Throttle is nullable in the contract: an explicit `null` CLEARS the damper,
+	// which is a different request from omitting the field. NullableThrottle keeps
+	// that distinction while leaving `httpx.Bind` the only door a body comes through.
+	Throttle NullableThrottle `json:"throttle,omitempty"`
 
 	// The digest is nullable for the same reason the throttle is: an explicit
 	// `null` TURNS THE SUMMARY OFF, which is a different request from omitting the
@@ -353,7 +338,7 @@ type UpdatePolicyRequest struct {
 func (r UpdatePolicyRequest) IsEmpty() bool {
 	return r.Name == nil && r.Priority == nil && r.Enabled == nil &&
 		r.Matchers == nil && r.Reasons == nil && r.ChannelIDs == nil &&
-		!r.Throttle.Set && !r.UnackedReminderAfterSeconds.Set &&
+		!r.Throttle.Set &&
 		!r.DigestWindowSeconds.Set && !r.DigestFloor.Set
 }
 

@@ -33,18 +33,10 @@
  * `tools/lintvocab`. Notably: the unacked reminder is a reminder, never a
  * ladder; oto measures a signal's **firing duration**, never anyone's response.
  */
-import { maxLengthOf } from "~/api/bounds";
-import {
-  ReminderMentionSchema,
-  ReminderMentionSeveritySchema,
-  UpdateOrgSettingsRequestSchema,
-  VerbositySchema,
-} from "~/api/generated/validators";
+import { VerbositySchema } from "~/api/generated/validators";
 import type {
   ReceiverBasis,
   ReceiverRoute,
-  ReminderMention,
-  ReminderMentionSeverity,
   TimingProvenance,
   UpdateOrgSettingsRequest,
   Verbosity,
@@ -272,10 +264,14 @@ export type KnobKind =
   | "days"
   | "months"
   | "verbosity"
-  | "boolean"
-  | "mentionMode"
-  | "mentionList"
-  | "severity";
+  | "boolean";
+
+/* ⛔ `mentionMode`, `mentionList` and `severity` WERE KINDS HERE AND ARE DELETED
+   (git-bug bd0fb1d). They existed only for the unacked reminder's mention
+   audience, which the owner ruled goes with the reminder. No knob has those
+   kinds any more, so their option tables and their controls in TuningSection.tsx
+   went too — a control for a setting the server no longer has is worse than no
+   control, because it saves and then does nothing. */
 
 /**
  * How wrong looks in each direction. Both are always shown: an operator picking
@@ -571,99 +567,17 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
 
   /* ---- what reaches the channel ----------------------------------------- */
 
-  unacked_reminder_after_s: {
-    key: "unacked_reminder_after_s",
-    kind: "seconds",
-    label: "Unacked reminder default",
-    zeroIsUnset: true,
-    what: "The org default a notification policy's own reminder delay falls back to when the policy names none. A policy with an opinion always wins. Zero means this org sets no default — it does not mean immediately, and a policy with no delay of its own still produces no reminder.",
-    risks: [
-      {
-        label: "Too short",
-        text: "A reminder that arrives before anyone could reasonably have looked is noise, and it is always broadcast into the channel. A channel that learns to scroll past oto's reminders has lost the only mechanism oto has for genuine urgency.",
-      },
-      {
-        label: "Too long",
-        text: "The reminder lands after the alert stopped mattering. Its entire purpose is to be seen; one that arrives at the end of the day is a log line.",
-      },
-    ],
-    amRule:
-      "Read it against repeat_interval. Alertmanager re-sends an unchanged group only that often — four hours by default — which is exactly why oto runs its own clock instead of relying on it. There is one reminder stage, forever: it is a single number, never a ladder, and it never targets anything but the policy's own channels.",
-    guide: (v, am) => {
-      if (v === 0) {
-        return ok(
-          "Unset. A policy that names no delay of its own produces no reminder at all. This is not the same as zero seconds.",
-        );
-      }
-      const ri = amSeconds(am.repeatInterval);
-      if (ri === null) return null;
-      const named = amPhrase("repeat_interval", am.repeatInterval);
-      if (v >= ri) {
-        return {
-          level: "tight",
-          text: `At or beyond ${named}. Alertmanager will already have re-sent the unchanged group before oto's reminder fires, so the reminder adds nothing the channel was not just told.`,
-        };
-      }
-      return ok(`Fires well inside ${named}, which is the point of having this clock at all.`);
-    },
-  },
+  /* ⛔ FOUR REMINDER KNOBS WERE HERE AND ARE DELETED (git-bug bd0fb1d):
+     unacked_reminder_after_s and the three unacked_reminder_mention* keys. The
+     owner withdrew the unacked reminder — oto sends nothing unprompted — and
+     ruled the mention goes with it, because a mention was never a property of
+     Slack delivery in general: it was the audience half of that one fact.
 
-  unacked_reminder_mention: {
-    key: "unacked_reminder_mention",
-    kind: "mentionMode",
-    label: "Unacked reminder mention",
-    what: "Who the one unacked reminder addresses. The reminder is delivered as a thread reply that also surfaces in the channel, and a thread reply notifies only people already following that thread — precisely the wrong audience for the one message whose purpose is to reach somebody who has not engaged.",
-    risks: [
-      {
-        label: "If none",
-        text: "The reminder arrives as an ordinary message in a busy channel. For the one notification meant to reach someone who has not looked, that is close to not sending it.",
-      },
-      {
-        label: "If here or channel",
-        text: "Slack documents that @here and @channel do not notify when used in threads, and oto's reminder is a thread reply. On the evidence these are silent no-ops from that position — worse than being obviously off, because a control that appears configured manufactures the belief that somebody was told. Nobody investigates a setting that looks like it is working.",
-      },
-    ],
-    amRule:
-      "Not an Alertmanager question — a Slack one. An explicit list of individuals and usergroups is the only form Slack documents as notifying from inside a thread, which is why it exists and why the shipped default is none rather than here. Nothing on this row is time-aware: it is a fixed audience an operator chose once, it will never learn who is awake, and there will never be a second stage after it.",
-  },
-
-  unacked_reminder_mention_list: {
-    key: "unacked_reminder_mention_list",
-    kind: "mentionList",
-    label: "Unacked reminder mention list",
-    what: "The explicit audience for list mode: Slack user ids and usergroup ids, at most ten. It is ignored unless the mention above is set to list.",
-    risks: [
-      {
-        label: "If empty",
-        text: "In list mode an empty list mentions nobody, so the reminder is exactly as quiet as none while appearing to be configured — the same failure as defaulting to here, arrived at from the other direction.",
-      },
-      {
-        label: "If crowded",
-        text: "A reminder that notifies ten people is at the outer edge of what a notification is; past that it is a page, and oto pages nobody. Ten is a cap, not a courtesy, and the server enforces it.",
-      },
-    ],
-    amRule:
-      "Not an Alertmanager question. This is a fixed audience, not a schedule: it has no notion of who is awake, whose week it is, or who is at a keyboard, and it will never become time-aware. If you need that, oto is the wrong layer — point a webhook channel at the tool that does it. Note also that @here and @channel are modes, not entries: a list that could contain them would let a five-person list quietly become a channel-wide ping.",
-  },
-
-  unacked_reminder_mention_min_severity: {
-    key: "unacked_reminder_mention_min_severity",
-    kind: "severity",
-    label: "Mention only at or above",
-    what: "The severity floor for attaching a mention at all. Below it the reminder still goes out — it simply arrives without a mention.",
-    risks: [
-      {
-        label: "Too low",
-        text: "A mention on every unacked warning is how a channel learns to mute oto, and a muted channel is how a real outage goes unseen. This is the setting that protects the one above it from being switched off in frustration.",
-      },
-      {
-        label: "Too high",
-        text: "Set it above the severities your rules actually emit and the mention never attaches. The mention above is then configured and inert, which looks exactly like being configured and working.",
-      },
-    ],
-    amRule:
-      "Not an Alertmanager route question, but it does read your alerts' own severity label — whatever your rules actually write there. The shipped default is critical.",
-  },
+     The mention copy carried a research result worth not losing: Slack documents
+     that @here and @channel do NOT notify from inside a thread, and oto's
+     reminder was a thread reply, so those two modes were believed to be silent
+     no-ops in the only position oto used them. That finding lives on in ADR 0020
+     and is why the default was `none`. */
 
   default_verbosity: {
     key: "default_verbosity",
@@ -767,10 +681,6 @@ export const KNOB_GROUPS: readonly KnobGroup[] = [
     keys: [
       "default_verbosity",
       "broadcast_on_resolved",
-      "unacked_reminder_after_s",
-      "unacked_reminder_mention",
-      "unacked_reminder_mention_list",
-      "unacked_reminder_mention_min_severity",
     ],
   },
   {
@@ -813,50 +723,16 @@ const VERBOSITY_LABEL: Record<Verbosity, string> = {
 
 export const VERBOSITY_OPTIONS = labelled<Verbosity>(VerbositySchema.options, VERBOSITY_LABEL);
 
-/**
- * The mention vocabulary. `here` and `channel` are offered because they are
- * expressible in Slack and an operator may know something about their workspace
- * that the documentation does not say — but the label says what the evidence
- * says, because a control that silently does nothing is the worst outcome here.
- */
-const MENTION_MODE_LABEL: Record<ReminderMention, string> = {
-  none: "none — no mention (oto's default)",
-  here: "here — @here; believed not to notify from a thread",
-  channel: "channel — @channel; believed not to notify from a thread",
-  list: "list — the explicit audience below; the only form documented to notify",
-};
+/* ⛔ THE MENTION VOCABULARY WAS HERE AND IS DELETED (git-bug bd0fb1d):
+   MENTION_MODE_LABEL, MENTION_MODE_OPTIONS, MENTION_TOKEN_HINT, SEVERITY_LABEL,
+   SEVERITY_OPTIONS and MENTION_LIST_MAX.
 
-export const MENTION_MODE_OPTIONS = labelled<ReminderMention>(
-  ReminderMentionSchema.options,
-  MENTION_MODE_LABEL,
-);
-
-/** The entries a mention list accepts, stated so the shape is not a guessing game. */
-export const MENTION_TOKEN_HINT =
-  "A Slack user id as <@U…> or a usergroup id as <!subteam^S…>. @here and @channel are modes, not entries.";
-
-const SEVERITY_LABEL: Record<ReminderMentionSeverity, string> = {
-  critical: "critical — only the loudest (oto's default)",
-  warning: "warning — critical and warning",
-  info: "info — every severity",
-};
-
-export const SEVERITY_OPTIONS = labelled<ReminderMentionSeverity>(
-  ReminderMentionSeveritySchema.options,
-  SEVERITY_LABEL,
-);
-
-/**
- * The list cap — READ from the write schema the server enforces it with.
- *
- * It is a cap, not a courtesy, and it was written here as `10`. That copy is the
- * one that decides what the screen refuses locally, so it is also the one that
- * can start refusing what the server accepts.
- */
-export const MENTION_LIST_MAX = maxLengthOf(
-  UpdateOrgSettingsRequestSchema,
-  "unacked_reminder_mention_list",
-);
+   ⭐ ONE THING IN IT WAS A RESEARCH RESULT AND IS WORTH NOT LOSING TWICE: the
+   labels said `here` and `channel` are "believed not to notify from a thread",
+   because Slack documents exactly that and oto's reminder was a thread reply.
+   `list` was "the only form documented to notify". That is why the default was
+   `none`, it is recorded in ADR 0020, and `2078a07` notes the whole mention path
+   was never once observed working against a real workspace. */
 
 /* -------------------------------------------------------------------------- */
 /* Units                                                                      */

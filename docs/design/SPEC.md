@@ -1837,7 +1837,8 @@ CREATE INDEX channels_enabled_idx ON channels (org_id, type) WHERE enabled AND d
 
 -- ⛔ BINDING (SCOPE-BOUNDARY §5.3): `channel_ids` references `channels` and NOTHING ELSE.
 -- `notification_policies` MUST NEVER gain `user_ids`, `team_ids`, `schedule_id`, `rotation`,
--- `time_of_day`, `days_of_week`, `timezone`, or a second reminder stage (§G.9.1).
+-- `time_of_day`, `days_of_week`, `timezone`, or ANY reminder stage (§G.9.1 — there is no
+-- longer a first one for a second to follow).
 -- A policy routes a fact to a DESTINATION. A policy that routes to a PERSON is a rota.
 CREATE TABLE notification_policies (
   id            UUID        PRIMARY KEY,
@@ -1850,8 +1851,6 @@ CREATE TABLE notification_policies (
   reasons       TEXT[]      NOT NULL,              -- a SET drawn from §H.6 Reason values
   channel_ids   UUID[]      NOT NULL,
   throttle      JSONB       NOT NULL DEFAULT '{}'::jsonb,   -- {"max":N,"window_s":S} per subject
-  unacked_reminder_after_s INT,                    -- NULL = no reminder; else unacked-for seconds.
-                                                   -- SCALAR. ONE STAGE, FOREVER. Never an array (§G.9.1).
   -- no DEFAULT now() (§D conventions); `ConfigRepository.CreatePolicy`/`UpdatePolicy`/
   -- `SoftDeletePolicy` stamp them.
   created_at    TIMESTAMPTZ NOT NULL,
@@ -1873,7 +1872,6 @@ CREATE TABLE notification_policies (
   CONSTRAINT policies_chan_ck     CHECK (array_length(channel_ids, 1) BETWEEN 1 AND 16
                                          AND array_position(channel_ids, NULL) IS NULL),
   CONSTRAINT policies_throttle_ck CHECK (jsonb_typeof(throttle) = 'object'),
-  CONSTRAINT policies_reminder_ck      CHECK (unacked_reminder_after_s IS NULL OR unacked_reminder_after_s BETWEEN 60 AND 86400),
   CONSTRAINT policies_time_ck     CHECK (updated_at >= created_at)
 );
 CREATE INDEX policies_eval_idx ON notification_policies (org_id, priority)
@@ -1964,9 +1962,10 @@ CREATE TABLE notifications (
   CONSTRAINT notifications_reason_ck CHECK (reason IN
     ('fired','new_alerts','some_resolved','all_resolved','repeat','suppressed','unsuppressed',
      'expired','refired','acked','unacked','snoozed','unsnoozed','enriched','rule_changed',
-     'comment','unacked_reminder','digest')),
-                                                   -- EIGHTEEN reasons: 00018's order, `digest`
-                                                   -- appended by 00058, `storm` DELETED by 00060.
+     'comment','digest')),
+                                                   -- SEVENTEEN reasons: 00018's order, `digest`
+                                                   -- appended by 00058, `storm` DELETED by 00060,
+                                                   -- `unacked_reminder` DELETED by 00067.
                                                    -- `refired` is RETIRED — nothing writes it since
                                                    -- ADR 0040, the CHECK still admits it, and rows
                                                    -- carrying it still render.
@@ -3499,7 +3498,6 @@ The response **body is ignored by Alertmanager on 2xx**. There is no back-channe
 | `lifecycle` | 4 | `case.reap` | `{}` | Periodic, 60 s |
 | `lifecycle` | 4 | `group.close` | `{}` | Periodic, 60 s |
 | `lifecycle` | 4 | `snooze.expire` | `{}` | Periodic, 60 s |
-| `lifecycle` | 4 | `notify.unacked_reminder` | `{}` | Periodic, 60 s |
 | `lifecycle` | 4 | `notify.digest` | `{}` | Periodic, 60 s — the tick only; the WINDOW is `notification_policies.digest_window_s`, aligned to the UTC day |
 | `maintenance` | 1 | `partitions.manage` | `{}` | Periodic, 3600 s |
 | `maintenance` | 1 | `retention.prune` | `{}` | Periodic, 3600 s |
@@ -3736,38 +3734,52 @@ Runs every `reconcile_interval_s` per source. It is **not** an ingestion path (C
    - Record `source_health.divergence_count`. **This metric is the canary for every correctness bug in the system** and MUST be on oto's own dashboard.
 5. On failure: `consecutive_failures++`; at 3, `source_health.status='unreachable'`, which **blocks the reaper** (§B.4).
 
-### G.9 Unacked reminder (`notify.unacked_reminder`)
+### G.9 Unacked reminder — ⛔ REMOVED (git-bug `bd0fb1d`, migrations `00067`/`00068`)
 
-Alertmanager's `repeat_interval` default is **4 hours** — far too slow for an unacknowledged critical. oto runs its own clock. For every policy with `unacked_reminder_after_s` set, an open group whose oldest member case has been `firing` and `unacked` for longer than that produces one `Reason=unacked_reminder` notification, delivered as a **thread reply with `reply_broadcast: true`** (Slack advises using broadcast sparingly, so it is gated on policy + unacked duration and fires **at most once per group generation**).
+**oto sends nothing unprompted.** The owner withdrew the unacked reminder on 2026-08-20. There is no
+`notify.unacked_reminder` job, no sweep, no `unacked_reminder_after_s` on a policy or an org, and no
+mention audience. `Reason=unacked_reminder` is **deleted outright** — it is gone from the enum, from
+`notifications_reason_ck`, from the verbosity tables, from the broadcast set and from the Slack
+renderer. It was briefly retired-but-readable on the thirteen-month history argument; the owner
+settled the premise instead, because oto is **unreleased and the database is being reset**. There is
+no history to keep decodable, and a value kept for a reader that cannot exist is a ghost the next
+person has to rule out.
 
-> ### ⛔ G.9.1 The one-stage clause (BINDING, PERMANENT)
+**What it was.** For every policy with `unacked_reminder_after_s` set, an open group whose oldest
+member case had been `firing` and `unacked` for longer than that produced one
+`Reason=unacked_reminder` notification, delivered as a thread reply with `reply_broadcast: true`, at
+most once per group generation. Alertmanager's `repeat_interval` default of 4 hours was the argument
+for oto running its own clock.
+
+> ### ⛔ G.9.1 The one-stage clause — SUPERSEDED BY A STRONGER ONE (BINDING, PERMANENT)
 >
-> **There is exactly ONE stage, forever.** `unacked_reminder_after_s` is a **scalar** and MUST NEVER
-> become an array, a ladder, or a list of stages. It MUST NEVER acquire a target other than the
-> policy's existing `channel_ids`. **A second stage is an escalation policy and is permanently OUT**
-> (SCOPE-BOUNDARY §4.7, §6 SS-2).
+> The clause read: *there is exactly ONE stage, forever;* `unacked_reminder_after_s` is a scalar and
+> must never become an array, a ladder, or a list of stages, and must never acquire a target other
+> than the policy's existing `channel_ids`.
 >
-> This is the shortest path from oto to PagerDuty and it is four small pull requests:
-> `escalate_after_s[]` → per-stage targets → targets that are people → a rota to resolve the person →
-> telephony. The rename to `unacked_reminder` is the load-bearing part: while the word "escalation"
-> lives in the schema, stage two reads as a natural extension of the word rather than as a scope
-> violation.
+> **It is superseded by the stronger statement that there are now NO stages.** oto sends no
+> unprompted reminder at all. This is not a relaxation and must never be read as one: the clause
+> existed to stop a second stage, and there is no first stage left for a second to follow.
 >
-> The reminder is triggered by **the signal's own unacked duration** and delivered to **the same
-> channels the policy already routes to**. It is a fact about the signal, not a routing decision about
-> a human. When a customer genuinely needs multi-stage escalation, they need PagerDuty or incident.io,
-> and oto's job is to be a clean event source for it (SCOPE-BOUNDARY §7, H-2/H-3).
+> ⛔ **Re-adding ANY unprompted reminder re-opens this and needs an ADR that argues against FR-1 by
+> name.** The old clause described the shortest path from oto to PagerDuty in four small pull
+> requests — `escalate_after_s[]` → per-stage targets → targets that are people → a rota to resolve
+> the person → telephony. The first of those four is now "add a reminder at all", which is a larger
+> and more visible step than it used to be. That is the whole benefit of the removal.
+>
+> `escalation` REMAINS a banned word (§A.1). It was banned because the vocabulary drags in rotas and
+> ownership, which is true whether or not oto reminds anyone.
 
-**Mentions.** `channels.config.mention_on_reminder` (§L.5.1) may name Slack usergroups, `!here`,
-`!channel`, **and individual users**. A cap of **10** entries applies.
+**Mentions.** ⛔ **Removed with the reminder.** `channels.config.mention_on_reminder`, the org-level
+`unacked_reminder_mention*` keys and the render path are all gone.
 
-> **A static mention list is NOT a rota and will never gain time-awareness.** `mention_on_reminder`
-> is a fixed, per-channel audience. It MUST NEVER acquire `time_of_day`, `days_of_week`, `timezone`,
-> a rotation order, a "current" pointer, an override table, or any field that makes *which* entry is
-> mentioned depend on *when* the reminder fires. The moment the list becomes time-aware it is a
-> schedule, and schedules are permanently out (SCOPE-BOUNDARY §4.8). Individual mentions are
-> permitted because addressing a known audience is not the same as *resolving* who is responsible;
-> the resolution step is the thing that is banned.
+> **The rota refusal survives its mechanism, and is stronger for it.** The mention list was bound
+> never to acquire `time_of_day`, `days_of_week`, `timezone`, a rotation order, a "current" pointer
+> or an override table — anything making *which* entry is mentioned depend on *when*. Individual
+> mentions were permitted only because addressing a known audience is not *resolving* who is
+> responsible. **With no mention surface at all, there is nowhere left for oto to name a responder**
+> (SCOPE-BOUNDARY §4.8, H-1, FR-1). ⚠️ `2078a07` records that the mention half was never once
+> observed working against a real workspace: it shipped on Slack's documentation alone.
 
 ### G.10 Two connection pools (binding)
 
@@ -4001,7 +4013,6 @@ Replies are posted with `thread_ts = channel_threads.provider_thread_id` (the **
 | `comment` | `comment` | 1 × `section` | `":speech_balloon: <@UA8RXUSPL>: rolling back the 14:02 deploy"` |
 | `snoozed` | `snoozed` | 1 × `section` | `":zzz: *Notifications snoozed* by <@UA8RXUSPL> until <!date^1786468800^{time}\|17:00 UTC> — _\"waiting on the node pool rollout\"_. The alert is still firing."` |
 | `unsnoozed` | `unsnoozed` | 1 × `section` | `":bell: *Snooze ended* (expired) — notifications resume. Still firing since <!date^…^{time}\|09:14 UTC>."` |
-| `unacked_reminder` | `unacked_reminder` | 1 × `section`, **`reply_broadcast: true`** | `":rotating_light: *Still unacknowledged after 15m.* <!subteam^SAZ94GDB8> — <https://oto…\|open in oto>"` |
 | `degraded` | *(system)* | 1 × `context` | `":warning: oto could not deliver an update to this thread (\`channel_not_found\`). See Deliveries in oto."` |
 | `continued` | *(system)* | 1 × `section` | `":arrow_right: *Continued in a new message* — this thread reached 30 replies. <link\|jump>"` |
 
@@ -4077,7 +4088,6 @@ Alertmanager's wire `notification_reason` (AM ≥ 0.32.0) maps to an oto `Reason
 | `comment` | `thread_reply` only | always |
 | `snoozed` | `update_root` + `thread_reply` | **always — exempt from snooze suppression (§B.8.4)** |
 | `unsnoozed` | `update_root` + `thread_reply` | **always — exempt from snooze suppression (§B.8.4)** |
-| `unacked_reminder` | `broadcast_reply` | always |
 | `digest` ※ | `post_root` (or `update_root` if the policy's digest thread already exists) + `thread_reply` | reply at `all` |
 
 **⛔ THE `storm` ROW WAS HERE AND IS DELETED.** ADR 0042 removed storm damping and migration `00060` removed the Reason: `notifications_reason_ck` admits eighteen values and `storm` is not one of them, so no row can spell it and nothing can render it. It does not keep `refired`'s treatment, because `refired`'s CHECK still admits it and `storm`'s no longer does.
@@ -4095,15 +4105,15 @@ still render. See the † under §H.5.
 | Value | Replies delivered |
 |---|---|
 | `all` | every reply type |
-| `status_changes` *(default)* | ack, unack, suppressed, unsuppressed, expired, refired, new_alerts, all_resolved, rule_changed, comment, snoozed, unsnoozed, unacked_reminder |
-| `firing_and_resolved` | new_alerts, all_resolved, expired, rule_changed, snoozed, unsnoozed, unacked_reminder |
-| `firing_only` | new_alerts, rule_changed, snoozed, unsnoozed, unacked_reminder |
+| `status_changes` *(default)* | ack, unack, suppressed, unsuppressed, expired, refired, new_alerts, all_resolved, rule_changed, comment, snoozed, unsnoozed |
+| `firing_and_resolved` | new_alerts, all_resolved, expired, rule_changed, snoozed, unsnoozed |
+| `firing_only` | new_alerts, rule_changed, snoozed, unsnoozed |
 
 ⛔ **`storm` was in all four sets and is gone from all four**, with the Reason itself (migration 00060). It survived even `firing_only` on the argument that a channel which asked for less has not asked to be lied to about oto withholding things — oto withholds nothing now, so there is no such fact and no Reason naming one. `refired` stays listed: nothing produces it since ADR 0040, but `notifications_reason_ck` still admits it, so a stored row can reach the gate and a gate that had forgotten it would decide wrongly.
 
 `digest` appears in none of the three named sets, which is `enriched`'s treatment and means the same thing: its reply is delivered at `all` and nowhere else. `internal/notification/domain/verbosity.go` is this table literally, and `all` is deliberately absent from it — "all means all" is the one rule that must never need maintenance.
 
-`channels.thread_updates = false` reduces every mode to `update_root` (except `unacked_reminder`, which is always broadcast). Root updates are **never** gated by verbosity.
+`channels.thread_updates = false` reduces every mode to `update_root`. ⛔ There used to be one exception — `unacked_reminder`, always broadcast — and it went with the reminder (git-bug `bd0fb1d`); the field now means exactly what it says for every Reason. Root updates are **never** gated by verbosity.
 
 ### H.7 Character and item limits to respect (validated in the renderer, not discovered in production)
 
@@ -4332,7 +4342,7 @@ oto/
 │   ├── notification/
 │   │   ├── {api,service,repository,domain}         # policy matcher notification dispatch
 │   │   │                                           # thread throttle view ports
-│   │   └── worker/{evaluate,dispatch,reminder}      # reminder = notify.unacked_reminder (§G.9)
+│   │   └── worker/{evaluate,dispatch}               # the reminder worker went with §G.9 (bd0fb1d)
 │   ├── channels/
 │   │   ├── {api,service,repository,domain}
 │   │   ├── providers/
@@ -4549,8 +4559,11 @@ Numbered, user-observable. v1 is not done until every one of these is demonstrab
     which is why it is banned rather than merely unused.
 51. There is no route matching `/resolve`, `/close`, `/merge`, `/dismiss` or `/reopen` in the mounted
     router, asserted by walking `chi`'s route tree at test time (§E.1.1).
-52. `unacked_reminder_after_s` is a scalar `*int` in every layer, and a compile-time test asserts the
-    field is not a slice or array type (§G.9.1).
+52. ⛔ **WITHDRAWN with the mechanism it guarded (git-bug `bd0fb1d`).** It read: `unacked_reminder_after_s`
+    is a scalar `*int` in every layer, and a compile-time test asserts the field is not a slice or
+    array type (§G.9.1). The field no longer exists, and the gate was DELETED rather than weakened —
+    a type gate over a field that is gone passes for the wrong reason. §G.9.1 now forbids any
+    unprompted reminder at all, which is the stronger statement this criterion was reaching for.
 
 **Snooze (§B.8)**
 
@@ -4885,7 +4898,6 @@ type CreatePolicyRequest struct {
 	Reasons        []string        `json:"reasons"         validate:"required,min=1,max=18,unique"`
 	ChannelIDs     []uuid.UUID     `json:"channel_ids"     validate:"required,min=1,max=16,unique,dive,uuid"`
 	Throttle       *ThrottleDTO    `json:"throttle"        validate:"omitempty"`
-	UnackedReminderAfterS *int            `json:"unacked_reminder_after_seconds" validate:"omitempty,gte=60,lte=86400"`
 }
 
 type MatcherDTO struct {

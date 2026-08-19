@@ -33,7 +33,6 @@ import { enumValuesOf, patternOf } from "~/api/bounds";
 import {
   AlertRollupDTOSchema,
   CreateSourceRequestSchema,
-  UpdateOrgSettingsRequestSchema,
 } from "~/api/generated/validators";
 import { enumValues, integerBounds, requestField, requestMaxLength } from "~/test/contract";
 import { channel, cluster, orgSettings, source } from "~/test/fixtures";
@@ -341,17 +340,11 @@ describe("the contract accessors", () => {
   });
 });
 
-describe("the mention list cap", () => {
-  it("is the contract's cap, not a number this screen chose", () => {
-    // The one bound on the tuning screen that is not served in `bounds` — the
-    // screen holds `MENTION_LIST_MAX` itself. Derived here so the copy cannot
-    // outlive the contract.
-    const max = requestMaxLength(UpdateOrgSettingsRequestSchema, "unacked_reminder_mention_list");
-    expect(max).toBeGreaterThan(0);
+/* ⛔ `the mention list cap` WAS HERE AND IS DELETED (git-bug bd0fb1d). It derived
+   the cap from `UpdateOrgSettingsRequestSchema` rather than letting the screen
+   choose a number, because `MENTION_LIST_MAX` was the ONE bound the tuning screen
+   held itself instead of reading from `bounds`. The mention list went with the
+   unacked reminder, and no screen-held bound is left.
 
-    mountTuning();
-    // The cap is stated in the copy wherever the list is edited; assert the
-    // number rather than the sentence, which is free to be reworded.
-    return until(() => expect(document.body.textContent).toContain(String(max)));
-  });
-});
+   ⚠️ IF ONE COMES BACK, SO DOES THIS TEST: a cap the screen states and the server
+   enforces separately is exactly the pair that drifts. */

@@ -251,7 +251,6 @@ nowrite:github.com/thulasiram/oto/internal/notification/repository.NewDelivery.T
 nowrite:github.com/thulasiram/oto/internal/notification/service.DispatchConfig.MaxInstances	field is never written in production — nothing populates it (internal/notification/service/dispatch.go:106)
 nowrite:github.com/thulasiram/oto/internal/notification/service.DispatchConfig.StaleClaimLease	field is never written in production — nothing populates it (internal/notification/service/dispatch.go:109)
 nowrite:github.com/thulasiram/oto/internal/notification/service.PreviewRequest.PolicyID	field is never written in production — nothing populates it (internal/notification/service/policy.go:128)
-nowrite:github.com/thulasiram/oto/internal/notification/service.ReminderConfig.Batch	field is never written in production — nothing populates it (internal/notification/service/reminder.go:55)
 nowrite:github.com/thulasiram/oto/internal/notification/service.ViewConfig.MaxInstances	field is never written in production — nothing populates it (internal/notification/service/view.go:45)
 nowrite:github.com/thulasiram/oto/internal/platform/authn.Principal.SourceID	field is never written in production — nothing populates it (internal/platform/authn/principal.go:60)
 nowrite:github.com/thulasiram/oto/internal/platform/httpc.TLSOptions.CACertPEM	field is never written in production — nothing populates it (internal/platform/httpc/config.go:94)

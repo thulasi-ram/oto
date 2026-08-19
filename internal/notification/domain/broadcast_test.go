@@ -43,9 +43,11 @@ func TestTheDefaultSetBroadcasts(t *testing.T) {
 	// damping itself was removed, and now because migration 00060 DELETES the Reason
 	// rather than retiring it. There is no `domain.ReasonStorm` left to assert
 	// against; a value that does not compile cannot broadcast.
+	// ⛔ `unacked_reminder` WAS THE SECOND ENTRY AND IS GONE (git-bug bd0fb1d), for
+	// the same reason `storm` is: the value does not compile, so it cannot
+	// broadcast. `refired` is the whole default set now.
 	broadcasts := []domain.Reason{
 		domain.ReasonRefired,
-		domain.ReasonUnackedReminder,
 	}
 	for _, r := range broadcasts {
 		if got := lastMode(domain.PlanFor(base(r))); got != domain.ModeBroadcastReply {
@@ -119,7 +121,7 @@ func TestFlappingNoLongerDampsAnything(t *testing.T) {
 	t.Parallel()
 
 	for _, reason := range []domain.Reason{
-		domain.ReasonUnackedReminder, domain.ReasonFired, domain.ReasonSomeResolved,
+		domain.ReasonRefired, domain.ReasonFired, domain.ReasonSomeResolved,
 		domain.ReasonAcked, domain.ReasonComment,
 	} {
 		calm := domain.PlanFor(base(reason))
@@ -166,11 +168,20 @@ func TestBroadcastNeverOverridesTheDestinationsOwnVolume(t *testing.T) {
 		t.Fatalf("drop reason %q, want thread_updates", p.ReplyDropReason)
 	}
 
-	// The reminder is the single documented exception, and it survives.
-	rem := base(domain.ReasonUnackedReminder)
+	// ⛔ THERE IS NO EXCEPTION ANY MORE, AND THAT IS THE ASSERTION. The unacked
+	// reminder was the single documented one — always a broadcast, because a
+	// reminder nobody sees is not a reminder — and it is gone (git-bug bd0fb1d).
+	// `thread_updates=false` now means what it says for EVERY Reason, including the
+	// one that still broadcasts by default.
+	rem := base(domain.ReasonRefired)
 	rem.ThreadUpdates = false
-	if got := lastMode(domain.PlanFor(rem)); got != domain.ModeBroadcastReply {
-		t.Fatalf("reminder with thread_updates=false: got %q — a reminder nobody sees is not a reminder", got)
+	p2 := domain.PlanFor(rem)
+	if lastMode(p2) == domain.ModeBroadcastReply {
+		t.Fatal("a broadcasting reason still broadcast with thread_updates=false — the " +
+			"reminder's exception outlived the reminder")
+	}
+	if p2.ReplyDropReason != "thread_updates" {
+		t.Fatalf("drop reason %q, want thread_updates", p2.ReplyDropReason)
 	}
 }
 
@@ -184,7 +195,7 @@ func TestCapBroadcastDegradesForEveryBroadcastingReason(t *testing.T) {
 		// ⛔ `storm` WAS THE THIRD ENTRY AND IS GONE. It only ever wanted a broadcast
 		// once it held the channel latch, and there is no latch: nothing withholds, so
 		// nothing announces withholding.
-		domain.ReasonRefired, domain.ReasonUnackedReminder,
+		domain.ReasonRefired,
 	} {
 		in := base(r)
 		in.Capabilities = noBroadcast
@@ -198,13 +209,10 @@ func TestCapBroadcastDegradesForEveryBroadcastingReason(t *testing.T) {
 		}
 	}
 
-	// With no threading either, the reminder falls all the way back to a root
-	// update — loud enough to still be a reminder.
-	rem := base(domain.ReasonUnackedReminder)
-	rem.Capabilities = domain.CapAmend
-	if got := lastMode(domain.PlanFor(rem)); got != domain.ModeUpdateRoot {
-		t.Fatalf("reminder with no threading: got %q, want update_root", got)
-	}
+	// ⛔ THE NO-THREADING FALLBACK WAS THE REMINDER'S OWN BRANCH and went with it
+	// (git-bug bd0fb1d): it fell all the way back to a root update, because a
+	// reminder had to stay loud. Nothing has that privilege now — a broadcasting
+	// reason on a channel that cannot thread takes the ordinary §H.10 path.
 }
 
 // TestChannelPolicyCodesNeverKillAThread is the other half of the Slack

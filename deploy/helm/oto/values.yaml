@@ -577,9 +577,9 @@ config:
 # Keys are the ones on docs/setup/tuning.md, e.g.
 #   refire_grace_s, resolve_grace_s, group_close_delay_s,
 #   raw_retention_days, event_retention_months,
-#   unacked_reminder_after_s, default_verbosity, broadcast_on_resolved,
-#   unacked_reminder_mention, unacked_reminder_mention_list,
-#   unacked_reminder_mention_min_severity
+#   default_verbosity, broadcast_on_resolved
+#   (the five unacked_reminder_* keys were here and are gone — git-bug bd0fb1d;
+#   a config still naming one is refused with unknown_key)
 # -----------------------------------------------------------------------------
 
 tuning: {}

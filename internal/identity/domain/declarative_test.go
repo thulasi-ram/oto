@@ -137,14 +137,10 @@ func TestValuesArriveAsStringsOrAsTypes(t *testing.T) {
 	fromEnv := mustDeclarative(t,
 		entry("refire_grace_s", "OTO_TUNING_REFIRE_GRACE_S", "900"),
 		entry("broadcast_on_resolved", "OTO_TUNING_BROADCAST_ON_RESOLVED", "true"),
-		entry("unacked_reminder_mention_list", "OTO_TUNING_UNACKED_REMINDER_MENTION_LIST",
-			[]string{"<@U012AB3CD>", "<!subteam^S01ABCDEF>"}),
 	)
 	fromFile := mustDeclarative(t,
 		entry("refire_grace_s", "tuning.refire_grace_s", 900),
 		entry("broadcast_on_resolved", "tuning.broadcast_on_resolved", true),
-		entry("unacked_reminder_mention_list", "tuning.unacked_reminder_mention_list",
-			[]any{"<@U012AB3CD>", "<!subteam^S01ABCDEF>"}),
 	)
 
 	env := domain.Org{}.WithDeclarative(fromEnv).Settings
@@ -154,9 +150,6 @@ func TestValuesArriveAsStringsOrAsTypes(t *testing.T) {
 	}
 	if !env.BroadcastOnResolved || !file.BroadcastOnResolved {
 		t.Fatalf("env %v, file %v", env.BroadcastOnResolved, file.BroadcastOnResolved)
-	}
-	if len(env.UnackedReminderMentionList) != 2 || len(file.UnackedReminderMentionList) != 2 {
-		t.Fatalf("env %v, file %v", env.UnackedReminderMentionList, file.UnackedReminderMentionList)
 	}
 }
 
@@ -176,20 +169,12 @@ func TestAValueOfTheWrongTypeFailsByName(t *testing.T) {
 	}
 }
 
-// TestThePatchIsCopiedOut. The resolved layer is process-wide and read on every
-// settings lookup; a caller that could mutate its slice would be editing the
-// deployment's stated configuration for every tenant at once.
-func TestThePatchIsCopiedOut(t *testing.T) {
-	t.Parallel()
-
-	d := mustDeclarative(t, entry("unacked_reminder_mention_list",
-		"tuning.unacked_reminder_mention_list", []string{"<@U012AB3CD>"}))
-
-	first := d.Patch()
-	(*first.UnackedReminderMentionList)[0] = "<@UDEADBEEF>"
-
-	second := d.Patch()
-	if (*second.UnackedReminderMentionList)[0] != "<@U012AB3CD>" {
-		t.Fatal("the resolved declarative layer was mutated through a returned patch")
-	}
-}
+// ⛔ `TestThePatchIsCopiedOut` WAS HERE AND IS DELETED (git-bug bd0fb1d). It proved
+// that `Declarative.Patch()` deep-copies its slice-valued field, so a caller could
+// not edit the deployment's stated configuration for every tenant at once by
+// mutating a returned patch. The only slice-valued setting was
+// `unacked_reminder_mention_list`, and it went with the reminder.
+//
+// ⚠️ THE HAZARD IS DORMANT, NOT SOLVED. `SettingsPatch` is returned by value and
+// still shares any slice it holds. The day a slice-valued setting comes back, the
+// copy in `Patch()` and this test both have to come back with it.

@@ -56,7 +56,7 @@ them; they have different expiry dates.
 | Door | Clause |
 |---|---|
 | **No person-reference column on a signal row.** No `assigned_to`, `owner_id`, `watchers`, `incident_id`, `ticket_id`, `sla_due_at`. `acked_by` is past-tense attribution and is the **only** exception. | SPEC §D.4.0 |
-| **One reminder stage, forever.** `unacked_reminder_after_s` is a scalar; it must never become an array, a ladder, or acquire a target other than the policy's `channel_ids`. | SPEC §G.9.1 |
+| **No unprompted reminder, at all.** The one reminder stage was withdrawn (git-bug `bd0fb1d`); oto sends nothing nobody asked for. This SUPERSEDES "one stage, forever" and is strictly stronger — there is no first stage for a second to follow. Re-adding any unprompted reminder needs an ADR arguing against FR-1 by name. `escalation` remains a banned word. | SPEC §G.9.1 |
 | **No human writes a signal's `state`.** There is no `POST /alerts/{id}/resolve`, ever — nor close, merge, dismiss, reopen. `ack_state` is the only state axis a human may write. | SPEC §E.1.1 |
 | **`notification_policies` routes to destinations, never to people.** No `user_ids`, `schedule_id`, `time_of_day`. | SPEC §D.8 |
 

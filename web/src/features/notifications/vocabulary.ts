@@ -46,10 +46,12 @@ export const REASON_LABEL: Record<NotificationReason, string> = {
   comment: "a comment was added",
   snoozed: "snoozed",
   unsnoozed: "snooze ended",
-  // oto's own clock on an unacknowledged signal, and ONE stage that ends at a
-  // channel. There is no ladder, no rota and no notion of who is next, which is
-  // why this is not called what the rest of the industry calls it (§G.9.1, §A.1).
-  unacked_reminder: "still firing and unacknowledged",
+  // ⛔ `unacked_reminder` WAS HERE AND IS GONE FROM THE ENUM (git-bug bd0fb1d,
+  // migration 00067). oto's own clock on an unacknowledged signal, one stage that
+  // ended at a channel — no ladder, no rota, no notion of who was next. Withdrawn
+  // by the owner: oto sends nothing unprompted. Unlike `storm` below it was not
+  // kept for a cut as a retired reason, because oto is unreleased and the database
+  // is being reset — there is no stored row left to explain.
   // ⛔ `storm` WAS HERE AND IS GONE FROM THE ENUM (ADR 0042, migration `00060`).
   // It was kept for one cut as a RETIRED reason, on the argument that
   // `notifications.reason` is what a STORED ROW SAYS IT WAS ABOUT and that

@@ -23,6 +23,11 @@ import (
 // after the other five periodics were converted, because nothing failed when it
 // stayed behind. This gate is what fails.
 //
+// ⚠️ THAT KIND NO LONGER EXISTS — git-bug bd0fb1d deleted the reminder outright —
+// and the file is deliberately still written around it. The defect was real, the
+// planted `legacySweepArgs` below is still byte-for-byte its pre-conversion shape,
+// and a gate explained by the case that motivated it survives the case going away.
+//
 // ⛔ THE DISCOVERY ENUMERATES THE SEAM, NEVER A HAND-LIST OF KINDS. A hand-list
 // of per-tenant periodics inside the gate is the defect the gate exists to kill:
 // the next periodic would be added to `jobs.Handlers` and not to the list, and
@@ -106,7 +111,7 @@ func TestEveryPerTenantPeriodicCarriesTheFanOutHalf(t *testing.T) {
 }
 
 // legacySweepArgs is the shape `notify.unacked_reminder` had before it was
-// converted: a periodic uniqueness window, a Payload, and no fan-out half — the
+// converted (the kind itself is gone — bd0fb1d — and this shape outlives it): a periodic uniqueness window, a Payload, and no fan-out half — the
 // all-tenants loop hid in its handler where no gate could see it, and the args
 // were the one place it showed.
 type legacySweepArgs struct {
@@ -152,10 +157,18 @@ func TestPerTenantPeriodicGateFires(t *testing.T) {
 		}
 	}
 
-	// The converted reminder is the negative half: the shape that satisfies the
-	// gate is the shape the fix actually shipped.
-	if v := fanOutViolation(jobs.KindNotifyUnackedReminder, reflect.TypeOf(jobs.NotifyUnackedReminderArgs{})); v != "" {
-		t.Errorf("the converted reminder args do not satisfy the gate:\n%s", v)
+	// The digest tick is the negative half: a real registered per-tenant periodic
+	// whose shape SATISFIES the gate, so the two halves together prove the gate
+	// discriminates rather than just always firing.
+	//
+	// ⚠️ IT USED TO BE `notify.unacked_reminder`, which was the kind this whole file
+	// was built for. git-bug bd0fb1d deleted that kind, so the negative half moved to
+	// the digest — the other per-tenant periodic of exactly the same shape. The
+	// planted `legacySweepArgs` above is STILL byte-for-byte the reminder's
+	// pre-conversion args, and that is the half worth keeping: it is the record of
+	// the defect, and it does not depend on the kind still existing.
+	if v := fanOutViolation(jobs.KindNotifyDigest, reflect.TypeOf(jobs.NotifyDigestArgs{})); v != "" {
+		t.Errorf("the digest tick's args do not satisfy the gate:\n%s", v)
 	}
 }
 

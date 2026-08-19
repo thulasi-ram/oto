@@ -49,16 +49,12 @@ type settingsJSON struct {
 	// The keys added when the tuning surface became editable. They are
 	// `omitempty` like the rest, so an org that has never opened the settings
 	// screen still stores `{}` and still reports every value as a DEFAULT.
-	UnackedReminderAfterS *int    `json:"unacked_reminder_after_s,omitempty"`
-	DefaultVerbosity      *string `json:"default_verbosity,omitempty"`
-	BroadcastOnResolved   *bool   `json:"broadcast_on_resolved,omitempty"`
+	DefaultVerbosity    *string `json:"default_verbosity,omitempty"`
+	BroadcastOnResolved *bool   `json:"broadcast_on_resolved,omitempty"`
 
 	// The unacked-reminder mention surface (ADR 0020). `omitempty` like the rest,
 	// so an org that never opened the screen stores nothing and reports every one
 	// of these as a DEFAULT — which for the mode is `none`, deliberately.
-	UnackedReminderMention            *string   `json:"unacked_reminder_mention,omitempty"`
-	UnackedReminderMentionList        *[]string `json:"unacked_reminder_mention_list,omitempty"`
-	UnackedReminderMentionMinSeverity *string   `json:"unacked_reminder_mention_min_severity,omitempty"`
 }
 
 // toPatch maps the stored blob onto the domain's override record. It is a
@@ -67,42 +63,32 @@ type settingsJSON struct {
 // before the domain ever saw it.
 func (s settingsJSON) toPatch() domain.SettingsPatch {
 	return domain.SettingsPatch{
-		RefireGraceS:          s.RefireGraceS,
-		ResolveGraceS:         s.ResolveGraceS,
-		GroupCloseDelayS:      s.GroupCloseDelayS,
-		FlapThreshold:         s.FlapThreshold,
-		FlapWindowS:           s.FlapWindowS,
-		FlapDigestIntervalS:   s.FlapDigestIntervalS,
-		RawRetentionDays:      s.RawRetentionDays,
-		EventRetentionMonth:   s.EventRetentionMonth,
-		UnackedReminderAfterS: s.UnackedReminderAfterS,
-		DefaultVerbosity:      s.DefaultVerbosity,
-		BroadcastOnResolved:   s.BroadcastOnResolved,
-
-		UnackedReminderMention:            s.UnackedReminderMention,
-		UnackedReminderMentionList:        s.UnackedReminderMentionList,
-		UnackedReminderMentionMinSeverity: s.UnackedReminderMentionMinSeverity,
+		RefireGraceS:        s.RefireGraceS,
+		ResolveGraceS:       s.ResolveGraceS,
+		GroupCloseDelayS:    s.GroupCloseDelayS,
+		FlapThreshold:       s.FlapThreshold,
+		FlapWindowS:         s.FlapWindowS,
+		FlapDigestIntervalS: s.FlapDigestIntervalS,
+		RawRetentionDays:    s.RawRetentionDays,
+		EventRetentionMonth: s.EventRetentionMonth,
+		DefaultVerbosity:    s.DefaultVerbosity,
+		BroadcastOnResolved: s.BroadcastOnResolved,
 	}
 }
 
 // fromPatch is toPatch's inverse, for the write path.
 func fromPatch(p domain.SettingsPatch) settingsJSON {
 	return settingsJSON{
-		RefireGraceS:          p.RefireGraceS,
-		ResolveGraceS:         p.ResolveGraceS,
-		GroupCloseDelayS:      p.GroupCloseDelayS,
-		FlapThreshold:         p.FlapThreshold,
-		FlapWindowS:           p.FlapWindowS,
-		FlapDigestIntervalS:   p.FlapDigestIntervalS,
-		RawRetentionDays:      p.RawRetentionDays,
-		EventRetentionMonth:   p.EventRetentionMonth,
-		UnackedReminderAfterS: p.UnackedReminderAfterS,
-		DefaultVerbosity:      p.DefaultVerbosity,
-		BroadcastOnResolved:   p.BroadcastOnResolved,
-
-		UnackedReminderMention:            p.UnackedReminderMention,
-		UnackedReminderMentionList:        p.UnackedReminderMentionList,
-		UnackedReminderMentionMinSeverity: p.UnackedReminderMentionMinSeverity,
+		RefireGraceS:        p.RefireGraceS,
+		ResolveGraceS:       p.ResolveGraceS,
+		GroupCloseDelayS:    p.GroupCloseDelayS,
+		FlapThreshold:       p.FlapThreshold,
+		FlapWindowS:         p.FlapWindowS,
+		FlapDigestIntervalS: p.FlapDigestIntervalS,
+		RawRetentionDays:    p.RawRetentionDays,
+		EventRetentionMonth: p.EventRetentionMonth,
+		DefaultVerbosity:    p.DefaultVerbosity,
+		BroadcastOnResolved: p.BroadcastOnResolved,
 	}
 }
 

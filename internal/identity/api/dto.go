@@ -71,26 +71,14 @@ type OrgSettingsDTO struct {
 	RawRetentionDays    int `json:"raw_retention_days"`
 	EventRetentionMonth int `json:"event_retention_months"`
 
-	// UnackedReminderAfterS is the org default a notification policy inherits when
-	// it names no delay. ZERO MEANS "no org default", which is what shipped — not
-	// "immediately". ⛔ ONE STAGE, FOREVER (§G.9.1).
-	UnackedReminderAfterS int `json:"unacked_reminder_after_s"`
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity string `json:"default_verbosity"`
 	// BroadcastOnResolved is ADR 0020's one configurable broadcast, default off.
 	BroadcastOnResolved bool `json:"broadcast_on_resolved"`
 
-	// UnackedReminderMention is WHO the one unacked reminder addresses:
-	// none | here | channel | list. DEFAULT `none`, because Slack documents that
-	// @here and @channel do not notify from inside a thread and oto's reminder is
-	// a thread reply — a default of `here` would ship a control that does nothing.
-	// ⛔ NOT A ROTA (§4.8): a fixed audience, never time-aware, never a ladder.
-	UnackedReminderMention string `json:"unacked_reminder_mention"`
-	// UnackedReminderMentionList is the explicit audience for mode `list`: Slack
-	// user (`<@U...>`) and usergroup (`<!subteam^S...>`) ids, at most ten.
-	UnackedReminderMentionList []string `json:"unacked_reminder_mention_list"`
-	// UnackedReminderMentionMinSeverity gates it on severity. DEFAULT `critical`.
-	UnackedReminderMentionMinSeverity string `json:"unacked_reminder_mention_min_severity"`
+	// ⛔ FOUR REMINDER FIELDS WERE HERE AND ARE DELETED (git-bug bd0fb1d):
+	// `unacked_reminder_after_s` and the three `unacked_reminder_mention*`. The
+	// owner withdrew the reminder and ruled the mention goes with it.
 }
 
 // OrgDTO is the tenant boundary.

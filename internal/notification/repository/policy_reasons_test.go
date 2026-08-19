@@ -93,13 +93,14 @@ func TestThePolicyReasonsCheckBoundsTheColumnAtTheEnum(t *testing.T) {
 	fx := newFixture(t)
 
 	all := domain.AllReasons()
-	// Eighteen: seventeen signal Reasons plus `digest`. It was nineteen until 00060
+	// Seventeen: sixteen signal Reasons plus `digest`. It was nineteen until 00060
 	// dropped `storm` from `notifications_reason_ck` and from `allReasons` together,
-	// and `policies_reasons_ck`'s ceiling moved with them (00060:206). The number is
-	// asserted here rather than derived so that widening the vocabulary without
-	// widening the CHECK fails HERE, where the mismatch is named, rather than as a
-	// 23514 an operator has to decode.
-	require.Len(t, all, 18, "the ceiling in the CHECK is the size of this vocabulary")
+	// and eighteen until 00067 dropped `unacked_reminder` the same way — the ceiling
+	// in `policies_reasons_ck` moved with each of them. The number is asserted here
+	// rather than derived so that widening the vocabulary without widening the CHECK
+	// fails HERE, where the mismatch is named, rather than as a 23514 an operator
+	// has to decode.
+	require.Len(t, all, 17, "the ceiling in the CHECK is the size of this vocabulary")
 
 	whole := make([]string, 0, len(all))
 	for _, r := range all {

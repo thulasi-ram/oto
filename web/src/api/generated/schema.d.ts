@@ -2621,12 +2621,17 @@ export interface components {
          *     was removed rather than kept "just in case": an enum value with no writer misleads every client
          *     that switches on it.
          *
-         *     `unacked_reminder` is oto's ONE reminder stage (§G.9.1): the signal is still firing and still
-         *     unacknowledged, so oto says so once more in the existing thread. It replaced the value this enum
-         *     used to spell `escalation`, which is a scope-banned word (SPEC §A.1, CONTEXT.md §3) — an
-         *     escalation is a ladder that ends at a person, and oto's one stage ends at a CHANNEL. Migration
-         *     `00019_unacked_reminder.sql` rewrote the stored values and narrowed the DB CHECK; a client that
-         *     still sends `escalation` is rejected with 422 `unknown notification reason`.
+         *     ⛔ `unacked_reminder` WAS HERE AND IS REMOVED (git-bug `bd0fb1d`, migration `00067`). It was
+         *     oto's one reminder stage: the signal still firing and still unacknowledged, so oto said so once
+         *     more in the existing thread. The owner withdrew it — **oto sends nothing unprompted** — and,
+         *     oto being unreleased with the database reset, the value is DELETED rather than kept readable, so
+         *     no client has to rule out a reason that can never arrive.
+         *
+         *     It had itself replaced the value this enum spelled `escalation`, a scope-banned word (SPEC
+         *     §A.1, CONTEXT.md §3) — an escalation is a ladder that ends at a person, and oto's one stage
+         *     ended at a CHANNEL. **`escalation` remains banned**: it was banned for dragging in rotas and
+         *     ownership, which is true whether or not oto reminds anyone. A client sending either value is
+         *     rejected with 422 `unknown notification reason`.
          *
          *     `snoozed` and `unsnoozed` announce a quiet period beginning and ending. They are the **only two
          *     reasons a snooze does not itself suppress** (§B.8.4): a damper that cannot announce itself is
@@ -2645,7 +2650,7 @@ export interface components {
          * @example fired
          * @enum {string}
          */
-        NotificationReason: "fired" | "new_alerts" | "some_resolved" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "unacked_reminder" | "digest";
+        NotificationReason: "fired" | "new_alerts" | "some_resolved" | "all_resolved" | "repeat" | "suppressed" | "unsuppressed" | "expired" | "refired" | "acked" | "unacked" | "snoozed" | "unsnoozed" | "enriched" | "rule_changed" | "comment" | "digest";
         /**
          * @example delivered
          * @enum {string}
@@ -2721,9 +2726,9 @@ export interface components {
          *
          *     - `all` — every reply type.
          *     - `status_changes` *(default)* — ack, unack, suppressed, unsuppressed, expired, refired,
-         *       new_alerts, all_resolved, rule_changed, comment, unacked_reminder.
-         *     - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed, unacked_reminder.
-         *     - `firing_only` — new_alerts, rule_changed, unacked_reminder.
+         *       new_alerts, all_resolved, rule_changed, comment.
+         *     - `firing_and_resolved` — new_alerts, all_resolved, expired, rule_changed.
+         *     - `firing_only` — new_alerts, rule_changed.
          *
          *     `storm` used to be present at **every** level including the quietest, on the argument that a
          *     channel which asked for less has not asked to be lied to about oto withholding things. oto
@@ -2738,41 +2743,6 @@ export interface components {
          * @enum {string}
          */
         Verbosity: "all" | "status_changes" | "firing_and_resolved" | "firing_only";
-        /**
-         * @description Who the **one** unacked reminder addresses (ADR 0020, §G.9.1).
-         *
-         *     ⚠️ **The default is `none`, and that is a research result, not timidity.** Slack's own help says
-         *     of `@here`, `@channel` and `@everyone`: *"These mentions won't notify people when their
-         *     notifications are paused or when they're used in threads."* oto's reminder is a thread reply that
-         *     broadcasts — `reply_broadcast` changes where a *reference* to it appears, and Slack documents no
-         *     exception to the thread rule for it. So on the evidence `here` and `channel` are **silent
-         *     no-ops** in the position oto uses them, and defaulting to one would ship a control that
-         *     manufactures the belief that somebody was told.
-         *
-         *     Individuals and usergroups are documented differently: a `<@U…>` mention notifies the user, and a
-         *     `<!subteam^S…>` mention notifies every user in the group, with no thread carve-out either time.
-         *     **`list` is the only form known to work.**
-         *
-         *     ⛔ **A list is not a rota** (ADR 0013, SCOPE-BOUNDARY §4.8). It is a fixed audience an operator
-         *     chose once. It must never become time-aware, never acquire a second stage, and never be derived
-         *     from a schedule. oto does not know who is on call.
-         * @default none
-         * @example none
-         * @enum {string}
-         */
-        ReminderMention: "none" | "here" | "channel" | "list";
-        /**
-         * @description The severity class at or above which the unacked reminder attaches a mention at all.
-         *
-         *     **Default `critical`.** `@here` on every unacked warning is how a channel learns to mute oto, and
-         *     a muted channel hides the real incident. The gate **fails closed**: a severity oto cannot rank —
-         *     an unknown label, or an absent one — gets no mention at any setting, so a typo'd `severity:`
-         *     cannot ping ten people. `page` is not listed because §H.2 renders it identically to `critical`.
-         * @default critical
-         * @example critical
-         * @enum {string}
-         */
-        ReminderMentionSeverity: "critical" | "warning" | "info";
         /**
          * @example healthy
          * @enum {string}
@@ -4839,19 +4809,6 @@ export interface components {
             throttle?: components["schemas"]["ThrottleDTO"] | null;
             /**
              * Format: int32
-             * @description How long a group's oldest member may stay firing and unacked before ONE reminder is sent as
-             *     a broadcast reply. Alertmanager's own `repeat_interval` defaults to four hours, which is far
-             *     too slow for an unacknowledged critical, so oto runs its own clock. `null` disables it.
-             *
-             *     ⛔ SCALAR, ONE STAGE, FOREVER (SPEC §G.9.1). It never becomes an array, a ladder or a stage
-             *     list, and its target is always the policy's own `channel_ids` — never a person. The field
-             *     was called `escalate_after_seconds` until migration `00019_unacked_reminder.sql`; the old
-             *     spelling named a concept oto does not have (SPEC §A.1, §P-20).
-             * @example 900
-             */
-            unacked_reminder_after_seconds?: number | null;
-            /**
-             * Format: int32
              * @description The DIGEST WINDOW: summarise what matched this policy over this many seconds, as ONE message
              *     per window instead of one per fact. `null` — the default — means this policy sends no digest
              *     and behaves exactly as it did before migration `00058`.
@@ -5472,20 +5429,6 @@ export interface components {
              * @default 13
              */
             event_retention_months: number;
-            /**
-             * Format: int32
-             * @description The org **default** an unacked-reminder delay falls back to when a notification policy names
-             *     none of its own. A policy that has an opinion always wins.
-             *
-             *     **Zero means "this org sets no default"**, which is what oto ships — a policy with no delay
-             *     of its own still produces no reminder. It does not mean "immediately". When set, the accepted
-             *     range is 60–86400, mirroring the `policies_reminder_ck` CHECK exactly.
-             *
-             *     ⛔ **One stage, forever** (§G.9.1). A scalar, never an array, never a ladder, and never a
-             *     target other than the policy's own `channel_ids`.
-             * @default 0
-             */
-            unacked_reminder_after_s: number;
             default_verbosity: components["schemas"]["Verbosity"];
             /**
              * @description Whether `all_resolved` is **broadcast** into the channel rather than posted quietly in the
@@ -5509,17 +5452,6 @@ export interface components {
              * @default false
              */
             broadcast_on_resolved: boolean;
-            unacked_reminder_mention: components["schemas"]["ReminderMention"];
-            /**
-             * @description The explicit audience for `unacked_reminder_mention: list` — Slack users and usergroups, in
-             *     Slack's own wire form. `@here` and `@channel` are **modes**, not members: a list that could
-             *     contain `@channel` would let a five-person list quietly become a channel-wide ping.
-             *
-             *     ⛔ **This is not a rota** (ADR 0013). A fixed audience chosen once, in configuration. It must
-             *     never become time-aware and there is never a second stage.
-             */
-            unacked_reminder_mention_list: string[];
-            unacked_reminder_mention_min_severity: components["schemas"]["ReminderMentionSeverity"];
         };
         /** @description A human principal. Password hashes and token material never appear in any response. */
         UserDTO: {
@@ -6244,8 +6176,6 @@ export interface components {
             reasons: components["schemas"]["NotificationReason"][];
             channel_ids: components["schemas"]["Uuid"][];
             throttle?: components["schemas"]["ThrottleDTO"];
-            /** Format: int32 */
-            unacked_reminder_after_seconds?: number;
             /**
              * Format: int32
              * @description Summarise what matched this policy over this many seconds instead of sending one message per
@@ -6274,8 +6204,6 @@ export interface components {
             reasons?: components["schemas"]["NotificationReason"][];
             channel_ids?: components["schemas"]["Uuid"][];
             throttle?: components["schemas"]["ThrottleDTO"] | null;
-            /** Format: int32 */
-            unacked_reminder_after_seconds?: number | null;
             /**
              * Format: int32
              * @description An explicit `null` turns the summary off; omitting the field leaves it alone. Clearing the
@@ -6675,13 +6603,8 @@ export interface components {
             raw_retention_days?: number;
             /** Format: int32 */
             event_retention_months?: number;
-            /** Format: int32 */
-            unacked_reminder_after_s?: number;
             default_verbosity?: components["schemas"]["Verbosity"];
             broadcast_on_resolved?: boolean;
-            unacked_reminder_mention?: components["schemas"]["ReminderMention"];
-            unacked_reminder_mention_list?: string[];
-            unacked_reminder_mention_min_severity?: components["schemas"]["ReminderMentionSeverity"];
         };
         OrgSettingsViewResponse: {
             data: components["schemas"]["OrgSettingsViewDTO"];
@@ -6709,25 +6632,12 @@ export interface components {
             raw_retention_days?: number;
             /** Format: int32 */
             event_retention_months?: number;
-            /**
-             * Format: int32
-             * @description The org default a notification policy inherits when it names no delay of its own. To remove
-             *     the default, name this key in `reset` rather than sending `0` — `0` is out of range here,
-             *     because a reminder delay of zero seconds is not a delay.
-             *
-             *     ⛔ **One stage, forever** (§G.9.1).
-             */
-            unacked_reminder_after_s?: number;
             default_verbosity?: components["schemas"]["Verbosity"];
             /**
              * @description Broadcast `all_resolved` into the channel (ADR 0020). Default off, and the **only**
              *     configurable broadcast — a broadcast cannot be un-sent.
              */
             broadcast_on_resolved?: boolean;
-            unacked_reminder_mention?: components["schemas"]["ReminderMention"];
-            /** @description The explicit audience for mode `list`. ⛔ Not a rota (ADR 0013): fixed ids, never time-aware. */
-            unacked_reminder_mention_list?: string[];
-            unacked_reminder_mention_min_severity?: components["schemas"]["ReminderMentionSeverity"];
             /**
              * @description Settings keys to return to oto's shipped default. After a reset the key's origin reports
              *     `default` again. An unknown key is rejected with 422, never ignored.

@@ -174,9 +174,9 @@ func (r *ConfigRepository) GetPolicy(
 const insertPolicySQL = `
 INSERT INTO notification_policies (
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
-  throttle, unacked_reminder_after_s, digest_window_s, digest_floor,
+  throttle, digest_window_s, digest_floor,
   created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
 RETURNING id`
 
 // CreatePolicy writes one routing rule.
@@ -225,7 +225,7 @@ func (r *ConfigRepository) CreatePolicy(
 	var stored uuid.UUID
 	err = r.db(ctx).QueryRow(ctx, insertPolicySQL,
 		newID, s.OrgID(), in.Name, priority, enabled, matchers, reasons,
-		in.ChannelIDs, throttle, secondsPtr(in.UnackedReminderAfter),
+		in.ChannelIDs, throttle,
 		// NULL is "no digest", which is the default and the state of every row
 		// written before migration 00058. Nothing is defaulted here: a caller that
 		// asked for no window must not acquire one from the repository.
@@ -256,17 +256,16 @@ UPDATE notification_policies SET
     reasons     = COALESCE($7, reasons),
     channel_ids = COALESCE($8, channel_ids),
     throttle    = CASE WHEN $9  THEN $10 ELSE throttle END,
-    unacked_reminder_after_s = CASE WHEN $11 THEN $12 ELSE unacked_reminder_after_s END,
-    digest_window_s = CASE WHEN $13 THEN $14 ELSE digest_window_s END,
-    digest_floor    = CASE WHEN $15 THEN $16 ELSE digest_floor END,
-    updated_at  = GREATEST(updated_at, $17)
+    digest_window_s = CASE WHEN $11 THEN $12 ELSE digest_window_s END,
+    digest_floor    = CASE WHEN $13 THEN $14 ELSE digest_floor END,
+    updated_at  = GREATEST(updated_at, $15)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
 // UpdatePolicy applies a partial change.
 //
-// `throttle`, `unacked_reminder_after_s`, `digest_window_s` and `digest_floor` are
-// written through a CASE rather than a COALESCE because all four are nullable and
+// `throttle`, `digest_window_s` and `digest_floor` are
+// written through a CASE rather than a COALESCE because all three are nullable and
 // clearing them is a real operation: COALESCE cannot express "set this to NULL",
 // and an operator turning a throttle or a digest off must be able to say so.
 //
@@ -288,8 +287,6 @@ func (r *ConfigRepository) UpdatePolicy(
 		channels    *[]uuid.UUID
 		setThrottle bool
 		throttleVal []byte
-		setReminder bool
-		reminderVal *int
 		setWindow   bool
 		windowVal   *int
 		setFloor    bool
@@ -320,10 +317,6 @@ func (r *ConfigRepository) UpdatePolicy(
 		}
 		throttleVal = b
 	}
-	if p.UnackedReminderAfter != nil {
-		setReminder = true
-		reminderVal = secondsPtr(*p.UnackedReminderAfter)
-	}
 	if p.DigestWindow != nil {
 		setWindow = true
 		windowVal = secondsPtr(*p.DigestWindow)
@@ -336,7 +329,7 @@ func (r *ConfigRepository) UpdatePolicy(
 	var stored uuid.UUID
 	err := r.db(ctx).QueryRow(ctx, updatePolicySQL,
 		s.OrgID(), policyID, p.Name, p.Priority, p.Enabled, matchers, reasons, channels,
-		setThrottle, throttleVal, setReminder, reminderVal,
+		setThrottle, throttleVal,
 		setWindow, windowVal, setFloor, floorVal, r.clock.Now().UTC(),
 	).Scan(&stored)
 	if err != nil {

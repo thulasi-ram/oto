@@ -260,11 +260,12 @@ const REASON_LABEL: Record<NotificationReason, string> = {
   enriched: "enrichment arrived",
   rule_changed: "rule changed",
   comment: "comment added",
-  // Note the wording: this is oto's own timer on an unacknowledged signal, and
-  // it is ONE stage that ends at a channel. oto has no ladder, no rota and no
-  // notion of who is next — which is why the reason is not called what the rest
-  // of this industry calls it (SPEC §G.9.1, §A.1).
-  unacked_reminder: "still firing and unacknowledged",
+  // ⛔ `unacked_reminder` WAS HERE AND IS GONE FROM THE ENUM (git-bug bd0fb1d,
+  // migration 00067). It was oto's own timer on an unacknowledged signal — ONE
+  // stage that ended at a channel, with no ladder, no rota and no notion of who
+  // was next, which is why it was never called what the rest of the industry
+  // calls it. The owner withdrew it: oto sends nothing unprompted. `escalation`
+  // remains a banned word (§A.1) for the reason it always was.
   // There is deliberately no `severity_raised` here: `severity` is an ordinary
   // Prometheus label and is hashed into `alert_key`, so two severities of one
   // rule are two Alerts rather than one Alert changing. Nothing can observe a
@@ -413,15 +414,6 @@ const PolicyRow: Component<{
             <p title="A throttled notification is recorded as suppressed with a reason, never silently dropped.">
               <span class="text-ink-subtle">at most</span> {t().max} per{" "}
               {Math.round(t().window_seconds / 60)} minutes
-            </p>
-          )}
-        </Show>
-        <Show when={p().unacked_reminder_after_seconds}>
-          {(secs) => (
-            // vocab:allow — user-facing copy that DENIES the concept; the sentence exists to tell an operator oto will not page.
-            <p title="oto's own clock on an unacknowledged signal. It broadcasts one reply in the existing thread; it does not page anyone and it does not know who is on call.">
-              <span class="text-ink-subtle">if still unacknowledged after</span>{" "}
-              {Math.round(secs() / 60)} minutes, say so once
             </p>
           )}
         </Show>

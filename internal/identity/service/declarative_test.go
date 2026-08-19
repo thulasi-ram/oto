@@ -204,20 +204,16 @@ func TestAllKeysCanBeSetDeclaratively(t *testing.T) {
 	t.Parallel()
 
 	values := map[domain.SettingKey]any{
-		domain.KeyRefireGrace:                       600,
-		domain.KeyResolveGrace:                      300,
-		domain.KeyGroupCloseDelay:                   300,
-		domain.KeyFlapThreshold:                     5,
-		domain.KeyFlapWindow:                        1800,
-		domain.KeyFlapDigestInterval:                900,
-		domain.KeyRawRetention:                      14,
-		domain.KeyEventRetention:                    13,
-		domain.KeyUnackedReminder:                   900,
-		domain.KeyDefaultVerbosity:                  "firing_only",
-		domain.KeyBroadcastOnResolved:               true,
-		domain.KeyUnackedReminderMention:            "list",
-		domain.KeyUnackedReminderMentionList:        []string{"<@U012AB3CD>"},
-		domain.KeyUnackedReminderMentionMinSeverity: "warning",
+		domain.KeyRefireGrace:         600,
+		domain.KeyResolveGrace:        300,
+		domain.KeyGroupCloseDelay:     300,
+		domain.KeyFlapThreshold:       5,
+		domain.KeyFlapWindow:          1800,
+		domain.KeyFlapDigestInterval:  900,
+		domain.KeyRawRetention:        14,
+		domain.KeyEventRetention:      13,
+		domain.KeyDefaultVerbosity:    "firing_only",
+		domain.KeyBroadcastOnResolved: true,
 	}
 
 	entries := make([]domain.DeclaredEntry, 0, len(values))

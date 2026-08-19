@@ -79,10 +79,11 @@ func (c Capability) Has(want Capability) bool { return c&want == want }
 // card. An empty Mode means the Reason touches no root at all.
 func rootModeFor(r Reason, threadExists bool) Mode {
 	switch r {
-	case ReasonComment, ReasonUnackedReminder:
-		// Neither changes the signal's state, so neither has anything to say to
-		// the root card. Rewriting the card to announce a comment would make the
-		// card's `updated` timestamp lie about when the SIGNAL last changed.
+	case ReasonComment:
+		// It does not change the signal's state, so it has nothing to say to the
+		// root card. Rewriting the card to announce a comment would make the card's
+		// `updated` timestamp lie about when the SIGNAL last changed.
+		// (`unacked_reminder` was the other arm — git-bug bd0fb1d.)
 		return ""
 
 	default:
@@ -126,7 +127,12 @@ type PlanInput struct {
 	// Verbosity is the destination Channel's setting.
 	Verbosity Verbosity
 	// ThreadUpdates is `channels.thread_updates`. False reduces every mode to
-	// update_root except the reminder, which is always a broadcast.
+	// update_root.
+	//
+	// ⛔ THERE USED TO BE ONE EXCEPTION — the unacked reminder, always a broadcast,
+	// because a reminder nobody sees is not a reminder. The reminder is gone
+	// (git-bug bd0fb1d) and so is the exception: this field now means exactly what
+	// it says, for every Reason.
 	ThreadUpdates bool
 	// Capabilities is the destination's negotiated bitmask. Negotiation happens
 	// HERE, centrally, and never inside a provider (§H.10).
@@ -298,38 +304,21 @@ func PlanFor(in PlanInput) Plan {
 		return Plan{}
 	}
 
-	// ---- the one reminder stage -----------------------------------------
-	// It is a broadcast reply and `thread_updates=false` does not reduce it: a
-	// reminder nobody sees is not a reminder. Where the destination cannot
-	// broadcast, it degrades to a plain reply, and where it cannot thread
-	// either, to a root update — loud enough to still be a reminder.
+	// ⛔ THE ONE REMINDER STAGE WAS PLANNED HERE AND IS DELETED (git-bug bd0fb1d).
+	// It was a broadcast reply that `thread_updates=false` did not reduce — a
+	// reminder nobody sees is not a reminder — degrading to a plain reply where the
+	// destination could not broadcast and to a root update where it could not
+	// thread. The owner withdrew the feature: oto sends nothing unprompted.
 	//
-	// ⛔ NO DAMPER BINDS HERE ANY MORE, AND THE HISTORY IS WORTH KEEPING. This branch
-	// once returned an UNCONDITIONAL broadcast; a storm across two hundred
-	// unacknowledged alerts then produced two hundred `chat.postMessage` calls into
-	// one channel, so a storm gate was added and the reminder degraded to a quiet
-	// thread reply. Both the flood and the gate are gone: nothing evaluates a storm,
-	// and the retention window keeps one case per flapping alert, so the volume the
-	// gate existed for is removed at its source rather than at delivery. The only
-	// thing that still quietens a reminder is a destination that CANNOT broadcast.
-	if in.Reason == ReasonUnackedReminder {
-		mode := ModeThreadReply
-		damp := ""
-		switch {
-		case !in.Capabilities.Has(CapThreading):
-			// Nothing to reply to. A root update is the loudest thing left.
-			return Plan{Modes: []Mode{ModeUpdateRoot}}
-		case in.Capabilities.Has(CapBroadcast):
-			mode = ModeBroadcastReply
-		default:
-			damp = "no_capability"
-		}
-		p := Plan{Modes: []Mode{mode}}
-		if mode != ModeBroadcastReply && damp != "" {
-			p.BroadcastDamped, p.BroadcastDampReason = true, damp
-		}
-		return p
-	}
+	// ⭐ THE HISTORY IS WORTH KEEPING BECAUSE IT IS A DAMPER ARGUMENT, NOT A REMINDER
+	// ARGUMENT. This branch once returned an UNCONDITIONAL broadcast; a storm across
+	// two hundred unacknowledged alerts produced two hundred `chat.postMessage`
+	// calls into one channel, so a storm gate was added and the reminder degraded to
+	// a quiet thread reply. Both the flood and the gate are gone — nothing evaluates
+	// a storm, and the case retention window keeps one case per flapping alert, so
+	// the volume the gate existed for is removed at its SOURCE rather than at
+	// delivery. That lesson outlives the reminder: the fix for a flood is upstream
+	// of the send, never a damper on it.
 
 	var p Plan
 

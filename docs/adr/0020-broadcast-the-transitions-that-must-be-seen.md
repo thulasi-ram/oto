@@ -1,10 +1,31 @@
 # 0020 — Broadcast the transitions that must be seen
 
 **Status:** Accepted · 2026-08-08 · **Amended four times — three by research, once by a live
-Slack workspace** — see
+Slack workspace** · ⛔ **Amendment 3 SUPERSEDED 2026-08-20: the unacked reminder and its mention
+audience are REMOVED** (git-bug `bd0fb1d`) — see the callout below. See
 [Amendment 1](#amendment-1--the-set-narrows-to-two-and-the-storm-moves-to-the-channel),
 [Amendment 2](#amendment-2--severity_raised-is-unreachable-and-has-been-deleted) and
 [Amendment 4](#amendment-4--the-stripping-premise-did-not-survive-the-first-live-workspace)
+
+> ⛔ **AMENDMENT 3 IS SUPERSEDED — THE UNACKED REMINDER IS GONE (2026-08-20, git-bug `bd0fb1d`,
+> migrations `00067`/`00068`).** The owner withdrew it: oto sends nothing unprompted. The mention
+> audience went with it, because a mention was never a property of Slack delivery in general — it
+> was the audience half of that one fact and had no other producer.
+>
+> ⭐ **This TIGHTENS the boundary this ADR was written to defend.** Amendment 3 permitted individual
+> `<@U…>` mentions on the argument that *addressing* a known audience is not *resolving* who is
+> responsible. That argument held, and it is now moot: with no mention surface at all there is
+> nowhere left for oto to name a responder (§4.8, H-1, FR-1).
+>
+> ⚠️ **And it was never verified.** Amendment 3 shipped on the strength of Slack's documentation
+> alone; `2078a07` records that the `@`-mention path was **never once observed working** against a
+> real workspace, and Amendment 4 immediately below is the standing proof that Slack's documentation
+> can be half wrong. The step that would have tested it — `slack-live-verification.md` step 8 — was
+> never run and is deleted with the feature. So this question closes by removal, not by evidence.
+>
+> **What survives unchanged:** the two binding rules — the top-level `text` must be self-sufficient,
+> and no broadcast may depend on a button. Both were always independent of who was mentioned.
+> `refired` is now the only reason that always broadcasts.
 
 > ⚠️ **Read Amendment 4 before relying on anything below about the in-channel copy being
 > "stripped".** Slack's documentation says the `thread_broadcast` reference cannot carry attachments

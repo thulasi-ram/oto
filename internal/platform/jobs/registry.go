@@ -136,10 +136,9 @@ type Handlers struct {
 	SilencesSync       Handler[SilencesSyncArgs]
 	SlackInteraction   Handler[SlackInteractionArgs]
 
-	CaseReap              Handler[CaseReapArgs]
-	GroupClose            Handler[GroupCloseArgs]
-	NotifyUnackedReminder Handler[NotifyUnackedReminderArgs]
-	NotifyDigest          Handler[NotifyDigestArgs]
+	CaseReap     Handler[CaseReapArgs]
+	GroupClose   Handler[GroupCloseArgs]
+	NotifyDigest Handler[NotifyDigestArgs]
 
 	PartitionsManage Handler[PartitionsManageArgs]
 	RetentionPrune   Handler[RetentionPruneArgs]
@@ -220,10 +219,6 @@ func RegisterAll(r *Registry, h Handlers) error {
 				orStub(h.GroupClose, KindGroupClose))
 		},
 		func() error {
-			return Register(r, Spec{Queue: QueueLifecycle, PayloadVersion: 1, Timeout: 2 * time.Minute},
-				orStub(h.NotifyUnackedReminder, KindNotifyUnackedReminder))
-		},
-		func() error {
 			// Two minutes, like every other per-tenant lifecycle sweep, and per TENANT
 			// for the same reason: the fan-out tick does a page read and one batch
 			// insert, and one tenant's pass is a bounded fold over at most
@@ -269,7 +264,7 @@ func RegisterAll(r *Registry, h Handlers) error {
 // AND a nil org id, and both expansions happen in the handler.
 //
 // ⭐ THE PER-TENANT PERIODICS ARE STILL HERE, AND THE ZERO ARGS BELOW ARE WHY.
-// `case.reap`, `group.close`, `notify.unacked_reminder`,
+// `case.reap`, `group.close`,
 // `notify.digest`, `retention.prune` and `stats.rollup` are all fanned out per tenant now
 // (jobs.TenantFanOut), but their SCHEDULE still needs no list: an args struct
 // with a nil OrgID IS the fan-out tick, and expanding it into one job per
@@ -300,9 +295,6 @@ func AddDefaultPeriodic(r *Registry, clk clock.Clock) {
 	})
 	add(time.Minute, KindGroupClose, func() (river.JobArgs, *river.InsertOpts) {
 		return GroupCloseArgs{}, nil
-	})
-	add(time.Minute, KindNotifyUnackedReminder, func() (river.JobArgs, *river.InsertOpts) {
-		return NotifyUnackedReminderArgs{}, nil
 	})
 	// The digest tick. Once a minute is not the window — the window is arithmetic on
 	// the clock, aligned to the UTC day (`notification/domain.Digest.WindowStart`) —

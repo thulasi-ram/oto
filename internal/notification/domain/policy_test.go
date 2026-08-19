@@ -103,10 +103,17 @@ func TestARepeatedReasonIsReportedOncePerValue(t *testing.T) {
 }
 
 // The ceiling followed the wire down to 18 when uniqueness became real: a set
-// drawn from an 18-value closed enum cannot reach 19, so 32 was a number no row
-// could ever test. The two bounds are asserted together because they now share a
+// drawn from a closed enum cannot exceed it, so 32 was a number no row could ever
+// test. The two bounds are asserted together because they now share a
 // justification — and because a Validate that only counted would let the whole
 // enum through twice while calling it 36 reasons.
+//
+// ⛔ IT WAS BRIEFLY "THE SUBSCRIBABLE SET" AND IS `AllReasons()` AGAIN. git-bug
+// bd0fb1d first RETIRED `unacked_reminder` — readable, unsubscribable — which split
+// the two into different lengths. The owner then ruled it DELETED outright, oto
+// being unreleased with the database due for a reset, so the split collapsed and
+// there is one vocabulary again. If a value is ever genuinely readable-but-unwritable,
+// the split comes back and so does the distinction this comment records.
 func TestTheReasonCeilingIsTheSizeOfTheReasonEnum(t *testing.T) {
 	t.Parallel()
 
@@ -124,6 +131,17 @@ func TestTheReasonCeilingIsTheSizeOfTheReasonEnum(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatalf("a policy reacting to the entire Reason vocabulary was refused: %v", err)
 	}
+
+	// A withdrawn value is refused as an unknown enum member, not as a special
+	// case: `unacked_reminder` is gone from `reasonSubjects`, so `Valid()` is what
+	// turns it away and no separate rule is needed.
+	p.Reasons = append(append([]domain.Reason{}, all[:2]...), domain.Reason("unacked_reminder"))
+	if err := p.Validate(); err == nil {
+		t.Fatal("a policy naming the withdrawn unacked_reminder was accepted")
+	} else if _, ok := violation(err, "reasons", "enum"); !ok {
+		t.Errorf("the refusal is not reported as reasons/enum: %v", err)
+	}
+	p.Reasons = all
 
 	// One more element cannot be a new reason, so it is necessarily a repeat —
 	// which is exactly why the ceiling and the set rule are the same statement.

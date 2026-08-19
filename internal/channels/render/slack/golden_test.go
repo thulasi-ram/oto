@@ -119,11 +119,14 @@ func smokeView() *domain.NotificationView {
 	}
 }
 
-// renderView renders v in mode. `mentions` is variadic because exactly one card
-// carries an audience (the unacked reminder) and every other caller must not have
+// renderView renders v in mode.
+//
+// ⛔ IT TOOK A VARIADIC `mentions` UNTIL git-bug bd0fb1d, because exactly one card
+// carried an audience — the unacked reminder. The reminder is withdrawn and the
+// mention went with it, so there is no audience to pass and no caller that needs
 // to say so.
 func renderView(
-	t *testing.T, v *domain.NotificationView, mode domain.Mode, mentions ...string,
+	t *testing.T, v *domain.NotificationView, mode domain.Mode,
 ) domain.RenderedMessage {
 	t.Helper()
 	msg, err := slackrender.New(clock.New()).Render(context.Background(), v, domain.RenderOptions{
@@ -132,7 +135,6 @@ func renderView(
 		BaseURL:        "http://localhost:8080",
 		MaxInstances:   10,
 		ShowFieldEmoji: true,
-		Mentions:       mentions,
 	})
 	if err != nil {
 		t.Fatalf("render: %v", err)
@@ -648,35 +650,20 @@ func TestGoldenAllResolvedThreadReply(t *testing.T) {
 	golden(t, "reply_all_resolved.golden.json", msg.Payload)
 }
 
-// ⭐ TestGoldenUnackedReminderMentionBroadcast — the mention, byte for byte.
+// ⛔ `TestGoldenUnackedReminderMentionBroadcast` AND `unackedReminderMentionView`
+// WERE HERE AND ARE DELETED (git-bug bd0fb1d), with their fixture
+// `reply_unacked_reminder_mention.golden.json`.
 //
-// The rule this pins is argued in reply_mention_test.go and is not repeated here:
-// the mention lives in the top-level `text` and NOWHERE else, because that is the
-// only position a push notification and a screen reader reach (ADR 0020,
-// Amendment 3, re-justified by Amendment 4). Those tests assert the property; this
-// fixture is the wire form a human compares against what their phone actually did.
+// They pinned the WIRE SHAPES of a mention — `<@U024BE7LH>` and
+// `<!subteam^SAZ94GDB8>` are Slack's own encodings, and a mention that reaches the
+// channel as the literal text `@ram` notifies nobody while looking identical in a
+// screenshot. That was worth a golden while oto mentioned anybody. The owner
+// withdrew the unacked reminder and ruled the mention goes with it, so there is no
+// longer a path that can emit either shape.
 //
-// ⚠️ THE WIRE SHAPES ARE THE WHOLE POINT. `<@U024BE7LH>` and
-// `<!subteam^SAZ94GDB8>` are Slack's own encodings; a mention that reaches the
-// channel as the literal text `@ram` notifies nobody, and looks identical in a
-// screenshot. That failure is invisible offline and obvious on a locked phone,
-// which is why step 4 of the live checklist exists.
-func TestGoldenUnackedReminderMentionBroadcast(t *testing.T) {
-	t.Parallel()
-	msg := renderView(t, unackedReminderMentionView(), domain.ModeBroadcastReply,
-		"<@U024BE7LH>", "<!subteam^SAZ94GDB8>")
-	golden(t, "reply_unacked_reminder_mention.golden.json", msg.Payload)
-}
-
-func unackedReminderMentionView() *domain.NotificationView {
-	v := smokeView()
-	reminded := upstreamStart.Add(15 * time.Minute)
-	v.Reason = "unacked_reminder"
-	v.Group.LastActivityAt = reminded
-	v.Notifications = 2
-	v.RenderedAt = reminded
-	return v
-}
+// ⚠️ THE LIVE CHECKLIST STEP THEY BACKED IS ALSO GONE, not merely unattended:
+// `2078a07` records that this half was never once observed working against a real
+// workspace. Retiring an unverified surface is the cheap direction.
 
 // TestGoldenSnoozed* — THE CARDS OTO SENDS WHEN A HUMAN ASKS IT TO GO QUIET.
 //

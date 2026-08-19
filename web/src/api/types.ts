@@ -52,10 +52,6 @@ export type DeliveryErrorClass = S["DeliveryErrorClass"];
 export type ChannelType = S["ChannelType"];
 export type RendererId = S["RendererId"];
 export type Verbosity = S["Verbosity"];
-/** Who the ONE unacked reminder addresses. `list` is the only form Slack documents as notifying from a thread. */
-export type ReminderMention = S["ReminderMention"];
-/** The severity class at or above which a reminder attaches a mention at all. */
-export type ReminderMentionSeverity = S["ReminderMentionSeverity"];
 export type ChannelHealthStatus = S["ChannelHealthStatus"];
 export type SourceKind = S["SourceKind"];
 export type SourceHealthStatus = S["SourceHealthStatus"];

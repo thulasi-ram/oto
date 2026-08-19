@@ -138,7 +138,6 @@ var (
 	_ notifservice.PolicyStore    = (*notifrepo.PolicyRepository)(nil)
 	_ notifservice.ChannelStore   = (*notifrepo.ChannelRepository)(nil)
 	_ notifservice.EventSink      = (*notifrepo.EventRepository)(nil)
-	_ notifservice.ReminderStore  = (*notifrepo.ReminderRepository)(nil)
 	_ notifservice.HistoryStore   = (*notifrepo.NotificationRepository)(nil)
 	_ notifservice.GateFactory    = (*notifrepo.OrderingGates)(nil)
 	_ notifservice.SnapshotSource = (*notifrepo.SnapshotRepository)(nil)

@@ -135,14 +135,10 @@ type Settings struct {
 	// EventRetention is how long `alert_events` are kept.
 	EventRetention time.Duration
 
-	// UnackedReminderAfter is the org DEFAULT a notification policy inherits when
-	// its own `unacked_reminder_after_s` is NULL. Zero means the org sets no
-	// default, which is what shipped: a policy with no delay of its own has no
-	// reminder.
-	//
-	// ⛔ ONE STAGE, FOREVER (§G.9.1). A scalar, never an array, never a ladder,
-	// and never a target other than the policy's own channel_ids.
-	UnackedReminderAfter time.Duration
+	// ⛔ `UnackedReminderAfter` AND THE THREE MENTION FIELDS WERE HERE AND ARE
+	// DELETED (git-bug bd0fb1d, migration 00068). They were the org-level reminder
+	// default and the audience it addressed. The owner withdrew the reminder and
+	// ruled the mention goes with it; `mention.go` went with them.
 
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity. It
 	// is a `channels_verbosity_ck` value, held as a string because `identity` owns
@@ -155,21 +151,6 @@ type Settings struct {
 	// quietly. Every other broadcasting transition is fixed by policy, because a
 	// broadcast cannot be un-sent and the set is a product decision, not a dial.
 	BroadcastOnResolved bool
-
-	// UnackedReminderMention is WHO the one unacked reminder addresses:
-	// none | here | channel | list (mention.go). DEFAULT `none`.
-	//
-	// ⛔ NOT A ROTA, EVER (§4.8, ADR 0013). A fixed audience chosen once, in
-	// configuration. No time of day, no weekday, no schedule, no second stage.
-	UnackedReminderMention string
-	// UnackedReminderMentionList is the explicit audience for mode `list`: Slack
-	// user and usergroup ids, at most MaxReminderMentions of them.
-	UnackedReminderMentionList []string
-	// UnackedReminderMentionMinSeverity is the severity class at or above which a
-	// mention is attached at all. DEFAULT `critical` — `@here` on every unacked
-	// warning is how a channel gets muted, and a muted channel hides the real
-	// incident.
-	UnackedReminderMentionMinSeverity string
 }
 
 // The defaults of SPEC §D.1, restated as the values a brand-new org boots with.
@@ -248,20 +229,8 @@ const (
 	// a preference: it is the longest window that keeps one org inside ADR 0014's
 	// own scale envelope of 50–100M rows.
 	DefaultEventRetention = tuning.DefaultEventRetention
-	// DefaultUnackedReminderAfter is ZERO, and the zero is the decision: oto ships
-	// no org-level reminder default, so a notification policy that names no delay
-	// still produces no reminder. Anything else would turn reminders on for every
-	// install that merely upgrades.
-	DefaultUnackedReminderAfter = 0 * time.Second
 	// DefaultBroadcastOnResolved is off (ADR 0020).
 	DefaultBroadcastOnResolved = false
-	// DefaultUnackedReminderMention is `none`, and the default is a RESEARCH
-	// RESULT: Slack documents that @here and @channel do not notify when used in
-	// threads, and oto's reminder is a thread reply. Shipping `here` by default
-	// would ship a setting that silently does nothing. See mention.go.
-	DefaultUnackedReminderMention = MentionNone
-	// DefaultUnackedReminderMentionMinSeverity is `critical` only.
-	DefaultUnackedReminderMentionMinSeverity = MentionSeverityCritical
 )
 
 // DefaultSettings is the tuning an org has until somebody changes it.
@@ -281,12 +250,8 @@ func DefaultSettings() Settings {
 		RawRetention:       DefaultRawRetention,
 		EventRetention:     DefaultEventRetention,
 
-		UnackedReminderAfter: DefaultUnackedReminderAfter,
-		DefaultVerbosity:     DefaultChannelVerbosity,
-		BroadcastOnResolved:  DefaultBroadcastOnResolved,
-
-		UnackedReminderMention:            DefaultUnackedReminderMention,
-		UnackedReminderMentionMinSeverity: DefaultUnackedReminderMentionMinSeverity,
+		DefaultVerbosity:    DefaultChannelVerbosity,
+		BroadcastOnResolved: DefaultBroadcastOnResolved,
 	}
 }
 
@@ -325,16 +290,6 @@ func (s Settings) Normalise() Settings {
 	if !channelVerbosities[s.DefaultVerbosity] {
 		s.DefaultVerbosity = d.DefaultVerbosity
 	}
-	if !ValidMentionMode(s.UnackedReminderMention) {
-		s.UnackedReminderMention = d.UnackedReminderMention
-	}
-	if !ValidMentionMinSeverity(s.UnackedReminderMentionMinSeverity) {
-		s.UnackedReminderMentionMinSeverity = d.UnackedReminderMentionMinSeverity
-	}
-	// UnackedReminderAfter is deliberately NOT defaulted here: zero is a meaningful
-	// value for it — "this org sets no reminder default" — and rewriting it to a
-	// default would give every policy a reminder nobody asked for. Its BOUND is
-	// still enforced, on the write path and on SettingsPatch.Settings.
 	return s
 }
 

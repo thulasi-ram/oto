@@ -749,7 +749,7 @@ func (o orgSettings) GroupLifecycle(
 // invalidation message, and no window in which two pods disagree about how loud
 // oto should be. If a cache is ever added it MUST carry a bounded TTL: the
 // failure it would introduce is the silent one, where an operator raises
-// `unacked_reminder_after_s` mid-incident, sees nothing change, and cannot tell a
+// `broadcast_on_resolved` mid-incident, sees nothing change, and cannot tell a
 // wrong setting from a stale one.
 func (o orgSettings) NotificationDefaults(
 	ctx context.Context, s db.TenantScope,
@@ -767,14 +767,8 @@ func (o orgSettings) NotificationDefaults(
 	}
 	cfg := org.Settings.Normalise()
 	return notifservice.OrgDefaults{
-		Broadcast:            notifdomain.BroadcastPolicy{Resolved: cfg.BroadcastOnResolved},
-		Verbosity:            notifdomain.Verbosity(cfg.DefaultVerbosity),
-		UnackedReminderAfter: cfg.UnackedReminderAfter,
-		ReminderMention: notifdomain.MentionPolicy{
-			Mode:        cfg.UnackedReminderMention,
-			List:        cfg.UnackedReminderMentionList,
-			MinSeverity: cfg.UnackedReminderMentionMinSeverity,
-		},
+		Broadcast: notifdomain.BroadcastPolicy{Resolved: cfg.BroadcastOnResolved},
+		Verbosity: notifdomain.Verbosity(cfg.DefaultVerbosity),
 	}, nil
 }
 

@@ -62,10 +62,12 @@ func DefaultBroadcastPolicy() BroadcastPolicy { return BroadcastPolicy{Resolved:
 // two whose quiet form is genuinely INVISIBLE, which is the only property that
 // earns an irreversible channel post:
 //
-//   - `unacked_reminder`  — its purpose is to reach someone who has NOT engaged.
-//     In-thread it reaches only the already-engaged, which
-//     is precisely the wrong audience. This is the case
-//     `reply_broadcast` was put in oto for.
+//   - ⛔ `unacked_reminder` WAS THE FIRST OF THE TWO AND IS DELETED (git-bug
+//     bd0fb1d). Its purpose was to reach someone who had NOT
+//     engaged, and in-thread it reached only the already-engaged
+//     — precisely the wrong audience. It was the case
+//     `reply_broadcast` was put in oto for; `refired` now carries
+//     that mechanism alone.
 //   - `refired`           — ⛔ RETAINED FOR HISTORY; NOTHING PRODUCES IT. It was
 //     T8's reason, and ADR 0040 retired T8: every re-fire
 //     now opens a new episode. It stays in this set because
@@ -96,7 +98,7 @@ func DefaultBroadcastPolicy() BroadcastPolicy { return BroadcastPolicy{Resolved:
 // traffic of every well-handled alert, punishing the behaviour oto wants.
 func (p BroadcastPolicy) Warrants(r Reason) bool {
 	switch r {
-	case ReasonRefired, ReasonUnackedReminder:
+	case ReasonRefired:
 		return true
 	case ReasonAllResolved:
 		return p.Resolved

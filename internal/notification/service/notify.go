@@ -62,12 +62,6 @@ type OrgDefaults struct {
 	// Verbosity is the fallback for a Channel with no verbosity of its own. Empty
 	// means the schema default.
 	Verbosity domain.Verbosity
-	// UnackedReminderAfter is the org's fallback delay for a policy that names
-	// none. Zero means the org sets none, which is what shipped.
-	//
-	// ⛔ ONE STAGE, FOREVER (§G.9.1). A scalar, and a FALLBACK — never a second
-	// threshold and never a ladder.
-	UnackedReminderAfter time.Duration
 	// ⛔ `StormCooldown` WAS HERE AND IS DELETED WITH THE LATCH IT WINDOWED. It
 	// carried the org's `storm_cooldown_s` into the once-per-channel storm-notice
 	// latch, so that a storm's start and its own end each got through while every
@@ -79,13 +73,16 @@ type OrgDefaults struct {
 	// `NewDeclarative` refuses a config still naming one with `unknown_key`. Migration
 	// 00059 dropped the column the latch itself lived in, `channels.storm_notice_at`.
 	//
-	// ReminderMention is who the ONE unacked reminder addresses (ADR 0020). The
-	// zero value is `none`, which is the shipped default and a deliberate one:
-	// Slack does not notify on @here/@channel from inside a thread, and the
-	// reminder is a thread reply.
+	// ⛔ `UnackedReminderAfter` AND `ReminderMention` WERE HERE AND ARE DELETED
+	// (git-bug bd0fb1d, migrations 00067 and 00068). They were the org's fallback
+	// reminder delay and the audience that reminder addressed. The owner withdrew
+	// the feature — oto sends nothing unprompted — and ruled the mention goes with
+	// it: a mention is not a property of Slack delivery in general, it is the
+	// audience half of the one reminder and existed nowhere else.
 	//
-	// ⛔ NOT A ROTA (§4.8). A fixed audience and a severity floor, nothing else.
-	ReminderMention domain.MentionPolicy
+	// ⭐ THAT STRENGTHENS §4.8 RATHER THAN RELAXING IT. The mention policy was
+	// already forbidden from being a rota; with no mention surface at all there is
+	// no place left for oto to name a responder.
 }
 
 // SettingsReader reads one org's notification-level tuning from `orgs.settings`.
@@ -542,7 +539,6 @@ func (s *NotificationService) orgDefaults(ctx context.Context, scope db.TenantSc
 		def.Verbosity = got.Verbosity
 	}
 	def.Broadcast = got.Broadcast
-	def.ReminderMention = got.ReminderMention
 	return def
 }
 

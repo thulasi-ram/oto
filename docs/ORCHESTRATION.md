@@ -104,10 +104,14 @@ being declared done, which is the standard the depguard rules were held to.
 
 ## Open work handed on from the phase-4 audit
 
-- `escalate_after_seconds` still ships on the wire from
-  `internal/notification/api/{dto,mapper}.go`. The DB column (00019), the
-  contract and the UI all say `unacked_reminder_after_s(econds)`; the Go DTO is
-  the last holdout and is listed in `tools/lintvocab/baseline.txt`.
+- ~~`escalate_after_seconds` still ships on the wire from
+  `internal/notification/api/{dto,mapper}.go`; the Go DTO is the last holdout of
+  the `escalation` → `unacked_reminder` rename and is listed in
+  `tools/lintvocab/baseline.txt`.~~ **Closed the hard way (git-bug `bd0fb1d`):
+  the owner withdrew the unacked reminder, so the field is gone from the wire,
+  the DB and the UI rather than renamed.** `escalation` remains a banned word —
+  it was banned for dragging in rotas and ownership, which is true whether or not
+  oto reminds anyone.
 - ~~G1 (Go DTO → OpenAPI), G2 (schemathesis against a running server) and G4
   (generated valibot validators) are unbuilt.~~ **Closed.** All three are built
   and in CI; see the gate table in `README.md`. G2 is Go-native rather than

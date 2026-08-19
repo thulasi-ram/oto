@@ -72,10 +72,13 @@ const (
 	ReasonRuleChanged Reason = "rule_changed"
 	// ReasonComment is a human speaking into the thread.
 	ReasonComment Reason = "comment"
-	// ReasonUnackedReminder is oto's ONE reminder stage (§G.9.1). It is a fact
-	// about how long the SIGNAL has gone unacknowledged, delivered to the channels
-	// the policy already routes to. It is not a ladder and has no second stage.
-	ReasonUnackedReminder Reason = "unacked_reminder"
+	// ⛔ `ReasonUnackedReminder` WAS HERE AND IS DELETED OUTRIGHT (git-bug bd0fb1d).
+	// It was oto's one reminder stage; the owner withdrew the feature — oto sends
+	// nothing unprompted — and then ruled that the value goes rather than being
+	// retired, because oto is UNRELEASED and the database is being reset. There is
+	// no history to keep decodable, so a value kept for a reader that cannot exist
+	// is not caution: it is a vocabulary entry the next person has to rule out.
+	// That is `EventType`'s own test, verbatim, applied in the other direction.
 	// ReasonDigest is the eighteenth Reason and the only one whose subject is not
 	// an object: it is a WINDOW OVER A NAMESPACE (migration 00058).
 	//
@@ -114,7 +117,7 @@ var allReasons = []Reason{
 	ReasonFired, ReasonNewAlerts, ReasonSomeResolved, ReasonAllResolved,
 	ReasonRepeat, ReasonSuppressed, ReasonUnsuppressed, ReasonExpired,
 	ReasonRefired, ReasonAcked, ReasonUnacked, ReasonSnoozed, ReasonUnsnoozed,
-	ReasonEnriched, ReasonRuleChanged, ReasonComment, ReasonUnackedReminder,
+	ReasonEnriched, ReasonRuleChanged, ReasonComment,
 	// `digest` is APPENDED, and the position is a contract rather than a
 	// preference: `test/contract/dto_schema_test.go` holds this slice to the
 	// `NotificationReason` enum in `api/openapi/openapi.yaml` as the same set IN
@@ -126,11 +129,21 @@ var allReasons = []Reason{
 
 // AllReasons returns the closed Reason set. The slice is freshly built so a
 // caller cannot mutate the vocabulary.
+//
+// ⚠️ IT HAS SEVENTEEN MEMBERS SINCE git-bug bd0fb1d removed `unacked_reminder`.
+// `MaxPolicyReasons` is `len(AllReasons())` by rule and follows it.
 func AllReasons() []Reason {
 	out := make([]Reason, len(allReasons))
 	copy(out, allReasons)
 	return out
 }
+
+// ⛔ `retiredReasons`, `Retired()` AND `SubscribableReasons()` WERE HERE AND ARE
+// DELETED (git-bug bd0fb1d). They existed for one value — `unacked_reminder` —
+// held readable while unwritable, and split "what a policy may name" from "what a
+// row may hold". With the value gone outright those are the same set again, and
+// `AllReasons()` is the one answer. Re-introducing the split needs a value that is
+// genuinely on disk and genuinely unwritable; there is none.
 
 // The two subjects that were not expressible before migration 00056. They are
 // declared HERE, next to the allocation that gives them meaning, rather than
@@ -233,12 +246,11 @@ const (
 // before it reaches this map. An alert-subject `rule_changed` would be one intent
 // for a drift that recurs at every fire.
 var reasonSubjects = map[Reason]SubjectKind{
-	ReasonFired:           SubjectAlertGroup,
-	ReasonNewAlerts:       SubjectAlertGroup,
-	ReasonSomeResolved:    SubjectAlertGroup,
-	ReasonAllResolved:     SubjectAlertGroup,
-	ReasonRepeat:          SubjectAlertGroup,
-	ReasonUnackedReminder: SubjectAlertGroup,
+	ReasonFired:        SubjectAlertGroup,
+	ReasonNewAlerts:    SubjectAlertGroup,
+	ReasonSomeResolved: SubjectAlertGroup,
+	ReasonAllResolved:  SubjectAlertGroup,
+	ReasonRepeat:       SubjectAlertGroup,
 
 	ReasonAcked:       SubjectCase,
 	ReasonUnacked:     SubjectCase,

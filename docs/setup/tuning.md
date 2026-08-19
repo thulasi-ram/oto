@@ -51,7 +51,6 @@ tuning:
   group_close_delay_s: 900
   default_verbosity: firing_only
   broadcast_on_resolved: true
-  unacked_reminder_mention_list: ["<@U012AB3CD>", "<!subteam^S01ABCDEF>"]
 ```
 
 or as environment variables — the key, upper-cased, behind `OTO_TUNING_`:
@@ -631,8 +630,11 @@ because a resolve arrived quietly.
 
 **Interaction with `verbosity`.** Broadcast is decided per *transition*, then modulated by the
 destination channel's `verbosity` and `thread_updates` settings. A channel that has opted out of thread
-replies does not receive louder ones. The single exception is the unacked reminder, which is always
-broadcast — a reminder nobody sees is not a reminder.
+replies does not receive louder ones.
+
+⛔ **There used to be one exception — the unacked reminder, always broadcast, because a reminder
+nobody sees is not a reminder. oto no longer sends it at all** (git-bug `bd0fb1d`): nothing is
+delivered that nobody asked for. `refired` is now the only reason that always broadcasts.
 
 ---
 
@@ -642,12 +644,8 @@ broadcast — a reminder nobody sees is not a reminder.
 |---|---|---|---|
 | `resolve_grace_s` | `300` (5m) | How long past an alert's `EndsAt` lease oto waits before the reaper marks the case **`expired`**. | Prometheus refreshes `EndsAt` on every send; the lease is typically `4 × scrape_interval` or `evaluation_interval` (commonly 3–4 minutes). Set `resolve_grace` **above** that lease, or a single missed scrape looks like an expiry. `5m` covers the usual case. |
 | `group_close_delay_s` | `1200` (20m) | How long an AlertGroup stays `open` after its last member stops firing, before it closes. Closing a group is what makes the *next* fire open a new generation — and therefore a new Slack root message. | Keep it **at or above `group_interval`**, and **at or above `refire_grace`** — that second one is not a suggestion. **This is the setting that decides whether a re-fire is loud**: since ADR 0040 the episode is always a new case, so the only remaining question is whether its generation is still open, and this key is the whole of that question. It shipped as `300` against a `600` grace, which defeated half of it; both are now `1200`. See `refire_grace`, above. |
-| `unacked_reminder_after_s` | `0` (unset) | The org **default** a notification policy's own `unacked_reminder_after_s` falls back to when it is NULL. A policy with an opinion always wins. | **Zero means "no org default"**, which is what shipped — not "immediately". When set, the range is `60`–`86400`, mirroring `policies_reminder_ck` exactly. ⛔ One stage, forever (§G.9.1). |
 | `default_verbosity` | `status_changes` | The fallback for a Channel that names no verbosity of its own. A channel's own setting always wins — an org default can never make a quiet channel loud. | Set it to `firing_only` if most of your channels want the quietest setting and you would rather not repeat yourself. |
 | `broadcast_on_resolved` | `false` | Whether `all_resolved` is broadcast into the channel rather than posted quietly in the thread. | See **Broadcast**, above. It is the only broadcast that is configurable, because a broadcast cannot be un-sent. |
-| `unacked_reminder_mention` | `none` | Who the unacked reminder addresses: `none`, `here`, `channel`, or `list`. | ⚠️ **`here` and `channel` probably do nothing.** Slack documents that `@here`/`@channel` *"won't notify people … when they're used in threads"*, and oto's reminder is a thread reply. Individual and usergroup mentions **do** notify from that position, so `list` is the only form known to work — which is why the default is `none` rather than a control that silently achieves nothing. |
-| `unacked_reminder_mention_list` | `[]` | The explicit audience for mode `list`: Slack users `<@U…>` and usergroups `<!subteam^S…>`, at most 10. | ⛔ **Not a rota.** A fixed audience you choose once. It must never become time-aware and there is never a second stage (§G.9.1). oto does not know who is on call. |
-| `unacked_reminder_mention_min_severity` | `critical` | The severity at or above which a mention is attached at all. | `@here` on every unacked *warning* is how a channel learns to mute oto, and a muted channel hides the real incident. The gate **fails closed**: a severity oto cannot rank gets no mention at any setting. |
 | `raw_retention_days` | `30` | How long raw webhook payloads are kept before their partition is dropped, permanently. | Nothing in `alertmanager.yml` bears on it. The thirty is **chosen**, not derived: a replay is refused when the alerts a batch would touch have moved on, never because the batch is old, so this is the depth of the rejection and failed-batch feeds and the window a replay can be attempted in. See **Retention**, below. |
 | `event_retention_months` | `13` | How long the instant-by-instant timeline is kept before the month is dropped, permanently. | The only setting on this page that destroys something oto cannot rebuild. See **Retention**, below, before you lower it. |
 

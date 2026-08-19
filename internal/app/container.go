@@ -184,7 +184,6 @@ type Container struct {
 	Dispatch        *notifservice.DispatchService
 	Policies        *notifservice.PolicyService
 	Views           *notifservice.ViewService
-	Reminders       *notifservice.ReminderService
 	Digests         *notifservice.DigestService
 	NotifyHistory   *notifservice.HistoryService
 	NotifyWorkers   *notifworker.Workers
@@ -790,7 +789,6 @@ func (c *Container) buildNotification(
 	deliveryRepo := notifrepo.NewDeliveryRepository(general)
 	threadRepo := notifrepo.NewThreadRepository(general)
 	eventRepo := notifrepo.NewEventRepository(general, clk)
-	reminderRepo := notifrepo.NewReminderRepository(general)
 	digestRepo := notifrepo.NewDigestRepository(general)
 	txRunner := notifrepo.NewTxRunner(general)
 
@@ -872,9 +870,6 @@ func (c *Container) buildNotification(
 			Registerer: reg,
 		}),
 		Enqueuer: c.enqueuer,
-		// The unacked reminder's mention audience, read from `orgs.settings` at
-		// claim time (ADR 0020). It is the ONLY setting the dispatch path reads.
-		Settings: settings,
 		BaseURL:  c.Config.HTTP.BaseURL,
 		Clock:    clk,
 		Logger:   logger,
@@ -883,18 +878,6 @@ func (c *Container) buildNotification(
 		// row behind it. Left unregistered it was a counter nothing could scrape,
 		// which is the same as not having it.
 		Metrics: notifservice.NewMetrics(reg),
-	}); err != nil {
-		return err
-	}
-
-	if c.Reminders, err = notifservice.NewReminderService(notifservice.ReminderConfig{
-		Policies:  policyRepo,
-		Reminders: reminderRepo,
-		Notifier:  c.Notify,
-		// The org's fallback reminder delay, for a policy that names none.
-		Settings: settings,
-		Clock:    clk,
-		Logger:   logger,
 	}); err != nil {
 		return err
 	}
@@ -921,12 +904,11 @@ func (c *Container) buildNotification(
 	}
 
 	c.NotifyWorkers, err = notifworker.New(notifworker.Config{
-		Scopes:    c.NotifyScopes,
-		Notifier:  c.Notify,
-		Dispatch:  c.Dispatch,
-		Reminders: c.Reminders,
-		Digests:   c.Digests,
-		Logger:    logger,
+		Scopes:   c.NotifyScopes,
+		Notifier: c.Notify,
+		Dispatch: c.Dispatch,
+		Digests:  c.Digests,
+		Logger:   logger,
 	})
 	return err
 }

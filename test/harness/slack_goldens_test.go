@@ -153,14 +153,6 @@ func TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept(t *testing.T) {
 					"rewrites <, > and & that way by default, and the mrkdwn in the file " +
 					"is no longer readable by the person pasting it")
 			}
-			// The same guarantee stated positively, so the check above cannot pass by
-			// being vacuous. `<` is the mrkdwn control character Go's encoder would
-			// have rewritten, and every card carries at least one — a link, a
-			// `<!date^…>` token or a `<@U…>` mention.
-			if !bytes.Contains(c.Builder, []byte("<")) {
-				t.Error("the capture contains no mrkdwn control character at all, so the " +
-					"escaping check above proves nothing for this card")
-			}
 
 			// The wire capture is the one thing that must equal what the provider
 			// sends, so it keeps its attachment.
@@ -174,6 +166,30 @@ func TestEveryBuilderCaptureIsSomethingBlockKitBuilderWillAccept(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// The escaping guarantee stated positively, so the per-card check above cannot
+	// pass by being vacuous. `<` is the mrkdwn control character Go's encoder would
+	// have rewritten — a link, a `<!date^…>` token or a `<@U…>` mention.
+	//
+	// ⚠️ IT IS ASSERTED OVER THE CORPUS, NOT PER CARD, AND THAT CHANGED AT git-bug
+	// bd0fb1d. It used to hold for every card because the corpus's broadcast was the
+	// unacked reminder, whose body carried both a mention and an "open in oto" link.
+	// That card is gone and `broadcast_refired` replaces it — and a re-fire reply
+	// renders `:repeat: *Re-fired* — case #N` with NO link, NO mention and no date
+	// token. Demanding one per card would have meant either inventing content for a
+	// fixture or dropping the guarantee; asserting it over the corpus keeps exactly
+	// what the guarantee is for, which is that the escaping check is proven SOMEWHERE
+	// rather than nowhere.
+	var withControl []string
+	for _, c := range captures {
+		if bytes.Contains(c.Builder, []byte("<")) {
+			withControl = append(withControl, c.Card.Name)
+		}
+	}
+	if len(withControl) == 0 {
+		t.Error("no capture in the corpus contains a mrkdwn control character, so the " +
+			"unicode-escape check proves nothing for any card")
 	}
 }
 

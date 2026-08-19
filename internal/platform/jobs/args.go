@@ -209,36 +209,6 @@ func DeliverQueueFor(channelType string) string {
 	return QueueDeliverWebhook
 }
 
-// NotifyUnackedReminderArgs sweeps for open groups whose oldest member case
-// has been firing and unacked past the policy's `unacked_reminder_after_s`
-// (SPEC §G.9). Periodic, 60 s, zero payload.
-//
-// Queue: lifecycle · Priority: normal · Retry: periodic (3) · Payload v1
-//
-// IDEMPOTENCY KEY: none needed at the job level — the sweep is a query, and the
-// reminder it may mint is a Notification, unique on `(org_id, idempotency_key)`
-// and fired AT MOST ONCE PER GROUP GENERATION by §G.9. Job-level uniqueness is
-// by kind, ARGS and period, and TenantFanOut is what makes that per-tenant: each
-// org's sweep gets its own once-a-minute slot instead of every org sharing the
-// tick's one, and a tenant whose policies are broken retries and dead-letters
-// alone instead of being a log line inside everybody else's execution.
-//
-// THERE IS EXACTLY ONE STAGE, FOREVER (SPEC §G.9.1, BINDING, PERMANENT). This
-// job must never gain a stage index, a target other than the policy's existing
-// channels, or any awareness of who is on call.
-type NotifyUnackedReminderArgs struct {
-	Payload
-	TenantFanOut
-}
-
-// Kind implements db.JobArgs and river.JobArgs.
-func (NotifyUnackedReminderArgs) Kind() string { return KindNotifyUnackedReminder }
-
-// InsertOpts pins the queue, priority, retry ceiling and tick uniqueness.
-func (NotifyUnackedReminderArgs) InsertOpts() river.InsertOpts {
-	return periodicOpts(QueueLifecycle, PriorityNormal, time.Minute)
-}
-
 // NotifyDigestArgs is the DIGEST TICK (migration 00058): at each window boundary,
 // count the Cases that opened inside the window for every policy carrying a
 // `digest_window_s`, and send one digest per policy per window if the count clears

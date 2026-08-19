@@ -25,10 +25,15 @@
 //     constant, or mounted through a sub-router, is invisible to a grep and
 //     present in the trie. So this package builds the real `app.Container` and
 //     walks `chi`'s route tree.
-//   - AC-52 asks what TYPE a field has in every layer. A grep for
+//   - AC-52 asked what TYPE a field had in every layer, because a grep for
 //     `unacked_reminder_after_s` finds the name whether it is `*int` or `[]int`.
-//     So this package asserts through the compiler, through `reflect`, through the
-//     AST and against the column's own `data_type`.
+//     ⛔ THAT GATE IS GONE (git-bug bd0fb1d): the owner withdrew the unacked
+//     reminder, so there is no field left to hold to a scalar. It is DELETED rather
+//     than weakened, because a gate over a field that does not exist goes green for
+//     the wrong reason — which is the failure mode this whole package exists to
+//     refuse. The technique it demonstrated (assert through the compiler, through
+//     `reflect`, through the AST and against the column's own `data_type`) is what
+//     the next type-shaped scope rule should copy.
 //
 // ⭐ EVERY GATE HERE HAS A COMPANION `…GateFires` TEST, and that is not optional
 // decoration. All three properties hold today, so all three gates pass whether

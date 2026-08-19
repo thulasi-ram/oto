@@ -29,20 +29,18 @@ type ScopeResolver interface {
 // payload, call the service, translate the error. Every decision worth arguing
 // about lives in `service`, where it can be reasoned about without a queue.
 type Workers struct {
-	scopes    ScopeResolver
-	notifier  *service.NotificationService
-	dispatch  *service.DispatchService
-	reminders *service.ReminderService
-	digests   *service.DigestService
-	log       *slog.Logger
+	scopes   ScopeResolver
+	notifier *service.NotificationService
+	dispatch *service.DispatchService
+	digests  *service.DigestService
+	log      *slog.Logger
 }
 
 // Config is everything New needs.
 type Config struct {
-	Scopes    ScopeResolver
-	Notifier  *service.NotificationService
-	Dispatch  *service.DispatchService
-	Reminders *service.ReminderService
+	Scopes   ScopeResolver
+	Notifier *service.NotificationService
+	Dispatch *service.DispatchService
 	// Digests is the digest tick. REQUIRED, like the other three: a build where the
 	// schema admits a `digest_window_s` and nothing ever evaluates it is a settings
 	// field an operator can fill in and never hear from again, which is the specific
@@ -53,14 +51,13 @@ type Config struct {
 
 // New builds the workers.
 func New(cfg Config) (*Workers, error) {
-	if cfg.Scopes == nil || cfg.Notifier == nil || cfg.Dispatch == nil ||
-		cfg.Reminders == nil || cfg.Digests == nil {
+	if cfg.Scopes == nil || cfg.Notifier == nil || cfg.Dispatch == nil || cfg.Digests == nil {
 		return nil, errs.New(errs.KindInternal, "notification_worker_deps",
-			"the notification workers need a scope resolver, the notification service, the dispatch service, the reminder service and the digest service")
+			"the notification workers need a scope resolver, the notification service, the dispatch service and the digest service")
 	}
 	w := &Workers{
 		scopes: cfg.Scopes, notifier: cfg.Notifier,
-		dispatch: cfg.Dispatch, reminders: cfg.Reminders, digests: cfg.Digests,
+		dispatch: cfg.Dispatch, digests: cfg.Digests,
 		log: cfg.Logger,
 	}
 	if w.log == nil {
@@ -77,17 +74,19 @@ func New(cfg Config) (*Workers, error) {
 // "not implemented", so the queue, the retries and the metrics were all live
 // before this code existed — which is what made the seam worth having.
 //
-// The tenant list and the queue arrive as arguments because the reminder is this
+// The tenant list and the queue arrive as arguments because the digest tick is this
 // module's one per-tenant periodic: both halves of its fan-out belong to
 // internal/app — the same live-org pager and outbox every other per-tenant
 // periodic is handed — and this module must never enumerate tenants for itself.
+//
+// ⛔ IT WAS TWO PERIODICS UNTIL git-bug bd0fb1d. `notify.unacked_reminder` was the
+// other one, and the owner withdrew it: oto sends nothing unprompted.
 func (w *Workers) Register(h *jobs.Handlers, orgs jobs.Tenants, enq db.Enqueuer) {
 	if h == nil {
 		return
 	}
 	h.NotifyEvaluate = w.NotifyEvaluate
 	h.DeliverDispatch = w.DeliverDispatch
-	h.NotifyUnackedReminder = w.NotifyUnackedReminder(orgs, enq)
 	h.NotifyDigest = w.NotifyDigest(orgs, enq)
 }
 
@@ -169,60 +168,6 @@ func (w *Workers) DeliverDispatch(ctx context.Context, job *jobs.Job[jobs.Delive
 		return classify(err)
 	}
 	return nil
-}
-
-// NotifyUnackedReminder builds the `notify.unacked_reminder` handler over the
-// two shapes of jobs.TenantFanOut: a payload naming no org is the fan-out tick
-// and only ENQUEUES — one job per live tenant, a continuation at the ceiling —
-// and a payload naming an org is ONE tenant's sweep, with the kind's whole
-// execution timeout to itself.
-//
-// One org's broken policy must not stop the others being reminded, and separate
-// jobs are how that is true now rather than a promise a log line made: a tenant
-// that fails retries on its own periodic budget and dead-letters under its own
-// payload, and the others were never in the same execution to be stopped. The
-// fan-out shape's own error IS returned — a tick that could not read the tenant
-// list or reach the queue has reminded nobody, which deserves the retry.
-//
-// The org id in the payload is a hint, never authority: jobs.ForTenant resolves
-// it against the live-org table, so a tenant that departed between the tick and
-// the pass is NotFound → nil — nothing to sweep, nothing to retry.
-//
-// ⛔ ONE STAGE, FOREVER (§G.9.1). This handler must never gain a stage index, a
-// target other than the matched policy's own channels, or any awareness of who
-// is on call.
-func (w *Workers) NotifyUnackedReminder(
-	orgs jobs.Tenants, enq db.Enqueuer,
-) jobs.Handler[jobs.NotifyUnackedReminderArgs] {
-	return func(ctx context.Context, job *jobs.Job[jobs.NotifyUnackedReminderArgs]) error {
-		if job.Args.IsFanOut() {
-			out, err := jobs.FanOutTenants(ctx, jobs.KindNotifyUnackedReminder, enq, orgs, w.log,
-				job.Args.After, func(f jobs.TenantFanOut) db.JobArgs {
-					return jobs.NotifyUnackedReminderArgs{TenantFanOut: f}
-				})
-			if err != nil {
-				return err
-			}
-			if out.Enqueued > 0 {
-				w.log.DebugContext(ctx, "notification: unacked reminder fan-out",
-					slog.Int("enqueued", out.Enqueued))
-			}
-			return nil
-		}
-
-		return jobs.ForTenant(ctx, jobs.KindNotifyUnackedReminder, orgs, job.Args.OrgID,
-			func(ctx context.Context, scope db.TenantScope) error {
-				sent, err := w.reminders.SweepOrg(ctx, scope)
-				if err != nil {
-					return classify(err)
-				}
-				if sent > 0 {
-					w.log.InfoContext(ctx, "notification: sent unacked reminders",
-						slog.String("org_id", scope.OrgID().String()), slog.Int("count", sent))
-				}
-				return nil
-			})
-	}
 }
 
 // NotifyDigest builds the `notify.digest` handler over the two shapes of

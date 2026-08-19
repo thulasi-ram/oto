@@ -257,18 +257,14 @@ type RenderOptions struct {
 	// stale one — a human can see the first and cannot see the second — but only
 	// if it says so.
 	Continued bool
-	// Mentions is the ALREADY-RESOLVED audience for this delivery: the org's
-	// mention policy after its severity gate, in the provider's own wire form.
-	// Empty is the default and means "address nobody".
+	// ⛔ `Mentions` WAS HERE AND IS DELETED (git-bug bd0fb1d). It carried the org's
+	// resolved mention audience for the ONE unacked reminder, gated on severity.
+	// The owner withdrew the reminder and ruled the mention goes with it: a mention
+	// was never a property of delivery in general, it was the audience half of that
+	// one fact and had no other producer.
 	//
-	// ⛔⛔ IT BELONGS IN THE TOP-LEVEL `text`, NEVER INSIDE A BLOCK. §H.1 S3 puts
-	// every oto block inside one attachment, and Slack strips attachments from the
-	// in-channel `thread_broadcast` reference — so a mention in a block is not
-	// merely un-notifying, it is INVISIBLE in the channel. A renderer that cannot
-	// put it in the top-level text must drop it rather than hide it (ADR 0020).
-	//
-	// ⛔ NOT A ROTA (§4.8, ADR 0013). It is a fixed audience an operator chose in
-	// configuration; nothing on this path knows the time of day and nothing on it
-	// ever may.
-	Mentions []string
+	// ⭐ ADR 0013 §4.8 AND H-1 GET STRONGER, NOT WEAKER. The field carried a standing
+	// refusal — a fixed audience from configuration, never a rota, nothing on the
+	// path allowed to read a clock. With no mention surface at all there is nowhere
+	// left for oto to name a responder.
 }

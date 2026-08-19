@@ -81,13 +81,8 @@ type OrgSettingsPatchDTO struct {
 	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
 
-	UnackedReminderAfterS *int    `json:"unacked_reminder_after_s,omitempty"`
-	DefaultVerbosity      *string `json:"default_verbosity,omitempty"`
-	BroadcastOnResolved   *bool   `json:"broadcast_on_resolved,omitempty"`
-
-	UnackedReminderMention            *string   `json:"unacked_reminder_mention,omitempty"`
-	UnackedReminderMentionList        *[]string `json:"unacked_reminder_mention_list,omitempty"`
-	UnackedReminderMentionMinSeverity *string   `json:"unacked_reminder_mention_min_severity,omitempty"`
+	DefaultVerbosity    *string `json:"default_verbosity,omitempty"`
+	BroadcastOnResolved *bool   `json:"broadcast_on_resolved,omitempty"`
 }
 
 // toOrgSettingsPatchDTO renders what an org wrote, field for field. It defaults
@@ -95,21 +90,16 @@ type OrgSettingsPatchDTO struct {
 // type is which keys are set.
 func toOrgSettingsPatchDTO(p domain.SettingsPatch) OrgSettingsPatchDTO {
 	return OrgSettingsPatchDTO{
-		RefireGraceS:          p.RefireGraceS,
-		ResolveGraceS:         p.ResolveGraceS,
-		GroupCloseDelayS:      p.GroupCloseDelayS,
-		FlapThreshold:         p.FlapThreshold,
-		FlapWindowS:           p.FlapWindowS,
-		FlapDigestIntervalS:   p.FlapDigestIntervalS,
-		RawRetentionDays:      p.RawRetentionDays,
-		EventRetentionMonth:   p.EventRetentionMonth,
-		UnackedReminderAfterS: p.UnackedReminderAfterS,
-		DefaultVerbosity:      p.DefaultVerbosity,
-		BroadcastOnResolved:   p.BroadcastOnResolved,
-
-		UnackedReminderMention:            p.UnackedReminderMention,
-		UnackedReminderMentionList:        p.UnackedReminderMentionList,
-		UnackedReminderMentionMinSeverity: p.UnackedReminderMentionMinSeverity,
+		RefireGraceS:        p.RefireGraceS,
+		ResolveGraceS:       p.ResolveGraceS,
+		GroupCloseDelayS:    p.GroupCloseDelayS,
+		FlapThreshold:       p.FlapThreshold,
+		FlapWindowS:         p.FlapWindowS,
+		FlapDigestIntervalS: p.FlapDigestIntervalS,
+		RawRetentionDays:    p.RawRetentionDays,
+		EventRetentionMonth: p.EventRetentionMonth,
+		DefaultVerbosity:    p.DefaultVerbosity,
+		BroadcastOnResolved: p.BroadcastOnResolved,
 	}
 }
 
@@ -146,10 +136,6 @@ type UpdateOrgSettingsRequest struct {
 	RawRetentionDays    *int `json:"raw_retention_days,omitempty"`
 	EventRetentionMonth *int `json:"event_retention_months,omitempty"`
 
-	// UnackedReminderAfterS is the org default a notification policy inherits when
-	// it names no delay of its own. ⛔ ONE STAGE, FOREVER (§G.9.1): a scalar, never
-	// an array, and never a target other than the policy's own channel_ids.
-	UnackedReminderAfterS *int `json:"unacked_reminder_after_s,omitempty"`
 	// DefaultVerbosity is the fallback for a Channel that names no verbosity.
 	DefaultVerbosity *string `json:"default_verbosity,omitempty"`
 	// BroadcastOnResolved is ADR 0020's one configurable broadcast. Default off:
@@ -157,25 +143,11 @@ type UpdateOrgSettingsRequest struct {
 	// for the least urgent fact oto has.
 	BroadcastOnResolved *bool `json:"broadcast_on_resolved,omitempty"`
 
-	// UnackedReminderMention is who the one unacked reminder addresses:
-	// none | here | channel | list. DEFAULT `none`.
-	//
-	// ⚠️ `here` AND `channel` MAY DO NOTHING. Slack's own help says @here and
-	// @channel "won't notify people ... when they're used in threads", and oto's
-	// reminder is a thread reply that broadcasts — `reply_broadcast` moves where a
-	// reference appears, and Slack documents no exception to the thread rule. An
-	// explicit list of individuals and usergroups is the only form Slack documents
-	// as notifying from that position.
-	//
-	// ⛔ THE LIST IS NOT A ROTA (§4.8, ADR 0013). It is a fixed audience chosen
-	// once. It must never become time-aware and must never gain a second stage.
-	UnackedReminderMention *string `json:"unacked_reminder_mention,omitempty"`
-	// UnackedReminderMentionList is the explicit audience for mode `list`.
-	UnackedReminderMentionList *[]string `json:"unacked_reminder_mention_list,omitempty"`
-	// UnackedReminderMentionMinSeverity is the severity floor for attaching a
-	// mention at all. DEFAULT `critical`: `@here` on every unacked warning is how
-	// a channel learns to mute oto, and a muted channel hides the real incident.
-	UnackedReminderMentionMinSeverity *string `json:"unacked_reminder_mention_min_severity,omitempty"`
+	// ⛔ THE FOUR REMINDER KEYS WERE HERE AND ARE DELETED (git-bug bd0fb1d).
+	// `2078a07` is worth reading alongside this: the mention half was NEVER ONCE
+	// OBSERVED working against a real workspace — it shipped on Slack's
+	// documentation alone, and Slack's documentation had already been half wrong
+	// once. Retiring an unverified surface is the cheap direction.
 
 	// Reset names keys to return to oto's shipped default. After a reset the key's
 	// origin reports `default` again.
@@ -188,21 +160,16 @@ type UpdateOrgSettingsRequest struct {
 // is silently dropped is a reset the operator believes happened and did not.
 func (r UpdateOrgSettingsRequest) toDomain() (domain.SettingsPatch, []domain.SettingKey, error) {
 	patch := domain.SettingsPatch{
-		RefireGraceS:          r.RefireGraceS,
-		ResolveGraceS:         r.ResolveGraceS,
-		GroupCloseDelayS:      r.GroupCloseDelayS,
-		FlapThreshold:         r.FlapThreshold,
-		FlapWindowS:           r.FlapWindowS,
-		FlapDigestIntervalS:   r.FlapDigestIntervalS,
-		RawRetentionDays:      r.RawRetentionDays,
-		EventRetentionMonth:   r.EventRetentionMonth,
-		UnackedReminderAfterS: r.UnackedReminderAfterS,
-		DefaultVerbosity:      r.DefaultVerbosity,
-		BroadcastOnResolved:   r.BroadcastOnResolved,
-
-		UnackedReminderMention:            r.UnackedReminderMention,
-		UnackedReminderMentionList:        r.UnackedReminderMentionList,
-		UnackedReminderMentionMinSeverity: r.UnackedReminderMentionMinSeverity,
+		RefireGraceS:        r.RefireGraceS,
+		ResolveGraceS:       r.ResolveGraceS,
+		GroupCloseDelayS:    r.GroupCloseDelayS,
+		FlapThreshold:       r.FlapThreshold,
+		FlapWindowS:         r.FlapWindowS,
+		FlapDigestIntervalS: r.FlapDigestIntervalS,
+		RawRetentionDays:    r.RawRetentionDays,
+		EventRetentionMonth: r.EventRetentionMonth,
+		DefaultVerbosity:    r.DefaultVerbosity,
+		BroadcastOnResolved: r.BroadcastOnResolved,
 	}
 
 	known := make(map[string]domain.SettingKey, len(domain.AllSettingKeys()))

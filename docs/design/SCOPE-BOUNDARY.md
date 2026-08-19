@@ -263,6 +263,13 @@ status pages, postmortems, rotas — are not on this list, because nobody adds t
 - **What it drags in:** a stage ladder → per-stage targets → targets that are people → a rota to resolve
   the person → phone/SMS because Slack is not enough at 3am → telephony vendors, 24/7 reliability
   obligations, and compliance. This is the shortest path from oto to PagerDuty and it is four small PRs.
+- ⛔ **SUPERSEDED 2026-08-20 (git-bug `bd0fb1d`): the reminder is REMOVED, not merely renamed.** The
+  RESHAPE below was carried out and has now been overtaken — the owner withdrew the mechanism
+  entirely, and the mention keys went with it. This is a TIGHTENING of the boundary, not a retreat
+  from it: §5.2's restriction existed to stop oto naming a responder, and with no mention surface
+  there is nowhere left to cross that line. The `escalation` banned word STAYS. The argument below is
+  left as written, because it is the record of what was decided in August 2026 and the reasoning is
+  what makes the removal obviously right rather than arbitrary.
 - **Door decision:** §5.2. Rename the concept to `unacked_reminder`, and bind the scalar: *one stage,
   forever, same channels*. The rename is the load-bearing part — as long as the word "escalation" lives
   in the schema, stage two is a natural reading of the word rather than a scope violation.

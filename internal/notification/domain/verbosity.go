@@ -52,12 +52,10 @@ var replySets = map[Verbosity]map[Reason]bool{
 		ReasonUnsuppressed: true, ReasonExpired: true, ReasonRefired: true,
 		ReasonNewAlerts: true, ReasonAllResolved: true, ReasonRuleChanged: true,
 		ReasonComment: true, ReasonSnoozed: true, ReasonUnsnoozed: true,
-		ReasonUnackedReminder: true,
 	},
 	VerbosityFiringAndResolved: {
 		ReasonNewAlerts: true, ReasonAllResolved: true, ReasonExpired: true,
 		ReasonRuleChanged: true, ReasonSnoozed: true, ReasonUnsnoozed: true,
-		ReasonUnackedReminder: true,
 	},
 	VerbosityFiringOnly: {
 		// ⛔ `storm` WAS IN ALL FOUR SETS AND IS GONE FROM THE VOCABULARY (reason.go,
@@ -66,7 +64,7 @@ var replySets = map[Verbosity]map[Reason]bool{
 		// withholding things — and oto withholds nothing now, so there is no such
 		// fact and no Reason naming one.
 		ReasonNewAlerts: true, ReasonRuleChanged: true, ReasonSnoozed: true,
-		ReasonUnsnoozed: true, ReasonUnackedReminder: true,
+		ReasonUnsnoozed: true,
 	},
 }
 
@@ -81,17 +79,15 @@ var replySets = map[Verbosity]map[Reason]bool{
 //   - rule_changed "always — never gated". The headline differentiator.
 //   - snoozed      "always — exempt from snooze suppression (§B.8.4)".
 //   - unsnoozed    same.
-//   - unacked_reminder "always". It is the reminder; gating it away deletes it.
 //   - comment      a human deliberately spoke into this thread. Swallowing a
 //     person's words because the channel is quiet is not a volume
 //     setting, it is data loss.
 var ungatedReplies = map[Reason]bool{
-	ReasonExpired:         true,
-	ReasonRuleChanged:     true,
-	ReasonSnoozed:         true,
-	ReasonUnsnoozed:       true,
-	ReasonUnackedReminder: true,
-	ReasonComment:         true,
+	ReasonExpired:     true,
+	ReasonRuleChanged: true,
+	ReasonSnoozed:     true,
+	ReasonUnsnoozed:   true,
+	ReasonComment:     true,
 }
 
 // AllowsReply reports whether this verbosity delivers the thread reply for r.

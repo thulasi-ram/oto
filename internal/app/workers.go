@@ -130,11 +130,14 @@ func (c *Container) handlers() jobs.Handlers {
 	}
 
 	// notification fills its own three fields (notify.evaluate, deliver.dispatch,
-	// notify.unacked_reminder). It MUTATES the set rather than returning one, so
-	// composing modules is one call each and nothing has to know the full list.
-	// The reminder is the module's one per-tenant periodic, so it takes the same
-	// live-org pager and outbox every other fan-out here is handed — the tenant
-	// list is this container's to give, never a module's to read for itself.
+	// notify.digest). It MUTATES the set rather than returning one, so composing
+	// modules is one call each and nothing has to know the full list. The digest
+	// tick is the module's one per-tenant periodic, so it takes the same live-org
+	// pager and outbox every other fan-out here is handed — the tenant list is this
+	// container's to give, never a module's to read for itself.
+	//
+	// ⛔ IT WAS FOUR FIELDS AND TWO PERIODICS UNTIL git-bug bd0fb1d removed
+	// `notify.unacked_reminder`.
 	if c.NotifyWorkers != nil {
 		c.NotifyWorkers.Register(&h, c.orgs, c.enqueuer)
 	}

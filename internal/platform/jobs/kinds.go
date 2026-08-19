@@ -60,7 +60,13 @@ const (
 	// Amendment 1). A queued tick of this kind is unhandled after this change;
 	// there is no deployment to strand, and `just reset` is the answer on the
 	// only database that exists (migration 00059 spends the same argument).
-	KindNotifyUnackedReminder = "notify.unacked_reminder"
+	// ⛔ THERE IS NO `notify.unacked_reminder` KIND ANY MORE, and the tombstone is
+	// here for the same reason `flap.score`'s is above. It swept every minute for
+	// open groups whose oldest member had been firing and unacked past
+	// `unacked_reminder_after_s`, and sent one reminder per generation. The owner
+	// withdrew the feature (git-bug bd0fb1d): oto sends nothing unprompted. A queued
+	// tick of this kind is unhandled after this change; there is no deployment to
+	// strand, and `just reset` is the answer on the only database that exists.
 	// KindNotifyDigest is the DIGEST TICK: at each window boundary, count what
 	// matched each digest policy and say so once. It is the only notification job
 	// whose subject is a WINDOW rather than an object (migration 00058).

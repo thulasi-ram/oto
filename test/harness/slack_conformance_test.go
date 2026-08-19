@@ -284,19 +284,22 @@ func TestBroadcastIsOneParameterOnAThreadReplyAndIsSetNowhereElse(t *testing.T) 
 		t.Fatalf("post the root: %v", err)
 	}
 	if _, err := channel.Deliver(ctx, chdomain.DeliverRequest{
-		Message: card(t, "broadcast_unacked_reminder"),
+		Message: card(t, "broadcast_refired"),
 		Mode:    chdomain.ModeBroadcastReply,
 		ReplyTo: &root.Ref,
 	}); err != nil {
-		t.Fatalf("post the broadcasting reminder: %v", err)
+		t.Fatalf("post the broadcasting re-fire: %v", err)
 	}
 	// ⛔ THE SECOND BROADCAST WAS `storm_notice` AND ADR 0042 DELETED IT. The claim
 	// under test is about the PARAMETER, not about which card carries it: a
 	// broadcast must set `reply_broadcast` AND `thread_ts` on every message that
 	// uses the mode, and one card sent twice proves that as well as two cards did.
-	// The unacked reminder is now the only broadcast §H.6 admits.
+	// ⛔ AND THE CARD CHANGED AGAIN: `broadcast_unacked_reminder` went with the
+	// reminder (git-bug bd0fb1d), so `refired` — the only broadcast §H.6 still
+	// admits — carries the claim now. The claim itself is unchanged, which is the
+	// point of it being about the PARAMETER.
 	if _, err := channel.Deliver(ctx, chdomain.DeliverRequest{
-		Message: card(t, "broadcast_unacked_reminder"),
+		Message: card(t, "broadcast_refired"),
 		Mode:    chdomain.ModeBroadcastReply,
 		ReplyTo: &root.Ref,
 	}); err != nil {
@@ -327,19 +330,30 @@ func TestBroadcastIsOneParameterOnAThreadReplyAndIsSetNowhereElse(t *testing.T) 
 	// ⛔⛔ ADR 0020 RULE 4, ASSERTED ON THE BYTES SLACK RECEIVED. The in-channel
 	// reference carries no buttons — that half of Slack's documented claim is the
 	// half nobody disputes — so the top-level `text` is very nearly all a channel
-	// reader gets, and the mention only reaches a phone from that position.
-	reminder := posts[1]
-	if !strings.Contains(reminder.Text, "<@U0123456789>") {
-		t.Errorf("the reminder's mention is not in the top-level text: %q", reminder.Text)
-	}
-	if strings.Contains(string(reminder.Attachments), "<@U0123456789>") {
-		t.Errorf("the mention is ALSO inside a block; a mention inside an attachment "+
-			"is a duplicate of a thing that only means something in one position: %s",
-			reminder.Attachments)
-	}
-	for _, want := range []string{"Severity critical", "unacknowledged"} {
-		if !strings.Contains(reminder.Text, want) {
-			t.Errorf("the broadcast text is not self-sufficient — no %q: %q", want, reminder.Text)
+	// reader gets, and it has to stand on its own.
+	//
+	// ⛔ THE MENTION ASSERTIONS WERE HERE AND ARE DELETED (git-bug bd0fb1d). They
+	// pinned that the audience appeared in the top-level `text` and NOT inside an
+	// attachment — the position being the whole point, because Slack strips
+	// attachments from the in-channel reference. The owner withdrew the unacked
+	// reminder and ruled the mention goes with it, so nothing emits an audience and
+	// there is no position left to defend.
+	//
+	// ⭐ WHAT REPLACES THEM IS THE STRONGER HALF, AND IT IS BELOW UNCHANGED: the
+	// broadcast text must be SELF-SUFFICIENT. That was always the point of rule 4 —
+	// a reader in the channel, with no buttons and no attachment, still has to be
+	// able to tell what happened. It never depended on anybody being mentioned.
+	//
+	// ⚠️ THE WORDS MOVED WITH THE CARD, AND THE RULE DID NOT. This probe used to want
+	// "unacknowledged", which was the reminder's own word. `refired` is
+	// self-sufficient on different evidence — HOW BAD (`Severity critical`), WHAT and
+	// WHERE (in the lead), and WHEN it came back (`firing again since`). Checking for
+	// the old word against a new card would have been asserting the sentence rather
+	// than the property.
+	broadcast := posts[1]
+	for _, want := range []string{"Severity critical", "firing again since"} {
+		if !strings.Contains(broadcast.Text, want) {
+			t.Errorf("the broadcast text is not self-sufficient — no %q: %q", want, broadcast.Text)
 		}
 	}
 }

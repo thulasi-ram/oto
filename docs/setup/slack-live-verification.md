@@ -24,11 +24,8 @@ discharges.
 1. Install the app and invite it: [slack.md sections 1–3 and 6](slack.md). Use a
    **scratch channel** — you are going to leave test cards in it. Interactivity
    (section 3) is required for step 4.
-2. Set the reminder audience to your own Slack user, or you cannot do step 8:
-   `unacked_reminder_mention: list`,
-   `unacked_reminder_mention_list: ["<@U…your id…>"]`,
-   `unacked_reminder_mention_min_severity: critical` — see [tuning.md](tuning.md).
-   Lower the unacked-reminder threshold to a couple of minutes for the sitting.
+2. ⛔ **This step set the reminder audience and is gone with step 8** (git-bug
+   `bd0fb1d`): oto no longer sends an unacked reminder and has no mention surface.
 3. Open the checked-in payloads in a second window. They are what oto sends, byte
    for byte, and they are what you compare against:
    - `internal/channels/render/slack/testdata/*.golden.json` — the renderer's own
@@ -173,30 +170,25 @@ a rendering change and not a delivery one.
 **If it looks fine to you:** say so, and say why. That is a product judgement and it
 belongs in the issue, not in this document.
 
-## 8. The mention reaches a locked phone
+## 8. ⛔ REMOVED — the mention reaches a locked phone
 
-**Do:** let an alert go unacknowledged past the reminder threshold, with the audience
-from step 2 pointing at **you**. Put your phone down, screen off, and wait.
+**This step is deleted with the feature it tested** (git-bug `bd0fb1d`). oto no
+longer sends an unacked reminder and has no mention audience, so there is nothing
+to observe.
 
-**Expect exactly:** three separate observations, all required.
-1. The reminder appears **in the channel body**, not only in the thread.
-2. Your phone shows a **push notification** on the lock screen, without unlocking.
-3. That notification reads as a **complete sentence** — severity, what, where, how
-   long unacknowledged — matching the `"text"` field of
-   `reply_unacked_reminder_mention.golden.json`, and it does not end `…​.`
+⭐ **It is worth recording what was never discharged.** This step existed because
+ADR 0020 **Amendment 3** shipped `unacked_reminder_mention` on the strength of
+Slack's documentation alone, and Amendment 4 is the standing proof that Slack's
+documentation can be half wrong. It was **never once run** (`2078a07`) — so the
+question *"does an `@`-mention from a broadcast reply actually notify a locked
+phone?"* was open for the whole life of the feature and is now closed by deletion
+rather than by evidence. That is the honest reason removing it was cheap: nobody
+could show it worked.
 
-**Discharges:** *"an `@`-mention that actually notifies"* — ADR 0020 **Amendment 3**
-ships `unacked_reminder_mention` on the strength of Slack's documentation alone, and
-Amendment 4 is the standing proof that Slack's documentation can be half wrong. This
-step also discharges the push-notification half of **rule 4**, which is the ground
-rule 4 now stands on.
-
-**If it fails:** visible in the channel but no notification means mentions do not
-notify from a broadcast reply and `unacked_reminder_mention` must stay defaulted to
-`none` — record that in Amendment 3, because the setting is then a control that
-silently achieves nothing. Only in the thread means `reply_broadcast` is not being
-set. A literal `@ram` on screen instead of a highlighted mention means the wire form
-never survived.
+⚠️ **If any mention surface is ever added back, this step comes back with it**, and
+the three observations it demanded are the right ones: visible in the channel body
+and not only the thread; a push notification on a locked screen; and that
+notification reading as a complete sentence rather than a truncated one.
 
 ## 9. The in-channel broadcast copy
 

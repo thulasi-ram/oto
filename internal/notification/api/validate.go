@@ -40,9 +40,6 @@ func materialise(scope db.TenantScope, d domain.PolicyDraft) domain.Policy {
 	if d.Throttle != nil {
 		p.Throttle = *d.Throttle
 	}
-	if d.UnackedReminderAfter != nil {
-		p.UnackedReminderAfter = *d.UnackedReminderAfter
-	}
 	// The digest's four rules — range, the divisor rule, the pair rule and the
 	// reason rule — are all `Policy.Validate`'s, so materialising the two halves is
 	// the whole of this layer's job. A hand-written range check here would be the
@@ -93,13 +90,6 @@ func validateMerged(existing domain.Policy, p domain.PolicyPatch) error {
 			merged.Throttle = *v
 		} else {
 			merged.Throttle = domain.Throttle{}
-		}
-	}
-	if p.UnackedReminderAfter != nil {
-		if v := *p.UnackedReminderAfter; v != nil {
-			merged.UnackedReminderAfter = *v
-		} else {
-			merged.UnackedReminderAfter = 0
 		}
 	}
 	// ⭐ THE DIGEST IS WHY MERGING RATHER THAN VALIDATING THE PATCH MATTERS MOST.

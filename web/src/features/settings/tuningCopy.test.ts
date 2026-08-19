@@ -120,9 +120,6 @@ const SHIPPED: Readonly<Partial<Record<KnobKey, number>>> = {
   flap_threshold: 5,
   flap_window_s: 7200,
   flap_digest_interval_s: 900,
-  // DefaultUnackedReminderAfter is ZERO, and the zero is the decision: oto ships
-  // no org-level reminder default at all (`identity/domain/org.go:246-250`).
-  unacked_reminder_after_s: 0,
 };
 
 function nums(over: Readonly<Partial<Record<KnobKey, number>>> = SHIPPED): Num {
@@ -192,28 +189,28 @@ function shapeOf(key: KnobKey, am: AmRef = AM, num: Num = N): readonly GuidanceL
 /* -------------------------------------------------------------------------- */
 
 describe("the guided knobs as a set", () => {
-  it("is the seven the screen computes for, and the other seven are the ones the doc declines to rule on", () => {
+  it("is the six the screen computes for, and the other four are the ones the doc declines to rule on", () => {
     // The count is asserted rather than trusted because `KnobKey` is derived from
     // the write contract: the day the contract grows a setting, this number is the
     // thing that should be reconsidered. It was nine and eight until ADR 0042
-    // deleted `storm_threshold`, `storm_window_s` and `storm_cooldown_s`.
-    expect(GUIDED).toHaveLength(7);
+    // deleted `storm_threshold`, `storm_window_s` and `storm_cooldown_s`, then
+    // seven and seven until git-bug bd0fb1d deleted `unacked_reminder_after_s`
+    // and the three mention keys with the reminder itself.
+    expect(GUIDED).toHaveLength(6);
 
     const unguided = (Object.keys(KNOBS) as KnobKey[]).filter(
       (k) => KNOBS[k].guide === undefined,
     );
     // Each of these is unguided for a stated reason, and none of the reasons is
-    // "nobody got round to it": the mention rows are Slack questions; retention and
-    // verbosity have no Alertmanager term at all. Inventing a threshold for any of
-    // them is the one thing this screen must not do.
+    // "nobody got round to it": retention and verbosity have no Alertmanager term
+    // at all, and a broadcast is a yes/no. Inventing a threshold for any of them is
+    // the one thing this screen must not do. (The three Slack mention rows were
+    // here too, and went with the reminder — git-bug bd0fb1d.)
     expect([...unguided].sort()).toEqual([
       "broadcast_on_resolved",
       "default_verbosity",
       "event_retention_months",
       "raw_retention_days",
-      "unacked_reminder_mention",
-      "unacked_reminder_mention_list",
-      "unacked_reminder_mention_min_severity",
     ]);
   });
 
@@ -300,13 +297,14 @@ describe("the guided knobs as a set", () => {
       }
     }
 
-    // `flap_digest_interval_s` used to demonstrate this wording rule and no longer
-    // can: it is retired and reads no reference at all (git-bug 235f347).
-    // `unacked_reminder_after_s` still argues from a real timing, so the rule is
-    // demonstrated there instead of being dropped with the knob.
-    const worded = guideOf("unacked_reminder_after_s")(60, asDefault, N);
-    expect(worded?.text).toContain("Alertmanager's default repeat_interval");
-    expect(guideOf("unacked_reminder_after_s")(60, AM, N)?.text).toContain("your repeat_interval");
+    // This rule has now outlived two of its demonstrators. `flap_digest_interval_s`
+    // was retired and reads no reference at all (git-bug 235f347);
+    // `unacked_reminder_after_s` went with the unacked reminder (git-bug bd0fb1d).
+    // `refire_grace_s` argues from a real timing and is where the rule is
+    // demonstrated now — the rule outranks any one knob that happens to show it.
+    const worded = guideOf("refire_grace_s")(60, asDefault, N);
+    expect(worded?.text).toContain("Alertmanager's default group_interval");
+    expect(guideOf("refire_grace_s")(60, AM, N)?.text).toContain("your group_interval");
   });
 
   it("calls every shipped default consistent against Alertmanager's own defaults", () => {
@@ -669,61 +667,11 @@ describe("the three flap knobs, after the detector was retired", () => {
 /* What reaches the channel                                                   */
 /* -------------------------------------------------------------------------- */
 
-describe("unacked_reminder_after_s", () => {
-  const g = guideOf("unacked_reminder_after_s");
+/* ⛔ THE `unacked_reminder_after_s` SUITE WAS HERE AND IS DELETED (git-bug
+   bd0fb1d). It was the only knob carrying `zeroIsUnset`, and the suite asserted
+   that nothing else carried it — worth restating if the flag ever comes back,
+   because the flag's whole point is that 0 is a legal READ value below a write
+   bound that starts at 60, and the way back to unset is `reset` rather than
+   writing a zero. It was also the only guide with a failing branch and no
+   suggestion button: an upper-bound argument and no formula. */
 
-  it("is consistent up to repeat_interval and tight from there on", () => {
-    expect(shapeOf("unacked_reminder_after_s")).toEqual(["ok", "tight"]);
-  });
-
-  it("reads zero as UNSET before it looks at Alertmanager at all", () => {
-    // ⭐ `zeroIsUnset`, and it is the only knob that carries it: the org settings
-    // schema admits 0 on read while the write bounds start at 60, and the way back
-    // to unset is `reset` rather than writing a zero. The check sits above the
-    // provenance guard, so this is also the only guide that answers at all when
-    // its timing was never read — correctly, because "unset" is a fact about oto
-    // and needs no upstream number.
-    expect(KNOBS.unacked_reminder_after_s.zeroIsUnset).toBe(true);
-    const withZeroIsUnset = (Object.keys(KNOBS) as KnobKey[]).filter(
-      (k) => KNOBS[k].zeroIsUnset === true,
-    );
-    expect(withZeroIsUnset).toEqual(["unacked_reminder_after_s"]);
-
-    const blind = amRef({ repeatInterval: unread });
-    const verdict = g(0, blind, N);
-    expect(verdict?.level).toBe("ok");
-    expect(verdict?.text).toContain("Unset");
-    // And it says what unset is NOT, because "0 seconds" is the natural misreading.
-    expect(verdict?.text).toContain("not the same as zero seconds");
-    // One second above unset is an ordinary value again, and needs the number.
-    expect(g(1, blind, N)).toBeNull();
-  });
-
-  it("turns tight AT repeat_interval, not past it", () => {
-    // `amRule`: at or beyond repeat_interval, Alertmanager will already have
-    // re-sent the unchanged group, so the reminder adds nothing the channel was
-    // not just told. Equality is already too late.
-    expect(g(AM_REPEAT_INTERVAL_S - 1, AM, N)?.level).toBe("ok");
-    expect(g(AM_REPEAT_INTERVAL_S, AM, N)?.level).toBe("tight");
-    expect(g(AM_REPEAT_INTERVAL_S + 1, AM, N)?.level).toBe("tight");
-  });
-
-  it("tracks the operator's own repeat_interval rather than the documented 4h", () => {
-    const brisk = amRef({ repeatInterval: observed(1800) });
-    expect(g(3600, AM, N)?.level).toBe("ok");
-    expect(g(3600, brisk, N)?.level).toBe("tight");
-  });
-
-  it("never offers a number, because the doc declines to give one", () => {
-    // ⭐ `tuningCopy.ts:16-21`: where the doc gives an arithmetic rule it is
-    // implemented as a guide; where it declines ("sanity-check against how long
-    // your incidents actually last") the screen says so and does not manufacture a
-    // threshold. This knob has an upper bound argument and no formula, so it warns
-    // and offers nothing — the only guide with a failing branch and no button.
-    const b = boundsOf("unacked_reminder_after_s");
-    for (const v of sweep(b.min, b.max)) {
-      expect(g(v, AM, N)?.suggest, `at ${v}`).toBeUndefined();
-    }
-    expect(g(0, AM, N)?.suggest).toBeUndefined();
-  });
-});

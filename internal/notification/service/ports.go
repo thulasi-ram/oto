@@ -37,7 +37,6 @@ type SnapshotSource interface {
 type PolicyStore interface {
 	ListLive(ctx context.Context, s db.TenantScope) ([]domain.Policy, error)
 	Get(ctx context.Context, s db.TenantScope, id uuid.UUID) (domain.Policy, error)
-	ListWithUnackedReminder(ctx context.Context, s db.TenantScope, orgDefaultSeconds *int) ([]domain.Policy, error)
 	// ListWithDigest is the digest tick's whole view of configuration: the live
 	// policies that carry a window (`digest_window_s`), in evaluation order. Unlike
 	// `ListLive` it is not walked to a first match — every digest policy is its own
@@ -138,15 +137,14 @@ type EventSink interface {
 	AppendDeliveryOutcome(ctx context.Context, s db.TenantScope, d domain.Delivery, groupID uuid.UUID, alertID *uuid.UUID, detail string, at time.Time) error
 }
 
-// ReminderStore serves the one-stage unacked reminder sweep.
+// ⛔ `ReminderStore` WAS HERE AND IS DELETED, along with `PolicyStore`'s
+// `ListWithUnackedReminder` (git-bug bd0fb1d). The owner withdrew the unacked
+// reminder: oto sends nothing unprompted, so there is no sweep to serve and no
+// "which policies want reminding" question to ask.
 //
-// It reads under a TenantScope and nothing else: the sweep is per-tenant, one
-// job per org (jobs.TenantFanOut), and the tenant list those jobs are minted
-// from belongs to the fan-out's live-org pager in internal/app — not to this
-// module, which must never enumerate tenants for itself.
-type ReminderStore interface {
-	ListUnackedGroups(ctx context.Context, s db.TenantScope, before time.Time, limit int) ([]repository.UnackedGroup, error)
-}
+// It was this module's ONLY port over `repository` as a package — the interface
+// spoke in `repository.UnackedGroup` rather than a domain type — so removing it
+// also removes that seam's one exception.
 
 // ChannelRegistry — the port onto the channels registry — is declared in
 // channels_port.go, alongside the type aliases it is expressed in. It lives

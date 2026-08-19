@@ -3,15 +3,15 @@
     {
       "attachment_color": "#a30200",
       "blocks": 1,
-      "exact_wire_payload": "broadcast_unacked_reminder.message.json",
-      "fallback": ":rotating_light: Still unacknowledged: CheckoutErrorRateHigh on eu-west-1. Severity critical, team payments, unacknowledged for 15m, firing since 17:56 UTC.",
+      "exact_wire_payload": "broadcast_refired.message.json",
+      "fallback": ":repeat: Re-fired: CheckoutErrorRateHigh on eu-west-1. Severity critical, team payments, firing again since 17:56 UTC.",
       "mode": "broadcast_reply",
-      "name": "broadcast_unacked_reminder",
-      "paste_into_builder": "broadcast_unacked_reminder.blockkit.json",
-      "reason": "unacked_reminder",
-      "rendered_hash": "314f5aa5fb61235570985ce31554ca327ef638dde1efea03ca53436dbb100a98",
-      "what": "A reply posted with reply_broadcast=true. Its top-level text must be self-sufficient (ADR 0020 rule 4) and it carries the mention audience.",
-      "wire_bytes": 843
+      "name": "broadcast_refired",
+      "paste_into_builder": "broadcast_refired.blockkit.json",
+      "reason": "refired",
+      "rendered_hash": "2c285ae354ed20227dff92bfd74b24c7a8c74d111cbcd0bc24922d229ec97df3",
+      "what": "A reply posted with reply_broadcast=true. Its top-level text must be self-sufficient (ADR 0020 rule 4), because the in-channel reference carries no buttons. ⭐ It replaces `broadcast_unacked_reminder`, which went with the reminder (git-bug bd0fb1d) and was the corpus's only broadcast: `reply_broadcast` is the one Slack parameter ADR 0020 Amendment 4 had to CORRECT from a live workspace, so leaving the mode uncaptured would have been the wrong kind of tidy.",
+      "wire_bytes": 615
     },
     {
       "attachment_color": "#a30200",

@@ -486,17 +486,12 @@ func contractOrg(t *testing.T) (domain.Org, domain.Declarative) {
 		t.Fatalf("build the org: %v", err)
 	}
 
-	mentions := []string{"<@U7A2K9QLM>", "<!subteam^SA1B2C3D4>"}
 	org.Overrides = domain.SettingsPatch{
-		RefireGraceS:                      intPtrOf(1800),
-		GroupCloseDelayS:                  intPtrOf(600),
-		FlapThreshold:                     intPtrOf(8),
-		UnackedReminderAfterS:             intPtrOf(900),
-		DefaultVerbosity:                  strPtrOf("all"),
-		BroadcastOnResolved:               boolPtrOf(true),
-		UnackedReminderMention:            strPtrOf("list"),
-		UnackedReminderMentionList:        &mentions,
-		UnackedReminderMentionMinSeverity: strPtrOf("warning"),
+		RefireGraceS:        intPtrOf(1800),
+		GroupCloseDelayS:    intPtrOf(600),
+		FlapThreshold:       intPtrOf(8),
+		DefaultVerbosity:    strPtrOf("all"),
+		BroadcastOnResolved: boolPtrOf(true),
 	}
 	if err := org.Overrides.Validate(); err != nil {
 		t.Fatalf("the fixture's own overrides are outside the bounds the server enforces: %v", err)

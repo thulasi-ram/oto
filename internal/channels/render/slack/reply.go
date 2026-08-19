@@ -15,21 +15,20 @@ import (
 // depend on it. If the two ever disagree, the reply falls through to the generic
 // branch and still says something true.
 const (
-	reasonFired           = "fired"
-	reasonNewAlerts       = "new_alerts"
-	reasonSomeResolved    = "some_resolved"
-	reasonAllResolved     = "all_resolved"
-	reasonRepeat          = "repeat"
-	reasonSuppressed      = "suppressed"
-	reasonUnsuppressed    = "unsuppressed"
-	reasonExpired         = "expired"
-	reasonRefired         = "refired"
-	reasonAcked           = "acked"
-	reasonUnacked         = "unacked"
-	reasonEnriched        = "enriched"
-	reasonRuleChanged     = "rule_changed"
-	reasonComment         = "comment"
-	reasonUnackedReminder = "unacked_reminder"
+	reasonFired        = "fired"
+	reasonNewAlerts    = "new_alerts"
+	reasonSomeResolved = "some_resolved"
+	reasonAllResolved  = "all_resolved"
+	reasonRepeat       = "repeat"
+	reasonSuppressed   = "suppressed"
+	reasonUnsuppressed = "unsuppressed"
+	reasonExpired      = "expired"
+	reasonRefired      = "refired"
+	reasonAcked        = "acked"
+	reasonUnacked      = "unacked"
+	reasonEnriched     = "enriched"
+	reasonRuleChanged  = "rule_changed"
+	reasonComment      = "comment"
 	// ⭐ `snoozed` AND `unsnoozed` ARE THE ONLY TWO REASONS A SNOOZE MAY NOT
 	// SUPPRESS (§B.8.4): "a snooze that cannot announce its own beginning and end
 	// is the silent suppression §B.6 forbids". They therefore reach a real channel
@@ -74,8 +73,8 @@ func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOption
 	// either is a duplicate of a thing that only means something in one position.
 	// The top-level text is the ONLY place a mention reaches a push notification,
 	// which is the whole point of mentioning somebody.
-	sentence := replyText(v, nil)
-	text := replyText(v, o.Mentions)
+	sentence := replyText(v)
+	text := sentence
 
 	return Payload{
 		Text:        text,
@@ -257,19 +256,6 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 	case reasonComment:
 		colour = state.Colour()
 		body = commentBody(v)
-
-	case reasonUnackedReminder:
-		colour = CardFiring.Colour()
-		body = ":rotating_light: *Still unacknowledged"
-		if d := unackedFor(v); d != "" {
-			body += " after " + d
-		}
-		body += ".*"
-		// ⛔ NO MENTION HERE. It goes in the TOP-LEVEL `text` — see replyText.
-		// A mention inside a block does not reach a push notification, and a
-		// reminder that does not reach the phone of somebody who has NOT engaged
-		// is not a reminder. ADR 0020, Amendment 4.
-		body += " — " + link(v.Links.Group, "open in oto")
 
 	case reasonDegraded:
 		colour = CardExpired.Colour()
@@ -598,9 +584,11 @@ func snoozeNote(v *domain.NotificationView) string {
 // span. On a group of ten pods that failed over forty minutes, reporting whichever
 // case the view happened to focus — the first to resolve or the last, depending on
 // how the notification was raised — puts one member's duration in a sentence whose
-// own next clause counts ten instances. Contrast `unackedFor` below, which DOES
-// prefer the case: "how long has nobody acknowledged this" is a question about the
-// focused episode, and it starts when oto knew. Same shape, different question.
+// own next clause counts ten instances. (`unackedFor` was the contrasting case
+// below — it DID prefer the case, because "how long has nobody acknowledged this"
+// is a question about the focused episode. It went with the unacked reminder,
+// git-bug bd0fb1d. Same shape, different question, and worth remembering the next
+// time a duration is rendered.)
 //
 // ⛔ AND THE START IS `StartedAt`, NEVER `FirstSeenAt` DIRECTLY. FirstSeenAt is when
 // oto first heard about the signal; the gap to upstream's `startsAt` is oto's
@@ -624,17 +612,6 @@ func resolvedAfter(v *domain.NotificationView) string {
 		return ""
 	}
 	return humanDuration(v.Group.LastActivityAt.Sub(start))
-}
-
-func unackedFor(v *domain.NotificationView) string {
-	start := v.Group.FirstSeenAt
-	if v.Case != nil && !v.Case.StartedAt.IsZero() {
-		start = v.Case.StartedAt
-	}
-	if start.IsZero() || !v.RenderedAt.After(start) {
-		return ""
-	}
-	return humanDuration(v.RenderedAt.Sub(start))
 }
 
 // newlyFiring is the members that arrived with this notification.
@@ -688,7 +665,7 @@ func nameList(alerts []domain.AlertView, o domain.RenderOptions) string {
 // PUSH NOTIFICATION ON A LOCKED PHONE AND THE TEXT A SCREEN READER ANNOUNCES.
 // Neither has ever rendered a colour bar. A broadcast whose text reads "Re-fired"
 // is a broadcast that communicates nothing to the person it woke up.
-func replyText(v *domain.NotificationView, mentions []string) string {
+func replyText(v *domain.NotificationView) string {
 	title := v.Group.Title
 	if title == "" {
 		title = v.Group.GroupLabels["alertname"]
@@ -732,9 +709,6 @@ func replyText(v *domain.NotificationView, mentions []string) string {
 	//
 	// The audience is already resolved and already gated on severity by the org's
 	// policy. This renderer does not decide WHO — only WHERE.
-	if m := mentionList(mentions); m != "" {
-		out += " " + m
-	}
 	return truncateClause(oneLine(out), otoTopLevelText)
 }
 
@@ -772,11 +746,6 @@ func replyFacts(v *domain.NotificationView) string {
 		}
 	case reasonExpired:
 		facts = append(facts, "last seen at "+plainClock(v.Group.LastActivityAt))
-	case reasonUnackedReminder:
-		if d := unackedFor(v); d != "" {
-			facts = append(facts, "unacknowledged for "+d)
-		}
-		facts = append(facts, "firing since "+plainClock(groupStart(v)))
 	case reasonSnoozed:
 		// ⛔⛔ THIS CLAUSE IS THE WHOLE POINT OF THE TICKET. The `default:` arm below
 		// appends `stateClause`, so the string that reached a locked phone read
@@ -835,8 +804,6 @@ func replyLead(reason string) string {
 		return ":sparkles: New enrichment for:"
 	case reasonComment:
 		return ":speech_balloon: New comment on:"
-	case reasonUnackedReminder:
-		return ":rotating_light: Still unacknowledged:"
 	case reasonDegraded:
 		return ":warning: oto could not update the thread for:"
 	case reasonContinued:

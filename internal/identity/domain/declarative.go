@@ -151,24 +151,6 @@ func (d *Declarative) set(key SettingKey, e DeclaredEntry) error {
 			return err
 		}
 		d.patch.BroadcastOnResolved = &b
-	case KeyUnackedReminderMention:
-		s, err := asStr(e.Value)
-		if err != nil {
-			return err
-		}
-		d.patch.UnackedReminderMention = &s
-	case KeyUnackedReminderMentionMinSeverity:
-		s, err := asStr(e.Value)
-		if err != nil {
-			return err
-		}
-		d.patch.UnackedReminderMentionMinSeverity = &s
-	case KeyUnackedReminderMentionList:
-		l, err := asList(e.Value)
-		if err != nil {
-			return err
-		}
-		d.patch.UnackedReminderMentionList = &l
 	default:
 		return fmt.Errorf("%s cannot be set declaratively", key)
 	}
@@ -201,12 +183,13 @@ func (d Declarative) Keys() []SettingKey {
 // It returns a copy of the slice-valued field so that no caller can reach into
 // the resolved layer and edit the deployment's stated configuration through it.
 func (d Declarative) Patch() SettingsPatch {
-	out := d.patch
-	if d.patch.UnackedReminderMentionList != nil {
-		l := append([]string(nil), *d.patch.UnackedReminderMentionList...)
-		out.UnackedReminderMentionList = &l
-	}
-	return out
+	// ⛔ IT USED TO DEEP-COPY `UnackedReminderMentionList`, THE ONE SLICE-VALUED
+	// FIELD, so no caller could edit the deployment's stated configuration through
+	// the resolved layer. That field is gone (git-bug bd0fb1d) and no slice-valued
+	// setting is left, so the copy has nothing to protect. ⚠️ IF ONE COMES BACK,
+	// THE COPY COMES BACK WITH IT — a `SettingsPatch` returned by value still
+	// shares any slice it holds.
+	return d.patch
 }
 
 // Empty reports whether configuration manages nothing, which is the state of
@@ -296,31 +279,12 @@ func asBool(v any) (bool, error) {
 	}
 }
 
-// asList accepts a YAML sequence, the []string a comma-separated environment
-// value becomes, and a single bare string — which is what
-// `OTO_TUNING_UNACKED_REMINDER_MENTION_LIST=<@U123>` looks like when there is
-// exactly one member and therefore no comma to split on.
-func asList(v any) ([]string, error) {
-	switch t := v.(type) {
-	case []string:
-		return append([]string(nil), t...), nil
-	case string:
-		s := strings.TrimSpace(t)
-		if s == "" {
-			return []string{}, nil
-		}
-		return []string{s}, nil
-	case []any:
-		out := make([]string, 0, len(t))
-		for _, item := range t {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("%v is not a list of strings", v)
-			}
-			out = append(out, strings.TrimSpace(s))
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("%v is not a list of strings", v)
-	}
-}
+// ⛔ `asList` WAS HERE AND IS DELETED (git-bug bd0fb1d). It accepted the three
+// shapes a list-valued setting could arrive in — a YAML sequence, the []string a
+// comma-separated environment value becomes, and a single bare string with no
+// comma to split on. `unacked_reminder_mention_list` was the only list-valued
+// setting, and it went with the reminder.
+//
+// ⚠️ IF A LIST-VALUED SETTING COMES BACK, SO DOES THIS: the bare-string case is
+// the one a naive `[]any` cast misses, and it is the common case — a one-member
+// list typed into an environment variable.

@@ -59,13 +59,6 @@ func TestBoundsAreEnforcedServerSide(t *testing.T) {
 			field: "flap_window_s",
 		},
 		{
-			// Mirrors policies_reminder_ck exactly. A value this accepted and that
-			// CHECK rejected would be a 23514 at reminder time.
-			name:  "reminder delay below policies_reminder_ck",
-			patch: domain.SettingsPatch{UnackedReminderAfterS: intp(30)},
-			field: "unacked_reminder_after_s",
-		},
-		{
 			name:  "unknown verbosity",
 			patch: domain.SettingsPatch{DefaultVerbosity: strp("very_loud")},
 			field: "default_verbosity",
@@ -246,26 +239,6 @@ func TestTheShippedDefaultsAreUnchanged(t *testing.T) {
 		t.Fatalf("an empty patch yields %+v, want the shipped defaults %+v", got, want)
 	}
 
-	// ⭐ THE MENTION DEFAULT IS `none`, AND IT IS ASSERTED HERE RATHER THAN LEFT
-	// TO THE STRUCT COMPARISON, because it is the one default in this file that is
-	// a RESEARCH RESULT: Slack documents that @here and @channel do not notify
-	// when used in threads, and oto's unacked reminder is a thread reply. A
-	// default of `here` would be a control that silently does nothing, which is
-	// worse than no default at all (ADR 0020).
-	if got.UnackedReminderMention != domain.MentionNone {
-		t.Fatalf("the shipped reminder mention is %q, want none", got.UnackedReminderMention)
-	}
-	// And mentions are gated on severity, critical only: @here on every unacked
-	// warning is how a channel gets muted, and a muted channel hides the real
-	// incident.
-	if got.UnackedReminderMentionMinSeverity != domain.MentionSeverityCritical {
-		t.Fatalf("the shipped mention severity gate is %q, want critical",
-			got.UnackedReminderMentionMinSeverity)
-	}
-	if len(got.UnackedReminderMentionList) != 0 {
-		t.Fatalf("the shipped reminder mention list is %v, want empty", got.UnackedReminderMentionList)
-	}
-
 	// Every default must sit inside its own bound.
 	for _, k := range domain.IntKeys() {
 		b, ok := domain.Bounds(k)
@@ -273,15 +246,6 @@ func TestTheShippedDefaultsAreUnchanged(t *testing.T) {
 			t.Fatalf("%s has no bound and so cannot be validated at all", k)
 		}
 		v, _, _ := empty.EffectiveInt(k)
-		if k == domain.KeyUnackedReminder {
-			// Its default is deliberately ZERO — "this org sets no default" — which
-			// is below the floor and is the one value outside the range on purpose.
-			// Anything else would turn reminders on for every install that upgrades.
-			if v != 0 {
-				t.Fatalf("the shipped unacked reminder default is %d, want 0 (no default)", v)
-			}
-			continue
-		}
 		if !b.Contains(v) {
 			t.Errorf("%s ships %d, outside its own bound %d..%d", k, v, b.Min, b.Max)
 		}

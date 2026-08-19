@@ -115,11 +115,10 @@ func policyFixture(id, org uuid.UUID) domain.Policy {
 		Reasons: []domain.Reason{
 			domain.ReasonFired, domain.ReasonAllResolved, domain.ReasonAcked,
 		},
-		ChannelIDs:           []uuid.UUID{notifChannel},
-		Throttle:             domain.Throttle{Max: 5, Window: time.Hour},
-		UnackedReminderAfter: 15 * time.Minute,
-		CreatedAt:            notifNow.Add(-30 * 24 * time.Hour),
-		UpdatedAt:            notifNow.Add(-time.Hour),
+		ChannelIDs: []uuid.UUID{notifChannel},
+		Throttle:   domain.Throttle{Max: 5, Window: time.Hour},
+		CreatedAt:  notifNow.Add(-30 * 24 * time.Hour),
+		UpdatedAt:  notifNow.Add(-time.Hour),
 	}
 }
 
@@ -515,8 +514,7 @@ func TestCreatingAPolicyReturnsTheStoredRoutingRule(t *testing.T) {
 		"channel_ids": []string{
 			notifChannel.String(),
 		},
-		"throttle":                       map[string]any{"max": 5, "window_seconds": 3600},
-		"unacked_reminder_after_seconds": 900,
+		"throttle": map[string]any{"max": 5, "window_seconds": 3600},
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -612,8 +610,7 @@ func TestClearingAThrottleIsDifferentFromLeavingItAlone(t *testing.T) {
 
 	w := newNotifWorld(t)
 	resp := w.client.PATCH(t, "/notification-policies/"+policyMine.String(), map[string]any{
-		"throttle":                       nil,
-		"unacked_reminder_after_seconds": nil,
+		"throttle": nil,
 	}).MustStatus(t, http.StatusOK)
 	schema.Assert(t, "updateNotificationPolicy", http.StatusOK, resp.Body())
 
@@ -624,17 +621,13 @@ func TestClearingAThrottleIsDifferentFromLeavingItAlone(t *testing.T) {
 	if p.Throttle == nil || *p.Throttle != nil {
 		t.Fatalf("an explicit `throttle: null` reached the store as %#v, want a request to CLEAR it", p.Throttle)
 	}
-	if p.UnackedReminderAfter == nil || *p.UnackedReminderAfter != nil {
-		t.Fatalf("an explicit null reminder reached the store as %#v, want a request to DISABLE it",
-			p.UnackedReminderAfter)
-	}
 
 	// And the other half: omitting the fields must leave them untouched.
 	w2 := newNotifWorld(t)
 	w2.client.PATCH(t, "/notification-policies/"+policyMine.String(), map[string]any{"name": "renamed"}).
 		MustStatus(t, http.StatusOK)
-	if got := w2.policies.patched[0]; got.Throttle != nil || got.UnackedReminderAfter != nil {
-		t.Fatalf("a rename asked to change the dampers: %#v / %#v", got.Throttle, got.UnackedReminderAfter)
+	if got := w2.policies.patched[0]; got.Throttle != nil {
+		t.Fatalf("a rename asked to change the throttle: %#v", got.Throttle)
 	}
 }
 

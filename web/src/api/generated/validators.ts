@@ -100,7 +100,7 @@ export const ActorKindSchema = v.picklist(["system", "ingest", "reconciler", "re
 
 export const AlertEventTypeSchema = v.picklist(["alert.created", "alert.mutated", "case.opened", "case.reopened", "case.suppressed", "case.unsuppressed", "case.resolved", "case.expired", "case.acknowledged", "case.unacknowledged", "alert.snoozed", "alert.unsnoozed", "group.opened", "group.closed", "group.member_joined", "group.member_left", "rule.snapshot_captured", "rule.definition_changed", "rule.lookup_failed", "enrichment.completed", "enrichment.failed", "notification.created", "notification.suppressed", "delivery.sent", "delivery.updated", "delivery.failed", "delivery.skipped", "delivery.dead", "comment.added", "source.unreachable", "source.recovered", "source.clock_skew"]);
 
-export const NotificationReasonSchema = v.picklist(["fired", "new_alerts", "some_resolved", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "unacked_reminder", "digest"]);
+export const NotificationReasonSchema = v.picklist(["fired", "new_alerts", "some_resolved", "all_resolved", "repeat", "suppressed", "unsuppressed", "expired", "refired", "acked", "unacked", "snoozed", "unsnoozed", "enriched", "rule_changed", "comment", "digest"]);
 
 export const NotificationStatusSchema = v.picklist(["pending", "dispatched", "partial", "delivered", "failed", "suppressed"]);
 
@@ -117,10 +117,6 @@ export const ChannelTypeSchema = v.picklist(["slack", "webhook"]);
 export const RendererIdSchema = v.picklist(["default", "slack.default", "webhook.json"]);
 
 export const VerbositySchema = v.picklist(["all", "status_changes", "firing_and_resolved", "firing_only"]);
-
-export const ReminderMentionSchema = v.picklist(["none", "here", "channel", "list"]);
-
-export const ReminderMentionSeveritySchema = v.picklist(["critical", "warning", "info"]);
 
 export const ChannelHealthStatusSchema = v.picklist(["healthy", "degraded", "auth_failed", "config_invalid", "unknown"]);
 
@@ -1456,7 +1452,7 @@ export const PolicyDTOSchema = v.looseObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(18),
+    v.maxLength(17),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -1466,12 +1462,6 @@ export const PolicyDTOSchema = v.looseObject({
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),
-  "unacked_reminder_after_seconds": v.exactOptional(v.nullable(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(60),
-    v.maxValue(86400),
-  ))),
   "digest_window_seconds": v.exactOptional(v.nullable(v.pipe(
     v.number(),
     v.integer(),
@@ -1971,24 +1961,8 @@ export const OrgSettingsDTOSchema = v.looseObject({
     v.minValue(1),
     v.maxValue(120),
   ),
-  "unacked_reminder_after_s": v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(0),
-    v.maxValue(86400),
-  ),
   "default_verbosity": VerbositySchema,
   "broadcast_on_resolved": v.boolean(),
-  "unacked_reminder_mention": ReminderMentionSchema,
-  "unacked_reminder_mention_list": v.pipe(
-    v.array(v.pipe(
-      v.string(),
-      v.regex(/^(<@[UW][A-Z0-9]{2,}>|<!subteam\^S[A-Z0-9]{2,}>)$/),
-    )),
-    v.maxLength(10),
-    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
-  ),
-  "unacked_reminder_mention_min_severity": ReminderMentionSeveritySchema,
 });
 
 export const OrgDTOSchema = v.looseObject({
@@ -2617,7 +2591,7 @@ export const CreatePolicyRequestSchema = v.strictObject({
   "reasons": v.pipe(
     v.array(NotificationReasonSchema),
     v.minLength(1),
-    v.maxLength(18),
+    v.maxLength(17),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "channel_ids": v.pipe(
@@ -2627,12 +2601,6 @@ export const CreatePolicyRequestSchema = v.strictObject({
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
   "throttle": v.exactOptional(ThrottleDTOSchema),
-  "unacked_reminder_after_seconds": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(60),
-    v.maxValue(86400),
-  )),
   "digest_window_seconds": v.exactOptional(v.pipe(
     v.number(),
     v.integer(),
@@ -2668,7 +2636,7 @@ export const UpdatePolicyRequestSchema = v.pipe(
     "reasons": v.exactOptional(v.pipe(
       v.array(NotificationReasonSchema),
       v.minLength(1),
-      v.maxLength(18),
+      v.maxLength(17),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "channel_ids": v.exactOptional(v.pipe(
@@ -2678,12 +2646,6 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),
-    "unacked_reminder_after_seconds": v.exactOptional(v.nullable(v.pipe(
-      v.number(),
-      v.integer(),
-      v.minValue(60),
-      v.maxValue(86400),
-    ))),
     "digest_window_seconds": v.exactOptional(v.nullable(v.pipe(
       v.number(),
       v.integer(),
@@ -3067,18 +3029,8 @@ export const OrgSettingsPatchDTOSchema = v.looseObject({
     v.number(),
     v.integer(),
   )),
-  "unacked_reminder_after_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-  )),
   "default_verbosity": v.exactOptional(VerbositySchema),
   "broadcast_on_resolved": v.exactOptional(v.boolean()),
-  "unacked_reminder_mention": v.exactOptional(ReminderMentionSchema),
-  "unacked_reminder_mention_list": v.exactOptional(v.pipe(
-    v.array(v.string()),
-    v.maxLength(10),
-  )),
-  "unacked_reminder_mention_min_severity": v.exactOptional(ReminderMentionSeveritySchema),
 });
 
 export const OrgSettingsViewDTOSchema = v.looseObject({
@@ -3146,24 +3098,8 @@ export const UpdateOrgSettingsRequestSchema = v.strictObject({
     v.minValue(1),
     v.maxValue(120),
   )),
-  "unacked_reminder_after_s": v.exactOptional(v.pipe(
-    v.number(),
-    v.integer(),
-    v.minValue(60),
-    v.maxValue(86400),
-  )),
   "default_verbosity": v.exactOptional(VerbositySchema),
   "broadcast_on_resolved": v.exactOptional(v.boolean()),
-  "unacked_reminder_mention": v.exactOptional(ReminderMentionSchema),
-  "unacked_reminder_mention_list": v.exactOptional(v.pipe(
-    v.array(v.pipe(
-      v.string(),
-      v.regex(/^(<@[UW][A-Z0-9]{2,}>|<!subteam\^S[A-Z0-9]{2,}>)$/),
-    )),
-    v.maxLength(10),
-    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
-  )),
-  "unacked_reminder_mention_min_severity": v.exactOptional(ReminderMentionSeveritySchema),
   "reset": v.exactOptional(v.pipe(
     v.array(v.pipe(
       v.string(),

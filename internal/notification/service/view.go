@@ -385,8 +385,7 @@ func previousState(reason domain.Reason, snap domain.Snapshot) *PreviousState {
 		return &PreviousState{State: "resolved"}
 	case domain.ReasonFired, domain.ReasonNewAlerts, domain.ReasonRepeat,
 		domain.ReasonSnoozed, domain.ReasonUnsnoozed, domain.ReasonEnriched,
-		domain.ReasonRuleChanged, domain.ReasonComment,
-		domain.ReasonUnackedReminder:
+		domain.ReasonRuleChanged, domain.ReasonComment:
 		return nil
 	default:
 		return nil

@@ -370,11 +370,6 @@ func TestEveryShippedDefaultIsInsideItsOwnBound(t *testing.T) {
 			t.Errorf("%s has no bound", k)
 			continue
 		}
-		// `unacked_reminder_after_s` ships as 0 meaning "the org sets no default",
-		// which is a legal READ value below a write bound that starts at 60.
-		if k == identity.KeyUnackedReminder && v == 0 {
-			continue
-		}
 		if !b.Contains(v) {
 			t.Errorf("%s ships %d, outside its own bound %d..%d — a fresh install fails its own "+
 				"validation", k, v, b.Min, b.Max)

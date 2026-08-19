@@ -46,10 +46,6 @@ type PolicyDraft struct {
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID
 	Throttle   *Throttle
-	// UnackedReminderAfter is oto's ONE reminder stage. Nil disables it.
-	//
-	// ⛔ IT IS A SCALAR. ONE STAGE, FOREVER (SPEC §G.9.1, BINDING, PERMANENT).
-	UnackedReminderAfter *time.Duration
 
 	// DigestWindow and DigestFloor are the two halves of `Digest` (migration
 	// 00058). Nil means the column stays NULL, which is "this policy sends no
@@ -81,8 +77,7 @@ type PolicyPatch struct {
 	Reasons    *[]Reason
 	ChannelIDs *[]uuid.UUID
 
-	Throttle             **Throttle
-	UnackedReminderAfter **time.Duration
+	Throttle **Throttle
 	// DigestWindow and DigestFloor are double pointers for the reason Throttle is:
 	// the contract types both as nullable and a pointer to nil CLEARS the column,
 	// which is how an operator turns the summary — or just its floor — off.
@@ -94,7 +89,7 @@ type PolicyPatch struct {
 func (p PolicyPatch) IsEmpty() bool {
 	return p.Name == nil && p.Priority == nil && p.Enabled == nil &&
 		p.Matchers == nil && p.Reasons == nil && p.ChannelIDs == nil &&
-		p.Throttle == nil && p.UnackedReminderAfter == nil &&
+		p.Throttle == nil &&
 		p.DigestWindow == nil && p.DigestFloor == nil
 }
 

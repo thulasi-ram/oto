@@ -1,7 +1,6 @@
 package slack
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -417,39 +416,13 @@ func blockID(name, nonce string) string {
 	return id
 }
 
-// mentionList renders the resolved mention audience for an unacked reminder.
+// ⛔ `mentionList` AND `mentionTokenRe` WERE HERE AND ARE DELETED (git-bug
+// bd0fb1d). They rendered the unacked reminder's audience into the top-level
+// `text` — the only position that reaches a locked phone — and dropped anything
+// that was not a recognised Slack mention shape, because an unvalidated fragment
+// in a message is an injection surface.
 //
-// ⛔⛔ ITS ONLY CALLER PUTS THE RESULT IN THE TOP-LEVEL `text`, AND THAT IS
-// CORRECTNESS, NOT STYLE (ADR 0020, Amendment 4).
-//
-// The original reason was that Slack documents the in-channel `thread_broadcast`
-// reference as unable to contain attachments, and §H.1 S3 puts every oto block
-// inside one — so a mention in a block would not be THERE at all. The live
-// workspace contradicts that: the attachment survives. The rule survives anyway,
-// on the stronger ground it always had — THE TOP-LEVEL TEXT IS WHAT A PUSH
-// NOTIFICATION SHOWS ON A LOCKED PHONE AND WHAT A SCREEN READER ANNOUNCES. A
-// mention nobody's phone shows them is a mention that did not happen, and that
-// has never depended on how Slack renders attachments.
-//
-// The tokens arrive in Slack's own wire form, already resolved and already gated
-// on severity by the org's mention policy. Anything that is not a recognised
-// mention shape is DROPPED rather than passed through: this string goes into a
-// message, and an unvalidated fragment there is an injection surface.
-//
-// This list is NOT a rota and must never become time-aware (§G.9.1, §4.8). It is
-// a fixed audience the operator chose once, in configuration, and oto has no
-// concept of who is on call.
-func mentionList(mentions []string) string {
-	out := make([]string, 0, len(mentions))
-	for _, m := range mentions {
-		if mentionTokenRe.MatchString(m) {
-			out = append(out, m)
-		}
-	}
-	return strings.Join(out, " ")
-}
-
-// mentionTokenRe is the closed set of mention shapes this renderer will emit: a
-// Slack user, a usergroup, `@here` or `@channel`. Nothing else reaches a message.
-var mentionTokenRe = regexp.MustCompile(
-	`^(<@[UW][A-Z0-9]{2,}>|<!subteam\^S[A-Z0-9]{2,}>|<!here>|<!channel>)$`)
+// The owner withdrew the reminder and ruled the mention goes with it. Nothing
+// resolves an audience now, so there is nothing to render and no shape to
+// validate. ⚠️ IF A MENTION EVER COMES BACK, THE ALLOW-LIST COMES BACK WITH IT:
+// the regex was the injection guard, not decoration.

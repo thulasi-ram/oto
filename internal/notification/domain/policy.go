@@ -29,14 +29,15 @@ import (
 const (
 	// MaxPolicyMatchers is policies_matchers_ck.
 	MaxPolicyMatchers = 32
-	// MaxPolicyReasons is policies_reasons_ck, and it is 18 because `reasons` is a
-	// SET over the 18-value Reason enum.
+	// MaxPolicyReasons is policies_reasons_ck, and it is 17 because `reasons` is a
+	// SET over the 17-value Reason enum.
 	//
-	// ⚠️ IT IS NOT A NUMBER TO BE CHOSEN. It is `len(AllReasons())`, asserted as such
-	// by `TestTheReasonCeilingIsTheSizeOfTheReasonEnum`. It moved from 18 to 19 when
-	// migration 00058 added `digest`, and back to 18 when migration 00060 deleted
-	// `storm` — the number follows the vocabulary in both directions. The DDL
-	// ceiling and the DTO `max` tag carry the same number for the same reason.
+	// ⚠️ IT IS NOT A NUMBER TO BE CHOSEN. It is `len(AllReasons())`, asserted as
+	// such by `TestTheReasonCeilingIsTheSizeOfTheReasonEnum`. It moved from 18 to 19
+	// when migration 00058 added `digest`, back to 18 when 00060 deleted `storm`,
+	// and to 17 when 00067 deleted `unacked_reminder` — the number follows the
+	// vocabulary in both directions. The DDL ceiling and the DTO `max` tag carry the
+	// same number for the same reason.
 	//
 	// It used to be 32 while the contract said 18, and that gap was not a wire
 	// bound differing from a storage bound on purpose: it was the room duplicates
@@ -49,7 +50,7 @@ const (
 	// closed 18-value vocabulary cannot reach 19, and a ceiling of 32 would be a
 	// number no row could ever test. All three layers now say 18 and all three say
 	// set, which is what CONTEXT.md §5b asks of a bound.
-	MaxPolicyReasons = 18
+	MaxPolicyReasons = 17
 	// MaxPolicyChannels is policies_chan_ck.
 	MaxPolicyChannels = 16
 	// MinPolicyPriority and MaxPolicyPriority are policies_prio_ck. LOWER IS
@@ -232,14 +233,16 @@ type Policy struct {
 	ChannelIDs []uuid.UUID
 	Throttle   Throttle
 
-	// UnackedReminderAfter is `unacked_reminder_after_s`: how long a signal may
-	// go unacknowledged before ONE Reason=unacked_reminder notification is sent to
-	// the channels this policy already names. Zero disables it.
+	// ⛔ `UnackedReminderAfter` WAS HERE AND IS DELETED (git-bug bd0fb1d, migration
+	// 00068). It was oto's one reminder stage — how long a signal could go
+	// unacknowledged before a single `unacked_reminder` was sent to this policy's
+	// own channels. The owner withdrew the feature: oto sends nothing unprompted.
 	//
-	// ⛔ IT IS A SCALAR. ONE STAGE, FOREVER (SPEC §G.9.1, BINDING, PERMANENT). It
-	// must never become a slice, a ladder, or a target other than ChannelIDs. The
-	// moment it is an array, oto is an on-call product and FR-1 has been crossed.
-	UnackedReminderAfter time.Duration
+	// The field carried a BINDING refusal — one stage, forever, never a slice, never
+	// a target other than ChannelIDs (SPEC §G.9.1) — and that refusal does not go
+	// away with it. It gets stronger: there is now no reminder stage at all, so
+	// there is no scalar for a second element to be appended to. Re-adding one is
+	// re-adding the feature, and needs an ADR that argues against FR-1 by name.
 
 	// Digest is `digest_window_s` and `digest_floor`: summarise what matched me over
 	// a window, and stay silent unless enough happened. The zero value means no
@@ -271,9 +274,6 @@ func (p Policy) Handles(r Reason) bool {
 	}
 	return false
 }
-
-// RemindsOnUnacked reports whether this policy asks for the one reminder stage.
-func (p Policy) RemindsOnUnacked() bool { return p.UnackedReminderAfter > 0 }
 
 // Digests reports whether this policy sends a periodic digest — a window AND the
 // Reason that routes it.
@@ -396,17 +396,6 @@ func (p Policy) Validate() error {
 		v = append(v, errs.Violation{
 			Field: "throttle", Code: "incomplete",
 			Message: "a throttle needs both max and window_seconds, or neither",
-		})
-	}
-
-	if p.UnackedReminderAfter != 0 &&
-		(p.UnackedReminderAfter < MinUnackedReminderAfter || p.UnackedReminderAfter > MaxUnackedReminderAfter) {
-		v = append(v, errs.Violation{
-			// The JSON name, not the column name. A violation path is what the
-			// settings form maps onto a control (CONTEXT.md §5b, SPEC §L.8.2), and
-			// `unacked_reminder_after_s` is a field no client has ever been sent.
-			Field: "unacked_reminder_after_seconds", Code: "range",
-			Message: "the unacked reminder delay is 60 to 86400 seconds, or unset",
 		})
 	}
 
