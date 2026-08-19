@@ -280,16 +280,38 @@ func (s *NotificationService) evaluate(
 
 	n := s.mint(scope, in, snap, now)
 
-	// ⭐ THE MATCHER SEES THE GROUP'S LABELS, and that is correct rather than lazy:
-	// they are the only label set true of EVERY member. Since ADR 0038 they are
-	// oto's own axes — `alertname`, and `namespace` when the alert has one — rather
-	// than whatever the operator put in `group_by`. Before that, a policy matching
-	// `namespace` matched nothing on most deployments, and failed as a `no_policy`
-	// suppression rather than as an error, which is a filter that silently deletes
-	// notifications.
+	// ⭐ THE MATCHER SEES THE GROUP'S LABELS PLUS THE FOCUSED ALERT'S OWN, and the
+	// second half is git-bug 7570090's declared prerequisite rather than a
+	// convenience.
+	//
+	// The group's labels are the only set true of EVERY member, which is why they
+	// were the whole input: since ADR 0038 they are oto's own axes — `alertname`,
+	// and `namespace` when the alert has one — rather than whatever the operator
+	// put in `group_by`. Before that, a policy matching `namespace` matched nothing
+	// on most deployments and failed as a `no_policy` suppression rather than as an
+	// error, which is a filter that silently deletes notifications.
+	//
+	// ⛔ BUT TWO AXES IS ALSO EVERY LABEL A POLICY CAN SEE, AND THAT IS THE LIMIT
+	// THAT HAS TO GO FIRST. `alert_groups` is to be replaced by a `group_by` on
+	// `notification_policies`, with the collapse key computed at delivery — and a
+	// policy cannot group by `node` while the matcher is handed a set that contains
+	// only `alertname` and `namespace`. Landing that column on top of this input
+	// would ship a `group_by` over labels the matcher cannot see, which is why the
+	// ticket calls this "a prerequisite, not a detail".
+	//
+	// ⭐ MERGED, NOT REPLACED, SO THE CHANGE IS MONOTONE. The focus's labels are a
+	// superset of the group's for that alert — the group axes are DERIVED from them
+	// — so every matcher that matched before still matches, and the only new
+	// outcomes are matches that were previously impossible to express. Replacing
+	// outright would have made this a behaviour change in both directions on a path
+	// whose failure mode is a silently deleted notification.
+	//
+	// Group-scoped reasons (`all_resolved`, `new_alerts`) carry no focus and are
+	// unchanged: `Focus` is nil and the group's own labels are the whole input,
+	// exactly as before.
 	match, err := s.policies.Evaluate(ctx, scope, MatchRequest{
 		Reason: in.Reason,
-		Labels: snap.Group.GroupLabels,
+		Labels: matchLabels(snap),
 	})
 	if err != nil {
 		return Result{}, err
@@ -829,4 +851,29 @@ func (s *NotificationService) createDelivery(
 // for the `post_root` it will always be given.
 func needsThread(c domain.Channel) bool {
 	return c.Capabilities.Has(domain.CapThreading) || c.Capabilities.Has(domain.CapAmend)
+}
+
+// matchLabels is the label set a policy is evaluated against: the group's axes,
+// widened by the focused alert's own labels when the intent has a focus.
+//
+// The group's axes are always present, whatever the focus carries, because they
+// are what every member shares and what a policy written before this change
+// targets. The focus wins on a collision only because it is the more specific
+// fact about the same alert; in practice it cannot collide, since the group axes
+// are computed from the focused alert's labels in the first place.
+//
+// Returns the group's labels unchanged when there is no focus, and never returns
+// a nil map, so a caller cannot tell "no labels" apart from "no group" by shape.
+func matchLabels(snap domain.Snapshot) map[string]string {
+	if snap.Focus == nil || len(snap.Focus.Labels) == 0 {
+		return snap.Group.GroupLabels
+	}
+	out := make(map[string]string, len(snap.Group.GroupLabels)+len(snap.Focus.Labels))
+	for k, v := range snap.Group.GroupLabels {
+		out[k] = v
+	}
+	for k, v := range snap.Focus.Labels {
+		out[k] = v
+	}
+	return out
 }
