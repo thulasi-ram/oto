@@ -96,9 +96,25 @@ const (
 	// documents no cap, but a push notification longer than this is not read.
 	otoTopLevelText = 300
 
-	// sectionTruncateAt is where a section is cut so that the ellipsis and the
-	// "see full detail in oto" link still fit inside maxSectionText (§H.7).
-	sectionTruncateAt = 2900
+	// ⛔ `sectionTruncateAt = 2900` WAS HERE AND IS DELETED (git-bug `1cd496f`). It
+	// was "where a section is cut so that the ellipsis and the link still fit inside
+	// maxSectionText (§H.7)" — a fixed 100-byte allowance for a suffix that costs
+	// `len(URL) + 29`. It therefore held only while the oto deep link was 71 bytes or
+	// shorter, and the shipped default left FOUR bytes of headroom. `truncateAt` now
+	// derives the cut from the suffix it actually built, so §H.7's invariant is true
+	// by construction instead of by tuning. `maxFieldText - 120` went the same way.
+)
+
+// The two literals the truncation suffix is made of, named so the arithmetic that
+// used to be a magic allowance can be derived instead.
+const (
+	// ellipsis is THREE BYTES, not one — U+2026. Counting it as a character is how a
+	// budget in bytes goes wrong by two.
+	ellipsis = "…"
+	// seeFullDetail is the truncation link's label. §H.7: a card that says "…" and
+	// offers a link tells an operator exactly what happened; one silently cut tells
+	// them a smaller truth than the one that exists.
+	seeFullDetail = "see full detail in oto"
 )
 
 func lower(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
@@ -138,25 +154,67 @@ func link(url, label string) string {
 // operator a smaller truth than the one that exists, and they have no way to know.
 // A card that says "…" and offers a link tells them exactly what happened.
 func truncateSection(text, moreURL string) string {
-	return truncateAt(text, sectionTruncateAt, maxSectionText, moreURL)
+	return truncateAt(text, maxSectionText, moreURL)
 }
 
 // truncateField cuts one section field, which has its own 2 000-char budget.
 func truncateField(text, moreURL string) string {
-	return truncateAt(text, maxFieldText-120, maxFieldText, moreURL)
+	return truncateAt(text, maxFieldText, moreURL)
 }
 
-func truncateAt(text string, cut, hard int, moreURL string) string {
+// truncateAt cuts `text` so that the result, INCLUDING the suffix it appends, is
+// never longer than `hard` bytes.
+//
+// ⛔⛔ IT USED TO TAKE THE CUT FROM THE CALLER AND THAT WAS THE BUG (git-bug
+// `1cd496f`). `truncateSection` passed 2900 against a hard limit of 3000, on the
+// belief that 100 bytes was enough for the suffix. The suffix costs
+// `len(moreURL) + 29`: four bytes for `"… "` (U+2026 is three), then `<`, the URL,
+// `|`, a 22-byte label and `>`. So the allowance held only while the oto deep link
+// was 71 bytes or shorter — `https://oto.example.com/groups/<uuid>` is 67, leaving
+// FOUR bytes — and one ordinary corporate hostname made the function that exists to
+// enforce Slack's 3 000-character section limit return 3 013. `Validate`'s V5 check
+// then refused the payload and `Render` returned terminal, so the card did not
+// degrade, the DELIVERY DIED.
+//
+// The cut is now derived from the suffix that was actually built. Nothing to tune,
+// and no URL length can overrun the limit.
+//
+// ⭐ THE NO-USEFUL-HEAD CASE, WHICH THE TICKET ASKS TO BE RECORDED RATHER THAN
+// DISCOVERED. Once the suffix is measured, a long enough URL would leave almost no
+// text — a section that is nothing but a pointer to itself. The rule is that the
+// TEXT MUST BE AT LEAST AS LONG AS THE POINTER TO THE REST OF IT: if the link
+// suffix would take more than half the budget, the link is dropped and a bare
+// ellipsis is used instead.
+//
+// Dropping the link is the right half to sacrifice, and `truncateRunes` below
+// already made the same call for the same reason — "there is no 'view in oto' link
+// here: these strings are too short to hang one off, and EVERY CARD ALREADY CARRIES
+// THE GROUP LINK". The link is a convenience that is duplicated elsewhere on the
+// card; the alert text is not duplicated anywhere.
+func truncateAt(text string, hard int, moreURL string) string {
 	if len(text) <= hard {
 		return text
 	}
-	suffix := "…"
+
+	// A budget smaller than the ellipsis itself is a programming error, not an
+	// input. Return empty rather than overrun: an empty text object is REFUSED by
+	// the V-checks (`TestAnEmptyTextObjectIsRefusedRatherThanShippedAsAnEmptyBlock`),
+	// so it surfaces loudly instead of shipping a block over the limit — which is
+	// the failure this whole function exists to prevent.
+	if hard < len(ellipsis) {
+		return ""
+	}
+
+	suffix := ellipsis
 	if moreURL != "" {
-		suffix = "… " + link(moreURL, "see full detail in oto")
+		// `*2 <= hard` IS the "at least as long as the pointer" rule, stated as the
+		// arithmetic rather than as a comment about the arithmetic.
+		if withLink := ellipsis + " " + link(moreURL, seeFullDetail); len(withLink)*2 <= hard {
+			suffix = withLink
+		}
 	}
-	if cut > len(text) {
-		cut = len(text)
-	}
+
+	cut := hard - len(suffix)
 	head := text[:cut]
 	// Never split a rune, and never split a link: cutting inside "<url|label>"
 	// leaves a dangling "<" that Slack renders as raw text.
