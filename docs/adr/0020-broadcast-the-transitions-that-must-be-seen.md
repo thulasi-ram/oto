@@ -575,12 +575,25 @@ mirror image of the mistake this amendment exists to correct.
 
 ### What does not change
 
-- The broadcast set (Amendment 1): `unacked_reminder` and `refired`, plus configurable
-  `all_resolved`.
-- The mention placement (Amendment 3). The mention stays in the top-level `text`. Its justification
-  shifts from *"a block is not present in the channel copy"* to *"the top-level text is the only
-  position that reaches a push notification"* — which was always the stronger half of the argument.
-- Constraints 1–3, and the one-way-door property of broadcasting.
+> ⛔ **TWO OF THESE THREE BULLETS ARE NO LONGER TRUE — corrected 2026-08-20 (git-bug `bd0fb1d`,
+> marked here by `68653ca`).** They were written on 2026-08-14, before the reminder was withdrawn,
+> and they are the LAST unmarked description of it in this file: its top-of-page callout, Amendment
+> 3's own heading and rule 5b were all updated and this section was missed. It was found by a red
+> team attacking the completeness of that sweep, which is the only reason it is marked at all.
+
+- ~~The broadcast set (Amendment 1): `unacked_reminder` and `refired`, plus configurable
+  `all_resolved`.~~ ⛔ `unacked_reminder` is DELETED. The set is `refired` — which nothing
+  produces, ADR 0040 having retired T8 — plus configurable `all_resolved`, so
+  `broadcast_on_resolved` is the only broadcast oto can currently send.
+- ~~The mention placement (Amendment 3). The mention stays in the top-level `text`.~~ ⛔ There is
+  no mention. Amendment 3 is superseded in full and oto has no mention surface anywhere.
+  ⭐ **Its justification is worth keeping even so, because Amendment 5 had to answer the same
+  question and answered it DIFFERENTLY.** The surviving half of the argument was *"the top-level
+  text is the only position that reaches a push notification"* — true of a mention, whose entire
+  value is the notification. A LINK's value is being clickable, and rule 4 binds that string to be
+  a self-sufficient sentence, so the link went in the body instead. Same position, opposite answer,
+  for a reason that is a property of the affordance rather than of the surface.
+- Constraints 1–3, and the one-way-door property of broadcasting. **This one stands unchanged.**
 
 ---
 
@@ -604,7 +617,13 @@ was right anyway — for a reason nobody had written down until they were forced
 
 ## Amendment 5 — a link is not a button, and it is the only affordance a broadcast can carry
 
-**2026-08-20 · git-bug `68653ca` · extends rule 5b. Nothing in Amendments 1-4 is reversed.**
+**2026-08-20 · git-bug `68653ca` · extends rule 5b.**
+
+⛔ This line first read *"Nothing in Amendments 1-4 is reversed"*, and that was wrong: **Amendment 3
+is reversed in full** — the page's own top callout has said so since `bd0fb1d`, and Amendment 4's
+"What does not change" section restates the reversed claim, which is what made the sentence
+self-contradicting the moment it was written. Amendments 1, 2 and 4 stand; Amendment 1's SET has
+narrowed. Caught by a red team, not by me.
 
 Rule 5 said a broadcasting reply *"carries no colour and no buttons, and must not depend on
 either"*, and named the call to action: *open the thread*. That was the whole of it, and it left

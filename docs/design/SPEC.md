@@ -5253,8 +5253,9 @@ Schema validation errors are mapped to `errs.Violation` with the JSON Pointer fr
       "maxLength": 80, "pattern": "^[^#][a-z0-9_-]*$"
     },
     "transport": {
-      "type": "string", "title": "Interactivity transport",
-      "enum": ["socket_mode", "http"], "default": "socket_mode"
+      "type": "string", "title": "Interactivity transport (deprecated, ignored)",
+      "enum": ["socket_mode", "http"],
+      "description": "IGNORED. Interactivity is a property of the DEPLOYMENT, not of one channel: it is OTO_SLACK_MODE plus a signing secret, and one process either has a Request URL or it does not. Socket Mode is not implemented at all. The field is still accepted so that configs written by earlier releases keep validating; it will be removed once no stored config carries it."
     },
     "max_instances": {
       "type": "integer", "title": "Instances rendered inline",
@@ -5276,8 +5277,22 @@ FIX."*
 `internal/channels/providers/slack/schema.json` goes straight from `max_instances` to `link_names`.
 A "literal" copy that differs from the file it copies is worse than a paraphrase, because an
 operator writing channel config from the SPEC would have had that key REJECTED by
-`DisallowUnknownFields` with no hint why. §H.7's own removal note at §H.6 (*"**Mentions.** ⛔
-**Removed with the reminder.**"*) was already correct, so the SPEC also disagreed with itself.
+`DisallowUnknownFields` with no hint why. §H.6's own removal note (*"**Mentions.** ⛔ **Removed with
+the reminder.**"*) was already correct, so the SPEC also disagreed with itself.
+
+⛔ **AND `mention_on_reminder` WAS NOT THE ONLY DIVERGENCE — `transport` WAS WRONG IN THREE WAYS
+AND IS CORRECTED IN THE SAME PASS.** The SPEC gave it `"title": "Interactivity transport"` with a
+`"default": "socket_mode"` and no `description`. The real file titles it *"Interactivity transport
+(deprecated, ignored)"*, carries a long `description` saying interactivity is a property of the
+DEPLOYMENT and that Socket Mode is not implemented at all, and has **no `default` key**. So the
+SPEC was advertising a default for a field the implementation ignores.
+
+⭐ **BOTH BLOCKS HAVE NOW BEEN COMPARED PROPERTY BY PROPERTY, PARSED RATHER THAN READ** — the two
+property sets are identical (`conversation_id`, `conversation_name`, `team_id`, `transport`,
+`max_instances`, `link_names`) and every property's JSON is equal. The first attempt at this
+correction fixed `mention_on_reminder` and claimed the block "now matches the file" on the strength
+of having read it, which a red-team pass refuted in one command. **If this block is edited again,
+parse both and diff them; do not eyeball it.**
 
 #### L.5.2 `webhook` config schema (literal, `internal/channels/providers/webhook/schema.json`)
 
