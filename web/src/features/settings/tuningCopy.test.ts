@@ -225,6 +225,16 @@ describe("the guided knobs as a set", () => {
       // `unacked_reminder_after_s` off its `0` means-unset path.
       const v = boundsOf(key).min;
       const verdict = guideOf(key)(v, blind, N);
+      if (key === "flap_threshold" || key === "flap_window_s" || key === "flap_digest_interval_s") {
+        // ⛔ RETIRED, SO AN UNREAD CONFIG TAKES NOTHING AWAY (git-bug 235f347).
+        // These three read no route timing: the verdict names the retirement and
+        // points at the case-retention window W, which is the same answer whether
+        // or not Alertmanager could be reached. Withholding it would leave the row
+        // silent about the one thing an operator needs to know about it.
+        expect(verdict, key).not.toBeNull();
+        expect(verdict?.level, key).toBe("inert");
+        continue;
+      }
       if (key === "resolve_grace_s") {
         // ⭐ THE ONE EXCEPTION, AND IT IS CORRECT. This knob is not derived from a
         // route timing at all — its `amRule` derives it from the scrape budget —
@@ -245,9 +255,11 @@ describe("the guided knobs as a set", () => {
       refire_grace_s: ["groupInterval"],
       group_close_delay_s: ["groupInterval"],
       resolve_grace_s: [],
-      flap_threshold: ["groupInterval"],
-      flap_window_s: ["groupInterval"],
-      flap_digest_interval_s: ["groupInterval"],
+      // Retired (git-bug 235f347): their verdict is about the retirement, not the
+      // value, so they argue from no upstream timing at all.
+      flap_threshold: [],
+      flap_window_s: [],
+      flap_digest_interval_s: [],
       unacked_reminder_after_s: ["repeatInterval"],
     };
 
@@ -288,9 +300,13 @@ describe("the guided knobs as a set", () => {
       }
     }
 
-    const worded = guideOf("flap_digest_interval_s")(60, asDefault, N);
-    expect(worded?.text).toContain("Alertmanager's default group_interval");
-    expect(guideOf("flap_digest_interval_s")(60, AM, N)?.text).toContain("your group_interval");
+    // `flap_digest_interval_s` used to demonstrate this wording rule and no longer
+    // can: it is retired and reads no reference at all (git-bug 235f347).
+    // `unacked_reminder_after_s` still argues from a real timing, so the rule is
+    // demonstrated there instead of being dropped with the knob.
+    const worded = guideOf("unacked_reminder_after_s")(60, asDefault, N);
+    expect(worded?.text).toContain("Alertmanager's default repeat_interval");
+    expect(guideOf("unacked_reminder_after_s")(60, AM, N)?.text).toContain("your repeat_interval");
   });
 
   it("calls every shipped default consistent against Alertmanager's own defaults", () => {
@@ -301,6 +317,13 @@ describe("the guided knobs as a set", () => {
     for (const key of GUIDED) {
       const shipped = SHIPPED[key];
       expect(shipped, `${key} has no shipped default named here`).toBeTypeOf("number");
+      if (key === "flap_threshold" || key === "flap_window_s" || key === "flap_digest_interval_s") {
+        // Their shipped default is not "consistent" and is not meant to be — the
+        // knob decides nothing, so `inert` is the honest verdict at every value
+        // including the default (git-bug 235f347).
+        expect(guideOf(key)(shipped!, AM, N)?.level, `${key} = ${shipped}`).toBe("inert");
+        continue;
+      }
       expect(guideOf(key)(shipped!, AM, N)?.level, `${key} = ${shipped}`).toBe("ok");
     }
   });
@@ -584,328 +607,61 @@ describe("resolve_grace_s", () => {
 /* Flap damping                                                               */
 /* -------------------------------------------------------------------------- */
 
-describe("flap_threshold", () => {
-  const g = guideOf("flap_threshold");
+describe("the three flap knobs, after the detector was retired", () => {
+  // ⛔ THREE describe BLOCKS STOOD HERE AND ARE DELETED WITH THE MECHANISM THEY
+  // TESTED (git-bug 235f347). They asserted the retired detector's arithmetic in
+  // detail -- the observable ceiling of 2 x floor(W / cycle), the upward
+  // degradation `ok -> tight -> inert` unique to `flap_threshold`, the suggestion
+  // clamping, and the cross-knob identity below -- and every one of them was a
+  // true statement about a computation nothing runs.
+  //
+  // ⭐ THE CROSS-KNOB INVARIANT IS DELETED, NOT MOVED, AND THAT IS THE ONE TO
+  // NOTICE. It read "agrees with flap_threshold exactly, because they are one
+  // inequality solved two ways", and it existed because the pair once disagreed:
+  // `flap_window_s` carried an extra x 2, demanded a quarter of the ceiling, and
+  // made the screen contradict itself in two adjacent rows. That was a real defect
+  // and this was the right guard for it. There is no inequality left to solve two
+  // ways, so there is nothing for the guard to hold -- keeping it would pin the
+  // arithmetic of a dead detector and make removing the keys harder later.
+  // git-bug 27a1860 decides whether the keys themselves survive.
 
-  it("is the one guide that degrades UPWARD: consistent, then tight, then unreachable", () => {
-    // Every other guide's failure is a value too small. This one's is a value too
-    // large, and the shape is what says so.
-    expect(shapeOf("flap_threshold")).toEqual(["ok", "tight", "inert"]);
-  });
-
-  it("measures against 2 × floor(window / cycle), which is even and monotone in the window", () => {
-    // `amRule`: one cycle yields exactly TWO counted transitions, so the ceiling
-    // in a window W is 2 × floor(W / cycle). A ceiling that rose and fell as the
-    // window widened, or an odd one, would mean the `2 ×` had been lost.
-    //
-    // The ceiling is RECOVERED from the boundary the closure itself draws — the
-    // largest threshold it does not call unreachable — rather than read off the
-    // formula, so this measures the closure and not a second copy of its
-    // arithmetic. Only windows whose ceiling falls inside the knob's own range are
-    // measurable; outside it the boundary is the bound, not the ceiling.
-    const cycle = observableCycleS(AM_GROUP_INTERVAL_S, ASSUMED_RULE_FOR_S);
-    const b = boundsOf("flap_threshold");
-    let prev = -1;
-    let measured = 0;
-    for (const w of [300, 1199, 1200, 2400, 3000, 3600, 6000, 7200, 12_000, 86_400]) {
-      const num = nums({ ...SHIPPED, flap_window_s: w });
-      let ceiling = 0;
-      for (let v = b.min; v <= b.max; v += 1) {
-        if (g(v, AM, num)?.level !== "inert") ceiling = v;
-      }
-      const predicted = 2 * Math.floor(w / cycle);
-      if (predicted >= b.min && predicted <= b.max) {
-        expect(ceiling, `window ${w}`).toBe(predicted);
-        expect(ceiling % 2, `window ${w} gave an odd ceiling`).toBe(0);
-        expect(ceiling, `window ${w} narrowed the ceiling`).toBeGreaterThanOrEqual(prev);
-        prev = ceiling;
-        measured += 1;
-      }
-    }
-    // Guards the guard: a `requestRange` that silently changed shape would make
-    // every branch above vacuous.
-    expect(measured).toBeGreaterThan(4);
-  });
-
-  it("calls every threshold unreachable when the window cannot hold one cycle", () => {
-    // A window below one observable cycle has a ceiling of zero, so the damper is
-    // dead code that looks configured — the exact failure the old 30m default had.
-    const cycle = observableCycleS(AM_GROUP_INTERVAL_S, ASSUMED_RULE_FOR_S);
-    const num = nums({ ...SHIPPED, flap_window_s: cycle - 1 });
-    for (const v of [3, 5, 25, 100]) {
-      expect(g(v, AM, num)?.level, `threshold ${v}`).toBe("inert");
+  it("all three return the same single verdict, and it is about the retirement", () => {
+    for (const key of ["flap_threshold", "flap_window_s", "flap_digest_interval_s"] as const) {
+      const verdict = guideOf(key)(SHIPPED[key]!, AM, N);
+      expect(verdict, key).not.toBeNull();
+      expect(verdict?.level, key).toBe("inert");
+      expect(verdict?.text, key).toContain("no value here changes what is delivered");
+      expect(verdict?.text, key).toContain("case-retention window W");
     }
   });
 
-  it("refuses to suggest anything when the threshold is unreachable, because the fix is the window", () => {
-    // ⭐ `amRule`: "Widen the window rather than lowering the threshold." A
-    // one-click button here would do the wrong thing very conveniently, so the
-    // `inert` branch is the only failing branch on the screen with no `suggest`.
-    const num = nums({ ...SHIPPED, flap_window_s: 1200 });
-    const verdict = g(100, AM, num);
-    expect(verdict?.level).toBe("inert");
-    expect(verdict?.suggest).toBeUndefined();
-    expect(verdict?.text).toContain("Widen the window rather than lowering the threshold");
-  });
-
-  it("puts the shipped default at roughly half the observable ceiling", () => {
-    // `defaults.go`: "at the window below it sits at 42% of the observable
-    // ceiling, which is the 'roughly half the ceiling' rule". 5 of 12.
-    const cycle = observableCycleS(AM_GROUP_INTERVAL_S, ASSUMED_RULE_FOR_S);
-    const ceiling = 2 * Math.floor(SHIPPED.flap_window_s! / cycle);
-    expect(ceiling).toBe(12);
-    const shipped = SHIPPED.flap_threshold!;
-    expect(shipped / ceiling).toBeGreaterThan(0.33);
-    expect(shipped / ceiling).toBeLessThanOrEqual(0.5);
-    expect(g(shipped, AM, N)?.level).toBe("ok");
-    // And half the ceiling is exactly the boundary it draws.
-    expect(g(6, AM, N)?.level).toBe("ok");
-    expect(g(7, AM, N)?.level).toBe("tight");
-  });
-
-  it("never suggests below the floor of 3 that keeps a rolling deploy off the flapping list", () => {
-    // `amRule`: "do not lower the threshold to 2 — two transitions is a normal
-    // deploy". The floor coincides with the knob's own minimum, and that is the
-    // reason the minimum is 3.
-    expect(boundsOf("flap_threshold").min).toBe(3);
-    for (const w of [2400, 3000, 3600, 4800, 7200, 86_400]) {
-      const num = nums({ ...SHIPPED, flap_window_s: w });
-      for (const v of [3, 5, 12, 50, 100]) {
-        const s = g(v, AM, num)?.suggest;
-        if (s !== undefined) expect(s, `window ${w}, threshold ${v}`).toBeGreaterThanOrEqual(3);
+  it("offers no suggestion, because a suggestion is an invitation to click", () => {
+    // The knob decides nothing. A one-click fix on it spends the operator's trust
+    // to change a number that changes no delivery.
+    for (const key of ["flap_threshold", "flap_window_s", "flap_digest_interval_s"] as const) {
+      for (const v of [0, 1, 5, 900, 7200, 100000]) {
+        expect(guideOf(key)(v, AM, N)?.suggest, `${key} at ${v}`).toBeUndefined();
       }
     }
   });
 
-  it("⚠️ DOUBT: on a narrow window the button offers the number already in the field", () => {
-    // ⚠️ When the ceiling is 4, half of it is 2, and the floor of 3 raises the
-    // suggestion back to 3 — which is both the knob's minimum and, at that
-    // ceiling, still "Tight". So an operator sitting at 3 is shown a "use 3"
-    // button that changes nothing and leaves the same warning on screen. The
-    // remedy `amRule` actually prescribes for this case is the one the `inert`
-    // branch already gives — "widen the window" — and this branch never says it.
-    const num = nums({ ...SHIPPED, flap_window_s: 3000 });
-    const verdict = g(3, AM, num);
-    expect(verdict?.level).toBe("tight");
-    expect(verdict?.suggest).toBe(3);
-    expect(verdict?.suggest).toBe(boundsOf("flap_threshold").min);
-    expect(g(verdict!.suggest!, AM, num)?.level).toBe("tight");
-  });
-
-  it("withholds the verdict entirely when the window does not parse, rather than calling it consistent", () => {
-    // ⛔ THE WORST OF THE LOT, AND THE REASON IT WAS WORST IS THE TONE. Its two
-    // sibling cross-referencing guides both guarded (`group_close_delay_s` with
-    // `Number.isFinite(refire)`, `flap_window_s` with `Number.isFinite(t)`); this one
-    // did not guard `w`. An empty or mid-edit flap-window box yielded ceiling = NaN,
-    // both comparisons then read false, and control fell through to `ok()` — the
-    // LEAST safe direction. The operator was told "Consistent · About half the
-    // observable ceiling of NaN", an all-clear derived from no computation, and the
-    // tone is what they act on.
-    //
-    // Unlike the two siblings there is no partial verdict to fall back to: EVERY
-    // number in this closure comes from the window. So the discipline stated at
-    // `tuningCopy.ts:320-327` applies in full — return null and render nothing.
-    const blank = nums({ flap_threshold: 5 });
-    for (const v of [boundsOf("flap_threshold").min, 5, boundsOf("flap_threshold").max]) {
-      expect(g(v, AM, blank), `threshold ${v} with an unparsed window`).toBeNull();
-    }
-    // And the guard is on the window alone: a window that parses still gets a verdict
-    // with no threshold field of its own to read.
-    expect(g(5, AM, nums({ flap_window_s: 7200 }))?.level).toBe("ok");
-  });
-});
-
-describe("flap_window_s", () => {
-  const g = guideOf("flap_window_s");
-
-  it("degrades in one direction only: unreachable, then tight, then consistent", () => {
-    expect(shapeOf("flap_window_s")).toEqual(["inert", "tight", "ok"]);
-  });
-
-  it("agrees with flap_threshold exactly, because they are one inequality solved two ways", () => {
-    // ⛔ `tuningCopy.ts:561-563`: this closure once carried an extra `× 2`, which
-    // demanded a quarter of the ceiling and disagreed with the threshold knob's
-    // own verdict on the same two numbers. The screen then contradicted itself in
-    // two adjacent rows.
-    //
-    // The identity: ceiling = 2 × floor(W / cycle), "half the ceiling" gives
-    // threshold = floor(W / cycle), and solving for W gives W = threshold × cycle.
-    // So W = t × cycle must be the FIRST window the pair both accept, and one
-    // second less must be rejected by both.
-    const threshold = guideOf("flap_threshold");
-    for (const gi of [30, 300, 900, 1800]) {
-      const am = amRef({ groupInterval: observed(gi) });
-      const cycle = observableCycleS(gi, ASSUMED_RULE_FOR_S);
-      for (const t of [3, 5, 12, 25]) {
-        const need = t * cycle;
-        const num = nums({ ...SHIPPED, flap_threshold: t, flap_window_s: need });
-        expect(g(need, am, num)?.level, `gi ${gi}, t ${t}`).toBe("ok");
-        expect(threshold(t, am, num)?.level, `gi ${gi}, t ${t}`).toBe("ok");
-
-        const short = nums({ ...SHIPPED, flap_threshold: t, flap_window_s: need - 1 });
-        expect(g(need - 1, am, short)?.level, `gi ${gi}, t ${t}`).not.toBe("ok");
-        expect(threshold(t, am, short)?.level, `gi ${gi}, t ${t}`).not.toBe("ok");
+  it("says the same thing at every value, because no value means anything", () => {
+    for (const key of ["flap_threshold", "flap_window_s", "flap_digest_interval_s"] as const) {
+      const first = guideOf(key)(0, AM, N);
+      for (const v of [1, 3, 42, 7200, 86400]) {
+        expect(guideOf(key)(v, AM, N), `${key} at ${v}`).toEqual(first);
       }
     }
   });
 
-  it("derives the shipped 2h from the shipped threshold and the modal rule", () => {
-    // `defaults.go`: 5 × (15m + 5m) = 100m, rounded UP to 2h. Rounding up is the
-    // safe direction — a window that is too wide fails visibly and self-heals,
-    // one that is too narrow fails as silence where a damper should be.
-    const cycle = observableCycleS(AM_GROUP_INTERVAL_S, ASSUMED_RULE_FOR_S);
-    expect(SHIPPED.flap_threshold! * cycle).toBe(6000);
-    expect(SHIPPED.flap_window_s!).toBeGreaterThanOrEqual(6000);
-    expect(g(SHIPPED.flap_window_s!, AM, N)?.level).toBe("ok");
-    expect(g(5999, AM, N)?.level).toBe("tight");
-    expect(g(6000, AM, N)?.level).toBe("ok");
-  });
-
-  it("rounds its threshold-derived suggestion to a whole second", () => {
-    // ⭐ THE ONLY `Math.round` IN ANY OF THE NINE, and it is needed: `value_ms` is
-    // milliseconds because `group_wait: 500ms` is legal upstream, so a
-    // sub-second `group_interval` makes the cycle fractional. The knob is
-    // `v.integer()`.
-    const am = amRef({ groupInterval: observed(0.5) });
-    const num = nums({ ...SHIPPED, flap_threshold: 5 });
-    const verdict = g(1000, am, num);
-    expect(verdict?.level).toBe("tight");
-    expect(Number.isInteger(verdict!.suggest!)).toBe(true);
-  });
-
-  it("withholds the threshold comparison when the threshold field does not parse, and says so instead of printing NaN", () => {
-    const blank = nums({ flap_window_s: 7200 });
-    const verdict = g(7200, AM, blank);
-    expect(verdict?.level).toBe("ok");
-    // ⛔ The `ok` branch interpolated `${t}` unguarded, so a blank threshold box
-    // rendered "Wide enough for a threshold of NaN" — the same class of defect as
-    // `flap_threshold`'s ceiling of NaN, on the branch that sounds most settled.
-    // Unlike `flap_threshold` there IS a partial verdict here (the cycle floor needs
-    // no second field), so the fix is to state what was and was not checked.
-    expect(verdict?.text).not.toContain("NaN");
-    expect(verdict?.text).toContain("one observable cycle");
-    expect(verdict?.text).toContain("no threshold to size this against");
-    // The cycle floor still applies — it needs no second field.
-    const short = g(1199, AM, blank);
-    expect(short?.level).toBe("inert");
-    expect(short?.text).not.toContain("NaN");
-    // Nor does the suggestion become NaN: with no threshold, one whole cycle is the
-    // most that can honestly be offered, and it is the value that earns the `ok`.
-    expect(short?.suggest).toBe(observableCycleS(AM_GROUP_INTERVAL_S, ASSUMED_RULE_FOR_S));
-    expect(g(short!.suggest!, AM, blank)?.level).toBe("ok");
-  });
-
-  it("computes its threshold-derived suggestion unclamped, and the button clamps it", () => {
-    // ⭐ RULED CORRECT AS IT STANDS. `need = threshold × cycle` is not checked
-    // against the write bound: flap_threshold's own maximum (100) with Alertmanager's
-    // own default group_interval gives 100 × 20m = 120 000s against a maximum of
-    // 86 400. That is not a 422 and not a broken button — `TuningSection.tsx:1393-1400`
-    // clamps every suggestion into the knob's own bounds before rendering it, so the
-    // button reads "use 86400" and the save succeeds. The arithmetic here answers
-    // "what would this threshold need"; the bound belongs to the control, which is
-    // the only place that knows it. Keeping the raw number means the two ratio
-    // sentences and the suggestion stay the same computation.
-    const num = nums({ ...SHIPPED, flap_threshold: boundsOf("flap_threshold").max });
-    const verdict = g(7200, AM, num);
-    expect(verdict?.level).toBe("tight");
-    expect(verdict?.suggest).toBe(120_000);
-    expect(verdict!.suggest!).toBeGreaterThan(boundsOf("flap_window_s").max);
-  });
-
-  it("below one cycle it suggests the window the current threshold needs, not a constant", () => {
-    // ⛔ The `inert` branch used to suggest `cycle × 3` — a 3 appearing in neither
-    // `amRule` nor `docs/setup/tuning.md`. The knob's whole stated purpose is to be
-    // wide enough for the CURRENT threshold, and the very next branch computes that
-    // as `threshold × cycle`: with the shipped threshold of 5 the suggestion landed
-    // in "Tight", and for any threshold above 3 it was insufficient by construction.
-    // One rule, one suggestion, and it is the same one both failing branches offer.
-    const cycle = observableCycleS(AM_GROUP_INTERVAL_S, ASSUMED_RULE_FOR_S);
-    for (const t of [3, 5, 12]) {
-      const num = nums({ ...SHIPPED, flap_threshold: t });
-      const verdict = g(600, AM, num);
-      expect(verdict?.level, `threshold ${t}`).toBe("inert");
-      expect(verdict?.suggest, `threshold ${t}`).toBe(t * cycle);
-      expect(g(verdict!.suggest!, AM, num)?.level, `threshold ${t}`).toBe("ok");
+  it("does not contradict the `what` copy above it", () => {
+    // The row already tells the operator the damper is gone. A guide that then
+    // graded their number would contradict it one paragraph later, and the
+    // confident half is the half people act on.
+    for (const key of ["flap_threshold", "flap_window_s", "flap_digest_interval_s"] as const) {
+      expect(KNOBS[key].what).toContain("changes no delivery");
+      expect(guideOf(key)(SHIPPED[key]!, AM, N)?.level).toBe("inert");
     }
-  });
-});
-
-describe("flap_digest_interval_s", () => {
-  const g = guideOf("flap_digest_interval_s");
-
-  it("is the only two-sided guide: tight, consistent, tight", () => {
-    // Both failure modes are live for this knob — below group_interval it cannot
-    // produce more digests than the upstream produces batches, above 4× the
-    // summary arrives after anyone cared — so the shape is a band rather than a
-    // floor. No other guide has an upper bound at all.
-    expect(shapeOf("flap_digest_interval_s")).toEqual(["tight", "ok", "tight"]);
-  });
-
-  it("holds the band the doc states, inclusive at both ends", () => {
-    // `amRule`: "Keep it at or above group_interval. Two to four times
-    // group_interval is the useful range."
-    expect(g(AM_GROUP_INTERVAL_S - 1, AM, N)?.level).toBe("tight");
-    expect(g(AM_GROUP_INTERVAL_S, AM, N)?.level).toBe("ok");
-    expect(g(4 * AM_GROUP_INTERVAL_S, AM, N)?.level).toBe("ok");
-    expect(g(4 * AM_GROUP_INTERVAL_S + 1, AM, N)?.level).toBe("tight");
-  });
-
-  it("suggests the middle of the useful range from both sides, and the shipped default is it", () => {
-    // 3 × group_interval is the midpoint of the 2×–4× band, so the same
-    // suggestion serves a value that is too small and one that is too large.
-    const low = g(60, AM, N);
-    const high = g(86_400, AM, N);
-    expect(low?.suggest).toBe(3 * AM_GROUP_INTERVAL_S);
-    expect(high?.suggest).toBe(3 * AM_GROUP_INTERVAL_S);
-    expect(low?.suggest).toBe(SHIPPED.flap_digest_interval_s);
-    expect(g(low!.suggest!, AM, N)?.level).toBe("ok");
-  });
-
-  it("claims the 2×–4× range only where it holds, and the floor everywhere else", () => {
-    // ⛔ The `ok` branch rendered "{n} x group_interval — inside the useful 2 x to
-    // 4 x range" for anything from 1× upward, so at exactly `group_interval` the
-    // sentence read "1.0 x group_interval — inside the useful 2 x to 4 x range" and
-    // refuted itself in eight words. `amRule` states TWO things — "keep it at or
-    // above group_interval" (the level, which was right) and "two to four times
-    // group_interval is the useful range" (the recommendation) — and the copy
-    // conflated them. The level is unchanged; the sentence now matches the band it
-    // is in.
-    const floor = g(AM_GROUP_INTERVAL_S, AM, N);
-    expect(floor?.level).toBe("ok");
-    expect(floor?.text).toContain("1.0 x group_interval");
-    expect(floor?.text).not.toContain("inside the useful 2 x to 4 x range");
-    expect(floor?.text).toContain("the useful range starts at 2 x");
-
-    const inside = g(2 * AM_GROUP_INTERVAL_S, AM, N);
-    expect(inside?.level).toBe("ok");
-    expect(inside?.text).toContain("2.0 x group_interval");
-    expect(inside?.text).toContain("inside the useful 2 x to 4 x range");
-
-    // The shipped default is inside the band, so the claim it makes is the true one.
-    expect(g(SHIPPED.flap_digest_interval_s!, AM, N)?.text).toContain(
-      "inside the useful 2 x to 4 x range",
-    );
-  });
-
-  it("would divide by a group_interval of 0, which no running Alertmanager can report", () => {
-    // ⭐ RULED NOT REACHABLE, AND THE CODE IS LEFT ALONE. `RouteTimingDTO.value_ms`
-    // does have `minimum: 0` and does say "`0` is a real setting and is never a
-    // stand-in for 'not known'" — but these numbers are read off a RUNNING
-    // Alertmanager's own config, and Alertmanager refuses to start with
-    // `group_interval: 0` ("group_interval cannot be zero"). So no source can serve
-    // one, and guarding it here would be a branch no operator can enter, written into
-    // the file whose whole discipline is that every sentence is reachable.
-    //
-    // This pins what the arithmetic WOULD do, so that the day something else makes a
-    // zero reachable the shape is already written down. No guide reads `group_wait`
-    // any more — `storm_window_s` was the only one, and ADR 0042 deleted it — so a
-    // legal upstream `group_wait: 0` now reaches no arithmetic at all.
-    const zero = amRef({ groupInterval: observed(0) });
-    expect(g(0, zero, N)?.text).toContain("NaN x group_interval");
-    const positive = g(900, zero, N);
-    expect(positive?.level).toBe("tight");
-    expect(positive?.suggest).toBe(0);
-    expect(positive!.suggest!).toBeLessThan(boundsOf("flap_digest_interval_s").min);
   });
 });
 

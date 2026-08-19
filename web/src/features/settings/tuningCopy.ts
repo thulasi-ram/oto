@@ -338,6 +338,33 @@ export interface KnobGroup {
 
 const ok = (text: string): Guidance => ({ level: "ok", text });
 
+// ⛔ THE THREE FLAP KNOBS SHARE ONE VERDICT, AND IT IS NOT A VERDICT ABOUT THE
+// VALUE (git-bug 235f347). Their `what` and `risks` copy already says the damper
+// is gone; the guides went on computing the retired detector's arithmetic and
+// phrasing the result as "Unreachable", "Reachable but only just" and "About half
+// the observable ceiling" — three levels, a one-click `suggest`, and every word of
+// it about arming and pacing a mechanism that no longer exists. A row that says
+// "this changes nothing" in one paragraph and offers a tuned number in the next
+// contradicts itself, and the operator acts on the confident half.
+//
+// ⭐ AND NO `suggest`. A suggestion is an invitation to click. Offering one on a
+// key that decides nothing spends the operator's trust to change a number that
+// changes no delivery.
+//
+// It reads nothing off the Alertmanager reference, deliberately: there is no
+// arithmetic left to argue from, and withholding is what `KnobCopy.guide`'s own
+// discipline calls for when there is no computation to stand on.
+const retiredFlapGuide = (): Guidance => ({
+  level: "inert",
+  text:
+    "Retired, and no value here changes what is delivered. The flap detector this " +
+    "knob sized is gone: nothing recomputes flap_score or is_flapping (ADR 0041 " +
+    "Amendment 1), and the writer refuses to record `flapping` as a suppression " +
+    "reason at all. Flap noise is absorbed one layer earlier, at case formation, " +
+    "by the case-retention window W — set per (namespace, alertname), 0 to 86400 " +
+    "seconds, and 0 is what ships. W is the control that decides what a flap costs.",
+});
+
 /* -------------------------------------------------------------------------- */
 /* The knobs                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -499,40 +526,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     ],
     amRule:
       "The arithmetic below is the retired detector's, kept because the live verdicts on this row still compute it; no value here changes what is delivered. The for: trap. One observable fire-resolve-fire cycle pays the larger of two floors — the rule's for: dwell, and one group_interval per notification, of which a cycle needs two — so a cycle costs group_interval + max(group_interval, for) and yields two counted transitions. The ceiling in a window W is about 2 x floor(W / cycle); set the threshold at roughly half of it. For long-for: rules do not lower the threshold to 2 — two transitions is a normal deploy. Widen the window instead.",
-    guide: (v, am, num) => {
-      const gi = amSeconds(am.groupInterval);
-      if (gi === null) return null;
-      const w = num("flap_window_s");
-      // ⛔ WITHOUT THE WINDOW THERE IS NO ARITHMETIC, AND THIS USED TO SAY "ok"
-      // ANYWAY. Every number below is derived from `w`: an empty or mid-edit
-      // window box makes the ceiling NaN, both comparisons then read false, and
-      // control fell through to `ok()` — the operator was told "About half the
-      // observable ceiling of NaN" in the confident tone they act on, on the
-      // strength of no computation at all. The discipline stated at the top of
-      // `KnobCopy.guide` is to withhold instead.
-      if (!Number.isFinite(w)) return null;
-      const cadence = observableCycleS(gi, ASSUMED_RULE_FOR_S);
-      const ceiling = 2 * Math.floor(w / cadence);
-      // oto does not read rule files, so the `for:` half of this arithmetic is an
-      // assumption and every verdict below says so in the same breath.
-      const basis = `an assumed for: of ${duration(ASSUMED_RULE_FOR_S)} and ${amPhrase("group_interval", am.groupInterval)}`;
-      if (v > ceiling) {
-        return {
-          level: "inert",
-          text: `Unreachable. With ${basis}, a ${duration(w)} window can contain at most about ${ceiling} transition${ceiling === 1 ? "" : "s"} oto is able to observe. The damper can never engage — it is dead code that looks configured. Widen the window rather than lowering the threshold.`,
-        };
-      }
-      if (v > Math.floor(ceiling / 2)) {
-        return {
-          level: "tight",
-          text: `Reachable but only just: with ${basis}, the observable ceiling in a ${duration(w)} window is about ${ceiling}, and the doc puts a workable threshold at roughly half of that.`,
-          suggest: Math.max(3, Math.floor(ceiling / 2)),
-        };
-      }
-      return ok(
-        `About half the observable ceiling of ${ceiling} for a ${duration(w)} window, with ${basis}.`,
-      );
-    },
+    guide: retiredFlapGuide,
   },
 
   flap_window_s: {
@@ -552,46 +546,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     ],
     amRule:
       "The arithmetic below is the retired detector's, kept because the live verdicts on this row still compute it; no value here changes what is delivered. For a rule with a long for:, widen this rather than lowering the threshold: flap_window is about flap_threshold x the observable cycle, and the cycle is group_interval + max(group_interval, for). With for: 15m and group_interval 5m the cycle is 20m, so a threshold of 5 needs about 100 minutes — which is where the shipped 2h comes from, and why the old 30m window made the threshold unreachable for every rule shape.",
-    guide: (v, am, num) => {
-      const gi = amSeconds(am.groupInterval);
-      if (gi === null) return null;
-      const named = amPhrase("group_interval", am.groupInterval);
-      const cycle = observableCycleS(gi, ASSUMED_RULE_FOR_S);
-      const t = num("flap_threshold");
-      // `threshold ~ floor(W / cycle)` is the "half the ceiling" rule solved for W.
-      // It used to carry an extra `x 2`, which demanded a quarter of the ceiling and
-      // disagreed with the threshold knob's own verdict on the same two numbers.
-      //
-      // ⛔ IT IS ALSO WHAT THE `inert` BRANCH OFFERS, AND THAT BRANCH USED TO OFFER
-      // `cycle x 3` — a 3 appearing in neither `amRule` nor `docs/setup/tuning.md`,
-      // and insufficient by construction for any threshold above 3, so the operator
-      // was asked to click twice. There is one rule for this knob and one suggestion
-      // derived from it. When the threshold box does not parse there is no such
-      // number, and the floor the `inert` branch checks — one whole cycle — is the
-      // most that can honestly be offered. `Math.ceil` because `group_wait: 500ms`
-      // is legal upstream, so a sub-second `group_interval` makes the cycle
-      // fractional while the knob is `v.integer()`.
-      const need = Math.max(Math.ceil(cycle), Number.isFinite(t) ? Math.round(t * cycle) : 0);
-      if (v < cycle) {
-        return {
-          level: "inert",
-          text: `Shorter than one observable cycle (${duration(cycle)}, from ${named} and an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}). The window cannot contain a single fire-resolve-fire cycle, so no threshold is reachable.`,
-          suggest: need,
-        };
-      }
-      if (Number.isFinite(t) && v < need) {
-        return {
-          level: "tight",
-          text: `A threshold of ${t} needs roughly ${duration(need)} to be reachable at an assumed for: of ${duration(ASSUMED_RULE_FOR_S)} and ${named}.`,
-          suggest: need,
-        };
-      }
-      return ok(
-        Number.isFinite(t)
-          ? `Wide enough for a threshold of ${t} at an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}, against ${named}.`
-          : `At least one observable cycle (${duration(cycle)}) wide, against ${named} and an assumed for: of ${duration(ASSUMED_RULE_FOR_S)}. The threshold box does not currently hold a number, so there is no threshold to size this against.`,
-      );
-    },
+    guide: retiredFlapGuide,
   },
 
   flap_digest_interval_s: {
@@ -611,37 +566,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     ],
     amRule:
       "The arithmetic below is the retired damper's, kept because the live verdicts on this row still compute it; no value here changes what is delivered. Keep it at or above group_interval. Two to four times group_interval is the useful range.",
-    guide: (v, am) => {
-      const gi = amSeconds(am.groupInterval);
-      if (gi === null) return null;
-      const named = amPhrase("group_interval", am.groupInterval);
-      if (v < gi) {
-        return {
-          level: "tight",
-          text: `Below ${named}. It cannot produce more digests than the upstream produces batches — it only jitters when they land.`,
-          suggest: gi * 3,
-        };
-      }
-      if (v > gi * 4) {
-        return {
-          level: "tight",
-          text: `Above 4 x group_interval (${duration(gi * 4)}), measured against ${named}, which is the top of the useful range. The digest starts arriving after anyone cared.`,
-          suggest: gi * 3,
-        };
-      }
-      // ⛔ `amRule` STATES TWO DIFFERENT THINGS AND THE SENTENCE USED TO CONFLATE
-      // THEM. The floor is "at or above group_interval" — that is what decides the
-      // level, and it is right. The recommendation is "two to four times
-      // group_interval is the useful range". Between 1 x and 2 x the old copy read
-      // "1.0 x group_interval — inside the useful 2 x to 4 x range", which refutes
-      // itself in eight words, on the screen whose entire purpose is prose.
-      const ratio = `${(v / gi).toFixed(1)} x group_interval`;
-      return ok(
-        v < gi * 2
-          ? `${ratio} — at or above ${named}, so it is a real digest, though the useful range starts at 2 x (${duration(gi * 2)}).`
-          : `${ratio} — inside the useful 2 x to 4 x range, against ${named}.`,
-      );
-    },
+    guide: retiredFlapGuide,
   },
 
   /* ---- what reaches the channel ----------------------------------------- */
