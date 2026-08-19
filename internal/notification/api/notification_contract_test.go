@@ -64,18 +64,20 @@ func notificationFixture(id, org uuid.UUID) domain.Notification {
 	alert := notifAlert
 	ac := notifOccurred
 	return domain.Notification{
-		ID:           id,
-		OrgID:        org,
-		SubjectKind:  domain.SubjectAlertGroup,
-		SubjectID:    notifGroup,
-		GroupID:      notifGroup,
-		AlertID:      &alert,
-		CaseID:       &ac,
-		Reason:       domain.ReasonFired,
-		StateVersion: 3,
-		Status:       domain.StatusDelivered,
-		CreatedAt:    notifNow.Add(-time.Hour),
-		UpdatedAt:    notifNow.Add(-time.Minute),
+		ID:               id,
+		OrgID:            org,
+		SubjectKind:      domain.SubjectAlertGroup,
+		SubjectID:        notifGroup,
+		GroupID:          notifGroup,
+		ConversationKind: domain.ConversationAlertGroup,
+		ConversationID:   notifGroup,
+		AlertID:          &alert,
+		CaseID:           &ac,
+		Reason:           domain.ReasonFired,
+		StateVersion:     3,
+		Status:           domain.StatusDelivered,
+		CreatedAt:        notifNow.Add(-time.Hour),
+		UpdatedAt:        notifNow.Add(-time.Minute),
 	}
 }
 

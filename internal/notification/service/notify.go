@@ -402,18 +402,24 @@ func (s *NotificationService) mint(
 	kind, subjectID := subjectOf(in)
 
 	n := domain.Notification{
-		ID:           uuid.New(),
-		OrgID:        scope.OrgID(),
-		SubjectKind:  kind,
-		SubjectID:    subjectID,
-		GroupID:      in.GroupID,
-		AlertID:      in.AlertID,
-		CaseID:       in.CaseID,
-		Reason:       in.Reason,
-		StateVersion: stateVersion,
-		Status:       domain.StatusPending,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:          uuid.New(),
+		OrgID:       scope.OrgID(),
+		SubjectKind: kind,
+		SubjectID:   subjectID,
+		GroupID:     in.GroupID,
+		// The delivery target, stored rather than re-derived at fan-out. Every
+		// intent that reaches `mint` names a group — `Notify` rejects a nil GroupID
+		// at :244 — so this arm is total here; the digest path builds its own row in
+		// `digest.go` and names its own conversation there.
+		ConversationKind: domain.ConversationAlertGroup,
+		ConversationID:   in.GroupID,
+		AlertID:          in.AlertID,
+		CaseID:           in.CaseID,
+		Reason:           in.Reason,
+		StateVersion:     stateVersion,
+		Status:           domain.StatusPending,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	n.IdempotencyKey = domain.IdempotencyKey(
 		scope.OrgID(), n.SubjectKind, n.SubjectID, n.Reason, n.StateVersion)
@@ -728,10 +734,15 @@ func (s *NotificationService) fanOut(
 // `threads_subject_uniq`: a fresh thread every ten minutes would be a channel full of
 // one-message threads, which is the noise a digest exists to replace.
 func threadSubjectOf(n domain.Notification) (domain.SubjectKind, uuid.UUID) {
-	if n.Digest() {
-		return domain.SubjectDigest, n.SubjectID
-	}
-	return domain.SubjectAlertGroup, n.GroupID
+	// ⭐ READ OFF THE ROW, NOT DERIVED FROM A DIGEST BRANCH (migration 00064).
+	// This function used to BE the derivation — `if n.Digest() { digest, SubjectID }
+	// else { alert_group, GroupID }` — computed on every fan-out and thrown away.
+	// The pair is that return value, stored, so the next conversation kind arrives
+	// without another arm here and without another branch in every reader.
+	//
+	// `dispatch.go` already branched on the THREAD's kind rather than on
+	// `n.Digest()`, so one reader was in this shape before the column existed.
+	return n.ConversationKind.SubjectKind(), n.ConversationID
 }
 
 // digestModes is the whole of a digest's §H.6, and it is two lines because a digest

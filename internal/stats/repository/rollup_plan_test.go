@@ -129,12 +129,14 @@ func TestTheRollupReachesBothTablesByIndex(t *testing.T) {
 	// without the test having to care.
 	h.Exec(`
 		INSERT INTO notifications
-		  (id, org_id, subject_kind, subject_id, group_id, reason, state_version,
+		  (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason, state_version,
 		   idempotency_key, created_at, updated_at)
 		SELECT gen_random_uuid(),
 		       $1,
 		       'alert_group',
 		       ($2::uuid[])[(i % $3) + 1],
+		       ($2::uuid[])[(i % $3) + 1],
+		       'alert_group',
 		       ($2::uuid[])[(i % $3) + 1],
 		       'fired',
 		       1,

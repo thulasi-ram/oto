@@ -24,7 +24,12 @@ type notificationRow struct {
 	// land in. Scanning a NULL into a bare `uuid.UUID` is a driver error, not a zero
 	// value, so this field cannot stay a value type without failing every read that
 	// happens to include a digest row — starting with the unfiltered audit list.
-	groupID           *uuid.UUID
+	groupID *uuid.UUID
+	// The delivery-target pair (00064). Both NOT NULL, so both are value types —
+	// unlike `groupID` above, whose pointer exists precisely because the old shape
+	// made a digest the one row with no target. Every row names a conversation now.
+	conversationKind  string
+	conversationID    uuid.UUID
 	alertID           *uuid.UUID
 	caseID            *uuid.UUID
 	reason            string
@@ -46,6 +51,7 @@ type notificationRow struct {
 func (r *notificationRow) scanInto() []any {
 	return []any{
 		&r.id, &r.orgID, &r.subjectKind, &r.subjectID, &r.groupID,
+		&r.conversationKind, &r.conversationID,
 		&r.alertID, &r.caseID, &r.reason, &r.policyID,
 		&r.stateVersion, &r.idempotencyKey, &r.status, &r.suppressedReason,
 		&r.digestWindowStart, &r.digestCount, &r.createdAt, &r.updatedAt,
@@ -58,6 +64,8 @@ func (r notificationRow) toDomain() domain.Notification {
 		OrgID:             r.orgID,
 		SubjectKind:       domain.SubjectKind(r.subjectKind),
 		SubjectID:         r.subjectID,
+		ConversationKind:  domain.ConversationKind(r.conversationKind),
+		ConversationID:    r.conversationID,
 		AlertID:           r.alertID,
 		CaseID:            r.caseID,
 		Reason:            domain.Reason(r.reason),
@@ -111,7 +119,8 @@ func NewNotificationRepository(q db.Querier) *NotificationRepository {
 func (r *NotificationRepository) db(ctx context.Context) db.Querier { return db.FromContext(ctx, r.q) }
 
 const notificationColumns = `
-  id, org_id, subject_kind, subject_id, group_id, alert_id, case_id,
+  id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id,
+  alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   digest_window_start, digest_count, created_at, updated_at`
 
@@ -128,10 +137,11 @@ const notificationColumns = `
 // break every non-digest insert, which has no `digest_window_start` for it to key on.
 const insertNotificationSQL = `
 INSERT INTO notifications (
-  id, org_id, subject_kind, subject_id, group_id, alert_id, case_id,
+  id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id,
+  alert_id, case_id,
   reason, policy_id, state_version, idempotency_key, status, suppressed_reason,
   digest_window_start, digest_count, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)
 ON CONFLICT (org_id, idempotency_key) DO NOTHING
 RETURNING` + notificationColumns
 
@@ -167,6 +177,7 @@ func (r *NotificationRepository) Insert(
 	var row notificationRow
 	err := r.db(ctx).QueryRow(ctx, insertNotificationSQL,
 		n.ID, s.OrgID(), string(n.SubjectKind), n.SubjectID, nilGroup(n.GroupID),
+		string(n.ConversationKind), n.ConversationID,
 		n.AlertID, n.CaseID, string(n.Reason), n.PolicyID, n.StateVersion,
 		n.IdempotencyKey, string(n.Status), suppressed,
 		n.DigestWindowStart, n.DigestCount, n.CreatedAt,

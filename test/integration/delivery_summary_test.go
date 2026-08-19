@@ -282,16 +282,16 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	// notification actually looks like. An alert roll-up that only counted
 	// `notifications.alert_id` would report zero for this, and zero here is the
 	// false silence the whole feature exists to prevent.
-	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, reason,
+	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason,
 	         state_version, idempotency_key, status, created_at, updated_at)
-	      VALUES ($1,$2,'alert_group',$3,$3,'fired',1,
+	      VALUES ($1,$2,'alert_group',$3,$3,'alert_group',$3,'fired',1,
 	         '0000000000000000000000000000000000000000000000000000000000000001','partial',$4,$4)`,
 		out.notificationID, orgID, out.groupID, now)
 
-	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, alert_id,
+	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, alert_id,
 	         case_id, reason, state_version, idempotency_key, status, suppressed_reason,
 	         created_at, updated_at)
-	      VALUES ($1,$2,'alert_group',$3,$3,$4,$5,'acked',1,
+	      VALUES ($1,$2,'alert_group',$3,$3,'alert_group',$3,$4,$5,'acked',1,
 	         '0000000000000000000000000000000000000000000000000000000000000002','suppressed',
 	         'throttled',$6,$6)`,
 		out.suppressedID, orgID, out.groupID, out.alertID, out.caseID, now)
@@ -364,9 +364,9 @@ func seedFanOut(t *testing.T, e *env) fanOut {
 	         state_version, total_count, firing_count, first_seen_at, last_activity_at)
 	      VALUES ($1,$2,$3,$4,'gk_abcdefghijklmnopqrstuv0123','Unrelated · prod','open',
 	         1,1,1,$5,$5)`, decoyGroup, orgID, sourceID, clusterID, now)
-	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, reason,
+	exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason,
 	         state_version, idempotency_key, status, created_at, updated_at)
-	      VALUES ($1,$2,'alert_group',$3,$3,'fired',1,
+	      VALUES ($1,$2,'alert_group',$3,$3,'alert_group',$3,'fired',1,
 	         '0000000000000000000000000000000000000000000000000000000000000003','delivered',$4,$4)`,
 		decoyNotification, orgID, decoyGroup, now)
 	for i := range 2 {

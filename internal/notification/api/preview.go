@@ -188,9 +188,14 @@ func (rt *Router) buildView(
 			SubjectKind: domain.SubjectAlertGroup,
 			SubjectID:   groupID,
 			GroupID:     groupID,
-			AlertID:     dto.AlertID,
-			CaseID:      dto.CaseID,
-			Reason:      reason,
+			// A preview is never inserted, but it is RENDERED, and the renderer asks
+			// which conversation the fact lands in. Naming it here keeps the preview
+			// the same shape as the real thing rather than a special case that drifts.
+			ConversationKind: domain.ConversationAlertGroup,
+			ConversationID:   groupID,
+			AlertID:          dto.AlertID,
+			CaseID:           dto.CaseID,
+			Reason:           reason,
 		},
 	})
 }

@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 63 {
-		t.Fatalf("latest migration is %d, want 63 — this test pins the number so that a "+
+	if latest != 64 {
+		t.Fatalf("latest migration is %d, want 64 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1444,6 +1444,35 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"%s — the ceiling IS the enum size, and 00060 moved it back to 18 when it deleted "+
 			"`storm`; a ceiling of 19 over an eighteen-value vocabulary is a number no row "+
 			"could ever test", def)
+	}
+
+	// 00064 makes the delivery target a PAIR (git-bug 7570090 stage 3). The
+	// assertion that matters is not that the columns exist but that the EXCEPTION is
+	// gone: `notifications_target_ck` read "every fact names a group EXCEPT a
+	// digest", and a shape with an exception in it cannot absorb a third kind.
+	if def := constraintDef("notifications_target_ck", "notifications"); def != "" {
+		t.Fatalf("notifications_target_ck still stands at the top of the stack: %s — "+
+			"the pair exists to retire it, and leaving both means a digest is still "+
+			"the exception in a CHECK as well as an ordinary value in a column", def)
+	}
+	if def := constraintDef("notifications_convkind_ck", "notifications"); !strings.Contains(def, "digest") {
+		t.Fatalf("notifications_convkind_ck does not bound the conversation vocabulary "+
+			"at the top of the stack: %s", def)
+	}
+	for _, col := range []string{"conversation_kind", "conversation_id"} {
+		if nullable := columnNullability("notifications", col); nullable != "NO" {
+			t.Fatalf("notifications.%s is is_nullable=%q, want NO — EVERY row names a "+
+				"conversation now, and a nullable half would re-create the exception "+
+				"this migration removed", col, nullable)
+		}
+	}
+
+	down(64)
+
+	if def := constraintDef("notifications_target_ck", "notifications"); !strings.Contains(def, "digest") {
+		t.Fatalf("notifications_target_ck did not come back after 00064's Down: %s — "+
+			"the release this rolls back to has no conversation pair, so without the "+
+			"CHECK a digest row and a group row are indistinguishable to it", def)
 	}
 
 	// 00063 moves the grouping decision onto the policy (git-bug 7570090 stage 2).

@@ -340,9 +340,17 @@ func (s *DigestService) emit(
 		// because one UUID column cannot hold a pair and hashing the two into a
 		// synthetic id would make `subject_id` resolve against no table (00058).
 		SubjectID: policyID,
-		// No GroupID. This is the row `notifications.group_id` was relaxed for: a
-		// digest spans many generations, so `notifications_target_ck` admits the NULL
-		// for this kind alone.
+		// The policy IS the conversation: a digest opens its own, keyed by the
+		// policy, and replies into it once per window.
+		ConversationKind: domain.ConversationDigest,
+		ConversationID:   policyID,
+		// No GroupID. A digest spans many generations, so it has no one thread to
+		// land in.
+		//
+		// ⭐ AND IT IS NO LONGER AN EXCEPTION. `notifications_target_ck` used to
+		// admit the missing group for this kind alone; migration 00064 retired it and
+		// a digest now names its conversation the same way every other fact does —
+		// with the pair below. What was a hole in a CHECK is an ordinary value.
 		Reason:   domain.ReasonDigest,
 		PolicyID: &policyID,
 		// The WINDOW ORDINAL as the subject's version (§C.7). It is what makes one

@@ -106,9 +106,9 @@ func TestMarkSentReportsALostClaim(t *testing.T) {
 	notificationID := uuid.New()
 	_, err = fx.pool.Exec(ctx, `
 		INSERT INTO notifications
-		  (id, org_id, subject_kind, subject_id, group_id, reason, policy_id,
+		  (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason, policy_id,
 		   state_version, idempotency_key, status, created_at, updated_at)
-		VALUES ($1,$2,'alert_group',$3,$3,'fired',$4,1,$5,'dispatched',$6,$6)`,
+		VALUES ($1,$2,'alert_group',$3,$3,'alert_group',$3,'fired',$4,1,$5,'dispatched',$6,$6)`,
 		notificationID, fx.orgID, fx.groupID, fx.policyID, idemKey("c"), now)
 	require.NoError(t, err)
 

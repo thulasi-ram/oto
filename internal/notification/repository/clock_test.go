@@ -136,16 +136,18 @@ func TestNotificationStatusSurvivesADispatcherBehindTheEvaluator(t *testing.T) {
 	repo := repository.NewNotificationRepository(h.Pool)
 
 	n, created, err := repo.Insert(h.Ctx, fx.scope, domain.Notification{
-		ID:             id.New(),
-		OrgID:          fx.scope.OrgID(),
-		SubjectKind:    domain.SubjectAlertGroup,
-		SubjectID:      fx.groupID,
-		GroupID:        fx.groupID,
-		Reason:         domain.ReasonFired,
-		StateVersion:   1,
-		IdempotencyKey: idem("a"),
-		Status:         domain.StatusPending,
-		CreatedAt:      h.Now(),
+		ID:               id.New(),
+		OrgID:            fx.scope.OrgID(),
+		SubjectKind:      domain.SubjectAlertGroup,
+		SubjectID:        fx.groupID,
+		GroupID:          fx.groupID,
+		ConversationKind: domain.ConversationAlertGroup,
+		ConversationID:   fx.groupID,
+		Reason:           domain.ReasonFired,
+		StateVersion:     1,
+		IdempotencyKey:   idem("a"),
+		Status:           domain.StatusPending,
+		CreatedAt:        h.Now(),
 	})
 	require.NoError(t, err)
 	require.True(t, created)
@@ -178,16 +180,18 @@ func TestDeliveryWritesSurviveAWorkerBehindTheFanOut(t *testing.T) {
 	threads := repository.NewThreadRepository(h.Pool)
 
 	n, _, err := notifications.Insert(h.Ctx, fx.scope, domain.Notification{
-		ID:             id.New(),
-		OrgID:          fx.scope.OrgID(),
-		SubjectKind:    domain.SubjectAlertGroup,
-		SubjectID:      fx.groupID,
-		GroupID:        fx.groupID,
-		Reason:         domain.ReasonFired,
-		StateVersion:   1,
-		IdempotencyKey: idem("b"),
-		Status:         domain.StatusPending,
-		CreatedAt:      h.Now(),
+		ID:               id.New(),
+		OrgID:            fx.scope.OrgID(),
+		SubjectKind:      domain.SubjectAlertGroup,
+		SubjectID:        fx.groupID,
+		GroupID:          fx.groupID,
+		ConversationKind: domain.ConversationAlertGroup,
+		ConversationID:   fx.groupID,
+		Reason:           domain.ReasonFired,
+		StateVersion:     1,
+		IdempotencyKey:   idem("b"),
+		Status:           domain.StatusPending,
+		CreatedAt:        h.Now(),
 	})
 	require.NoError(t, err)
 
@@ -260,16 +264,18 @@ func TestClaimIsNotExpiredAtTheMomentItIsTaken(t *testing.T) {
 	deliveries := repository.NewDeliveryRepository(h.Pool)
 
 	n, _, err := notifications.Insert(h.Ctx, fx.scope, domain.Notification{
-		ID:             id.New(),
-		OrgID:          fx.scope.OrgID(),
-		SubjectKind:    domain.SubjectAlertGroup,
-		SubjectID:      fx.groupID,
-		GroupID:        fx.groupID,
-		Reason:         domain.ReasonFired,
-		StateVersion:   1,
-		IdempotencyKey: idem("c"),
-		Status:         domain.StatusPending,
-		CreatedAt:      h.Now(),
+		ID:               id.New(),
+		OrgID:            fx.scope.OrgID(),
+		SubjectKind:      domain.SubjectAlertGroup,
+		SubjectID:        fx.groupID,
+		GroupID:          fx.groupID,
+		ConversationKind: domain.ConversationAlertGroup,
+		ConversationID:   fx.groupID,
+		Reason:           domain.ReasonFired,
+		StateVersion:     1,
+		IdempotencyKey:   idem("c"),
+		Status:           domain.StatusPending,
+		CreatedAt:        h.Now(),
 	})
 	require.NoError(t, err)
 
@@ -372,9 +378,9 @@ func TestTheFourTablesHaveNoClockOfTheirOwn(t *testing.T) {
 		id.New(), orgID, fx.channel)
 
 	refused("notifications",
-		`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, reason,
+		`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason,
 		     state_version, idempotency_key)
-		 VALUES ($1, $2, 'alert_group', $3, $3, 'fired', 1, $4)`,
+		 VALUES ($1, $2, 'alert_group', $3, $3, 'alert_group', $3, 'fired', 1, $4)`,
 		id.New(), orgID, fx.groupID, idem("d"))
 
 	threadID := id.New()
@@ -384,9 +390,9 @@ func TestTheFourTablesHaveNoClockOfTheirOwn(t *testing.T) {
 		threadID, orgID, fx.channel, fx.groupID, h.Now())
 
 	notificationID := id.New()
-	h.Exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, reason,
+	h.Exec(`INSERT INTO notifications (id, org_id, subject_kind, subject_id, group_id, conversation_kind, conversation_id, reason,
 	           state_version, idempotency_key, created_at, updated_at)
-	        VALUES ($1, $2, 'alert_group', $3, $3, 'fired', 1, $4, $5, $5)`,
+	        VALUES ($1, $2, 'alert_group', $3, $3, 'alert_group', $3, 'fired', 1, $4, $5, $5)`,
 		notificationID, orgID, fx.groupID, idem("e"), h.Now())
 
 	refused("notification_deliveries",

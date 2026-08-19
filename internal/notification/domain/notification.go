@@ -208,6 +208,23 @@ type Notification struct {
 	// its own conversation keyed by its policy. Anything that dereferences this
 	// without asking `SubjectKind` first will address the nil UUID.
 	GroupID uuid.UUID
+	// ConversationKind and ConversationID are THE DELIVERY TARGET, as a pair
+	// (migration 00064, git-bug 7570090). They answer "where does this land", the
+	// way (SubjectKind, SubjectID) answers "what is this about".
+	//
+	// ⭐ THEY REPLACED `GroupID` PLUS AN EXCEPTION. The old shape was `group_id`
+	// with `notifications_target_ck` reading "every fact names a group EXCEPT a
+	// digest", which does not extend: a policy-collapsed conversation is neither,
+	// and adding it meant a third arm in the CHECK and a third branch in every
+	// reader. As a pair, a digest is ONE KIND AMONG SEVERAL and the next kind needs
+	// no migration.
+	//
+	// ⛔ `GroupID` SURVIVES AND IS NOT THE SAME QUESTION. Several readers use it to
+	// answer SUBJECT-shaped ones — the per-alert rollup, the drill artifact read,
+	// the audit filter — and those are answered deliberately when `alert_groups`
+	// goes, not by deleting a column they happen to use.
+	ConversationKind ConversationKind
+	ConversationID   uuid.UUID
 	// AlertID is set when the fact is about ONE alert. It is MANDATORY for the
 	// alert-scoped reasons (notifications_focus_ck).
 	AlertID *uuid.UUID
@@ -324,4 +341,50 @@ func AggregateStatus(statuses []DeliveryStatus) Status {
 	default:
 		return StatusPartial
 	}
+}
+
+// ConversationKind is WHERE a fact lands: which kind of conversation owns the
+// thread it belongs to.
+//
+// ⛔ IT IS DELIBERATELY NOT `SubjectKind`, THOUGH THEY OVERLAP TODAY. A subject is
+// what a fact is ABOUT; a conversation is where it is DELIVERED. `alert` and
+// `case` are subjects that no conversation is ever keyed by, and the policy
+// collapse that replaces `alert_groups` is a conversation that is no subject at
+// all — so the two vocabularies already differ and are about to differ more.
+// Sharing one type would tie two sets that have different reasons to change, and
+// `notifications_convkind_ck` is a separate CHECK for the same reason.
+type ConversationKind string
+
+const (
+	// ConversationAlertGroup is one AlertGroup GENERATION's thread.
+	//
+	// ⚠️ TRANSITIONAL. It names a row in a table git-bug 7570090 deletes, and its
+	// replacement is already ruled: `case`. The owner decided on 2026-08-19 that a
+	// conversation holds exactly ONE Case, never a collapse of several, so this
+	// kind is REPLACED rather than reinterpreted when `alert_groups` goes. Quietly
+	// widening it to mean "generation or case" is how that distinction would be
+	// lost — a generation could hold many cases and a conversation may not.
+	ConversationAlertGroup ConversationKind = "alert_group"
+	// ConversationDigest is a digest's own conversation, keyed by its policy. It
+	// spans many generations, which is why it could never carry a group id and why
+	// it was the exception the pair exists to retire.
+	ConversationDigest ConversationKind = "digest"
+)
+
+// SubjectKind maps a conversation kind onto the `channel_threads.subject_kind`
+// spelling.
+//
+// The thread table still calls this column `subject_kind`, and renaming it is
+// 7570090's later stage rather than this one's. The mapping is total over the two
+// kinds that exist; an unknown kind returns the empty SubjectKind, which
+// `threads_subjkind_ck` refuses at the write — a loud failure rather than a thread
+// silently opened under the wrong key.
+func (k ConversationKind) SubjectKind() SubjectKind {
+	switch k {
+	case ConversationAlertGroup:
+		return SubjectAlertGroup
+	case ConversationDigest:
+		return SubjectDigest
+	}
+	return ""
 }
