@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 61 {
-		t.Fatalf("latest migration is %d, want 61 — this test pins the number so that a "+
+	if latest != 62 {
+		t.Fatalf("latest migration is %d, want 62 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -663,6 +663,22 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	// rather than a bare existence count because a constraint's PREDICATE is the
 	// contract and its name is only the handle — and because `NOT VALID` shows up
 	// in the rendering, which is the whole point of 00050's.
+	// A column's comment. Same reason `tableComment` exists: a migration whose only
+	// visible output is a sentence an operator reads at `\d+` is the one whose Down
+	// is most likely to be a copy of its Up.
+	columnComment := func(table, column string) string {
+		t.Helper()
+		var c string
+		if err := env.pool.QueryRow(env.ctx,
+			`SELECT coalesce(col_description($1::regclass, (
+			           SELECT attnum FROM pg_attribute
+			            WHERE attrelid = $1::regclass AND attname = $2)), '')`,
+			table, column).Scan(&c); err != nil {
+			t.Fatalf("introspect comment on %s.%s: %v", table, column, err)
+		}
+		return c
+	}
+
 	constraintDef := func(name, table string) string {
 		t.Helper()
 		var def string
@@ -1428,6 +1444,29 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"%s — the ceiling IS the enum size, and 00060 moved it back to 18 when it deleted "+
 			"`storm`; a ceiling of 19 over an eighteen-value vocabulary is a number no row "+
 			"could ever test", def)
+	}
+
+	// 00062 records the flap retirement on the columns themselves. The owner ruled the
+	// detector is not needed (git-bug 752cb18), so these say "frozen" rather than the
+	// live-state claim 00007 shipped and 00057's header repeated.
+	for _, col := range []string{"flap_score", "is_flapping"} {
+		if c := columnComment("alerts", col); !strings.Contains(c, "RETIRED IN PLACE") {
+			t.Fatalf("alerts.%s does not say it is retired at the top of the stack: %s — "+
+				"the column is frozen, nothing recomputes it, and a comment describing a "+
+				"live detector sends an operator to trust a measurement taken at a time", col, c)
+		}
+	}
+
+	down(62)
+
+	for _, col := range []string{"flap_score", "is_flapping"} {
+		if c := columnComment("alerts", col); strings.Contains(c, "RETIRED IN PLACE") {
+			t.Fatalf("alerts.%s still says retired after 00062's Down: %s — the Down restores "+
+				"00007's wording, which was true of the release this rolls back to", col, c)
+		}
+	}
+	if c := columnComment("alerts", "flap_score"); !strings.Contains(c, "flap.score job") {
+		t.Fatalf("alerts.flap_score did not get 00007's wording back after 00062's Down: %s", c)
 	}
 
 	// 00061 restates two table comments 00036 shipped and later changes made false.
