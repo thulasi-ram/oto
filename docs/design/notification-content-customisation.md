@@ -299,9 +299,16 @@ Surfaced while auditing. None is caused by this design; all are real.
 8. **The UI has no dead-delivery retry.** `POST /api/v1/deliveries/{id}/retry` exists server-side;
    `retryDelivery` appears only in generated `schema.d.ts` with no hand-written caller, and the dead-letter
    screen is an index comment (`del_dead_idx`) with no route.
-9. **§L.5.1 is drifted from the code.** SPEC.md:4633-4638 still declares `mention_on_reminder` and
+9. ~~**§L.5.1 is drifted from the code.** SPEC.md:4633-4638 still declares `mention_on_reminder` and
    SPEC.md:3192 still cites it, while `providers/slack/config.go:55` says *"⛔ THERE IS NO
-   `mention_on_reminder` HERE, AND ITS REMOVAL IS A BUG FIX"*. ADR 0020's deletion never reached the SPEC.
+   `mention_on_reminder` HERE, AND ITS REMOVAL IS A BUG FIX"*. ADR 0020's deletion never reached the SPEC.~~
+   **FIXED 2026-08-20 (git-bug `68653ca`).** And it was worse than "drifted": §L.5.1's block is
+   labelled *"literal, `internal/channels/providers/slack/schema.json`"* and was not literal — it
+   declared `mention_on_reminder` between `max_instances` and `link_names`, where the real file goes
+   straight from one to the other. An operator writing channel config from the SPEC would have had
+   that key rejected by `DisallowUnknownFields` with no hint why. The block now matches the file and
+   records the deletion; §H.6's own removal note was already correct, so the SPEC had also been
+   disagreeing with itself.
 10. **`validate.go` has 19 identifiers, not 18.** V0–V18; its doc comment (`validate.go:91`) says "the
     eighteen outbound checks of §L.6" because V0 is an extra JSON-decode guard. V14, V17 and V18 are not
     Block Kit checks — they are top-level text, metadata size and payload size.
@@ -311,8 +318,8 @@ Surfaced while auditing. None is caused by this design; all are real.
 Pre-release, the division that matters is not risky-vs-safe but **cheap now, expensive forever.**
 
 1. **Doc-only work, free exactly once.** Amend §H.7 to declare a render order distinct from its shed order and
-   enumerate the twelve terminal fields (this is what unblocks field ordering later); delete
-   `mention_on_reminder` from §L.5.1; make the metrics table stop promising counters that do not exist; write
+   enumerate the twelve terminal fields (this is what unblocks field ordering later); ~~delete
+   `mention_on_reminder` from §L.5.1~~ (**done** — git-bug `68653ca`); make the metrics table stop promising counters that do not exist; write
    `Stanza` and `Wording` into CONTEXT.md before they appear in schema property names.
 2. **Make the pipeline honest, and close the read-model gaps.** Finding 7's render counter and death log,
    finding 8's retry wiring, snooze into `NotificationView`, and the `alert.history` payload rendered.

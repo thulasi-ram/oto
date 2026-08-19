@@ -26,12 +26,6 @@ func (p policyStore) Get(context.Context, db.TenantScope, uuid.UUID) (domain.Pol
 	return p.policy, nil
 }
 
-func (p policyStore) ListWithUnackedReminder(
-	context.Context, db.TenantScope, *int,
-) ([]domain.Policy, error) {
-	return nil, nil
-}
-
 // No digest. The fan-out under test here is the SIGNAL one, and a digest policy
 // would have this fake's single policy digesting on every tick as well.
 func (p policyStore) ListWithDigest(context.Context, db.TenantScope) ([]domain.Policy, error) {

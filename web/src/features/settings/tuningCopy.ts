@@ -215,7 +215,7 @@ export const AM_FIELDS: readonly AmFieldCopy[] = [
     key: "repeatInterval",
     label: "repeat_interval",
     source: "route.repeat_interval",
-    why: "Produces the notification oto delivers as an update rather than a new message — the single largest noise reduction oto provides, and it needs no tuning. Its consequence is that an unacknowledged critical is re-sent only this often, which is why oto runs its own unacked-reminder clock.",
+    why: "Produces the notification oto delivers as an update rather than a new message — the single largest noise reduction oto provides, and it needs no tuning. Its consequence is that an unacknowledged critical is re-sent only this often, and this is the ONLY cadence involved: oto runs no clock of its own and sends nothing you did not ask for.",
   },
 ];
 
@@ -602,7 +602,7 @@ export const KNOBS: Readonly<Record<KnobKey, KnobCopy>> = {
     key: "broadcast_on_resolved",
     kind: "boolean",
     label: "Broadcast when everything resolves",
-    what: "Whether the all-resolved transition surfaces in the channel rather than being posted quietly in the thread. It is the only broadcast an org can configure. Two others are fixed by policy — a re-fire inside the grace window, and the unacked reminder — because for those two the quiet form of the fact is genuinely invisible, which is the only property that earns an irreversible channel post.",
+    what: "Whether the all-resolved transition surfaces in the channel rather than being posted quietly in the thread. It is the only broadcast an org can configure, and today it is the only broadcast oto sends at all: a re-fire now opens a new case with its own message rather than replying into a thread people stopped following. The bar for surfacing anything in the channel is that the quiet form of the fact would be genuinely invisible, because a broadcast cannot be un-sent.",
     risks: [
       {
         label: "If it is on",

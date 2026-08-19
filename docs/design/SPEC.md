@@ -5260,16 +5260,24 @@ Schema validation errors are mapped to `errs.Violation` with the JSON Pointer fr
       "type": "integer", "title": "Instances rendered inline",
       "minimum": 1, "maximum": 20, "default": 10
     },
-    "mention_on_reminder": {
-      "type": "array", "title": "Mention on unacked reminder",
-      "description": "A FIXED audience mentioned when an unacked reminder fires. Usergroups, individuals, !here and !channel are all permitted. This list is NOT a rota: it must never become time-aware (§G.9.1).",
-      "maxItems": 10, "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^(<!subteam\\^S[A-Z0-9]+>|<@[UW][A-Z0-9]+>|!here|!channel)$" }
-    },
     "link_names": { "type": "boolean", "default": false }
   }
 }
 ```
+
+⛔ **`mention_on_reminder` WAS IN THIS BLOCK AND IS DELETED (git-bug `bd0fb1d`, corrected here by
+`68653ca`).** It sat between `max_instances` and `link_names` and declared an array of `<@U…>` /
+`<!subteam^S…>` / `!here` / `!channel` capped at `maxItems: 10`. The owner withdrew the unacked
+reminder and ruled the mention goes with it, and `internal/channels/providers/slack/config.go:55`
+says so in as many words: *"⛔ THERE IS NO `mention_on_reminder` HERE, AND ITS REMOVAL IS A BUG
+FIX."*
+
+⚠️ **This block is labelled "literal", and until this correction it was not** — the real
+`internal/channels/providers/slack/schema.json` goes straight from `max_instances` to `link_names`.
+A "literal" copy that differs from the file it copies is worse than a paraphrase, because an
+operator writing channel config from the SPEC would have had that key REJECTED by
+`DisallowUnknownFields` with no hint why. §H.7's own removal note at §H.6 (*"**Mentions.** ⛔
+**Removed with the reminder.**"*) was already correct, so the SPEC also disagreed with itself.
 
 #### L.5.2 `webhook` config schema (literal, `internal/channels/providers/webhook/schema.json`)
 

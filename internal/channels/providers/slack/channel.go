@@ -85,9 +85,17 @@ func (c *Channel) Deliver(ctx context.Context, req domain.DeliverRequest) (domai
 		// threading off a reply silently flattens the thread.
 		opts = append(opts, slack.MsgOptionTS(threadRoot(req.ReplyTo)))
 		if req.Mode == domain.ModeBroadcastReply {
-			// Broadcast is used sparingly and only for the unacked reminder,
-			// which is gated on policy AND fires at most once per generation
-			// (§G.9).
+			// ⛔ THIS USED TO SAY "only for the unacked reminder, which is gated on
+			// policy AND fires at most once per generation (§G.9)". The reminder and
+			// its once-per-generation latch are deleted (git-bug `bd0fb1d`).
+			//
+			// Broadcast is still used sparingly, and the narrowness now lives in
+			// `BroadcastPolicy.Warrants` instead of in a latch: `all_resolved` when
+			// the org opts in, and `refired`, which nothing currently produces. The
+			// decision is made ONCE, in `notification/domain/mode.go`, and this
+			// branch only obeys it — `MsgOptionBroadcast()` is keyed on the mode and
+			// re-deriving the policy here would be a second opinion on an
+			// irreversible act.
 			opts = append(opts, slack.MsgOptionBroadcast())
 		}
 

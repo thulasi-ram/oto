@@ -12,9 +12,15 @@ import (
 
 // policyDTO maps a policy onto the wire.
 //
-// The wire name `unacked_reminder_after_seconds` and the domain field
-// `UnackedReminderAfter` now agree; only the unit differs, and the seconds ⇄
-// Duration conversion happens here and nowhere else.
+// ⛔ THIS COMMENT USED TO BE ABOUT A FIELD THAT NO LONGER EXISTS. It said the wire
+// name `unacked_reminder_after_seconds` and the domain field `UnackedReminderAfter`
+// agreed and that the seconds ⇄ Duration conversion happened here and nowhere else.
+// Both are deleted (git-bug `bd0fb1d`).
+//
+// The rule it stated is the part worth keeping, and it still holds for the two
+// remaining duration fields: a policy's `throttle` window and its `digest` window
+// cross the wire in SECONDS and live in the domain as a `time.Duration`, and this
+// file is the only place either conversion happens.
 func policyDTO(p domain.Policy) PolicyDTO {
 	matchers := make([]MatcherDTO, 0, len(p.Matchers))
 	for _, m := range p.Matchers {
@@ -48,7 +54,8 @@ func policyDTO(p domain.Policy) PolicyDTO {
 	}
 	// The zero value means "no digest" in the domain and `null` on the wire; the
 	// seconds ⇄ Duration conversion happens here and nowhere else, as it does for
-	// the reminder above.
+	// the throttle window above. (It used to say "as it does for the reminder
+	// above"; the reminder is deleted — git-bug `bd0fb1d`.)
 	if p.Digest.Window > 0 {
 		v := int32(p.Digest.Window / time.Second) //nolint:gosec // bounded by policies_digest_window_ck
 		out.DigestWindowSeconds = &v

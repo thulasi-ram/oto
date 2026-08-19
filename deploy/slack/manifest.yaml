@@ -74,7 +74,12 @@ oauth_config:
       #
       # WHY: this is the whole product. It covers BOTH verbs oto uses:
       #   * chat.postMessage — the root alert card, thread replies, and the
-      #     broadcast reply used by the unacked reminder (SPEC §H.5).
+      #     broadcast reply that surfaces a transition in the channel rather
+      #     than only in the thread (SPEC §H.5, ADR 0020).
+      #     ⛔ This used to read "the broadcast reply used by the unacked
+      #     reminder". The reminder was withdrawn (git-bug `bd0fb1d`) and the
+      #     broadcast set is now whatever `BroadcastPolicy.Warrants` returns.
+      #     The scope is needed either way — a broadcast IS a chat.postMessage.
       #   * chat.update      — editing the existing card in place. ADR 0008
       #     makes this the PRIMARY verb: it is Tier 3 (50+/min) where
       #     chat.postMessage is ~1 message/second/channel, and it is what keeps

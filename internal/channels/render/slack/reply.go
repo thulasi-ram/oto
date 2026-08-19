@@ -65,19 +65,28 @@ func (r *Renderer) renderReply(v *domain.NotificationView, o domain.RenderOption
 			Text{Type: TypeMrkdwn, Text: truncateField(extra, v.Links.Group)}))
 	}
 
-	// ⛔⛔ THE MENTION IS ADDED TO THE TOP-LEVEL `text` ONLY, AND THE SENTENCE IS
-	// BUILT WITHOUT IT FIRST (ADR 0020, Amendment 4).
+	// ⛔⛔ THE MENTION THIS BLOCK USED TO DESCRIBE IS DELETED (git-bug `bd0fb1d`).
+	// It said the mention was added to the top-level `text` only, with the sentence
+	// built without it first, because `fallback` and the delivery `summary` are
+	// copies of the sentence and a mention in either duplicates a thing that means
+	// something in one position only. There is no mention anywhere in oto now, and
+	// `text := sentence` — an alias whose only purpose was to hold the augmented
+	// string — went with it.
 	//
-	// The attachment's own `fallback` and the delivery `summary` are copies of the
-	// sentence used for notification previews and for the timeline; a mention in
-	// either is a duplicate of a thing that only means something in one position.
-	// The top-level text is the ONLY place a mention reaches a push notification,
-	// which is the whole point of mentioning somebody.
+	// ⭐ THE STRUCTURAL INSIGHT SURVIVED ITS SUBJECT AND IS WHY THE LINK IS NOT HERE.
+	// `68653ca` needed a way back to oto for a channel reader, which is the same
+	// shape of problem, and the answer came out DIFFERENT: the link goes in the BODY
+	// (see `replyBody`'s tail). A mention only means anything in a push notification,
+	// so it had to be in the `text`; a link has to be somewhere a reader can click,
+	// and the `text` is bound by ADR 0020 rule 4 to be a self-sufficient SENTENCE —
+	// which is also what `TestABroadcastTopLevelTextCarriesSeverityAndDuration`
+	// asserts, by refusing `<http` in this exact string. Same position, opposite
+	// answer, and the reasoning is recorded because the next affordance will have to
+	// choose again.
 	sentence := replyText(v)
-	text := sentence
 
 	return Payload{
-		Text:        text,
+		Text:        sentence,
 		UnfurlLinks: false,
 		UnfurlMedia: false,
 		Metadata:    rootMetadata(v),
@@ -290,11 +299,30 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 	// WHY A LINK IN THE BODY AND NOT IN THE TOP-LEVEL `text`, which is the ticket's
 	// first open question. Three reasons, and the third is the one that settles it:
 	//
-	//  1. ADR 0020 Amendment 4 observed in a LIVE workspace that the attachment is
-	//     returned intact by `conversations.history` and its colour bar renders, so
-	//     the block a link sits in does reach a channel reader. What Amendment 4
-	//     left unverified is BUTTONS (rule 5b) — and a mrkdwn link is not a button,
-	//     which is exactly why it is the affordance available here.
+	//  1. ⭐ A BUTTON IS IMPOSSIBLE HERE, CONFIRMED BY OBSERVATION — so a link is not
+	//     the safest affordance, it is the ONLY one. ADR 0020 rule 5b is marked
+	//     "⭐ CONFIRMED, not merely cautious": a human watched the in-channel copy
+	//     show NO buttons beside a root card in the same channel showing all of
+	//     them. A mrkdwn link is not a button and not an interactive element — it is
+	//     text that happens to be addressable — which is what leaves it available.
+	//
+	//     ⚠️ AND THE PREMISE THAT IT REACHES THE READER IS INFERRED, NOT OBSERVED.
+	//     Amendment 4's three data points are: the attachment comes back from
+	//     `conversations.history`, the COLOUR BAR renders, the BUTTONS do not. None
+	//     of them watched a section block's TEXT render in the channel copy, and
+	//     Amendment 4 warns in as many words that "`blocks` being present in the
+	//     stored attachment is storage, not rendering". The inference is strong — a
+	//     copy that rendered no blocks at all would have been reported as blank
+	//     rather than as button-less — but it is an inference, git-bug `2078a07`
+	//     carries it as an observation owed, and if it fails the link moves to the
+	//     top-level `text` and `TestABroadcastTopLevelTextCarriesSeverityAndDuration`
+	//     is the one test that has to be amended to allow it.
+	//
+	//     ⛔ THIS PARAGRAPH ONCE SAID THE OPPOSITE — that Amendment 4 "left BUTTONS
+	//     unverified" — which inverted the ADR's own confirmed/unknown labels (what
+	//     it leaves unknown is CLIENT PARITY). The ADR's summary callout at rule 5
+	//     said "still unverified" too, and that callout has been corrected; this is
+	//     what reading a summary instead of the section costs.
 	//  2. Rule 4 binds the top-level `text` to be a self-sufficient SENTENCE, and it
 	//     is also the push notification on a locked phone. A URL is not a sentence
 	//     and a locked phone cannot follow one.
@@ -739,19 +767,29 @@ func replyText(v *domain.NotificationView) string {
 		out += " " + endSentence(facts)
 	}
 
-	// ⛔⛔ THE MENTION LIVES HERE AND NOWHERE ELSE (ADR 0020). Everything the
-	// renderer builds for the thread sits inside ONE attachment (§H.1 S3, the only
-	// way to get a colour bar), and Slack strips attachments from the in-channel
-	// `thread_broadcast` reference — so a mention inside a block is invisible in
-	// the channel, notification or not. This string is very nearly all a channel
-	// reader sees, which makes it the only position a mention can occupy.
+	// ⛔⛔ NOTHING IS APPENDED HERE ANY MORE, AND THE ARGUMENT THAT USED TO LIVE IN
+	// THIS SPOT WAS BUILT ON A PREMISE THAT IS ALSO GONE.
 	//
-	// It goes AFTER the sentence: the sentence has to be readable by the people
-	// who were not mentioned, and a message that opens with four user ids reads as
-	// addressed to four people rather than to the channel.
+	// It said the mention lives here and nowhere else, because everything the
+	// renderer builds sits inside ONE attachment (§H.1 S3, the only way to get a
+	// colour bar) and Slack STRIPS attachments from the in-channel
+	// `thread_broadcast` reference — so a mention inside a block would be invisible
+	// in the channel. Two things happened to that:
 	//
-	// The audience is already resolved and already gated on severity by the org's
-	// policy. This renderer does not decide WHO — only WHERE.
+	//   1. The mention was deleted (git-bug `bd0fb1d`): the owner withdrew the
+	//      unacked reminder and ruled the mention goes with it.
+	//   2. ⭐ THE STRIPPING PREMISE ITSELF TURNED OUT TO BE FALSE. ADR 0020
+	//      Amendment 4: a live workspace returns the `thread_broadcast` message WITH
+	//      its `attachments` array intact and the colour bar renders. What Slack's
+	//      documentation is right about is BUTTONS — confirmed absent by observation
+	//      (rule 5b), not merely suspected. So a block is not invisible in the
+	//      channel; an interactive element is.
+	//
+	// ⚠️ WHICH IS WHY `68653ca` PUT THE LINK IN THE BODY AND NOT HERE — see
+	// `replyBody`'s tail for the full argument, including the one premise still
+	// owed an observation (whether a section block's TEXT renders in the in-channel
+	// copy; Amendment 4 saw the colour bar, not the words, and git-bug `2078a07`
+	// carries the question).
 	return truncateClause(oneLine(out), otoTopLevelText)
 }
 

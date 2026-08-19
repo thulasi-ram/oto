@@ -33,9 +33,17 @@ const defaultMaxInstances = 10
 // set and that could never do anything. That is the exact trap ADR 0020 is trying
 // to close, so it was closed here too.
 //
-// The audience now arrives per delivery, already resolved and already gated on
-// severity, as `RenderOptions.Mentions` — one place to configure it, one place to
-// read it, and the resolution is testable without a channel row.
+// ⛔⛔ AND THEN THE REPLACEMENT WENT TOO. This paragraph used to say the audience
+// "now arrives per delivery … as `RenderOptions.Mentions`". There is no such field:
+// git-bug `bd0fb1d` withdrew the unacked reminder and the owner ruled the mention
+// goes with it, so `RenderOptions` carries no audience and no delivery resolves one.
+// oto has NO mention surface at all.
+//
+// ⭐ Two deletions, one comment block, and for two DIFFERENT reasons — which is why
+// both halves are kept rather than collapsed. The first was a control that could
+// never act (wired to nothing). The second was a mechanism that worked and was
+// withdrawn on product grounds. A reader who only learns the first would conclude
+// the port field is the fix, and it was, until the thing it served stopped existing.
 type Renderer struct {
 	clock clock.Clock
 }

@@ -4865,8 +4865,9 @@ paths:
       summary: The org's tuning, each value with its origin
       tags: [Identity]
       description: |
-        The knobs that decide how loudly oto talks: `refire_grace`, the flap thresholds, the
-        unacked-reminder default, the fallback channel verbosity and the one configurable broadcast.
+        The knobs that decide how loudly oto talks: `refire_grace`, the flap thresholds, the fallback
+        channel verbosity and the one configurable broadcast. (An unacked-reminder default was in this
+        list and is deleted — migration `00068`, git-bug `bd0fb1d`: oto sends nothing unprompted.)
 
         **It returns three things, and all three are the point.**
 
@@ -9015,8 +9016,10 @@ components:
           type: boolean
           default: true
           description: |
-            When false, every delivery mode collapses to an in-place root update — except the
-            unacked reminder, which is always broadcast.
+            When false, every delivery mode collapses to an in-place root update. There is no
+            exception: there used to be one — the unacked reminder, which was always broadcast — and
+            it went with the reminder (git-bug `bd0fb1d`), so this field now means exactly what it
+            says for every Reason. Root updates are never gated by verbosity either.
         show_field_emoji:
           type: boolean
           default: true
@@ -10081,9 +10084,14 @@ components:
             Whether `all_resolved` is **broadcast** into the channel rather than posted quietly in the
             thread (ADR 0020). Default **off**.
 
-            It is the only broadcast that is configurable. The other two — `refired` and
-            `unacked_reminder` — are fixed by policy, because **a broadcast cannot be
-            un-sent**: Slack documents nothing that removes a channel reference once made. The bar is
+            It is the only broadcast that is configurable, and today it is the only broadcast oto can
+            send at all. `unacked_reminder` was fixed by policy and is deleted (git-bug `bd0fb1d`).
+            `refired` is still fixed by policy and still in the Reason vocabulary, but nothing produces
+            it: since ADR 0040 a re-fire opens a new case with its own root message instead of replying
+            into a thread people stopped following. A broadcast is fixed rather than configurable when
+            the quiet form of the fact would be genuinely invisible, and it is fixed because
+            **a broadcast cannot be un-sent**: Slack documents nothing that removes a channel reference
+            once made. The bar is
 
             `storm` is **not** in that list, and there is no longer a storm to be in it: storm damping is
             removed entirely. A storm is many alerts, so one broadcast per storming group was the flood

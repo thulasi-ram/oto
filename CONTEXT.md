@@ -104,8 +104,11 @@ API path or UI copy. AC-49 greps for them in CI:
 `owner_id` · `responder` · `triage` · `postmortem` · `war room` · `SLA` · `MTTA` · `MTTR` ·
 `severity override` · `close` (of an alert) · `merge` · `dismiss` · `watcher`/`subscriber`
 
-Say **firing duration**, not MTTR. Say **unacked reminder**, not escalation. Say **correlation**,
-not incidents.
+Say **firing duration**, not MTTR. Say **correlation**, not incidents. ⛔ `escalation` has no
+replacement term and this line used to offer one: it said "say **unacked reminder**", and the one
+reminder stage `escalation` had been reshaped into was itself withdrawn (git-bug `bd0fb1d`) — see
+the **No unprompted reminder, at all** row above. The word stays banned with nothing to say
+instead, which is the point: there is no oto concept in that shape.
 
 ### The four states and THREE orthogonal axes
 

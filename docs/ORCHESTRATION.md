@@ -178,9 +178,15 @@ being declared done, which is the standard the depguard rules were held to.
   because nothing could ever enter that state), the bounded `MaxWait` escalation and its dead-letter
   outcome, and the three-phase send with the claim durable before the provider
   call. Reasoning is in ADR 0023.
-- `mention_on_reminder` lives in Slack channel config but neither
+- ~~`mention_on_reminder` lives in Slack channel config but neither
   `NotificationView` nor `RenderOptions` can carry it to the renderer. Worked
-  around with a channel-scoped renderer copy; may want a port field instead.
+  around with a channel-scoped renderer copy; may want a port field instead.~~
+  **CLOSED, BY DELETION.** git-bug `bd0fb1d`: the owner withdrew the unacked
+  reminder and ruled the mention goes with it, so there is no mention surface
+  anywhere in oto and nothing left to carry to the renderer. The
+  channel-scoped renderer copy, `RenderOptions.Mentions`, `WithMentions` and
+  the `For` method all went with it — the port field this item wanted was the
+  right answer to a question that no longer has a subject.
 - `V11`'s bare-UUID assertion was scoped to `button.value` only, because
   `§H.3`'s own overflow option carries `"labels|<group_id>"`.
 

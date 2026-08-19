@@ -52,9 +52,11 @@ type settingsJSON struct {
 	DefaultVerbosity    *string `json:"default_verbosity,omitempty"`
 	BroadcastOnResolved *bool   `json:"broadcast_on_resolved,omitempty"`
 
-	// The unacked-reminder mention surface (ADR 0020). `omitempty` like the rest,
-	// so an org that never opened the screen stores nothing and reports every one
-	// of these as a DEFAULT — which for the mode is `none`, deliberately.
+	// ⛔ FOUR KEYS FOLLOWED THIS COMMENT AND ALL FOUR ARE DELETED (git-bug
+	// `bd0fb1d`): the unacked-reminder delay and the three that carried its mention
+	// surface. The paragraph described "every one of these" and there is no longer a
+	// "these" — the struct closes here. The remaining two keys above are the whole
+	// of `orgs.settings`.
 }
 
 // toPatch maps the stored blob onto the domain's override record. It is a

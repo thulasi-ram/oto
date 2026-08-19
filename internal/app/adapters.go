@@ -735,9 +735,12 @@ func (o orgSettings) GroupLifecycle(
 }
 
 // NotificationDefaults serves `notification/service.SettingsReader` from
-// `orgs.settings`: which transitions surface in the channel (ADR 0020), the
-// fallback verbosity for a Channel that names none, and the fallback unacked
-// reminder delay for a policy that names none.
+// `orgs.settings`: which transitions surface in the channel (ADR 0020), and the
+// fallback verbosity for a Channel that names none.
+//
+// ⛔ IT USED TO NAME A THIRD — "the fallback unacked reminder delay for a policy
+// that names none" — and there is no such field in `OrgDefaults` any more
+// (git-bug `bd0fb1d`). Two defaults, not three.
 //
 // ⛔ IT NEVER PROPAGATES A FAILURE, for the same reason as the two ports above:
 // a settings lookup must not be able to stop a notification. An unreadable

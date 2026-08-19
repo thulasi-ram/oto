@@ -97,7 +97,7 @@ type rule struct {
 // exactly how it survived the first pass (SPEC §P-20).
 var banned = []rule{
 	{"escalation", regexp.MustCompile(`(?i)escalat(e|es|ed|ing|ion|ions|ory)`),
-		"oto has ONE reminder stage that ends at a CHANNEL; an escalation is a ladder that ends at a PERSON (SPEC §G.9.1). Say unacked_reminder."},
+		"an escalation is a ladder that ends at a PERSON, and oto must never learn who that is (SPEC §G.9.1). There is NO replacement term: oto had one reminder stage that ended at a CHANNEL and it was withdrawn too (git-bug bd0fb1d), so oto sends nothing unprompted. Delete the concept, do not rename it."},
 	{"on-call", regexp.MustCompile(`(?i)\bon[-_ ]?call\b`),
 		"oto does not know who is on call and must never learn (FR-1, H-1)."},
 	{"rota", regexp.MustCompile(`(?i)\brotas?\b`),

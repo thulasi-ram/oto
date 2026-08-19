@@ -279,13 +279,20 @@ func (p Plan) PrimaryMode() Mode {
 //
 // Order matters and is deliberate:
 //
-//  1. the reminder is decided first, because it is the one mode `thread_updates`
-//     may not reduce;
-//  2. the root mode is chosen, then degraded if the destination cannot amend —
+//  1. the root mode is chosen, then degraded if the destination cannot amend —
 //     a channel with no edit-in-place gets a fresh standalone message rather
 //     than nothing at all;
-//  3. the reply is chosen, then gated by thread_updates, verbosity and threading
+//  2. the reply is chosen, then gated by thread_updates, verbosity and threading
 //     capability, in that order.
+//
+// ⛔ THERE USED TO BE A STEP AHEAD OF BOTH — "the reminder is decided first,
+// because it is the one mode `thread_updates` may not reduce" — and it is deleted
+// (git-bug `bd0fb1d`). It is called out rather than silently renumbered because it
+// was the ONLY step that could not be reduced, so a reader who remembers a
+// three-step order needs to know which one left: with it gone, `thread_updates`
+// now means exactly what it says for every Reason, and this function has no
+// unreducible mode at all. The ⛔ note further down, on the deleted `flapping` and
+// `storm` gates, is the same class of correction.
 //
 // ⛔ TWO GATES USED TO STAND AHEAD OF THOSE THREE AND BOTH ARE DELETED. `flapping`
 // went with migration 00057 — the flap damper is the case retention window now, not

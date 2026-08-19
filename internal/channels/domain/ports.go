@@ -144,8 +144,14 @@ const (
 	ModeThreadReply Mode = "thread_reply"
 	// ModeBroadcastReply surfaces a thread reply in-channel (ADR 0020). It is for
 	// the transitions an on-call engineer would be angry to have missed, and it is
-	// IRREVERSIBLE: Slack documents nothing that un-broadcasts. Never an
-	// escalation — oto has one reminder stage and it reminds a CHANNEL (§G.9.1).
+	// IRREVERSIBLE: Slack documents nothing that un-broadcasts.
+	//
+	// ⛔ NEVER AN ESCALATION, AND THE REASON IS NOW STRONGER THAN IT WAS. This used
+	// to say "oto has one reminder stage and it reminds a CHANNEL (§G.9.1)". oto has
+	// ZERO reminder stages: the one stage was withdrawn (git-bug `bd0fb1d`) and oto
+	// sends nothing unprompted. A broadcast is therefore never oto chasing anybody —
+	// it is one transition surfacing once, on the same trigger as every other
+	// delivery. `escalation` remains a banned word (CONTEXT.md) with no replacement.
 	ModeBroadcastReply Mode = "broadcast_reply"
 )
 

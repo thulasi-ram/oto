@@ -90,12 +90,6 @@ func (p digestPolicies) Get(
 	return p.policies[0], nil
 }
 
-func (p digestPolicies) ListWithUnackedReminder(
-	context.Context, db.TenantScope, *int,
-) ([]domain.Policy, error) {
-	return nil, nil
-}
-
 func (p digestPolicies) ListWithDigest(
 	context.Context, db.TenantScope,
 ) ([]domain.Policy, error) {
