@@ -174,9 +174,9 @@ func (r *ConfigRepository) GetPolicy(
 const insertPolicySQL = `
 INSERT INTO notification_policies (
   id, org_id, name, priority, enabled, matchers, reasons, channel_ids,
-  group_by, throttle, unacked_reminder_after_s, digest_window_s, digest_floor,
+  throttle, unacked_reminder_after_s, digest_window_s, digest_floor,
   created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
 RETURNING id`
 
 // CreatePolicy writes one routing rule.
@@ -225,10 +225,7 @@ func (r *ConfigRepository) CreatePolicy(
 	var stored uuid.UUID
 	err = r.db(ctx).QueryRow(ctx, insertPolicySQL,
 		newID, s.OrgID(), in.Name, priority, enabled, matchers, reasons,
-		// A nil slice reaches Postgres as NULL, and the column is NOT NULL with a
-		// `{}` default that an explicit NULL would NOT trigger. Normalised here so a
-		// policy created without a collapse is `{}` rather than a constraint error.
-		in.ChannelIDs, groupByOrEmpty(in.GroupBy), throttle, secondsPtr(in.UnackedReminderAfter),
+		in.ChannelIDs, throttle, secondsPtr(in.UnackedReminderAfter),
 		// NULL is "no digest", which is the default and the state of every row
 		// written before migration 00058. Nothing is defaulted here: a caller that
 		// asked for no window must not acquire one from the repository.
@@ -258,17 +255,11 @@ UPDATE notification_policies SET
     matchers    = COALESCE($6, matchers),
     reasons     = COALESCE($7, reasons),
     channel_ids = COALESCE($8, channel_ids),
-    -- CASE WHEN, NOT COALESCE. An empty collapse list is a REAL instruction --
-    -- stop collapsing -- and COALESCE cannot express it: an empty array is not
-    -- NULL, but a caller omitting the field and a caller clearing it both have to
-    -- be distinguishable, and only the set-flag says which. Same idiom as the
-    -- throttle and digest pairs below, for the same reason.
-    group_by    = CASE WHEN $9 THEN $10 ELSE group_by END,
-    throttle    = CASE WHEN $11 THEN $12 ELSE throttle END,
-    unacked_reminder_after_s = CASE WHEN $13 THEN $14 ELSE unacked_reminder_after_s END,
-    digest_window_s = CASE WHEN $15 THEN $16 ELSE digest_window_s END,
-    digest_floor    = CASE WHEN $17 THEN $18 ELSE digest_floor END,
-    updated_at  = GREATEST(updated_at, $19)
+    throttle    = CASE WHEN $9  THEN $10 ELSE throttle END,
+    unacked_reminder_after_s = CASE WHEN $11 THEN $12 ELSE unacked_reminder_after_s END,
+    digest_window_s = CASE WHEN $13 THEN $14 ELSE digest_window_s END,
+    digest_floor    = CASE WHEN $15 THEN $16 ELSE digest_floor END,
+    updated_at  = GREATEST(updated_at, $17)
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
 RETURNING id`
 
@@ -295,8 +286,6 @@ func (r *ConfigRepository) UpdatePolicy(
 		matchers    *[]byte
 		reasons     *[]string
 		channels    *[]uuid.UUID
-		setGroupBy  bool
-		groupByVal  []string
 		setThrottle bool
 		throttleVal []byte
 		setReminder bool
@@ -345,15 +334,8 @@ func (r *ConfigRepository) UpdatePolicy(
 	}
 
 	var stored uuid.UUID
-	if p.GroupBy != nil {
-		// Normalised so a cleared collapse is `{}` and never SQL NULL: the column is
-		// NOT NULL, and "stop collapsing" must not fail as a constraint error.
-		setGroupBy, groupByVal = true, groupByOrEmpty(*p.GroupBy)
-	}
-
 	err := r.db(ctx).QueryRow(ctx, updatePolicySQL,
 		s.OrgID(), policyID, p.Name, p.Priority, p.Enabled, matchers, reasons, channels,
-		setGroupBy, groupByVal,
 		setThrottle, throttleVal, setReminder, reminderVal,
 		setWindow, windowVal, setFloor, floorVal, r.clock.Now().UTC(),
 	).Scan(&stored)

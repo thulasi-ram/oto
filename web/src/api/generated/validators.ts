@@ -1465,11 +1465,6 @@ export const PolicyDTOSchema = v.looseObject({
     v.maxLength(16),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
-  "group_by": v.pipe(
-    v.array(v.string()),
-    v.maxLength(8),
-    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
-  ),
   "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),
   "unacked_reminder_after_seconds": v.exactOptional(v.nullable(v.pipe(
     v.number(),
@@ -2631,11 +2626,6 @@ export const CreatePolicyRequestSchema = v.strictObject({
     v.maxLength(16),
     v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
   ),
-  "group_by": v.exactOptional(v.pipe(
-    v.array(v.string()),
-    v.maxLength(8),
-    v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
-  )),
   "throttle": v.exactOptional(ThrottleDTOSchema),
   "unacked_reminder_after_seconds": v.exactOptional(v.pipe(
     v.number(),
@@ -2685,11 +2675,6 @@ export const UpdatePolicyRequestSchema = v.pipe(
       v.array(UuidSchema),
       v.minLength(1),
       v.maxLength(16),
-      v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
-    )),
-    "group_by": v.exactOptional(v.pipe(
-      v.array(v.string()),
-      v.maxLength(8),
       v.check((items) => new Set(items).size === items.length, "must not contain duplicates"),
     )),
     "throttle": v.exactOptional(v.nullable(ThrottleDTOSchema)),

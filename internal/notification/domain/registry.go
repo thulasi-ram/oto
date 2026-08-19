@@ -42,11 +42,7 @@ type PolicyDraft struct {
 	Enabled *bool
 
 	Matchers []Matcher
-	// GroupBy is the labels this policy collapses its deliveries by (git-bug
-	// 7570090). Nil and empty both mean "no policy-level collapse", which is the
-	// default and today's behaviour.
-	GroupBy []string
-	Reasons []Reason
+	Reasons  []Reason
 	// ChannelIDs references `channels` and NOTHING ELSE.
 	ChannelIDs []uuid.UUID
 	Throttle   *Throttle
@@ -78,13 +74,10 @@ type PolicyDraft struct {
 // because the contract types both as nullable: a pointer to nil CLEARS, which is
 // how an operator turns a damper off.
 type PolicyPatch struct {
-	Name     *string
-	Priority *int
-	Enabled  *bool
-	Matchers *[]Matcher
-	// GroupBy replaces the whole collapse list when present. A non-nil pointer to
-	// an empty slice CLEARS it, which is a real instruction (git-bug 7570090).
-	GroupBy    *[]string
+	Name       *string
+	Priority   *int
+	Enabled    *bool
+	Matchers   *[]Matcher
 	Reasons    *[]Reason
 	ChannelIDs *[]uuid.UUID
 

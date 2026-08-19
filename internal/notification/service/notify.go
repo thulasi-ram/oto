@@ -280,9 +280,9 @@ func (s *NotificationService) evaluate(
 
 	n := s.mint(scope, in, snap, now)
 
-	// ⭐ THE MATCHER SEES THE GROUP'S LABELS PLUS THE FOCUSED ALERT'S OWN, and the
-	// second half is git-bug 7570090's declared prerequisite rather than a
-	// convenience.
+	// ⭐ THE MATCHER SEES THE GROUP'S LABELS PLUS THE FOCUSED ALERT'S OWN. The second
+	// half was landed as git-bug 7570090's declared prerequisite; that prerequisite is
+	// gone and the merge is not — see the ⛔ block below for why it stands on its own.
 	//
 	// The group's labels are the only set true of EVERY member, which is why they
 	// were the whole input: since ADR 0038 they are oto's own axes — `alertname`,
@@ -291,13 +291,13 @@ func (s *NotificationService) evaluate(
 	// on most deployments and failed as a `no_policy` suppression rather than as an
 	// error, which is a filter that silently deletes notifications.
 	//
-	// ⛔ BUT TWO AXES IS ALSO EVERY LABEL A POLICY CAN SEE, AND THAT IS THE LIMIT
-	// THAT HAS TO GO FIRST. `alert_groups` is to be replaced by a `group_by` on
-	// `notification_policies`, with the collapse key computed at delivery — and a
-	// policy cannot group by `node` while the matcher is handed a set that contains
-	// only `alertname` and `namespace`. Landing that column on top of this input
-	// would ship a `group_by` over labels the matcher cannot see, which is why the
-	// ticket calls this "a prerequisite, not a detail".
+	// ⛔ TWO AXES WAS ALSO EVERY LABEL A POLICY COULD SEE, AND THAT IS THE LIMIT
+	// THIS REMOVES. The merge was landed as the prerequisite for a `group_by` column
+	// on `notification_policies`; migration 00065 deleted that column again, because
+	// the owner ruled one Case per conversation and left no collapse to configure.
+	// The limit it lifted is real without it: a policy written against any label off
+	// the two axes matched nothing and suppressed as `no_policy`, which is ADR 0038's
+	// failure mode reappearing one layer up.
 	//
 	// ⭐ MERGED, NOT REPLACED, SO THE CHANGE IS MONOTONE. The focus's labels are a
 	// superset of the group's for that alert — the group axes are DERIVED from them

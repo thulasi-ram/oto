@@ -214,10 +214,10 @@ type Notification struct {
 	//
 	// ⭐ THEY REPLACED `GroupID` PLUS AN EXCEPTION. The old shape was `group_id`
 	// with `notifications_target_ck` reading "every fact names a group EXCEPT a
-	// digest", which does not extend: a policy-collapsed conversation is neither,
-	// and adding it meant a third arm in the CHECK and a third branch in every
-	// reader. As a pair, a digest is ONE KIND AMONG SEVERAL and the next kind needs
-	// no migration.
+	// digest", which does not extend: the Case conversation that replaces
+	// `alert_groups` is not a group row either, and adding it meant a third arm in
+	// the CHECK and a third branch in every reader. As a pair, a digest is ONE KIND
+	// AMONG SEVERAL and the next kind needs no migration.
 	//
 	// ⛔ `GroupID` SURVIVES AND IS NOT THE SAME QUESTION. Several readers use it to
 	// answer SUBJECT-shaped ones — the per-alert rollup, the drill artifact read,
@@ -346,13 +346,26 @@ func AggregateStatus(statuses []DeliveryStatus) Status {
 // ConversationKind is WHERE a fact lands: which kind of conversation owns the
 // thread it belongs to.
 //
-// ⛔ IT IS DELIBERATELY NOT `SubjectKind`, THOUGH THEY OVERLAP TODAY. A subject is
-// what a fact is ABOUT; a conversation is where it is DELIVERED. `alert` and
-// `case` are subjects that no conversation is ever keyed by, and the policy
-// collapse that replaces `alert_groups` is a conversation that is no subject at
-// all — so the two vocabularies already differ and are about to differ more.
-// Sharing one type would tie two sets that have different reasons to change, and
-// `notifications_convkind_ck` is a separate CHECK for the same reason.
+// ⛔ IT IS DELIBERATELY NOT `SubjectKind`, THOUGH THEY OVERLAP. A subject is what
+// a fact is ABOUT; a conversation is where it is DELIVERED. `alert` and `case` are
+// subjects that no conversation is ever keyed by, so the sets are not the same set.
+// Sharing one type would tie two vocabularies that have different reasons to change,
+// and `notifications_convkind_ck` is a separate CHECK for the same reason.
+//
+// ⚠️ THIS ARGUMENT IS WEAKER THAN IT WAS, AND SAYING SO IS THE POINT. It used to
+// have a second leg: the policy collapse that was going to replace `alert_groups`
+// would have been a conversation that is no subject at all, so the two vocabularies
+// differed at BOTH ends. Migration 00065 deleted that collapse — the owner ruled a
+// conversation holds exactly one Case — and the leg went with it. What is left is
+// one-directional: every ConversationKind today IS also a SubjectKind, which
+// `SubjectKind()` below proves by being total, and the difference is only the
+// subjects that are never conversations. `case` is about to leave even that list
+// when it becomes a conversation kind, narrowing it to `alert`.
+//
+// The types stay apart on the surviving leg, not on the dead one. If `alert` ever
+// becomes a conversation the argument is spent, and THAT is the moment to merge
+// them — not before, and not on the strength of a sentence about a collapse that
+// no longer exists.
 type ConversationKind string
 
 const (

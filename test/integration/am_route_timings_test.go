@@ -408,8 +408,8 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest: %v", err)
 	}
-	if latest != 64 {
-		t.Fatalf("latest migration is %d, want 64 — this test pins the number so that a "+
+	if latest != 65 {
+		t.Fatalf("latest migration is %d, want 65 — this test pins the number so that a "+
 			"second migration claiming the same version is caught here. ⛔ Bumping this number "+
 			"is HALF the change: the new migration's Down needs an assertion below, or the pin "+
 			"is the only thing the new migration got and this test quietly shrank", latest)
@@ -1446,6 +1446,44 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 			"could ever test", def)
 	}
 
+	// 00065 REVERTS 00063: the owner ruled one Case per conversation, so a policy
+	// collapse decides nothing and `group_by` went. The assertion is the ABSENCE of
+	// a column, which is the only reading that catches the failure this migration
+	// exists to prevent — a knob an operator can still write and nothing honours,
+	// which is the defect `0457f1f`, `35d4248`, `39e48e2` and `27a1860` all closed.
+	//
+	// `columnNullability` answers "" for a column that is not there, which is why an
+	// absence can be asserted with the same helper as a presence.
+	if nullable := columnNullability("notification_policies", "group_by"); nullable != "" {
+		t.Fatalf("notification_policies.group_by is still present at the top of the "+
+			"stack (is_nullable=%q) — 00065 drops it, and a surviving column is a "+
+			"collapse list the policy API could still accept and return while no "+
+			"delivery reads it", nullable)
+	}
+	if def := constraintDef("policies_group_by_ck", "notification_policies"); def != "" {
+		t.Fatalf("policies_group_by_ck survived 00065 at the top of the stack: %s — the "+
+			"constraint names the dropped column, so leaving it would make the schema "+
+			"depend on DROP COLUMN's cascade rather than on this migration being right",
+			def)
+	}
+
+	down(65)
+
+	// 00065's Down puts the SHAPE back and cannot put the VALUES back: every policy
+	// returns with the `{}` default because the Up dropped the arrays. That is the
+	// whole loss, and it is a loss only on paper — nothing ever read the values, so
+	// there is no behaviour to restore alongside them.
+	if nullable := columnNullability("notification_policies", "group_by"); nullable != "NO" {
+		t.Fatalf("notification_policies.group_by is is_nullable=%q after 00065's Down, "+
+			"want NO — a nullable collapse list gives 'no collapse' two spellings, NULL "+
+			"and {}, and the release this rolls back to could tell them apart", nullable)
+	}
+	if def := constraintDef("policies_group_by_ck", "notification_policies"); !strings.Contains(def, "8") {
+		t.Fatalf("policies_group_by_ck did not come back bounded after 00065's Down: %s — "+
+			"restoring the column without its bound rolls back to a schema the release "+
+			"never shipped", def)
+	}
+
 	// 00064 makes the delivery target a PAIR (git-bug 7570090 stage 3). The
 	// assertion that matters is not that the columns exist but that the EXCEPTION is
 	// gone: `notifications_target_ck` read "every fact names a group EXCEPT a
@@ -1476,22 +1514,9 @@ func TestEveryMigrationDownTo00028IsReversible(t *testing.T) {
 	}
 
 	// 00063 moves the grouping decision onto the policy (git-bug 7570090 stage 2).
-	// The column is NOT NULL with a `{}` default, and that pair is the assertion:
-	// a default only fires when a column is OMITTED from an INSERT, never when it
-	// is supplied as NULL, so a write path that supplies every column has to spell
-	// "no collapse" itself.
-	if nullable := columnNullability("notification_policies", "group_by"); nullable != "NO" {
-		t.Fatalf("notification_policies.group_by is is_nullable=%q at the top of the "+
-			"stack, want NO — a nullable collapse list gives 'no collapse' two "+
-			"spellings, NULL and {}, and nothing downstream could tell them apart",
-			nullable)
-	}
-	if def := constraintDef("policies_group_by_ck", "notification_policies"); !strings.Contains(def, "8") {
-		t.Fatalf("policies_group_by_ck does not bound the collapse list at the top of "+
-			"the stack: %s — without a bound a policy can name so many labels that "+
-			"every alert lands in a conversation of its own", def)
-	}
-
+	// Its Up state — the NOT NULL column and its bound — is asserted after 00065's
+	// Down above rather than a second time here: 00064 does not touch the column, so
+	// a re-reading would restate a fact three lines of rollback ago and drift from it.
 	down(63)
 
 	if def := constraintDef("policies_group_by_ck", "notification_policies"); def != "" {

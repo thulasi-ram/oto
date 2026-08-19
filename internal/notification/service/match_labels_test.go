@@ -6,15 +6,21 @@ import (
 	"github.com/thulasiram/oto/internal/notification/domain"
 )
 
-// TestTheMatcherSeesTheFocusedAlertsOwnLabels is git-bug 7570090's declared
-// prerequisite, landed ahead of the change that needs it.
+// TestTheMatcherSeesTheFocusedAlertsOwnLabels is git-bug 7570090 stage 1, and it
+// OUTLIVED THE REASON IT WAS FILED FOR.
 //
-// `alert_groups` is to be replaced by a `group_by` column on
-// `notification_policies`, with the collapse key computed at delivery. That is
-// impossible while a policy is evaluated against the group's two axes —
-// `alertname`, and `namespace` when the alert has one — because a policy cannot
-// group by a label the matcher was never handed. Landing `group_by` on the old
-// input would ship a knob over labels nothing can see.
+// It was landed as the prerequisite for a `group_by` column on
+// `notification_policies`: a policy cannot collapse on `node` while the matcher is
+// handed only the group's two axes. That column landed in 00063 and migration
+// 00065 took it away again — the owner ruled one Case per conversation, so there
+// is no collapse left to configure.
+//
+// ⭐ THE PROPERTY IS WORTH KEEPING ON ITS OWN, WHICH IS WHY THIS DID NOT GO WITH
+// IT. Evaluating a policy against `alertname` and `namespace` alone is the ADR
+// 0038 failure mode in a second place: a policy written against any other label
+// matched nothing and failed as a `no_policy` suppression rather than as an error.
+// A filter that silently deletes notifications is wrong whether or not anything
+// downstream ever groups by the labels it can now see.
 //
 // ⭐ THE PROPERTY THAT MATTERS IS MONOTONICITY, and it is asserted here rather
 // than argued in a comment. The focus's labels are a SUPERSET of the group's for
@@ -42,10 +48,12 @@ func TestTheMatcherSeesTheFocusedAlertsOwnLabels(t *testing.T) {
 		}
 		got := matchLabels(snap)
 
-		// The case `group_by: [node]` needs and the old input could not serve.
+		// A label off the two axes, reachable only through the focus. This is the
+		// case a policy matching `node` needs and the old input could not serve.
 		if got["node"] != "worker-7" {
-			t.Errorf("node = %q, want worker-7 — a policy cannot group by a label the "+
-				"matcher was never handed, which is why this is a prerequisite", got["node"])
+			t.Errorf("node = %q, want worker-7 — a policy cannot MATCH on a label the "+
+				"matcher was never handed, and a policy that matches nothing suppresses "+
+				"as `no_policy` rather than failing (ADR 0038)", got["node"])
 		}
 		if got["pod"] != "api-abc123" {
 			t.Errorf("pod = %q, want api-abc123", got["pod"])

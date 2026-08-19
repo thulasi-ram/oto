@@ -225,11 +225,6 @@ type Policy struct {
 	Enabled  bool
 
 	Matchers []Matcher
-	// GroupBy is the labels this policy collapses its deliveries by, computed at
-	// delivery from the alert's own label set (git-bug 7570090). Empty is the
-	// default and is today's behaviour: no policy-level collapse. See CollapseKey
-	// for why this is NOT `alert_groups.group_key` under another name.
-	GroupBy []string
 	// Reasons is which §H.6 Reason values this policy reacts to.
 	Reasons []Reason
 	// ChannelIDs is the fan-out, 1..16 destinations. It references `channels` and
@@ -415,7 +410,6 @@ func (p Policy) Validate() error {
 		})
 	}
 
-	v = append(v, p.validateGroupBy()...)
 	v = append(v, p.validateDigest()...)
 
 	if len(v) > 0 {
