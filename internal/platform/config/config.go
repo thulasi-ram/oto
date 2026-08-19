@@ -77,7 +77,25 @@ type HTTPConfig struct {
 	// default on a credentialed CORS policy is a hole with a friendly name; the
 	// dev server sets the variable, like every other origin has to.
 	CORSOrigins []string `koanf:"cors_origins"`
-	BaseURL     string   `koanf:"base_url"`
+	// BaseURL is the absolute root of every oto link oto ever emits — the Slack
+	// card's deep links and the webhook URL an operator pastes into Alertmanager.
+	//
+	// ⛔ IT CARRIED NO VALIDATION AT ALL AND THAT WAS A BUG (git-bug `3f5e952`).
+	// `DBConfig.URL` six lines down has always been `validate:"required"`; this had
+	// nothing, so an operator could set it empty — an env override, a config file, a
+	// Helm value that renders blank — and oto would start cleanly with no working
+	// link anywhere. Two surfaces degrade to the empty string DELIBERATELY and
+	// silently: `notification/service.links` guards on `baseURL != ""` and leaves
+	// every card's deep link empty, and `sources/api.webhookURL` returns "" for the
+	// URL that makes ingestion work at all — so oto appears configured and receives
+	// nothing, with the diagnostic pointing at Alertmanager.
+	//
+	// ⭐ `http_url` RATHER THAN `url`, AND THE DEFAULT IS KEPT. `url` would admit
+	// `oto.example.com` with no scheme, which Slack will not linkify and which
+	// produces a card whose link silently does nothing. Keeping the
+	// `http://localhost:8080` default preserves the zero-config dev path; what is
+	// refused is an explicitly WRONG value, which is the realistic failure.
+	BaseURL string `koanf:"base_url" validate:"required,http_url"`
 }
 
 // DBConfig configures the two pgx pools mandated by SPEC §G.10.
@@ -483,6 +501,28 @@ func Validate(cfg Config) error {
 		if strings.TrimSpace(o) == "*" {
 			return errors.New("config: http.cors_origins may not contain '*': oto sends credentials, and a wildcard origin with credentials is refused by every browser")
 		}
+	}
+	// ⛔ THE CHARACTERS THAT SILENTLY CORRUPT A SLACK LINK, REFUSED AT BOOT.
+	//
+	// `render/slack.link` builds `<url|label>` and escapes the LABEL, never the URL —
+	// correctly, because the Alertmanager silence deep link is legitimately
+	// percent-encoded and escaping would mangle it. So every mrkdwn metacharacter in
+	// `base_url` reaches the payload verbatim: a `|` gives the tag two separators and
+	// Slack takes the first, so the label becomes part of the URL; a `>` closes the
+	// tag early and the label falls out as literal text; a newline sits raw inside
+	// the span. `http_url` above does not reliably reject these — Go's URL parser is
+	// permissive about host characters — so they are named here, in the CORS check's
+	// own shape: a rule that needs a sentence gets one.
+	//
+	// ⚠️ The failure this prevents is INVISIBLE, which is why it is worth a boot
+	// check rather than a runtime guard: nothing errors, nothing logs, and the card
+	// still ships — just wrong, for every reader.
+	if i := strings.IndexAny(cfg.HTTP.BaseURL, "<>|\n\r\t "); i >= 0 {
+		return fmt.Errorf(
+			"config: http.base_url contains %q at byte %d: oto renders it into Slack "+
+				"mrkdwn as <url|label>, where < > and | are control characters and "+
+				"whitespace is not legal in a URL — the card would ship silently wrong",
+			cfg.HTTP.BaseURL[i], i)
 	}
 	if cfg.Slack.Enabled && cfg.Slack.Mode == "http" && cfg.Slack.SigningSecret == "" {
 		return errors.New("config: slack.signing_secret is required in http mode (an empty secret accepts forged requests)")
