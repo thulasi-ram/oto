@@ -39,7 +39,32 @@ type NotificationView struct {
 	// the receipt because "how loud was this?" is a question about oto's own
 	// behaviour that only oto can answer.
 	Notifications int
-	RenderedAt    time.Time
+	// SnoozedUntil is when oto's own quiet on this signal runs out, and nil when
+	// oto is not being quiet about it. It is the ONE fact a snooze card cannot
+	// infer: who asked is `Actor` and what they wrote is `Comment` — both already
+	// here, both read the same gated way `ackedBy` and `suppressionNote` read them
+	// — but "until when" lives nowhere a renderer can reach, and a `snoozed` card
+	// that cannot say it is a card that says "Snoozed" and stops.
+	//
+	// ⛔ IT IS THE THIRD ORTHOGONAL AXIS AND IT NEVER TOUCHES THE COLOUR (§B.8.1,
+	// §B.8.6). A snoozed firing critical is still a firing critical: it stays
+	// `#a30200` / `:rotating_light:`, its Status field still follows `case.state`,
+	// and `DeriveCardState` neither reads this field nor may ever learn to.
+	// "Colouring a snoozed critical calm would be the exact lie §E.1.1 exists to
+	// prevent" (§H.4). This field exists so the card can SAY oto has gone quiet,
+	// never so the card can LOOK quiet.
+	//
+	// ⛔ IT IS ALSO NOT `CaseView.SuppressionReason`, which is Alertmanager's
+	// silence and explicitly "NOT" oto's (`notification/domain/suppression.go`).
+	// A snooze changes nothing in the cluster, so `CardSuppressed` never fires for
+	// one and its grey must never be borrowed to draw one.
+	//
+	// ⚠️ A NON-NIL VALUE IS NOT THE SAME AS "QUIET" — the snooze row is live until
+	// the 60-second expiry sweep ends it, so its clock may already have run out.
+	// The renderer draws what it is given; it does not re-decide whether oto is
+	// speaking, because that decision was already made upstream at claim time.
+	SnoozedUntil *time.Time
+	RenderedAt   time.Time
 }
 
 // OrgRef identifies the tenant a notification belongs to.
@@ -159,8 +184,8 @@ type PreviousState struct {
 // TrailEntry is one transition on the card's state trail.
 //
 // Kind is a small closed vocabulary the renderer maps to an emoji and a verb —
-// `fired`, `acked`, `unacked`, `suppressed`, `unsuppressed`, `resolved`,
-// `expired`, `refired`. It is deliberately NOT the raw
+// `fired`, `acked`, `unacked`, `suppressed`, `unsuppressed`, `snoozed`,
+// `unsnoozed`, `resolved`, `expired`, `refired`. It is deliberately NOT the raw
 // `alert_events.type`: the renderer must not learn another module's enum, and a
 // type it does not recognise is dropped rather than printed raw.
 type TrailEntry struct {

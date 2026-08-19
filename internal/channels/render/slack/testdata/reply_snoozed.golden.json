@@ -1,5 +1,5 @@
 {
-  "text": ":bell: Update on: OtoSmokeTest on smoke-test. Severity critical, team observability, firing since 17:56 UTC.",
+  "text": ":zzz: Snoozed: OtoSmokeTest on smoke-test. Severity critical, team observability, oto quiet until 22:02 UTC.",
   "unfurl_links": false,
   "unfurl_media": false,
   "metadata": {
@@ -13,15 +13,25 @@
   "attachments": [
     {
       "color": "#a30200",
-      "fallback": ":bell: Update on: OtoSmokeTest on smoke-test. Severity critical, team observability, firing since 17:56 UTC.",
+      "fallback": ":zzz: Snoozed: OtoSmokeTest on smoke-test. Severity critical, team observability, oto quiet until 22:02 UTC.",
       "blocks": [
         {
           "type": "section",
           "block_id": "oto_reply_8cfa57fc08",
           "text": {
             "type": "mrkdwn",
-            "text": ":information_source: *OtoSmokeTest* — :fire: Firing"
+            "text": ":zzz: *Snoozed* by <@U024BE7LH> until <!date^1786140129^{date_short_pretty} {time}|2026-08-07 22:02 UTC> — _provider incident — quiet until their ETA_"
           }
+        },
+        {
+          "type": "context",
+          "block_id": "oto_replyctx_8cfa57fc08",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": "_oto will not post about this again while the snooze lasts. A snooze changes nothing upstream and nothing about the alert's own state._"
+            }
+          ]
         }
       ]
     }

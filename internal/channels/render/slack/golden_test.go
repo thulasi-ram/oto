@@ -678,45 +678,49 @@ func unackedReminderMentionView() *domain.NotificationView {
 	return v
 }
 
-// ⛔⛔ TestGoldenSnoozed* — THE CARD OTO SENDS WHEN A HUMAN ASKS IT TO GO QUIET,
-// AND IT DOES NOT SAY SO.
+// TestGoldenSnoozed* — THE CARDS OTO SENDS WHEN A HUMAN ASKS IT TO GO QUIET.
 //
-// These two fixtures are checked in because the bytes are wrong, not because they
-// are right, and a golden is how a wrong rendering stops being invisible. Read
-// them before the live run: what a human must compare on screen is what oto
-// actually sends, and what oto actually sends is this.
+// ⭐ THESE FIXTURES USED TO BE EVIDENCE OF A DEFECT AND ARE NOW EVIDENCE OF A
+// DECISION. The comment they replace said they were "checked in because the bytes
+// are wrong, not because they are right", and that the fix was "not in these
+// fixtures on purpose" because it needed "a snooze axis on the view (someone
+// else's module), a Reason branch, a trail verb and words a human chooses". All
+// four landed with git-bug 1f7bdd0. Leaving that comment standing would have made
+// it a lie in the opposite direction — a note insisting a live defect exists in
+// code that no longer has it.
 //
-// The chain, all of it verifiable from this repository:
+// What the cards say now, and why:
 //
-//  1. `snoozed` and `unsnoozed` are real Reasons (`internal/notification/domain/
-//     reason.go`), and they are the ONLY two a snooze may not suppress
-//     (`SnoozeExempt`) — "a snooze that cannot announce its own beginning and end
-//     is the silent suppression §B.6 forbids".
-//  2. `PlanFor` gives them the default treatment: `update_root` plus a
-//     `thread_reply` (`rootModeFor`, `hasReply` — neither names them), and both sit
-//     in `ungatedReplies`, so the reply is delivered at EVERY verbosity — §H.6
-//     states it as "always — exempt from snooze suppression (§B.8.4)".
-//  3. So both cards below are delivered to a real channel today.
-//  4. And the Slack renderer has no `snoozed` branch at all. `replyBody` falls to
-//     its `default:` arm — `:information_source: *Title* — <status>` — and
-//     `reasonPhrase` returns "" so the footer's "why this card moved" clause is
-//     absent. A snooze is NOT a suppression in oto's model: `SuppressedSnoozed`
-//     lives in oto's own notification-suppression vocabulary and is explicitly
-//     "NOT Alertmanager's `alert_cases.suppression_reason`", so `CardSuppressed`
-//     never fires and the card stays FIRING-COLOURED.
-//  5. `NotificationView` has no snooze axis to render even if the renderer wanted
-//     one: no snoozed-until, no snoozer, and `TrailEntry.Kind` has no `snoozed`
-//     verb (`trailEmoji`/`trailVerb` would print the raw word).
+//  1. `snoozed` and `unsnoozed` are still the ONLY two Reasons a snooze may not
+//     suppress (§B.8.4) — "a snooze that cannot announce its own beginning and end
+//     is the silent suppression §B.6 forbids" — so both still reach a real channel
+//     at every verbosity. That was never the bug.
+//  2. `replyBody` has real arms for both now. The reply names who asked, until
+//     when, and what they wrote, and `reasonPhrase` says "snoozed", so the amended
+//     root card no longer changes for no stated reason.
+//  3. `NotificationView.SnoozedUntil` carries the one fact the renderer could not
+//     infer. `ViewService.project` fills it from a snapshot the repository was
+//     already joining.
 //
-// The result is a card that changes for no stated reason and a thread line that
-// announces an alert is firing — at the exact moment oto has decided to stop
-// talking about it. That is §B.6's fatal failure mode with a message attached:
-// oto's silence must never be indistinguishable from "there was no alert".
+// ⛔⛔ AND THE COLOUR IS STILL `#a30200`, DELIBERATELY, WHICH IS THE HALF OF THIS
+// A READER IS MOST LIKELY TO "FIX".
 //
-// ⚠️ THE FIX IS NOT IN THESE FIXTURES ON PURPOSE. It needs a snooze axis on the
-// view (someone else's module), a Reason branch, a trail verb and words a human
-// chooses. What is here is the evidence, frozen, so the next change to any of them
-// shows up as a diff.
+// The ticket asked for a card that is not firing-red. The SPEC forbids exactly
+// that, in a call-out block: "⛔ Snooze does NOT change the card's colour or emoji
+// … A snoozed firing critical stays `#a30200` / `:rotating_light:` … Colouring a
+// snoozed critical calm would be the exact lie §E.1.1 exists to prevent" (§H.4),
+// restated by §B.8.1, §B.8.2 and §B.8.6 and by `SnoozedUntil`'s own comment in
+// `notification/domain/snapshot.go`: "a snoozed critical is still rendered as a
+// firing critical". Snooze is the THIRD ORTHOGONAL AXIS — a fact about OTO'S
+// NOTIFICATION BEHAVIOUR, not about the world, and the world is what the colour
+// reports. So the clause was refused with those citations and the defect was
+// fixed in words, which is what it always was.
+//
+// `TestGoldenSnoozedCriticalKeepsTheFiringColour` below is §P-17's own acceptance
+// criterion — "add a golden file proving a snoozed critical still renders
+// `#a30200`" — written down at last, so the next person to reach for a calmer hex
+// fails a test that explains itself rather than passing one.
+
 func TestGoldenSnoozedRootCard(t *testing.T) {
 	t.Parallel()
 	msg := renderView(t, snoozedView(), domain.ModeUpdateRoot)
@@ -733,6 +737,12 @@ func TestGoldenSnoozedThreadReply(t *testing.T) {
 // Nothing about it is suppressed in Alertmanager's sense: the alerts are firing,
 // the case is open and unacked, and the only thing that changed is that oto has
 // agreed to stop mentioning it.
+//
+// ⭐ IT IS STILL A FIRING CRITICAL, ON PURPOSE. `FiringCount` is untouched, the
+// case stays open and unacked and `SuppressionReason` is left empty, so
+// `DeriveCardState` returns `CardFiring` and both cards come out `#a30200`. A
+// fixture that quietly calmed the group down would make the colour assertions
+// pass for the wrong reason.
 func snoozedView() *domain.NotificationView {
 	v := smokeView()
 	snoozedAt := upstreamStart.Add(6 * time.Minute)
@@ -742,10 +752,183 @@ func snoozedView() *domain.NotificationView {
 		Kind: "slack_user", ID: "U024BE7LH", Label: "ram@example.com",
 	}
 	v.Comment = "provider incident — quiet until their ETA"
+	// The fact the card could not previously reach. Four hours is one of §B.8.3's
+	// five presets (30 m · 1 h · 4 h · 24 h · 7 d); there is no indefinite snooze,
+	// so a fixture with a nil until would be a snooze the product cannot create.
+	v.SnoozedUntil = tptr(snoozedAt.Add(4 * time.Hour))
+	v.Trail = append(v.Trail, domain.TrailEntry{
+		Kind: "snoozed", At: snoozedAt, Actor: "ram@example.com",
+	})
 	v.Notifications = 2
 	v.RenderedAt = snoozedAt.Add(time.Second)
 	return v
 }
+
+// unsnoozedView is the other end of the same quiet: oto is audible again.
+//
+// ⛔ `SnoozedUntil` IS NIL AND THAT IS THE FACT. The repository's join reads only
+// rows with `ended_at IS NULL`, so a lifted or expired snooze arrives ABSENT
+// rather than past-dated — and this card must therefore say oto is speaking again
+// without a countdown to point at. Nothing else moved: same firing counts, same
+// open unacked case, same colour. That is what makes this card's whole job
+// "distinguishable from a state change".
+func unsnoozedView() *domain.NotificationView {
+	v := snoozedView()
+	woke := upstreamStart.Add(6*time.Minute + 4*time.Hour)
+	v.Reason = "unsnoozed"
+	v.SnoozedUntil = nil
+	// The note belonged to the snooze, not to its ending. Carrying it onto this
+	// card would attribute "provider incident — quiet until their ETA" to the act
+	// of waking up, which is the opposite of what the human wrote it about.
+	v.Comment = ""
+	v.Group.LastActivityAt = woke
+	v.Trail = append(v.Trail, domain.TrailEntry{Kind: "unsnoozed", At: woke})
+	v.Notifications = 3
+	v.RenderedAt = woke.Add(time.Second)
+	return v
+}
+
+// TestGoldenUnsnoozed* are the other half of the pair §B.8.4 requires. A snooze
+// that announces only its beginning leaves a channel unable to tell "oto is quiet
+// about this" from "oto has nothing to say" — §B.6's forbidden shape, arriving
+// four hours late.
+func TestGoldenUnsnoozedRootCard(t *testing.T) {
+	t.Parallel()
+	msg := renderView(t, unsnoozedView(), domain.ModeUpdateRoot)
+	golden(t, "root_unsnoozed.golden.json", msg.Payload)
+}
+
+func TestGoldenUnsnoozedThreadReply(t *testing.T) {
+	t.Parallel()
+	msg := renderView(t, unsnoozedView(), domain.ModeThreadReply)
+	golden(t, "reply_unsnoozed.golden.json", msg.Payload)
+}
+
+// TestGoldenSnoozedCriticalKeepsTheFiringColour is §P-17's acceptance criterion,
+// stated there and never written down: "colour and severity emoji unchanged while
+// snoozed — add a golden file proving a snoozed critical still renders `#a30200`".
+//
+// ⛔ IT ASSERTS AGAINST `CardFiring.Colour()`, NOT AGAINST A LITERAL. The literal
+// is already pinned to §H.2 by `TestSlackPaletteUnchanged`, which reads the hex off
+// the SPEC rather than out of a fixture; restating it here would give the two a way
+// to agree with each other while both drift from the document. What THIS test adds
+// is the ORTHOGONALITY: whatever `firing` is, a snooze does not change it, and
+// neither does the leading emoji.
+//
+// It is a test and not merely a golden because the goldens beside it cannot carry
+// the claim alone — a coordinated edit to `palette.go` and the captured bytes would
+// leave every one of them green.
+func TestGoldenSnoozedCriticalKeepsTheFiringColour(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		view *domain.NotificationView
+	}{
+		{"snoozed", snoozedView()},
+		{"unsnoozed", unsnoozedView()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tc.view.Group.Severity; got != "critical" {
+				t.Fatalf("the fixture must stay a CRITICAL or the claim is untested: severity = %q", got)
+			}
+			if got := slackrender.DeriveCardState(tc.view.Group); got != slackrender.CardFiring {
+				t.Fatalf("a snooze is orthogonal to state (§B.8.1) and must not move the card "+
+					"off firing: card state = %q", got)
+			}
+
+			for _, mode := range []domain.Mode{domain.ModeUpdateRoot, domain.ModeThreadReply} {
+				card := decodeCard(t, renderView(t, tc.view, mode).Payload)
+				if len(card.Attachments) != 1 {
+					t.Fatalf("%s: want exactly one attachment, got %d", mode, len(card.Attachments))
+				}
+				if got, want := card.Attachments[0].Color, slackrender.CardFiring.Colour(); got != want {
+					t.Errorf("%s: colour = %q, want %q — §H.4: colouring a snoozed critical calm "+
+						"would be the exact lie §E.1.1 exists to prevent", mode, got, want)
+				}
+			}
+
+			root := decodeCard(t, renderView(t, tc.view, domain.ModeUpdateRoot).Payload)
+			if sev := slackrender.SeverityEmoji("critical"); !strings.Contains(root.Text, sev) {
+				t.Errorf("§B.8.6: the leading emoji follows severity and a snooze does not touch "+
+					"it — want %s in %q", sev, root.Text)
+			}
+		})
+	}
+}
+
+// card is the two fields an assertion about colour needs, read back out of the
+// bytes the renderer actually returns. Reaching into the payload rather than into
+// the view is the point: what Slack receives is what the claim is about.
+type card struct {
+	Text        string `json:"text"`
+	Attachments []struct {
+		Color string `json:"color"`
+	} `json:"attachments"`
+}
+
+func decodeCard(t *testing.T, payload []byte) card {
+	t.Helper()
+	var c card
+	if err := json.Unmarshal(payload, &c); err != nil {
+		t.Fatalf("decode card: %v", err)
+	}
+	return c
+}
+
+// ⛔⛔ A SNOOZE IS THE ONLY FORWARD-LOOKING CLOCK ON THESE CARDS, AND IT RUNS FOR
+// UP TO THIRTY DAYS.
+//
+// §B.8.3's presets are 30 m · 1 h · 4 h · 24 h · 7 d with a thirty-day maximum, so
+// most snoozes outlive the day they were set on. Every other timestamp in the
+// top-level text points BACKWARD — "firing since 17:56 UTC" — where a bare time is
+// unambiguous because the card is about now; the first cut of the snooze clause
+// reused that rendering and produced "oto quiet until 22:02 UTC" for a snooze
+// ending the following Tuesday. That is a specific false statement to the one
+// person guaranteed to read the card, which is whoever asked for the quiet.
+//
+// The push notification is asserted separately from the block because they use
+// different mechanisms and only one of them can be fixed by Slack: the block gets
+// a `<!date>` token that renders in the reader's own timezone, and the push text
+// gets literal characters, because `<!date>` does not render in a push (S5).
+func TestALongSnoozeNamesTheDayAndNotJustTheClock(t *testing.T) {
+	t.Parallel()
+
+	v := snoozedView()
+	*v.SnoozedUntil = v.RenderedAt.Add(7 * 24 * time.Hour)
+
+	reply := decodeCard(t, renderView(t, v, domain.ModeThreadReply).Payload)
+	if strings.Contains(reply.Text, "quiet until 22:02 UTC") {
+		t.Errorf("the push text names a bare clock time for a seven-day snooze, "+
+			"which reads as tonight: %q", reply.Text)
+	}
+	for _, want := range []string{"quiet until", "Aug"} {
+		if !strings.Contains(reply.Text, want) {
+			t.Errorf("push text = %q, want it to contain %q", reply.Text, want)
+		}
+	}
+
+	// The same-day snooze must NOT grow a date: the terse rendering is what every
+	// other clause beside it uses, and the common case is a few hours.
+	short := decodeCard(t, renderView(t, snoozedView(), domain.ModeThreadReply).Payload)
+	if !strings.Contains(short.Text, "oto quiet until 22:02 UTC") {
+		t.Errorf("a same-day snooze should read as a bare clock time: %q", short.Text)
+	}
+
+	// The block carries `{date_short_pretty}`, so a reader in any timezone sees the
+	// day rather than a time that could be one of thirty.
+	raw := string(renderView(t, v, domain.ModeThreadReply).Payload)
+	if !strings.Contains(raw, "{date_short_pretty}") {
+		t.Errorf("the snooze block must use a date-carrying <!date> token: %s", raw)
+	}
+}
+
+// tptr is the fixtures' time-pointer helper. `SnoozedUntil` is a pointer because
+// "not snoozed" and "snoozed until the zero time" are different facts, and only a
+// pointer can tell them apart.
+func tptr(t time.Time) *time.Time { return &t }
 
 // ⭐ THE `rendered_hash` IS WHAT MAKES `chat.update` SAFE TO CALL ON EVERY FACT.
 //

@@ -30,6 +30,13 @@ const (
 	reasonRuleChanged     = "rule_changed"
 	reasonComment         = "comment"
 	reasonUnackedReminder = "unacked_reminder"
+	// ⭐ `snoozed` AND `unsnoozed` ARE THE ONLY TWO REASONS A SNOOZE MAY NOT
+	// SUPPRESS (§B.8.4): "a snooze that cannot announce its own beginning and end
+	// is the silent suppression §B.6 forbids". They therefore reach a real channel
+	// at EVERY verbosity, which is why having no branch for them was not a cosmetic
+	// gap — it was the one card oto is never allowed to get wrong.
+	reasonSnoozed   = "snoozed"
+	reasonUnsnoozed = "unsnoozed"
 	// ⛔ `reasonStorm` WAS HERE AND IS DELETED (ADR 0042). Storm damping is removed,
 	// `storm` has left the Reason vocabulary, and migration 00060 narrows
 	// `notifications_reason_ck` so no row can spell it — so the reply heading it
@@ -177,6 +184,67 @@ func (r *Renderer) replyBody(v *domain.NotificationView, o domain.RenderOptions)
 	case reasonUnsuppressed:
 		colour = CardFiring.Colour()
 		body = ":speaker: *Silence ended* — this alert is firing again"
+
+	case reasonSnoozed:
+		// ⛔⛔ `state.Colour()`, NOT A COLOUR OF ITS OWN, AND NOT `CardSuppressed`.
+		//
+		// Snooze is the THIRD ORTHOGONAL AXIS (§B.8.1): a snoozed firing critical is
+		// still a firing critical and every surface "MUST continue to render it that
+		// way" (§B.8.6) — `#a30200` / `:rotating_light:`, unchanged. §H.4 states the
+		// consequence in a call-out: "Colouring a snoozed critical calm would be the
+		// exact lie §E.1.1 exists to prevent." `TestGoldenSnoozedCriticalKeepsTheFiringColour`
+		// is §P-17's own proof of it.
+		//
+		// Borrowing `CardSuppressed`'s grey would be the same lie wearing a different
+		// coat: that grey means an ALERTMANAGER SILENCE, which only the reconciler can
+		// produce (C1), and a snooze writes nothing into the cluster (R3, §B.8.1).
+		//
+		// The defect this branch fixes was never the colour. It was that the card
+		// changed and NEVER SAID WHY: `replyBody` fell to `default:` and posted
+		// ":information_source: *Title* — :fire: Firing" — an announcement of the very
+		// alert oto had just agreed to stop mentioning. The fix is words, not paint.
+		colour = state.Colour()
+		body = ":zzz: *Snoozed*" + snoozedBy(v)
+		if until := snoozeUntil(v); until != "" {
+			body += " until " + until
+		}
+		if note := snoozeNote(v); note != "" {
+			body += " — _" + note + "_"
+		}
+		// What oto will DO, which is the only thing that actually changed. It is
+		// phrased about oto's behaviour and never about the signal's state, because
+		// this is the one card whose subject is oto's own quiet — and because §B.8.1's
+		// two negations are what stop a reader filing a snooze as a silence or as a
+		// resolution. The auto-expiry is named on purpose: there is no indefinite
+		// snooze (§B.8.3), and the card that announces the quiet is the right place
+		// for the sentence that promises it ends.
+		//
+		// ⛔ IT SAYS "while the snooze lasts", NOT "until then", AND THE DIFFERENCE IS
+		// NOT STYLE. "until then" is a back-reference to the until-when clause above,
+		// and that clause is CONDITIONAL: `SnoozedUntil` is nil whenever the snooze row
+		// was swept between the suppression decision and this render. The first cut of
+		// this branch read "until then" and the golden caught it pointing at nothing —
+		// a card promising quiet until a moment it had not named, which is a smaller
+		// copy of the very defect this ticket is about. This sentence is true with the
+		// clause and without it.
+		extra = "_oto will not post about this again while the snooze lasts. A snooze " +
+			"changes nothing upstream and nothing about the alert's own state._"
+
+	case reasonUnsnoozed:
+		// The one card whose entire content is "oto is audible again", and §B.6's
+		// requirement runs in both directions: a silence that cannot announce its END
+		// is still a silence nobody can distinguish from "there was no alert".
+		//
+		// It must not read as a state change. Nothing about the alert moved when the
+		// snooze ended — an expiry sweep or a human lifted oto's own quiet — so the
+		// body names oto as the subject and the context line says outright that the
+		// signal did not change. Without that sentence a reader who sees a card move
+		// reasonably assumes the alert did something, which is the mirror of the
+		// defect on the `snoozed` side.
+		colour = state.Colour()
+		body = ":bell: *Snooze ended* — oto is posting about this again"
+		extra = "_The snooze was lifted or ran out. Nothing about the alert itself " +
+			"changed when it did._"
 
 	case reasonRuleChanged:
 		colour = state.Colour()
@@ -466,6 +534,63 @@ func suppressedUntil(v *domain.NotificationView) string {
 	return ""
 }
 
+// snoozedBy attributes oto's own quiet, and unlike `silencedBy` it has no
+// "upstream" to fall back on.
+//
+// ⛔ THE TWO ARE OPPOSITES AND THE FALLBACKS SAY SO. A silence is ALWAYS somebody
+// else's — oto has no write path into the cluster (R3, H-3) — so `silencedBy`
+// naming "upstream" when it knows no name is the true sentence. A snooze is
+// ALWAYS oto's own and always a deliberate human act: §B.8.1 lists "attributed and
+// visible" against "a silent suppression", and §B.8.3's only operation is
+// `snooze(alert_id, until, note)`. So an unattributed snooze is oto failing to
+// record something it owns, and the honest rendering is to say nothing rather than
+// to invent an author or to blame a cluster that was never involved.
+//
+// The reason gate is `ackedBy`'s, for `ackedBy`'s reason: `v.Actor` is the actor of
+// the FACT BEING ANNOUNCED, so on any other card it is a different person doing a
+// different thing.
+func snoozedBy(v *domain.NotificationView) string {
+	if v.Reason != reasonSnoozed {
+		return ""
+	}
+	if who := actorLabel(v); who != "" {
+		return " by " + who
+	}
+	return ""
+}
+
+// snoozeUntil is the fact the card could not previously reach at all.
+//
+// ⛔ IT IS `NotificationView.SnoozedUntil` AND NEVER `Case.EndedAt`. `suppressedUntil`
+// above reads the case because an Alertmanager silence ends the case's suppression;
+// a snooze touches no case, no state and no column on the alert (§B.8.1), so the
+// case has nothing to say about when oto starts talking again. Reading it here
+// would print a silence's expiry on a snooze's card.
+//
+// ⛔ `slackDateTime`, NOT `slackDate`. Every other until-when on these cards points
+// at something hours away at most, so `slackDate`'s bare `{time}` is unambiguous.
+// A snooze runs up to thirty days (§B.8.3), and "until 22:02" a week out names the
+// wrong evening.
+func snoozeUntil(v *domain.NotificationView) string {
+	if v.SnoozedUntil == nil {
+		return ""
+	}
+	return slackDateTime(*v.SnoozedUntil)
+}
+
+// snoozeNote is what the human typed into `snooze(alert_id, until, note)`.
+//
+// ⛔ IT DOES NOT FALL BACK TO `Case.SuppressionReason` the way `suppressionNote`
+// does. That column is Alertmanager's silence comment and is explicitly "NOT" oto's
+// (`notification/domain/suppression.go`); printing it under "Snoozed by ram" would
+// attribute a stranger's sentence to the person who asked for quiet.
+func snoozeNote(v *domain.NotificationView) string {
+	if v.Comment == "" {
+		return ""
+	}
+	return escape(oneLine(v.Comment))
+}
+
 // resolvedAfter measures THE GENERATION, because the sentence it feeds is about
 // the generation: "All resolved after <d> — N of M instances".
 //
@@ -652,6 +777,24 @@ func replyFacts(v *domain.NotificationView) string {
 			facts = append(facts, "unacknowledged for "+d)
 		}
 		facts = append(facts, "firing since "+plainClock(groupStart(v)))
+	case reasonSnoozed:
+		// ⛔⛔ THIS CLAUSE IS THE WHOLE POINT OF THE TICKET. The `default:` arm below
+		// appends `stateClause`, so the string that reached a locked phone read
+		// "… firing since 17:56 UTC" — oto announcing the alert at the exact moment
+		// it agreed to stop announcing it. The snooze is the fact being communicated,
+		// so the snooze is what this clause must name.
+		//
+		// Severity and team are appended ABOVE and deliberately survive: ADR 0020
+		// Rule 4 binds this string to be self-sufficient, and a reader in the channel
+		// still has to be able to tell a snoozed `info` from a snoozed `critical`.
+		// Naming the snooze is not the same as hiding the signal.
+		if v.SnoozedUntil != nil {
+			facts = append(facts, "oto quiet until "+plainMoment(*v.SnoozedUntil, v.RenderedAt))
+		} else {
+			facts = append(facts, "oto has gone quiet about this")
+		}
+	case reasonUnsnoozed:
+		facts = append(facts, "oto is posting about this again")
 	default:
 		facts = append(facts, stateClause(v, state))
 	}
@@ -679,6 +822,13 @@ func replyLead(reason string) string {
 		return ":mute: Silenced:"
 	case reasonUnsuppressed:
 		return ":speaker: Silence ended:"
+	// `:zzz:` and `:bell:` are §B.8.6's own two emoji for the snooze axis — the
+	// card's `*Notifications*` field and the `Unsnooze` action. They are reused here
+	// so that one signal wears one symbol across every surface a reader meets it on.
+	case reasonSnoozed:
+		return ":zzz: Snoozed:"
+	case reasonUnsnoozed:
+		return ":bell: Snooze ended:"
 	case reasonRuleChanged:
 		return ":scroll: The alerting rule changed for:"
 	case reasonEnriched:

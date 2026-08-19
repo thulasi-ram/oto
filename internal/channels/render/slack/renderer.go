@@ -309,6 +309,16 @@ func reasonPhrase(reason string) string {
 		return "silenced"
 	case reasonUnsuppressed:
 		return "silence ended"
+	// The footer clause a snooze never had. `reasonPhrase` returning "" for
+	// `snoozed` is why the amended root card moved for no stated reason at all —
+	// the header changed, the fields changed, and the one line whose job is to say
+	// why was absent. "A card that changes without saying why teaches an operator
+	// to distrust it", and the snooze card was the worst case of it: the operator
+	// distrusting it is the same operator who had just asked oto to be quiet.
+	case reasonSnoozed:
+		return "snoozed"
+	case reasonUnsnoozed:
+		return "snooze ended"
 	case reasonExpired:
 		return "stopped being reported"
 	case reasonRefired:

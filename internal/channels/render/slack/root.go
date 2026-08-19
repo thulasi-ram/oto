@@ -132,6 +132,21 @@ func (r *Renderer) fieldsBlock(
 	// whether a human had already picked it up. They are ordered after `Duration`
 	// so §H.7's ten-field budget sheds `Flapping` and `Team` first, which are the
 	// two that matter least once it is over.
+	// §B.8.6's one added field, and the ONLY thing a snooze changes about the root
+	// card: "A field is added: `*Notifications*\n:zzz: Snoozed by <@U…> until
+	// <!date^…>`". Colour, leading emoji and the Status field are untouched and
+	// follow `case.state` — a snoozed firing critical still reads `:fire: Firing` in
+	// Status and still carries `#a30200`, because the world did not change when oto
+	// decided to stop narrating it (§B.8.2, §H.4).
+	//
+	// It shares the `*Notifications*` label with the terminal receipt's count below
+	// because §B.8.6 names that label, and the two can never both apply: the receipt
+	// fields render only on a terminal card, and a card oto has gone quiet about is
+	// one it is still tracking. The guard below states that rather than relying on it.
+	if v.SnoozedUntil != nil && !state.IsTerminal() {
+		add("Notifications", ":zzz: Snoozed"+snoozedBy(v)+" until "+snoozeUntil(v))
+	}
+
 	if state.IsTerminal() {
 		add(terminalTimeLabel(state), slackDate(v.Group.LastActivityAt))
 		add("Instances affected", instancesAffected(v))
@@ -355,6 +370,10 @@ func trailEmoji(kind string) string {
 		return ":mute:"
 	case "unsuppressed":
 		return ":speaker:"
+	case "snoozed":
+		return ":zzz:"
+	case "unsnoozed":
+		return ":bell:"
 	case "resolved":
 		return ":white_check_mark:"
 	case "expired":
@@ -378,6 +397,15 @@ func trailVerb(kind string) string {
 		return "silenced"
 	case "unsuppressed":
 		return "silence ended"
+	// ⛔ "snoozed" AND "silenced" ARE DIFFERENT WORDS FOR DIFFERENT FACTS and the
+	// trail is where confusing them is most expensive: the trail is the receipt
+	// somebody reads weeks later. A silence is Alertmanager's and changed the
+	// cluster; a snooze is oto's and changed nothing but oto. Without these two
+	// arms `trailVerb` fell to `default:` and printed the raw enum word.
+	case "snoozed":
+		return "snoozed"
+	case "unsnoozed":
+		return "snooze ended"
 	case "resolved":
 		return "resolved"
 	case "expired":

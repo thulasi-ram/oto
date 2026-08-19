@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	kernel "github.com/thulasiram/oto/internal/alerts/domain"
 	"github.com/thulasiram/oto/internal/notification/domain"
@@ -212,10 +213,54 @@ func (v *ViewService) project(snap domain.Snapshot, req ViewRequest) *Notificati
 	view.Previous = previousState(n.Reason, snap)
 	view.Trail = trail(snap)
 	view.Notifications = snap.NotificationCount
+	view.SnoozedUntil = snoozedUntil(snap)
 
 	view.Links = v.links(snap)
 	view.Actions = v.actions(snap)
 	return view
+}
+
+// snoozedUntil carries oto's own quiet across the seam, and it is the only fact
+// on the snooze axis a renderer cannot already reach: `Actor` is who asked and
+// `Comment` is what they wrote, and both are projected above.
+//
+// ⛔ THE FOCUS DECIDES WHENEVER THERE IS ONE, exactly as `Snapshot.FocusSnoozed`
+// decides. A snooze is scoped to an `alert_key` (§B.8.1) and `snoozed` /
+// `unsnoozed` are raised per alert (§B.8.3) — a group snooze is a FAN-OUT of the
+// same primitive, one row per currently-joined member, not a group-level fact —
+// so the card's own alert is the one whose clock the card must print. Reading the
+// group's latest here would put another member's wake-up time on a card about
+// this one.
+//
+// The group-wide fallback is for the card that has no focus, and it takes the
+// LATEST: a reader of a partly-snoozed group asks when oto starts talking again,
+// and that is when the last of them wakes. `grouping/api/dto.go` states the same
+// reading of the same fact, which is why this one is phrased to agree with it.
+//
+// ⚠️ IT DOES NOT RE-DECIDE WHETHER OTO IS QUIET, so it does not take a clock and
+// does not filter on one. Whether to speak was settled before this projection ran;
+// asking again here against `TakenAt` would let a row that expired between the
+// suppression check and the render silently erase the until-when from a card that
+// is being sent precisely because of it. An expired-but-unswept row still
+// truthfully names the moment the quiet ends (`snapshot.go`, `SnoozedUntil`).
+func snoozedUntil(snap domain.Snapshot) *time.Time {
+	if snap.Focus != nil {
+		if until, ok := snap.SnoozedAlerts[snap.Focus.ID]; ok {
+			return &until
+		}
+		return snap.Focus.SnoozedUntil
+	}
+
+	var latest time.Time
+	for _, until := range snap.SnoozedAlerts {
+		if until.After(latest) {
+			latest = until
+		}
+	}
+	if latest.IsZero() {
+		return nil
+	}
+	return &latest
 }
 
 // actorViewKind translates the timeline's actor vocabulary into the view's.

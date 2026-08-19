@@ -7,7 +7,7 @@
     "event_payload": {
       "generation": 1,
       "group_id": "019fe297-d84f-7599-b5b2-1f231749104a",
-      "reason": "snoozed"
+      "reason": "unsnoozed"
     }
   },
   "attachments": [
@@ -17,7 +17,7 @@
       "blocks": [
         {
           "type": "section",
-          "block_id": "oto_title_b7ddeb0678",
+          "block_id": "oto_title_780aa64e09",
           "text": {
             "type": "mrkdwn",
             "text": ":rotating_light: *<http://localhost:8080/groups/019fe297-d84f-7599-b5b2-1f231749104a|OtoSmokeTest>*  ·  `smoke-test`\n_AUTOMATED TEST from oto — please ignore. This is oto's end-to-end smoke test against a synthetic alert; no real service is affected._"
@@ -25,7 +25,7 @@
         },
         {
           "type": "section",
-          "block_id": "oto_body_b7ddeb0678",
+          "block_id": "oto_body_780aa64e09",
           "text": {
             "type": "mrkdwn",
             "text": "Synthetic test alert produced by oto's first live Slack verification run. Nothing is wrong. The card you are looking at is the thing under test."
@@ -33,7 +33,7 @@
         },
         {
           "type": "section",
-          "block_id": "oto_fields_b7ddeb0678",
+          "block_id": "oto_fields_780aa64e09",
           "fields": [
             {
               "type": "mrkdwn",
@@ -57,11 +57,7 @@
             },
             {
               "type": "mrkdwn",
-              "text": "*Firing for*\n6m 1s"
-            },
-            {
-              "type": "mrkdwn",
-              "text": "*Notifications*\n:zzz: Snoozed by <@U024BE7LH> until <!date^1786140129^{date_short_pretty} {time}|2026-08-07 22:02 UTC>"
+              "text": "*Firing for*\n4h 6m"
             },
             {
               "type": "mrkdwn",
@@ -71,7 +67,7 @@
         },
         {
           "type": "section",
-          "block_id": "oto_members_b7ddeb0678",
+          "block_id": "oto_members_780aa64e09",
           "text": {
             "type": "mrkdwn",
             "text": "*Affected instances*\n• `oto-smoke-b2`\n• `oto-smoke-a1`"
@@ -79,7 +75,17 @@
         },
         {
           "type": "context",
-          "block_id": "oto_rule_b7ddeb0678",
+          "block_id": "oto_trail_780aa64e09",
+          "elements": [
+            {
+              "type": "mrkdwn",
+              "text": ":zzz: <!date^1786125729^{time}|18:02 UTC> snoozed by `ram@example.com`  →  :bell: <!date^1786140129^{time}|22:02 UTC> snooze ended"
+            }
+          ]
+        },
+        {
+          "type": "context",
+          "block_id": "oto_rule_780aa64e09",
           "elements": [
             {
               "type": "mrkdwn",
@@ -89,7 +95,7 @@
         },
         {
           "type": "actions",
-          "block_id": "oto_actions_b7ddeb0678",
+          "block_id": "oto_actions_780aa64e09",
           "elements": [
             {
               "type": "button",
@@ -172,11 +178,11 @@
         },
         {
           "type": "context",
-          "block_id": "oto_footer_b7ddeb0678",
+          "block_id": "oto_footer_780aa64e09",
           "elements": [
             {
               "type": "mrkdwn",
-              "text": "oto  ·  `gk_4vbuj1c49jbpf`  ·  receiver `oto-smoke`  ·  _snoozed_  ·  oto first saw it <!date^1786126629^{time}|18:17 UTC> (21m later)  ·  updated <!date^1786125730^{time}|18:02 UTC>"
+              "text": "oto  ·  `gk_4vbuj1c49jbpf`  ·  receiver `oto-smoke`  ·  _snooze ended_  ·  oto first saw it <!date^1786126629^{time}|18:17 UTC> (21m later)  ·  updated <!date^1786140130^{time}|22:02 UTC>"
             }
           ]
         }

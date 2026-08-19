@@ -294,6 +294,31 @@ func plainClock(t time.Time) string {
 	return t.UTC().Format("15:04 MST")
 }
 
+// plainMoment is plainClock with the day added when the moment is not on the
+// render's own day.
+//
+// ⛔ IT EXISTS FOR FORWARD-LOOKING TIMESTAMPS, AND A SNOOZE IS THE ONLY ONE THE
+// CARDS HAVE. Every other clock in the top-level text points BACKWARD at something
+// that has already happened — "firing since 17:56 UTC", "last seen at …" — and for
+// those a bare time is unambiguous because the card is about now. A snooze points
+// forward by up to thirty days (§B.8.3, presets 30 m · 1 h · 4 h · 24 h · 7 d), and
+// "oto quiet until 22:02 UTC" on a seven-day snooze reads as tonight. That is a
+// false statement to the one person guaranteed to read the card: whoever asked for
+// the quiet.
+//
+// The same-day case keeps `plainClock`'s exact output on purpose, so the common
+// snooze reads as tersely as everything beside it.
+func plainMoment(t, ref time.Time) string {
+	if t.IsZero() {
+		return "an unknown time"
+	}
+	u, r := t.UTC(), ref.UTC()
+	if u.Year() == r.Year() && u.YearDay() == r.YearDay() {
+		return u.Format("15:04 MST")
+	}
+	return u.Format("2 Jan 15:04 MST")
+}
+
 // humanDuration renders a duration the way an operator reads one: two units at
 // most, largest first, never "0s" padding. Durations are computed server-side and
 // re-rendered on every update (S13).

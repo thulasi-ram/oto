@@ -80,33 +80,42 @@ type SlackCard struct {
 // SlackCards is the whole corpus, in the order a human should review it: the
 // card is posted, replied to, amended, broadcast, and finally closed.
 //
-// ⛔ THERE IS NO "SNOOZED" CARD HERE, AND THE REASON IS NOT THE ONE THIS COMMENT
-// USED TO GIVE.
+// ⛔ THERE IS NO "SNOOZED" CARD HERE, AND THE REASON HAS CHANGED TWICE.
 //
-// It said a snooze reaches a channel as the SUPPRESSED card — `CardSuppressed`,
-// "Silenced", `#dddddd` — and that `root_silenced` below is therefore the capture
-// of it. That is wrong, and it is wrong in the direction that hides a defect.
-// `SuppressedSnoozed` belongs to oto's OWN notification-suppression vocabulary and
-// is explicitly "NOT Alertmanager's `alert_cases.suppression_reason`"
+// It first said a snooze reaches a channel as the SUPPRESSED card —
+// `CardSuppressed`, "Silenced", `#dddddd` — and that `root_silenced` below is
+// therefore the capture of it. That was wrong in the direction that hides a
+// defect. `SuppressedSnoozed` belongs to oto's OWN notification-suppression
+// vocabulary and is explicitly "NOT Alertmanager's `alert_cases.suppression_reason`"
 // (`internal/notification/domain/suppression.go`), so a snooze never moves a case
-// into `suppressed` and `CardSuppressed` never fires for one. `root_silenced` is
-// an Alertmanager silence and nothing else.
+// into `suppressed` and `CardSuppressed` never fires for one. `root_silenced` is an
+// Alertmanager silence and nothing else.
 //
-// What actually reaches a channel is a `snoozed` Reason — one of the only two a
-// snooze may not suppress, because "a snooze that cannot announce its own
-// beginning and end is the silent suppression §B.6 forbids" — carried by
-// `PlanFor`'s default treatment as `update_root` plus a thread reply, into a
-// renderer that has no branch for it. The result is a FIRING-coloured card with no
-// stated reason and a thread line reading ":information_source: *…* — :fire:
-// Firing", at the moment oto has agreed to stop talking.
+// It then said the snooze's cards were frozen elsewhere as EVIDENCE OF A DEFECT —
+// a firing-coloured card with no stated reason and a thread line reading
+// ":information_source: *…* — :fire: Firing" — and that the snooze "earns a slot
+// here when it gets a state of its own". That is now settled, and settled the
+// other way, so the sentence has to go before it becomes a promise nobody kept.
 //
-// The captures for that live in the renderer's own goldens —
-// `internal/channels/render/slack/testdata/root_snoozed.golden.json` and
-// `reply_snoozed.golden.json` — and not here, because
+// ⭐ THE SNOOZE WILL NEVER GET A STATE OF ITS OWN. It is the THIRD ORTHOGONAL AXIS
+// (§B.8.1): a fact about oto's notification behaviour, not about the world, and a
+// card state is a reading of the world. §H.4 settles it in a call-out — "⛔ Snooze
+// does NOT change the card's colour or emoji … Colouring a snoozed critical calm
+// would be the exact lie §E.1.1 exists to prevent" — and §P-17 asks for a golden
+// PROVING a snoozed critical still renders `#a30200`, which
+// `TestGoldenSnoozedCriticalKeepsTheFiringColour` now is. git-bug 1f7bdd0 asked for
+// the opposite and was refused on those citations.
+//
+// So the snooze can never earn a slot on colour grounds: it has no colour of its
+// own to capture, by decision rather than by omission, and
 // `TestEachCardStateCarriesItsOwnColourForAHumanToVerify` permits two captures per
-// colour and the firing colour already has both (the root and the reminder). When
-// the snooze gets a state of its own it earns a slot here; until then the defect is
-// frozen where the colour budget does not apply.
+// colour with the firing colour's pair already spent (the root and the reminder).
+//
+// The defect the old comment described is FIXED — `replyBody` has `snoozed` and
+// `unsnoozed` arms, the root card carries §B.8.6's `*Notifications*` field, and
+// `reasonPhrase` names the cause in the footer. The four cards live where the
+// colour budget does not apply, in the renderer's own goldens:
+// `internal/channels/render/slack/testdata/{root,reply}_{snoozed,unsnoozed}.golden.json`.
 func SlackCards() []SlackCard {
 	return []SlackCard{
 		{
