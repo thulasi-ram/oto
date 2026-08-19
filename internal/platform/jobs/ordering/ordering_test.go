@@ -53,6 +53,37 @@ func TestDecide(t *testing.T) {
 			thread: Thread{State: StateOpen, LastSentSeq: 0, NextSeq: 1},
 			want:   ActionAbandon, reason: "unsequenced",
 		},
+		// git-bug b04a2f3. Each of these returned `proceed` before the default arm
+		// existed, because the state switch fell through to the sequence logic and
+		// every one of these items is head-of-line. They are spelled out rather
+		// than table-generated because the POINT is the specific strings: `frozen`
+		// is what 00066's Down deliberately re-admits, `""` is what an unset column
+		// or a failed scan produces, and the other two are the shape of a typo and
+		// of a wrong-case write.
+		{
+			name:   "a frozen row left by 00066's Down does not send",
+			item:   item(3, true, 0),
+			thread: Thread{State: ThreadState("frozen"), LastSentSeq: 2, NextSeq: 4, RootLanded: true},
+			want:   ActionAbandon, reason: "unknown_state",
+		},
+		{
+			name:   "the empty state does not send",
+			item:   item(3, true, 0),
+			thread: Thread{State: ThreadState(""), LastSentSeq: 2, NextSeq: 4, RootLanded: true},
+			want:   ActionAbandon, reason: "unknown_state",
+		},
+		{
+			name:   "a wrong-case state does not send",
+			item:   item(3, true, 0),
+			thread: Thread{State: ThreadState("OPEN"), LastSentSeq: 2, NextSeq: 4, RootLanded: true},
+			want:   ActionAbandon, reason: "unknown_state",
+		},
+		{
+			name:   "garbage does not send",
+			item:   item(3, true, 0),
+			thread: Thread{State: ThreadState("garbage"), LastSentSeq: 2, NextSeq: 4, RootLanded: true},
+			want:   ActionAbandon, reason: "unknown_state",
+		},
 		{
 			name:   "a resolved slot is a duplicate worker",
 			item:   item(2, true, 0),

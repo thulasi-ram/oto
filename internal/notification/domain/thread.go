@@ -26,15 +26,17 @@ const (
 	ThreadDead ThreadState = "dead"
 )
 
-// Valid reports whether s is in the closed set.
-func (s ThreadState) Valid() bool {
-	switch s {
-	case ThreadOpening, ThreadOpen, ThreadDead:
-		return true
-	default:
-		return false
-	}
-}
+// ⛔ `Valid()` WAS HERE AND IS DELETED (git-bug b04a2f3). It was the closed-set
+// check for this vocabulary and NOTHING had ever called it — not one caller in the
+// whole tree, tests included. An unwired closed-set guard is worse than no guard:
+// it reads as protection while the two conversions that build a ThreadState from
+// raw column text (`repository/threads.go:46` and `:363`) went straight past it,
+// and it is the same defect `e5c060b` was filed about one type over.
+//
+// ⭐ THE GUARD THAT MATTERS NOW LIVES WHERE THE DAMAGE WAS. An unrecognised state
+// used to fall through `ordering.Decide`'s switch and SEND; it now hits an explicit
+// `default` that abandons. That is a check on the path that acts, rather than a
+// predicate next to the type hoping someone calls it.
 
 // Terminal reports whether nothing further will be sent on this thread as it
 // stands.

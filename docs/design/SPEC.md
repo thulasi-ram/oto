@@ -3678,6 +3678,7 @@ The gate's verdicts, in evaluation order. The vocabulary is closed; every verdic
 |---|---|---|
 | `state='dead'` | `recover_thread` / `thread_dead` | §H.9 transition. **Never a snooze** |
 | `thread_seq <= 0` | `abandon` / `unsequenced` | `skipped`; a bug in the creating transaction, not a wait |
+| any other `state` | `abandon` / `unknown_state` | `skipped`; the gate cannot interpret the thread, so it records and stops rather than sending |
 | `thread_seq <= last_sent_seq` | `out_of_order` / `already_resolved` | exit quietly — duplicate worker, or recovery already moved past |
 | needs a root, none landed, **and this item is the head** | `recover_thread` / `root_never_landed` | recover immediately; `MaxWait` is not waited out |
 | needs a root, none landed, behind the head | `wait_for_root` / `awaiting_root` | snooze **2 s**, until `MaxWait` |

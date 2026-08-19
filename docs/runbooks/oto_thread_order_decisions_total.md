@@ -21,6 +21,7 @@ send now". It exists to explain the other two ordering metrics, not to be paged 
 | `recover_thread` | `root_never_landed` | the root was allocated but never sent |
 | `recover_thread` | `head_of_line_stalled` | a slot has been in flight past the §G.5 lease (120 s) |
 | `abandon` | `unsequenced` | the item carries no sequence number |
+| `abandon` | `unknown_state` | the thread's state is not one the gate recognises; nothing is sent and nothing is acted on |
 | `out_of_order` | `already_resolved` | this slot is already finished; the head merely had not caught up |
 
 ## How to read it

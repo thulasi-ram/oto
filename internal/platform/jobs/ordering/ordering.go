@@ -186,6 +186,22 @@ func Decide(item Item, th Thread, now time.Time, p Policy) Decision {
 		// caller decides, and it must decide now rather than wait.
 		return Decision{Action: ActionRecoverThread, Reason: "thread_dead"}
 	case StateOpening, StateOpen:
+	default:
+		// ⛔ AN UNRECOGNISED STATE MUST NOT REACH THE SEQUENCE LOGIC (git-bug
+		// b04a2f3). Without this arm the switch fell through and a head-of-line
+		// item got `proceed` — so `""`, `"garbage"` and a `frozen` row left behind
+		// by 00066's Down all SENT. That is the one direction a gate must never
+		// fail in, and it failed there silently.
+		//
+		// ⭐ ABANDON, NOT RECOVER, AND THE CHOICE IS DELIBERATE. `recover_thread`
+		// is what ADR 0023 prescribes for a state known to be TERMINAL, and it
+		// ACTS: it posts a fresh root and re-points the thread. Doing that to a
+		// thread whose state oto cannot interpret is taking a visible action on a
+		// row it does not understand. `abandon` writes a `skipped` row — the answer
+		// an operator gets to "why is there no message?" — and touches no provider.
+		// When the gate cannot tell what a thread is, the honest move is to record
+		// and stop.
+		return Decision{Action: ActionAbandon, Reason: "unknown_state"}
 	}
 
 	switch {
